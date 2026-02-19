@@ -79,8 +79,8 @@ export default function ProductTypesSettings() {
       name: type.name,
       description: type.description || "",
       sortOrder: type.sortOrder || 0,
-      defaultStationKey: type.defaultStationKey ?? null,
-      defaultStepKey: type.defaultStepKey ?? null,
+      defaultStationKey: type.defaultStationKey || null,
+      defaultStepKey: type.defaultStepKey || null,
       sendToProductionDefault: type.sendToProductionDefault ?? false,
     });
   };
@@ -178,7 +178,7 @@ export default function ProductTypesSettings() {
                   <div>
                     <Label>Default Station</Label>
                     <Select
-                      value={formData.defaultStationKey ?? "__none__"}
+                      value={formData.defaultStationKey || "__none__"}
                       onValueChange={(v) => setFormData({ ...formData, defaultStationKey: v === "__none__" ? null : v, defaultStepKey: null })}
                     >
                       <SelectTrigger>
@@ -194,7 +194,7 @@ export default function ProductTypesSettings() {
                   <div>
                     <Label>Default Step</Label>
                     <Select
-                      value={formData.defaultStepKey ?? "__none__"}
+                      value={formData.defaultStepKey || "__none__"}
                       onValueChange={(v) => setFormData({ ...formData, defaultStepKey: v === "__none__" ? null : v })}
                       disabled={!formData.defaultStationKey}
                     >
@@ -324,7 +324,7 @@ export default function ProductTypesSettings() {
                 <div>
                   <Label>Default Station</Label>
                   <Select
-                    value={formData.defaultStationKey ?? "__none__"}
+                    value={formData.defaultStationKey || "__none__"}
                     onValueChange={(v) => setFormData({ ...formData, defaultStationKey: v === "__none__" ? null : v, defaultStepKey: null })}
                   >
                     <SelectTrigger>
@@ -340,7 +340,7 @@ export default function ProductTypesSettings() {
                 <div>
                   <Label>Default Step</Label>
                   <Select
-                    value={formData.defaultStepKey ?? "__none__"}
+                    value={formData.defaultStepKey || "__none__"}
                     onValueChange={(v) => setFormData({ ...formData, defaultStepKey: v === "__none__" ? null : v })}
                     disabled={!formData.defaultStationKey}
                   >
