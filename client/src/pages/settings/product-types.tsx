@@ -20,12 +20,19 @@ export default function ProductTypesSettings() {
 
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [editingType, setEditingType] = useState<any>(null);
-  const [formData, setFormData] = useState({
+  const [formData, setFormData] = useState<{
+    name: string;
+    description: string;
+    sortOrder: number;
+    defaultStationKey: string | null;
+    defaultStepKey: string | null;
+    sendToProductionDefault: boolean;
+  }>({
     name: "",
     description: "",
     sortOrder: 0,
-    defaultStationKey: "",
-    defaultStepKey: "",
+    defaultStationKey: null,
+    defaultStepKey: null,
     sendToProductionDefault: false,
   });
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
@@ -40,7 +47,7 @@ export default function ProductTypesSettings() {
       sendToProductionDefault: formData.sendToProductionDefault,
     });
     setIsCreateOpen(false);
-    setFormData({ name: "", description: "", sortOrder: 0, defaultStationKey: "", defaultStepKey: "", sendToProductionDefault: false });
+    setFormData({ name: "", description: "", sortOrder: 0, defaultStationKey: null, defaultStepKey: null, sendToProductionDefault: false });
   };
 
   const handleUpdate = async () => {
@@ -57,7 +64,7 @@ export default function ProductTypesSettings() {
       },
     });
     setEditingType(null);
-    setFormData({ name: "", description: "", sortOrder: 0, defaultStationKey: "", defaultStepKey: "", sendToProductionDefault: false });
+    setFormData({ name: "", description: "", sortOrder: 0, defaultStationKey: null, defaultStepKey: null, sendToProductionDefault: false });
   };
 
   const handleDelete = async (id: string) => {
@@ -72,8 +79,8 @@ export default function ProductTypesSettings() {
       name: type.name,
       description: type.description || "",
       sortOrder: type.sortOrder || 0,
-      defaultStationKey: type.defaultStationKey || "",
-      defaultStepKey: type.defaultStepKey || "",
+      defaultStationKey: type.defaultStationKey ?? null,
+      defaultStepKey: type.defaultStepKey ?? null,
       sendToProductionDefault: type.sendToProductionDefault ?? false,
     });
   };
@@ -171,14 +178,14 @@ export default function ProductTypesSettings() {
                   <div>
                     <Label>Default Station</Label>
                     <Select
-                      value={formData.defaultStationKey || ""}
-                      onValueChange={(v) => setFormData({ ...formData, defaultStationKey: v, defaultStepKey: "" })}
+                      value={formData.defaultStationKey ?? "__none__"}
+                      onValueChange={(v) => setFormData({ ...formData, defaultStationKey: v === "__none__" ? null : v, defaultStepKey: null })}
                     >
                       <SelectTrigger>
                         <SelectValue placeholder="— None —" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="">— None —</SelectItem>
+                        <SelectItem value="__none__">— None —</SelectItem>
                         <SelectItem value="flatbed">Flatbed</SelectItem>
                         <SelectItem value="roll">Roll</SelectItem>
                       </SelectContent>
@@ -187,15 +194,15 @@ export default function ProductTypesSettings() {
                   <div>
                     <Label>Default Step</Label>
                     <Select
-                      value={formData.defaultStepKey || ""}
-                      onValueChange={(v) => setFormData({ ...formData, defaultStepKey: v })}
+                      value={formData.defaultStepKey ?? "__none__"}
+                      onValueChange={(v) => setFormData({ ...formData, defaultStepKey: v === "__none__" ? null : v })}
                       disabled={!formData.defaultStationKey}
                     >
                       <SelectTrigger>
                         <SelectValue placeholder="— None —" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="">— None —</SelectItem>
+                        <SelectItem value="__none__">— None —</SelectItem>
                         <SelectItem value="prepress">Prepress</SelectItem>
                         <SelectItem value="print">Print</SelectItem>
                         <SelectItem value="laminate">Laminate</SelectItem>
@@ -317,14 +324,14 @@ export default function ProductTypesSettings() {
                 <div>
                   <Label>Default Station</Label>
                   <Select
-                    value={formData.defaultStationKey || ""}
-                    onValueChange={(v) => setFormData({ ...formData, defaultStationKey: v, defaultStepKey: "" })}
+                    value={formData.defaultStationKey ?? "__none__"}
+                    onValueChange={(v) => setFormData({ ...formData, defaultStationKey: v === "__none__" ? null : v, defaultStepKey: null })}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="— None —" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">— None —</SelectItem>
+                      <SelectItem value="__none__">— None —</SelectItem>
                       <SelectItem value="flatbed">Flatbed</SelectItem>
                       <SelectItem value="roll">Roll</SelectItem>
                     </SelectContent>
@@ -333,15 +340,15 @@ export default function ProductTypesSettings() {
                 <div>
                   <Label>Default Step</Label>
                   <Select
-                    value={formData.defaultStepKey || ""}
-                    onValueChange={(v) => setFormData({ ...formData, defaultStepKey: v })}
+                    value={formData.defaultStepKey ?? "__none__"}
+                    onValueChange={(v) => setFormData({ ...formData, defaultStepKey: v === "__none__" ? null : v })}
                     disabled={!formData.defaultStationKey}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="— None —" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">— None —</SelectItem>
+                      <SelectItem value="__none__">— None —</SelectItem>
                       <SelectItem value="prepress">Prepress</SelectItem>
                       <SelectItem value="print">Print</SelectItem>
                       <SelectItem value="laminate">Laminate</SelectItem>
