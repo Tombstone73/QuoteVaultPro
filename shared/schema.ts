@@ -307,6 +307,10 @@ export const productTypes = pgTable("product_types", {
   name: varchar("name", { length: 100 }).notNull(),
   description: text("description"),
   sortOrder: integer("sort_order").default(0).notNull(),
+  // Production routing defaults
+  defaultStationKey: varchar("default_station_key", { length: 40 }),
+  defaultStepKey: varchar("default_step_key", { length: 40 }),
+  sendToProductionDefault: boolean("send_to_production_default").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -321,6 +325,9 @@ export const insertProductTypeSchema = createInsertSchema(productTypes).omit({
   organizationId: true,
 }).extend({
   sortOrder: z.coerce.number().int().default(0),
+  defaultStationKey: z.string().max(40).nullish(),
+  defaultStepKey: z.string().max(40).nullish(),
+  sendToProductionDefault: z.boolean().default(false),
 });
 
 export const updateProductTypeSchema = insertProductTypeSchema.partial().extend({
