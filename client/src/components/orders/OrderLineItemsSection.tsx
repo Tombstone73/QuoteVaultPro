@@ -1360,7 +1360,7 @@ export function OrderLineItemsSection({
                                   override: isOverride,
                                   internal: hasProductionNotes,
                                 }}
-                                showNoteLabel={false}
+                                showNoteLabel={true}
                                 descriptionPreview={persistedDescription || undefined}
                                 optionChips={optionChips.map((chip, index) => ({
                                   text: chip,
