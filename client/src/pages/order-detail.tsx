@@ -2682,30 +2682,56 @@ export default function OrderDetail() {
 
             <Card>
               <CardHeader className="py-4 px-6">
-                <div className="flex items-center justify-between">
-                  <button
-                    type="button"
-                    onClick={() => setRightPanel(prev => prev === "timeline" ? "collapsed" : "timeline")}
-                    className={cn(
-                      "text-lg font-medium transition-colors hover:text-foreground cursor-pointer",
-                      rightPanel === "timeline" ? "text-foreground" : "text-muted-foreground"
-                    )}
-                  >
-                    Timeline
-                  </button>
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setRightPanel(prev => prev === "timeline" ? "collapsed" : "timeline")}
+                      className={cn(
+                        "text-lg font-medium transition-colors hover:text-foreground cursor-pointer",
+                        rightPanel === "timeline" ? "text-foreground" : "text-muted-foreground"
+                      )}
+                    >
+                      Timeline
+                    </button>
 
-                  <div className="h-4 w-px bg-muted-foreground/30" aria-hidden="true" />
+                    <div className="h-4 w-px bg-muted-foreground/30" aria-hidden="true" />
 
-                  <button
-                    type="button"
-                    onClick={() => setRightPanel(prev => prev === "material" ? "collapsed" : "material")}
-                    className={cn(
-                      "text-lg font-medium transition-colors hover:text-foreground cursor-pointer",
-                      rightPanel === "material" ? "text-foreground" : "text-muted-foreground"
-                    )}
-                  >
-                    Material Usage
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => setRightPanel(prev => prev === "material" ? "collapsed" : "material")}
+                      className={cn(
+                        "text-lg font-medium transition-colors hover:text-foreground cursor-pointer",
+                        rightPanel === "material" ? "text-foreground" : "text-muted-foreground"
+                      )}
+                    >
+                      Material Usage
+                    </button>
+                  </div>
+
+                  <div className="ml-auto flex w-full flex-wrap justify-start gap-2 sm:w-auto sm:justify-end">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setShowInventoryReservationsDialog(true)}
+                    >
+                      Inventory
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setShowManualReservationsDialog(true)}
+                    >
+                      Manual
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setShowPbv2RollupDialog(true)}
+                    >
+                      Rollup
+                    </Button>
+                  </div>
                 </div>
               </CardHeader>
               {rightPanel !== "collapsed" && (
@@ -2723,36 +2749,6 @@ export default function OrderDetail() {
                   )}
                 </CardContent>
               )}
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg font-medium">Utilities</CardTitle>
-                <CardDescription>Open operational tools in focused panels</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <Button
-                  variant="outline"
-                  className="w-full justify-start"
-                  onClick={() => setShowInventoryReservationsDialog(true)}
-                >
-                  Inventory Reservations
-                </Button>
-                <Button
-                  variant="outline"
-                  className="w-full justify-start"
-                  onClick={() => setShowManualReservationsDialog(true)}
-                >
-                  Manual Reservations
-                </Button>
-                <Button
-                  variant="outline"
-                  className="w-full justify-start"
-                  onClick={() => setShowPbv2RollupDialog(true)}
-                >
-                  PBV2 Rollup
-                </Button>
-              </CardContent>
             </Card>
           </div>
         </div>
