@@ -195,6 +195,9 @@ export default function OrderDetail() {
   const [rightPanel, setRightPanel] = useState<"collapsed" | "timeline" | "material">("collapsed");
 
   const [showReleaseReservationsDialog, setShowReleaseReservationsDialog] = useState(false);
+  const [showPbv2RollupDialog, setShowPbv2RollupDialog] = useState(false);
+  const [showInventoryReservationsDialog, setShowInventoryReservationsDialog] = useState(false);
+  const [showManualReservationsDialog, setShowManualReservationsDialog] = useState(false);
 
   const [showCustomerAddress, setShowCustomerAddress] = useState(true);
 
@@ -1996,214 +1999,6 @@ export default function OrderDetail() {
                 onAfterLineItemsChange={recalculateOrderTotals}
               />
 
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-lg font-medium">PBV2 Production Rollup</CardTitle>
-                  <CardDescription>Materials + accepted PBV2 components</CardDescription>
-                </CardHeader>
-
-                <CardContent className="space-y-4">
-                  {pbv2RollupQuery.isLoading ? (
-                    <div className="text-sm text-muted-foreground">Loading rollup…</div>
-                  ) : pbv2RollupQuery.isError ? (
-                    <div className="text-sm text-destructive">Failed to load rollup.</div>
-                  ) : (
-                    (() => {
-                      const data = pbv2RollupQuery.data as any;
-                      const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
-                      const materials = Array.isArray(data?.materials) ? data.materials : [];
-                      const components = Array.isArray(data?.components) ? data.components : [];
-
-                      return (
-                        <div className="space-y-4">
-                          {warnings.length > 0 ? (
-                            <div className="rounded-md border border-border/60 bg-background/30 p-3">
-                              <div className="text-sm font-medium">Warnings</div>
-                              <div className="mt-1 space-y-1 text-sm text-muted-foreground">
-                                {warnings.map((w: any, idx: number) => (
-                                  <div key={idx}>
-                                    {w.lineItemId ? `Line item ${w.lineItemId}: ` : ""}
-                                    {String(w.message || w.code || "Warning")}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          ) : null}
-
-                          <div>
-                            <div className="text-sm font-medium mb-2">Materials</div>
-                            <Table>
-                              <TableHeader>
-                                <TableRow>
-                                  <TableHead>SKU</TableHead>
-                                  <TableHead>UOM</TableHead>
-                                  <TableHead className="text-right">Total Qty</TableHead>
-                                </TableRow>
-                              </TableHeader>
-                              <TableBody>
-                                {materials.length === 0 ? (
-                                  <TableRow>
-                                    <TableCell colSpan={3} className="text-sm text-muted-foreground">
-                                      No PBV2 materials found.
-                                    </TableCell>
-                                  </TableRow>
-                                ) : (
-                                  materials.map((m: any) => (
-                                    <TableRow key={`${m.skuRef}::${m.uom}`}>
-                                      <TableCell className="font-mono">{String(m.skuRef || "")}</TableCell>
-                                      <TableCell className="font-mono">{String(m.uom || "")}</TableCell>
-                                      <TableCell className="text-right font-mono">{String(m.qty || "")}</TableCell>
-                                    </TableRow>
-                                  ))
-                                )}
-                              </TableBody>
-                            </Table>
-                          </div>
-
-                          <div>
-                            <div className="text-sm font-medium mb-2">Accepted Components</div>
-                            <Table>
-                              <TableHeader>
-                                <TableRow>
-                                  <TableHead>Title</TableHead>
-                                  <TableHead>SKU/Product</TableHead>
-                                  <TableHead className="text-right">Qty</TableHead>
-                                </TableRow>
-                              </TableHeader>
-                              <TableBody>
-                                {components.length === 0 ? (
-                                  <TableRow>
-                                    <TableCell colSpan={3} className="text-sm text-muted-foreground">
-                                      No accepted components.
-                                    </TableCell>
-                                  </TableRow>
-                                ) : (
-                                  components.map((c: any, idx: number) => (
-                                    <TableRow key={`${c.lineItemId || ""}::${c.title || ""}::${idx}`}>
-                                      <TableCell>{String(c.title || "")}</TableCell>
-                                      <TableCell className="font-mono">
-                                        {String(c.kind || "") === "inlineSku"
-                                          ? String(c.skuRef || "")
-                                          : String(c.childProductId || "")}
-                                      </TableCell>
-                                      <TableCell className="text-right font-mono">{String(c.qty || "")}</TableCell>
-                                    </TableRow>
-                                  ))
-                                )}
-                              </TableBody>
-                            </Table>
-                          </div>
-                        </div>
-                      );
-                    })()
-                  )}
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader className="pb-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <CardTitle className="text-lg font-medium">Inventory Reservations</CardTitle>
-                      <CardDescription>
-                        {inventoryReservationsEnabled
-                          ? "Derived from PBV2 rollup"
-                          : "Inventory reservations are disabled in settings."}
-                      </CardDescription>
-                    </div>
-                    {(() => {
-                      if (!inventoryReservationsEnabled) {
-                        return (
-                          <Button size="sm" disabled>
-                            Reserve
-                          </Button>
-                        );
-                      }
-
-                      const data = inventoryQuery.data as any;
-                      const hasActive = Boolean(data?.hasActiveReservations);
-
-                      if (!orderId) return null;
-
-                      return hasActive ? (
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          onClick={() => setShowReleaseReservationsDialog(true)}
-                          disabled={releaseInventoryMutation.isPending || inventoryQuery.isLoading}
-                        >
-                          Release
-                        </Button>
-                      ) : (
-                        <Button
-                          size="sm"
-                          onClick={() => reserveInventoryMutation.mutate()}
-                          disabled={reserveInventoryMutation.isPending || inventoryQuery.isLoading}
-                        >
-                          Reserve
-                        </Button>
-                      );
-                    })()}
-                  </div>
-                </CardHeader>
-
-                <CardContent className="space-y-3">
-                  {!inventoryReservationsEnabled ? (
-                    <div className="text-sm text-muted-foreground">
-                      Enable Inventory Reservations in Organization Settings to view and manage reservations for this order.
-                    </div>
-                  ) : inventoryQuery.isLoading ? (
-                    <div className="text-sm text-muted-foreground">Loading reservations…</div>
-                  ) : inventoryQuery.isError ? (
-                    <div className="text-sm text-destructive">Failed to load reservations.</div>
-                  ) : (
-                    (() => {
-                      const data = inventoryQuery.data as any;
-                      const items = Array.isArray(data?.reserved?.items) ? data.reserved.items : [];
-
-                      return (
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>Source Key</TableHead>
-                              <TableHead>UOM</TableHead>
-                              <TableHead className="text-right">Total</TableHead>
-                              <TableHead className="text-right">Material</TableHead>
-                              <TableHead className="text-right">Component</TableHead>
-                              <TableHead className="text-right">Manual</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {items.length === 0 ? (
-                              <TableRow>
-                                <TableCell colSpan={6} className="text-sm text-muted-foreground">
-                                  No active reservations.
-                                </TableCell>
-                              </TableRow>
-                            ) : (
-                              items.map((it: any) => (
-                                <TableRow key={`${it.sourceKey}::${it.uom}`}>
-                                  <TableCell className="font-mono">{String(it.sourceKey || "")}</TableCell>
-                                  <TableCell className="font-mono">{String(it.uom || "")}</TableCell>
-                                  <TableCell className="text-right font-mono">{String(it.qty || "")}</TableCell>
-                                  <TableCell className="text-right font-mono">{String(it.bySourceType?.PBV2_MATERIAL || "0.00")}</TableCell>
-                                  <TableCell className="text-right font-mono">{String(it.bySourceType?.PBV2_COMPONENT || "0.00")}</TableCell>
-                                  <TableCell className="text-right font-mono">{String(it.bySourceType?.MANUAL || "0.00")}</TableCell>
-                                </TableRow>
-                              ))
-                            )}
-                          </TableBody>
-                        </Table>
-                      );
-                    })()
-                  )}
-                </CardContent>
-              </Card>
-
-              {orderId ? (
-                <ManualReservationsCard orderId={orderId} enabled={inventoryReservationsEnabled} />
-              ) : null}
-
               {/* Totals */}
               <Card>
                 <CardHeader>
@@ -2929,6 +2724,36 @@ export default function OrderDetail() {
                 </CardContent>
               )}
             </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg font-medium">Utilities</CardTitle>
+                <CardDescription>Open operational tools in focused panels</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <Button
+                  variant="outline"
+                  className="w-full justify-start"
+                  onClick={() => setShowInventoryReservationsDialog(true)}
+                >
+                  Inventory Reservations
+                </Button>
+                <Button
+                  variant="outline"
+                  className="w-full justify-start"
+                  onClick={() => setShowManualReservationsDialog(true)}
+                >
+                  Manual Reservations
+                </Button>
+                <Button
+                  variant="outline"
+                  className="w-full justify-start"
+                  onClick={() => setShowPbv2RollupDialog(true)}
+                >
+                  PBV2 Rollup
+                </Button>
+              </CardContent>
+            </Card>
           </div>
         </div>
       </ContentLayout>
@@ -2977,6 +2802,241 @@ export default function OrderDetail() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={showPbv2RollupDialog} onOpenChange={setShowPbv2RollupDialog}>
+        <DialogContent className="max-w-6xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>PBV2 Production Rollup</DialogTitle>
+            <DialogDescription>Materials + accepted PBV2 components</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            {pbv2RollupQuery.isLoading ? (
+              <div className="text-sm text-muted-foreground">Loading rollup…</div>
+            ) : pbv2RollupQuery.isError ? (
+              <div className="text-sm text-destructive">Failed to load rollup.</div>
+            ) : (
+              (() => {
+                const data = pbv2RollupQuery.data as any;
+                const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
+                const materials = Array.isArray(data?.materials) ? data.materials : [];
+                const components = Array.isArray(data?.components) ? data.components : [];
+
+                return (
+                  <div className="space-y-4">
+                    {warnings.length > 0 ? (
+                      <div className="rounded-md border border-border/60 bg-background/30 p-3">
+                        <div className="text-sm font-medium">Warnings</div>
+                        <div className="mt-1 space-y-1 text-sm text-muted-foreground">
+                          {warnings.map((w: any, idx: number) => (
+                            <div key={idx}>
+                              {w.lineItemId ? `Line item ${w.lineItemId}: ` : ""}
+                              {String(w.message || w.code || "Warning")}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div>
+                      <div className="text-sm font-medium mb-2">Materials</div>
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>SKU</TableHead>
+                            <TableHead>UOM</TableHead>
+                            <TableHead className="text-right">Total Qty</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {materials.length === 0 ? (
+                            <TableRow>
+                              <TableCell colSpan={3} className="text-sm text-muted-foreground">
+                                No PBV2 materials found.
+                              </TableCell>
+                            </TableRow>
+                          ) : (
+                            materials.map((m: any) => (
+                              <TableRow key={`${m.skuRef}::${m.uom}`}>
+                                <TableCell className="font-mono">{String(m.skuRef || "")}</TableCell>
+                                <TableCell className="font-mono">{String(m.uom || "")}</TableCell>
+                                <TableCell className="text-right font-mono">{String(m.qty || "")}</TableCell>
+                              </TableRow>
+                            ))
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+
+                    <div>
+                      <div className="text-sm font-medium mb-2">Accepted Components</div>
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Title</TableHead>
+                            <TableHead>SKU/Product</TableHead>
+                            <TableHead className="text-right">Qty</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {components.length === 0 ? (
+                            <TableRow>
+                              <TableCell colSpan={3} className="text-sm text-muted-foreground">
+                                No accepted components.
+                              </TableCell>
+                            </TableRow>
+                          ) : (
+                            components.map((c: any, idx: number) => (
+                              <TableRow key={`${c.lineItemId || ""}::${c.title || ""}::${idx}`}>
+                                <TableCell>{String(c.title || "")}</TableCell>
+                                <TableCell className="font-mono">
+                                  {String(c.kind || "") === "inlineSku"
+                                    ? String(c.skuRef || "")
+                                    : String(c.childProductId || "")}
+                                </TableCell>
+                                <TableCell className="text-right font-mono">{String(c.qty || "")}</TableCell>
+                              </TableRow>
+                            ))
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                );
+              })()
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowPbv2RollupDialog(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showInventoryReservationsDialog} onOpenChange={setShowInventoryReservationsDialog}>
+        <DialogContent className="max-w-6xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Inventory Reservations</DialogTitle>
+            <DialogDescription>
+              {inventoryReservationsEnabled
+                ? "Derived from PBV2 rollup"
+                : "Inventory reservations are disabled in settings."}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div />
+              {(() => {
+                if (!inventoryReservationsEnabled) {
+                  return (
+                    <Button size="sm" disabled>
+                      Reserve
+                    </Button>
+                  );
+                }
+
+                const data = inventoryQuery.data as any;
+                const hasActive = Boolean(data?.hasActiveReservations);
+
+                if (!orderId) return null;
+
+                return hasActive ? (
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => setShowReleaseReservationsDialog(true)}
+                    disabled={releaseInventoryMutation.isPending || inventoryQuery.isLoading}
+                  >
+                    Release
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    onClick={() => reserveInventoryMutation.mutate()}
+                    disabled={reserveInventoryMutation.isPending || inventoryQuery.isLoading}
+                  >
+                    Reserve
+                  </Button>
+                );
+              })()}
+            </div>
+
+            {!inventoryReservationsEnabled ? (
+              <div className="text-sm text-muted-foreground">
+                Enable Inventory Reservations in Organization Settings to view and manage reservations for this order.
+              </div>
+            ) : inventoryQuery.isLoading ? (
+              <div className="text-sm text-muted-foreground">Loading reservations…</div>
+            ) : inventoryQuery.isError ? (
+              <div className="text-sm text-destructive">Failed to load reservations.</div>
+            ) : (
+              (() => {
+                const data = inventoryQuery.data as any;
+                const items = Array.isArray(data?.reserved?.items) ? data.reserved.items : [];
+
+                return (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Source Key</TableHead>
+                        <TableHead>UOM</TableHead>
+                        <TableHead className="text-right">Total</TableHead>
+                        <TableHead className="text-right">Material</TableHead>
+                        <TableHead className="text-right">Component</TableHead>
+                        <TableHead className="text-right">Manual</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {items.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={6} className="text-sm text-muted-foreground">
+                            No active reservations.
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        items.map((it: any) => (
+                          <TableRow key={`${it.sourceKey}::${it.uom}`}>
+                            <TableCell className="font-mono">{String(it.sourceKey || "")}</TableCell>
+                            <TableCell className="font-mono">{String(it.uom || "")}</TableCell>
+                            <TableCell className="text-right font-mono">{String(it.qty || "")}</TableCell>
+                            <TableCell className="text-right font-mono">{String(it.bySourceType?.PBV2_MATERIAL || "0.00")}</TableCell>
+                            <TableCell className="text-right font-mono">{String(it.bySourceType?.PBV2_COMPONENT || "0.00")}</TableCell>
+                            <TableCell className="text-right font-mono">{String(it.bySourceType?.MANUAL || "0.00")}</TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                );
+              })()
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowInventoryReservationsDialog(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showManualReservationsDialog} onOpenChange={setShowManualReservationsDialog}>
+        <DialogContent className="max-w-6xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Manual Reservations</DialogTitle>
+            <DialogDescription>Manage manual inventory reservations for this order.</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            {orderId ? (
+              <ManualReservationsCard orderId={orderId} enabled={inventoryReservationsEnabled} />
+            ) : null}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowManualReservationsDialog(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
 
 
