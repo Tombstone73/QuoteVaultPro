@@ -246,6 +246,13 @@
       "when": 1771545600000,
       "tag": "0042_add_order_line_items_priced_at",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1771632000000,
+      "tag": "0043_product_type_production_defaults",
+      "breakpoints": true
     }
   ]
 }

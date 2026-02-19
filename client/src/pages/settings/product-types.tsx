@@ -5,7 +5,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Loader2, Plus, Pencil, Trash2, GripVertical } from "lucide-react";
 import { TitanCard } from "@/components/ui/TitanCard";
@@ -18,20 +20,44 @@ export default function ProductTypesSettings() {
 
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [editingType, setEditingType] = useState<any>(null);
-  const [formData, setFormData] = useState({ name: "", description: "", sortOrder: 0 });
+  const [formData, setFormData] = useState({
+    name: "",
+    description: "",
+    sortOrder: 0,
+    defaultStationKey: "",
+    defaultStepKey: "",
+    sendToProductionDefault: false,
+  });
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
 
   const handleCreate = async () => {
-    await createMutation.mutateAsync(formData);
+    await createMutation.mutateAsync({
+      name: formData.name,
+      description: formData.description || undefined,
+      sortOrder: formData.sortOrder,
+      defaultStationKey: formData.defaultStationKey || null,
+      defaultStepKey: formData.defaultStepKey || null,
+      sendToProductionDefault: formData.sendToProductionDefault,
+    });
     setIsCreateOpen(false);
-    setFormData({ name: "", description: "", sortOrder: 0 });
+    setFormData({ name: "", description: "", sortOrder: 0, defaultStationKey: "", defaultStepKey: "", sendToProductionDefault: false });
   };
 
   const handleUpdate = async () => {
     if (!editingType) return;
-    await updateMutation.mutateAsync({ id: editingType.id, data: formData });
+    await updateMutation.mutateAsync({
+      id: editingType.id,
+      data: {
+        name: formData.name,
+        description: formData.description || undefined,
+        sortOrder: formData.sortOrder,
+        defaultStationKey: formData.defaultStationKey || null,
+        defaultStepKey: formData.defaultStepKey || null,
+        sendToProductionDefault: formData.sendToProductionDefault,
+      },
+    });
     setEditingType(null);
-    setFormData({ name: "", description: "", sortOrder: 0 });
+    setFormData({ name: "", description: "", sortOrder: 0, defaultStationKey: "", defaultStepKey: "", sendToProductionDefault: false });
   };
 
   const handleDelete = async (id: string) => {
@@ -42,7 +68,14 @@ export default function ProductTypesSettings() {
 
   const openEdit = (type: any) => {
     setEditingType(type);
-    setFormData({ name: type.name, description: type.description || "", sortOrder: type.sortOrder || 0 });
+    setFormData({
+      name: type.name,
+      description: type.description || "",
+      sortOrder: type.sortOrder || 0,
+      defaultStationKey: type.defaultStationKey || "",
+      defaultStepKey: type.defaultStepKey || "",
+      sendToProductionDefault: type.sendToProductionDefault ?? false,
+    });
   };
 
   const handleDragStart = (index: number) => {
@@ -131,6 +164,58 @@ export default function ProductTypesSettings() {
                   onChange={(e) => setFormData({ ...formData, sortOrder: Number(e.target.value) })}
                 />
               </div>
+
+              <div className="border-t pt-4">
+                <p className="text-sm font-medium mb-3">Production Routing Defaults</p>
+                <div className="space-y-3">
+                  <div>
+                    <Label>Default Station</Label>
+                    <Select
+                      value={formData.defaultStationKey || ""}
+                      onValueChange={(v) => setFormData({ ...formData, defaultStationKey: v, defaultStepKey: "" })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="— None —" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="">— None —</SelectItem>
+                        <SelectItem value="flatbed">Flatbed</SelectItem>
+                        <SelectItem value="roll">Roll</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>Default Step</Label>
+                    <Select
+                      value={formData.defaultStepKey || ""}
+                      onValueChange={(v) => setFormData({ ...formData, defaultStepKey: v })}
+                      disabled={!formData.defaultStationKey}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="— None —" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="">— None —</SelectItem>
+                        <SelectItem value="prepress">Prepress</SelectItem>
+                        <SelectItem value="print">Print</SelectItem>
+                        <SelectItem value="laminate">Laminate</SelectItem>
+                        <SelectItem value="finishing">Finishing</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex items-center justify-between py-1">
+                    <Label htmlFor="create-sendToProduction" className="font-normal">
+                      Send to Production by default
+                    </Label>
+                    <Switch
+                      id="create-sendToProduction"
+                      checked={formData.sendToProductionDefault}
+                      onCheckedChange={(v) => setFormData({ ...formData, sendToProductionDefault: v })}
+                    />
+                  </div>
+                </div>
+              </div>
+
               <Button onClick={handleCreate} disabled={!formData.name || createMutation.isPending}>
                 {createMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Create
@@ -148,6 +233,8 @@ export default function ProductTypesSettings() {
                   <TableHead className="w-12"></TableHead>
                   <TableHead>Name</TableHead>
                   <TableHead>Description</TableHead>
+                  <TableHead className="w-28">Default Station</TableHead>
+                  <TableHead className="w-28">Auto-Production</TableHead>
                   <TableHead className="w-24">Sort Order</TableHead>
                   <TableHead className="w-24">Actions</TableHead>
                 </TableRow>
@@ -167,6 +254,8 @@ export default function ProductTypesSettings() {
                     </TableCell>
                     <TableCell className="font-medium">{type.name}</TableCell>
                     <TableCell className="text-muted-foreground">{type.description || "—"}</TableCell>
+                    <TableCell className="text-muted-foreground capitalize">{type.defaultStationKey || "—"}</TableCell>
+                    <TableCell>{type.sendToProductionDefault ? <span className="text-xs font-medium text-emerald-600">On</span> : <span className="text-xs text-muted-foreground">Off</span>}</TableCell>
                     <TableCell>{type.sortOrder}</TableCell>
                     <TableCell>
                       <div className="flex gap-2">
@@ -221,6 +310,58 @@ export default function ProductTypesSettings() {
                 onChange={(e) => setFormData({ ...formData, sortOrder: Number(e.target.value) })}
               />
             </div>
+
+            <div className="border-t pt-4">
+              <p className="text-sm font-medium mb-3">Production Routing Defaults</p>
+              <div className="space-y-3">
+                <div>
+                  <Label>Default Station</Label>
+                  <Select
+                    value={formData.defaultStationKey || ""}
+                    onValueChange={(v) => setFormData({ ...formData, defaultStationKey: v, defaultStepKey: "" })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="— None —" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="">— None —</SelectItem>
+                      <SelectItem value="flatbed">Flatbed</SelectItem>
+                      <SelectItem value="roll">Roll</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Default Step</Label>
+                  <Select
+                    value={formData.defaultStepKey || ""}
+                    onValueChange={(v) => setFormData({ ...formData, defaultStepKey: v })}
+                    disabled={!formData.defaultStationKey}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="— None —" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="">— None —</SelectItem>
+                      <SelectItem value="prepress">Prepress</SelectItem>
+                      <SelectItem value="print">Print</SelectItem>
+                      <SelectItem value="laminate">Laminate</SelectItem>
+                      <SelectItem value="finishing">Finishing</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-center justify-between py-1">
+                  <Label htmlFor="edit-sendToProduction" className="font-normal">
+                    Send to Production by default
+                  </Label>
+                  <Switch
+                    id="edit-sendToProduction"
+                    checked={formData.sendToProductionDefault}
+                    onCheckedChange={(v) => setFormData({ ...formData, sendToProductionDefault: v })}
+                  />
+                </div>
+              </div>
+            </div>
+
             <Button onClick={handleUpdate} disabled={!formData.name || updateMutation.isPending}>
               {updateMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Save Changes

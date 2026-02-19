@@ -7,6 +7,9 @@ export interface ProductType {
   name: string;
   description: string | null;
   sortOrder: number;
+  defaultStationKey: string | null;
+  defaultStepKey: string | null;
+  sendToProductionDefault: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -29,7 +32,7 @@ export function useCreateProductType() {
   const { toast } = useToast();
 
   return useMutation({
-    mutationFn: async (data: { name: string; description?: string; sortOrder?: number }) => {
+    mutationFn: async (data: { name: string; description?: string; sortOrder?: number; defaultStationKey?: string | null; defaultStepKey?: string | null; sendToProductionDefault?: boolean }) => {
       const response = await fetch("/api/product-types", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
