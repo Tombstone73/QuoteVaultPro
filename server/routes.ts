@@ -8660,11 +8660,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       .limit(1);
     const settings = rows[0]?.settings as any;
     const enabledViews =
-      (settings?.preferences?.production?.enabledViews as string[] | undefined) ?? ["flatbed"];
+      (settings?.preferences?.production?.enabledViews as string[] | undefined) ?? ["flatbed", "roll"];
     const defaultView =
       (settings?.preferences?.production?.defaultView as string | undefined) ?? "flatbed";
     return {
-      enabledViews: Array.isArray(enabledViews) && enabledViews.length > 0 ? enabledViews : ["flatbed"],
+      // Default includes both flatbed and roll so orgs without explicit config see both boards.
+      // Orgs with an explicit enabledViews array keep their exact configuration.
+      enabledViews: Array.isArray(enabledViews) && enabledViews.length > 0 ? enabledViews : ["flatbed", "roll"],
       defaultView: typeof defaultView === "string" && defaultView.trim() ? defaultView : "flatbed",
     };
   };
@@ -9320,7 +9322,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const search = typeof searchRaw === "string" ? searchRaw.trim() : "";
 
       const config = await getProductionConfigForOrganization(organizationId);
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[DEV][GET /api/production/jobs] params:", { organizationId, status, view, station, enabledViews: config.enabledViews });
+      }
       if (station && !config.enabledViews.includes(station)) {
+        // Station not in this org's enabledViews — return empty rather than 403.
+        if (process.env.NODE_ENV !== "production") {
+          console.log("[DEV][GET /api/production/jobs] station '" + station + "' not in enabledViews " + JSON.stringify(config.enabledViews) + " — returning []");
+        }
         return res.json({ success: true, data: [] });
       }
 
