@@ -42,6 +42,7 @@ import { registerOrderRoutes } from "./routes/orders.routes";
 import { registerPrepressRoutes } from "./prepress/routes";
 import { registerPlatformRoutes } from "./routes/platform";
 import { registerInviteRoutes } from "./routes/invites";
+import { registerMeRoutes } from "./routes/me";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/validator";
 import { resolveInventoryPolicyFromOrgPreferences } from "@shared/inventoryPolicy";
 import { mergeInventoryPolicyIntoPreferences, normalizeInventoryPolicyPatch } from "@shared/inventoryPolicyPreferences";
@@ -552,6 +553,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Platform admin routes (org creation, step-up auth)
   registerPlatformRoutes(app);
   registerInviteRoutes(app);
+  registerMeRoutes(app);
 
   // Dev-only debug: verify status pills exist per org/state
   if (nodeEnv === 'development') {

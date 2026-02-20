@@ -56,6 +56,7 @@ import PrepressPage from "@/pages/prepress";
 import ProductBuilderV2Page from "@/pages/product-builder-v2";
 import PlatformOrgCreatePage from "@/pages/platform/PlatformOrgCreatePage";
 import AcceptInvitePage from "@/pages/accept-invite";
+import SelectOrgPage from "@/pages/SelectOrgPage";
 import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
 
 function Router() {
@@ -209,6 +210,9 @@ function Router() {
 
         {/* Platform admin */}
         <Route path="/platform/orgs/new" element={<PlatformOrgCreatePage />} />
+
+        {/* Org picker (multi-org users) */}
+        <Route path="/select-org" element={<SelectOrgPage />} />
 
         {/* Public invite acceptance (accessible while authenticated too) */}
         <Route path="/accept-invite" element={<AcceptInvitePage />} />

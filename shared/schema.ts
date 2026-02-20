@@ -180,6 +180,7 @@ export const users = pgTable("users", {
   role: varchar("role", { length: 50 }).default("employee").notNull(), // owner, admin, manager, employee
   mustSetPassword: boolean("must_set_password").default(false).notNull(), // True if invited with temp password, must set new password on first login
   lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+  lastActiveOrgId: varchar("last_active_org_id").references(() => organizations.id, { onDelete: 'set null' }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

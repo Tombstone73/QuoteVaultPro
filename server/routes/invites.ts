@@ -311,7 +311,16 @@ export function registerInviteRoutes(app: import("express").Express): void {
       // Non-fatal: membership already created; log and continue
       console.error("[invites/accept] mark accepted error:", err);
     }
-
+    // ── Persist active org: set users.last_active_org_id to the invited org ────────
+    try {
+      await db
+        .update(users)
+        .set({ lastActiveOrgId: orgId })
+        .where(eq(users.id, userId));
+    } catch (err) {
+      // Non-fatal: tenant context will re-resolve on next request
+      console.error("[invites/accept] set lastActiveOrgId error:", err);
+    }
     // ── Audit log ─────────────────────────────────────────────────────────────
     await writePlatformAuditLog({
       action: "org.invite.accept",
