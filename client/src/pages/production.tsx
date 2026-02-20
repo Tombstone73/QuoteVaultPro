@@ -9,7 +9,7 @@ import { useProductionConfig } from "@/hooks/useProduction";
 import ProductionViewRenderer from "@/features/production/ProductionViewRenderer";
 import ProductionOverviewPage from "@/features/production/views/ProductionOverviewPage";
 
-type ProductionStatus = "queued" | "in_progress" | "done";
+type ProductionStatus = "queued" | "in_progress" | "done" | "all";
 type ProductionModule = "overview" | "flatbed" | "roll" | "apparel";
 
 export default function ProductionBoard() {
@@ -110,6 +110,7 @@ export default function ProductionBoard() {
                   {/* Status tabs */}
                   <Tabs value={status} onValueChange={(v) => setStatus(v as ProductionStatus)}>
                     <TabsList>
+                      <TabsTrigger value="all">All</TabsTrigger>
                       <TabsTrigger value="queued">Queued</TabsTrigger>
                       <TabsTrigger value="in_progress">In Progress</TabsTrigger>
                       <TabsTrigger value="done">Done</TabsTrigger>
@@ -180,6 +181,7 @@ export default function ProductionBoard() {
                   {/* Status tabs */}
                   <Tabs value={status} onValueChange={(v) => setStatus(v as ProductionStatus)}>
                     <TabsList>
+                      <TabsTrigger value="all">All</TabsTrigger>
                       <TabsTrigger value="queued">Queued</TabsTrigger>
                       <TabsTrigger value="in_progress">In Progress</TabsTrigger>
                       <TabsTrigger value="done">Done</TabsTrigger>

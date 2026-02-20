@@ -63,7 +63,7 @@ import {
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
 
-type ProductionStatus = "queued" | "in_progress" | "done";
+type ProductionStatus = "queued" | "in_progress" | "done" | "all";
 
 type DueUrgency = "overdue" | "today" | "soon" | "normal";
 
@@ -375,7 +375,7 @@ function statusRank(status: ProductionStatus) {
 
 function formatDims(width: string | null | undefined, height: string | null | undefined) {
   if (!width || !height) return "—";
-  return `${width} × ${height}`;
+  return `${width} x ${height}`;
 }
 
 function primaryLineItem(job: ProductionJobListItem): ProductionOrderLineItemSummary | null {
@@ -1172,7 +1172,10 @@ function PreviewPanel({
 }
 
 export default function RollProductionView(props: { viewKey: string; status: ProductionStatus }) {
-  const { data, isLoading, error } = useProductionJobs({ status: props.status, view: "roll" });
+  const { data, isLoading, error } = useProductionJobs({ 
+    status: props.status === "all" ? undefined : props.status, 
+    view: "roll" 
+  });
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewSide, setPreviewSide] = useState<"front" | "back">("front");
