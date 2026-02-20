@@ -63,7 +63,7 @@ import {
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
 
-type ProductionStatus = "queued" | "in_progress" | "done";
+type ProductionStatus = "queued" | "in_progress" | "done" | "all";
 
 type DueUrgency = "overdue" | "today" | "soon" | "normal";
 
@@ -373,9 +373,52 @@ function statusRank(status: ProductionStatus) {
   return 2;
 }
 
+function sanitizeDisplayText(input: unknown): string {
+  if (input === null || input === undefined) return "—";
+  let s = String(input);
+
+  // Fix common mojibake sequences (UTF-8 decoded as Latin-1)
+  // multiplication sign × -> "x"
+  s = s.replaceAll("\u00C3\u0097", "x");
+  s = s.replaceAll("\u00D7", "x");
+
+  // em dash / en dash mojibake
+  s = s.replaceAll("\u00E2\u0080\u0094", "—");
+  s = s.replaceAll("\u00E2\u0080\u0093", "–");
+  // Sometimes we only see the leading sequence in UI columns (ex: "â€")
+  // In that case treat it as an em dash placeholder.
+  if (s.trim() === "\u00E2\u0080" || s.trim() === "\u00E2\u0080\u008B" || s.trim() === "\u00E2\u0080\u00AF") s = "—";
+
+  // Non-breaking space mojibake that often appears in wrapped text
+  s = s.replaceAll("\u00C2 ", " ");
+  s = s.replaceAll("\u00C2", "");
+
+  // If after cleanup it's empty, return dash
+  if (s.trim().length === 0) return "—";
+  return s;
+}
+
+function normalizeSidesValue(raw: unknown): { label: "Single" | "Double" | "—"; isDouble: boolean } {
+  const s = sanitizeDisplayText(raw);
+  if (s === "—") return { label: "—", isDouble: false };
+
+  const lowered = s.toLowerCase();
+  const isDouble =
+    lowered === "double" ||
+    lowered === "ds" ||
+    lowered === "2" ||
+    lowered.includes("double") ||
+    lowered.includes("2-sided") ||
+    lowered.includes("2 sided") ||
+    lowered.includes("two-sided") ||
+    lowered.includes("two sided");
+
+  return { label: isDouble ? "Double" : "Single", isDouble };
+}
+
 function formatDims(width: string | null | undefined, height: string | null | undefined) {
   if (!width || !height) return "—";
-  return `${width} × ${height}`;
+  return `${width} x ${height}`;
 }
 
 function primaryLineItem(job: ProductionJobListItem): ProductionOrderLineItemSummary | null {
@@ -418,7 +461,7 @@ function pickArtworkForPreview(artwork: ProductionOrderArtworkSummary[]) {
  * - Single-sided: only front, no back slot
  */
 function normalizeArtworkForSides(
-  sides: string,
+  isDouble: boolean,
   artwork: ProductionOrderArtworkSummary[],
 ): {
   front: ProductionOrderArtworkSummary | null;
@@ -427,12 +470,10 @@ function normalizeArtworkForSides(
   backMissingReason: "not_uploaded" | null;
 } {
   const list = [...(artwork || [])];
-  const isDouble = sides === "Double" || sides === "2" || sides === "double";
 
   // DEV logging for debugging artwork mapping
   if (process.env.NODE_ENV === "development" && list.length > 0) {
     console.log("[normalizeArtworkForSides]", {
-      sides,
       isDouble,
       artworkCount: list.length,
       frontFile: list[0]?.fileName ?? null,
@@ -979,18 +1020,18 @@ function PreviewPanel({
   const thumbs = artworkThumbs(job);
   
   // Use backend-derived sides and normalize artwork accordingly
-  const sidesValue = (job as any).sides ?? "—";
+  const sidesInfo = normalizeSidesValue((job as any).sides);
   const { front, back, showBackSlot, backMissingReason } = useMemo(
-    () => normalizeArtworkForSides(sidesValue, thumbs),
-    [sidesValue, thumbs]
+    () => normalizeArtworkForSides(sidesInfo.isDouble, thumbs),
+    [sidesInfo.isDouble, thumbs]
   );
 
   const due = dueMeta(job.order.dueDate);
   
   // Use backend-derived display fields (no UI computation)
-  const media = (job as any).media ?? "—";
-  const sides = (job as any).sides ?? "—";
-  const size = (job as any).size ?? "—";
+  const media = sanitizeDisplayText((job as any).media);
+  const sides = sidesInfo.label;
+  const size = sanitizeDisplayText((job as any).size);
   const orderNumber = (job as any).orderNumber ?? job.order.orderNumber ?? "—";
   const productionJobId = (job as any).productionJobId ?? job.id;
   
@@ -1172,7 +1213,10 @@ function PreviewPanel({
 }
 
 export default function RollProductionView(props: { viewKey: string; status: ProductionStatus }) {
-  const { data, isLoading, error } = useProductionJobs({ status: props.status, view: "roll" });
+  const { data, isLoading, error } = useProductionJobs({ 
+    status: props.status === "all" ? undefined : props.status, 
+    view: "roll" 
+  });
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewSide, setPreviewSide] = useState<"front" | "back">("front");
@@ -1218,10 +1262,12 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
     const events = selectedDetail?.events ?? [];
     return events
       .filter((e) => e.type === "note" && !(e.payload as any)?.deleted)
+      .slice() // copy
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
       .slice(0, 5)
       .map((e) => ({
         id: e.id,
-        text: typeof e.payload?.text === "string" ? e.payload.text : "",
+        text: sanitizeDisplayText(e.payload?.text ?? e.payload?.note ?? ""),
         createdAt: e.createdAt,
         edited: !!(e.payload as any)?.edited,
       }))
@@ -1372,12 +1418,13 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                   const due = dueMeta(job.order.dueDate);
                   
                   // Backend-derived display fields (API computes these)
-                  const mediaName = (job as any).media ?? "—";
-                  const sidesDisplay = (job as any).sides ?? "—";
+                  const mediaName = sanitizeDisplayText((job as any).media);
+                  const sidesInfo = normalizeSidesValue((job as any).sides);
+                  const sidesDisplay = sidesInfo.label;
 
                   // Normalize artwork based on sides for UI display
                   const thumbs = artworkThumbs(job);
-                  const { front, back, showBackSlot, backMissingReason } = normalizeArtworkForSides(sidesDisplay, thumbs);
+                  const { front, back, showBackSlot, backMissingReason } = normalizeArtworkForSides(sidesInfo.isDouble, thumbs);
                   const hasFront = !!front;
                   const hasBack = !!back;
 
@@ -1546,9 +1593,9 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
             </DialogTitle>
           </DialogHeader>
           {selectedJob && (() => {
-            const sidesValue = (selectedJob as any).sides ?? "—";
+            const sidesInfo = normalizeSidesValue((selectedJob as any).sides);
             const thumbs = artworkThumbs(selectedJob);
-            const { front, back, showBackSlot, backMissingReason } = normalizeArtworkForSides(sidesValue, thumbs);
+            const { front, back, showBackSlot, backMissingReason } = normalizeArtworkForSides(sidesInfo.isDouble, thumbs);
             const currentArtwork = previewSide === "front" ? front : back;
             const imageSrc = getBestArtworkImage(currentArtwork);
 

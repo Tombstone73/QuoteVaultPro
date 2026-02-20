@@ -63,7 +63,7 @@ import {
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
 
-type ProductionStatus = "queued" | "in_progress" | "done";
+type ProductionStatus = "queued" | "in_progress" | "done" | "all";
 
 type DueUrgency = "overdue" | "today" | "soon" | "normal";
 
@@ -373,9 +373,34 @@ function statusRank(status: ProductionStatus) {
   return 2;
 }
 
+function sanitizeDisplayText(input: unknown): string {
+  if (input === null || input === undefined) return "—";
+  let s = String(input);
+
+  // Fix common mojibake sequences (UTF-8 decoded as Latin-1)
+  // multiplication sign × -> "x"
+  s = s.replaceAll("\u00C3\u0097", "x");
+  s = s.replaceAll("\u00D7", "x");
+
+  // em dash / en dash mojibake
+  s = s.replaceAll("\u00E2\u0080\u0094", "—");
+  s = s.replaceAll("\u00E2\u0080\u0093", "–");
+  // Sometimes we only see the leading sequence in UI columns (ex: "â€")
+  // In that case treat it as an em dash placeholder.
+  if (s.trim() === "\u00E2\u0080" || s.trim() === "\u00E2\u0080\u008B" || s.trim() === "\u00E2\u0080\u00AF") s = "—";
+
+  // Non-breaking space mojibake that often appears in wrapped text
+  s = s.replaceAll("\u00C2 ", " ");
+  s = s.replaceAll("\u00C2", "");
+
+  // If after cleanup it's empty, return dash
+  if (s.trim().length === 0) return "—";
+  return s;
+}
+
 function formatDims(width: string | null | undefined, height: string | null | undefined) {
   if (!width || !height) return "—";
-  return `${width} × ${height}`;
+  return `${width} x ${height}`;
 }
 
 function primaryLineItem(job: ProductionJobListItem): ProductionOrderLineItemSummary | null {
@@ -988,9 +1013,9 @@ function PreviewPanel({
   const due = dueMeta(job.order.dueDate);
   
   // Use backend-derived display fields (no UI computation)
-  const media = (job as any).media ?? "—";
-  const sides = (job as any).sides ?? "—";
-  const size = (job as any).size ?? "—";
+  const media = sanitizeDisplayText((job as any).media);
+  const sides = sanitizeDisplayText((job as any).sides);
+  const size = sanitizeDisplayText((job as any).size);
   const orderNumber = (job as any).orderNumber ?? job.order.orderNumber ?? "—";
   const productionJobId = (job as any).productionJobId ?? job.id;
   
@@ -1141,7 +1166,10 @@ function PreviewPanel({
 }
 
 export default function FlatbedProductionView(props: { viewKey: string; status: ProductionStatus }) {
-  const { data, isLoading, error } = useProductionJobs({ status: props.status, view: props.viewKey });
+  const { data, isLoading, error } = useProductionJobs({ 
+    status: props.status === "all" ? undefined : props.status, 
+    view: props.viewKey 
+  });
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewSide, setPreviewSide] = useState<"front" | "back">("front");
@@ -1187,10 +1215,12 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
     const events = selectedDetail?.events ?? [];
     return events
       .filter((e) => e.type === "note" && !(e.payload as any)?.deleted)
+      .slice() // copy
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
       .slice(0, 5)
       .map((e) => ({
         id: e.id,
-        text: typeof e.payload?.text === "string" ? e.payload.text : "",
+        text: sanitizeDisplayText(e.payload?.text ?? e.payload?.note ?? ""),
         createdAt: e.createdAt,
         edited: !!(e.payload as any)?.edited,
       }))
