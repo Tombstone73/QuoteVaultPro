@@ -54,6 +54,7 @@ import ProductsPage from "@/pages/products";
 import ProductEditorPage from "@/pages/ProductEditorPage";
 import PrepressPage from "@/pages/prepress";
 import ProductBuilderV2Page from "@/pages/product-builder-v2";
+import PlatformOrgCreatePage from "@/pages/platform/PlatformOrgCreatePage";
 import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
 
 function Router() {
@@ -203,6 +204,9 @@ function Router() {
 
         {/* Misc */}
         <Route path="/debug-user" element={<DebugUser />} />
+
+        {/* Platform admin */}
+        <Route path="/platform/orgs/new" element={<PlatformOrgCreatePage />} />
       </Route>
 
       {/* Catch-all not found */}
