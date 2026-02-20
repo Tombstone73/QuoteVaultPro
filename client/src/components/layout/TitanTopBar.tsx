@@ -1,6 +1,7 @@
 import * as React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Search, Bell, Menu, User, ChevronRight, LogOut, Settings, X } from "lucide-react";
+import { Search, Bell, Menu, User, ChevronRight, LogOut, Settings, X, Bug } from "lucide-react";
+import { BugReportModal } from "@/components/bug-report/BugReportModal";
 import { cn } from "@/lib/utils";
 import { useAuth, useLogout } from "@/hooks/useAuth";
 import { useGlobalSearch } from "@/hooks/useGlobalSearch";
@@ -105,6 +106,7 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
   const logout = useLogout();
   const [searchQuery, setSearchQuery] = React.useState("");
   const [showSearchResults, setShowSearchResults] = React.useState(false);
+  const [bugReportOpen, setBugReportOpen] = React.useState(false);
   const searchInputRef = React.useRef<HTMLInputElement>(null);
   const searchContainerRef = React.useRef<HTMLDivElement>(null);
 
@@ -194,6 +196,7 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
   };
 
   return (
+    <>
     <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-border bg-card/80 px-4 backdrop-blur-md md:px-6">
       {/* Left side - Menu button (mobile) + Breadcrumbs/Title */}
       <div className="flex items-center gap-3">
@@ -282,6 +285,17 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
         {/* Org Switcher (multi-org users only) */}
         <OrgSwitcher />
 
+        {/* Report a bug */}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-9 w-9 text-muted-foreground hover:text-foreground"
+          title="Report a bug"
+          onClick={() => setBugReportOpen(true)}
+        >
+          <Bug className="h-4 w-4" />
+        </Button>
+
         {/* Notifications */}
         <Button
           variant="ghost"
@@ -335,6 +349,10 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
         </DropdownMenu>
       </div>
     </header>
+
+    {/* Bug Report Modal — rendered outside header to avoid stacking context issues */}
+    <BugReportModal open={bugReportOpen} onClose={() => setBugReportOpen(false)} />
+    </>
   );
 }
 
