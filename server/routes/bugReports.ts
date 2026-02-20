@@ -21,8 +21,8 @@ import { promises as fs } from "fs";
 import { randomUUID } from "crypto";
 import { z } from "zod";
 import { db } from "../db";
-import { bugReports, auditLogs } from "@shared/schema";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { bugReports, bugReportNotes, auditLogs } from "@shared/schema";
+import { eq, and, desc, asc, sql } from "drizzle-orm";
 import { getRequestOrganizationId } from "../tenantContext";
 import { isSupabaseConfigured } from "../supabaseStorage";
 
@@ -70,6 +70,16 @@ const listBugReportsQuerySchema = z.object({
   severity: z.enum(SEVERITY_VALUES).optional(),
   limit:    z.coerce.number().int().min(1).max(200).default(50),
   cursor:   z.string().optional(), // createdAt-based ISO string cursor
+});
+
+const STATUS_VALUES = ["open", "in_review", "resolved", "closed"] as const;
+
+const updateBugReportStatusSchema = z.object({
+  status: z.enum(STATUS_VALUES),
+});
+
+const createNoteSchema = z.object({
+  note: z.string().min(1, "Note cannot be empty").max(2000),
 });
 
 // ─── Screenshot upload constants ──────────────────────────────────────────────
@@ -384,6 +394,162 @@ export function registerBugReportRoutes(
     } catch (err) {
       console.error("[BugReports] Get by ID failed:", err);
       return res.status(500).json({ success: false, message: "Failed to fetch bug report." });
+    }
+  });
+
+  // ── PATCH /:id (update status — admin only) ──────────────────────────────────
+  router.patch("/:id", isAuthenticated, tenantContext, requireOrgAdmin, async (req: Request, res: Response) => {
+    const parse = updateBugReportStatusSchema.safeParse(req.body);
+    if (!parse.success) {
+      return res.status(400).json({
+        success: false,
+        message: "Validation failed",
+        errors: parse.error.flatten().fieldErrors,
+      });
+    }
+
+    const { status } = parse.data;
+    const orgId = getRequestOrganizationId(req);
+    const { id } = req.params;
+    const userId = getUserId(req.user) ?? null;
+    const email = getUserEmail(req.user);
+
+    try {
+      // Verify report belongs to this org
+      const [existing] = await db
+        .select({ id: bugReports.id, title: bugReports.title })
+        .from(bugReports)
+        .where(and(eq(bugReports.orgId, orgId), eq(bugReports.id, id)))
+        .limit(1);
+
+      if (!existing) {
+        return res.status(404).json({ success: false, message: "Bug report not found." });
+      }
+
+      const [updated] = await db
+        .update(bugReports)
+        .set({ status })
+        .where(and(eq(bugReports.orgId, orgId), eq(bugReports.id, id)))
+        .returning({ id: bugReports.id, status: bugReports.status });
+
+      // Audit log
+      try {
+        await db.insert(auditLogs).values({
+          organizationId: orgId,
+          userId: userId ?? undefined,
+          userName: email,
+          actionType: "UPDATE",
+          entityType: "bug_report",
+          entityId: id,
+          entityName: existing.title,
+          description: `Bug report status updated to '${status}': ${existing.title}`,
+          ipAddress: req.ip ?? null,
+          userAgent: req.get("user-agent") ?? "",
+          newValues: { status },
+        });
+      } catch (auditErr) {
+        console.error("[BugReports] Status update audit log failed:", auditErr);
+      }
+
+      return res.json({ success: true, id: updated.id, status: updated.status });
+    } catch (err) {
+      console.error("[BugReports] Status update failed:", err);
+      return res.status(500).json({ success: false, message: "Failed to update status." });
+    }
+  });
+
+  // ── POST /:id/notes (add note — admin only) ───────────────────────────────────
+  router.post("/:id/notes", isAuthenticated, tenantContext, requireOrgAdmin, async (req: Request, res: Response) => {
+    const parse = createNoteSchema.safeParse(req.body);
+    if (!parse.success) {
+      return res.status(400).json({
+        success: false,
+        message: "Validation failed",
+        errors: parse.error.flatten().fieldErrors,
+      });
+    }
+
+    const { note } = parse.data;
+    const orgId = getRequestOrganizationId(req);
+    const { id } = req.params;
+    const userId = getUserId(req.user) ?? null;
+    const email = getUserEmail(req.user);
+
+    try {
+      // Verify report belongs to this org
+      const [existing] = await db
+        .select({ id: bugReports.id })
+        .from(bugReports)
+        .where(and(eq(bugReports.orgId, orgId), eq(bugReports.id, id)))
+        .limit(1);
+
+      if (!existing) {
+        return res.status(404).json({ success: false, message: "Bug report not found." });
+      }
+
+      const [created] = await db
+        .insert(bugReportNotes)
+        .values({
+          bugReportId:     id,
+          orgId,
+          createdByUserId: userId,
+          createdByEmail:  email,
+          note,
+        })
+        .returning();
+
+      // Audit log
+      try {
+        await db.insert(auditLogs).values({
+          organizationId: orgId,
+          userId: userId ?? undefined,
+          userName: email,
+          actionType: "CREATE",
+          entityType: "bug_report_note",
+          entityId: created.id,
+          entityName: `Note on bug report ${id}`,
+          description: `Internal note added to bug report ${id}`,
+          ipAddress: req.ip ?? null,
+          userAgent: req.get("user-agent") ?? "",
+        });
+      } catch (auditErr) {
+        console.error("[BugReports] Note audit log failed:", auditErr);
+      }
+
+      return res.status(201).json({ success: true, data: created });
+    } catch (err) {
+      console.error("[BugReports] Add note failed:", err);
+      return res.status(500).json({ success: false, message: "Failed to add note." });
+    }
+  });
+
+  // ── GET /:id/notes (list notes — admin only) ──────────────────────────────────
+  router.get("/:id/notes", isAuthenticated, tenantContext, requireOrgAdmin, async (req: Request, res: Response) => {
+    const orgId = getRequestOrganizationId(req);
+    const { id } = req.params;
+
+    try {
+      // Verify report belongs to this org before exposing notes
+      const [existing] = await db
+        .select({ id: bugReports.id })
+        .from(bugReports)
+        .where(and(eq(bugReports.orgId, orgId), eq(bugReports.id, id)))
+        .limit(1);
+
+      if (!existing) {
+        return res.status(404).json({ success: false, message: "Bug report not found." });
+      }
+
+      const notes = await db
+        .select()
+        .from(bugReportNotes)
+        .where(and(eq(bugReportNotes.orgId, orgId), eq(bugReportNotes.bugReportId, id)))
+        .orderBy(asc(bugReportNotes.createdAt));
+
+      return res.json({ success: true, data: notes });
+    } catch (err) {
+      console.error("[BugReports] List notes failed:", err);
+      return res.status(500).json({ success: false, message: "Failed to fetch notes." });
     }
   });
 

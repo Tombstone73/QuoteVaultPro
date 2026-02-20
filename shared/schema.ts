@@ -4049,6 +4049,25 @@ export const bugReports = pgTable("bug_reports", {
 export type BugReport = typeof bugReports.$inferSelect;
 export type InsertBugReport = typeof bugReports.$inferInsert;
 
+// ──────────────────────────────────────────────────────────────────────────────
+// BUG REPORT NOTES — admin-only internal notes per bug report
+// ──────────────────────────────────────────────────────────────────────────────
+export const bugReportNotes = pgTable("bug_report_notes", {
+  id:                varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  bugReportId:       varchar("bug_report_id").notNull().references(() => bugReports.id, { onDelete: 'cascade' }),
+  orgId:             varchar("org_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  createdByUserId:   varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  createdByEmail:    text("created_by_email").notNull(),
+  note:              text("note").notNull(),
+  createdAt:         timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("bug_report_notes_bug_id_idx").on(table.bugReportId, table.createdAt),
+  index("bug_report_notes_org_idx").on(table.orgId),
+]);
+
+export type BugReportNote = typeof bugReportNotes.$inferSelect;
+export type InsertBugReportNote = typeof bugReportNotes.$inferInsert;
+
 // ============================================================
 // PREPRESS TABLES (imported from server/prepress/schema.ts)
 // ============================================================

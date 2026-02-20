@@ -187,3 +187,66 @@ describe("isScreenshotSizeAllowed()", () => {
   it("rejects one byte over 5 MB",  () => expect(isScreenshotSizeAllowed(5 * 1024 * 1024 + 1)).toBe(false));
   it("rejects 10 MB",               () => expect(isScreenshotSizeAllowed(10 * 1024 * 1024)).toBe(false));
 });
+
+// ─── Inline: update status schema ─────────────────────────────────────────────
+// Must stay in sync with server/routes/bugReports.ts updateBugReportStatusSchema.
+
+const STATUS_VALUES = ["open", "in_review", "resolved", "closed"] as const;
+
+const updateBugReportStatusSchema = z.object({
+  status: z.enum(STATUS_VALUES),
+});
+
+describe("updateBugReportStatusSchema", () => {
+  it.each(STATUS_VALUES)("accepts status '%s'", (status) => {
+    const result = updateBugReportStatusSchema.safeParse({ status });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects an unknown status value", () => {
+    const result = updateBugReportStatusSchema.safeParse({ status: "pending" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects when status field is missing", () => {
+    const result = updateBugReportStatusSchema.safeParse({});
+    expect(result.success).toBe(false);
+  });
+});
+
+// ─── Inline: create note schema ───────────────────────────────────────────────
+// Must stay in sync with server/routes/bugReports.ts createNoteSchema.
+
+const createNoteSchema = z.object({
+  note: z.string().min(1, "Note cannot be empty").max(2000),
+});
+
+describe("createNoteSchema", () => {
+  it("accepts a valid note", () => {
+    const result = createNoteSchema.safeParse({ note: "Confirmed on staging. Will fix in next sprint." });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects an empty note", () => {
+    const result = createNoteSchema.safeParse({ note: "" });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.flatten().fieldErrors.note).toBeDefined();
+    }
+  });
+
+  it("rejects a note exceeding 2000 characters", () => {
+    const result = createNoteSchema.safeParse({ note: "x".repeat(2001) });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts a note of exactly 2000 characters", () => {
+    const result = createNoteSchema.safeParse({ note: "a".repeat(2000) });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts a single character note", () => {
+    const result = createNoteSchema.safeParse({ note: "." });
+    expect(result.success).toBe(true);
+  });
+});
