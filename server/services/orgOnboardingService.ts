@@ -1,27 +1,38 @@
 /**
- * orgOnboardingService — creates a new organization + optional owner invite
+ * orgOnboardingService — creates a new organization + required owner invite
  * in a single DB transaction.
  *
- * Raw invite token is returned ONCE in the response; only its SHA-256 hash
- * is stored in the database.
+ * OwnerEmail is ALWAYS required. An invite is ALWAYS created alongside the org.
+ * Raw invite token is returned ONCE in the response; only its SHA-256 hash is stored.
  */
 import crypto from "crypto";
 import { db } from "../db";
 import { organizations, orgInvites } from "@shared/schema";
-import { sql } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 
 export interface CreateOrgParams {
   name: string;
   slug: string;
   createdByUserId: string;
-  createOwnerInvite: boolean;
-  ownerEmail?: string;
+  ownerEmail: string; // always required; invite is always created
 }
 
 export interface CreateOrgResult {
   orgId: string;
-  inviteToken?: string; // raw token returned once; caller builds the link
-  ownerEmail?: string;
+  slug: string;
+  inviteToken: string; // raw token returned once; caller builds the invite link
+  ownerEmail: string;
+}
+
+/**
+ * Error thrown when a duplicate unaccepted invite exists for (org_id, email).
+ * Should result in 409 Conflict at the route layer.
+ */
+export class DuplicateInviteError extends Error {
+  constructor(orgId: string, email: string) {
+    super(`An unaccepted invite for ${email} in org ${orgId} already exists.`);
+    this.name = "DuplicateInviteError";
+  }
 }
 
 /** Slugify a string: lowercase, spaces → hyphens, strip non-alphanumeric. */
@@ -36,10 +47,11 @@ export function slugify(text: string): string {
 }
 
 export async function createOrgWithInvite(params: CreateOrgParams): Promise<CreateOrgResult> {
-  const { name, slug, createdByUserId, createOwnerInvite, ownerEmail } = params;
+  const { name, slug, createdByUserId, ownerEmail } = params;
+  const normalizedEmail = ownerEmail.trim().toLowerCase();
 
   return await db.transaction(async (tx) => {
-    // Insert organization
+    // ── 1. Insert organization ──────────────────────────────────────────────
     const [org] = await tx
       .insert(organizations)
       .values({
@@ -53,30 +65,45 @@ export async function createOrgWithInvite(params: CreateOrgParams): Promise<Crea
     if (!org) throw new Error("Failed to create organization");
 
     const orgId = org.id;
-    let inviteToken: string | undefined;
 
-    if (createOwnerInvite && ownerEmail) {
-      // Generate cryptographically random 32-byte token (64 hex chars)
-      const rawToken = crypto.randomBytes(32).toString("hex");
-      const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
-      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+    // ── 2. Guard duplicate unaccepted invite (mirrors partial UNIQUE index) ─
+    // The DB index (org_id, email) WHERE accepted_at IS NULL will also enforce
+    // this, but we pre-check to produce a structured error rather than a raw PG error.
+    const [existing] = await tx
+      .select({ id: orgInvites.id })
+      .from(orgInvites)
+      .where(
+        and(
+          eq(orgInvites.orgId, orgId),
+          eq(orgInvites.email, normalizedEmail),
+          isNull(orgInvites.acceptedAt)
+        )
+      )
+      .limit(1);
 
-      await tx.insert(orgInvites).values({
-        orgId,
-        email: ownerEmail.trim().toLowerCase(),
-        role: "owner",
-        tokenHash,
-        expiresAt,
-        createdByUserId,
-      });
-
-      inviteToken = rawToken;
+    if (existing) {
+      throw new DuplicateInviteError(orgId, normalizedEmail);
     }
+
+    // ── 3. Generate token + insert invite ───────────────────────────────────
+    const rawToken = crypto.randomBytes(32).toString("hex"); // 64 hex chars
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
+    await tx.insert(orgInvites).values({
+      orgId,
+      email: normalizedEmail,
+      role: "owner",
+      tokenHash,
+      expiresAt,
+      createdByUserId,
+    });
 
     return {
       orgId,
-      inviteToken,
-      ownerEmail: createOwnerInvite && ownerEmail ? ownerEmail.trim().toLowerCase() : undefined,
+      slug: slug.trim(),
+      inviteToken: rawToken,
+      ownerEmail: normalizedEmail,
     };
   });
 }

@@ -15,16 +15,16 @@ export interface ReauthResult {
 export interface CreateOrgPayload {
   name: string;
   slug?: string;
-  createOwnerInvite: boolean;
-  ownerEmail?: string;
+  ownerEmail: string; // always required; owner invite is always created
 }
 
 export interface CreateOrgResult {
   success: boolean;
   data?: {
     orgId: string;
-    inviteLink?: string;
-    ownerEmail?: string;
+    slug: string;
+    inviteLink: string;
+    ownerEmail: string;
   };
   code?: string;
   message?: string;
