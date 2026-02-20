@@ -25,6 +25,7 @@ import {
   ChevronRight,
   LayoutGrid,
   ShieldCheck,
+  Bug,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -126,6 +127,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     items: [
       { id: "settings", name: "Settings", icon: Settings, path: ROUTES.settings.root, roles: ["admin", "owner"] },
       { id: "users", name: "Users", icon: UserCog, path: ROUTES.users.list, roles: ["admin", "owner"] },
+      { id: "bug-reports", name: "Bug Reports", icon: Bug, path: ROUTES.admin.bugReports, roles: ["admin", "owner"] },
     ],
   },
   {

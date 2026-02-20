@@ -4022,6 +4022,34 @@ export const assetLinksRelations = relations(assetLinks, ({ one }) => ({
 }));
 
 // ============================================================
+// BUG REPORTS — org-scoped user-submitted bug reports
+// ============================================================
+export const bugReports = pgTable("bug_reports", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  createdByEmail: text("created_by_email").notNull(),
+  title: text("title").notNull(),
+  description: text("description").notNull(),
+  severity: text("severity").notNull(), // 'low' | 'medium' | 'high' | 'critical'
+  url: text("url").notNull(),
+  userAgent: text("user_agent").notNull(),
+  screenWidth: integer("screen_width"),
+  screenHeight: integer("screen_height"),
+  screenshotUrl: text("screenshot_url"),
+  status: text("status").notNull().default('open'), // 'open' | 'in_review' | 'resolved' | 'closed'
+  metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("bug_reports_org_created_at_idx").on(table.orgId, table.createdAt),
+  index("bug_reports_org_severity_idx").on(table.orgId, table.severity),
+  index("bug_reports_org_status_idx").on(table.orgId, table.status),
+]);
+
+export type BugReport = typeof bugReports.$inferSelect;
+export type InsertBugReport = typeof bugReports.$inferInsert;
+
+// ============================================================
 // PREPRESS TABLES (imported from server/prepress/schema.ts)
 // ============================================================
 // Re-export prepress tables so they're available in db.query

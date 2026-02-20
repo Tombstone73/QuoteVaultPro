@@ -57,6 +57,7 @@ import ProductBuilderV2Page from "@/pages/product-builder-v2";
 import PlatformOrgCreatePage from "@/pages/platform/PlatformOrgCreatePage";
 import AcceptInvitePage from "@/pages/accept-invite";
 import SelectOrgPage from "@/pages/SelectOrgPage";
+import BugReportsPage from "@/pages/admin/BugReportsPage";
 import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
 
 function Router() {
@@ -134,6 +135,7 @@ function Router() {
         <Route path="/admin/users" element={<AdminUsers />} />
         <Route path="/admin/products" element={<ProductsPage />} />
         <Route path="/admin/product-types" element={<ProductTypesSettings />} />
+        <Route path="/admin/bug-reports" element={<BugReportsPage />} />
         <Route path="/users" element={<UserManagement />} />
         <Route path="/admin" element={<Admin />} />
         
