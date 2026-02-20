@@ -25,7 +25,7 @@
     "prepress:worker:dev": "tsx --watch scripts/prepress-worker.ts",
     "fix-user": "tsx fix-user-role.ts",
     "migrate:file-storage": "powershell ./scripts/run_file_storage_migration.ps1",
-    "test": "cross-env NODE_OPTIONS='--experimental-vm-modules' jest",
+    "test": "cross-env NODE_OPTIONS='--max-old-space-size=8192 --experimental-vm-modules' jest",
     "test:client": "jest --config client/jest.config.js",
     "test:client:mem": "cross-env-shell \"NODE_OPTIONS=--max_old_space_size=4096\" jest --config client/jest.config.js",
     "test:smoke": "cross-env NODE_OPTIONS='--experimental-vm-modules' jest --testPathPattern=smoke",
