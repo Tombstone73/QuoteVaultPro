@@ -23,7 +23,7 @@ import { db } from "../db";
 import { authIdentities, users } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 import { writePlatformAuditLog } from "../services/platformAuditLogService";
-import { createOrgWithInvite, slugify } from "../services/orgOnboardingService";
+import { createOrgWithInvite, slugify, DuplicateInviteError } from "../services/orgOnboardingService";
 
 // ─── Session type augmentation ────────────────────────────────────────────────
 declare module "express-session" {
@@ -129,8 +129,7 @@ const reauthBodySchema = z.object({
 const createOrgBodySchema = z.object({
   name: z.string().min(1, "Org name required").max(255),
   slug: z.string().max(100).regex(/^[a-z0-9-]*$/, "Slug must be lowercase alphanumeric with hyphens").optional(),
-  createOwnerInvite: z.boolean().default(false),
-  ownerEmail: z.string().email().optional(),
+  ownerEmail: z.string().email("A valid owner email is required"),
 });
 
 // ─── Router ───────────────────────────────────────────────────────────────────
@@ -211,7 +210,7 @@ export function registerPlatformRoutes(app: import("express").Express): void {
         return res.status(400).json({ success: false, message: parse.error.issues[0].message });
       }
 
-      const { name, slug: rawSlug, createOwnerInvite, ownerEmail } = parse.data;
+      const { name, slug: rawSlug, ownerEmail } = parse.data;
       const resolvedSlug = (rawSlug && rawSlug.trim()) ? rawSlug.trim() : slugify(name);
 
       if (!resolvedSlug) {
@@ -226,15 +225,10 @@ export function registerPlatformRoutes(app: import("express").Express): void {
           name,
           slug: resolvedSlug,
           createdByUserId: userId,
-          createOwnerInvite: !!(createOwnerInvite && ownerEmail),
           ownerEmail,
         });
 
-        // Build invite link if token was created
-        let inviteLink: string | undefined;
-        if (result.inviteToken) {
-          inviteLink = `${getBaseUrl(req)}/accept-invite?token=${result.inviteToken}`;
-        }
+        const inviteLink = `${getBaseUrl(req)}/accept-invite?token=${result.inviteToken}`;
 
         await writePlatformAuditLog({
           action: "org.create",
@@ -246,8 +240,8 @@ export function registerPlatformRoutes(app: import("express").Express): void {
             orgId: result.orgId,
             name,
             slug: resolvedSlug,
-            createdOwnerInvite: !!(createOwnerInvite && ownerEmail),
-            ownerEmail: ownerEmail ?? null,
+            ownerEmail: result.ownerEmail,
+            inviteCreated: true,
           },
         });
 
@@ -255,13 +249,32 @@ export function registerPlatformRoutes(app: import("express").Express): void {
           success: true,
           data: {
             orgId: result.orgId,
+            slug: result.slug,
             inviteLink,
             ownerEmail: result.ownerEmail,
           },
         });
       } catch (err: any) {
-        // Unique constraint on slug → user-friendly error
+        // Duplicate unaccepted invite for this (org, email)
+        if (err instanceof DuplicateInviteError) {
+          await writePlatformAuditLog({
+            action: "org.create.failed",
+            actorUserId: userId,
+            actorEmail,
+            req,
+            metadata: { reason: "duplicate_invite", ownerEmail },
+          });
+          return res.status(409).json({ success: false, message: err.message });
+        }
+        // Unique constraint on slug
         if (err?.message?.includes("unique") || err?.code === "23505") {
+          await writePlatformAuditLog({
+            action: "org.create.failed",
+            actorUserId: userId,
+            actorEmail,
+            req,
+            metadata: { reason: "slug_conflict", slug: resolvedSlug },
+          });
           return res.status(409).json({ success: false, message: "An organization with that slug already exists." });
         }
         console.error("[platform/orgs] create error:", err);
