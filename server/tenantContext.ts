@@ -12,7 +12,7 @@
 
 import { RequestHandler, Request } from 'express';
 import { db } from './db';
-import { userOrganizations, organizations, customers } from '../shared/schema';
+import { userOrganizations, organizations, customers, users } from '../shared/schema';
 import { eq, and } from 'drizzle-orm';
 
 // Default organization ID - matches the seed in migration 0020
@@ -86,7 +86,40 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
       return next();
     }
 
-    // Get user's default organization
+    // 2. Check users.last_active_org_id — persisted choice survives session restarts
+    const [userRow] = await db
+      .select({ lastActiveOrgId: users.lastActiveOrgId })
+      .from(users)
+      .where(eq(users.id, user.id))
+      .limit(1);
+
+    if (userRow?.lastActiveOrgId) {
+      const [lastActiveMembership] = await db
+        .select({
+          organizationId: userOrganizations.organizationId,
+          slug: organizations.slug,
+          orgRole: userOrganizations.role,
+        })
+        .from(userOrganizations)
+        .innerJoin(organizations, eq(userOrganizations.organizationId, organizations.id))
+        .where(
+          and(
+            eq(userOrganizations.userId, user.id),
+            eq(userOrganizations.organizationId, userRow.lastActiveOrgId)
+          )
+        )
+        .limit(1);
+
+      if (lastActiveMembership) {
+        req.organizationId = lastActiveMembership.organizationId;
+        req.organizationSlug = lastActiveMembership.slug;
+        req.orgRole = lastActiveMembership.orgRole;
+        return next();
+      }
+      // last_active_org_id is stale (org deleted / membership removed) — fall through
+    }
+
+    // 3. Get user's default organization (isDefault=true — backward compat)
     const defaultOrg = await db
       .select({
         organizationId: userOrganizations.organizationId,
@@ -107,16 +140,11 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
       req.organizationId = defaultOrg[0].organizationId;
       req.organizationSlug = defaultOrg[0].slug;
       req.orgRole = defaultOrg[0].orgRole;
-      console.log('[TenantContext] Set org context:', {
-        organizationId: req.organizationId,
-        orgRole: req.orgRole,
-        userId: user.id
-      });
       return next();
     }
 
-    // Fallback: Get any organization the user belongs to
-    const anyOrg = await db
+    // 4. If user has exactly one org membership, auto-select and persist it
+    const allOrgs = await db
       .select({
         organizationId: userOrganizations.organizationId,
         slug: organizations.slug,
@@ -124,19 +152,28 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
       })
       .from(userOrganizations)
       .innerJoin(organizations, eq(userOrganizations.organizationId, organizations.id))
-      .where(eq(userOrganizations.userId, user.id))
-      .limit(1);
+      .where(eq(userOrganizations.userId, user.id));
 
-    if (anyOrg.length > 0) {
-      req.organizationId = anyOrg[0].organizationId;
-      req.organizationSlug = anyOrg[0].slug;
-      req.orgRole = anyOrg[0].orgRole;
-      console.log('[TenantContext] Set org context (fallback):', {
-        organizationId: req.organizationId,
-        orgRole: req.orgRole,
-        userId: user.id
-      });
+    if (allOrgs.length === 1) {
+      req.organizationId = allOrgs[0].organizationId;
+      req.organizationSlug = allOrgs[0].slug;
+      req.orgRole = allOrgs[0].orgRole;
+      // Persist so subsequent requests skip this logic
+      await db
+        .update(users)
+        .set({ lastActiveOrgId: allOrgs[0].organizationId })
+        .where(eq(users.id, user.id))
+        .catch((e) => console.error('[TenantContext] Failed to persist lastActiveOrgId:', e));
       return next();
+    }
+
+    if (allOrgs.length > 1) {
+      // Multiple orgs — user must pick one
+      return res.status(409).json({
+        success: false,
+        code: 'ORG_SELECTION_REQUIRED',
+        message: 'Please select an organization to continue.',
+      });
     }
 
     // If user is a portal user (customer), derive org from customer record
@@ -153,8 +190,19 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
       return next();
     }
 
-    // Auto-provision: Create membership for user in default org
-    console.warn(`[TenantContext] User ${user.id} has no organization membership - auto-provisioning to default org`);
+    // 5. Auto-provision: dev/test safety net — creates membership in default org
+    // In production, this indicates a data integrity issue (user with 0 memberships);
+    // return ORG_SELECTION_REQUIRED so the UI can guide them.
+    if (process.env.NODE_ENV === 'production') {
+      console.warn(`[TenantContext] User ${user.id} has no org membership in production — returning ORG_SELECTION_REQUIRED`);
+      return res.status(409).json({
+        success: false,
+        code: 'ORG_SELECTION_REQUIRED',
+        message: 'Please select an organization to continue.',
+      });
+    }
+
+    console.warn(`[TenantContext] User ${user.id} has no organization membership - auto-provisioning to default org (dev/test only)`);
     
     try {
       await db

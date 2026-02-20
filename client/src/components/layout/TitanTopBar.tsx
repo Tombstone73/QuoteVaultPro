@@ -16,6 +16,7 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ROUTES } from "@/config/routes";
 import { GlobalSearchOverlay } from "./GlobalSearchOverlay";
+import { OrgSwitcher } from "@/components/OrgSwitcher";
 
 // ============================================================
 // ROUTE TITLE MAPPING
@@ -278,6 +279,9 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
 
       {/* Right side - Actions + User */}
       <div className="flex items-center gap-2">
+        {/* Org Switcher (multi-org users only) */}
+        <OrgSwitcher />
+
         {/* Notifications */}
         <Button
           variant="ghost"

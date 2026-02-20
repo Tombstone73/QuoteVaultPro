@@ -376,3 +376,109 @@ describe("CORS origin allow logic", () => {
     expect(isCorsAllowed("https://staging.printershero.com", extended)).toBe(true);
   });
 });
+
+// ─── Inline: resolveActiveOrg decision tree ────────────────────────────────────
+// Mirrors the logic in server/tenantContext.ts tenantContext middleware.
+// Pure function version — no DB calls.
+
+type OrgEntry = { organizationId: string };
+
+type ResolveOrgInput = {
+  headerOrgId?: string;         // X-Organization-Id header
+  lastActiveOrgId?: string | null; // users.last_active_org_id
+  memberships: OrgEntry[];      // all user_organizations rows for this user
+};
+
+type ResolveOrgResult =
+  | { type: "resolved"; orgId: string; shouldPersist?: boolean }
+  | { type: "ORG_SELECTION_REQUIRED" }
+  | { type: "NO_MEMBERSHIP" };
+
+function resolveActiveOrg(input: ResolveOrgInput): ResolveOrgResult {
+  const { headerOrgId, lastActiveOrgId, memberships } = input;
+
+  // 1. Explicit header takes highest priority
+  if (headerOrgId) {
+    const valid = memberships.some((m) => m.organizationId === headerOrgId);
+    if (valid) return { type: "resolved", orgId: headerOrgId };
+  }
+
+  // 2. Persisted last-active org (if still valid membership)
+  if (lastActiveOrgId) {
+    const valid = memberships.some((m) => m.organizationId === lastActiveOrgId);
+    if (valid) return { type: "resolved", orgId: lastActiveOrgId };
+    // Stale → fall through
+  }
+
+  // 3. Single-membership auto-select + persist
+  if (memberships.length === 1) {
+    return { type: "resolved", orgId: memberships[0].organizationId, shouldPersist: true };
+  }
+
+  // 4. Multiple orgs with no clear winner → require selection
+  if (memberships.length > 1) {
+    return { type: "ORG_SELECTION_REQUIRED" };
+  }
+
+  // 5. No memberships at all
+  return { type: "NO_MEMBERSHIP" };
+}
+
+describe("resolveActiveOrg decision tree", () => {
+  const orgA = { organizationId: "org-a" };
+  const orgB = { organizationId: "org-b" };
+  const orgC = { organizationId: "org-c" };
+
+  it("0 memberships → NO_MEMBERSHIP", () => {
+    expect(resolveActiveOrg({ memberships: [] })).toEqual({ type: "NO_MEMBERSHIP" });
+  });
+
+  it("1 membership + no hint → resolved with shouldPersist=true", () => {
+    const result = resolveActiveOrg({ memberships: [orgA] });
+    expect(result).toEqual({ type: "resolved", orgId: "org-a", shouldPersist: true });
+  });
+
+  it(">1 memberships + no hint → ORG_SELECTION_REQUIRED", () => {
+    expect(resolveActiveOrg({ memberships: [orgA, orgB] })).toEqual({
+      type: "ORG_SELECTION_REQUIRED",
+    });
+  });
+
+  it(">1 memberships + valid lastActiveOrgId → resolved (no persist)", () => {
+    const result = resolveActiveOrg({ memberships: [orgA, orgB], lastActiveOrgId: "org-b" });
+    expect(result).toEqual({ type: "resolved", orgId: "org-b" });
+    expect((result as any).shouldPersist).toBeUndefined();
+  });
+
+  it(">1 memberships + stale lastActiveOrgId (org removed) → ORG_SELECTION_REQUIRED", () => {
+    // org-c is not in memberships — it was removed
+    expect(
+      resolveActiveOrg({ memberships: [orgA, orgB], lastActiveOrgId: "org-c" })
+    ).toEqual({ type: "ORG_SELECTION_REQUIRED" });
+  });
+
+  it("header org overrides lastActiveOrgId", () => {
+    const result = resolveActiveOrg({
+      headerOrgId: "org-a",
+      lastActiveOrgId: "org-b",
+      memberships: [orgA, orgB, orgC],
+    });
+    expect(result).toEqual({ type: "resolved", orgId: "org-a" });
+  });
+
+  it("header org pointing to invalid/unjoined org → falls through to lastActiveOrgId", () => {
+    // Header org-z is not a membership; lastActiveOrgId org-b is valid
+    const result = resolveActiveOrg({
+      headerOrgId: "org-z",
+      lastActiveOrgId: "org-b",
+      memberships: [orgA, orgB],
+    });
+    expect(result).toEqual({ type: "resolved", orgId: "org-b" });
+  });
+
+  it("null lastActiveOrgId treated as absent", () => {
+    expect(
+      resolveActiveOrg({ memberships: [orgA, orgB], lastActiveOrgId: null })
+    ).toEqual({ type: "ORG_SELECTION_REQUIRED" });
+  });
+});

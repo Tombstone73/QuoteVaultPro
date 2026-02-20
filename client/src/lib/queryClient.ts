@@ -4,6 +4,17 @@ import { getApiUrl } from "./apiConfig";
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
+    // Intercept org-selection-required globally so every org-scoped page
+    // automatically routes the user to the org picker.
+    if (res.status === 409) {
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed?.code === "ORG_SELECTION_REQUIRED") {
+          window.location.href = "/select-org";
+          return; // navigation is happening; don't throw
+        }
+      } catch { /* not JSON — fall through to normal error */ }
+    }
     throw new Error(`${res.status}: ${text}`);
   }
 }
