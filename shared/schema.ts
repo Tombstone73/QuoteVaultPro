@@ -176,8 +176,10 @@ export const users = pgTable("users", {
   profileImageUrl: varchar("profile_image_url"),
   passwordHash: text("password_hash"), // DEPRECATED: Use auth_identities.password_hash instead. Will be removed in v1.1.
   isAdmin: boolean("is_admin").default(false).notNull(),
+  isPlatformAdmin: boolean("is_platform_admin").default(false).notNull(),
   role: varchar("role", { length: 50 }).default("employee").notNull(), // owner, admin, manager, employee
   mustSetPassword: boolean("must_set_password").default(false).notNull(), // True if invited with temp password, must set new password on first login
+  lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -1639,6 +1641,54 @@ export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({
 
 export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
 export type AuditLog = typeof auditLogs.$inferSelect;
+
+// ============================================================
+// PLATFORM AUDIT LOGS — cross-org platform events (orgId nullable)
+// ============================================================
+export const platformAuditLogs = pgTable("platform_audit_logs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  // varchar matches organizations.id / users.id type; nullable FKs SET NULL on delete
+  // so audit records survive org/user deletion.
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: 'set null' }),
+  actorUserId: varchar("actor_user_id").references(() => users.id, { onDelete: 'set null' }),
+  actorEmail: text("actor_email").notNull(),
+  action: text("action").notNull(),      // e.g. 'org.create', 'platform.reauth'
+  ip: text("ip").notNull(),
+  userAgent: text("user_agent").notNull(),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("platform_audit_logs_actor_user_id_idx").on(table.actorUserId),
+  index("platform_audit_logs_action_idx").on(table.action),
+  index("platform_audit_logs_created_at_idx").on(table.createdAt),
+  index("platform_audit_logs_action_created_at_idx").on(table.action, table.createdAt),
+]);
+
+export type PlatformAuditLog = typeof platformAuditLogs.$inferSelect;
+
+// ============================================================
+// ORG INVITES — platform-admin created, owner bootstrapping
+// ============================================================
+export const orgInvites = pgTable("org_invites", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  email: text("email").notNull(),
+  role: text("role").notNull().default('owner'),
+  tokenHash: text("token_hash").notNull(), // SHA-256 of raw token; never store raw (uniqueness enforced by composite index)
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  // RESTRICT: cannot delete platform-admin user while outstanding invites exist (accountability)
+  createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+}, (table) => [
+  index("org_invites_org_id_idx").on(table.orgId),
+  index("org_invites_email_idx").on(table.email),
+  index("org_invites_expires_at_idx").on(table.expiresAt),
+  index("org_invites_created_by_user_id_idx").on(table.createdByUserId),
+  uniqueIndex("org_invites_org_id_token_hash_uidx").on(table.orgId, table.tokenHash),
+]);
+
+export type OrgInvite = typeof orgInvites.$inferSelect;
 
 // Company Settings table
 export const companySettings = pgTable("company_settings", {
