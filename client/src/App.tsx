@@ -55,6 +55,7 @@ import ProductEditorPage from "@/pages/ProductEditorPage";
 import PrepressPage from "@/pages/prepress";
 import ProductBuilderV2Page from "@/pages/product-builder-v2";
 import PlatformOrgCreatePage from "@/pages/platform/PlatformOrgCreatePage";
+import AcceptInvitePage from "@/pages/accept-invite";
 import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
 
 function Router() {
@@ -76,6 +77,7 @@ function Router() {
         <Route path="/login" element={<Login />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/accept-invite" element={<AcceptInvitePage />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     );
@@ -207,6 +209,9 @@ function Router() {
 
         {/* Platform admin */}
         <Route path="/platform/orgs/new" element={<PlatformOrgCreatePage />} />
+
+        {/* Public invite acceptance (accessible while authenticated too) */}
+        <Route path="/accept-invite" element={<AcceptInvitePage />} />
       </Route>
 
       {/* Catch-all not found */}

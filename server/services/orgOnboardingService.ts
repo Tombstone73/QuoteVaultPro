@@ -9,6 +9,7 @@ import crypto from "crypto";
 import { db } from "../db";
 import { organizations, orgInvites } from "@shared/schema";
 import { eq, and, isNull } from "drizzle-orm";
+import { sha256Hex } from "../lib/tokenHash";
 
 export interface CreateOrgParams {
   name: string;
@@ -87,7 +88,7 @@ export async function createOrgWithInvite(params: CreateOrgParams): Promise<Crea
 
     // ── 3. Generate token + insert invite ───────────────────────────────────
     const rawToken = crypto.randomBytes(32).toString("hex"); // 64 hex chars
-    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+    const tokenHash = sha256Hex(rawToken);
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
 
     await tx.insert(orgInvites).values({

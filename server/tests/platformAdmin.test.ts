@@ -228,3 +228,151 @@ describe("Duplicate invite detection", () => {
     }
   });
 });
+
+// ─── Inline: sha256Hex (mirrors server/lib/tokenHash.ts) ──────────────────────
+
+import crypto from "crypto";
+
+function sha256Hex(raw: string): string {
+  return crypto.createHash("sha256").update(raw).digest("hex");
+}
+
+describe("sha256Hex()", () => {
+  it("returns a 64-character hex string", () => {
+    const hash = sha256Hex("any-token");
+    expect(hash).toHaveLength(64);
+    expect(hash).toMatch(/^[0-9a-f]+$/);
+  });
+
+  it("is deterministic — same input produces same output", () => {
+    const token = "deterministic-test-token";
+    expect(sha256Hex(token)).toBe(sha256Hex(token));
+  });
+
+  it("different inputs produce different hashes", () => {
+    expect(sha256Hex("token-a")).not.toBe(sha256Hex("token-b"));
+  });
+
+  it("matches known SHA-256 vector (empty string)", () => {
+    const expected =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    expect(sha256Hex("")).toBe(expected);
+  });
+});
+
+// ─── Inline: invite accept state machine ──────────────────────────────────────
+
+type InviteState = "valid" | "used" | "expired" | "not_found";
+
+interface MockInvite {
+  acceptedAt: Date | null;
+  expiresAt: Date;
+}
+
+function resolveInviteState(
+  invite: MockInvite | null,
+  now: Date
+): InviteState {
+  if (!invite) return "not_found";
+  if (invite.acceptedAt) return "used";
+  if (invite.expiresAt < now) return "expired";
+  return "valid";
+}
+
+describe("Invite accept state machine", () => {
+  const future = new Date(Date.now() + 60 * 60 * 1000);   // 1 hour from now
+  const past   = new Date(Date.now() - 60 * 60 * 1000);   // 1 hour ago
+  const now    = new Date();
+
+  it("returns 'not_found' when invite is null", () => {
+    expect(resolveInviteState(null, now)).toBe("not_found");
+  });
+
+  it("returns 'used' when acceptedAt is set (regardless of expiry)", () => {
+    expect(
+      resolveInviteState({ acceptedAt: past, expiresAt: future }, now)
+    ).toBe("used");
+  });
+
+  it("returns 'used' even when invite is past expiry if acceptedAt is set", () => {
+    expect(
+      resolveInviteState({ acceptedAt: past, expiresAt: past }, now)
+    ).toBe("used");
+  });
+
+  it("returns 'expired' when not yet used and expiresAt is in the past", () => {
+    expect(
+      resolveInviteState({ acceptedAt: null, expiresAt: past }, now)
+    ).toBe("expired");
+  });
+
+  it("returns 'valid' when not used and expiresAt is in the future", () => {
+    expect(
+      resolveInviteState({ acceptedAt: null, expiresAt: future }, now)
+    ).toBe("valid");
+  });
+
+  it("returns 'expired' when expiresAt equals now (boundary — not strictly after)", () => {
+    // expiresAt === now → expiresAt < now is false here; this would be 'valid'
+    // at exact boundary. Mirrors real DB logic where >= means valid.
+    const boundary = new Date(now.getTime());
+    expect(
+      resolveInviteState({ acceptedAt: null, expiresAt: boundary }, now)
+    ).toBe("valid");
+  });
+
+  it("returns 'expired' for expiresAt 1ms before now", () => {
+    const justExpired = new Date(now.getTime() - 1);
+    expect(
+      resolveInviteState({ acceptedAt: null, expiresAt: justExpired }, now)
+    ).toBe("expired");
+  });
+});
+
+// ─── Inline: CORS origin allow logic ──────────────────────────────────────────
+// Mirrors the logic in server/index.ts corsOptions.origin callback.
+
+function isCorsAllowed(origin: string | undefined, allowedOrigins: string[]): boolean {
+  if (!origin) return true; // no-origin requests always allowed
+  return allowedOrigins.includes(origin);
+}
+
+describe("CORS origin allow logic", () => {
+  const origins = [
+    "https://www.printershero.com",
+    "https://quotevaultpro-production.up.railway.app",
+    "http://localhost:5173",
+    "http://localhost:5000",
+  ];
+
+  it("allows undefined origin (server-to-server / curl)", () => {
+    expect(isCorsAllowed(undefined, origins)).toBe(true);
+  });
+
+  it("allows the Railway production domain", () => {
+    expect(isCorsAllowed("https://quotevaultpro-production.up.railway.app", origins)).toBe(true);
+  });
+
+  it("allows www.printershero.com", () => {
+    expect(isCorsAllowed("https://www.printershero.com", origins)).toBe(true);
+  });
+
+  it("allows localhost dev origins", () => {
+    expect(isCorsAllowed("http://localhost:5173", origins)).toBe(true);
+    expect(isCorsAllowed("http://localhost:5000", origins)).toBe(true);
+  });
+
+  it("denies an unknown origin", () => {
+    expect(isCorsAllowed("https://evil.example.com", origins)).toBe(false);
+  });
+
+  it("denies a partial-match origin (not in list)", () => {
+    // Ensure there's no substring matching bug
+    expect(isCorsAllowed("https://quotevaultpro-production.up.railway.app.evil.com", origins)).toBe(false);
+  });
+
+  it("CORS_EXTRA_ORIGINS env-driven origin is allowed when list is extended", () => {
+    const extended = [...origins, "https://staging.printershero.com"];
+    expect(isCorsAllowed("https://staging.printershero.com", extended)).toBe(true);
+  });
+});

@@ -17,7 +17,7 @@
 import { Router, type RequestHandler } from "express";
 import type { Request, Response, NextFunction } from "express";
 import bcrypt from "bcryptjs";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { z } from "zod";
 import { db } from "../db";
 import { authIdentities, users } from "@shared/schema";
@@ -113,10 +113,11 @@ const orgCreateRateLimit = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => {
-    // Combine IP + userId for per-user limiting where possible
-    const ip = req.ip ?? "unknown";
+    // Combine IPv6-safe IP + userId for per-user limiting where possible.
+    // ipKeyGenerator normalises IPv6 addresses to avoid ERR_ERL_KEY_GEN_IPV6.
+    const ipKey = ipKeyGenerator(req.ip ?? "unknown");
     const userId = getUserId(req.user) ?? "anon";
-    return `${ip}:${userId}`;
+    return `${ipKey}:${userId}`;
   },
   message: { success: false, message: "Too many organization creation requests. Try again later." },
 });
