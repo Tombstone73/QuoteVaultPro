@@ -9857,16 +9857,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
           media = String(primaryLineItem?.description || "").trim();
         }
         if (!media) {
-          media = "â€”"; // Only show "â€”" if both materialName and description are empty
+          media = "—"; // Only show "—" if both materialName and description are empty
         }
         
-        // 2) Size: Format width Ã— height if both exist
+        // 2) Size: Format width × height if both exist
         const width = primaryLineItem?.width;
         const height = primaryLineItem?.height;
-        const size = (width && height) ? `${width} Ã— ${height}` : "â€”";
+        const size = (width && height) ? `${width} × ${height}` : "—";
         
         // 3) Sides: Parse selected_options for "Single Sided" / "Double Sided" choice
-        let sides: string = "â€”";
+        let sides: string = "—";
         if (primaryLineItem?.selectedOptions && Array.isArray(primaryLineItem.selectedOptions)) {
           const sidesOption = primaryLineItem.selectedOptions.find((opt: any) => {
             const optName = String(opt.optionName || "").toLowerCase();
@@ -9882,7 +9882,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
         }
         // Fallback: if selected_options didn't provide sides, use artwork count
-        if (sides === "â€”" && artworkBasedSides) {
+        if (sides === "—" && artworkBasedSides) {
           sides = artworkBasedSides === 1 ? "Single" : "Double";
         }
 
@@ -9924,7 +9924,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           lineItemId: String(row.lineItemId ?? ""),
           orderId: row.orderId,
           orderNumber: String(row.orderNumber ?? ""), // Order number at top level for easy access
-          customerName: String(row.customerName ?? "â€”"),
+          customerName: String(row.customerName ?? "—"),
           dueDate: row.dueDate ?? null,
           stationKey: String(row.stationKey ?? ""),
           stepKey: String(row.stepKey ?? ""),
@@ -10304,15 +10304,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!media) {
         media = String(primaryLineItem?.description || "").trim();
       }
-      if (!media) media = "â€”";
+      if (!media) media = "—";
 
       // 2) Size
       const width = primaryLineItem?.width;
       const height = primaryLineItem?.height;
-      const size = width && height ? `${width} Ã— ${height}` : "â€”";
+      const size = width && height ? `${width} × ${height}` : "—";
 
       // 3) Sides
-      let sides: string = "â€”";
+      let sides: string = "—";
       if (primaryLineItem?.selectedOptions && Array.isArray(primaryLineItem.selectedOptions)) {
         const sidesOption = primaryLineItem.selectedOptions.find((opt: any) => {
           const optName = String(opt.optionName || "").toLowerCase();
@@ -10327,7 +10327,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
         }
       }
-      if (sides === "â€”" && artworkBasedSides) {
+      if (sides === "—" && artworkBasedSides) {
         sides = artworkBasedSides === 1 ? "Single" : "Double";
       }
 
@@ -10362,13 +10362,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         let rowMedia = String(li?.materialName || "").trim();
         if (!rowMedia) rowMedia = String(li?.description || "").trim();
-        if (!rowMedia) rowMedia = "â€”";
+        if (!rowMedia) rowMedia = "—";
 
         const rowWidth = li?.width;
         const rowHeight = li?.height;
-        const rowSize = rowWidth && rowHeight ? `${rowWidth} Ã— ${rowHeight}` : "â€”";
+        const rowSize = rowWidth && rowHeight ? `${rowWidth} × ${rowHeight}` : "—";
 
-        let rowSides: string = "â€”";
+        let rowSides: string = "—";
         if (li?.selectedOptions && Array.isArray(li.selectedOptions)) {
           const sidesOption = li.selectedOptions.find((opt: any) => {
             const optName = String(opt.optionName || "").toLowerCase();
@@ -10383,7 +10383,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
           }
         }
-        if (rowSides === "â€”" && rowArtworkSides) {
+        if (rowSides === "—" && rowArtworkSides) {
           rowSides = rowArtworkSides === 1 ? "Single" : "Double";
         }
 
@@ -10445,7 +10445,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           mediaLabel: media,
           // Convenience top-level order context
           orderNumber: order.orderNumber,
-          customerName: String(order.customerName || "â€”"),
+          customerName: String(order.customerName || "—"),
           dueDate: order.dueDate ?? null,
           priority: order.priority ?? null,
           // Convenience top-level artwork (same list used in order.artwork)
@@ -10453,7 +10453,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           order: {
             id: orderId,
             orderNumber: order.orderNumber,
-            customerName: String(order.customerName || "â€”"),
+            customerName: String(order.customerName || "—"),
             dueDate: order.dueDate,
             priority: order.priority,
             fulfillmentStatus: order.fulfillmentStatus,
