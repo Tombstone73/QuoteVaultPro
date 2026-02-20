@@ -13,7 +13,7 @@
  * 5. On success: show result card with orgId, inviteLink, and "Switch to org" link.
  */
 import { useState } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useAuth } from "@/hooks/useAuth";
@@ -187,10 +187,14 @@ export default function PlatformOrgCreatePage() {
   const {
     register,
     handleSubmit,
+    control,
     watch,
     reset,
     formState: { errors },
-  } = useForm<FormValues>({ resolver: zodResolver(formSchema) });
+  } = useForm<FormValues>({
+    resolver: zodResolver(formSchema),
+    defaultValues: { createOwnerInvite: false },
+  });
 
   const createOwnerInvite = watch("createOwnerInvite");
 
@@ -209,6 +213,7 @@ export default function PlatformOrgCreatePage() {
   }
 
   const doCreate = async (values: FormValues) => {
+    console.log("submit fired", values);
     setSubmitting(true);
     try {
       const { httpStatus, body } = await createPlatformOrg({
@@ -288,16 +293,18 @@ export default function PlatformOrgCreatePage() {
               {errors.slug && <p className="text-destructive text-sm">{errors.slug.message}</p>}
             </div>
 
-            {/* Create owner invite */}
+            {/* Create owner invite — must use Controller; Radix Checkbox uses onCheckedChange not onChange */}
             <div className="flex items-start gap-3 rounded-md border p-3">
-              <Checkbox
-                id="createOwnerInvite"
-                {...register("createOwnerInvite")}
-                onCheckedChange={(checked) => {
-                  // react-hook-form register does not handle Radix Checkbox onChange the same way
-                  // Use a workaround via setValue via the form context — but since we're using register,
-                  // we can safely let defaultChecked / register handle it.
-                }}
+              <Controller
+                control={control}
+                name="createOwnerInvite"
+                render={({ field }) => (
+                  <Checkbox
+                    id="createOwnerInvite"
+                    checked={field.value}
+                    onCheckedChange={(checked) => field.onChange(checked === true)}
+                  />
+                )}
               />
               <div className="space-y-0.5">
                 <Label htmlFor="createOwnerInvite" className="cursor-pointer">Create owner invite</Label>
