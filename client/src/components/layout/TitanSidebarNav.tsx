@@ -24,6 +24,7 @@ import {
   ChevronDown,
   ChevronRight,
   LayoutGrid,
+  ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -47,6 +48,7 @@ export type NavItemConfig = {
   roles?: string[];
   badge?: boolean; // If true, fetch badge count from query
   badgeQuery?: string; // Query key for badge count
+  platformAdminOnly?: boolean; // Only shown to platform admins (isPlatformAdmin=true)
   conditional?: {
     requireApproval?: boolean; // Only show if org preference requireApproval=true
     approverOnly?: boolean; // Only show for internal users
@@ -126,13 +128,21 @@ export const NAV_CONFIG: NavSectionConfig[] = [
       { id: "users", name: "Users", icon: UserCog, path: ROUTES.users.list, roles: ["admin", "owner"] },
     ],
   },
+  {
+    section: "PLATFORM",
+    sectionKey: "platform",
+    items: [
+      { id: "platform-orgs-new", name: "New Organization", icon: ShieldCheck, path: "/platform/orgs/new", platformAdminOnly: true },
+    ],
+  },
 ];
 
 // Filter nav items by user role and conditional visibility
 function filterNavByRole(
   sections: NavSectionConfig[], 
   role?: string | null,
-  orgPreferences?: { quotes?: { requireApproval?: boolean } }
+  orgPreferences?: { quotes?: { requireApproval?: boolean } },
+  isPlatformAdmin?: boolean
 ): NavSectionConfig[] {
   const userRole = (role || "").toLowerCase();
   const isOwner = userRole === "owner";
@@ -143,6 +153,9 @@ function filterNavByRole(
     .map((section) => ({
       ...section,
       items: section.items.filter((item) => {
+        // Platform-admin-only items
+        if (item.platformAdminOnly && !isPlatformAdmin) return false;
+
         // Check role-based visibility
         if (!item.roles) {
           // No role restriction
@@ -328,7 +341,7 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
   const location = useLocation();
   const navigate = useNavigate();
   const role = user?.role ?? null;
-  const filteredSections = filterNavByRole(NAV_CONFIG, role, preferences);
+  const filteredSections = filterNavByRole(NAV_CONFIG, role, preferences, user?.isPlatformAdmin ?? false);
 
   const roleLower = String(role || '').toLowerCase();
   const isApprover = ['owner', 'admin', 'manager', 'employee'].includes(roleLower);

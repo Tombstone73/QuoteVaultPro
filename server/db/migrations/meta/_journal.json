@@ -253,6 +253,13 @@
       "when": 1771632000000,
       "tag": "0043_product_type_production_defaults",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1771718400000,
+      "tag": "0044_platform_admin_org_creator",
+      "breakpoints": true
     }
   ]
 }

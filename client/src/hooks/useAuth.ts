@@ -53,6 +53,7 @@ export function useAuth() {
     isLoading,
     isAuthenticated,
     isAdmin: sessionData?.user?.isAdmin ?? false,
+    isPlatformAdmin: sessionData?.user?.isPlatformAdmin ?? false,
     mustChangePassword: sessionData?.mustChangePassword ?? false,
   };
 }

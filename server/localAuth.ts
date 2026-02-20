@@ -11,7 +11,7 @@ import { db } from "./db";
 import { pgTable, varchar, text, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { sql, eq, and, gt, isNull } from "drizzle-orm";
 import crypto from "crypto";
-import { authIdentities } from "@shared/schema";
+import { authIdentities, users } from "@shared/schema";
 
 // Helper: Check if user must change password (invited state)
 async function getMustChangePassword(userId: string): Promise<boolean> {
@@ -241,14 +241,24 @@ export async function setupAuth(app: Express) {
   });
 
   // Login endpoint for production
-  app.post("/api/auth/login", passport.authenticate("local"), (req, res) => {
+  app.post("/api/auth/login", passport.authenticate("local"), async (req, res) => {
     // Diagnostic logging for session/cookie setup (non-sensitive)
     if (nodeEnv !== 'production' || process.env.DEBUG_AUTH === 'true') {
       console.log(`[Login] Session created for user ${(req.user as any)?.email || (req.user as any)?.id}`);
       console.log('[Login] Session ID:', req.sessionID?.substring(0, 8) + '...');
       console.log('[Login] Sending Set-Cookie header');
     }
-    
+
+    // Stamp lastLoginAt for step-up auth (platform admin recent-login check)
+    const loginUserId = (req.user as any)?.claims?.sub || (req.user as any)?.id;
+    if (loginUserId) {
+      await db
+        .update(users)
+        .set({ lastLoginAt: new Date() })
+        .where(eq(users.id, loginUserId))
+        .catch((err: unknown) => console.error('[Login] Failed to update lastLoginAt:', err));
+    }
+
     res.json({ success: true, user: req.user });
   });
 
