@@ -1082,7 +1082,7 @@ function PreviewPanel({
           )}
         </div>
 
-        <div className="space-y-3">
+        <div className="space-y-3 min-w-0 overflow-hidden">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               {customerId ? (
