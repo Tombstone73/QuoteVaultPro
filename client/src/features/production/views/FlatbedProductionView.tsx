@@ -62,6 +62,7 @@ import {
 } from "lucide-react";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
+import { sanitizeDisplayText } from "@/lib/sanitizeDisplayText";
 
 type ProductionStatus = "queued" | "in_progress" | "done" | "all";
 
@@ -373,30 +374,7 @@ function statusRank(status: ProductionStatus) {
   return 2;
 }
 
-function sanitizeDisplayText(input: unknown): string {
-  if (input === null || input === undefined) return "—";
-  let s = String(input);
-
-  // Fix common mojibake sequences (UTF-8 decoded as Latin-1)
-  // multiplication sign × -> "x"
-  s = s.replaceAll("\u00C3\u0097", "x");
-  s = s.replaceAll("\u00D7", "x");
-
-  // em dash / en dash mojibake
-  s = s.replaceAll("\u00E2\u0080\u0094", "—");
-  s = s.replaceAll("\u00E2\u0080\u0093", "–");
-  // Sometimes we only see the leading sequence in UI columns (ex: "â€")
-  // In that case treat it as an em dash placeholder.
-  if (s.trim() === "\u00E2\u0080" || s.trim() === "\u00E2\u0080\u008B" || s.trim() === "\u00E2\u0080\u00AF") s = "—";
-
-  // Non-breaking space mojibake that often appears in wrapped text
-  s = s.replaceAll("\u00C2 ", " ");
-  s = s.replaceAll("\u00C2", "");
-
-  // If after cleanup it's empty, return dash
-  if (s.trim().length === 0) return "—";
-  return s;
-}
+// sanitizeDisplayText is imported from @/lib/sanitizeDisplayText
 
 function formatDims(width: string | null | undefined, height: string | null | undefined) {
   if (!width || !height) return "—";
