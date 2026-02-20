@@ -267,6 +267,20 @@
       "when": 1771804800000,
       "tag": "0045_user_last_active_org",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1739318963482,
+      "tag": "0046_bug_reports",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1739318963483,
+      "tag": "0047_bug_report_notes",
+      "breakpoints": true
     }
   ]
 }
