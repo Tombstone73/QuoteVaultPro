@@ -219,7 +219,7 @@ export default function PlatformOrgCreatePage() {
       const { httpStatus, body } = await createPlatformOrg({
         name: values.name,
         slug: values.slug || undefined,
-        ownerEmail: values.ownerEmail,
+        ownerEmail: values.ownerEmail as string,
       });
 
       if (httpStatus === 404) {

@@ -108,6 +108,8 @@ export async function setupAuth(app: Express) {
       '/api/auth/complete-invite-password',
       '/api/auth/reset-password',
       '/api/auth/forgot-password',
+      '/api/invites/preview',
+      '/api/invites/accept',
     ];
 
     if (allowlistedPaths.includes(req.path)) {

@@ -15,25 +15,37 @@ const app = express();
 
 // CORS configuration for production frontend
 // Note: Same-origin requests from Vercel proxy (www.printershero.com/api/* → Railway)
-// will have no Origin header, so they're allowed by default
-const allowedOrigins = [
+// will have no Origin header, so they're allowed by default.
+//
+// Add extra allowed origins at runtime via CORS_EXTRA_ORIGINS env var (comma-separated).
+const _staticOrigins = [
   "https://www.printershero.com",
+  "https://quotevaultpro-production.up.railway.app", // Railway deployment
   "http://localhost:5173", // Vite dev server
   "http://localhost:5000", // Local backend
 ];
 
+const _extraOrigins = (process.env.CORS_EXTRA_ORIGINS ?? "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+const allowedOrigins = Array.from(new Set([..._staticOrigins, ..._extraOrigins]));
+
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-    // Allow requests with no origin (same-origin requests from Vercel proxy)
+    // Allow requests with no origin (server-to-server, curl, same-origin Vercel proxy)
     if (!origin) {
       callback(null, true);
       return;
     }
-    // Allow requests from explicitly allowed origins
+    // Allow requests from explicitly allowed origins; deny others without throwing
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      callback(new Error(`Origin ${origin} not allowed by CORS`));
+      // Return false → CORS headers omitted, browser blocks the request.
+      // Do NOT call callback(new Error(...)) — that causes a 500.
+      callback(null, false);
     }
   },
   credentials: true,
