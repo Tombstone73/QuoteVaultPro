@@ -133,11 +133,20 @@ function StepUpModal({ open, onClose, onSuccess }: StepUpModalProps) {
 
 interface SuccessResult {
   orgId: string;
-  inviteLink?: string;
-  ownerEmail?: string;
+  slug: string;
+  inviteLink: string;
+  ownerEmail: string;
 }
 
 function SuccessCard({ result, onReset }: { result: SuccessResult; onReset: () => void }) {
+  const { toast } = useToast();
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(result.inviteLink).then(() => {
+      toast({ title: "Invite link copied" });
+    });
+  };
+
   return (
     <Card className="border-green-200 bg-green-50">
       <CardHeader>
@@ -148,25 +157,24 @@ function SuccessCard({ result, onReset }: { result: SuccessResult; onReset: () =
           <span className="font-medium text-muted-foreground">Org ID</span>
           <p className="font-mono text-xs mt-0.5 break-all">{result.orgId}</p>
         </div>
-        {result.ownerEmail && (
-          <div>
-            <span className="font-medium text-muted-foreground">Owner Invite Email</span>
-            <p className="mt-0.5">{result.ownerEmail}</p>
-          </div>
-        )}
-        {result.inviteLink && (
-          <div>
-            <span className="font-medium text-muted-foreground">Invite Link</span>
-            <p className="font-mono text-xs mt-0.5 break-all bg-white border rounded px-2 py-1.5 select-all">
-              {result.inviteLink}
-            </p>
-          </div>
-        )}
+        <div>
+          <span className="font-medium text-muted-foreground">Owner Invite Email</span>
+          <p className="mt-0.5">{result.ownerEmail}</p>
+        </div>
+        <div>
+          <span className="font-medium text-muted-foreground">Invite Link</span>
+          <p className="font-mono text-xs mt-0.5 break-all bg-white border rounded px-2 py-1.5 select-all">
+            {result.inviteLink}
+          </p>
+        </div>
         <div className="flex gap-2 pt-2 flex-wrap">
-          <Button asChild variant="outline" size="sm">
-            <a href={`/settings`}>Switch to Org settings</a>
+          <Button variant="secondary" size="sm" onClick={handleCopy}>
+            Copy invite link
           </Button>
-          <Button variant="secondary" size="sm" onClick={onReset}>
+          <Button asChild variant="outline" size="sm">
+            <a href="/settings">Switch to Org settings</a>
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onReset}>
             Create another org
           </Button>
         </div>
@@ -187,16 +195,9 @@ export default function PlatformOrgCreatePage() {
   const {
     register,
     handleSubmit,
-    control,
-    watch,
     reset,
     formState: { errors },
-  } = useForm<FormValues>({
-    resolver: zodResolver(formSchema),
-    defaultValues: { createOwnerInvite: false },
-  });
-
-  const createOwnerInvite = watch("createOwnerInvite");
+  } = useForm<FormValues>({ resolver: zodResolver(formSchema) });
 
   // Still loading auth
   if (isLoading) {
@@ -213,14 +214,12 @@ export default function PlatformOrgCreatePage() {
   }
 
   const doCreate = async (values: FormValues) => {
-    console.log("submit fired", values);
     setSubmitting(true);
     try {
       const { httpStatus, body } = await createPlatformOrg({
         name: values.name,
         slug: values.slug || undefined,
-        createOwnerInvite: values.createOwnerInvite,
-        ownerEmail: (values.createOwnerInvite && values.ownerEmail) ? values.ownerEmail : undefined,
+        ownerEmail: values.ownerEmail,
       });
 
       if (httpStatus === 404) {
@@ -274,7 +273,7 @@ export default function PlatformOrgCreatePage() {
         <CardHeader>
           <CardTitle>Organization details</CardTitle>
           <CardDescription>
-            Creates a new tenant organization. Slug must be unique and URL-safe.
+            Creates a new tenant organization with an owner invite. Slug must be unique and URL-safe.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -288,38 +287,23 @@ export default function PlatformOrgCreatePage() {
 
             {/* Slug */}
             <div className="space-y-1">
-              <Label htmlFor="slug">Slug <span className="text-muted-foreground font-normal">(optional — auto-derived from name)</span></Label>
+              <Label htmlFor="slug">
+                Slug{" "}
+                <span className="text-muted-foreground font-normal">(optional — auto-derived from name)</span>
+              </Label>
               <Input id="slug" {...register("slug")} placeholder="acme-print-co" className="font-mono" />
               {errors.slug && <p className="text-destructive text-sm">{errors.slug.message}</p>}
             </div>
 
-            {/* Create owner invite — must use Controller; Radix Checkbox uses onCheckedChange not onChange */}
-            <div className="flex items-start gap-3 rounded-md border p-3">
-              <Controller
-                control={control}
-                name="createOwnerInvite"
-                render={({ field }) => (
-                  <Checkbox
-                    id="createOwnerInvite"
-                    checked={field.value}
-                    onCheckedChange={(checked) => field.onChange(checked === true)}
-                  />
-                )}
-              />
-              <div className="space-y-0.5">
-                <Label htmlFor="createOwnerInvite" className="cursor-pointer">Create owner invite</Label>
-                <p className="text-muted-foreground text-xs">Generate a 7-day invite link for the initial organization owner.</p>
-              </div>
+            {/* Owner Email — always required */}
+            <div className="space-y-1">
+              <Label htmlFor="ownerEmail">Owner Email <span className="text-destructive">*</span></Label>
+              <Input id="ownerEmail" type="email" {...register("ownerEmail")} placeholder="owner@example.com" />
+              <p className="text-muted-foreground text-xs">
+                A 7-day invite link will be generated for this address.
+              </p>
+              {errors.ownerEmail && <p className="text-destructive text-sm">{errors.ownerEmail.message}</p>}
             </div>
-
-            {/* Owner email (conditional) */}
-            {createOwnerInvite && (
-              <div className="space-y-1">
-                <Label htmlFor="ownerEmail">Owner Email <span className="text-destructive">*</span></Label>
-                <Input id="ownerEmail" type="email" {...register("ownerEmail")} placeholder="owner@example.com" />
-                {errors.ownerEmail && <p className="text-destructive text-sm">{errors.ownerEmail.message}</p>}
-              </div>
-            )}
 
             <Button type="submit" className="w-full" disabled={submitting}>
               {submitting ? "Creating…" : "Create Organization"}
