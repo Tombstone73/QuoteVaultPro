@@ -180,6 +180,7 @@ export const ROUTES = {
     users: "/admin/users",
     products: "/admin/products",
     productTypes: "/admin/product-types",
+    bugReports: "/admin/bug-reports",
   },
   
   users: {
