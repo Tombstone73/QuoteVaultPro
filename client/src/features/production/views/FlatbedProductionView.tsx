@@ -1106,6 +1106,14 @@ function PreviewPanel({
               {formattedNotes}
             </div>
           </div>
+          {li?.description && li.description !== "—" && (
+            <div className="rounded-md border border-amber-400/40 bg-amber-400/10 px-3 py-2">
+              <div className="text-[11px] uppercase tracking-wide text-amber-200">Description</div>
+              <div className="text-sm text-titan-text-primary max-h-24 overflow-y-auto break-words whitespace-pre-wrap">
+                {li.description}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-x-8 gap-y-3">
