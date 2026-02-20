@@ -1,10 +1,11 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState, useRef } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { Bug, ExternalLink, RefreshCw } from "lucide-react";
+import { Bug, ExternalLink, RefreshCw, Send } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -15,6 +16,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -38,7 +40,24 @@ interface BugReportDetail extends BugReportListItem {
   metadata: Record<string, unknown>;
 }
 
+interface BugReportNote {
+  id: string;
+  bugReportId: string;
+  orgId: string;
+  createdByUserId: string | null;
+  createdByEmail: string;
+  note: string;
+  createdAt: string;
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
+
+const STATUS_OPTIONS = [
+  { value: "open",      label: "Open" },
+  { value: "in_review", label: "In review" },
+  { value: "resolved",  label: "Resolved" },
+  { value: "closed",    label: "Closed" },
+] as const;
 
 const SEVERITY_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
   low:      "secondary",
@@ -73,13 +92,53 @@ async function fetchBugReportDetail(id: string): Promise<BugReportDetail> {
   return body.data as BugReportDetail;
 }
 
+async function patchBugReportStatus(id: string, status: string): Promise<{ id: string; status: string }> {
+  const res = await fetch(`/api/bug-reports/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+    credentials: "include",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error((body as { message?: string }).message ?? "Failed to update status");
+  }
+  return res.json();
+}
+
+async function fetchNotes(bugReportId: string): Promise<BugReportNote[]> {
+  const res = await fetch(`/api/bug-reports/${bugReportId}/notes`, { credentials: "include" });
+  if (!res.ok) throw new Error("Failed to fetch notes");
+  const body = await res.json();
+  return body.data as BugReportNote[];
+}
+
+async function postNote(bugReportId: string, note: string): Promise<BugReportNote> {
+  const res = await fetch(`/api/bug-reports/${bugReportId}/notes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ note }),
+    credentials: "include",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error((body as { message?: string }).message ?? "Failed to add note");
+  }
+  const body = await res.json();
+  return body.data as BugReportNote;
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function BugReportsPage() {
   const { user } = useAuth();
-  const [statusFilter, setStatusFilter]   = useState("all");
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [statusFilter, setStatusFilter]     = useState("all");
   const [severityFilter, setSeverityFilter] = useState("all");
-  const [selectedId, setSelectedId]       = useState<string | null>(null);
+  const [selectedId, setSelectedId]         = useState<string | null>(null);
+  const [noteText, setNoteText]             = useState("");
+  const noteRef = useRef<HTMLTextAreaElement>(null);
 
   const isAdminOrOwner = user?.role === "admin" || user?.role === "owner";
 
@@ -90,10 +149,53 @@ export default function BugReportsPage() {
   });
 
   const { data: detail, isLoading: detailLoading } = useQuery<BugReportDetail>({
-    queryKey: ["/api/bug-reports", selectedId],
+    queryKey: ["/api/bug-reports/detail", selectedId],
     queryFn: () => fetchBugReportDetail(selectedId!),
     enabled: !!selectedId,
   });
+
+  const { data: notes, isLoading: notesLoading } = useQuery<BugReportNote[]>({
+    queryKey: ["/api/bug-reports/notes", selectedId],
+    queryFn: () => fetchNotes(selectedId!),
+    enabled: !!selectedId,
+  });
+
+  const statusMutation = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: string }) =>
+      patchBugReportStatus(id, status),
+    onSuccess: (result) => {
+      queryClient.setQueryData<BugReportDetail>(
+        ["/api/bug-reports/detail", selectedId],
+        (old) => old ? { ...old, status: result.status } : old,
+      );
+      queryClient.setQueryData<BugReportListItem[]>(
+        ["/api/bug-reports", statusFilter, severityFilter],
+        (old) => old?.map((r) => r.id === result.id ? { ...r, status: result.status } : r),
+      );
+      toast({ title: "Status updated" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Update failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const noteMutation = useMutation({
+    mutationFn: (note: string) => postNote(selectedId!, note),
+    onSuccess: () => {
+      setNoteText("");
+      queryClient.invalidateQueries({ queryKey: ["/api/bug-reports/notes", selectedId] });
+      toast({ title: "Note added" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to add note", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const handleAddNote = () => {
+    const trimmed = noteText.trim();
+    if (!trimmed) return;
+    noteMutation.mutate(trimmed);
+  };
 
   if (!isAdminOrOwner) {
     return (
@@ -135,10 +237,9 @@ export default function BugReportsPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All statuses</SelectItem>
-                  <SelectItem value="open">Open</SelectItem>
-                  <SelectItem value="in_review">In review</SelectItem>
-                  <SelectItem value="resolved">Resolved</SelectItem>
-                  <SelectItem value="closed">Closed</SelectItem>
+                  {STATUS_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -224,7 +325,7 @@ export default function BugReportsPage() {
       </Card>
 
       {/* Detail sheet */}
-      <Sheet open={!!selectedId} onOpenChange={(o) => { if (!o) setSelectedId(null); }}>
+      <Sheet open={!!selectedId} onOpenChange={(o) => { if (!o) { setSelectedId(null); setNoteText(""); } }}>
         <SheetContent side="right" className="w-full sm:max-w-xl overflow-y-auto">
           {detailLoading || !detail ? (
             <div className="space-y-4 pt-6">
@@ -243,9 +344,20 @@ export default function BugReportsPage() {
                   <Badge variant={SEVERITY_VARIANT[detail.severity] ?? "default"} className="capitalize">
                     {detail.severity}
                   </Badge>
-                  <Badge variant={STATUS_VARIANT[detail.status] ?? "outline"} className="capitalize">
-                    {detail.status.replace("_", " ")}
-                  </Badge>
+                  <Select
+                    value={detail.status}
+                    onValueChange={(val) => statusMutation.mutate({ id: detail.id, status: val })}
+                    disabled={statusMutation.isPending}
+                  >
+                    <SelectTrigger className="h-7 w-[140px] text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {STATUS_OPTIONS.map((o) => (
+                        <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                   <span className="text-xs text-muted-foreground">
                     {format(new Date(detail.createdAt), "MMM d, yyyy HH:mm")}
                   </span>
@@ -309,6 +421,71 @@ export default function BugReportsPage() {
                     </pre>
                   </DetailSection>
                 )}
+
+                {/* ── Internal Notes ────────────────────────────────────────── */}
+                <div className="border-t border-border pt-5 space-y-4">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Internal Notes
+                  </p>
+
+                  {notesLoading ? (
+                    <div className="space-y-2">
+                      {Array.from({ length: 2 }).map((_, i) => (
+                        <Skeleton key={i} className="h-12 w-full" />
+                      ))}
+                    </div>
+                  ) : !notes || notes.length === 0 ? (
+                    <p className="text-xs text-muted-foreground italic">No notes yet.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {notes.map((n) => (
+                        <div
+                          key={n.id}
+                          className="rounded-md border border-border bg-muted/20 px-3 py-2 space-y-1"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-medium text-foreground">
+                              {n.createdByEmail}
+                            </span>
+                            <span className="text-xs text-muted-foreground whitespace-nowrap">
+                              {format(new Date(n.createdAt), "MMM d, yyyy HH:mm")}
+                            </span>
+                          </div>
+                          <p className="text-sm whitespace-pre-wrap text-foreground">{n.note}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <Textarea
+                      ref={noteRef}
+                      placeholder="Add an internal note…"
+                      className="min-h-[80px] resize-none text-sm"
+                      value={noteText}
+                      onChange={(e) => setNoteText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                          e.preventDefault();
+                          handleAddNote();
+                        }
+                      }}
+                      disabled={noteMutation.isPending}
+                    />
+                    <div className="flex items-center gap-3">
+                      <Button
+                        size="sm"
+                        className="gap-2"
+                        onClick={handleAddNote}
+                        disabled={!noteText.trim() || noteMutation.isPending}
+                      >
+                        <Send className="h-3 w-3" />
+                        {noteMutation.isPending ? "Adding…" : "Add note"}
+                      </Button>
+                      <span className="text-xs text-muted-foreground">Ctrl+Enter to submit</span>
+                    </div>
+                  </div>
+                </div>
               </div>
             </>
           )}
