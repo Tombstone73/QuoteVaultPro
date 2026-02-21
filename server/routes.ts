@@ -11789,6 +11789,70 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // MANUAL PREPRESS PRODUCTION WORKFLOW
   // ============================================================
 
+  const parseDimensionsFromDescription = (description?: string | null): { widthIn: number | null; heightIn: number | null } => {
+    if (!description) return { widthIn: null, heightIn: null };
+    const match = description.match(/(\d+(?:\.\d+)?)\s*(?:"|in|inch|inches)?\s*[x×]\s*(\d+(?:\.\d+)?)/i);
+    if (!match) return { widthIn: null, heightIn: null };
+    return {
+      widthIn: Number(match[1]) || null,
+      heightIn: Number(match[2]) || null,
+    };
+  };
+
+  const computeTotalSqFt = (params: { width: unknown; height: unknown; quantity: unknown; description?: string | null }): number | null => {
+    const quantity = Number(params.quantity ?? 0);
+    if (!Number.isFinite(quantity) || quantity <= 0) return null;
+
+    const width = params.width != null ? Number(params.width) : null;
+    const height = params.height != null ? Number(params.height) : null;
+    const parsed = parseDimensionsFromDescription(params.description);
+    const widthIn = width && width > 0 ? width : parsed.widthIn;
+    const heightIn = height && height > 0 ? height : parsed.heightIn;
+    if (!widthIn || !heightIn) return null;
+
+    const areaSqFtPerUnit = (widthIn * heightIn) / 144;
+    return areaSqFtPerUnit * quantity;
+  };
+
+  const extractFinishingBullets = (lineItem: any): string[] => {
+    const results = new Set<string>();
+    const pushIfFinishingLike = (label?: string, value?: unknown) => {
+      const l = String(label || "").trim();
+      if (!l) return;
+      const lv = l.toLowerCase();
+      if (!/(finish|laminat|grommet|hem|trim|weld|mount|sew|pocket|tape|edge)/.test(lv)) return;
+      const v = typeof value === "string" ? value.trim() : value;
+      if (v === undefined || v === null || v === "") {
+        results.add(l);
+      } else if (typeof v === "boolean") {
+        if (v) results.add(l);
+      } else {
+        results.add(`${l}: ${String(v)}`);
+      }
+    };
+
+    const selectedOptions = Array.isArray(lineItem?.selectedOptions) ? lineItem.selectedOptions : [];
+    for (const opt of selectedOptions) {
+      pushIfFinishingLike(opt?.optionName, opt?.value);
+    }
+
+    const optionSelections = lineItem?.optionSelectionsJson;
+    if (optionSelections && typeof optionSelections === "object") {
+      for (const [key, value] of Object.entries(optionSelections)) {
+        pushIfFinishingLike(key, value as unknown);
+      }
+    }
+
+    const specs = lineItem?.specsJson;
+    if (specs && typeof specs === "object") {
+      for (const [key, value] of Object.entries(specs)) {
+        pushIfFinishingLike(key, value as unknown);
+      }
+    }
+
+    return Array.from(results);
+  };
+
   // GET /api/prepress/queue - List line items for prepress
   app.get("/api/prepress/queue", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -11816,10 +11880,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         conditions.push(eq(orderLineItems.productType, printTypeFilter));
       }
 
-      // Get line items with order, customer, and session data
+      // Get line items with order/customer/material data (session is resolved separately)
       const items = await db
         .select({
           lineItemId: orderLineItems.id,
+          orderId: orders.id,
           status: orderLineItems.status,
           description: orderLineItems.description,
           productType: orderLineItems.productType,
@@ -11827,22 +11892,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
           width: orderLineItems.width,
           height: orderLineItems.height,
           sqft: orderLineItems.sqft,
+          materialName: materials.name,
+          specsJson: orderLineItems.specsJson,
+          optionSelectionsJson: orderLineItems.optionSelectionsJson,
+          selectedOptions: orderLineItems.selectedOptions,
           orderNumber: orders.orderNumber,
           dueDate: orders.dueDate,
           priority: orders.priority,
           customerName: customers.companyName,
-          sessionId: prepressSessions.id,
         })
         .from(orderLineItems)
         .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
         .innerJoin(customers, eq(orders.customerId, customers.id))
-        .leftJoin(
-          prepressSessions,
-          and(
-            eq(prepressSessions.lineItemId, orderLineItems.id),
-            eq(prepressSessions.status, "active")
-          )
-        )
+        .leftJoin(materials, eq(orderLineItems.materialId, materials.id))
         .where(and(...conditions))
         .orderBy(asc(orders.dueDate), desc(orders.priority));
 
@@ -11865,31 +11927,102 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .groupBy(lineItemFiles.lineItemId, lineItemFiles.role)
         : [];
 
+      const previewFiles = lineItemIds.length > 0
+        ? await db
+            .select({
+              id: lineItemFiles.id,
+              lineItemId: lineItemFiles.lineItemId,
+              mimeType: lineItemFiles.mimeType,
+              createdAt: lineItemFiles.createdAt,
+            })
+            .from(lineItemFiles)
+            .where(
+              and(
+                inArray(lineItemFiles.lineItemId, lineItemIds),
+                eq(lineItemFiles.status, "active")
+              )
+            )
+            .orderBy(desc(lineItemFiles.createdAt))
+        : [];
+
+      const firstPreviewByLineItem = new Map<string, string>();
+      for (const pf of previewFiles) {
+        const previewable = pf.mimeType?.startsWith("image/") || pf.mimeType === "application/pdf";
+        if (!previewable) continue;
+        if (!firstPreviewByLineItem.has(pf.lineItemId)) {
+          firstPreviewByLineItem.set(pf.lineItemId, `/api/prepress/files/${pf.id}/download?inline=1`);
+        }
+      }
+
+      // Resolve latest active session per line item (non-exclusive sessions supported)
+      const activeSessions = lineItemIds.length > 0
+        ? await db
+            .select({
+              id: prepressSessions.id,
+              lineItemId: prepressSessions.lineItemId,
+              notesText: prepressSessions.notesText,
+              issueFlag: prepressSessions.issueFlag,
+              issueType: prepressSessions.issueType,
+              updatedAt: prepressSessions.updatedAt,
+              startedAt: prepressSessions.startedAt,
+            })
+            .from(prepressSessions)
+            .where(
+              and(
+                inArray(prepressSessions.lineItemId, lineItemIds),
+                eq(prepressSessions.organizationId, organizationId),
+                eq(prepressSessions.status, "active")
+              )
+            )
+            .orderBy(desc(prepressSessions.updatedAt), desc(prepressSessions.startedAt))
+        : [];
+
+      const latestSessionByLineItem = new Map<string, typeof activeSessions[number]>();
+      for (const session of activeSessions) {
+        if (!latestSessionByLineItem.has(session.lineItemId)) {
+          latestSessionByLineItem.set(session.lineItemId, session);
+        }
+      }
+
       // Map to flat QueueItem shape the frontend expects
       const queue = items.map((item) => {
         const counts = fileCounts.filter((fc) => fc.lineItemId === item.lineItemId);
         const originals = counts.find((c) => c.role === "original")?.count || 0;
         const finals = counts.find((c) => c.role === "final")?.count || 0;
+        const latestSession = latestSessionByLineItem.get(item.lineItemId);
+        const computedSqFt = computeTotalSqFt({
+          width: item.width,
+          height: item.height,
+          quantity: item.quantity,
+          description: item.description,
+        });
+        const finishingBullets = extractFinishingBullets(item);
 
         return {
           lineItemId: item.lineItemId,
+          orderId: item.orderId,
           jobNumber: item.orderNumber,
           customerName: item.customerName ?? "—",
           productName: item.description,
           printType: item.productType ?? null,
-          media: null,
+          media: item.materialName ?? null,
           dueDate: item.dueDate ?? null,
           status: item.status,
           rush: item.priority === "rush",
           assignedTo: null,
-          sessionId: item.sessionId ?? null,
+          sessionId: latestSession?.id ?? null,
+          prepressNotes: latestSession?.notesText ?? null,
+          issueFlag: latestSession?.issueFlag ?? false,
+          issueType: latestSession?.issueType ?? null,
+          thumbnailUrl: firstPreviewByLineItem.get(item.lineItemId) ?? null,
           fileCounts: { originals, finals },
           quantity: Number(item.quantity) || 0,
           width: item.width != null ? Number(item.width) : null,
           height: item.height != null ? Number(item.height) : null,
-          sqFootage: item.sqft != null ? Number(item.sqft) : null,
+          sqFootage: computedSqFt ?? (item.sqft != null ? Number(item.sqft) : null),
           bleed: null,
-          finishing: null,
+          finishing: finishingBullets.length > 0 ? finishingBullets.join(" • ") : null,
+          finishingBullets,
         };
       });
 
@@ -11901,6 +12034,257 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("[Prepress] Error fetching queue:", error);
       res.status(500).json({ error: error?.message || "Failed to fetch prepress queue" });
+    }
+  });
+
+  // GET /api/prepress/line-item/:lineItemId/history - Timeline for prepress/production activity
+  app.get("/api/prepress/line-item/:lineItemId/history", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const { lineItemId } = req.params;
+
+      const [lineItem] = await db
+        .select({ id: orderLineItems.id })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+
+      if (!lineItem) {
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      const sessions = await db
+        .select({
+          id: prepressSessions.id,
+          startedAt: prepressSessions.startedAt,
+          updatedAt: prepressSessions.updatedAt,
+          completedAt: prepressSessions.completedAt,
+          status: prepressSessions.status,
+          notesText: prepressSessions.notesText,
+          issueFlag: prepressSessions.issueFlag,
+          issueType: prepressSessions.issueType,
+        })
+        .from(prepressSessions)
+        .where(
+          and(
+            eq(prepressSessions.organizationId, organizationId),
+            eq(prepressSessions.lineItemId, lineItemId)
+          )
+        )
+        .orderBy(desc(prepressSessions.updatedAt));
+
+      const sessionIds = sessions.map((s) => s.id);
+
+      const events = await db
+        .select({
+          createdAt: productionEvents.createdAt,
+          type: productionEvents.type,
+          payload: productionEvents.payload,
+        })
+        .from(productionEvents)
+        .innerJoin(productionJobs, eq(productionEvents.productionJobId, productionJobs.id))
+        .where(
+          and(
+            eq(productionEvents.organizationId, organizationId),
+            eq(productionJobs.lineItemId, lineItemId)
+          )
+        )
+        .orderBy(desc(productionEvents.createdAt));
+
+      const auditFilter = sessionIds.length > 0
+        ? or(
+            and(eq(auditLogs.entityType, "order_line_item"), eq(auditLogs.entityId, lineItemId)),
+            and(eq(auditLogs.entityType, "prepress_session"), inArray(auditLogs.entityId, sessionIds))
+          )
+        : and(eq(auditLogs.entityType, "order_line_item"), eq(auditLogs.entityId, lineItemId));
+
+      const audits = await db
+        .select({
+          createdAt: auditLogs.createdAt,
+          actionType: auditLogs.actionType,
+          entityType: auditLogs.entityType,
+          description: auditLogs.description,
+        })
+        .from(auditLogs)
+        .where(and(eq(auditLogs.organizationId, organizationId), auditFilter!))
+        .orderBy(desc(auditLogs.createdAt));
+
+      const timeline = [
+        ...sessions.map((s) => ({
+          at: s.updatedAt || s.startedAt,
+          source: "prepress_session",
+          type: s.status,
+          description: s.status === "complete"
+            ? "Prepress session completed"
+            : s.notesText
+              ? `Session notes updated: ${s.notesText}`
+              : "Prepress session active",
+        })),
+        ...events.map((e) => ({
+          at: e.createdAt,
+          source: "production_event",
+          type: e.type,
+          description: typeof e.payload?.text === "string" && e.payload.text.trim().length > 0
+            ? e.payload.text
+            : `${e.type}`,
+        })),
+        ...audits.map((a) => ({
+          at: a.createdAt,
+          source: "audit_log",
+          type: `${a.entityType}:${a.actionType}`,
+          description: a.description,
+        })),
+      ]
+        .filter((entry) => !!entry.at)
+        .sort((a, b) => new Date(b.at as any).getTime() - new Date(a.at as any).getTime());
+
+      res.json({ success: true, data: timeline });
+    } catch (error: any) {
+      console.error("[Prepress] Error fetching history:", error);
+      res.status(500).json({ error: error?.message || "Failed to fetch prepress history" });
+    }
+  });
+
+  // GET /api/prepress/line-item/:lineItemId/spec-sheet - Printable prepress spec payload
+  app.get("/api/prepress/line-item/:lineItemId/spec-sheet", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const { lineItemId } = req.params;
+
+      const rows = await db
+        .select({
+          lineItem: orderLineItems,
+          orderNumber: orders.orderNumber,
+          customerName: customers.companyName,
+          materialName: materials.name,
+        })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .innerJoin(customers, eq(orders.customerId, customers.id))
+        .leftJoin(materials, eq(orderLineItems.materialId, materials.id))
+        .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+
+      if (!rows[0]) {
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      const row = rows[0];
+      const li = row.lineItem;
+      const filesGrouped = await prepressFileService.getLineItemFiles(lineItemId, organizationId);
+      const allFiles = [...filesGrouped.originals, ...filesGrouped.finals, ...filesGrouped.references].map((f) => ({
+        ...f,
+        computedDisplayFilename: prepressFileService.buildComputedDisplayFilename({
+          role: f.role,
+          originalFilename: f.originalFilename,
+          tag: f.tag,
+        }),
+      }));
+
+      const computedSqFt = computeTotalSqFt({
+        width: li.width,
+        height: li.height,
+        quantity: li.quantity,
+        description: li.description,
+      });
+
+      const parsedDimensions = parseDimensionsFromDescription(li.description);
+      const width = li.width != null ? Number(li.width) : parsedDimensions.widthIn;
+      const height = li.height != null ? Number(li.height) : parsedDimensions.heightIn;
+
+      res.json({
+        success: true,
+        data: {
+          lineItemId: li.id,
+          jobNumber: row.orderNumber,
+          customerName: row.customerName,
+          productName: li.description,
+          quantity: li.quantity,
+          width,
+          height,
+          sqFootage: computedSqFt ?? (li.sqft != null ? Number(li.sqft) : null),
+          media: row.materialName ?? null,
+          printType: li.productType,
+          bleed: null,
+          finishingBullets: extractFinishingBullets(li),
+          originals: allFiles.filter((f) => f.role === "original"),
+          finals: allFiles.filter((f) => f.role === "final"),
+          references: allFiles.filter((f) => f.role === "reference"),
+        },
+      });
+    } catch (error: any) {
+      console.error("[Prepress] Error building spec sheet:", error);
+      res.status(500).json({ error: error?.message || "Failed to build spec sheet" });
+    }
+  });
+
+  // PATCH /api/prepress/line-item/:lineItemId/print-type
+  app.patch("/api/prepress/line-item/:lineItemId/print-type", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const schema = z.object({ printType: z.enum(["flatbed", "wide_roll", "roll"]) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const { lineItemId } = req.params;
+      const { printType } = parsed.data;
+
+      const rows = await db
+        .select({
+          id: orderLineItems.id,
+          productType: orderLineItems.productType,
+        })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+
+      if (!rows[0]) {
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      if (rows[0].productType === printType) {
+        return res.json({ success: true, data: { lineItemId, printType } });
+      }
+
+      await db
+        .update(orderLineItems)
+        .set({ productType: printType, updatedAt: new Date() })
+        .where(eq(orderLineItems.id, lineItemId));
+
+      await db.insert(auditLogs).values({
+        organizationId,
+        userId,
+        userName: req.user?.email || req.user?.name || null,
+        actionType: "UPDATE",
+        entityType: "order_line_item",
+        entityId: lineItemId,
+        entityName: `Line item ${lineItemId}`,
+        description: "Updated prepress print type",
+        oldValues: { printType: rows[0].productType },
+        newValues: { printType },
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+      } as any);
+
+      res.json({ success: true, data: { lineItemId, printType } });
+    } catch (error: any) {
+      console.error("[Prepress] Error updating print type:", error);
+      res.status(500).json({ error: error?.message || "Failed to update print type" });
     }
   });
 
@@ -11944,23 +12328,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         const lineItem = lineItems[0].lineItem;
         const order = lineItems[0].order;
-
-        // Check for existing ACTIVE session
-        const existingSessions = await tx
-          .select()
-          .from(prepressSessions)
-          .where(
-            and(
-              eq(prepressSessions.lineItemId, lineItemId),
-              eq(prepressSessions.status, "active")
-            )
-          )
-          .limit(1);
-
-        if (existingSessions[0]) {
-          // Session already exists - return it
-          return existingSessions[0];
-        }
 
         // Create new session
         const [session] = await tx
@@ -12019,19 +12386,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const sessionId = req.params.id;
       const schema = z.object({
+        note: z.string().optional(),
         notesText: z.string().optional(),
+        flaggedForQc: z.boolean().optional(),
         issueFlag: z.boolean().optional(),
         issueType: z.string().optional().nullable(),
+        ifMatchUpdatedAt: z.string().optional(),
       });
       const parsed = schema.safeParse(req.body);
       if (!parsed.success) {
         return res.status(400).json({ error: fromZodError(parsed.error).message });
       }
 
+      const [existingSession] = await db
+        .select({ updatedAt: prepressSessions.updatedAt })
+        .from(prepressSessions)
+        .where(
+          and(
+            eq(prepressSessions.id, sessionId),
+            eq(prepressSessions.organizationId, organizationId)
+          )
+        )
+        .limit(1);
+
+      if (!existingSession) {
+        return res.status(404).json({ error: "Session not found" });
+      }
+
+      if (parsed.data.ifMatchUpdatedAt) {
+        const expected = new Date(parsed.data.ifMatchUpdatedAt).getTime();
+        const actual = existingSession.updatedAt ? new Date(existingSession.updatedAt).getTime() : NaN;
+        if (Number.isFinite(expected) && Number.isFinite(actual) && expected !== actual) {
+          return res.status(409).json({ error: "Notes changed by another user; reload before saving." });
+        }
+      }
+
       const updates: any = {};
+      if (parsed.data.note !== undefined) updates.notesText = parsed.data.note;
       if (parsed.data.notesText !== undefined) updates.notesText = parsed.data.notesText;
+      if (parsed.data.flaggedForQc !== undefined) updates.issueFlag = parsed.data.flaggedForQc;
       if (parsed.data.issueFlag !== undefined) updates.issueFlag = parsed.data.issueFlag;
       if (parsed.data.issueType !== undefined) updates.issueType = parsed.data.issueType;
+      updates.updatedAt = new Date();
 
       await db
         .update(prepressSessions)
@@ -12288,14 +12684,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Line item not found" });
       }
 
-      // Deactivate any existing active prepress sessions for this item
-      await db.update(prepressSessions)
-        .set({ status: "complete", completedAt: new Date() })
-        .where(and(
-          eq(prepressSessions.lineItemId, lineItemId),
-          eq(prepressSessions.status, "active")
-        ));
-
       // Create new prepress session as edit request
       const editNote = `[EDIT REQUEST FROM PRODUCTION]\n${note.trim()}`;
       const [session] = await db.insert(prepressSessions).values({
@@ -12467,12 +12855,49 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
-      await prepressFileService.downloadLineItemFile(req.params.fileId, organizationId, res);
+      const inline = String(req.query.inline || "").toLowerCase() === "1" || String(req.query.inline || "").toLowerCase() === "true";
+      await prepressFileService.downloadLineItemFile(req.params.fileId, organizationId, res, { inline });
     } catch (error: any) {
       console.error("[Prepress] Download error:", error);
       if (!res.headersSent) {
         res.status(500).json({ error: error?.message || "Failed to download file" });
       }
+    }
+  });
+
+  // GET /api/prepress/files/:fileId/thumbnail - Preview URL (thumbnail/inline fallback)
+  app.get("/api/prepress/files/:fileId/thumbnail", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const [fileRow] = await db
+        .select({
+          id: lineItemFiles.id,
+          mimeType: lineItemFiles.mimeType,
+        })
+        .from(lineItemFiles)
+        .where(
+          and(
+            eq(lineItemFiles.id, req.params.fileId),
+            eq(lineItemFiles.organizationId, organizationId),
+            eq(lineItemFiles.status, "active")
+          )
+        )
+        .limit(1);
+
+      if (!fileRow) {
+        return res.status(404).json({ error: "File not found" });
+      }
+
+      const previewable = fileRow.mimeType.startsWith("image/") || fileRow.mimeType === "application/pdf";
+      const inlineUrl = previewable ? `/api/prepress/files/${fileRow.id}/download?inline=1` : null;
+
+      res.json({ success: true, data: { thumbnailUrl: inlineUrl } });
+    } catch (error: any) {
+      console.error("[Prepress] Thumbnail URL error:", error);
+      res.status(500).json({ error: error?.message || "Failed to resolve thumbnail URL" });
     }
   });
 
@@ -12500,7 +12925,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
       const files = await prepressFileService.getLineItemFiles(req.params.lineItemId, organizationId);
-      res.json({ success: true, data: files });
+      const enhance = (f: any) => ({
+        ...f,
+        computedDisplayFilename: prepressFileService.buildComputedDisplayFilename({
+          role: f.role,
+          originalFilename: f.originalFilename,
+          tag: f.tag,
+        }),
+        thumbnailUrl: f.mimeType?.startsWith("image/") || f.mimeType === "application/pdf"
+          ? `/api/prepress/files/${f.id}/download?inline=1`
+          : null,
+      });
+
+      const data = {
+        originals: files.originals.map(enhance),
+        finals: files.finals.map(enhance),
+        references: files.references.map(enhance),
+      };
+
+      res.json({ success: true, data, files: [...data.originals, ...data.finals, ...data.references] });
     } catch (error: any) {
       console.error("[Prepress] Error fetching files:", error);
       res.status(500).json({ error: error?.message || "Failed to fetch files" });

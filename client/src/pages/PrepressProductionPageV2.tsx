@@ -1,6 +1,6 @@
 import React, { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Search, RefreshCw, History, FileText, Download, ZoomIn, Upload, Check, Image as ImageIcon, Info, Paperclip, CheckCircle, AlertCircle, Loader2 } from "lucide-react";
+import { Search, RefreshCw, History, FileText, Download, ZoomIn, Upload, Image as ImageIcon, Info, Paperclip, CheckCircle, AlertCircle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -8,6 +8,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { formatDistanceToNow } from "date-fns";
@@ -15,6 +17,7 @@ import { formatDistanceToNow } from "date-fns";
 // API Types
 type QueueItem = {
   lineItemId: string;
+  orderId?: string;
   jobNumber: string;
   customerName: string;
   productName: string;
@@ -25,6 +28,10 @@ type QueueItem = {
   rush: boolean;
   assignedTo: string | null;
   sessionId: string | null;
+  prepressNotes?: string | null;
+  issueFlag?: boolean;
+  issueType?: string | null;
+  thumbnailUrl?: string | null;
   fileCounts: {
     originals: number;
     finals: number;
@@ -36,6 +43,7 @@ type QueueItem = {
   sqFootage: number | null;
   bleed: string | null;
   finishing: string | null;
+  finishingBullets?: string[];
 };
 
 type LineItemFile = {
@@ -46,6 +54,40 @@ type LineItemFile = {
   tag: string | null;
   createdAt: string;
   uploadedBy: string;
+  computedDisplayFilename?: string;
+  thumbnailUrl?: string | null;
+  mimeType?: string;
+};
+
+type LineItemFilesPayload = {
+  originals: LineItemFile[];
+  finals: LineItemFile[];
+  references: LineItemFile[];
+};
+
+type HistoryEntry = {
+  at: string;
+  source: string;
+  type: string;
+  description: string;
+};
+
+type SpecSheetData = {
+  lineItemId: string;
+  jobNumber: string;
+  customerName: string;
+  productName: string;
+  quantity: number;
+  width: number | null;
+  height: number | null;
+  sqFootage: number | null;
+  media: string | null;
+  printType: string | null;
+  bleed: string | null;
+  finishingBullets: string[];
+  originals: LineItemFile[];
+  finals: LineItemFile[];
+  references: LineItemFile[];
 };
 
 type UploadProgress = {
@@ -79,8 +121,11 @@ export default function PrepressProductionPageV2() {
   const [prepressNotes, setPrepressNotes] = useState("");
   const [flagForQc, setFlagForQc] = useState(false);
   const [issueType, setIssueType] = useState("");
+  const [uploadRole, setUploadRole] = useState<"original" | "final">("final");
   const [selectedTag, setSelectedTag] = useState("final_print");
   const [uploadingFiles, setUploadingFiles] = useState<UploadProgress[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [specSheetOpen, setSpecSheetOpen] = useState(false);
 
   // Queue Query
   const { data: queueData, isLoading: queueLoading } = useQuery({
@@ -111,10 +156,33 @@ export default function PrepressProductionPageV2() {
       const res = await fetch(`/api/prepress/line-item/${selectedLineItemId}/files`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch files");
       const data = await res.json();
-      console.log("[Line Item Files]", data.files?.length || 0, "files");
-      return data.files as LineItemFile[];
+      return data.data as LineItemFilesPayload;
     },
     enabled: !!selectedLineItemId,
+  });
+
+  const { data: historyData, isLoading: historyLoading } = useQuery({
+    queryKey: ["/api/prepress/line-item", selectedLineItemId, "history"],
+    queryFn: async () => {
+      if (!selectedLineItemId) return [] as HistoryEntry[];
+      const res = await fetch(`/api/prepress/line-item/${selectedLineItemId}/history`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch history");
+      const data = await res.json();
+      return (data.data || []) as HistoryEntry[];
+    },
+    enabled: !!selectedLineItemId && historyOpen,
+  });
+
+  const { data: specSheetData, isLoading: specSheetLoading } = useQuery({
+    queryKey: ["/api/prepress/line-item", selectedLineItemId, "spec-sheet"],
+    queryFn: async () => {
+      if (!selectedLineItemId) return null;
+      const res = await fetch(`/api/prepress/line-item/${selectedLineItemId}/spec-sheet`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch spec sheet");
+      const data = await res.json();
+      return data.data as SpecSheetData;
+    },
+    enabled: !!selectedLineItemId && specSheetOpen,
   });
 
   // Mutations
@@ -150,10 +218,14 @@ export default function PrepressProductionPageV2() {
         credentials: "include",
         body: JSON.stringify({ note, flaggedForQc, issueType }),
       });
-      if (!res.ok) throw new Error("Failed to save note");
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}));
+        throw new Error(error.error || "Failed to save note");
+      }
       return res.json();
     },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
       toast({ title: "Notes saved", description: "Prepress notes updated" });
     },
     onError: (error: Error) => {
@@ -231,6 +303,7 @@ export default function PrepressProductionPageV2() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] });
       // Clear selection since item will move to production boards
       setSelectedLineItemId(null);
       toast({ 
@@ -247,11 +320,35 @@ export default function PrepressProductionPageV2() {
     },
   });
 
+  const updatePrintTypeMutation = useMutation({
+    mutationFn: async ({ lineItemId, printType }: { lineItemId: string; printType: string }) => {
+      const res = await fetch(`/api/prepress/line-item/${lineItemId}/print-type`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ printType }),
+      });
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}));
+        throw new Error(error.error || "Failed to update print type");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      toast({ title: "Print type updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
   // Derived state
   const queue = queueData || [];
   const selectedItem = queue.find(q => q.lineItemId === selectedLineItemId);
-  const originalFiles = filesData?.filter(f => f.role === "original") || [];
-  const finalFiles = filesData?.filter(f => f.role === "final") || [];
+  const originalFiles = filesData?.originals || [];
+  const finalFiles = filesData?.finals || [];
   const hasFinalFiles = finalFiles.length > 0;
   const canComplete = hasFinalFiles && !!selectedItem?.sessionId;
   // PROMPT B: Enable "Send to Print Queue" when prepress is complete and has final files
@@ -266,9 +363,30 @@ export default function PrepressProductionPageV2() {
     }
   }, [selectedLineItemId, selectedItem]);
 
+  React.useEffect(() => {
+    setPrepressNotes(selectedItem?.prepressNotes || "");
+    setFlagForQc(!!selectedItem?.issueFlag);
+    setIssueType(selectedItem?.issueType || "");
+  }, [selectedItem?.lineItemId, selectedItem?.prepressNotes, selectedItem?.issueFlag, selectedItem?.issueType]);
+
   // Handlers
   const handleRefresh = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+  };
+
+  const handleOpenHistory = () => {
+    if (!selectedItem) return;
+    setHistoryOpen(true);
+  };
+
+  const handleOpenSpecSheet = () => {
+    if (!selectedItem) return;
+    setSpecSheetOpen(true);
+  };
+
+  const handlePrintTypeChange = (value: string) => {
+    if (!selectedItem || !selectedLineItemId) return;
+    updatePrintTypeMutation.mutate({ lineItemId: selectedLineItemId, printType: value });
   };
 
   const handleStartPrepress = () => {
@@ -309,8 +427,8 @@ export default function PrepressProductionPageV2() {
       uploadFileMutation.mutate({
         lineItemId: selectedLineItemId,
         file,
-        role: "final",
-        tag: selectedTag,
+        role: uploadRole,
+        tag: uploadRole === "final" ? selectedTag : "",
       });
     });
 
@@ -365,7 +483,7 @@ export default function PrepressProductionPageV2() {
                 <SelectContent>
                   <SelectItem value="all">Print Type: All</SelectItem>
                   <SelectItem value="flatbed">Flatbed</SelectItem>
-                  <SelectItem value="roll">Roll</SelectItem>
+                  <SelectItem value="wide_roll">Wide Roll</SelectItem>
                 </SelectContent>
               </Select>
 
@@ -488,10 +606,18 @@ export default function PrepressProductionPageV2() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <button className="flex items-center gap-2 text-xs text-slate-400 hover:text-white transition-colors">
+            <button
+              className="flex items-center gap-2 text-xs text-slate-400 hover:text-white transition-colors disabled:opacity-50"
+              onClick={handleOpenHistory}
+              disabled={!selectedItem}
+            >
               <History className="w-4 h-4" /> History
             </button>
-            <button className="flex items-center gap-2 text-xs text-slate-400 hover:text-white transition-colors">
+            <button
+              className="flex items-center gap-2 text-xs text-slate-400 hover:text-white transition-colors disabled:opacity-50"
+              onClick={handleOpenSpecSheet}
+              disabled={!selectedItem}
+            >
               <FileText className="w-4 h-4" /> Spec Sheet
             </button>
           </div>
@@ -533,7 +659,20 @@ export default function PrepressProductionPageV2() {
               </div>
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Print Type</p>
-                <p className="text-sm font-medium">{selectedItem?.printType || "—"}</p>
+                <Select
+                  value={selectedItem?.printType || "wide_roll"}
+                  onValueChange={handlePrintTypeChange}
+                  disabled={!selectedItem || updatePrintTypeMutation.isPending}
+                >
+                  <SelectTrigger className="h-8 bg-[#111921] border-[#2d3748] text-sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="flatbed">flatbed</SelectItem>
+                    <SelectItem value="wide_roll">wide_roll</SelectItem>
+                    <SelectItem value="roll">roll</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Bleed</p>
@@ -541,7 +680,15 @@ export default function PrepressProductionPageV2() {
               </div>
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Finishing</p>
-                <p className="text-sm font-medium">{selectedItem?.finishing || "—"}</p>
+                {(selectedItem?.finishingBullets?.length || 0) > 0 ? (
+                  <ul className="text-sm font-medium list-disc pl-4 space-y-0.5">
+                    {selectedItem?.finishingBullets?.map((bullet, index) => (
+                      <li key={`${bullet}-${index}`}>{bullet}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-sm font-medium">—</p>
+                )}
               </div>
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Priority</p>
@@ -558,14 +705,27 @@ export default function PrepressProductionPageV2() {
               <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2">
                 <Paperclip className="w-4 h-4" /> Original Customer Files
               </h3>
-              {selectedLineItemId && originalFiles.length > 0 && (
-                <button 
-                  onClick={handleDownloadAllOriginals}
-                  className="text-xs font-bold text-[#1773cf] hover:underline flex items-center gap-1"
-                >
-                  <Download className="w-4 h-4" /> Download All
-                </button>
-              )}
+              <div className="flex items-center gap-3">
+                {selectedLineItemId && (
+                  <button
+                    onClick={() => {
+                      setUploadRole("original");
+                      fileInputRef.current?.click();
+                    }}
+                    className="text-xs font-bold text-[#1773cf] hover:underline flex items-center gap-1"
+                  >
+                    <Upload className="w-4 h-4" /> Upload Originals
+                  </button>
+                )}
+                {selectedLineItemId && originalFiles.length > 0 && (
+                  <button
+                    onClick={handleDownloadAllOriginals}
+                    className="text-xs font-bold text-[#1773cf] hover:underline flex items-center gap-1"
+                  >
+                    <Download className="w-4 h-4" /> Download All
+                  </button>
+                )}
+              </div>
             </div>
             <div className="border border-[#2d3748] rounded-lg overflow-hidden bg-[#1a232e]">
               <table className="w-full text-left text-xs">
@@ -591,9 +751,9 @@ export default function PrepressProductionPageV2() {
                     originalFiles.map((file) => (
                       <tr key={file.id} className="hover:bg-white/5 transition-colors group cursor-pointer">
                         <td className="px-4 py-3">
-                          <FileThumbnail filename={file.originalFilename} />
+                          <FileThumbnail filename={file.originalFilename} thumbnailUrl={file.thumbnailUrl || undefined} />
                         </td>
-                        <td className="px-4 py-3 font-medium text-slate-200">{file.originalFilename}</td>
+                        <td className="px-4 py-3 font-medium text-slate-200">{file.computedDisplayFilename || file.originalFilename}</td>
                         <td className="px-4 py-3 font-mono">{formatBytes(file.sizeBytes)}</td>
                         <td className="px-4 py-3">{formatDistanceToNow(new Date(file.createdAt), { addSuffix: true })}</td>
                         <td className="px-4 py-3">{file.uploadedBy}</td>
@@ -643,21 +803,11 @@ export default function PrepressProductionPageV2() {
                     finalFiles.map((file) => (
                       <tr key={file.id} className="hover:bg-white/5 transition-colors cursor-pointer">
                         <td className="px-4 py-3">
-                          <div className="relative w-20 h-20 rounded-lg border border-[#2d3748] overflow-hidden bg-[#111921] flex items-center justify-center group">
-                            <div className="absolute inset-0 bg-slate-700 flex items-center justify-center">
-                              <ImageIcon className="w-8 h-8 text-slate-500" />
-                            </div>
-                            <div className="absolute top-1 right-1 w-5 h-5 bg-green-500 rounded-full border-2 border-[#1a232e] flex items-center justify-center shadow-lg">
-                              <Check className="w-3 h-3 text-white" />
-                            </div>
-                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                              <ZoomIn className="w-5 h-5 text-white" />
-                            </div>
-                          </div>
+                          <FileThumbnail filename={file.originalFilename} thumbnailUrl={file.thumbnailUrl || undefined} />
                         </td>
                         <td className="px-4 py-3">
                           <div className="space-y-1">
-                            <p className="font-bold text-slate-200">{file.originalFilename}</p>
+                            <p className="font-bold text-slate-200">{file.computedDisplayFilename || file.originalFilename}</p>
                             <div className="flex items-center gap-3">
                               <span className="bg-[#1773cf]/30 text-[#1773cf] border border-[#1773cf]/40 px-2 py-0.5 rounded font-bold uppercase text-[9px]">
                                 {file.tag || "final"}
@@ -720,7 +870,10 @@ export default function PrepressProductionPageV2() {
                   disabled={!selectedLineItemId}
                 />
                 <Button 
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => {
+                    setUploadRole("final");
+                    fileInputRef.current?.click();
+                  }}
                   disabled={!selectedLineItemId}
                   className="bg-[#1773cf] text-white text-sm font-bold px-6 py-2 rounded-lg hover:bg-[#1773cf]/90 transition-colors shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
                 >
@@ -846,7 +999,7 @@ export default function PrepressProductionPageV2() {
           <div className="flex items-center gap-3">
             <Button
               onClick={handleStartPrepress}
-              disabled={!selectedItem || !!selectedItem?.sessionId || startSessionMutation.isPending}
+              disabled={!selectedItem || startSessionMutation.isPending}
               variant="outline"
               className="bg-transparent border-[#2d3748] text-slate-300 hover:bg-[#2d3748] hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
             >
@@ -893,7 +1046,7 @@ export default function PrepressProductionPageV2() {
                 <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Sending...</>
               ) : (
                 <>
-                  Send to Print Queue
+                  Send to Production
                   <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
                   </svg>
@@ -903,6 +1056,77 @@ export default function PrepressProductionPageV2() {
           </div>
         </div>
       </main>
+
+      <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
+        <SheetContent side="right" className="w-[520px] bg-[#111921] border-[#2d3748] text-slate-100">
+          <SheetHeader>
+            <SheetTitle className="text-slate-100">History</SheetTitle>
+          </SheetHeader>
+          <div className="mt-6 space-y-3 max-h-[85vh] overflow-y-auto pr-2">
+            {historyLoading && (
+              <div className="text-sm text-slate-400">Loading history...</div>
+            )}
+            {!historyLoading && (historyData?.length || 0) === 0 && (
+              <div className="text-sm text-slate-500">No history found for this line item.</div>
+            )}
+            {!historyLoading && (historyData || []).map((entry, idx) => (
+              <div key={`${entry.at}-${entry.type}-${idx}`} className="border border-[#2d3748] rounded-lg p-3 bg-[#1a232e]">
+                <div className="text-[11px] text-slate-500 uppercase tracking-wide">{entry.source.replaceAll("_", " ")}</div>
+                <div className="text-xs text-slate-300 mt-1">{entry.type}</div>
+                <div className="text-sm text-slate-100 mt-1">{entry.description}</div>
+                <div className="text-[11px] text-slate-500 mt-2">{new Date(entry.at).toLocaleString()}</div>
+              </div>
+            ))}
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      <Dialog open={specSheetOpen} onOpenChange={setSpecSheetOpen}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto bg-[#111921] border-[#2d3748] text-slate-100">
+          <DialogHeader>
+            <DialogTitle>Spec Sheet</DialogTitle>
+          </DialogHeader>
+          {specSheetLoading ? (
+            <div className="text-sm text-slate-400">Loading spec sheet...</div>
+          ) : !specSheetData ? (
+            <div className="text-sm text-slate-500">No spec data available.</div>
+          ) : (
+            <div className="space-y-6 text-sm">
+              <div className="grid grid-cols-2 gap-4">
+                <div><span className="text-slate-500">Job #:</span> {specSheetData.jobNumber || "—"}</div>
+                <div><span className="text-slate-500">Customer:</span> {specSheetData.customerName || "—"}</div>
+                <div><span className="text-slate-500">Product:</span> {specSheetData.productName || "—"}</div>
+                <div><span className="text-slate-500">Size:</span> {specSheetData.width && specSheetData.height ? `${specSheetData.width}" x ${specSheetData.height}"` : "—"}</div>
+                <div><span className="text-slate-500">Qty:</span> {specSheetData.quantity || "—"}</div>
+                <div><span className="text-slate-500">Sq Ft:</span> {specSheetData.sqFootage != null ? `${specSheetData.sqFootage.toFixed(1)} sq ft` : "—"}</div>
+                <div><span className="text-slate-500">Media:</span> {specSheetData.media || "—"}</div>
+                <div><span className="text-slate-500">Print Type:</span> {specSheetData.printType || "—"}</div>
+              </div>
+
+              <div>
+                <div className="text-slate-500 uppercase text-xs mb-2">Finishing</div>
+                {(specSheetData.finishingBullets || []).length > 0 ? (
+                  <ul className="list-disc pl-5 space-y-1">
+                    {specSheetData.finishingBullets.map((bullet, i) => <li key={`${bullet}-${i}`}>{bullet}</li>)}
+                  </ul>
+                ) : (
+                  <div>—</div>
+                )}
+              </div>
+
+              <div>
+                <div className="text-slate-500 uppercase text-xs mb-2">Files</div>
+                <div className="space-y-1">
+                  {[...specSheetData.originals, ...specSheetData.finals].map((f) => (
+                    <div key={f.id} className="text-slate-200">• {f.computedDisplayFilename || f.originalFilename}</div>
+                  ))}
+                  {[...specSheetData.originals, ...specSheetData.finals].length === 0 && <div>—</div>}
+                </div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -941,10 +1165,14 @@ function JobCard({ item, isSelected, onClick }: { item: QueueItem; isSelected: b
       )}
     >
       <div className="relative w-16 h-16 flex-shrink-0 rounded-lg border border-[#2d3748] overflow-hidden bg-[#111921] flex items-center justify-center group">
-        <div className="absolute inset-0 flex items-center justify-center">
-          <ImageIcon className="w-8 h-8 text-slate-700" />
-        </div>
-        <div className="relative z-10 w-full h-full bg-slate-600"></div>
+        {item.thumbnailUrl ? (
+          <img src={item.thumbnailUrl} alt={item.productName} className="absolute inset-0 w-full h-full object-cover" loading="lazy" />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <ImageIcon className="w-8 h-8 text-slate-700" />
+          </div>
+        )}
+        {!item.thumbnailUrl && <div className="relative z-10 w-full h-full bg-slate-600"></div>}
         {item.fileCounts && (item.fileCounts.originals > 0 || item.fileCounts.finals > 0) && (
           <div className="absolute bottom-0 right-0 bg-[#1773cf] text-white text-[9px] font-black px-1 rounded-tl-sm shadow-lg z-20">
             +{item.fileCounts.originals + item.fileCounts.finals}
@@ -980,12 +1208,14 @@ function JobCard({ item, isSelected, onClick }: { item: QueueItem; isSelected: b
   );
 }
 
-function FileThumbnail({ filename }: { filename: string }) {
+function FileThumbnail({ filename, thumbnailUrl }: { filename: string; thumbnailUrl?: string }) {
   const isPdf = filename.toLowerCase().endsWith(".pdf");
 
   return (
     <div className="relative w-20 h-20 rounded-lg border border-[#2d3748] overflow-hidden bg-[#111921] flex items-center justify-center group">
-      {isPdf ? (
+      {thumbnailUrl ? (
+        <img src={thumbnailUrl} alt={filename} className="absolute inset-0 w-full h-full object-cover" loading="lazy" />
+      ) : isPdf ? (
         <div className="absolute inset-0 bg-slate-600 flex items-center justify-center">
           <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />

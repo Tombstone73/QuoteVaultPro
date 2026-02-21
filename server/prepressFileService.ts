@@ -21,6 +21,37 @@ const BUCKET_NAME = process.env.PREPRESS_FILES_BUCKET || process.env.GCS_BUCKET_
 const MAX_FILE_SIZE_MB = 250;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
+function splitExtension(filename: string): { base: string; ext: string } {
+  const lastDot = filename.lastIndexOf(".");
+  if (lastDot <= 0 || lastDot === filename.length - 1) {
+    return { base: filename, ext: "" };
+  }
+  return {
+    base: filename.slice(0, lastDot),
+    ext: filename.slice(lastDot),
+  };
+}
+
+function mapTagToDisplay(tag?: string | null): string {
+  const normalized = (tag || "").trim().toLowerCase();
+  if (normalized === "proof_only" || normalized === "proof") return "Proof";
+  if (normalized === "cut_file" || normalized === "cut") return "CutFile";
+  return "Print";
+}
+
+export function buildComputedDisplayFilename(params: {
+  role: string;
+  originalFilename: string;
+  tag?: string | null;
+}): string {
+  const { role, originalFilename, tag } = params;
+  if (role !== "final") return originalFilename;
+
+  const { base, ext } = splitExtension(originalFilename);
+  const suffix = mapTagToDisplay(tag);
+  return `${base}_FINAL_${suffix}${ext}`;
+}
+
 /**
  * Upload a file to storage and create line_item_files record
  */
@@ -161,7 +192,8 @@ export async function replaceLineItemFile(params: {
 export async function downloadLineItemFile(
   fileId: string,
   organizationId: string,
-  res: Response
+  res: Response,
+  options?: { inline?: boolean }
 ): Promise<void> {
   // Get file record
   const [file] = await db
@@ -197,12 +229,18 @@ export async function downloadLineItemFile(
   const [metadata] = await gcsFile.getMetadata();
 
   // Download filename with job number prefix + TWO SPACES
-  const downloadFilename = `${jobNumber}  ${file.file.originalFilename}`;
+  const computedDisplayFilename = buildComputedDisplayFilename({
+    role: file.file.role,
+    originalFilename: file.file.originalFilename,
+    tag: file.file.tag,
+  });
+  const downloadFilename = `${jobNumber}  ${computedDisplayFilename}`;
+  const dispositionType = options?.inline ? "inline" : "attachment";
 
   res.set({
     "Content-Type": file.file.mimeType,
     "Content-Length": metadata.size,
-    "Content-Disposition": `attachment; filename="${downloadFilename}"`,
+    "Content-Disposition": `${dispositionType}; filename="${downloadFilename}"`,
     "Cache-Control": "private, no-cache",
   });
 
