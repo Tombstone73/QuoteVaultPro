@@ -10,6 +10,8 @@ import {
     customerContacts,
     users,
     products,
+    productTypes,
+    organizations,
     productVariants,
     quotes,
     quoteAttachments,
@@ -748,34 +750,69 @@ export class OrdersRepository {
         const quoteLines = await this.dbInstance.select().from(quoteLineItems).where(eq(quoteLineItems.quoteId, quoteId));
         if (quoteLines.length === 0) throw new Error('Quote has no line items');
 
+        // Fetch org settings for prepress default (migration 0051)
+        const [org] = await this.dbInstance
+            .select({ prepressDefaultEnabled: organizations.prepressDefaultEnabled })
+            .from(organizations)
+            .where(eq(organizations.id, organizationId))
+            .limit(1);
+        const orgPrepressDefault = org?.prepressDefaultEnabled ?? true;
+
+        // Fetch product types for prepress override logic (migration 0051)
+        const productIds = Array.from(new Set(quoteLines.map(ql => ql.productId)));
+        const productsWithTypes = await this.dbInstance
+            .select({
+                productId: products.id,
+                productTypeId: products.productTypeId,
+                requiresPrepressOverride: productTypes.requiresPrepressOverride,
+            })
+            .from(products)
+            .leftJoin(productTypes, eq(products.productTypeId, productTypes.id))
+            .where(inArray(products.id, productIds as [string, ...string[]]));
+        
+        const productPrepressMap = new Map<string, boolean>();
+        for (const p of productsWithTypes) {
+            // requiresPrepress = productType.requiresPrepressOverride ?? org.prepressDefaultEnabled
+            const requiresPrepress = p.requiresPrepressOverride !== null 
+                ? p.requiresPrepressOverride 
+                : orgPrepressDefault;
+            productPrepressMap.set(p.productId, requiresPrepress);
+        }
+
         // Convert quote line items to order line items
-        const orderLineItemsData: Omit<InsertOrderLineItem, 'orderId'>[] = quoteLines.map((ql, index) => ({
-            quoteLineItemId: ql.id,
-            productId: ql.productId,
-            productVariantId: ql.variantId,
-            productType: ql.productType,
-            description: ql.productName,
-            width: ql.width ? Number(ql.width) : 0,
-            height: ql.height ? Number(ql.height) : 0,
-            quantity: ql.quantity,
-            sqft: null,
-            unitPrice: parseFloat(ql.linePrice) / ql.quantity,
-            totalPrice: parseFloat(ql.linePrice),
-            status: 'queued',
-            specsJson: ql.specsJson,
-            selectedOptions: ql.selectedOptions,
-            optionSelectionsJson: (ql as any).optionSelectionsJson ?? null,
-            // PBV2 snapshot fields (copied from quote line item - no repricing during conversion)
-            pbv2TreeVersionId: (ql as any).pbv2TreeVersionId ?? null,
-            pbv2SnapshotJson: (ql as any).pbv2SnapshotJson ?? null,
-            pricedAt: (ql as any).pricedAt ?? null, // Preserve pricing timestamp from quote
-            nestingConfigSnapshot: null,
-            requiresInventory: false,
-            materialId: null,
-            sortOrder: ql.displayOrder ?? index, // Use quote displayOrder or default to index
-            taxAmount: ql.taxAmount || '0',
-            isTaxableSnapshot: ql.isTaxableSnapshot,
-        }));
+        const orderLineItemsData: Omit<InsertOrderLineItem, 'orderId'>[] = quoteLines.map((ql, index) => {
+            const requiresPrepress = productPrepressMap.get(ql.productId) ?? orgPrepressDefault;
+            const initialStatus = requiresPrepress ? 'pending_prepress' : 'queued';
+
+            return {
+                quoteLineItemId: ql.id,
+                productId: ql.productId,
+                productVariantId: ql.variantId,
+                productType: ql.productType,
+                description: ql.productName,
+                width: ql.width ? Number(ql.width) : 0,
+                height: ql.height ? Number(ql.height) : 0,
+                quantity: ql.quantity,
+                sqft: null,
+                unitPrice: parseFloat(ql.linePrice) / ql.quantity,
+                totalPrice: parseFloat(ql.linePrice),
+                status: initialStatus,
+                requiresPrepress, // Snapshot prepress requirement (TEMP→PERMANENT)
+                specsJson: ql.specsJson,
+                selectedOptions: ql.selectedOptions,
+                optionSelectionsJson: (ql as any).optionSelectionsJson ?? null,
+                // PBV2 snapshot fields (copied from quote line item - no repricing during conversion)
+                pbv2TreeVersionId: (ql as any).pbv2TreeVersionId ?? null,
+                pbv2SnapshotJson: (ql as any).pbv2SnapshotJson ?? null,
+                pricedAt: (ql as any).pricedAt ?? null, // Preserve pricing timestamp from quote
+                nestingConfigSnapshot: null,
+                requiresInventory: false,
+                materialId: null,
+                sortOrder: ql.displayOrder ?? index, // Use quote displayOrder or default to index
+                taxAmount: ql.taxAmount || '0',
+                isTaxableSnapshot: ql.isTaxableSnapshot,
+            };
+        });
 
         // Create the order
         const orderData = {
