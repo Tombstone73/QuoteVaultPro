@@ -89,6 +89,8 @@ export const organizations = pgTable("organizations", {
     .$type<'auto_on_save' | 'manual_publish'>()
     .default('auto_on_save')
     .notNull(),
+  // Prepress default system (migration 0051)
+  prepressDefaultEnabled: boolean("prepress_default_enabled").notNull().default(true),
   // Soft delete lifecycle tracking
   deleteState: text("delete_state").notNull().default('active'), // 'active' | 'pending_delete' | 'soft_deleted'
   deleteRequestedAt: timestamp("delete_requested_at", { withTimezone: true }),
@@ -327,6 +329,8 @@ export const productTypes = pgTable("product_types", {
   defaultStationKey: varchar("default_station_key", { length: 40 }),
   defaultStepKey: varchar("default_step_key", { length: 40 }),
   sendToProductionDefault: boolean("send_to_production_default").notNull().default(false),
+  // Prepress override (migration 0051): null=inherit org default, true=force, false=skip
+  requiresPrepressOverride: boolean("requires_prepress_override"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -344,6 +348,7 @@ export const insertProductTypeSchema = createInsertSchema(productTypes).omit({
   defaultStationKey: z.string().max(40).nullish(),
   defaultStepKey: z.string().max(40).nullish(),
   sendToProductionDefault: z.boolean().default(false),
+  requiresPrepressOverride: z.boolean().nullish(),
 });
 
 export const updateProductTypeSchema = insertProductTypeSchema.partial().extend({
@@ -2263,6 +2268,8 @@ export const orderLineItems = pgTable("order_line_items", {
   materialUsages: jsonb("material_usages").$type<LineItemMaterialUsage[]>().default(sql`'[]'::jsonb`).notNull(), // structured material usage tracking
   requiresInventory: boolean("requires_inventory").notNull().default(true), // flag if inventory tracking is needed
   sortOrder: integer("sort_order").notNull().default(0), // Display order in UI (for drag-and-drop reordering)
+  // Prepress requirement snapshot (migration 0051 - TEMP→PERMANENT contract)
+  requiresPrepress: boolean("requires_prepress").notNull().default(true),
   // Tax system fields
   taxAmount: decimal("tax_amount", { precision: 10, scale: 2 }).default("0").notNull(),
   isTaxableSnapshot: boolean("is_taxable_snapshot").default(true).notNull(),
@@ -2279,6 +2286,7 @@ export const orderLineItems = pgTable("order_line_items", {
   index("order_line_items_order_id_idx").on(table.orderId),
   index("order_line_items_product_id_idx").on(table.productId),
   index("order_line_items_status_idx").on(table.status),
+  index("order_line_items_requires_prepress_idx").on(table.requiresPrepress),
   index("order_line_items_product_type_idx").on(table.productType),
   index("order_line_items_pbv2_tree_version_id_idx").on(table.pbv2TreeVersionId),
 ]);
