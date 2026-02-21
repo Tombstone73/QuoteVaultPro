@@ -493,6 +493,34 @@ export function useUpdateProductionJobStatus(jobId: string) {
   });
 }
 
+export function useSendLineItemToPrepress() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { lineItemId: string; note: string; noPrintsCompletedYet?: boolean }) => {
+      const res = await fetch(`/api/production/line-item/${args.lineItemId}/send-to-prepress`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note: args.note, noPrintsCompletedYet: args.noPrintsCompletedYet ?? false }),
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to send to prepress");
+      return json;
+    },
+    onSuccess: (_data, args) => {
+      // Invalidate production boards so the job disappears
+      qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      // Invalidate prepress queue so the item appears
+      qc.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      toast({ title: "Sent to prepress", description: "Job moved to prepress queue for editing" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Send to prepress failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
 export function useOverrideProductionJobRouting() {
   const qc = useQueryClient();
   const { toast } = useToast();
