@@ -42,6 +42,7 @@ import {
   useStartProductionTimer,
   useStopProductionTimer,
   useUpdateProductionJobStatus,
+  useSendLineItemToPrepress,
 } from "@/hooks/useProduction";
 import {
   CheckCircle2,
@@ -567,6 +568,10 @@ function ActionRail({
   const [wasteText, setWasteText] = useState("");
   const [wasteQty, setWasteQty] = useState<string>("");
   const [wasteUnit, setWasteUnit] = useState("");
+  const [sendToPrepressOpen, setSendToPrepressOpen] = useState(false);
+  const [sendToPrepressNote, setSendToPrepressNote] = useState("");
+  const [sendToPrepressNoPrints, setSendToPrepressNoPrints] = useState(false);
+  const sendToPrepress = useSendLineItemToPrepress();
 
   const isBusy =
     start.isPending ||
@@ -577,7 +582,8 @@ function ActionRail({
     addNote.isPending ||
     editNote.isPending ||
     deleteNote.isPending ||
-    setMedia.isPending;
+    setMedia.isPending ||
+    sendToPrepress.isPending;
 
   const canAct = job.status !== "done";
   const canStart = canAct && !timerIsRunning;
@@ -673,6 +679,9 @@ function ActionRail({
           </Button>
           <Button className="w-full justify-start bg-red-600 hover:bg-red-600/90 text-white" onClick={() => setWasteOpen(true)} disabled={isBusy}>
             <Undo2 className="w-4 h-4 mr-2" /> LOG WASTE
+          </Button>
+          <Button className="w-full justify-start bg-orange-600 hover:bg-orange-600/90 text-white" onClick={() => setSendToPrepressOpen(true)} disabled={isBusy || !job.lineItemId}>
+            <Square className="w-4 h-4 mr-2" /> SEND TO PREPRESS
           </Button>
         </div>
 
@@ -901,6 +910,61 @@ function ActionRail({
                 disabled={isBusy || !wasteText.trim()}
               >
                 Save
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        <AlertDialog open={sendToPrepressOpen} onOpenChange={(open) => { setSendToPrepressOpen(open); if (!open) { setSendToPrepressNote(""); setSendToPrepressNoPrints(false); } }}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Send to Prepress</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will move the job back to the Prepress queue for file edits. It will be removed from this board until prepress completes it again.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="space-y-3">
+              <Textarea
+                value={sendToPrepressNote}
+                onChange={(e) => setSendToPrepressNote(e.target.value)}
+                placeholder="Describe what needs to change (required)..."
+                className="min-h-[96px] resize-none"
+                disabled={sendToPrepress.isPending}
+              />
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="flatbed-no-prints"
+                  checked={sendToPrepressNoPrints}
+                  onChange={(e) => setSendToPrepressNoPrints(e.target.checked)}
+                  disabled={sendToPrepress.isPending}
+                  className="h-4 w-4 rounded border-gray-300"
+                />
+                <label htmlFor="flatbed-no-prints" className="text-sm cursor-pointer select-none">
+                  No prints completed yet
+                </label>
+              </div>
+            </div>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={sendToPrepress.isPending}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  const note = sendToPrepressNote.trim();
+                  if (!note || !job.lineItemId) return;
+                  sendToPrepress.mutate(
+                    { lineItemId: job.lineItemId, note, noPrintsCompletedYet: sendToPrepressNoPrints },
+                    {
+                      onSuccess: () => {
+                        setSendToPrepressOpen(false);
+                        setSendToPrepressNote("");
+                        setSendToPrepressNoPrints(false);
+                      },
+                    },
+                  );
+                }}
+                disabled={sendToPrepress.isPending || !sendToPrepressNote.trim()}
+              >
+                {sendToPrepress.isPending ? "Sending..." : "Send to Prepress"}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
