@@ -574,6 +574,7 @@ function ActionRail({
   const [wasteText, setWasteText] = useState("");
   const [wasteQty, setWasteQty] = useState<string>("");
   const [wasteUnit, setWasteUnit] = useState("");
+  const [wasteComment, setWasteComment] = useState("");
   const [sendToPrepressOpen, setSendToPrepressOpen] = useState(false);
   const [sendToPrepressNote, setSendToPrepressNote] = useState("");
   const [sendToPrepressNoPrints, setSendToPrepressNoPrints] = useState(false);
@@ -906,31 +907,44 @@ function ActionRail({
                 <Input value={wasteQty} onChange={(e) => setWasteQty(e.target.value)} placeholder="Qty" disabled={isBusy} />
                 <Input value={wasteUnit} onChange={(e) => setWasteUnit(e.target.value)} placeholder="Unit" disabled={isBusy} />
               </div>
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">Reason <span className="text-destructive">*</span></div>
+                <Textarea
+                  value={wasteComment}
+                  onChange={(e) => setWasteComment(e.target.value)}
+                  placeholder="Why did this waste occur?"
+                  className="min-h-[72px] resize-none"
+                  disabled={isBusy}
+                />
+              </div>
             </div>
             <AlertDialogFooter>
               <AlertDialogCancel disabled={isBusy}>Cancel</AlertDialogCancel>
               <AlertDialogAction
                 onClick={() => {
                   const text = wasteText.trim();
-                  if (!text) return;
+                  const comment = wasteComment.trim();
+                  if (!text || !comment) return;
                   const qtyNum = wasteQty.trim() ? Number(wasteQty) : undefined;
                   setMedia.mutate(
                     {
                       text,
                       qty: Number.isFinite(qtyNum as any) ? qtyNum : undefined,
                       unit: wasteUnit.trim() || undefined,
+                      comment,
                     },
                     {
                       onSuccess: () => {
                         setWasteText("");
                         setWasteQty("");
                         setWasteUnit("");
+                        setWasteComment("");
                         setWasteOpen(false);
                       },
                     },
                   );
                 }}
-                disabled={isBusy || !wasteText.trim()}
+                disabled={isBusy || !wasteText.trim() || !wasteComment.trim()}
               >
                 Save
               </AlertDialogAction>
