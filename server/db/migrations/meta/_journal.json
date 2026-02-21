@@ -295,6 +295,13 @@
       "when": 1739318963485,
       "tag": "0049_add_bug_report_screenshots",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1739318963486,
+      "tag": "0050_manual_prepress_production",
+      "breakpoints": true
     }
   ]
 }
