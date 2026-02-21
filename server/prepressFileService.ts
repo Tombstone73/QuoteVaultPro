@@ -9,14 +9,20 @@
  */
 
 import { db } from "./db";
-import { lineItemFiles, prepressSessions, orders, orderLineItems, orderAttachments } from "../shared/schema";
-import { eq, and, inArray } from "drizzle-orm";
-import { objectStorageClient } from "./objectStorage";
+import { lineItemFiles, orders, orderLineItems } from "../shared/schema";
+import { eq, and } from "drizzle-orm";
+import { getStorageClient } from "./objectStorage";
 import type { Response } from "express";
-import { randomUUID } from "crypto";
 import archiver from "archiver";
-import type { InsertLineItemFile, LineItemFile } from "../shared/schema";
+import type { LineItemFile } from "../shared/schema";
 import { isSupabaseConfigured, SupabaseStorageService } from "./supabaseStorage";
+import {
+  processUploadedFile,
+  generateStoredFilename,
+  generateRelativePath,
+} from "./utils/fileStorage";
+import { decideStorageTarget } from "./services/storageTarget";
+import { normalizeObjectKeyForDb } from "./lib/supabaseObjectHelpers";
 
 const BUCKET_NAME = process.env.PREPRESS_FILES_BUCKET || process.env.GCS_BUCKET_NAME || "quotevaultpro-uploads";
 const MAX_FILE_SIZE_MB = 250;
@@ -85,28 +91,50 @@ export async function uploadLineItemFile(params: {
     throw new Error(`File size exceeds maximum allowed size of ${MAX_FILE_SIZE_MB}MB`);
   }
 
-  // Generate storage path: prepress/{org_id}/{line_item_id}/{uuid}_{filename}
-  const fileId = randomUUID();
-  const safeName = originalFilename.replace(/[^a-zA-Z0-9._-]/g, "_");
-  const storagePath = `prepress/${organizationId}/${lineItemId}/${fileId}_${safeName}`;
-
-  // Upload to GCS
-  const bucket = objectStorageClient.bucket(BUCKET_NAME);
-  const file = bucket.file(storagePath);
-  
-  await file.save(buffer, {
-    contentType: mimeType,
-    metadata: {
-      metadata: {
-        organizationId,
-        orderId,
-        lineItemId,
-        role,
-        originalFilename,
-        uploadedBy: createdByUserId,
-      },
-    },
+  const target = decideStorageTarget({
+    fileName: originalFilename,
+    fileSizeBytes: buffer.length,
+    organizationId,
+    context: "prepress.uploadLineItemFile",
   });
+
+  let storagePath = "";
+  let storageKey: string | null = null;
+  let storageBucket: string | null = null;
+
+  if (target === "supabase" && isSupabaseConfigured()) {
+    const storedFilename = generateStoredFilename(originalFilename);
+    const relativePath = generateRelativePath({
+      organizationId,
+      orderNumber: undefined,
+      lineItemId,
+      storedFilename,
+      resourceType: "order",
+      resourceId: orderId,
+    });
+
+    const supabase = new SupabaseStorageService();
+    const uploaded = await supabase.uploadFile(relativePath, buffer, mimeType || "application/octet-stream");
+    const fileKey = normalizeObjectKeyForDb(uploaded.path);
+
+    storagePath = fileKey;
+    storageKey = fileKey;
+    storageBucket = null;
+  } else {
+    const fileMetadata = await processUploadedFile({
+      originalFilename,
+      buffer,
+      mimeType,
+      organizationId,
+      lineItemId,
+      resourceType: "order",
+      resourceId: orderId,
+    });
+
+    storagePath = fileMetadata.relativePath;
+    storageKey = fileMetadata.relativePath;
+    storageBucket = null;
+  }
 
   // Insert database record
   const [insertedFile] = await db.insert(lineItemFiles).values({
@@ -117,9 +145,9 @@ export async function uploadLineItemFile(params: {
     role,
     status: "active",
     tag: tag || null,
-    storageBucket: BUCKET_NAME,
+    storageBucket,
     storagePath,
-    storageKey: null,
+    storageKey,
     originalFilename,
     mimeType,
     sizeBytes: buffer.length,
@@ -234,7 +262,7 @@ export async function downloadLineItemFile(
 
   // Prepress bucket path
   if (file.file.storageBucket) {
-    const bucket = objectStorageClient.bucket(file.file.storageBucket || BUCKET_NAME);
+    const bucket = getStorageClient().bucket(file.file.storageBucket || BUCKET_NAME);
     const gcsFile = bucket.file(file.file.storagePath);
     const [exists] = await gcsFile.exists();
     if (!exists) {
@@ -251,29 +279,19 @@ export async function downloadLineItemFile(
     return;
   }
 
-  const [attachment] = await db
-    .select({ storageProvider: orderAttachments.storageProvider })
-    .from(orderAttachments)
-    .where(
-      and(
-        eq(orderAttachments.orderId, file.file.orderId),
-        eq(orderAttachments.orderLineItemId, file.file.lineItemId),
-        eq(orderAttachments.fileUrl, storageKey)
-      )
-    )
-    .limit(1);
-
-  if (attachment?.storageProvider === "supabase" && isSupabaseConfigured()) {
-    const supabase = new SupabaseStorageService();
-    const signedUrl = await supabase.getSignedDownloadUrl(storageKey, 3600);
-    const upstream = await fetch(signedUrl);
-    if (!upstream.ok || !upstream.body) {
-      res.status(404).json({ error: "File not found in storage" });
-      return;
+  if (isSupabaseConfigured()) {
+    try {
+      const supabase = new SupabaseStorageService();
+      const signedUrl = await supabase.getSignedDownloadUrl(storageKey, 3600);
+      const upstream = await fetch(signedUrl);
+      if (upstream.ok && upstream.body) {
+        const { Readable } = await import("stream");
+        Readable.fromWeb(upstream.body as any).pipe(res);
+        return;
+      }
+    } catch {
+      // Fall through to local path.
     }
-    const { Readable } = await import("stream");
-    Readable.fromWeb(upstream.body as any).pipe(res);
-    return;
   }
 
   try {
@@ -344,19 +362,54 @@ export async function downloadOriginalsAsZip(
 
   // Add each file to the archive with job number prefix
   for (const fileRecord of files) {
-    const bucket = objectStorageClient.bucket(fileRecord.file.storageBucket || BUCKET_NAME);
-    const gcsFile = bucket.file(fileRecord.file.storagePath);
+    const entryName = `${jobNumber}  ${fileRecord.file.originalFilename}`;
 
-    const [exists] = await gcsFile.exists();
-    if (!exists) {
-      console.warn(`[PrepressFiles] File not found in storage: ${fileRecord.file.storagePath}`);
+    if (fileRecord.file.storageBucket) {
+      const bucket = getStorageClient().bucket(fileRecord.file.storageBucket || BUCKET_NAME);
+      const gcsFile = bucket.file(fileRecord.file.storagePath);
+      const [exists] = await gcsFile.exists();
+      if (!exists) {
+        console.warn(`[PrepressFiles] File not found in storage: ${fileRecord.file.storagePath}`);
+        continue;
+      }
+      archive.append(gcsFile.createReadStream(), { name: entryName });
       continue;
     }
 
-    // Archive entry name with job number prefix + TWO SPACES
-    const entryName = `${jobNumber}  ${fileRecord.file.originalFilename}`;
-    
-    archive.append(gcsFile.createReadStream(), { name: entryName });
+    const storageKey = (fileRecord.file.storageKey || fileRecord.file.storagePath || "").trim();
+    if (!storageKey) {
+      continue;
+    }
+
+    let appended = false;
+
+    if (isSupabaseConfigured()) {
+      try {
+        const supabase = new SupabaseStorageService();
+        const signedUrl = await supabase.getSignedDownloadUrl(storageKey, 3600);
+        const upstream = await fetch(signedUrl);
+        if (upstream.ok && upstream.body) {
+          const { Readable } = await import("stream");
+          archive.append(Readable.fromWeb(upstream.body as any), { name: entryName });
+          appended = true;
+        }
+      } catch {
+        // Fall through to local.
+      }
+    }
+
+    if (appended) continue;
+
+    try {
+      const { getAbsolutePath } = await import("./utils/fileStorage");
+      const fs = await import("fs");
+      const fsPromises = await import("fs/promises");
+      const abs = getAbsolutePath(storageKey);
+      await fsPromises.access(abs, fs.constants.R_OK);
+      archive.append(fs.createReadStream(abs), { name: entryName });
+    } catch {
+      console.warn(`[PrepressFiles] File not found in storage: ${storageKey}`);
+    }
   }
 
   await archive.finalize();
