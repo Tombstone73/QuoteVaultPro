@@ -38,16 +38,20 @@ const bugReportSchema = z.object({
   title:       z.string().min(3, "Title must be at least 3 characters").max(200),
   description: z.string().min(3, "Description must be at least 3 characters").max(5000),
   severity:    z.enum(["low", "medium", "high", "critical"]),
-  screenshot:  z.instanceof(File).optional().nullable(),
+  screenshots: z.array(z.instanceof(File)).max(5, "Maximum 5 screenshots allowed").optional(),
 });
 
 type BugReportFormValues = z.infer<typeof bugReportSchema>;
 
 // ─── API helpers ──────────────────────────────────────────────────────────────
 
-async function uploadScreenshot(file: File): Promise<string | null> {
+async function uploadScreenshots(files: File[]): Promise<string[]> {
+  if (files.length === 0) return [];
+
   const formData = new FormData();
-  formData.append("screenshot", file);
+  files.forEach((file) => {
+    formData.append("screenshots", file);
+  });
 
   const res = await fetch("/api/bug-reports/screenshot", {
     method: "POST",
@@ -61,7 +65,7 @@ async function uploadScreenshot(file: File): Promise<string | null> {
   }
 
   const body = await res.json();
-  return body.screenshotUrl ?? null;
+  return body.screenshotUrls ?? [];
 }
 
 async function createBugReport(payload: object): Promise<{ id: string }> {
@@ -100,7 +104,7 @@ interface BugReportModalProps {
 
 export function BugReportModal({ open, onClose }: BugReportModalProps) {
   const { toast } = useToast();
-  const [screenshotName, setScreenshotName] = React.useState<string | null>(null);
+  const [selectedFiles, setSelectedFiles] = React.useState<File[]>([]);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   const currentUrl = typeof window !== "undefined" ? window.location.href : "";
@@ -115,16 +119,16 @@ export function BugReportModal({ open, onClose }: BugReportModalProps) {
       title:       "",
       description: "",
       severity:    "medium",
-      screenshot:  null,
+      screenshots: [],
     },
   });
 
   const mutation = useMutation({
     mutationFn: async (values: BugReportFormValues) => {
-      let screenshotUrl: string | null = null;
+      let screenshotUrls: string[] = [];
 
-      if (values.screenshot) {
-        screenshotUrl = await uploadScreenshot(values.screenshot);
+      if (values.screenshots && values.screenshots.length > 0) {
+        screenshotUrls = await uploadScreenshots(values.screenshots);
       }
 
       return createBugReport({
@@ -134,13 +138,13 @@ export function BugReportModal({ open, onClose }: BugReportModalProps) {
         url:          currentUrl,
         screenWidth:  typeof window !== "undefined" ? window.screen.width : undefined,
         screenHeight: typeof window !== "undefined" ? window.screen.height : undefined,
-        screenshotUrl,
+        screenshotUrls,
       });
     },
     onSuccess: () => {
       toast({ title: "Bug report submitted", description: "Thank you! We'll look into it." });
       form.reset();
-      setScreenshotName(null);
+      setSelectedFiles([]);
       onClose();
     },
     onError: (err: Error) => {
@@ -149,21 +153,45 @@ export function BugReportModal({ open, onClose }: BugReportModalProps) {
   });
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0] ?? null;
-    form.setValue("screenshot", file);
-    setScreenshotName(file?.name ?? null);
+    const files = Array.from(e.target.files ?? []);
+    
+    // Validate file count
+    if (files.length + selectedFiles.length > 5) {
+      toast({
+        title: "Too many files",
+        description: "Maximum 5 screenshots allowed",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Validate file sizes
+    const invalidFiles = files.filter(f => f.size > 5 * 1024 * 1024);
+    if (invalidFiles.length > 0) {
+      toast({
+        title: "File too large",
+        description: "Each screenshot must be under 5 MB",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const newFiles = [...selectedFiles, ...files];
+    setSelectedFiles(newFiles);
+    form.setValue("screenshots", newFiles);
   };
 
-  const handleRemoveScreenshot = () => {
-    form.setValue("screenshot", null);
-    setScreenshotName(null);
+  const handleRemoveFile = (index: number) => {
+    const newFiles = selectedFiles.filter((_, i) => i !== index);
+    setSelectedFiles(newFiles);
+    form.setValue("screenshots", newFiles);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const handleClose = () => {
     if (!mutation.isPending) {
       form.reset();
-      setScreenshotName(null);
+      setSelectedFiles([]);
       onClose();
     }
   };
@@ -246,22 +274,40 @@ export function BugReportModal({ open, onClose }: BugReportModalProps) {
               )}
             />
 
-            {/* Screenshot (optional) */}
+            {/* Screenshots (optional, up to 5) */}
             <FormItem>
-              <FormLabel>Screenshot <span className="text-muted-foreground font-normal">(optional, max 5 MB)</span></FormLabel>
-              {screenshotName ? (
-                <div className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
-                  <span className="flex-1 truncate text-foreground">{screenshotName}</span>
-                  <button
-                    type="button"
-                    onClick={handleRemoveScreenshot}
-                    className="text-muted-foreground hover:text-foreground"
-                    aria-label="Remove screenshot"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
+              <FormLabel>Screenshots <span className="text-muted-foreground font-normal">(optional, max 5 files, 5 MB each)</span></FormLabel>
+              
+              {selectedFiles.length > 0 && (
+                <div className="grid grid-cols-2 gap-2 mb-2">
+                  {selectedFiles.map((file, index) => {
+                    const previewUrl = URL.createObjectURL(file);
+                    return (
+                      <div key={index} className="relative group rounded-md border border-border overflow-hidden bg-muted/30">
+                        <img
+                          src={previewUrl}
+                          alt={`Preview ${index + 1}`}
+                          className="w-full h-24 object-cover"
+                          onLoad={() => URL.revokeObjectURL(previewUrl)}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveFile(index)}
+                          className="absolute top-1 right-1 bg-background/90 hover:bg-background rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                          aria-label="Remove screenshot"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                        <div className="absolute bottom-0 left-0 right-0 bg-background/80 px-2 py-0.5 text-xs truncate">
+                          {file.name}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              ) : (
+              )}
+
+              {selectedFiles.length < 5 && (
                 <Button
                   type="button"
                   variant="outline"
@@ -270,13 +316,15 @@ export function BugReportModal({ open, onClose }: BugReportModalProps) {
                   onClick={() => fileInputRef.current?.click()}
                 >
                   <Upload className="h-4 w-4" />
-                  Attach screenshot
+                  {selectedFiles.length > 0 ? "Add more screenshots" : "Attach screenshots"}
                 </Button>
               )}
+
               <input
                 ref={fileInputRef}
                 type="file"
                 accept="image/png,image/jpeg,image/webp"
+                multiple
                 className="hidden"
                 onChange={handleFileChange}
               />

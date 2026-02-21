@@ -36,7 +36,8 @@ interface BugReportDetail extends BugReportListItem {
   userAgent: string;
   screenWidth: number | null;
   screenHeight: number | null;
-  screenshotUrl: string | null;
+  screenshotUrl: string | null; // DEPRECATED: backward compatibility
+  screenshotUrls: string[];
   metadata: Record<string, unknown>;
 }
 
@@ -399,19 +400,41 @@ export default function BugReportsPage() {
                   <p className="text-xs text-muted-foreground break-all">{detail.userAgent}</p>
                 </DetailSection>
 
-                {/* Screenshot */}
-                {detail.screenshotUrl && (
-                  <DetailSection label="Screenshot">
-                    <a href={detail.screenshotUrl} target="_blank" rel="noopener noreferrer">
-                      <img
-                        src={detail.screenshotUrl}
-                        alt="Bug report screenshot"
-                        className="max-w-full rounded-md border border-border object-contain"
-                        style={{ maxHeight: 320 }}
-                      />
-                    </a>
-                  </DetailSection>
-                )}
+                {/* Screenshots */}
+                {(() => {
+                  // Collect all screenshots (new array + legacy single screenshot for backward compatibility)
+                  const screenshots: string[] = [];
+                  if (detail.screenshotUrls && detail.screenshotUrls.length > 0) {
+                    screenshots.push(...detail.screenshotUrls);
+                  } else if (detail.screenshotUrl) {
+                    screenshots.push(detail.screenshotUrl);
+                  }
+
+                  if (screenshots.length === 0) return null;
+
+                  return (
+                    <DetailSection label={screenshots.length === 1 ? "Screenshot" : `Screenshots (${screenshots.length})`}>
+                      <div className={screenshots.length === 1 ? "" : "grid grid-cols-2 gap-2"}>
+                        {screenshots.map((url, index) => (
+                          <a
+                            key={index}
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="block"
+                          >
+                            <img
+                              src={url}
+                              alt={`Screenshot ${index + 1}`}
+                              className="max-w-full rounded-md border border-border object-contain hover:opacity-90 transition-opacity"
+                              style={{ maxHeight: screenshots.length === 1 ? 320 : 200 }}
+                            />
+                          </a>
+                        ))}
+                      </div>
+                    </DetailSection>
+                  );
+                })()}
 
                 {/* Metadata */}
                 {Object.keys(detail.metadata ?? {}).length > 0 && (
