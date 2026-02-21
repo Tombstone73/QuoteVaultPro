@@ -31,6 +31,9 @@ type QueueItem = {
   prepressNotes?: string | null;
   issueFlag?: boolean;
   issueType?: string | null;
+  thumbFileId?: string | null;
+  thumbSelectionReason?: "thumbFileId" | "original_fallback" | "final_fallback" | "none" | null;
+  thumbCandidateMimeType?: string | null;
   thumbnailUrl?: string | null;
   fileCounts: {
     originals: number;
@@ -142,7 +145,9 @@ export default function PrepressProductionPageV2() {
       const res = await fetch(`/api/prepress/queue?${params}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch queue");
       const data = await res.json();
-      console.log("[Prepress Queue]", data.data?.length || 0, "items");
+      if (import.meta.env.DEV) {
+        console.log("[Prepress Queue]", data.data?.length || 0, "items");
+      }
       return data.data as QueueItem[];
     },
     refetchInterval: 30000, // Refresh every 30s
@@ -751,7 +756,12 @@ export default function PrepressProductionPageV2() {
                     originalFiles.map((file) => (
                       <tr key={file.id} className="hover:bg-white/5 transition-colors group cursor-pointer">
                         <td className="px-4 py-3">
-                          <FileThumbnail filename={file.originalFilename} thumbnailUrl={file.thumbnailUrl || undefined} />
+                          <FileThumbnail
+                            fileId={file.id}
+                            filename={file.originalFilename}
+                            mimeType={file.mimeType}
+                            thumbnailUrl={file.thumbnailUrl || undefined}
+                          />
                         </td>
                         <td className="px-4 py-3 font-medium text-slate-200">{file.computedDisplayFilename || file.originalFilename}</td>
                         <td className="px-4 py-3 font-mono">{formatBytes(file.sizeBytes)}</td>
@@ -803,7 +813,12 @@ export default function PrepressProductionPageV2() {
                     finalFiles.map((file) => (
                       <tr key={file.id} className="hover:bg-white/5 transition-colors cursor-pointer">
                         <td className="px-4 py-3">
-                          <FileThumbnail filename={file.originalFilename} thumbnailUrl={file.thumbnailUrl || undefined} />
+                          <FileThumbnail
+                            fileId={file.id}
+                            filename={file.originalFilename}
+                            mimeType={file.mimeType}
+                            thumbnailUrl={file.thumbnailUrl || undefined}
+                          />
                         </td>
                         <td className="px-4 py-3">
                           <div className="space-y-1">
@@ -1155,6 +1170,16 @@ function JobCard({ item, isSelected, onClick }: { item: QueueItem; isSelected: b
 
   const config = statusConfig[item.status] || statusConfig.pending_prepress;
 
+  React.useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    console.log("[Prepress Queue Thumbnail Selection]", {
+      lineItemId: item.lineItemId,
+      thumbFileId: item.thumbFileId ?? null,
+      reason: item.thumbSelectionReason ?? "none",
+      mimeType: item.thumbCandidateMimeType ?? null,
+    });
+  }, [item.lineItemId, item.thumbFileId, item.thumbSelectionReason, item.thumbCandidateMimeType]);
+
   return (
     <div
       onClick={onClick}
@@ -1165,14 +1190,13 @@ function JobCard({ item, isSelected, onClick }: { item: QueueItem; isSelected: b
       )}
     >
       <div className="relative w-16 h-16 flex-shrink-0 rounded-lg border border-[#2d3748] overflow-hidden bg-[#111921] flex items-center justify-center group">
-        {item.thumbnailUrl ? (
-          <img src={item.thumbnailUrl} alt={item.productName} className="absolute inset-0 w-full h-full object-cover" loading="lazy" />
-        ) : (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <ImageIcon className="w-8 h-8 text-slate-700" />
-          </div>
-        )}
-        {!item.thumbnailUrl && <div className="relative z-10 w-full h-full bg-slate-600"></div>}
+        <FileThumbnail
+          fileId={item.thumbFileId || undefined}
+          filename={item.productName || "preview"}
+          mimeType={item.thumbCandidateMimeType || undefined}
+          thumbnailUrl={item.thumbnailUrl || undefined}
+          compact
+        />
         {item.fileCounts && (item.fileCounts.originals > 0 || item.fileCounts.finals > 0) && (
           <div className="absolute bottom-0 right-0 bg-[#1773cf] text-white text-[9px] font-black px-1 rounded-tl-sm shadow-lg z-20">
             +{item.fileCounts.originals + item.fileCounts.finals}
@@ -1208,21 +1232,53 @@ function JobCard({ item, isSelected, onClick }: { item: QueueItem; isSelected: b
   );
 }
 
-function FileThumbnail({ filename, thumbnailUrl }: { filename: string; thumbnailUrl?: string }) {
-  const isPdf = filename.toLowerCase().endsWith(".pdf");
+function FileThumbnail({
+  fileId,
+  filename,
+  mimeType,
+  thumbnailUrl,
+  compact = false,
+}: {
+  fileId?: string;
+  filename: string;
+  mimeType?: string;
+  thumbnailUrl?: string;
+  compact?: boolean;
+}) {
+  const isImage = !!mimeType?.startsWith("image/");
+  const isPdf = !!mimeType?.includes("pdf") || filename.toLowerCase().endsWith(".pdf");
+
+  const { data: resolvedThumbnailUrl } = useQuery({
+    queryKey: ["/api/prepress/files", fileId, "thumbnail"],
+    queryFn: async () => {
+      if (!fileId) return null as string | null;
+      const res = await fetch(`/api/prepress/files/${fileId}/thumbnail`, { credentials: "include" });
+      if (!res.ok) return null as string | null;
+      const json = await res.json().catch(() => ({}));
+      return (json?.data?.thumbnailUrl as string | null) || null;
+    },
+    enabled: !!fileId && isImage,
+    staleTime: 60_000,
+    gcTime: 5 * 60_000,
+    retry: 1,
+  });
+
+  const finalThumbnailUrl = thumbnailUrl || resolvedThumbnailUrl || undefined;
+  const baseClass = compact ? "w-16 h-16" : "w-20 h-20";
 
   return (
-    <div className="relative w-20 h-20 rounded-lg border border-[#2d3748] overflow-hidden bg-[#111921] flex items-center justify-center group">
-      {thumbnailUrl ? (
-        <img src={thumbnailUrl} alt={filename} className="absolute inset-0 w-full h-full object-cover" loading="lazy" />
+    <div className={cn("relative rounded-lg border border-[#2d3748] overflow-hidden bg-[#111921] flex items-center justify-center group", baseClass)}>
+      {finalThumbnailUrl ? (
+        <img src={finalThumbnailUrl} alt={filename} className="absolute inset-0 w-full h-full object-cover" loading="lazy" />
       ) : isPdf ? (
-        <div className="absolute inset-0 bg-slate-600 flex items-center justify-center">
-          <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <div className="absolute inset-0 bg-slate-700/60 flex items-center justify-center">
+          <svg className={cn(compact ? "w-6 h-6" : "w-8 h-8", "text-white")} fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
           </svg>
+          <span className="absolute bottom-1 text-[9px] font-bold text-white/90">PDF</span>
         </div>
       ) : (
-        <svg className="w-8 h-8 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg className={cn(compact ? "w-6 h-6" : "w-8 h-8", "text-slate-500")} fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
         </svg>
       )}
