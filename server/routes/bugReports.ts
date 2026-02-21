@@ -61,7 +61,8 @@ const createBugReportSchema = z.object({
   url:              z.string().min(1).max(2000),
   screenWidth:      z.number().int().positive().optional(),
   screenHeight:     z.number().int().positive().optional(),
-  screenshotUrl:    z.string().url().max(4000).optional().nullable(),
+  screenshotUrl:    z.string().url().max(4000).optional().nullable(), // DEPRECATED: backward compatibility
+  screenshotUrls:   z.array(z.string().url().max(4000)).max(5).optional(),
   metadata:         z.record(z.unknown()).optional(),
 });
 
@@ -156,8 +157,9 @@ export function registerBugReportRoutes(
 
   // ── POST /screenshot ─────────────────────────────────────────────────────────
   /**
-   * Upload a screenshot image. Returns { screenshotUrl }.
-   * Accepts multipart/form-data with a single "screenshot" file field.
+   * Upload screenshot images (up to 5). Returns { screenshotUrls: string[] }.
+   * Accepts multipart/form-data with "screenshots" file field(s).
+   * Each file must be under 5MB.
    */
   router.post("/screenshot", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
     const orgId = getRequestOrganizationId(req);
@@ -176,19 +178,24 @@ export function registerBugReportRoutes(
     };
 
     try {
-      const bb = BusBoy({ headers: req.headers, limits: { files: 1, fileSize: MAX_SCREENSHOT_BYTES + 1 } });
+      const bb = BusBoy({ headers: req.headers, limits: { files: 5, fileSize: MAX_SCREENSHOT_BYTES + 1 } });
 
-      let fileReceived = false;
+      const uploadedUrls: string[] = [];
+      const uploadErrors: string[] = [];
+      let filesProcessed = 0;
+      let totalFiles = 0;
 
       bb.on("file", async (fieldname, file, info) => {
         const { filename, mimeType } = info;
+        totalFiles++;
 
         if (!ALLOWED_MIME_TYPES.has(mimeType)) {
           file.resume(); // drain
-          return respond(400, { success: false, message: "Only PNG, JPEG, and WebP images are allowed." });
+          uploadErrors.push(`File ${filename}: Only PNG, JPEG, and WebP images are allowed.`);
+          filesProcessed++;
+          return;
         }
 
-        fileReceived = true;
         const chunks: Buffer[] = [];
         let totalBytes = 0;
         let tooLarge = false;
@@ -209,30 +216,44 @@ export function registerBugReportRoutes(
 
         file.on("close", async () => {
           if (tooLarge) {
-            return respond(413, { success: false, message: "Screenshot must be under 5 MB." });
+            uploadErrors.push(`File ${filename}: Must be under 5 MB.`);
+            filesProcessed++;
+            return;
           }
 
           try {
             const buffer = Buffer.concat(chunks);
             const ext = path.extname(filename || "screenshot.png") || ".png";
-            const screenshotUrl = await storeScreenshot(orgId, buffer, mimeType, ext, req);
-            respond(200, { success: true, screenshotUrl });
+            const url = await storeScreenshot(orgId, buffer, mimeType, ext, req);
+            uploadedUrls.push(url);
           } catch (err) {
             console.error("[BugReports] Screenshot upload failed:", err);
-            respond(500, { success: false, message: "Screenshot upload failed." });
+            uploadErrors.push(`File ${filename}: Upload failed.`);
           }
+          filesProcessed++;
         });
 
         file.on("error", (err: Error) => {
           console.error("[BugReports] File stream error:", err);
-          respond(500, { success: false, message: "File read error." });
+          uploadErrors.push(`File ${filename}: Read error.`);
+          filesProcessed++;
         });
       });
 
       bb.on("finish", () => {
-        if (!fileReceived && !resolved) {
-          respond(400, { success: false, message: "No file provided. Include a 'screenshot' field." });
-        }
+        // Wait for all file processing to complete
+        const checkComplete = setInterval(() => {
+          if (filesProcessed >= totalFiles && !resolved) {
+            clearInterval(checkComplete);
+            if (uploadedUrls.length === 0 && uploadErrors.length === 0) {
+              respond(400, { success: false, message: "No files provided. Include 'screenshots' field(s)." });
+            } else if (uploadedUrls.length > 0) {
+              respond(200, { success: true, screenshotUrls: uploadedUrls, errors: uploadErrors.length > 0 ? uploadErrors : undefined });
+            } else {
+              respond(400, { success: false, message: "All uploads failed.", errors: uploadErrors });
+            }
+          }
+        }, 50);
       });
 
       bb.on("error", (err: Error) => {
@@ -258,12 +279,20 @@ export function registerBugReportRoutes(
       });
     }
 
-    const { title, description, severity, url, screenWidth, screenHeight, screenshotUrl, metadata } = parse.data;
+    const { title, description, severity, url, screenWidth, screenHeight, screenshotUrl, screenshotUrls, metadata } = parse.data;
 
     const orgId = getRequestOrganizationId(req);
     const userId = getUserId(req.user) ?? null;
     const email = getUserEmail(req.user);
     const userAgent = (req.get("user-agent") ?? "").slice(0, 1024);
+
+    // Merge screenshotUrls (new) and screenshotUrl (legacy) into screenshotUrls array
+    let finalScreenshotUrls: string[] = [];
+    if (screenshotUrls && screenshotUrls.length > 0) {
+      finalScreenshotUrls = screenshotUrls;
+    } else if (screenshotUrl) {
+      finalScreenshotUrls = [screenshotUrl];
+    }
 
     try {
       const [created] = await db
@@ -279,7 +308,8 @@ export function registerBugReportRoutes(
           userAgent,
           screenWidth: screenWidth ?? null,
           screenHeight: screenHeight ?? null,
-          screenshotUrl: screenshotUrl ?? null,
+          screenshotUrl: screenshotUrl ?? null, // Keep for backward compatibility
+          screenshotUrls: finalScreenshotUrls,
           status: "open",
           metadata: (metadata as Record<string, unknown>) ?? {},
         })

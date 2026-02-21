@@ -4049,7 +4049,8 @@ export const bugReports = pgTable("bug_reports", {
   userAgent: text("user_agent").notNull(),
   screenWidth: integer("screen_width"),
   screenHeight: integer("screen_height"),
-  screenshotUrl: text("screenshot_url"),
+  screenshotUrl: text("screenshot_url"), // DEPRECATED: use screenshotUrls instead
+  screenshotUrls: text("screenshot_urls").array().notNull().default(sql`'{}'::text[]`),
   status: text("status").notNull().default('open'), // 'open' | 'in_review' | 'resolved' | 'closed'
   metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
