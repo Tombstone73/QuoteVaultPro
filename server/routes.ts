@@ -11443,6 +11443,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         text: z.string().trim().min(1).max(500),
         qty: z.coerce.number().optional(),
         unit: z.string().trim().max(32).optional(),
+        comment: z.string().trim().min(1, "Reason is required").max(2000),
       });
       const parsed = mediaSchema.safeParse(req.body || {});
       if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });

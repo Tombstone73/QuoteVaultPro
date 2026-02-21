@@ -374,7 +374,7 @@ export function useSetProductionMediaUsed(jobId: string) {
   const qc = useQueryClient();
   const { toast } = useToast();
   return useMutation({
-    mutationFn: async (data: { text: string; qty?: number; unit?: string }) => {
+    mutationFn: async (data: { text: string; qty?: number; unit?: string; comment: string }) => {
       const res = await fetch(`/api/production/jobs/${jobId}/media-used`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -387,7 +387,7 @@ export function useSetProductionMediaUsed(jobId: string) {
     },
     onSuccess: () => {
       invalidateProduction(qc, jobId);
-      toast({ title: "Media used saved" });
+      toast({ title: "Waste logged" });
     },
     onError: (e: Error) => {
       toast({ title: "Save failed", description: e.message, variant: "destructive" });
