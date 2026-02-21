@@ -105,6 +105,15 @@ type UploadProgress = {
   progress: number;
 };
 
+type PlannedMaterial = {
+  materialId: string;
+  materialName?: string;
+  qty: number;
+  uom: "sqft" | "ft" | "each";
+  basis: string;
+  sources: Array<{ optionLabel: string; choiceLabel: string }>;
+};
+
 // Utility to format bytes
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -194,6 +203,23 @@ export default function PrepressProductionPageV2() {
       return data.data as SpecSheetData;
     },
     enabled: !!selectedLineItemId && specSheetOpen,
+  });
+
+  const { data: plannedMaterialsData, isLoading: plannedMaterialsLoading } = useQuery({
+    queryKey: ["/api/prepress/line-items", selectedLineItemId, "materials-planned"],
+    queryFn: async () => {
+      if (!selectedLineItemId) return { materials: [] as PlannedMaterial[], message: undefined as string | undefined };
+      const res = await fetch(`/api/prepress/line-items/${selectedLineItemId}/materials-planned`, { credentials: "include" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.message || "Failed to fetch planned materials");
+      }
+      return {
+        materials: (data?.data?.materials || []) as PlannedMaterial[],
+        message: typeof data?.message === "string" ? data.message : undefined,
+      };
+    },
+    enabled: !!selectedLineItemId,
   });
 
   // Mutations
@@ -361,6 +387,8 @@ export default function PrepressProductionPageV2() {
   const originalFiles = filesData?.originals || [];
   const finalFiles = filesData?.finals || [];
   const hasFinalFiles = finalFiles.length > 0;
+  const plannedMaterials = plannedMaterialsData?.materials || [];
+  const plannedMaterialsMessage = plannedMaterialsData?.message;
   const canComplete = hasFinalFiles && !!selectedItem?.sessionId;
   // PROMPT B: Enable "Send to Print Queue" when prepress is complete and has final files
   const canSendToPrint =
@@ -387,6 +415,15 @@ export default function PrepressProductionPageV2() {
       optionsRows: selectedItem.optionsRows?.length ?? 0,
     });
   }, [selectedItem?.lineItemId, selectedItem?.optionsRows]);
+
+  React.useEffect(() => {
+    if (!import.meta.env.DEV || !selectedItem) return;
+    console.log("[Prepress Materials Needed]", {
+      lineItemId: selectedItem.lineItemId,
+      plannedMaterials: plannedMaterials.length,
+      message: plannedMaterialsMessage || null,
+    });
+  }, [selectedItem?.lineItemId, plannedMaterials.length, plannedMaterialsMessage]);
 
   // Handlers
   const handleRefresh = () => {
@@ -745,6 +782,37 @@ export default function PrepressProductionPageV2() {
                   {selectedItem?.rush ? "RUSH" : "Normal"}
                 </p>
               </div>
+            </div>
+
+            <div className="mt-4 bg-[#1a232e] p-5 border border-[#2d3748] rounded-lg shadow-sm">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Materials Needed</p>
+                {plannedMaterialsLoading ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
+              </div>
+
+              {plannedMaterials.length > 0 ? (
+                <ul className="space-y-1.5 text-sm">
+                  {plannedMaterials.map((material, index) => (
+                    <li key={`${material.materialId}-${material.basis}-${index}`} className="flex items-center justify-between gap-3">
+                      <span className="font-medium text-slate-200">
+                        {material.materialName || `Material ${material.materialId}`}
+                      </span>
+                      <span className="text-slate-300 font-mono">
+                        {material.qty} {material.uom}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="space-y-1">
+                  <p className="text-sm text-slate-400">No materials computed</p>
+                  <p className="text-xs text-slate-500">Add inventory materials to PBV2 choices or set size/options</p>
+                </div>
+              )}
+
+              {plannedMaterialsMessage ? (
+                <p className="text-xs text-amber-300 mt-2">{plannedMaterialsMessage}</p>
+              ) : null}
             </div>
           </section>
 
