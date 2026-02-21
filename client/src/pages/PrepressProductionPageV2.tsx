@@ -6,6 +6,8 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { formatDistanceToNow } from "date-fns";
@@ -646,18 +648,27 @@ export default function PrepressProductionPageV2() {
                 <Upload className="w-6 h-6 text-[#1773cf]" />
               </div>
               <p className="text-sm font-semibold mb-1">Drag and drop final production files here</p>
-              <p className="text-xs text-slate-500 mb-6">PDF, TIF, JPG, or EPS up to 2GB</p>
+              <p className="text-xs text-slate-500 mb-4">PDF, TIF, JPG, or EPS up to 2GB</p>
+              
+              <div className="mb-4">
+                <p className="text-[10px] uppercase font-bold text-slate-500 mb-2 tracking-wider">File Type</p>
+                <RadioGroup value={selectedTag} onValueChange={setSelectedTag} className="flex items-center gap-6">
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="final_print" id="tag-print" className="border-[#2d3748] text-[#1773cf]" />
+                    <Label htmlFor="tag-print" className="text-sm font-medium text-slate-300 cursor-pointer">Print</Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="proof_only" id="tag-proof" className="border-[#2d3748] text-[#1773cf]" />
+                    <Label htmlFor="tag-proof" className="text-sm font-medium text-slate-300 cursor-pointer">Proof</Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="cut_file" id="tag-cut" className="border-[#2d3748] text-[#1773cf]" />
+                    <Label htmlFor="tag-cut" className="text-sm font-medium text-slate-300 cursor-pointer">Cut File</Label>
+                  </div>
+                </RadioGroup>
+              </div>
+              
               <div className="flex items-center gap-4">
-                <Select value={selectedTag} onValueChange={setSelectedTag}>
-                  <SelectTrigger className="bg-[#111921] border-[#2d3748] rounded-lg text-xs py-2 px-4 focus:ring-[#1773cf] focus:border-[#1773cf] w-48">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="final_print">Select Tag: FINAL_PRINT</SelectItem>
-                    <SelectItem value="proof_only">PROOF_ONLY</SelectItem>
-                    <SelectItem value="cut_file">CUT_FILE</SelectItem>
-                  </SelectContent>
-                </Select>
                 <input
                   ref={fileInputRef}
                   type="file"
