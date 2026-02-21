@@ -67,8 +67,12 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
     if (headerOrgId) {
       // Verify user has access to this organization
       const membership = await db
-        .select()
+        .select({
+          role: userOrganizations.role,
+          deleteState: organizations.deleteState,
+        })
         .from(userOrganizations)
+        .innerJoin(organizations, eq(userOrganizations.organizationId, organizations.id))
         .where(
           and(
             eq(userOrganizations.userId, user.id),
@@ -79,6 +83,15 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
       
       if (membership.length === 0) {
         return res.status(403).json({ message: "Forbidden - No access to this organization" });
+      }
+
+      // Block access to soft-deleted or pending-delete orgs
+      if (membership[0].deleteState !== 'active') {
+        return res.status(403).json({ 
+          code: 'ORG_DISABLED_OR_DELETED',
+          message: "This organization is not accessible",
+          deleteState: membership[0].deleteState,
+        });
       }
       
       req.organizationId = headerOrgId;
@@ -99,6 +112,7 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
           organizationId: userOrganizations.organizationId,
           slug: organizations.slug,
           orgRole: userOrganizations.role,
+          deleteState: organizations.deleteState,
         })
         .from(userOrganizations)
         .innerJoin(organizations, eq(userOrganizations.organizationId, organizations.id))
@@ -111,6 +125,15 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
         .limit(1);
 
       if (lastActiveMembership) {
+        // Block access to soft-deleted or pending-delete orgs
+        if (lastActiveMembership.deleteState !== 'active') {
+          return res.status(403).json({ 
+            code: 'ORG_DISABLED_OR_DELETED',
+            message: "This organization is not accessible",
+            deleteState: lastActiveMembership.deleteState,
+          });
+        }
+
         req.organizationId = lastActiveMembership.organizationId;
         req.organizationSlug = lastActiveMembership.slug;
         req.orgRole = lastActiveMembership.orgRole;
@@ -125,6 +148,7 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
         organizationId: userOrganizations.organizationId,
         slug: organizations.slug,
         orgRole: userOrganizations.role,
+        deleteState: organizations.deleteState,
       })
       .from(userOrganizations)
       .innerJoin(organizations, eq(userOrganizations.organizationId, organizations.id))
@@ -137,6 +161,15 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
       .limit(1);
 
     if (defaultOrg.length > 0) {
+      // Block access to soft-deleted or pending-delete orgs
+      if (defaultOrg[0].deleteState !== 'active') {
+        return res.status(403).json({ 
+          code: 'ORG_DISABLED_OR_DELETED',
+          message: "This organization is not accessible",
+          deleteState: defaultOrg[0].deleteState,
+        });
+      }
+
       req.organizationId = defaultOrg[0].organizationId;
       req.organizationSlug = defaultOrg[0].slug;
       req.orgRole = defaultOrg[0].orgRole;
@@ -149,25 +182,29 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
         organizationId: userOrganizations.organizationId,
         slug: organizations.slug,
         orgRole: userOrganizations.role,
+        deleteState: organizations.deleteState,
       })
       .from(userOrganizations)
       .innerJoin(organizations, eq(userOrganizations.organizationId, organizations.id))
       .where(eq(userOrganizations.userId, user.id));
 
-    if (allOrgs.length === 1) {
-      req.organizationId = allOrgs[0].organizationId;
-      req.organizationSlug = allOrgs[0].slug;
-      req.orgRole = allOrgs[0].orgRole;
+    // Filter out soft-deleted/pending orgs
+    const activeOrgs = allOrgs.filter(o => o.deleteState === 'active');
+
+    if (activeOrgs.length === 1) {
+      req.organizationId = activeOrgs[0].organizationId;
+      req.organizationSlug = activeOrgs[0].slug;
+      req.orgRole = activeOrgs[0].orgRole;
       // Persist so subsequent requests skip this logic
       await db
         .update(users)
-        .set({ lastActiveOrgId: allOrgs[0].organizationId })
+        .set({ lastActiveOrgId: activeOrgs[0].organizationId })
         .where(eq(users.id, user.id))
         .catch((e) => console.error('[TenantContext] Failed to persist lastActiveOrgId:', e));
       return next();
     }
 
-    if (allOrgs.length > 1) {
+    if (activeOrgs.length > 1) {
       // Multiple orgs — user must pick one
       return res.status(409).json({
         success: false,
