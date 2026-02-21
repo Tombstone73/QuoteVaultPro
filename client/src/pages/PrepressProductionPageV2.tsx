@@ -98,8 +98,8 @@ export default function PrepressProductionPageV2() {
       const res = await fetch(`/api/prepress/queue?${params}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch queue");
       const data = await res.json();
-      console.log("[Prepress Queue]", data.items?.length || 0, "items");
-      return data.items as QueueItem[];
+      console.log("[Prepress Queue]", data.data?.length || 0, "items");
+      return data.data as QueueItem[];
     },
     refetchInterval: 30000, // Refresh every 30s
   });
