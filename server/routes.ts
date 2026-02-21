@@ -10,7 +10,7 @@ import busboy from "busboy";
 import { storage } from "./storage";
 import * as prepressFileService from "./prepressFileService";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, authIdentities, bugReports, prepressSessions, lineItemFiles } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, authIdentities, bugReports, prepressSessions, lineItemFiles, reprintRequests } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, asc, inArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -11355,6 +11355,79 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const status = error?.statusCode || 500;
       console.error("Error recording reprint:", error);
       res.status(status).json({ error: error?.message || "Failed to record reprint" });
+    }
+  });
+
+  // PROMPT E: POST /api/production/line-item/:lineItemId/reprint
+  // Creates a detailed reprint request record from the production board.
+  app.post("/api/production/line-item/:lineItemId/reprint", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const { lineItemId } = req.params;
+
+      const bodySchema = z.object({
+        fileId: z.string().optional(),
+        filename: z.string().trim().min(1, "Filename required").max(512),
+        quantity: z.coerce.number().positive("Quantity must be greater than 0"),
+        units: z.string().trim().min(1, "Units required").max(64),
+        reason: z.string().trim().min(1, "Reason required").max(2000),
+        noPrintsCompletedYet: z.boolean().optional().default(false),
+      });
+      const parsed = bodySchema.safeParse(req.body || {});
+      if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });
+
+      const { fileId, filename, quantity, units, reason, noPrintsCompletedYet } = parsed.data;
+
+      // Verify line item belongs to this org
+      const [lineItem] = await db
+        .select({ id: orderLineItems.id, orderId: orderLineItems.orderId })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+      if (!lineItem) return res.status(404).json({ error: "Line item not found" });
+
+      // Insert reprint request
+      const [reprintReq] = await db
+        .insert(reprintRequests)
+        .values({
+          organizationId,
+          lineItemId,
+          fileId: fileId || null,
+          filename,
+          quantity: String(quantity),
+          units,
+          reason,
+          noPrintsCompletedYet: noPrintsCompletedYet ?? false,
+          createdByUserId: userId,
+          status: 'open',
+        })
+        .returning({ id: reprintRequests.id });
+
+      // Audit log
+      await db.insert(auditLogs).values({
+        organizationId,
+        userId,
+        userName: (req.user as any)?.email || (req.user as any)?.name || null,
+        actionType: "CREATE",
+        entityType: "reprint_request",
+        entityId: reprintReq?.id || lineItemId,
+        entityName: `Reprint – ${filename}`,
+        description: "Reprint request created from production board",
+        newValues: { filename, quantity, units, reason, noPrintsCompletedYet },
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+      } as any);
+
+      res.json({ success: true, data: { id: reprintReq?.id } });
+    } catch (error: any) {
+      console.error("[Reprint Request] Error:", error);
+      res.status(500).json({ error: error?.message || "Failed to create reprint request" });
     }
   });
 

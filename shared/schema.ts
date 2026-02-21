@@ -4205,6 +4205,43 @@ export type InsertLineItemFile = z.infer<typeof insertLineItemFileSchema>;
 export type UpdateLineItemFile = z.infer<typeof updateLineItemFileSchema>;
 
 // ============================================================
+// REPRINT REQUESTS
+// ============================================================
+
+export const reprintRequests = pgTable("reprint_requests", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()::text`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'restrict' }),
+  fileId: varchar("file_id").references(() => lineItemFiles.id, { onDelete: 'set null' }),
+  filename: text("filename").notNull(),
+  quantity: decimal("quantity", { precision: 10, scale: 2 }).notNull(),
+  units: text("units").notNull(),
+  reason: text("reason").notNull(),
+  noPrintsCompletedYet: boolean("no_prints_completed_yet").notNull().default(false),
+  createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  status: text("status").notNull().default('open'),
+}, (table) => [
+  index("reprint_requests_org_idx").on(table.organizationId),
+  index("reprint_requests_line_item_idx").on(table.lineItemId),
+  index("reprint_requests_status_idx").on(table.status),
+  index("reprint_requests_org_status_idx").on(table.organizationId, table.status),
+]);
+
+export type ReprintRequest = typeof reprintRequests.$inferSelect;
+export const insertReprintRequestSchema = createInsertSchema(reprintRequests)
+  .omit({ id: true, createdAt: true })
+  .extend({
+    filename: z.string().trim().min(1, "Filename required").max(512),
+    quantity: z.coerce.number().positive("Quantity must be greater than 0"),
+    units: z.string().trim().min(1, "Units required").max(64),
+    reason: z.string().trim().min(1, "Reason required").max(2000),
+    noPrintsCompletedYet: z.boolean().optional().default(false),
+    fileId: z.string().optional(),
+    status: z.enum(["open", "acknowledged", "closed"]).optional().default("open"),
+  });
+
+// ============================================================
 // PREPRESS TABLES (imported from server/prepress/schema.ts)
 // ============================================================
 // Re-export prepress tables so they're available in db.query
