@@ -704,8 +704,8 @@ function ActionRail({
           <Button className="w-full justify-start bg-red-600 hover:bg-red-600/90 text-white" onClick={() => setWasteOpen(true)} disabled={isBusy}>
             <Undo2 className="w-4 h-4 mr-2" /> LOG WASTE
           </Button>
-          <Button className="w-full justify-start bg-orange-600 hover:bg-orange-600/90 text-white" onClick={() => setSendToPrepressOpen(true)} disabled={isBusy || !job.lineItemId}>
-            <Square className="w-4 h-4 mr-2" /> SEND TO PREPRESS
+          <Button className="w-full justify-start whitespace-nowrap bg-orange-600 hover:bg-orange-600/90 text-white" onClick={() => setSendToPrepressOpen(true)} disabled={isBusy || !job.lineItemId}>
+            <Square className="w-4 h-4 mr-2 shrink-0" /> SEND TO PREPRESS
           </Button>
         </div>
 
