@@ -91,33 +91,32 @@ export default function AdminTools() {
     },
   });
 
-  // Delete organization mutation
+  // Delete organization mutation (actually requests deletion)
   const deleteMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (reason?: string) => {
       const response = await fetch("/api/admin/org", {
         method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason }),
         credentials: "include",
       });
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.message || "Failed to delete organization");
+        throw new Error(error.message || "Failed to request organization deletion");
       }
       return response.json();
     },
     onSuccess: () => {
       toast({
-        title: "Organization deleted",
-        description: "This organization and all its data have been permanently deleted.",
+        title: "Deletion requested",
+        description: "A platform administrator must finalize this action. You will be notified when it's complete.",
       });
-      // Redirect to login after deletion
-      setTimeout(() => {
-        window.location.href = "/login";
-      }, 2000);
+      queryClient.invalidateQueries();
     },
     onError: (error: Error) => {
       toast({
         variant: "destructive",
-        title: "Delete failed",
+        title: "Request failed",
         description: error.message,
       });
     },
@@ -329,9 +328,9 @@ export default function AdminTools() {
             {/* Delete Organization */}
             <div className="flex items-start justify-between p-4 border border-destructive/50 rounded-lg bg-destructive/5">
               <div className="space-y-1 flex-1">
-                <h4 className="text-sm font-semibold text-destructive">Delete Organization</h4>
+                <h4 className="text-sm font-semibold text-destructive">Request Organization Deletion</h4>
                 <p className="text-xs text-titan-text-secondary">
-                  Permanently deletes this organization and all associated data.
+                  Submits a deletion request. A platform administrator must finalize this action.
                 </p>
               </div>
               <Button
@@ -342,7 +341,7 @@ export default function AdminTools() {
                 className="ml-4 shrink-0"
               >
                 <Trash2 className="h-4 w-4 mr-1" />
-                Delete
+                Request Deletion
               </Button>
             </div>
           </div>
@@ -377,12 +376,12 @@ export default function AdminTools() {
       <DestructiveActionModal
         open={deleteModalOpen}
         onOpenChange={setDeleteModalOpen}
-        title="Delete Organization"
-        description="This will permanently delete this organization and ALL associated data including users, customers, orders, invoices, and all other records. This action cannot be undone."
+        title="Request Organization Deletion"
+        description="This will submit a deletion request for platform administrator review. The organization will enter a pending state and a platform admin must finalize the deletion before it takes effect."
         confirmationSlug={orgSlug}
-        confirmButtonText="Delete Organization"
+        confirmButtonText="Request Deletion"
         onConfirm={async () => {
-          await deleteMutation.mutateAsync();
+          await deleteMutation.mutateAsync(undefined);
         }}
       />
     </div>

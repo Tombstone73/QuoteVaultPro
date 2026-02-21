@@ -24,6 +24,8 @@ import { authIdentities, users } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 import { writePlatformAuditLog } from "../services/platformAuditLogService";
 import { createOrgWithInvite, slugify, DuplicateInviteError } from "../services/orgOnboardingService";
+import { organizations, auditLogs } from "@shared/schema";
+import { notifyDevCritical, notifyDev } from "../services/devNotify";
 
 // ─── Session type augmentation ────────────────────────────────────────────────
 declare module "express-session" {
@@ -280,6 +282,241 @@ export function registerPlatformRoutes(app: import("express").Express): void {
         }
         console.error("[platform/orgs] create error:", err);
         return res.status(500).json({ success: false, message: "Failed to create organization." });
+      }
+    }
+  );
+
+  /**
+   * POST /api/platform/orgs/:orgId/finalize-delete
+   * Platform admin finalizes organization deletion (soft delete).
+   * Requires step-up auth + platform admin.
+   */
+  router.post(
+    "/orgs/:orgId/finalize-delete",
+    requirePlatformAdminOr404,
+    requireStepUp,
+    async (req: Request, res: Response) => {
+      const { orgId } = req.params;
+      const userId = getUserId(req.user);
+      const actorEmail = (req.user as any)?.email || "unknown";
+
+      if (!userId) {
+        return res.status(401).json({ success: false, message: "Unauthorized" });
+      }
+
+      try {
+        // Get org details
+        const [org] = await db
+          .select({
+            id: organizations.id,
+            slug: organizations.slug,
+            name: organizations.name,
+            deleteState: organizations.deleteState,
+          })
+          .from(organizations)
+          .where(eq(organizations.id, orgId))
+          .limit(1);
+
+        if (!org) {
+          return res.status(404).json({ success: false, message: "Organization not found" });
+        }
+
+        // Validate org is in pending_delete state
+        if (org.deleteState !== 'pending_delete') {
+          return res.status(409).json({
+            success: false,
+            code: "ORG_NOT_PENDING_DELETE",
+            message: `Organization is in ${org.deleteState} state, must be pending_delete to finalize`,
+            deleteState: org.deleteState,
+          });
+        }
+
+        // Extract IP and user agent
+        const ip = req.ip || req.socket.remoteAddress || 'unknown';
+        const userAgent = req.get('user-agent') || 'unknown';
+
+        // Update org to soft_deleted state
+        await db
+          .update(organizations)
+          .set({
+            deleteState: 'soft_deleted',
+            deletedAt: new Date(),
+            deletedByUserId: userId,
+            deleteConfirmedAt: new Date(),
+            deleteConfirmedByUserId: userId,
+            deletedIp: ip,
+            deletedUserAgent: userAgent,
+          })
+          .where(eq(organizations.id, orgId));
+
+        // Audit log
+        await db.insert(auditLogs).values({
+          organizationId: orgId,
+          userId,
+          actionType: "org.delete.finalized",
+          entityType: "organization",
+          entityId: orgId,
+          description: `Organization "${org.slug}" soft-deleted by platform admin`,
+          newValues: {
+            deleteState: 'soft_deleted',
+            orgSlug: org.slug,
+            orgName: org.name,
+            ip,
+            userAgent,
+          },
+        });
+
+        // Platform audit log
+        await writePlatformAuditLog({
+          action: "org.delete.finalized",
+          actorUserId: userId,
+          actorEmail,
+          req,
+          metadata: {
+            orgId,
+            orgSlug: org.slug,
+            orgName: org.name,
+          },
+        });
+
+        // Notify devs (critical priority)
+        await notifyDevCritical(
+          'org.delete.finalized',
+          `Organization "${org.slug}" (${org.name}) soft-deleted by platform admin ${actorEmail}`,
+          {
+            orgId,
+            orgSlug: org.slug,
+            orgName: org.name,
+            platformAdminId: userId,
+            platformAdminEmail: actorEmail,
+          }
+        );
+
+        return res.json({
+          success: true,
+          message: `Organization "${org.slug}" has been soft-deleted and is no longer accessible`,
+          deleteState: 'soft_deleted',
+        });
+      } catch (error: any) {
+        console.error("[Platform] Finalize delete error:", error);
+        return res.status(500).json({ success: false, message: "Failed to finalize organization deletion" });
+      }
+    }
+  );
+
+  /**
+   * POST /api/platform/orgs/:orgId/restore
+   * Platform admin restores soft-deleted organization.
+   * Requires step-up auth + platform admin.
+   */
+  router.post(
+    "/orgs/:orgId/restore",
+    requirePlatformAdminOr404,
+    requireStepUp,
+    async (req: Request, res: Response) => {
+      const { orgId } = req.params;
+      const userId = getUserId(req.user);
+      const actorEmail = (req.user as any)?.email || "unknown";
+
+      if (!userId) {
+        return res.status(401).json({ success: false, message: "Unauthorized" });
+      }
+
+      try {
+        // Get org details
+        const [org] = await db
+          .select({
+            id: organizations.id,
+            slug: organizations.slug,
+            name: organizations.name,
+            deleteState: organizations.deleteState,
+          })
+          .from(organizations)
+          .where(eq(organizations.id, orgId))
+          .limit(1);
+
+        if (!org) {
+          return res.status(404).json({ success: false, message: "Organization not found" });
+        }
+
+        // Validate org is soft_deleted or pending_delete
+        if (org.deleteState === 'active') {
+          return res.status(409).json({
+            success: false,
+            code: "ORG_ALREADY_ACTIVE",
+            message: "Organization is already active",
+          });
+        }
+
+        // Restore org to active state (clear delete tracking fields)
+        await db
+          .update(organizations)
+          .set({
+            deleteState: 'active',
+            deleteRequestedAt: null,
+            deleteRequestedByUserId: null,
+            deleteConfirmedAt: null,
+            deleteConfirmedByUserId: null,
+            deletedAt: null,
+            deletedByUserId: null,
+            deleteReason: null,
+            deletedIp: null,
+            deletedUserAgent: null,
+          })
+          .where(eq(organizations.id, orgId));
+
+        // Audit log
+        await db.insert(auditLogs).values({
+          organizationId: orgId,
+          userId,
+          actionType: "org.delete.restored",
+          entityType: "organization",
+          entityId: orgId,
+          description: `Organization "${org.slug}" restored by platform admin`,
+          newValues: {
+            deleteState: 'active',
+            orgSlug: org.slug,
+            orgName: org.name,
+          },
+        });
+
+        // Platform audit log
+        await writePlatformAuditLog({
+          action: "org.delete.restored",
+          actorUserId: userId,
+          actorEmail,
+          req,
+          metadata: {
+            orgId,
+            orgSlug: org.slug,
+            orgName: org.name,
+          },
+        });
+
+        // Notify devs
+        await notifyDev({
+          eventName: 'org.delete.restored',
+          priority: 'high',
+          organizationId: orgId,
+          userId,
+          message: `Organization "${org.slug}" (${org.name}) restored by platform admin ${actorEmail}`,
+          metadata: {
+            orgId,
+            orgSlug: org.slug,
+            orgName: org.name,
+            platformAdminId: userId,
+            platformAdminEmail: actorEmail,
+          },
+        });
+
+        return res.json({
+          success: true,
+          message: `Organization "${org.slug}" has been restored and is now accessible`,
+          deleteState: 'active',
+        });
+      } catch (error: any) {
+        console.error("[Platform] Restore org error:", error);
+        return res.status(500).json({ success: false, message: "Failed to restore organization" });
       }
     }
   );
