@@ -27,6 +27,7 @@ export default function ProductTypesSettings() {
     defaultStationKey: string | null;
     defaultStepKey: string | null;
     sendToProductionDefault: boolean;
+    requiresPrepressOverride: boolean | null;
   }>({
     name: "",
     description: "",
@@ -34,6 +35,7 @@ export default function ProductTypesSettings() {
     defaultStationKey: null,
     defaultStepKey: null,
     sendToProductionDefault: false,
+    requiresPrepressOverride: null,
   });
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
 
@@ -45,9 +47,10 @@ export default function ProductTypesSettings() {
       defaultStationKey: formData.defaultStationKey || null,
       defaultStepKey: formData.defaultStepKey || null,
       sendToProductionDefault: formData.sendToProductionDefault,
+      requiresPrepressOverride: formData.requiresPrepressOverride,
     });
     setIsCreateOpen(false);
-    setFormData({ name: "", description: "", sortOrder: 0, defaultStationKey: null, defaultStepKey: null, sendToProductionDefault: false });
+    setFormData({ name: "", description: "", sortOrder: 0, defaultStationKey: null, defaultStepKey: null, sendToProductionDefault: false, requiresPrepressOverride: null });
   };
 
   const handleUpdate = async () => {
@@ -61,10 +64,11 @@ export default function ProductTypesSettings() {
         defaultStationKey: formData.defaultStationKey || null,
         defaultStepKey: formData.defaultStepKey || null,
         sendToProductionDefault: formData.sendToProductionDefault,
+        requiresPrepressOverride: formData.requiresPrepressOverride,
       },
     });
     setEditingType(null);
-    setFormData({ name: "", description: "", sortOrder: 0, defaultStationKey: null, defaultStepKey: null, sendToProductionDefault: false });
+    setFormData({ name: "", description: "", sortOrder: 0, defaultStationKey: null, defaultStepKey: null, sendToProductionDefault: false, requiresPrepressOverride: null });
   };
 
   const handleDelete = async (id: string) => {
@@ -82,6 +86,7 @@ export default function ProductTypesSettings() {
       defaultStationKey: type.defaultStationKey || null,
       defaultStepKey: type.defaultStepKey || null,
       sendToProductionDefault: type.sendToProductionDefault ?? false,
+      requiresPrepressOverride: type.requiresPrepressOverride ?? null,
     });
   };
 
@@ -219,6 +224,28 @@ export default function ProductTypesSettings() {
                       checked={formData.sendToProductionDefault}
                       onCheckedChange={(v) => setFormData({ ...formData, sendToProductionDefault: v })}
                     />
+                  </div>
+                  <div>
+                    <Label>Prepress Requirement</Label>
+                    <Select
+                      value={formData.requiresPrepressOverride === null ? "__inherit__" : formData.requiresPrepressOverride ? "__required__" : "__skip__"}
+                      onValueChange={(v) => setFormData({ 
+                        ...formData, 
+                        requiresPrepressOverride: v === "__inherit__" ? null : v === "__required__" ? true : false 
+                      })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__inherit__">Inherit org default</SelectItem>
+                        <SelectItem value="__required__">Required</SelectItem>
+                        <SelectItem value="__skip__">Skip</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Controls whether jobs require prepress before printing. Default inherits org setting.
+                    </p>
                   </div>
                 </div>
               </div>
@@ -365,6 +392,28 @@ export default function ProductTypesSettings() {
                     checked={formData.sendToProductionDefault}
                     onCheckedChange={(v) => setFormData({ ...formData, sendToProductionDefault: v })}
                   />
+                </div>
+                <div>
+                  <Label>Prepress Requirement</Label>
+                  <Select
+                    value={formData.requiresPrepressOverride === null ? "__inherit__" : formData.requiresPrepressOverride ? "__required__" : "__skip__"}
+                    onValueChange={(v) => setFormData({ 
+                      ...formData, 
+                      requiresPrepressOverride: v === "__inherit__" ? null : v === "__required__" ? true : false 
+                    })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__inherit__">Inherit org default</SelectItem>
+                      <SelectItem value="__required__">Required</SelectItem>
+                      <SelectItem value="__skip__">Skip</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Controls whether jobs require prepress before printing. Default inherits org setting.
+                  </p>
                 </div>
               </div>
             </div>
