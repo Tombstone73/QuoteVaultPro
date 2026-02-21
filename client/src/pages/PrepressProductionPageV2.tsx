@@ -1,116 +1,285 @@
-import { useState } from "react";
-import { Search, RefreshCw, History, FileText, Download, ZoomIn, Upload, Check, Lock, Image as ImageIcon, Info, Paperclip, CheckCircle, AlertCircle } from "lucide-react";
+import { useState, useRef } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Search, RefreshCw, History, FileText, Download, ZoomIn, Upload, Check, Lock, Image as ImageIcon, Info, Paperclip, CheckCircle, AlertCircle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/hooks/use-toast";
+import { formatDistanceToNow } from "date-fns";
 
-type JobStatus = "pending" | "in_prepress" | "locked";
+import { formatDistanceToNow } from "date-fns";
 
-type Job = {
-  id: string;
+// API Types
+type QueueItem = {
+  lineItemId: string;
   jobNumber: string;
-  customer: string;
-  product: string;
-  status: JobStatus;
-  assignedTo?: string;
-  dueDate?: string;
-  isRush?: boolean;
-  lockedBy?: string;
-  thumbnailUrl?: string;
-  fileCount?: number;
+  customerName: string;
+  productName: string;
+  printType: string | null;
+  media: string | null;
+  dueDate: string | null;
+  status: string;
+  rush: boolean;
+  assignedTo: string | null;
+  lockedBy: string | null;
+  sessionId: string | null;
+  fileCounts: {
+    originals: number;
+    finals: number;
+  };
+  // Job specs for detail view
+  quantity: number;
+  width: number | null;
+  height: number | null;
+  sqFootage: number | null;
+  bleed: string | null;
+  finishing: string | null;
 };
 
-type FileItem = {
+type LineItemFile = {
+  id: string;
+  role: "original" | "final" | "reference";
+  originalFilename: string;
+  sizeBytes: number;
+  tag: string | null;
+  createdAt: string;
+  uploadedBy: string;
+};
+
+type UploadProgress = {
   id: string;
   filename: string;
-  size: string;
-  uploadDate: string;
-  uploadedBy: string;
-  tag: string;
-  thumbnailUrl?: string;
+  progress: number;
 };
 
+// Utility to format bytes
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+}
+
 export default function PrepressProductionPageV2() {
-  const [selectedJobId, setSelectedJobId] = useState("JOB-94028");
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  // UI State
+  const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [printTypeFilter, setPrintTypeFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [rushFilter, setRushFilter] = useState(false);
   const [sortBy, setSortBy] = useState("due_date");
   const [sortAsc, setSortAsc] = useState(true);
   const [prepressNotes, setPrepressNotes] = useState("");
   const [flagForQc, setFlagForQc] = useState(false);
   const [issueType, setIssueType] = useState("");
+  const [selectedTag, setSelectedTag] = useState("final_print");
+  const [uploadingFiles, setUploadingFiles] = useState<UploadProgress[]>([]);
 
-  const jobs: Job[] = [
-    {
-      id: "JOB-94028",
-      jobNumber: "JOB-94028",
-      customer: "Global Logistics",
-      product: "Vinyl Banner (120\"x48\")",
-      status: "in_prepress",
-      assignedTo: "Alex M.",
-      isRush: true,
+  // Queue Query
+  const { data: queueData, isLoading: queueLoading } = useQuery({
+    queryKey: ["/api/prepress/queue", { search: searchQuery, printType: printTypeFilter, status: statusFilter, rush: rushFilter, sortBy, sortAsc }],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (searchQuery) params.set("search", searchQuery);
+      if (printTypeFilter !== "all") params.set("printType", printTypeFilter);
+      if (statusFilter !== "all") params.set("status", statusFilter);
+      if (rushFilter) params.set("rush", "true");
+      params.set("sortBy", sortBy);
+      params.set("sortOrder", sortAsc ? "asc" : "desc");
+      
+      const res = await fetch(`/api/prepress/queue?${params}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch queue");
+      const data = await res.json();
+      console.log("[Prepress Queue]", data.items?.length || 0, "items");
+      return data.items as QueueItem[];
     },
-    {
-      id: "JOB-94031",
-      jobNumber: "JOB-94031",
-      customer: "Apex Marketing",
-      product: "Window Perf (48\"x60\")",
-      status: "locked",
-      lockedBy: "Sarah K.",
-    },
-    {
-      id: "JOB-94035",
-      jobNumber: "JOB-94035",
-      customer: "Riverview Arts",
-      product: "Coroplast (18\"x24\")",
-      status: "pending",
-      dueDate: "10/25",
-      fileCount: 3,
-    },
-    {
-      id: "JOB-94039",
-      jobNumber: "JOB-94039",
-      customer: "Eco-Clean Corp",
-      product: "Vehicle Wrap Panels",
-      status: "in_prepress",
-      assignedTo: "Mike T.",
-      dueDate: "Qty: 2",
-    },
-  ];
+    refetchInterval: 30000, // Refresh every 30s
+  });
 
-  const originalFiles: FileItem[] = [
-    {
-      id: "1",
-      filename: "Global_Logistics_Banner_v1.pdf",
-      size: "142.5 MB",
-      uploadDate: "Oct 23, 14:20",
-      uploadedBy: "Customer Portal",
-      tag: "Print Ready",
+  // Line Item Files Query
+  const { data: filesData } = useQuery({
+    queryKey: ["/api/prepress/line-item", selectedLineItemId, "files"],
+    queryFn: async () => {
+      if (!selectedLineItemId) return null;
+      const res = await fetch(`/api/prepress/line-item/${selectedLineItemId}/files`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch files");
+      const data = await res.json();
+      console.log("[Line Item Files]", data.files?.length || 0, "files");
+      return data.files as LineItemFile[];
     },
-    {
-      id: "2",
-      filename: "Logistics_Logo_Vector.ai",
-      size: "12.8 MB",
-      uploadDate: "Oct 23, 14:21",
-      uploadedBy: "Customer Portal",
-      tag: "Source",
-    },
-  ];
+    enabled: !!selectedLineItemId,
+  });
 
-  const finalFiles: FileItem[] = [
-    {
-      id: "1",
-      filename: "JOB-94028_Banner_FINAL_PRINT.tif",
-      size: "854.2 MB",
-      uploadDate: "Oct 24, 09:15",
-      uploadedBy: "Alex M.",
-      tag: "FINAL_PRINT",
+  // Mutations
+  const startSessionMutation = useMutation({
+    mutationFn: async (lineItemId: string) => {
+      const res = await fetch("/api/prepress/session/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ lineItemId }),
+      });
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "Failed to start session");
+      }
+      return res.json();
     },
-  ];
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/prepress/line-item", selectedLineItemId] });
+      toast({ title: "Prepress started", description: "Session created successfully" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
 
-  const selectedJob = jobs.find(j => j.id === selectedJobId);
+  const saveNoteMutation = useMutation({
+    mutationFn: async ({ sessionId, note, flaggedForQc, issueType }: { sessionId: string; note: string; flaggedForQc: boolean; issueType: string }) => {
+      const res = await fetch(`/api/prepress/session/${sessionId}/note`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ note, flaggedForQc, issueType }),
+      });
+      if (!res.ok) throw new Error("Failed to save note");
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Notes saved", description: "Prepress notes updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const completeSessionMutation = useMutation({
+    mutationFn: async (sessionId: string) => {
+      const res = await fetch(`/api/prepress/session/${sessionId}/complete`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "Failed to complete prepress");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      setSelectedLineItemId(null);
+      toast({ title: "Prepress complete", description: "Job marked complete and moved to production" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const uploadFileMutation = useMutation({
+    mutationFn: async ({ lineItemId, file, role, tag }: { lineItemId: string; file: File; role: string; tag: string }) => {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("lineItemId", lineItemId);
+      formData.append("role", role);
+      if (tag) formData.append("tag", tag);
+
+      const uploadId = Math.random().toString();
+      setUploadingFiles(prev => [...prev, { id: uploadId, filename: file.name, progress: 0 }]);
+
+      const res = await fetch("/api/prepress/files/upload", {
+        method: "POST",
+        credentials: "include",
+        body: formData,
+      });
+
+      setUploadingFiles(prev => prev.filter(u => u.id !== uploadId));
+
+      if (!res.ok) throw new Error("Upload failed");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/prepress/line-item", selectedLineItemId] });
+      toast({ title: "Upload complete", description: "File uploaded successfully" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Upload failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Derived state
+  const queue = queueData || [];
+  const selectedItem = queue.find(q => q.lineItemId === selectedLineItemId);
+  const originalFiles = filesData?.filter(f => f.role === "original") || [];
+  const finalFiles = filesData?.filter(f => f.role === "final") || [];
   const hasFinalFiles = finalFiles.length > 0;
+  const canComplete = hasFinalFiles && selectedItem?.sessionId && !selectedItem?.lockedBy;
+  const isLocked = selectedItem?.lockedBy && !selectedItem?.sessionId;
+
+  // Handlers
+  const handleRefresh = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+  };
+
+  const handleStartPrepress = () => {
+    if (selectedItem) {
+      startSessionMutation.mutate(selectedItem.lineItemId);
+    }
+  };
+
+  const handleSaveNotes = () => {
+    if (selectedItem?.sessionId) {
+      saveNoteMutation.mutate({
+        sessionId: selectedItem.sessionId,
+        note: prepressNotes,
+        flaggedForQc: flagForQc,
+        issueType: flagForQc ? issueType : "",
+      });
+    }
+  };
+
+  const handleComplete = () => {
+    if (selectedItem?.sessionId && canComplete) {
+      completeSessionMutation.mutate(selectedItem.sessionId);
+    }
+  };
+
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (!files || !selectedLineItemId) return;
+
+    Array.from(files).forEach(file => {
+      uploadFileMutation.mutate({
+        lineItemId: selectedLineItemId,
+        file,
+        role: "final",
+        tag: selectedTag,
+      });
+    });
+
+    // Reset input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
+  const handleDownloadFile = (fileId: string) => {
+    window.open(`/api/prepress/files/${fileId}/download`, "_blank");
+  };
+
+  const handleDownloadAllOriginals = () => {
+    if (selectedLineItemId) {
+      window.open(`/api/prepress/line-item/${selectedLineItemId}/download-originals-zip`, "_blank");
+    }
+  };
 
   return (
     <div className="h-screen flex bg-[#111921] text-slate-100 font-sans overflow-hidden">
@@ -123,8 +292,8 @@ export default function PrepressProductionPageV2() {
               <h1 className="text-xl font-bold tracking-tight">Prepress Queue</h1>
               <p className="text-xs text-slate-400">TitanOS ERP Production v2.4</p>
             </div>
-            <button className="p-2 hover:bg-white/10 rounded-lg transition-colors">
-              <RefreshCw className="w-4 h-4" />
+            <button onClick={handleRefresh} className="p-2 hover:bg-white/10 rounded-lg transition-colors" disabled={queueLoading}>
+              <RefreshCw className={cn("w-4 h-4", queueLoading && "animate-spin")} />
             </button>
           </div>
 
@@ -133,15 +302,17 @@ export default function PrepressProductionPageV2() {
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
               <Input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full bg-[#111921] border-[#2d3748] rounded-lg pl-10 text-sm focus:ring-[#1773cf] focus:border-[#1773cf] h-9"
                 placeholder="Search Job #, Customer, Product..."
               />
             </div>
 
             <div className="flex gap-2">
-              <Select defaultValue="all">
+              <Select value={printTypeFilter} onValueChange={setPrintTypeFilter}>
                 <SelectTrigger className="flex-1 bg-[#111921] border-[#2d3748] rounded-lg text-xs py-1 h-8 focus:ring-[#1773cf] focus:border-[#1773cf]">
-                  <SelectValue placeholder="Print Type: All" />
+                  <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">Print Type: All</SelectItem>
@@ -150,19 +321,25 @@ export default function PrepressProductionPageV2() {
                 </SelectContent>
               </Select>
 
-              <Select defaultValue="all">
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
                 <SelectTrigger className="flex-1 bg-[#111921] border-[#2d3748] rounded-lg text-xs py-1 h-8 focus:ring-[#1773cf] focus:border-[#1773cf]">
-                  <SelectValue placeholder="Status: All" />
+                  <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">Status: All</SelectItem>
-                  <SelectItem value="pending">Pending</SelectItem>
+                  <SelectItem value="pending_prepress">Pending</SelectItem>
                   <SelectItem value="in_prepress">In Prepress</SelectItem>
                 </SelectContent>
               </Select>
 
-              <button className="px-2 py-1 bg-[#111921] border border-[#2d3748] rounded-lg text-[10px] font-bold text-slate-400 hover:border-[#e53e3e] hover:text-[#e53e3e] transition-colors flex items-center gap-1 h-8">
-                <span className="w-2 h-2 rounded-full bg-slate-600"></span>
+              <button
+                onClick={() => setRushFilter(!rushFilter)}
+                className={cn(
+                  "px-2 py-1 bg-[#111921] border rounded-lg text-[10px] font-bold transition-colors flex items-center gap-1 h-8",
+                  rushFilter ? "border-[#e53e3e] text-[#e53e3e]" : "border-[#2d3748] text-slate-400 hover:border-[#e53e3e] hover:text-[#e53e3e]"
+                )}
+              >
+                <span className={cn("w-2 h-2 rounded-full", rushFilter ? "bg-[#e53e3e]" : "bg-slate-600")}></span>
                 RUSH
               </button>
             </div>
