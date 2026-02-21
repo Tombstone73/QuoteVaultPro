@@ -81,6 +81,7 @@ import {
     getManualReservationById,
     listManualReservationsForOrder,
 } from "../lib/manualInventoryReservationsRepo";
+import { createLineItemFileRecord } from "../services/lineItemFileRecordService";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -3599,6 +3600,29 @@ export async function registerOrderRoutes(
             }
 
             const [attachment] = await db.insert(orderAttachments).values(attachmentData).returning();
+
+            if (orderLineItemId) {
+                const storagePath =
+                    (attachment.relativePath as string | null) ||
+                    (attachment.fileUrl as string | null) ||
+                    null;
+
+                if (storagePath && userId) {
+                    await createLineItemFileRecord({
+                        organizationId,
+                        orderId: req.params.id,
+                        lineItemId: String(orderLineItemId),
+                        role: 'original',
+                        storagePath,
+                        storageKey: storagePath,
+                        storageBucket: null,
+                        originalFilename: (attachment.originalFilename as string | null) || (attachment.fileName as string),
+                        mimeType: attachment.mimeType,
+                        sizeBytes: attachment.sizeBytes ?? attachment.fileSize,
+                        uploadedByUserId: userId,
+                    });
+                }
+            }
 
             await storage.createOrderAuditLog({
                 orderId: req.params.id,

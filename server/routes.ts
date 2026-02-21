@@ -51,6 +51,7 @@ import { resolveInventoryPolicyFromOrgPreferences } from "@shared/inventoryPolic
 import { mergeInventoryPolicyIntoPreferences, normalizeInventoryPolicyPatch } from "@shared/inventoryPolicyPreferences";
 import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBooksPreferences";
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2OverrideConfig";
+import { createLineItemFileRecord } from "./services/lineItemFileRecordService";
 
 // Auth provider selection logic
 // Priority: AUTH_PROVIDER env var > detection logic
@@ -11932,6 +11933,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .select({
               id: lineItemFiles.id,
               lineItemId: lineItemFiles.lineItemId,
+              role: lineItemFiles.role,
               mimeType: lineItemFiles.mimeType,
               createdAt: lineItemFiles.createdAt,
             })
@@ -11945,13 +11947,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .orderBy(desc(lineItemFiles.createdAt))
         : [];
 
-      const firstPreviewByLineItem = new Map<string, string>();
+      const firstPreviewByLineItem = new Map<string, { thumbFileId: string; thumbnailUrl: string }>();
+      const previewCandidatesByLineItem = new Map<string, { original: string | null; final: string | null }>();
       for (const pf of previewFiles) {
-        const previewable = pf.mimeType?.startsWith("image/") || pf.mimeType === "application/pdf";
-        if (!previewable) continue;
-        if (!firstPreviewByLineItem.has(pf.lineItemId)) {
-          firstPreviewByLineItem.set(pf.lineItemId, `/api/prepress/files/${pf.id}/download?inline=1`);
+        const isImage = pf.mimeType?.startsWith("image/");
+        if (!isImage) continue;
+
+        const bucket = previewCandidatesByLineItem.get(pf.lineItemId) || { original: null, final: null };
+        if (pf.role === "original" && !bucket.original) {
+          bucket.original = pf.id;
+        } else if (pf.role === "final" && !bucket.final) {
+          bucket.final = pf.id;
         }
+        previewCandidatesByLineItem.set(pf.lineItemId, bucket);
+      }
+
+      for (const [lineItemId, candidate] of previewCandidatesByLineItem.entries()) {
+        const thumbFileId = candidate.original || candidate.final;
+        if (!thumbFileId) continue;
+        firstPreviewByLineItem.set(lineItemId, {
+          thumbFileId,
+          thumbnailUrl: `/api/prepress/files/${thumbFileId}/download?inline=1`,
+        });
       }
 
       // Resolve latest active session per line item (non-exclusive sessions supported)
@@ -12014,7 +12031,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           prepressNotes: latestSession?.notesText ?? null,
           issueFlag: latestSession?.issueFlag ?? false,
           issueType: latestSession?.issueType ?? null,
-          thumbnailUrl: firstPreviewByLineItem.get(item.lineItemId) ?? null,
+          thumbFileId: firstPreviewByLineItem.get(item.lineItemId)?.thumbFileId ?? null,
+          thumbnailUrl: firstPreviewByLineItem.get(item.lineItemId)?.thumbnailUrl ?? null,
           fileCounts: { originals, finals },
           quantity: Number(item.quantity) || 0,
           width: item.width != null ? Number(item.width) : null,
@@ -12875,6 +12893,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const [fileRow] = await db
         .select({
           id: lineItemFiles.id,
+          orderId: lineItemFiles.orderId,
+          lineItemId: lineItemFiles.lineItemId,
+          storageBucket: lineItemFiles.storageBucket,
+          storagePath: lineItemFiles.storagePath,
+          storageKey: lineItemFiles.storageKey,
           mimeType: lineItemFiles.mimeType,
         })
         .from(lineItemFiles)
@@ -12891,10 +12914,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "File not found" });
       }
 
-      const previewable = fileRow.mimeType.startsWith("image/") || fileRow.mimeType === "application/pdf";
-      const inlineUrl = previewable ? `/api/prepress/files/${fileRow.id}/download?inline=1` : null;
+      const isImage = fileRow.mimeType.startsWith("image/");
+      const key = (fileRow.storageKey || fileRow.storagePath || "").trim();
+      if (!isImage || !key) {
+        return res.json({ success: true, data: { thumbnailUrl: null } });
+      }
 
-      res.json({ success: true, data: { thumbnailUrl: inlineUrl } });
+      if (fileRow.storageBucket) {
+        return res.json({
+          success: true,
+          data: { thumbnailUrl: `/api/prepress/files/${fileRow.id}/download?inline=1` },
+        });
+      }
+
+      const [attachment] = await db
+        .select({
+          storageProvider: orderAttachments.storageProvider,
+        })
+        .from(orderAttachments)
+        .where(
+          and(
+            eq(orderAttachments.orderId, fileRow.orderId),
+            eq(orderAttachments.orderLineItemId, fileRow.lineItemId),
+            eq(orderAttachments.fileUrl, key),
+          )
+        )
+        .limit(1);
+
+      if (attachment?.storageProvider === "supabase" && isSupabaseConfigured()) {
+        const supabase = new SupabaseStorageService();
+        const signedUrl = await supabase.getSignedDownloadUrl(key, 3600);
+        return res.json({ success: true, data: { thumbnailUrl: signedUrl } });
+      }
+
+      return res.json({ success: true, data: { thumbnailUrl: `/objects/${key}` } });
     } catch (error: any) {
       console.error("[Prepress] Thumbnail URL error:", error);
       res.status(500).json({ error: error?.message || "Failed to resolve thumbnail URL" });
@@ -12932,7 +12985,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           originalFilename: f.originalFilename,
           tag: f.tag,
         }),
-        thumbnailUrl: f.mimeType?.startsWith("image/") || f.mimeType === "application/pdf"
+        thumbnailUrl: f.mimeType?.startsWith("image/")
           ? `/api/prepress/files/${f.id}/download?inline=1`
           : null,
       });
@@ -13563,6 +13616,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         } as any);
 
         await assetRepository.linkAsset(organizationId, asset.id, 'order_line_item', lineItemId, normalizeRole(c.role) as any);
+
+        if (userId) {
+          await createLineItemFileRecord({
+            organizationId,
+            orderId,
+            lineItemId,
+            role: 'original',
+            storagePath: c.fileKey,
+            storageKey: c.fileKey,
+            storageBucket: null,
+            originalFilename: c.fileName || guessFileNameFromKey(c.fileKey),
+            mimeType: c.mimeType || null,
+            sizeBytes: c.sizeBytes || null,
+            uploadedByUserId: userId,
+          });
+        }
 
         setImmediate(() => {
           assetPreviewGenerator.generatePreviews(asset).catch((err) => {
