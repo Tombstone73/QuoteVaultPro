@@ -102,6 +102,8 @@ if (authProviderEnv) {
 
 console.log(`[Auth] Selected provider: ${authProvider} (NODE_ENV=${nodeEnv}, REPL_ID=${isReplit ? 'present' : 'absent'})`);
 
+let hasLoggedPrepressStorageAuthMode = false;
+
 const { setupAuth, isAuthenticated, isAdmin } = auth;
 
 // Role-based access control middleware
@@ -277,6 +279,7 @@ import { fromZodError } from "zod-validation-error";
 import {
   ObjectStorageService,
   ObjectNotFoundError,
+  getStorageAuthMode,
 } from "./objectStorage";
 import { ObjectPermission } from "./objectAcl";
 import { SupabaseStorageService, isSupabaseConfigured } from "./supabaseStorage";
@@ -12830,6 +12833,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
             return res.status(404).json({ error: "Line item not found" });
           }
 
+          if (!hasLoggedPrepressStorageAuthMode && process.env.NODE_ENV !== "production") {
+            hasLoggedPrepressStorageAuthMode = true;
+            console.log(`[Prepress] GCS auth mode: ${getStorageAuthMode()}`);
+          }
+
           const lineItem = lineItems[0].lineItem;
           const order = lineItems[0].order;
 
@@ -12850,7 +12858,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
           res.json({ success: true, data: uploadedFile });
         } catch (uploadError: any) {
           console.error("[Prepress] File upload error:", uploadError);
-          res.status(500).json({ error: uploadError?.message || "Failed to upload file" });
+          const upstreamMessage = String(uploadError?.message || uploadError || "upload_failed");
+          const isStorageAuthFailure =
+            upstreamMessage.includes("127.0.0.1:1106") ||
+            upstreamMessage.includes("ECONNREFUSED") ||
+            upstreamMessage.toLowerCase().includes("credential");
+
+          res.status(500).json({
+            error: "Failed to upload file",
+            code: isStorageAuthFailure ? "storage_auth_unavailable" : "prepress_upload_failed",
+            message: upstreamMessage.slice(0, 280),
+          });
         }
       });
       
