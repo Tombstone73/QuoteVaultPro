@@ -26,6 +26,11 @@ import { eq, and, desc, asc, sql } from "drizzle-orm";
 import { getRequestOrganizationId } from "../tenantContext";
 import { isSupabaseConfigured } from "../supabaseStorage";
 
+// ─── Bug report screenshot storage configuration ─────────────────────────────
+
+// Use "titan-private" bucket for bug screenshots (stored in org-scoped bug-screenshots/ folder)
+const BUG_REPORT_SCREENSHOT_BUCKET = process.env.SUPABASE_BUG_REPORT_BUCKET ?? "titan-private";
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Handles both Replit (claims.sub) and local (id) auth user objects. */
@@ -61,8 +66,8 @@ const createBugReportSchema = z.object({
   url:              z.string().min(1).max(2000),
   screenWidth:      z.number().int().positive().optional(),
   screenHeight:     z.number().int().positive().optional(),
-  screenshotUrl:    z.string().url().max(4000).optional().nullable(), // DEPRECATED: backward compatibility
-  screenshotUrls:   z.array(z.string().url().max(4000)).max(5).optional(),
+  screenshotUrl:    z.string().max(4000).optional().nullable(), // DEPRECATED: backward compatibility (URL or path)
+  screenshotUrls:   z.array(z.string().max(4000)).max(5).optional(), // Storage paths or URLs
   metadata:         z.record(z.unknown()).optional(),
 });
 
@@ -90,30 +95,53 @@ const MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024; // 5 MB
 
 // ─── Screenshot storage ───────────────────────────────────────────────────────
 
+/**
+ * Store screenshot and return STORAGE PATH (not URL).
+ * Paths will be converted to signed URLs at view time.
+ * 
+ * @returns Storage path like "bug-reports/{bugReportId}/{timestamp}-{random}.png"
+ */
 async function storeScreenshot(
-  orgId: string,
+  bugReportId: string,
   fileBuffer: Buffer,
   mimeType: string,
   originalExt: string,
   req: Request
 ): Promise<string> {
-  const filename = `${randomUUID()}${originalExt}`;
-  const storageKey = `bug-screenshots/${orgId}/${filename}`;
+  const orgId = getRequestOrganizationId(req);
+  const timestamp = Date.now();
+  const random = randomUUID().split('-')[0]; // First segment for brevity
+  const filename = `${timestamp}-${random}${originalExt}`;
+  const storagePath = `org_${orgId}/bug-screenshots/${bugReportId}/${filename}`;
 
   if (isSupabaseConfigured()) {
     const { SupabaseStorageService } = await import("../supabaseStorage");
-    const svc = new SupabaseStorageService();
-    const result = await svc.uploadFile(storageKey, fileBuffer, mimeType);
-    return result.publicUrl ?? `/api/bug-reports/screenshot/file/${orgId}/${filename}`;
+    const svc = new SupabaseStorageService(BUG_REPORT_SCREENSHOT_BUCKET);
+    
+    console.log('[BugReports] Uploading screenshot:', {
+      bucket: BUG_REPORT_SCREENSHOT_BUCKET,
+      path: storagePath,
+      size: fileBuffer.length,
+      mimeType
+    });
+    
+    try {
+      await svc.uploadFile(storagePath, fileBuffer, mimeType);
+      console.log('[BugReports] Upload successful:', storagePath);
+      return storagePath; // Return PATH, not URL
+    } catch (err) {
+      console.error('[BugReports] Supabase upload failed:', err);
+      throw err;
+    }
   }
 
-  // Local-dev fallback: write to disk, serve via static handler registered in route
-  const uploadDir = path.resolve(process.cwd(), "uploads", "bug-screenshots", orgId);
+  // Local-dev fallback: write to disk, return local path
+  const uploadDir = path.resolve(process.cwd(), "uploads", "bug-screenshots", bugReportId);
   await fs.mkdir(uploadDir, { recursive: true });
   await fs.writeFile(path.join(uploadDir, filename), fileBuffer);
-
-  const baseUrl = (process.env.APP_URL ?? `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
-  return `${baseUrl}/api/bug-reports/screenshot/file/${orgId}/${filename}`;
+  
+  // Return path format (will be converted to URL at view time)
+  return `local:bug-screenshots/${bugReportId}/${filename}`;
 }
 
 // ─── Route registration ───────────────────────────────────────────────────────
@@ -129,24 +157,15 @@ export function registerBugReportRoutes(
   const router = Router();
 
   // ── Serve locally stored screenshots (dev only) ─────────────────────────────
-  router.get("/screenshot/file/:orgId/:filename", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
-    const { orgId, filename } = req.params;
-    // Validate org matches session
-    try {
-      const sessionOrgId = getRequestOrganizationId(req);
-      if (sessionOrgId !== orgId) {
-        return res.status(403).json({ success: false, message: "Forbidden" });
-      }
-    } catch {
-      return res.status(403).json({ success: false, message: "Forbidden" });
-    }
+  router.get("/screenshot/file/:bugReportId/:filename", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    const { bugReportId, filename } = req.params;
 
     // Basic path sanitisation
-    if (!/^[a-zA-Z0-9_.-]+$/.test(filename)) {
-      return res.status(400).json({ success: false, message: "Invalid filename" });
+    if (!/^[a-zA-Z0-9_.-]+$/.test(filename) || !/^[a-zA-Z0-9_.-]+$/.test(bugReportId)) {
+      return res.status(400).json({ success: false, message: "Invalid path" });
     }
 
-    const filePath = path.resolve(process.cwd(), "uploads", "bug-screenshots", orgId, filename);
+    const filePath = path.resolve(process.cwd(), "uploads", "bug-screenshots", bugReportId, filename);
     try {
       await fs.access(filePath);
       res.sendFile(filePath);
@@ -224,8 +243,10 @@ export function registerBugReportRoutes(
           try {
             const buffer = Buffer.concat(chunks);
             const ext = path.extname(filename || "screenshot.png") || ".png";
-            const url = await storeScreenshot(orgId, buffer, mimeType, ext, req);
-            uploadedUrls.push(url);
+            // Use temp ID for pre-create uploads (will be organized by bug report ID later)
+            const tempId = `temp-${randomUUID()}`;
+            const storagePath = await storeScreenshot(tempId, buffer, mimeType, ext, req);
+            uploadedUrls.push(storagePath); // Store PATH, not URL
           } catch (err) {
             console.error("[BugReports] Screenshot upload failed:", err);
             uploadErrors.push(`File ${filename}: Upload failed.`);
@@ -424,6 +445,82 @@ export function registerBugReportRoutes(
     } catch (err) {
       console.error("[BugReports] Get by ID failed:", err);
       return res.status(500).json({ success: false, message: "Failed to fetch bug report." });
+    }
+  });
+
+  // ── GET /:id/screenshot-urls (get signed URLs for screenshots) ───────────────
+  /**
+   * Generate signed URLs for bug report screenshots.
+   * Converts stored paths to temporary signed URLs (1 hour expiry).
+   */
+  router.get("/:id/screenshot-urls", isAuthenticated, tenantContext, requireOrgAdmin, async (req: Request, res: Response) => {
+    const orgId = getRequestOrganizationId(req);
+    const { id } = req.params;
+
+    try {
+      const [row] = await db
+        .select({ screenshotUrls: bugReports.screenshotUrls, screenshotUrl: bugReports.screenshotUrl })
+        .from(bugReports)
+        .where(and(eq(bugReports.orgId, orgId), eq(bugReports.id, id)))
+        .limit(1);
+
+      if (!row) {
+        return res.status(404).json({ success: false, message: "Bug report not found." });
+      }
+
+      const urls: Array<{ path: string; url: string }> = [];
+
+      // Process new screenshot_urls array
+      if (row.screenshotUrls && row.screenshotUrls.length > 0) {
+        for (const path of row.screenshotUrls) {
+          // If path is already a full URL (legacy data), pass through
+          if (path.startsWith('http://') || path.startsWith('https://')) {
+            urls.push({ path, url: path });
+            continue;
+          }
+
+          // Handle local dev paths
+          if (path.startsWith('local:')) {
+            const localPath = path.replace('local:', '');
+            const baseUrl = (process.env.APP_URL ?? `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+            const parts = localPath.split('/');
+            const bugReportId = parts[1];
+            const filename = parts[2];
+            urls.push({ 
+              path, 
+              url: `${baseUrl}/api/bug-reports/screenshot/file/${bugReportId}/${filename}` 
+            });
+            continue;
+          }
+
+          // Generate signed URL for Supabase path
+          if (isSupabaseConfigured()) {
+            try {
+              const { SupabaseStorageService } = await import("../supabaseStorage");
+              const svc = new SupabaseStorageService(BUG_REPORT_SCREENSHOT_BUCKET);
+              const signedUrl = await svc.getSignedDownloadUrl(path, 3600); // 1 hour
+              urls.push({ path, url: signedUrl });
+            } catch (err) {
+              console.error(`[BugReports] Failed to generate signed URL:`, {
+                bucket: BUG_REPORT_SCREENSHOT_BUCKET,
+                path,
+                error: err
+              });
+              // Skip failed URLs rather than breaking entire request
+            }
+          }
+        }
+      }
+
+      // Process legacy screenshot_url field (backward compatibility)
+      if (row.screenshotUrl && urls.length === 0) {
+        urls.push({ path: row.screenshotUrl, url: row.screenshotUrl });
+      }
+
+      return res.json({ success: true, data: urls });
+    } catch (err) {
+      console.error("[BugReports] Screenshot URL generation failed:", err);
+      return res.status(500).json({ success: false, message: "Failed to generate screenshot URLs." });
     }
   });
 
