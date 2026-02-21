@@ -8,7 +8,7 @@ import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, authIdentities, bugReports } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, authIdentities, bugReports } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, asc, inArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -1839,6 +1839,182 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error importing products:", error);
       res.status(500).json({ message: "Failed to import products" });
+    }
+  });
+
+  // ============================================================================
+  // PBV2-Aware Product Import/Export (v2)
+  // ============================================================================
+
+  /**
+   * GET /api/admin/products/export
+   * Export all products with full PBV2 tree definitions
+   * Org-scoped, admin-only
+   */
+  app.get("/api/admin/products/export", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const { exportProducts } = await import("./services/pbv2ExportMapper");
+
+      // Fetch all products for org
+      const allProducts = await db
+        .select()
+        .from(products)
+        .where(eq(products.organizationId, organizationId))
+        .orderBy(asc(products.name));
+
+      // Fetch all PBV2 trees for these products
+      const productIds = allProducts.map(p => p.id);
+      const pbv2Trees = new Map<string, { active?: any; draft?: any }>();
+
+      if (productIds.length > 0) {
+        const allTreeVersions = await db
+          .select()
+          .from(pbv2TreeVersions)
+          .where(
+            and(
+              eq(pbv2TreeVersions.organizationId, organizationId),
+              inArray(pbv2TreeVersions.productId, productIds)
+            )
+          );
+
+        for (const tree of allTreeVersions) {
+          if (!pbv2Trees.has(tree.productId)) {
+            pbv2Trees.set(tree.productId, {});
+          }
+          const entry = pbv2Trees.get(tree.productId)!;
+          if (tree.status === "ACTIVE") entry.active = tree;
+          if (tree.status === "DRAFT") entry.draft = tree;
+        }
+      }
+
+      // Fetch reference data
+      const [allProductTypes, allMaterials, org] = await Promise.all([
+        db.select().from(productTypes).where(eq(productTypes.organizationId, organizationId)),
+        db.select().from(materials).where(eq(materials.organizationId, organizationId)),
+        db.select().from(organizations).where(eq(organizations.id, organizationId)).limit(1),
+      ]);
+
+      const exportData = await exportProducts(
+        {
+          db,
+          organizationId,
+          orgName: org[0]?.name,
+        },
+        allProducts,
+        pbv2Trees,
+        allProductTypes,
+        allMaterials
+      );
+
+      // Audit log
+      await db.insert(auditLogs).values({
+        organizationId,
+        userId: userId || null,
+        actionType: "EXPORT",
+        entityType: "product",
+        entityId: null,
+        description: `Exported ${exportData.products.length} products`,
+        newValues: { count: exportData.products.length },
+      });
+
+      res.json(exportData);
+    } catch (error: any) {
+      console.error("[Product Export] Error:", error);
+      res.status(500).json({ error: error.message || "Failed to export products" });
+    }
+  });
+
+  /**
+   * POST /api/admin/products/import?dryRun=1|0
+   * Import products with PBV2 trees
+   * Org-scoped, admin-only
+   */
+  app.post("/api/admin/products/import", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const dryRun = req.query.dryRun === "1" || req.query.dryRun === "true";
+      const mode = (req.body.mode || "upsertBySlug") as any;
+
+      const { productImportV2RequestSchema } = await import("@shared/importExportSchemas");
+      const { buildImportPlan, applyImport } = await import("./services/pbv2ImportMapper");
+
+      // Validate request body
+      const validation = productImportV2RequestSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({
+          error: "Invalid import request",
+          details: validation.error.errors,
+        });
+      }
+
+      const importRequest = validation.data;
+
+      if (!userId) {
+        return res.status(403).json({ error: "User ID required" });
+      }
+
+      const ctx = {
+        db,
+        organizationId,
+        userId,
+        mode,
+      };
+
+      if (dryRun) {
+        // Dry-run: validate and return plan
+        const plan = await buildImportPlan(ctx, importRequest);
+
+        // Audit log
+        await db.insert(auditLogs).values({
+          organizationId,
+          userId,
+          actionType: "VALIDATE",
+          entityType: "product",
+          entityId: null,
+          description: `Dry-run validation: ${plan.counts.total} products, ${plan.errors.length} errors`,
+          newValues: {
+            total: plan.counts.total,
+            create: plan.counts.create,
+            update: plan.counts.update,
+            skip: plan.counts.skip,
+            errorCount: plan.errors.length,
+          },
+        });
+
+        res.json(plan);
+      } else {
+        // Apply import
+        const result = await applyImport(ctx, importRequest);
+
+        // Audit log
+        await db.insert(auditLogs).values({
+          organizationId,
+          userId,
+          actionType: "IMPORT",
+          entityType: "product",
+          entityId: null,
+          description: `Imported products: ${result.counts.created} created, ${result.counts.updated} updated, ${result.counts.failed} failed`,
+          newValues: {
+            total: result.counts.total,
+            created: result.counts.created,
+            updated: result.counts.updated,
+            skipped: result.counts.skipped,
+            failed: result.counts.failed,
+          },
+        });
+
+        res.json(result);
+      }
+    } catch (error: any) {
+      console.error("[Product Import] Error:", error);
+      res.status(500).json({ error: error.message || "Failed to import products" });
     }
   });
 

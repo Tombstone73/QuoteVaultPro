@@ -58,6 +58,7 @@ import PlatformOrgCreatePage from "@/pages/platform/PlatformOrgCreatePage";
 import AcceptInvitePage from "@/pages/accept-invite";
 import SelectOrgPage from "@/pages/SelectOrgPage";
 import BugReportsPage from "@/pages/admin/BugReportsPage";
+import ProductImportExport from "@/pages/admin/ProductImportExport";
 import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
 
 function Router() {
@@ -136,6 +137,7 @@ function Router() {
         <Route path="/admin/products" element={<ProductsPage />} />
         <Route path="/admin/product-types" element={<ProductTypesSettings />} />
         <Route path="/admin/bug-reports" element={<BugReportsPage />} />
+        <Route path="/admin/products/import-export" element={<ProductImportExport />} />
         <Route path="/users" element={<UserManagement />} />
         <Route path="/admin" element={<Admin />} />
         
