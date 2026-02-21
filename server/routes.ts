@@ -2018,6 +2018,121 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ============================================================
+  // DANGER ZONE: Organization Reset/Disable/Delete (Stubs)
+  // ============================================================
+
+  /**
+   * POST /api/admin/org/reset
+   * Reset organization transactional data (orders, invoices, quotes, production records).
+   * Preserves organization, users, and core configuration.
+   * Requires owner/admin role.
+   */
+  app.post("/api/admin/org/reset", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+
+      if (!userId) {
+        return res.status(401).json({ message: "User ID not found" });
+      }
+
+      // Audit log
+      await db.insert(auditLogs).values({
+        organizationId,
+        userId,
+        actionType: "org.reset.requested",
+        entityType: "organization",
+        entityId: organizationId,
+        description: "Organization data reset requested",
+        newValues: {},
+      });
+
+      // Return 501 Not Implemented
+      return res.status(501).json({
+        code: "NOT_IMPLEMENTED",
+        message: "Organization reset functionality is not yet implemented. Please contact system administrator.",
+      });
+    } catch (error: any) {
+      console.error("[Org Reset] Error:", error);
+      res.status(500).json({ message: error.message || "Failed to reset organization" });
+    }
+  });
+
+  /**
+   * POST /api/admin/org/disable
+   * Disable organization - prevents non-admin access.
+   * Organization remains in system.
+   * Requires owner/admin role.
+   */
+  app.post("/api/admin/org/disable", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+
+      if (!userId) {
+        return res.status(401).json({ message: "User ID not found" });
+      }
+
+      // Audit log
+      await db.insert(auditLogs).values({
+        organizationId,
+        userId,
+        actionType: "org.disable.requested",
+        entityType: "organization",
+        entityId: organizationId,
+        description: "Organization disable requested",
+        newValues: {},
+      });
+
+      // Return 501 Not Implemented
+      return res.status(501).json({
+        code: "NOT_IMPLEMENTED",
+        message: "Organization disable functionality is not yet implemented. Please contact system administrator.",
+      });
+    } catch (error: any) {
+      console.error("[Org Disable] Error:", error);
+      res.status(500).json({ message: error.message || "Failed to disable organization" });
+    }
+  });
+
+  /**
+   * DELETE /api/admin/org
+   * Permanently delete organization and all associated data.
+   * THIS IS IRREVERSIBLE.
+   * Requires owner/admin role.
+   */
+  app.delete("/api/admin/org", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+
+      if (!userId) {
+        return res.status(401).json({ message: "User ID not found" });
+      }
+
+      // Audit log
+      await db.insert(auditLogs).values({
+        organizationId,
+        userId,
+        actionType: "org.delete.requested",
+        entityType: "organization",
+        entityId: organizationId,
+        description: "Organization deletion requested",
+        newValues: {},
+      });
+
+      // Return 501 Not Implemented
+      return res.status(501).json({
+        code: "NOT_IMPLEMENTED",
+        message: "Organization deletion functionality is not yet implemented. Please contact system administrator.",
+      });
+    } catch (error: any) {
+      console.error("[Org Delete] Error:", error);
+      res.status(500).json({ message: error.message || "Failed to delete organization" });
+    }
+  });
+
   // ============================================================================
   // PBV2 (Product Builder v2) - Versioned Tree Lifecycle
   // ============================================================================
