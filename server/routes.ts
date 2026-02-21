@@ -9305,6 +9305,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             id: orderLineItems.id,
             orderId: orderLineItems.orderId,
             status: orderLineItems.status,
+            requiresPrepress: orderLineItems.requiresPrepress,
           })
           .from(orderLineItems)
           .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
@@ -9392,6 +9393,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 stepKey,
               },
             });
+
+            // Set line item status based on requiresPrepress:
+            //   requiresPrepress=true  → pending_prepress (goes to prepress queue first)
+            //   requiresPrepress=false → print_ready      (goes directly to production board)
+            // Only set status when the item is in a neutral/initial state (don't override
+            // an item that already has an active prepress workflow state).
+            const neutralStatuses = ['queued', 'new', ''];
+            if (neutralStatuses.includes(li.status || '')) {
+              const targetStatus = li.requiresPrepress ? 'pending_prepress' : 'print_ready';
+              await tx
+                .update(orderLineItems)
+                .set({ status: targetStatus, updatedAt: new Date() })
+                .where(eq(orderLineItems.id, li.id));
+
+              if (process.env.NODE_ENV !== "production") {
+                console.log(`[ProductionIntake] Set lineItem ${li.id} status: ${li.status} → ${targetStatus} (requiresPrepress=${li.requiresPrepress})`);
+              }
+            }
 
             return inserted;
           }
@@ -9704,15 +9723,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         orderIdRaw ? eq(productionJobs.orderId, orderIdRaw) : undefined,
       );
 
-      // PROMPT A: Prepress Gate Enforcement
-      // When querying for Flatbed or Roll boards, exclude jobs whose line items require prepress
-      // but haven't completed it yet (pending_prepress, in_prepress, prepress_complete).
-      // Only allow line items that either:
-      // 1) Don't require prepress at all (requiresPrepress = false), OR
-      // 2) Require prepress AND have status in (print_ready, printing, done, complete)
+      // PROMPT A (revised): Prepress Gate Enforcement — DENY-LIST approach
+      // Block items that are ACTIVELY in prepress workflow states.
+      // Items with status "queued" (legacy/unprocessed) are ALLOWED so existing roll/flatbed jobs
+      // are not accidentally hidden. New items will be set to "pending_prepress" at intake time.
       //
-      // This ensures prepress-dependent jobs never leak onto production boards until explicitly
-      // sent to print queue via the "Send to Print Queue" action.
+      // EXCLUDED from boards: requiresPrepress=true AND status IN (pending_prepress, in_prepress, prepress_complete)
+      // ALLOWED: requiresPrepress=false, OR status is anything else (queued, print_ready, printing, done, complete, etc.)
+      //
+      // NULL handling:
+      //   - requiresPrepress NULL → treat as true (hide until corrected)
+      //   - status NULL → hide and log so we can spot bad data
       const prepressGateApplies = station && (station === 'flatbed' || station === 'roll');
 
       const baseRows = await db
@@ -9735,31 +9756,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
           routingTarget: orders.routingTarget,
           customerId: customers.id,
           customerName: customers.companyName,
-          // ADDED: Prepress gate fields for filtering
+          // Prepress gate fields (null when no line item linked)
           lineItemRequiresPrepress: orderLineItems.requiresPrepress,
           lineItemStatus: orderLineItems.status,
         })
         .from(productionJobs)
         .innerJoin(orders, eq(productionJobs.orderId, orders.id))
         .innerJoin(customers, eq(orders.customerId, customers.id))
-        // LEFT JOIN order_line_items to apply prepress gate
         .leftJoin(orderLineItems, eq(productionJobs.lineItemId, orderLineItems.id))
         .where(whereClause)
         .orderBy(desc(productionJobs.updatedAt));
 
-      // Apply prepress gate filtering in-memory (cleaner than complex SQL with edge cases)
+      // Deny-list gate: only exclude jobs that are explicitly mid-prepress
+      const PREPRESS_BLOCKED_STATUSES = ['pending_prepress', 'in_prepress', 'prepress_complete'] as const;
       const filteredRows = prepressGateApplies
         ? baseRows.filter(row => {
-            // If no line item linked, allow it (intake/unlinked jobs)
-            if (!row.lineItemId || row.lineItemRequiresPrepress === null) return true;
-            
-            // If line item doesn't require prepress, allow it
-            if (row.lineItemRequiresPrepress === false) return true;
-            
-            // If line item requires prepress, only allow if status is print_ready or beyond
-            // EXCLUDE: queued, pending_prepress, in_prepress, prepress_complete
-            const allowedStatuses = ['print_ready', 'printing', 'done', 'complete'];
-            return allowedStatuses.includes(row.lineItemStatus || '');
+            // No line item linked → allow (intake/unlinked jobs)
+            if (!row.lineItemId) return true;
+
+            // requiresPrepress NULL → treat as true (hide until data corrected)
+            const reqPrepress = row.lineItemRequiresPrepress ?? true;
+
+            // If doesn't require prepress → always allow
+            if (!reqPrepress) return true;
+
+            // Status NULL → hide and log
+            if (row.lineItemStatus === null) {
+              if (process.env.NODE_ENV !== "production") {
+                console.warn(`[Prepress Gate] Job ${row.id}: lineItemId ${row.lineItemId} has NULL status — hiding from board`);
+              }
+              return false;
+            }
+
+            // Requires prepress: BLOCK only if in a prepress workflow state
+            // "queued", "print_ready", "printing", "done", "complete" → ALLOW
+            return !PREPRESS_BLOCKED_STATUSES.includes(row.lineItemStatus as any);
           })
         : baseRows;
 
@@ -11695,26 +11726,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const printTypeFilter = req.query.printType as string | undefined;
       const searchQuery = req.query.search as string | undefined;
 
-      // Build WHERE conditions
-      const conditions: any[] = [];
-      
-      if (statusFilter.length > 0) {
-        conditions.push(inArray(orderLineItems.status, statusFilter));
-      }
-      
-      if (printTypeFilter) {
+      // Build WHERE conditions.
+      // Prepress queue shows ONLY items that require prepress (requiresPrepress=true).
+      // Default (no status filter) shows all active prepress states; caller can override.
+      const defaultStatuses = ['pending_prepress', 'in_prepress', 'prepress_complete'];
+      const activeStatusFilter = statusFilter.length > 0 ? statusFilter : defaultStatuses;
+
+      const conditions: any[] = [
+        eq(orders.organizationId, organizationId),           // Always filter by org
+        eq(orderLineItems.requiresPrepress, true),           // Prepress queue = prepress items only
+        inArray(orderLineItems.status, activeStatusFilter),  // Status filter (default: prepress states)
+      ];
+
+      if (printTypeFilter && printTypeFilter !== 'all') {
         conditions.push(eq(orderLineItems.productType, printTypeFilter));
       }
 
-      // Get line items with order and session data
+      // Get line items with order, customer, and session data
       const items = await db
         .select({
-          lineItem: orderLineItems,
-          order: orders,
-          session: prepressSessions,
+          lineItemId: orderLineItems.id,
+          status: orderLineItems.status,
+          description: orderLineItems.description,
+          productType: orderLineItems.productType,
+          quantity: orderLineItems.quantity,
+          width: orderLineItems.width,
+          height: orderLineItems.height,
+          sqft: orderLineItems.sqft,
+          orderNumber: orders.orderNumber,
+          dueDate: orders.dueDate,
+          priority: orders.priority,
+          customerName: customers.companyName,
+          sessionId: prepressSessions.id,
+          lockedBy: prepressSessions.lockOwnerUserId,
         })
         .from(orderLineItems)
         .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .innerJoin(customers, eq(orders.customerId, customers.id))
         .leftJoin(
           prepressSessions,
           and(
@@ -11723,10 +11771,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           )
         )
         .where(and(...conditions))
-        .orderBy(orders.createdAt);
+        .orderBy(asc(orders.dueDate), desc(orders.priority));
 
       // Get file counts for each line item
-      const lineItemIds = items.map((i) => i.lineItem.id);
+      const lineItemIds = items.map((i) => i.lineItemId);
       const fileCounts = lineItemIds.length > 0
         ? await db
             .select({
@@ -11744,20 +11792,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .groupBy(lineItemFiles.lineItemId, lineItemFiles.role)
         : [];
 
-      // Build response with file counts
+      // Map to flat QueueItem shape the frontend expects
       const queue = items.map((item) => {
-        const counts = fileCounts.filter((fc) => fc.lineItemId === item.lineItem.id);
+        const counts = fileCounts.filter((fc) => fc.lineItemId === item.lineItemId);
         const originals = counts.find((c) => c.role === "original")?.count || 0;
         const finals = counts.find((c) => c.role === "final")?.count || 0;
-        const references = counts.find((c) => c.role === "reference")?.count || 0;
 
         return {
-          lineItem: item.lineItem,
-          order: item.order,
-          session: item.session,
-          fileCounts: { originals, finals, references },
+          lineItemId: item.lineItemId,
+          jobNumber: item.orderNumber,
+          customerName: item.customerName ?? "—",
+          productName: item.description,
+          printType: item.productType ?? null,
+          media: null,
+          dueDate: item.dueDate ?? null,
+          status: item.status,
+          rush: item.priority === "rush",
+          assignedTo: null,
+          lockedBy: item.lockedBy ?? null,
+          sessionId: item.sessionId ?? null,
+          fileCounts: { originals, finals },
+          quantity: Number(item.quantity) || 0,
+          width: item.width != null ? Number(item.width) : null,
+          height: item.height != null ? Number(item.height) : null,
+          sqFootage: item.sqft != null ? Number(item.sqft) : null,
+          bleed: null,
+          finishing: null,
         };
       });
+
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[Prepress Queue] org=${organizationId} statuses=${activeStatusFilter.join(",")} → ${queue.length} items`);
+      }
 
       res.json({ success: true, data: queue });
     } catch (error: any) {
@@ -12020,7 +12086,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { lineItemId } = req.params;
 
       // 1. Verify line item exists and belongs to org
-      const [lineItem] = await db.select()
+      const [lineItem] = await db.select({
+          id: orderLineItems.id,
+          status: orderLineItems.status,
+          requiresPrepress: orderLineItems.requiresPrepress,
+        })
         .from(orderLineItems)
         .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
         .where(and(
@@ -12033,7 +12103,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Line item not found" });
       }
 
-      const item = lineItem.order_line_items;
+      const item = lineItem;
 
       // 2. Verify prepress requirement and status
       if (item.requiresPrepress && item.status !== 'prepress_complete') {
@@ -12045,10 +12115,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // 3. Verify at least one FINAL file exists
       const finalFiles = await db.select()
-        .from(prepressFiles)
+        .from(lineItemFiles)
         .where(and(
-          eq(prepressFiles.lineItemId, lineItemId),
-          eq(prepressFiles.role, 'final')
+          eq(lineItemFiles.lineItemId, lineItemId),
+          eq(lineItemFiles.role, 'final'),
+          eq(lineItemFiles.status, 'active')
         ))
         .limit(1);
 
