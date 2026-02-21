@@ -215,6 +215,39 @@ export default function PrepressProductionPageV2() {
     },
   });
 
+  // PROMPT B: Send to Print Queue mutation
+  const sendToPrintMutation = useMutation({
+    mutationFn: async (lineItemId: string) => {
+      const res = await fetch(`/api/prepress/line-item/${lineItemId}/send-to-print`, {
+        method: "POST",
+        credentials: "include",
+      });
+      
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "Failed to send to print");
+      }
+      
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      // Clear selection since item will move to production boards
+      setSelectedLineItemId(null);
+      toast({ 
+        title: "Sent to print queue", 
+        description: "Job is now ready for production boards" 
+      });
+    },
+    onError: (error: Error) => {
+      toast({ 
+        title: "Error", 
+        description: error.message, 
+        variant: "destructive" 
+      });
+    },
+  });
+
   // Derived state
   const queue = queueData || [];
   const selectedItem = queue.find(q => q.lineItemId === selectedLineItemId);
@@ -223,6 +256,11 @@ export default function PrepressProductionPageV2() {
   const hasFinalFiles = finalFiles.length > 0;
   const canComplete = hasFinalFiles && selectedItem?.sessionId && !selectedItem?.lockedBy;
   const isLocked = selectedItem?.lockedBy && !selectedItem?.sessionId;
+  // PROMPT B: Enable "Send to Print Queue" when prepress is complete and has final files
+  const canSendToPrint = 
+    selectedItem?.status === 'prepress_complete' && 
+    hasFinalFiles && 
+    !isLocked;
 
   // Clear selection if selected item is not in queue
   React.useEffect(() => {
@@ -256,6 +294,13 @@ export default function PrepressProductionPageV2() {
   const handleComplete = () => {
     if (selectedItem?.sessionId && canComplete) {
       completeSessionMutation.mutate(selectedItem.sessionId);
+    }
+  };
+
+  // PROMPT B: Send to Print Queue handler
+  const handleSendToPrint = () => {
+    if (selectedLineItemId) {
+      sendToPrintMutation.mutate(selectedLineItemId);
     }
   };
 
@@ -834,6 +879,29 @@ export default function PrepressProductionPageV2() {
                   Mark Prepress Complete
                   <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </>
+              )}
+            </Button>
+
+            {/* PROMPT B: Send to Print Queue button */}
+            <Button
+              onClick={handleSendToPrint}
+              disabled={!canSendToPrint || sendToPrintMutation.isPending}
+              className={cn(
+                "font-bold shadow-lg transition-all",
+                canSendToPrint
+                  ? "bg-green-600 text-white hover:bg-green-700"
+                  : "bg-slate-700 text-slate-500 cursor-not-allowed"
+              )}
+            >
+              {sendToPrintMutation.isPending ? (
+                <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Sending...</>
+              ) : (
+                <>
+                  Send to Print Queue
+                  <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
                   </svg>
                 </>
               )}

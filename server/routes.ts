@@ -9704,6 +9704,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         orderIdRaw ? eq(productionJobs.orderId, orderIdRaw) : undefined,
       );
 
+      // PROMPT A: Prepress Gate Enforcement
+      // When querying for Flatbed or Roll boards, exclude jobs whose line items require prepress
+      // but haven't completed it yet (pending_prepress, in_prepress, prepress_complete).
+      // Only allow line items that either:
+      // 1) Don't require prepress at all (requiresPrepress = false), OR
+      // 2) Require prepress AND have status in (print_ready, printing, done, complete)
+      //
+      // This ensures prepress-dependent jobs never leak onto production boards until explicitly
+      // sent to print queue via the "Send to Print Queue" action.
+      const prepressGateApplies = station && (station === 'flatbed' || station === 'roll');
+
       const baseRows = await db
         .select({
           id: productionJobs.id,
@@ -9724,18 +9735,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
           routingTarget: orders.routingTarget,
           customerId: customers.id,
           customerName: customers.companyName,
+          // ADDED: Prepress gate fields for filtering
+          lineItemRequiresPrepress: orderLineItems.requiresPrepress,
+          lineItemStatus: orderLineItems.status,
         })
         .from(productionJobs)
         .innerJoin(orders, eq(productionJobs.orderId, orders.id))
         .innerJoin(customers, eq(orders.customerId, customers.id))
+        // LEFT JOIN order_line_items to apply prepress gate
+        .leftJoin(orderLineItems, eq(productionJobs.lineItemId, orderLineItems.id))
         .where(whereClause)
         .orderBy(desc(productionJobs.updatedAt));
 
-      if (baseRows.length === 0) {
+      // Apply prepress gate filtering in-memory (cleaner than complex SQL with edge cases)
+      const filteredRows = prepressGateApplies
+        ? baseRows.filter(row => {
+            // If no line item linked, allow it (intake/unlinked jobs)
+            if (!row.lineItemId || row.lineItemRequiresPrepress === null) return true;
+            
+            // If line item doesn't require prepress, allow it
+            if (row.lineItemRequiresPrepress === false) return true;
+            
+            // If line item requires prepress, only allow if status is print_ready or beyond
+            // EXCLUDE: queued, pending_prepress, in_prepress, prepress_complete
+            const allowedStatuses = ['print_ready', 'printing', 'done', 'complete'];
+            return allowedStatuses.includes(row.lineItemStatus || '');
+          })
+        : baseRows;
+
+      // DEV-only logging: show how many items were gated
+      if (process.env.NODE_ENV !== "production" && prepressGateApplies) {
+        const gatedCount = baseRows.length - filteredRows.length;
+        if (gatedCount > 0) {
+          console.log(`[Prepress Gate] ${station} board: Excluded ${gatedCount} of ${baseRows.length} jobs requiring prepress`);
+        }
+      }
+
+      if (filteredRows.length === 0) {
         return res.json({ success: true, data: [] });
       }
 
-      const jobIds = baseRows.map((r) => r.id);
+      const jobIds = filteredRows.map((r) => r.id);
 
       const timerEventRows = await db
         .select({
@@ -9809,14 +9849,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Batched order enrichment for cockpit UI (no schema changes, no N+1)
-      const orderIds = Array.from(new Set(baseRows.map((r) => r.orderId)));
+      const orderIds = Array.from(new Set(filteredRows.map((r) => r.orderId)));
 
       // Collect BOTH order IDs (for context) AND explicit line item IDs from production_jobs
       // This ensures we fetch the specific line item each job references, even if it's
       // not the first/default line item for the order
       const productionLineItemIds = Array.from(
         new Set(
-          baseRows
+          filteredRows
             .map((r) => r.lineItemId)
             .filter((v): v is string => typeof v === "string" && !!v.trim()),
         ),
@@ -10163,7 +10203,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       };
 
       const now = Date.now();
-      const data = baseRows.map((row) => {
+      const data = filteredRows.map((row) => {
         const lastTimer = latestTimerEventByJobId.get(row.id);
         const isRunning = lastTimer?.type === "timer_started";
         const runningSince = isRunning ? new Date(lastTimer!.createdAt as any).toISOString() : null;
@@ -11964,6 +12004,104 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const status = error?.statusCode || 500;
       console.error("[Prepress] Error completing session:", error);
       res.status(status).json({ error: error?.message || "Failed to complete session" });
+    }
+  });
+
+  // PROMPT B: POST /api/prepress/line-item/:lineItemId/send-to-print
+  // Transitions prepress_complete → print_ready (explicit handoff to production boards)
+  app.post("/api/prepress/line-item/:lineItemId/send-to-print", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+      
+      const { lineItemId } = req.params;
+
+      // 1. Verify line item exists and belongs to org
+      const [lineItem] = await db.select()
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .where(and(
+          eq(orderLineItems.id, lineItemId),
+          eq(orders.organizationId, organizationId)
+        ))
+        .limit(1);
+
+      if (!lineItem) {
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      const item = lineItem.order_line_items;
+
+      // 2. Verify prepress requirement and status
+      if (item.requiresPrepress && item.status !== 'prepress_complete') {
+        return res.status(400).json({ 
+          error: "Line item must complete prepress first",
+          currentStatus: item.status
+        });
+      }
+
+      // 3. Verify at least one FINAL file exists
+      const finalFiles = await db.select()
+        .from(prepressFiles)
+        .where(and(
+          eq(prepressFiles.lineItemId, lineItemId),
+          eq(prepressFiles.role, 'final')
+        ))
+        .limit(1);
+
+      if (finalFiles.length === 0) {
+        return res.status(400).json({ error: "At least one final file is required before sending to print" });
+      }
+
+      // 4. Check if already at or past print_ready
+      const ineligibleStatuses = ['print_ready', 'printing', 'done', 'complete'];
+      if (ineligibleStatuses.includes(item.status)) {
+        return res.status(400).json({ 
+          error: "Line item is already in production queue",
+          currentStatus: item.status
+        });
+      }
+
+      // 5. Transition to PRINT_READY
+      await db.update(orderLineItems)
+        .set({
+          status: 'print_ready',
+          updatedAt: new Date()
+        })
+        .where(eq(orderLineItems.id, lineItemId));
+
+      // 6. Create audit log
+      await db.insert(auditLogs).values({
+        organizationId,
+        userId,
+        userName: req.user?.email || req.user?.name || null,
+        actionType: "UPDATE",
+        entityType: "order_line_item",
+        entityId: lineItemId,
+        entityName: `Line item ${lineItemId}`,
+        description: "Sent to print queue from prepress",
+        oldValues: { status: item.status },
+        newValues: { status: 'print_ready' },
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+      } as any);
+
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[Send to Print] Line item ${lineItemId} sent to print queue by user ${userId}`);
+      }
+
+      res.json({ 
+        success: true, 
+        message: "Sent to print queue successfully",
+        newStatus: 'print_ready'
+      });
+
+    } catch (error) {
+      console.error("[Send to Print] Error:", error);
+      res.status(500).json({ error: "Failed to send to print queue" });
     }
   });
 
