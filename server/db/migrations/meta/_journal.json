@@ -288,6 +288,13 @@
       "when": 1739318963484,
       "tag": "0048_org_soft_delete",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1739318963485,
+      "tag": "0049_bug_reports_multiple_screenshots",
+      "breakpoints": true
     }
   ]
 }
