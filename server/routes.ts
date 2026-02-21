@@ -12176,6 +12176,97 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // PROMPT D: POST /api/production/line-item/:lineItemId/send-to-prepress
+  // Kickback from production board to prepress with a required edit-request note.
+  app.post("/api/production/line-item/:lineItemId/send-to-prepress", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const { lineItemId } = req.params;
+      const { note, noPrintsCompletedYet } = req.body;
+
+      // Validate note (required)
+      if (!note || typeof note !== 'string' || !note.trim()) {
+        return res.status(400).json({ error: "Note is required" });
+      }
+
+      // Verify line item belongs to org
+      const [lineItem] = await db.select({
+          id: orderLineItems.id,
+          status: orderLineItems.status,
+          orderId: orderLineItems.orderId,
+        })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .where(and(
+          eq(orderLineItems.id, lineItemId),
+          eq(orders.organizationId, organizationId)
+        ))
+        .limit(1);
+
+      if (!lineItem) {
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      // Deactivate any existing active prepress sessions for this item
+      await db.update(prepressSessions)
+        .set({ status: "complete", completedAt: new Date() })
+        .where(and(
+          eq(prepressSessions.lineItemId, lineItemId),
+          eq(prepressSessions.status, "active")
+        ));
+
+      // Create new prepress session as edit request
+      const editNote = `[EDIT REQUEST FROM PRODUCTION]\n${note.trim()}`;
+      const [session] = await db.insert(prepressSessions).values({
+        organizationId,
+        orderId: lineItem.orderId,
+        lineItemId,
+        status: "active",
+        startedByUserId: userId,
+        lockOwnerUserId: userId,
+        issueFlag: true,
+        issueType: "production_edit_request",
+        notesText: editNote,
+      }).returning({ id: prepressSessions.id });
+
+      // Update line item status back to pending_prepress
+      await db.update(orderLineItems)
+        .set({ status: 'pending_prepress', updatedAt: new Date() })
+        .where(eq(orderLineItems.id, lineItemId));
+
+      // Audit log
+      await db.insert(auditLogs).values({
+        organizationId,
+        userId,
+        userName: req.user?.email || req.user?.name || null,
+        actionType: "UPDATE",
+        entityType: "order_line_item",
+        entityId: lineItemId,
+        entityName: `Line item ${lineItemId}`,
+        description: "Sent to prepress for editing from production board",
+        oldValues: { status: lineItem.status },
+        newValues: { status: 'pending_prepress', note: note.trim(), noPrintsCompletedYet: noPrintsCompletedYet || false },
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+      } as any);
+
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[Send to Prepress] Line item ${lineItemId} sent back to prepress by user ${userId}`);
+      }
+
+      res.json({ success: true, message: "Sent to prepress for editing", sessionId: session?.id });
+
+    } catch (error) {
+      console.error("[Send to Prepress] Error:", error);
+      res.status(500).json({ error: "Failed to send to prepress" });
+    }
+  });
+
   // POST /api/prepress/files/upload - Upload file (multipart)
   app.post("/api/prepress/files/upload", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
