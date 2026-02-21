@@ -93,6 +93,16 @@ async function fetchBugReportDetail(id: string): Promise<BugReportDetail> {
   return body.data as BugReportDetail;
 }
 
+async function fetchScreenshotUrls(id: string): Promise<Array<{ path: string; url: string }>> {
+  const res = await fetch(`/api/bug-reports/${id}/screenshot-urls`, { credentials: "include" });
+  if (!res.ok) {
+    console.error("Failed to fetch screenshot URLs");
+    return [];
+  }
+  const body = await res.json();
+  return body.data || [];
+}
+
 async function patchBugReportStatus(id: string, status: string): Promise<{ id: string; status: string }> {
   const res = await fetch(`/api/bug-reports/${id}`, {
     method: "PATCH",
@@ -152,6 +162,12 @@ export default function BugReportsPage() {
   const { data: detail, isLoading: detailLoading } = useQuery<BugReportDetail>({
     queryKey: ["/api/bug-reports/detail", selectedId],
     queryFn: () => fetchBugReportDetail(selectedId!),
+    enabled: !!selectedId,
+  });
+
+  const { data: screenshotUrls, isLoading: screenshotsLoading } = useQuery<Array<{ path: string; url: string }>>({
+    queryKey: ["/api/bug-reports/screenshots", selectedId],
+    queryFn: () => fetchScreenshotUrls(selectedId!),
     enabled: !!selectedId,
   });
 
@@ -402,32 +418,36 @@ export default function BugReportsPage() {
 
                 {/* Screenshots */}
                 {(() => {
-                  // Collect all screenshots (new array + legacy single screenshot for backward compatibility)
-                  const screenshots: string[] = [];
-                  if (detail.screenshotUrls && detail.screenshotUrls.length > 0) {
-                    screenshots.push(...detail.screenshotUrls);
-                  } else if (detail.screenshotUrl) {
-                    screenshots.push(detail.screenshotUrl);
+                  if (screenshotsLoading) {
+                    return (
+                      <DetailSection label="Screenshots">
+                        <Skeleton className="h-32 w-full" />
+                      </DetailSection>
+                    );
                   }
 
-                  if (screenshots.length === 0) return null;
+                  if (!screenshotUrls || screenshotUrls.length === 0) return null;
 
                   return (
-                    <DetailSection label={screenshots.length === 1 ? "Screenshot" : `Screenshots (${screenshots.length})`}>
-                      <div className={screenshots.length === 1 ? "" : "grid grid-cols-2 gap-2"}>
-                        {screenshots.map((url, index) => (
+                    <DetailSection label={screenshotUrls.length === 1 ? "Screenshot" : `Screenshots (${screenshotUrls.length})`}>
+                      <div className={screenshotUrls.length === 1 ? "" : "grid grid-cols-2 gap-2"}>
+                        {screenshotUrls.map((item, index) => (
                           <a
                             key={index}
-                            href={url}
+                            href={item.url}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="block"
                           >
                             <img
-                              src={url}
+                              src={item.url}
                               alt={`Screenshot ${index + 1}`}
                               className="max-w-full rounded-md border border-border object-contain hover:opacity-90 transition-opacity"
-                              style={{ maxHeight: screenshots.length === 1 ? 320 : 200 }}
+                              style={{ maxHeight: screenshotUrls.length === 1 ? 320 : 200 }}
+                              onError={(e) => {
+                                console.error("Failed to load screenshot:", item.path);
+                                e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Crect fill='%23f0f0f0' width='200' height='200'/%3E%3Ctext x='50%25' y='50%25' font-family='Arial' font-size='14' fill='%23666' text-anchor='middle' dy='.3em'%3EImage unavailable%3C/text%3E%3C/svg%3E";
+                              }}
                             />
                           </a>
                         ))}
