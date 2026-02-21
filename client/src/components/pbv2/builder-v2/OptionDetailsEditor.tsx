@@ -76,6 +76,14 @@ export function OptionDetailsEditor({
   const hasEmptyValues = choices.some((c: any) => !c.value?.trim());
   const hasInvalidDefault = defaultValue && !choices.some((c: any) => c.value === defaultValue);
 
+  const quantityBasisOptions: Array<{ value: "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed"; label: string }> = [
+    { value: "area_sqft", label: "Area (sqft)" },
+    { value: "perimeter_ft", label: "Perimeter (ft)" },
+    { value: "linear_ft", label: "Linear (ft)" },
+    { value: "each", label: "Each" },
+    { value: "fixed", label: "Fixed Qty" },
+  ];
+
   return (
     <div className="space-y-4">
       <div className="space-y-3">
@@ -486,6 +494,170 @@ export function OptionDetailsEditor({
                               </div>
                             ) : (
                               <div className="text-xs text-slate-500 italic">No pricing impacts defined</div>
+                            )}
+                          </div>
+
+                          <div className="mt-3 pt-3 border-t border-slate-700">
+                            <div className="flex items-center justify-between mb-2">
+                              <div>
+                                <Label className="text-xs text-slate-400">Materials / Inventory</Label>
+                                <p className="text-[11px] text-slate-500 mt-0.5">Planned material usage metadata for Prepress</p>
+                              </div>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => {
+                                  const currentConsumption = Array.isArray(choice.inventoryConsumption) ? choice.inventoryConsumption : [];
+                                  onUpdateChoice(option.id, choice.value, {
+                                    inventoryConsumption: [
+                                      ...currentConsumption,
+                                      {
+                                        materialId: "",
+                                        quantityBasis: "area_sqft",
+                                        multiplier: 1,
+                                      },
+                                    ],
+                                  });
+                                }}
+                                className="h-6 text-xs text-slate-400 hover:text-slate-200"
+                              >
+                                <Plus className="h-3 w-3 mr-1" />
+                                Add Material
+                              </Button>
+                            </div>
+
+                            {Array.isArray(choice.inventoryConsumption) && choice.inventoryConsumption.length > 0 ? (
+                              <div className="space-y-2">
+                                {choice.inventoryConsumption.map((entry: any, entryIdx: number) => {
+                                  const basis = entry?.quantityBasis || "area_sqft";
+                                  const showFixedQty = basis === "fixed" || basis === "each";
+
+                                  const updateEntry = (entryUpdates: Record<string, unknown>) => {
+                                    const updated = [...(choice.inventoryConsumption || [])];
+                                    updated[entryIdx] = { ...updated[entryIdx], ...entryUpdates };
+                                    onUpdateChoice(option.id, choice.value, { inventoryConsumption: updated });
+                                  };
+
+                                  return (
+                                    <div key={entryIdx} className="bg-[#0f172a] border border-slate-600 rounded p-2 space-y-2">
+                                      <div className="flex items-start gap-2">
+                                        <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-2">
+                                          <div>
+                                            <Label className="text-xs text-slate-500 mb-1 block">Material ID *</Label>
+                                            <Input
+                                              value={entry?.materialId ?? ""}
+                                              onChange={(e) => updateEntry({ materialId: e.target.value })}
+                                              placeholder="material-id"
+                                              className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7"
+                                            />
+                                          </div>
+
+                                          <div>
+                                            <Label className="text-xs text-slate-500 mb-1 block">Quantity Basis</Label>
+                                            <Select
+                                              value={basis}
+                                              onValueChange={(value) => {
+                                                const nextBasis = value as "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed";
+                                                const next: Record<string, unknown> = { quantityBasis: nextBasis };
+                                                if (nextBasis !== "fixed" && nextBasis !== "each") {
+                                                  next.fixedQty = undefined;
+                                                }
+                                                updateEntry(next);
+                                              }}
+                                            >
+                                              <SelectTrigger className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7">
+                                                <SelectValue />
+                                              </SelectTrigger>
+                                              <SelectContent>
+                                                {quantityBasisOptions.map((qb) => (
+                                                  <SelectItem key={qb.value} value={qb.value}>{qb.label}</SelectItem>
+                                                ))}
+                                              </SelectContent>
+                                            </Select>
+                                          </div>
+
+                                          <div>
+                                            <Label className="text-xs text-slate-500 mb-1 block">Multiplier</Label>
+                                            <Input
+                                              type="number"
+                                              step="0.01"
+                                              min="0.01"
+                                              value={entry?.multiplier ?? 1}
+                                              onChange={(e) => {
+                                                const val = Number(e.target.value);
+                                                updateEntry({ multiplier: Number.isFinite(val) && val > 0 ? val : 1 });
+                                              }}
+                                              className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7"
+                                            />
+                                          </div>
+
+                                          <div>
+                                            <Label className="text-xs text-slate-500 mb-1 block">Waste % (optional)</Label>
+                                            <Input
+                                              type="number"
+                                              step="0.01"
+                                              min="0"
+                                              max="100"
+                                              value={entry?.wastePercent ?? ""}
+                                              onChange={(e) => {
+                                                const raw = e.target.value;
+                                                if (raw === "") {
+                                                  updateEntry({ wastePercent: undefined });
+                                                  return;
+                                                }
+                                                const val = Number(raw);
+                                                if (!Number.isFinite(val)) return;
+                                                updateEntry({ wastePercent: Math.max(0, Math.min(100, val)) });
+                                              }}
+                                              className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7"
+                                            />
+                                          </div>
+
+                                          {showFixedQty && (
+                                            <div>
+                                              <Label className="text-xs text-slate-500 mb-1 block">Fixed Qty {basis === "fixed" ? "*" : "(optional)"}</Label>
+                                              <Input
+                                                type="number"
+                                                step="0.01"
+                                                min="0"
+                                                value={entry?.fixedQty ?? ""}
+                                                onChange={(e) => {
+                                                  const raw = e.target.value;
+                                                  if (raw === "") {
+                                                    updateEntry({ fixedQty: undefined });
+                                                    return;
+                                                  }
+                                                  const val = Number(raw);
+                                                  if (!Number.isFinite(val)) return;
+                                                  updateEntry({ fixedQty: Math.max(0, val) });
+                                                }}
+                                                className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7"
+                                              />
+                                            </div>
+                                          )}
+                                        </div>
+
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={() => {
+                                            const updated = [...(choice.inventoryConsumption || [])];
+                                            updated.splice(entryIdx, 1);
+                                            onUpdateChoice(option.id, choice.value, { inventoryConsumption: updated });
+                                          }}
+                                          className="text-red-400 hover:text-red-300 h-6 w-6 p-0 mt-1"
+                                        >
+                                          <Trash2 className="h-3 w-3" />
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <div className="text-xs text-slate-500 italic">No materials defined</div>
                             )}
                           </div>
                         </div>

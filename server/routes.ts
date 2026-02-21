@@ -53,6 +53,7 @@ import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBoo
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2OverrideConfig";
 import { createLineItemFileRecord } from "./services/lineItemFileRecordService";
 import { resolveVisibleNodes } from "@shared/optionTreeV2Runtime";
+import { computePlannedMaterialsForLineItem } from "./services/prepressPlannedMaterials";
 
 // Auth provider selection logic
 // Priority: AUTH_PROVIDER env var > detection logic
@@ -12253,6 +12254,89 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("[Prepress] Error fetching queue:", error);
       res.status(500).json({ error: error?.message || "Failed to fetch prepress queue" });
+    }
+  });
+
+  // GET /api/prepress/line-items/:lineItemId/materials-planned - Planned materials from PBV2 selected choices
+  app.get("/api/prepress/line-items/:lineItemId/materials-planned", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(500).json({ success: false, data: { materials: [] }, message: "Missing organization context" });
+      }
+
+      const { lineItemId } = req.params;
+
+      const [lineItem] = await db
+        .select({
+          id: orderLineItems.id,
+          quantity: orderLineItems.quantity,
+          width: orderLineItems.width,
+          height: orderLineItems.height,
+          optionSelectionsJson: orderLineItems.optionSelectionsJson,
+          pbv2TreeVersionId: orderLineItems.pbv2TreeVersionId,
+        })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+
+      if (!lineItem) {
+        return res.status(404).json({ success: false, data: { materials: [] }, message: "Line item not found" });
+      }
+
+      if (!lineItem.pbv2TreeVersionId) {
+        return res.json({ success: true, data: { materials: [] }, message: "No PBV2 tree linked to this line item" });
+      }
+
+      const [treeVersion] = await db
+        .select({ id: pbv2TreeVersions.id, treeJson: pbv2TreeVersions.treeJson })
+        .from(pbv2TreeVersions)
+        .where(
+          and(
+            eq(pbv2TreeVersions.id, lineItem.pbv2TreeVersionId),
+            eq(pbv2TreeVersions.organizationId, organizationId)
+          )
+        )
+        .limit(1);
+
+      if (!treeVersion?.treeJson || (treeVersion.treeJson as any)?.schemaVersion !== 2) {
+        return res.json({ success: true, data: { materials: [] }, message: "PBV2 tree not available for planned material calculation" });
+      }
+
+      const computed = computePlannedMaterialsForLineItem({
+        lineItem,
+        treeJson: treeVersion.treeJson as any,
+      });
+
+      const materialIds = Array.from(new Set(computed.materials.map((m) => m.materialId).filter(Boolean)));
+      const materialRows = materialIds.length > 0
+        ? await db
+            .select({ id: materials.id, name: materials.name })
+            .from(materials)
+            .where(and(eq(materials.organizationId, organizationId), inArray(materials.id, materialIds)))
+        : [];
+
+      const materialNameById = new Map<string, string>(materialRows.map((m) => [m.id, m.name]));
+
+      const resolvedMaterials = computed.materials.map((m) => ({
+        ...m,
+        materialName: materialNameById.get(m.materialId),
+      }));
+
+      return res.json({
+        success: true,
+        data: { materials: resolvedMaterials },
+        ...(computed.message ? { message: computed.message } : {}),
+      });
+    } catch (error: any) {
+      console.error("[Prepress] Error computing planned materials:", error);
+      return res.status(500).json({
+        success: false,
+        data: { materials: [] },
+        message: error?.message || "Failed to compute planned materials",
+      });
     }
   });
 
