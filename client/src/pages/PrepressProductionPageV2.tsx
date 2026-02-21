@@ -222,6 +222,13 @@ export default function PrepressProductionPageV2() {
   const canComplete = hasFinalFiles && selectedItem?.sessionId && !selectedItem?.lockedBy;
   const isLocked = selectedItem?.lockedBy && !selectedItem?.sessionId;
 
+  // Clear selection if selected item is not in queue
+  React.useEffect(() => {
+    if (selectedLineItemId && !selectedItem) {
+      setSelectedLineItemId(null);
+    }
+  }, [selectedLineItemId, selectedItem]);
+
   // Handlers
   const handleRefresh = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
@@ -288,7 +295,6 @@ export default function PrepressProductionPageV2() {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-xl font-bold tracking-tight">Prepress Queue</h1>
-              <p className="text-xs text-slate-400">TitanOS ERP Production v2.4</p>
             </div>
             <button onClick={handleRefresh} className="p-2 hover:bg-white/10 rounded-lg transition-colors" disabled={queueLoading}>
               <RefreshCw className={cn("w-4 h-4", queueLoading && "animate-spin")} />
@@ -402,23 +408,38 @@ export default function PrepressProductionPageV2() {
         <header className="p-6 border-b border-[#2d3748] bg-[#1a232e]/30 flex justify-between items-center">
           <div className="flex items-center gap-6">
             <div>
-              <h2 className="text-2xl font-black text-white">JOB-94028</h2>
-              <div className="flex items-center gap-2 mt-1">
-                <span className="bg-[#1773cf]/20 text-[#1773cf] text-[10px] font-bold px-2 py-0.5 rounded border border-[#1773cf]/30 uppercase tracking-widest">
-                  In Prepress
-                </span>
-                <span className="text-slate-400 text-xs">Assigned to: Alex M.</span>
-              </div>
+              <h2 className="text-2xl font-black text-white">
+                {selectedItem ? selectedItem.jobNumber : "Select a line item"}
+              </h2>
+              {selectedItem && (
+                <div className="flex items-center gap-2 mt-1">
+                  <span className={cn(
+                    "text-[10px] font-bold px-2 py-0.5 rounded border uppercase tracking-widest",
+                    selectedItem.status === "in_prepress" && "bg-[#1773cf]/20 text-[#1773cf] border-[#1773cf]/30",
+                    selectedItem.status === "pending_prepress" && "bg-slate-700 text-slate-300 border-[#2d3748]",
+                    selectedItem.status === "prepress_complete" && "bg-green-700/20 text-green-400 border-green-700/30"
+                  )}>
+                    {selectedItem.status === "in_prepress" && "In Prepress"}
+                    {selectedItem.status === "pending_prepress" && "Pending"}
+                    {selectedItem.status === "prepress_complete" && "Complete"}
+                  </span>
+                  {selectedItem.assignedTo && (
+                    <span className="text-slate-400 text-xs">Assigned to: {selectedItem.assignedTo}</span>
+                  )}
+                </div>
+              )}
             </div>
             <div className="h-10 w-px bg-[#2d3748]"></div>
             <div className="flex gap-8">
               <div>
                 <p className="text-[10px] uppercase text-slate-500 font-bold tracking-tighter">Customer</p>
-                <p className="text-sm font-semibold">Global Logistics Solutions</p>
+                <p className="text-sm font-semibold">{selectedItem?.customerName || "—"}</p>
               </div>
               <div>
                 <p className="text-[10px] uppercase text-slate-500 font-bold tracking-tighter">Due Date</p>
-                <p className="text-sm font-semibold text-[#e53e3e]">Oct 24, 2023 (Today)</p>
+                <p className={cn("text-sm font-semibold", selectedItem?.rush && "text-[#e53e3e]")}>
+                  {selectedItem?.dueDate ? new Date(selectedItem.dueDate).toLocaleDateString() : "—"}
+                </p>
               </div>
             </div>
           </div>
@@ -442,39 +463,47 @@ export default function PrepressProductionPageV2() {
             <div className="grid grid-cols-4 lg:grid-cols-6 gap-4 bg-[#1a232e] p-5 border border-[#2d3748] rounded-lg shadow-sm">
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Product</p>
-                <p className="text-sm font-medium">Vinyl Banner</p>
+                <p className="text-sm font-medium">{selectedItem?.productName || "—"}</p>
               </div>
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Size</p>
-                <p className="text-sm font-medium">120" x 48"</p>
+                <p className="text-sm font-medium">
+                  {selectedItem?.width && selectedItem?.height 
+                    ? `${selectedItem.width}" x ${selectedItem.height}"` 
+                    : "—"}
+                </p>
               </div>
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Qty</p>
-                <p className="text-sm font-medium">5 units</p>
+                <p className="text-sm font-medium">{selectedItem?.quantity ? `${selectedItem.quantity} units` : "—"}</p>
               </div>
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Sq Footage</p>
-                <p className="text-sm font-medium text-[#1773cf]">500.0 sq ft</p>
+                <p className="text-sm font-medium text-[#1773cf]">
+                  {selectedItem?.sqFootage ? `${selectedItem.sqFootage.toFixed(1)} sq ft` : "—"}
+                </p>
               </div>
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Media</p>
-                <p className="text-sm font-medium">13oz Scrim Vinyl</p>
+                <p className="text-sm font-medium">{selectedItem?.media || "—"}</p>
               </div>
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Print Type</p>
-                <p className="text-sm font-medium">Roll-to-Roll</p>
+                <p className="text-sm font-medium">{selectedItem?.printType || "—"}</p>
               </div>
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Bleed</p>
-                <p className="text-sm font-medium">0.5" All Sides</p>
+                <p className="text-sm font-medium">{selectedItem?.bleed || "—"}</p>
               </div>
               <div>
-                <p className="text-[10px] text-slate-500 uppercase font-bold">Registration</p>
-                <p className="text-sm font-medium">Grommets @ 24"</p>
+                <p className="text-[10px] text-slate-500 uppercase font-bold">Finishing</p>
+                <p className="text-sm font-medium">{selectedItem?.finishing || "—"}</p>
               </div>
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Priority</p>
-                <p className="text-sm font-bold text-[#e53e3e]">RUSH</p>
+                <p className={cn("text-sm font-bold", selectedItem?.rush ? "text-[#e53e3e]" : "text-slate-400")}>
+                  {selectedItem?.rush ? "RUSH" : "Normal"}
+                </p>
               </div>
             </div>
           </section>
@@ -485,9 +514,14 @@ export default function PrepressProductionPageV2() {
               <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2">
                 <Paperclip className="w-4 h-4" /> Original Customer Files
               </h3>
-              <button className="text-xs font-bold text-[#1773cf] hover:underline flex items-center gap-1">
-                <Download className="w-4 h-4" /> Download All
-              </button>
+              {selectedLineItemId && originalFiles.length > 0 && (
+                <button 
+                  onClick={handleDownloadAllOriginals}
+                  className="text-xs font-bold text-[#1773cf] hover:underline flex items-center gap-1"
+                >
+                  <Download className="w-4 h-4" /> Download All
+                </button>
+              )}
             </div>
             <div className="border border-[#2d3748] rounded-lg overflow-hidden bg-[#1a232e]">
               <table className="w-full text-left text-xs">
@@ -503,25 +537,36 @@ export default function PrepressProductionPageV2() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#2d3748]">
-                  {originalFiles.map((file) => (
-                    <tr key={file.id} className="hover:bg-white/5 transition-colors group cursor-pointer">
-                      <td className="px-4 py-3">
-                        <FileThumbnail filename={file.filename} />
-                      </td>
-                      <td className="px-4 py-3 font-medium text-slate-200">{file.filename}</td>
-                      <td className="px-4 py-3 font-mono">{file.size}</td>
-                      <td className="px-4 py-3">{file.uploadDate}</td>
-                      <td className="px-4 py-3">{file.uploadedBy}</td>
-                      <td className="px-4 py-3">
-                        <span className="bg-slate-700 px-2 py-0.5 rounded">{file.tag}</span>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <button className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-[#1773cf]/20 hover:border-[#1773cf] transition-all">
-                          Download
-                        </button>
+                  {originalFiles.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
+                        {selectedLineItemId ? "No original files uploaded" : "Select a line item to view files"}
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    originalFiles.map((file) => (
+                      <tr key={file.id} className="hover:bg-white/5 transition-colors group cursor-pointer">
+                        <td className="px-4 py-3">
+                          <FileThumbnail filename={file.originalFilename} />
+                        </td>
+                        <td className="px-4 py-3 font-medium text-slate-200">{file.originalFilename}</td>
+                        <td className="px-4 py-3 font-mono">{formatBytes(file.sizeBytes)}</td>
+                        <td className="px-4 py-3">{formatDistanceToNow(new Date(file.createdAt), { addSuffix: true })}</td>
+                        <td className="px-4 py-3">{file.uploadedBy}</td>
+                        <td className="px-4 py-3">
+                          <span className="bg-slate-700 px-2 py-0.5 rounded">{file.tag || "original"}</span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button 
+                            onClick={() => handleDownloadFile(file.id)}
+                            className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-[#1773cf]/20 hover:border-[#1773cf] transition-all"
+                          >
+                            Download
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -544,45 +589,53 @@ export default function PrepressProductionPageV2() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#2d3748]">
-                  {finalFiles.map((file) => (
-                    <tr key={file.id} className="hover:bg-white/5 transition-colors cursor-pointer">
-                      <td className="px-4 py-3">
-                        <div className="relative w-20 h-20 rounded-lg border border-[#2d3748] overflow-hidden bg-[#111921] flex items-center justify-center group">
-                          <div className="absolute inset-0 bg-slate-700 flex items-center justify-center">
-                            <ImageIcon className="w-8 h-8 text-slate-500" />
-                          </div>
-                          <div className="absolute top-1 right-1 w-5 h-5 bg-green-500 rounded-full border-2 border-[#1a232e] flex items-center justify-center shadow-lg">
-                            <Check className="w-3 h-3 text-white" />
-                          </div>
-                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                            <ZoomIn className="w-5 h-5 text-white" />
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="space-y-1">
-                          <p className="font-bold text-slate-200">{file.filename}</p>
-                          <div className="flex items-center gap-3">
-                            <span className="bg-[#1773cf]/30 text-[#1773cf] border border-[#1773cf]/40 px-2 py-0.5 rounded font-bold uppercase text-[9px]">
-                              {file.tag}
-                            </span>
-                            <span className="text-slate-500 font-mono">{file.size}</span>
-                            <span className="text-slate-400 italic">
-                              Uploaded by {file.uploadedBy} ({file.uploadDate})
-                            </span>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-right space-x-2">
-                        <button className="text-slate-400 hover:text-white p-1">
-                          <Download className="w-5 h-5" />
-                        </button>
-                        <button className="text-slate-400 hover:text-[#e53e3e] p-1">
-                          <RefreshCw className="w-5 h-5" />
-                        </button>
+                  {finalFiles.length === 0 ? (
+                    <tr>
+                      <td colSpan={3} className="px-4 py-8 text-center text-slate-500">
+                        {selectedLineItemId ? "No final files uploaded yet" : "Select a line item to upload files"}
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    finalFiles.map((file) => (
+                      <tr key={file.id} className="hover:bg-white/5 transition-colors cursor-pointer">
+                        <td className="px-4 py-3">
+                          <div className="relative w-20 h-20 rounded-lg border border-[#2d3748] overflow-hidden bg-[#111921] flex items-center justify-center group">
+                            <div className="absolute inset-0 bg-slate-700 flex items-center justify-center">
+                              <ImageIcon className="w-8 h-8 text-slate-500" />
+                            </div>
+                            <div className="absolute top-1 right-1 w-5 h-5 bg-green-500 rounded-full border-2 border-[#1a232e] flex items-center justify-center shadow-lg">
+                              <Check className="w-3 h-3 text-white" />
+                            </div>
+                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                              <ZoomIn className="w-5 h-5 text-white" />
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="space-y-1">
+                            <p className="font-bold text-slate-200">{file.originalFilename}</p>
+                            <div className="flex items-center gap-3">
+                              <span className="bg-[#1773cf]/30 text-[#1773cf] border border-[#1773cf]/40 px-2 py-0.5 rounded font-bold uppercase text-[9px]">
+                                {file.tag || "final"}
+                              </span>
+                              <span className="text-slate-500 font-mono">{formatBytes(file.sizeBytes)}</span>
+                              <span className="text-slate-400 italic">
+                                Uploaded by {file.uploadedBy} ({formatDistanceToNow(new Date(file.createdAt), { addSuffix: true })})
+                              </span>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-right space-x-2">
+                          <button 
+                            onClick={() => handleDownloadFile(file.id)}
+                            className="text-slate-400 hover:text-white p-1"
+                          >
+                            <Download className="w-5 h-5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -595,7 +648,7 @@ export default function PrepressProductionPageV2() {
               <p className="text-sm font-semibold mb-1">Drag and drop final production files here</p>
               <p className="text-xs text-slate-500 mb-6">PDF, TIF, JPG, or EPS up to 2GB</p>
               <div className="flex items-center gap-4">
-                <Select defaultValue="final_print">
+                <Select value={selectedTag} onValueChange={setSelectedTag}>
                   <SelectTrigger className="bg-[#111921] border-[#2d3748] rounded-lg text-xs py-2 px-4 focus:ring-[#1773cf] focus:border-[#1773cf] w-48">
                     <SelectValue />
                   </SelectTrigger>
@@ -605,29 +658,47 @@ export default function PrepressProductionPageV2() {
                     <SelectItem value="cut_file">CUT_FILE</SelectItem>
                   </SelectContent>
                 </Select>
-                <Button className="bg-[#1773cf] text-white text-sm font-bold px-6 py-2 rounded-lg hover:bg-[#1773cf]/90 transition-colors shadow-lg">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={handleFileSelect}
+                  disabled={!selectedLineItemId}
+                />
+                <Button 
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={!selectedLineItemId}
+                  className="bg-[#1773cf] text-white text-sm font-bold px-6 py-2 rounded-lg hover:bg-[#1773cf]/90 transition-colors shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                >
                   Choose File
                 </Button>
               </div>
 
-              {/* Recently Uploaded */}
-              <div className="w-full mt-8 border-t border-[#2d3748]/50 pt-6">
-                <p className="text-[10px] uppercase font-bold text-slate-500 mb-4 text-left">
-                  Recently Uploaded / In Progress
-                </p>
-                <div className="flex gap-4">
-                  {/* Uploading Item */}
-                  <div className="w-24 flex flex-col gap-2">
-                    <div className="w-24 h-24 rounded-lg border border-[#1773cf]/50 bg-[#1773cf]/5 flex items-center justify-center relative overflow-hidden">
-                      <Upload className="w-6 h-6 text-[#1773cf] animate-pulse" />
-                    </div>
-                    <div className="w-full bg-slate-800 h-1 rounded-full overflow-hidden">
-                      <div className="bg-[#1773cf] h-full w-2/3"></div>
-                    </div>
-                    <p className="text-[10px] text-slate-400 truncate">Uploading...</p>
+              {/* Recently Uploaded / In Progress */}
+              {uploadingFiles.length > 0 && (
+                <div className="w-full mt-8 border-t border-[#2d3748]/50 pt-6">
+                  <p className="text-[10px] uppercase font-bold text-slate-500 mb-4 text-left">
+                    Recently Uploaded / In Progress
+                  </p>
+                  <div className="flex gap-4">
+                    {uploadingFiles.map((upload) => (
+                      <div key={upload.id} className="w-24 flex flex-col gap-2">
+                        <div className="w-24 h-24 rounded-lg border border-[#1773cf]/50 bg-[#1773cf]/5 flex items-center justify-center relative overflow-hidden">
+                          <Upload className="w-6 h-6 text-[#1773cf] animate-pulse" />
+                        </div>
+                        <div className="w-full bg-slate-800 h-1 rounded-full overflow-hidden">
+                          <div 
+                            className="bg-[#1773cf] h-full transition-all"
+                            style={{ width: `${upload.progress}%` }}
+                          ></div>
+                        </div>
+                        <p className="text-[10px] text-slate-400 truncate">{upload.filename}</p>
+                      </div>
+                    ))}
                   </div>
                 </div>
-              </div>
+              )}
             </div>
           </section>
 
@@ -648,8 +719,16 @@ export default function PrepressProductionPageV2() {
                     placeholder="Add prepress notes, color corrections, adjustments..."
                   />
                 </div>
-                <Button className="bg-[#1a232e] border border-[#2d3748] text-slate-300 hover:bg-[#2d3748] w-full">
-                  Save Notes
+                <Button 
+                  onClick={handleSaveNotes}
+                  disabled={!selectedItem?.sessionId || saveNoteMutation.isPending}
+                  className="bg-[#1a232e] border border-[#2d3748] text-slate-300 hover:bg-[#2d3748] w-full disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {saveNoteMutation.isPending ? (
+                    <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Saving...</>
+                  ) : (
+                    "Save Notes"
+                  )}
                 </Button>
               </div>
 
@@ -716,24 +795,37 @@ export default function PrepressProductionPageV2() {
 
           <div className="flex items-center gap-3">
             <Button
+              onClick={handleStartPrepress}
+              disabled={!selectedItem || !!selectedItem?.sessionId || isLocked || startSessionMutation.isPending}
               variant="outline"
-              className="bg-transparent border-[#2d3748] text-slate-300 hover:bg-[#2d3748] hover:text-white"
+              className="bg-transparent border-[#2d3748] text-slate-300 hover:bg-[#2d3748] hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Start Prepress
+              {startSessionMutation.isPending ? (
+                <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Starting...</>
+              ) : (
+                "Start Prepress"
+              )}
             </Button>
             <Button
-              disabled={!hasFinalFiles}
+              onClick={handleComplete}
+              disabled={!canComplete || completeSessionMutation.isPending}
               className={cn(
                 "font-bold shadow-lg transition-all",
-                hasFinalFiles
+                canComplete
                   ? "bg-[#1773cf] text-white hover:bg-[#1773cf]/90"
                   : "bg-slate-700 text-slate-500 cursor-not-allowed"
               )}
             >
-              Mark Prepress Complete
-              <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
+              {completeSessionMutation.isPending ? (
+                <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Completing...</>
+              ) : (
+                <>
+                  Mark Prepress Complete
+                  <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </>
+              )}
             </Button>
           </div>
         </div>
