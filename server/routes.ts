@@ -2098,8 +2098,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   /**
    * DELETE /api/admin/org
-   * Permanently delete organization and all associated data.
-   * THIS IS IRREVERSIBLE.
+   * Request organization deletion (sets pending_delete state).
+   * Only org owner/admin can request. Platform admin must finalize.
    * Requires owner/admin role.
    */
   app.delete("/api/admin/org", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
@@ -2111,6 +2111,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ message: "User ID not found" });
       }
 
+      // Get current org state
+      const [org] = await db
+        .select({
+          id: organizations.id,
+          deleteState: organizations.deleteState,
+          slug: organizations.slug,
+        })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      if (!org) {
+        return res.status(404).json({ message: "Organization not found" });
+      }
+
+      // Validate org is active (not already pending/deleted)
+      if (org.deleteState !== 'active') {
+        return res.status(409).json({
+          code: "ORG_ALREADY_PENDING_DELETE",
+          message: `Organization is already in ${org.deleteState} state`,
+          deleteState: org.deleteState,
+        });
+      }
+
+      // Extract optional reason from body
+      const { reason } = req.body || {};
+
+      // Update org to pending_delete state
+      await db
+        .update(organizations)
+        .set({
+          deleteState: 'pending_delete',
+          deleteRequestedAt: new Date(),
+          deleteRequestedByUserId: userId,
+          deleteReason: reason || null,
+        })
+        .where(eq(organizations.id, organizationId));
+
       // Audit log
       await db.insert(auditLogs).values({
         organizationId,
@@ -2118,18 +2156,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
         actionType: "org.delete.requested",
         entityType: "organization",
         entityId: organizationId,
-        description: "Organization deletion requested",
-        newValues: {},
+        description: `Organization deletion requested${reason ? `: ${reason}` : ''}`,
+        newValues: {
+          deleteState: 'pending_delete',
+          reason: reason || null,
+        },
       });
 
-      // Return 501 Not Implemented
-      return res.status(501).json({
-        code: "NOT_IMPLEMENTED",
-        message: "Organization deletion functionality is not yet implemented. Please contact system administrator.",
+      // Notify devs
+      const { notifyDev } = await import('./services/devNotify');
+      await notifyDev({
+        eventName: 'org.delete.requested',
+        priority: 'high',
+        organizationId,
+        userId,
+        message: `Organization "${org.slug}" deletion requested by user ${userId}`,
+        metadata: {
+          orgId: organizationId,
+          orgSlug: org.slug,
+          reason: reason || 'No reason provided',
+        },
+      });
+
+      return res.json({
+        success: true,
+        message: "Deletion request submitted. A platform administrator must finalize this action.",
+        deleteState: 'pending_delete',
       });
     } catch (error: any) {
-      console.error("[Org Delete] Error:", error);
-      res.status(500).json({ message: error.message || "Failed to delete organization" });
+      console.error("[Org Delete Request] Error:", error);
+      res.status(500).json({ message: error.message || "Failed to request organization deletion" });
     }
   });
 

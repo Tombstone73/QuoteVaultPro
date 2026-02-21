@@ -89,12 +89,25 @@ export const organizations = pgTable("organizations", {
     .$type<'auto_on_save' | 'manual_publish'>()
     .default('auto_on_save')
     .notNull(),
+  // Soft delete lifecycle tracking
+  deleteState: text("delete_state").notNull().default('active'), // 'active' | 'pending_delete' | 'soft_deleted'
+  deleteRequestedAt: timestamp("delete_requested_at", { withTimezone: true }),
+  deleteRequestedByUserId: varchar("delete_requested_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  deleteConfirmedAt: timestamp("delete_confirmed_at", { withTimezone: true }),
+  deleteConfirmedByUserId: varchar("delete_confirmed_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  deletedByUserId: varchar("deleted_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  deleteReason: text("delete_reason"),
+  deletedIp: text("deleted_ip"),
+  deletedUserAgent: text("deleted_user_agent"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
   index("organizations_slug_idx").on(table.slug),
   index("organizations_status_idx").on(table.status),
   index("organizations_type_idx").on(table.type),
+  index("organizations_delete_state_idx").on(table.deleteState),
+  index("organizations_delete_requested_at_idx").on(table.deleteRequestedAt),
 ]);
 
 export const insertOrganizationSchema = createInsertSchema(organizations).omit({
