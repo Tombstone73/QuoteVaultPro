@@ -4083,6 +4083,120 @@ export type BugReportNote = typeof bugReportNotes.$inferSelect;
 export type InsertBugReportNote = typeof bugReportNotes.$inferInsert;
 
 // ============================================================
+// MANUAL PREPRESS PRODUCTION WORKFLOW
+// ============================================================
+
+// Prepress session status enum
+export const prepressSessionStatusEnum = pgEnum('prepress_session_status', ['active', 'complete']);
+
+// Line item file role enum
+export const lineItemFileRoleEnum = pgEnum('line_item_file_role', ['original', 'final', 'reference']);
+
+// Line item file status enum
+export const lineItemFileStatusEnum = pgEnum('line_item_file_status', ['active', 'superseded']);
+
+/**
+ * Prepress Sessions - Manual prepress workflow tracking
+ * One ACTIVE session per line item at a time
+ */
+export const prepressSessions = pgTable("prepress_sessions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  status: prepressSessionStatusEnum("status").notNull().default('active'),
+  
+  // Session ownership and locking
+  startedByUserId: varchar("started_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
+  lockOwnerUserId: varchar("lock_owner_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
+  
+  // Session notes and issue tracking
+  notesText: text("notes_text"),
+  issueFlag: boolean("issue_flag").notNull().default(false),
+  issueType: text("issue_type"),
+  
+  // Completion tracking
+  completedByUserId: varchar("completed_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  
+  // Timestamps
+  startedAt: timestamp("started_at", { withTimezone: true }).defaultNow().notNull(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("prepress_sessions_org_idx").on(table.organizationId),
+  index("prepress_sessions_order_idx").on(table.orderId),
+  index("prepress_sessions_line_item_idx").on(table.lineItemId),
+  index("prepress_sessions_status_idx").on(table.status),
+  index("prepress_sessions_lock_owner_idx").on(table.lockOwnerUserId),
+]);
+
+/**
+ * Line Item Files - File attachments for line items (originals, finals, references)
+ * Supports multiple files per line item with versioning via supersedes
+ */
+export const lineItemFiles = pgTable("line_item_files", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  prepressSessionId: varchar("prepress_session_id").references(() => prepressSessions.id, { onDelete: 'set null' }),
+  
+  // File metadata
+  role: lineItemFileRoleEnum("role").notNull(), // original | final | reference
+  status: lineItemFileStatusEnum("status").notNull().default('active'), // active | superseded
+  tag: text("tag"), // Front/Back/Panel/etc
+  
+  // Storage information
+  storageBucket: varchar("storage_bucket", { length: 255 }),
+  storagePath: text("storage_path").notNull(),
+  storageKey: text("storage_key"), // Alternative to bucket+path for some providers
+  originalFilename: varchar("original_filename", { length: 512 }).notNull(),
+  mimeType: varchar("mime_type", { length: 255 }).notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  
+  // Versioning
+  supersedesFileId: varchar("supersedes_file_id").references((): any => lineItemFiles.id, { onDelete: 'set null' }),
+  
+  // Audit
+  createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("line_item_files_org_idx").on(table.organizationId),
+  index("line_item_files_order_idx").on(table.orderId),
+  index("line_item_files_line_item_idx").on(table.lineItemId),
+  index("line_item_files_session_idx").on(table.prepressSessionId),
+  index("line_item_files_role_status_idx").on(table.role, table.status),
+  index("line_item_files_supersedes_idx").on(table.supersedesFileId),
+]);
+
+// Zod schemas
+export const insertPrepressSessionSchema = createInsertSchema(prepressSessions).omit({
+  id: true,
+  startedAt: true,
+  completedAt: true,
+  updatedAt: true,
+});
+
+export const updatePrepressSessionSchema = insertPrepressSessionSchema.partial().extend({
+  id: z.string(),
+});
+
+export const insertLineItemFileSchema = createInsertSchema(lineItemFiles);
+
+export const updateLineItemFileSchema = insertLineItemFileSchema.partial().extend({
+  id: z.string(),
+});
+
+// Types
+export type PrepressSession = typeof prepressSessions.$inferSelect;
+export type InsertPrepressSession = z.infer<typeof insertPrepressSessionSchema>;
+export type UpdatePrepressSession = z.infer<typeof updatePrepressSessionSchema>;
+
+export type LineItemFile = typeof lineItemFiles.$inferSelect;
+export type InsertLineItemFile = z.infer<typeof insertLineItemFileSchema>;
+export type UpdateLineItemFile = z.infer<typeof updateLineItemFileSchema>;
+
+// ============================================================
 // PREPRESS TABLES (imported from server/prepress/schema.ts)
 // ============================================================
 // Re-export prepress tables so they're available in db.query

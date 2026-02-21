@@ -6,9 +6,11 @@ import { randomUUID } from "crypto";
 import crypto from "crypto";
 import { evaluate } from "mathjs";
 import Papa from "papaparse";
+import busboy from "busboy";
 import { storage } from "./storage";
+import * as prepressFileService from "./prepressFileService";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, authIdentities, bugReports } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, authIdentities, bugReports, prepressSessions, lineItemFiles } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, asc, inArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -11635,6 +11637,576 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting job status:", error);
       res.status(500).json({ error: "Failed to delete job status" });
+    }
+  });
+
+  // ============================================================
+  // MANUAL PREPRESS PRODUCTION WORKFLOW
+  // ============================================================
+
+  // GET /api/prepress/queue - List line items for prepress
+  app.get("/api/prepress/queue", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const statusFilter = req.query.status ? String(req.query.status).split(",") : [];
+      const printTypeFilter = req.query.printType as string | undefined;
+      const searchQuery = req.query.search as string | undefined;
+
+      // Build WHERE conditions
+      const conditions: any[] = [];
+      
+      if (statusFilter.length > 0) {
+        conditions.push(inArray(orderLineItems.status, statusFilter));
+      }
+      
+      if (printTypeFilter) {
+        conditions.push(eq(orderLineItems.productType, printTypeFilter));
+      }
+
+      // Get line items with order and session data
+      const items = await db
+        .select({
+          lineItem: orderLineItems,
+          order: orders,
+          session: prepressSessions,
+        })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .leftJoin(
+          prepressSessions,
+          and(
+            eq(prepressSessions.lineItemId, orderLineItems.id),
+            eq(prepressSessions.status, "active")
+          )
+        )
+        .where(and(...conditions))
+        .orderBy(orders.createdAt);
+
+      // Get file counts for each line item
+      const lineItemIds = items.map((i) => i.lineItem.id);
+      const fileCounts = lineItemIds.length > 0
+        ? await db
+            .select({
+              lineItemId: lineItemFiles.lineItemId,
+              role: lineItemFiles.role,
+              count: sql<number>`count(*)::int`,
+            })
+            .from(lineItemFiles)
+            .where(
+              and(
+                inArray(lineItemFiles.lineItemId, lineItemIds),
+                eq(lineItemFiles.status, "active")
+              )
+            )
+            .groupBy(lineItemFiles.lineItemId, lineItemFiles.role)
+        : [];
+
+      // Build response with file counts
+      const queue = items.map((item) => {
+        const counts = fileCounts.filter((fc) => fc.lineItemId === item.lineItem.id);
+        const originals = counts.find((c) => c.role === "original")?.count || 0;
+        const finals = counts.find((c) => c.role === "final")?.count || 0;
+        const references = counts.find((c) => c.role === "reference")?.count || 0;
+
+        return {
+          lineItem: item.lineItem,
+          order: item.order,
+          session: item.session,
+          fileCounts: { originals, finals, references },
+        };
+      });
+
+      res.json({ success: true, data: queue });
+    } catch (error: any) {
+      console.error("[Prepress] Error fetching queue:", error);
+      res.status(500).json({ error: error?.message || "Failed to fetch prepress queue" });
+    }
+  });
+
+  // POST /api/prepress/session/start - Start prepress session
+  app.post("/api/prepress/session/start", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const schema = z.object({ lineItemId: z.string() });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const { lineItemId } = parsed.data;
+
+      const result = await db.transaction(async (tx) => {
+        // Get line item
+        const lineItems = await tx
+          .select({
+            lineItem: orderLineItems,
+            order: orders,
+          })
+          .from(orderLineItems)
+          .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+          .where(
+            and(
+              eq(orderLineItems.id, lineItemId),
+              eq(orders.organizationId, organizationId)
+            )
+          )
+          .limit(1);
+
+        if (!lineItems[0]) {
+          throw Object.assign(new Error("Line item not found"), { statusCode: 404 });
+        }
+
+        const lineItem = lineItems[0].lineItem;
+        const order = lineItems[0].order;
+
+        // Check for existing ACTIVE session
+        const existingSessions = await tx
+          .select()
+          .from(prepressSessions)
+          .where(
+            and(
+              eq(prepressSessions.lineItemId, lineItemId),
+              eq(prepressSessions.status, "active")
+            )
+          )
+          .limit(1);
+
+        if (existingSessions[0]) {
+          // Session already exists - return it
+          return existingSessions[0];
+        }
+
+        // Create new session
+        const [session] = await tx
+          .insert(prepressSessions)
+          .values({
+            organizationId,
+            orderId: order.id,
+            lineItemId,
+            status: "active",
+            startedByUserId: userId,
+            lockOwnerUserId: userId,
+            issueFlag: false,
+          })
+          .returning();
+
+        // Update line item status to IN_PREPRESS
+        await tx
+          .update(orderLineItems)
+          .set({ status: "in_prepress" })
+          .where(eq(orderLineItems.id, lineItemId));
+
+        // Audit log
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "CREATE",
+          entityType: "prepress_session",
+          entityId: session.id,
+          entityName: `Session for line item ${lineItemId}`,
+          description: "Started prepress session",
+          newValues: { status: "active", lineItemId },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        return session;
+      });
+
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Prepress] Error starting session:", error);
+      res.status(status).json({ error: error?.message || "Failed to start session" });
+    }
+  });
+
+  // POST /api/prepress/session/:id/note - Update session notes
+  app.post("/api/prepress/session/:id/note", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const sessionId = req.params.id;
+      const schema = z.object({
+        notesText: z.string().optional(),
+        issueFlag: z.boolean().optional(),
+        issueType: z.string().optional().nullable(),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const updates: any = {};
+      if (parsed.data.notesText !== undefined) updates.notesText = parsed.data.notesText;
+      if (parsed.data.issueFlag !== undefined) updates.issueFlag = parsed.data.issueFlag;
+      if (parsed.data.issueType !== undefined) updates.issueType = parsed.data.issueType;
+
+      await db
+        .update(prepressSessions)
+        .set(updates)
+        .where(
+          and(
+            eq(prepressSessions.id, sessionId),
+            eq(prepressSessions.organizationId, organizationId)
+          )
+        );
+
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("[Prepress] Error updating notes:", error);
+      res.status(500).json({ error: error?.message || "Failed to update notes" });
+    }
+  });
+
+  // POST /api/prepress/session/:id/complete - Mark prepress complete
+  app.post("/api/prepress/session/:id/complete", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const sessionId = req.params.id;
+
+      const result = await db.transaction(async (tx) => {
+        // Get session
+        const sessions = await tx
+          .select()
+          .from(prepressSessions)
+          .where(
+            and(
+              eq(prepressSessions.id, sessionId),
+              eq(prepressSessions.organizationId, organizationId)
+            )
+          )
+          .limit(1);
+
+        if (!sessions[0]) {
+          throw Object.assign(new Error("Session not found"), { statusCode: 404 });
+        }
+
+        const session = sessions[0];
+
+        if (session.status === "complete") {
+          throw Object.assign(new Error("Session already complete"), { statusCode: 400 });
+        }
+
+        // Validate at least one FINAL file exists
+        const finalFiles = await tx
+          .select()
+          .from(lineItemFiles)
+          .where(
+            and(
+              eq(lineItemFiles.prepressSessionId, sessionId),
+              eq(lineItemFiles.role, "final"),
+              eq(lineItemFiles.status, "active")
+            )
+          )
+          .limit(1);
+
+        if (!finalFiles[0]) {
+          throw Object.assign(
+            new Error("Cannot complete prepress without at least one final file"),
+            { statusCode: 400 }
+          );
+        }
+
+        // Mark session complete
+        await tx
+          .update(prepressSessions)
+          .set({
+            status: "complete",
+            completedAt: new Date(),
+            completedByUserId: userId,
+          })
+          .where(eq(prepressSessions.id, sessionId));
+
+        // Update line item status to PREPRESS_COMPLETE
+        await tx
+          .update(orderLineItems)
+          .set({ status: "prepress_complete" })
+          .where(eq(orderLineItems.id, session.lineItemId));
+
+        // Audit log
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "UPDATE",
+          entityType: "prepress_session",
+          entityId: sessionId,
+          entityName: `Session for line item ${session.lineItemId}`,
+          description: "Completed prepress session",
+          oldValues: { status: "active" },
+          newValues: { status: "complete" },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        return session;
+      });
+
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Prepress] Error completing session:", error);
+      res.status(status).json({ error: error?.message || "Failed to complete session" });
+    }
+  });
+
+  // POST /api/prepress/files/upload - Upload file (multipart)
+  app.post("/api/prepress/files/upload", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      // Parse multipart upload
+      const bb = busboy({ headers: req.headers });
+      
+      let fileBuffer: Buffer | null = null;
+      let fileName = '';
+      let fileMimeType = '';
+      const fields: Record<string, string> = {};
+      let fileSize = 0;
+      const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024;
+      
+      bb.on('file', (name, file, info) => {
+        const { filename, mimeType } = info;
+        fileName = filename;
+        fileMimeType = mimeType;
+        
+        const chunks: Buffer[] = [];
+        
+        file.on('data', (chunk: Buffer) => {
+          fileSize += chunk.length;
+          if (fileSize > MAX_FILE_SIZE_BYTES) {
+            file.resume();
+            return;
+          }
+          chunks.push(chunk);
+        });
+        
+        file.on('end', () => {
+          if (fileSize <= MAX_FILE_SIZE_BYTES) {
+            fileBuffer = Buffer.concat(chunks);
+          }
+        });
+      });
+      
+      bb.on('field', (name, value) => {
+        fields[name] = value;
+      });
+      
+      bb.on('finish', async () => {
+        try {
+          if (fileSize > MAX_FILE_SIZE_BYTES) {
+            return res.status(400).json({ error: "File size exceeds maximum allowed size of 250MB" });
+          }
+
+          if (!fileBuffer) {
+            return res.status(400).json({ error: 'No file uploaded' });
+          }
+
+          // Validate required fields
+          if (!fields.lineItemId || !fields.role) {
+            return res.status(400).json({ error: "Missing required fields: lineItemId, role" });
+          }
+
+          // Get line item to validate org and get order ID
+          const lineItems = await db
+            .select({
+              lineItem: orderLineItems,
+              order: orders,
+            })
+            .from(orderLineItems)
+            .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+            .where(
+              and(
+                eq(orderLineItems.id, fields.lineItemId),
+                eq(orders.organizationId, organizationId)
+              )
+            )
+            .limit(1);
+
+          if (!lineItems[0]) {
+            return res.status(404).json({ error: "Line item not found" });
+          }
+
+          const lineItem = lineItems[0].lineItem;
+          const order = lineItems[0].order;
+
+          // Upload file
+          const uploadedFile = await prepressFileService.uploadLineItemFile({
+            organizationId,
+            orderId: order.id,
+            lineItemId: fields.lineItemId,
+            prepressSessionId: fields.sessionId || undefined,
+            role: fields.role as "original" | "final" | "reference",
+            tag: fields.tag || undefined,
+            buffer: fileBuffer,
+            originalFilename: fileName,
+            mimeType: fileMimeType,
+            createdByUserId: userId,
+          });
+
+          res.json({ success: true, data: uploadedFile });
+        } catch (uploadError: any) {
+          console.error("[Prepress] File upload error:", uploadError);
+          res.status(500).json({ error: uploadError?.message || "Failed to upload file" });
+        }
+      });
+      
+      bb.on('error', (error) => {
+        console.error("[Prepress] Busboy error:", error);
+        res.status(500).json({ error: "Upload parsing failed" });
+      });
+      
+      req.pipe(bb);
+    } catch (error: any) {
+      console.error("[Prepress] Upload error:", error);
+      res.status(500).json({ error: error?.message || "Failed to upload file" });
+    }
+  });
+
+  // GET /api/prepress/files/:fileId/download - Download file with job number prefix
+  app.get("/api/prepress/files/:fileId/download", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      await prepressFileService.downloadLineItemFile(req.params.fileId, organizationId, res);
+    } catch (error: any) {
+      console.error("[Prepress] Download error:", error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: error?.message || "Failed to download file" });
+      }
+    }
+  });
+
+  // GET /api/prepress/line-item/:lineItemId/download-originals-zip - Download all originals as ZIP
+  app.get("/api/prepress/line-item/:lineItemId/download-originals-zip", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      await prepressFileService.downloadOriginalsAsZip(req.params.lineItemId, organizationId, res);
+    } catch (error: any) {
+      console.error("[Prepress] ZIP download error:", error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: error?.message || "Failed to download originals" });
+      }
+    }
+  });
+
+  // GET /api/prepress/line-item/:lineItemId/files - Get all files for a line item
+  app.get("/api/prepress/line-item/:lineItemId/files", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const files = await prepressFileService.getLineItemFiles(req.params.lineItemId, organizationId);
+      res.json({ success: true, data: files });
+    } catch (error: any) {
+      console.error("[Prepress] Error fetching files:", error);
+      res.status(500).json({ error: error?.message || "Failed to fetch files" });
+    }
+  });
+
+  // POST /api/prepress/files/:fileId/replace - Replace existing file
+  app.post("/api/prepress/files/:fileId/replace", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      // Parse multipart upload (same pattern as upload)
+      const bb = busboy({ headers: req.headers });
+      
+      let fileBuffer: Buffer | null = null;
+      let fileName = '';
+      let fileMimeType = '';
+      let fileSize = 0;
+      const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024;
+      
+      bb.on('file', (name, file, info) => {
+        const { filename, mimeType } = info;
+        fileName = filename;
+        fileMimeType = mimeType;
+        
+        const chunks: Buffer[] = [];
+        
+        file.on('data', (chunk: Buffer) => {
+          fileSize += chunk.length;
+          if (fileSize > MAX_FILE_SIZE_BYTES) {
+            file.resume();
+            return;
+          }
+          chunks.push(chunk);
+        });
+        
+        file.on('end', () => {
+          if (fileSize <= MAX_FILE_SIZE_BYTES) {
+            fileBuffer = Buffer.concat(chunks);
+          }
+        });
+      });
+      
+      bb.on('finish', async () => {
+        try {
+          if (fileSize > MAX_FILE_SIZE_BYTES) {
+            return res.status(400).json({ error: "File size exceeds maximum allowed size of 250MB" });
+          }
+
+          if (!fileBuffer) {
+            return res.status(400).json({ error: 'No file uploaded' });
+          }
+
+          const replacedFile = await prepressFileService.replaceLineItemFile({
+            fileId: req.params.fileId,
+            organizationId,
+            buffer: fileBuffer,
+            originalFilename: fileName,
+            mimeType: fileMimeType,
+            createdByUserId: userId,
+          });
+
+          res.json({ success: true, data: replacedFile });
+        } catch (replaceError: any) {
+          console.error("[Prepress] File replace error:", replaceError);
+          res.status(500).json({ error: replaceError?.message || "Failed to replace file" });
+        }
+      });
+      
+      bb.on('error', (error) => {
+        console.error("[Prepress] Busboy error:", error);
+        res.status(500).json({ error: "Upload parsing failed" });
+      });
+      
+      req.pipe(bb);
+    } catch (error: any) {
+      console.error("[Prepress] Replace error:", error);
+      res.status(500).json({ error: error?.message || "Failed to replace file" });
     }
   });
 
