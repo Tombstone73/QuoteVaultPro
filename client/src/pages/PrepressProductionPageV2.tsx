@@ -1,6 +1,6 @@
 import React, { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Search, RefreshCw, History, FileText, Download, ZoomIn, Upload, Check, Lock, Image as ImageIcon, Info, Paperclip, CheckCircle, AlertCircle, Loader2 } from "lucide-react";
+import { Search, RefreshCw, History, FileText, Download, ZoomIn, Upload, Check, Image as ImageIcon, Info, Paperclip, CheckCircle, AlertCircle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -24,7 +24,6 @@ type QueueItem = {
   status: string;
   rush: boolean;
   assignedTo: string | null;
-  lockedBy: string | null;
   sessionId: string | null;
   fileCounts: {
     originals: number;
@@ -254,13 +253,11 @@ export default function PrepressProductionPageV2() {
   const originalFiles = filesData?.filter(f => f.role === "original") || [];
   const finalFiles = filesData?.filter(f => f.role === "final") || [];
   const hasFinalFiles = finalFiles.length > 0;
-  const canComplete = hasFinalFiles && selectedItem?.sessionId && !selectedItem?.lockedBy;
-  const isLocked = selectedItem?.lockedBy && !selectedItem?.sessionId;
+  const canComplete = hasFinalFiles && !!selectedItem?.sessionId;
   // PROMPT B: Enable "Send to Print Queue" when prepress is complete and has final files
-  const canSendToPrint = 
-    selectedItem?.status === 'prepress_complete' && 
-    hasFinalFiles && 
-    !isLocked;
+  const canSendToPrint =
+    selectedItem?.status === 'prepress_complete' &&
+    hasFinalFiles;
 
   // Clear selection if selected item is not in queue
   React.useEffect(() => {
@@ -844,15 +841,12 @@ export default function PrepressProductionPageV2() {
                 <span className="text-xs font-medium">No final files uploaded</span>
               </div>
             )}
-            <button className="text-xs font-medium text-[#1773cf] hover:underline">
-              Release Lock
-            </button>
           </div>
 
           <div className="flex items-center gap-3">
             <Button
               onClick={handleStartPrepress}
-              disabled={!selectedItem || !!selectedItem?.sessionId || isLocked || startSessionMutation.isPending}
+              disabled={!selectedItem || !!selectedItem?.sessionId || startSessionMutation.isPending}
               variant="outline"
               className="bg-transparent border-[#2d3748] text-slate-300 hover:bg-[#2d3748] hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
             >
@@ -921,11 +915,11 @@ function JobCard({ item, isSelected, onClick }: { item: QueueItem; isSelected: b
       textClass: "text-[#1773cf]",
       borderClass: "border-[#1773cf]/30",
     },
-    locked: {
-      label: "LOCKED",
-      bgClass: "bg-slate-700/50",
-      textClass: "text-slate-400",
-      borderClass: "border-[#2d3748]",
+    prepress_complete: {
+      label: "COMPLETE",
+      bgClass: "bg-green-700/20",
+      textClass: "text-green-400",
+      borderClass: "border-green-700/30",
     },
     pending_prepress: {
       label: "PENDING",
@@ -935,65 +929,45 @@ function JobCard({ item, isSelected, onClick }: { item: QueueItem; isSelected: b
     },
   };
 
-  const isLocked = !!item.lockedBy;
-  const status = isLocked ? "locked" : item.status;
-  const config = statusConfig[status] || statusConfig.pending_prepress;
+  const config = statusConfig[item.status] || statusConfig.pending_prepress;
 
   return (
     <div
-      onClick={!isLocked ? onClick : undefined}
+      onClick={onClick}
       className={cn(
-        "p-2 rounded-lg flex gap-3 transition-colors relative",
-        isLocked && "opacity-70 cursor-not-allowed",
-        !isLocked && "cursor-pointer",
+        "p-2 rounded-lg flex gap-3 transition-colors relative cursor-pointer",
         isSelected && "bg-[#1773cf]/10 border-l-4 border-[#1773cf] rounded-l-none rounded-r-lg",
-        !isSelected && isLocked && "bg-[#1a232e]/50 border border-[#2d3748]",
-        !isSelected && !isLocked && "bg-[#1a232e] border border-[#2d3748] hover:border-[#1773cf]/50"
+        !isSelected && "bg-[#1a232e] border border-[#2d3748] hover:border-[#1773cf]/50"
       )}
     >
       <div className="relative w-16 h-16 flex-shrink-0 rounded-lg border border-[#2d3748] overflow-hidden bg-[#111921] flex items-center justify-center group">
-        {isLocked ? (
-          <>
-            <svg className="w-6 h-6 text-[#d69e2e]/50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-            </svg>
-            <div className="absolute bottom-0 right-0 bg-[#d69e2e] p-0.5 rounded-tl-lg">
-              <Lock className="w-2.5 h-2.5 text-black" />
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="absolute inset-0 flex items-center justify-center">
-              <ImageIcon className="w-8 h-8 text-slate-700" />
-            </div>
-            <div className="relative z-10 w-full h-full bg-slate-600"></div>
-            {item.fileCounts && (item.fileCounts.originals > 0 || item.fileCounts.finals > 0) && (
-              <div className="absolute bottom-0 right-0 bg-[#1773cf] text-white text-[9px] font-black px-1 rounded-tl-sm shadow-lg z-20">
-                +{item.fileCounts.originals + item.fileCounts.finals}
-              </div>
-            )}
-            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-              <ZoomIn className="w-5 h-5 text-white" />
-            </div>
-          </>
+        <div className="absolute inset-0 flex items-center justify-center">
+          <ImageIcon className="w-8 h-8 text-slate-700" />
+        </div>
+        <div className="relative z-10 w-full h-full bg-slate-600"></div>
+        {item.fileCounts && (item.fileCounts.originals > 0 || item.fileCounts.finals > 0) && (
+          <div className="absolute bottom-0 right-0 bg-[#1773cf] text-white text-[9px] font-black px-1 rounded-tl-sm shadow-lg z-20">
+            +{item.fileCounts.originals + item.fileCounts.finals}
+          </div>
         )}
+        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+          <ZoomIn className="w-5 h-5 text-white" />
+        </div>
       </div>
 
       <div className="flex-1 min-w-0 flex flex-col justify-center">
         <div className="flex justify-between items-start">
-          <span className={cn("text-sm font-bold", isSelected ? "text-white" : isLocked ? "text-slate-400" : "text-white")}>
+          <span className="text-sm font-bold text-white">
             {item.jobNumber}
           </span>
           <span className={cn("text-[8px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider", config.bgClass, config.textClass, config.borderClass)}>
             {config.label}
           </span>
         </div>
-        <p className={cn("text-xs font-semibold truncate", isLocked ? "text-slate-500" : "text-slate-200")}>{item.customerName}</p>
-        <p className={cn("text-[10px] truncate", isLocked ? "text-slate-600" : "text-slate-400")}>{item.productName}</p>
+        <p className="text-xs font-semibold truncate text-slate-200">{item.customerName}</p>
+        <p className="text-[10px] truncate text-slate-400">{item.productName}</p>
         <div className="flex items-center justify-between mt-1 text-[9px]">
-          {isLocked ? (
-            <span className="text-[#d69e2e]">Locked by {item.lockedBy}</span>
-          ) : item.assignedTo ? (
+          {item.assignedTo ? (
             <span className="text-slate-500">Assigned: {item.assignedTo}</span>
           ) : (
             <span className="text-slate-500">Unassigned</span>
