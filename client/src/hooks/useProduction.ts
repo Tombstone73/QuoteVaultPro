@@ -521,6 +521,46 @@ export function useSendLineItemToPrepress() {
   });
 }
 
+export function useSubmitReprintRequest(jobId: string) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: {
+      lineItemId: string;
+      filename: string;
+      quantity: number;
+      units: string;
+      reason: string;
+      noPrintsCompletedYet?: boolean;
+      fileId?: string;
+    }) => {
+      const res = await fetch(`/api/production/line-item/${args.lineItemId}/reprint`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileId: args.fileId,
+          filename: args.filename,
+          quantity: args.quantity,
+          units: args.units,
+          reason: args.reason,
+          noPrintsCompletedYet: args.noPrintsCompletedYet ?? false,
+        }),
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to create reprint request");
+      return json;
+    },
+    onSuccess: () => {
+      invalidateProduction(qc, jobId);
+      toast({ title: "Reprint request created" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Reprint request failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
 export function useOverrideProductionJobRouting() {
   const qc = useQueryClient();
   const { toast } = useToast();
