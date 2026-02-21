@@ -42,6 +42,7 @@ import JobDetail from "@/pages/job-detail";
 import ProductTypesSettings from "@/pages/settings/product-types";
 import PricingFormulasSettings from "@/pages/settings/pricing-formulas";
 import SettingsIntegrations from "@/pages/settings/integrations";
+import AdminTools from "@/pages/settings/admin-tools";
 import InvoicesListPage from "@/pages/invoices";
 import InvoiceDetailPage from "@/pages/invoice-detail";
 import MaterialsListPage from "@/pages/materials";
@@ -207,6 +208,7 @@ function Router() {
           <Route path="inventory" element={<InventorySettings />} />
           <Route path="notifications" element={<NotificationsSettings />} />
           <Route path="appearance" element={<AppearanceSettings />} />
+          <Route path="admin-tools" element={<AdminTools />} />
         </Route>
 
         {/* Misc */}

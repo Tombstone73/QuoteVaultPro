@@ -44,6 +44,7 @@ import {
   PlugZap,
   Sliders,
   Mail,
+  Wrench,
   type LucideIcon,
 } from "lucide-react";
 
@@ -141,6 +142,12 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     path: "/settings/appearance", 
     icon: Palette,
     description: "UI theme and visual preferences"
+  },
+  { 
+    label: "Admin Tools", 
+    path: "/settings/admin-tools", 
+    icon: Wrench,
+    description: "Data portability and system administration"
   },
 ];
 
