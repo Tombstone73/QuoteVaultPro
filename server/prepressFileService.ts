@@ -9,13 +9,14 @@
  */
 
 import { db } from "./db";
-import { lineItemFiles, prepressSessions, orders, orderLineItems } from "../shared/schema";
+import { lineItemFiles, prepressSessions, orders, orderLineItems, orderAttachments } from "../shared/schema";
 import { eq, and, inArray } from "drizzle-orm";
 import { objectStorageClient } from "./objectStorage";
 import type { Response } from "express";
 import { randomUUID } from "crypto";
 import archiver from "archiver";
 import type { InsertLineItemFile, LineItemFile } from "../shared/schema";
+import { isSupabaseConfigured, SupabaseStorageService } from "./supabaseStorage";
 
 const BUCKET_NAME = process.env.PREPRESS_FILES_BUCKET || process.env.GCS_BUCKET_NAME || "quotevaultpro-uploads";
 const MAX_FILE_SIZE_MB = 250;
@@ -216,18 +217,6 @@ export async function downloadLineItemFile(
   // Get job number from order (orders table doesn't have jobNumber, use orderNumber)
   const jobNumber = file.order.orderNumber || "NOJOB";
 
-  // Download from storage
-  const bucket = objectStorageClient.bucket(file.file.storageBucket || BUCKET_NAME);
-  const gcsFile = bucket.file(file.file.storagePath);
-
-  const [exists] = await gcsFile.exists();
-  if (!exists) {
-    res.status(404).json({ error: "File not found in storage" });
-    return;
-  }
-
-  const [metadata] = await gcsFile.getMetadata();
-
   // Download filename with job number prefix + TWO SPACES
   const computedDisplayFilename = buildComputedDisplayFilename({
     role: file.file.role,
@@ -239,12 +228,66 @@ export async function downloadLineItemFile(
 
   res.set({
     "Content-Type": file.file.mimeType,
-    "Content-Length": metadata.size,
     "Content-Disposition": `${dispositionType}; filename="${downloadFilename}"`,
     "Cache-Control": "private, no-cache",
   });
 
-  gcsFile.createReadStream().pipe(res);
+  // Prepress bucket path
+  if (file.file.storageBucket) {
+    const bucket = objectStorageClient.bucket(file.file.storageBucket || BUCKET_NAME);
+    const gcsFile = bucket.file(file.file.storagePath);
+    const [exists] = await gcsFile.exists();
+    if (!exists) {
+      res.status(404).json({ error: "File not found in storage" });
+      return;
+    }
+    gcsFile.createReadStream().pipe(res);
+    return;
+  }
+
+  const storageKey = (file.file.storageKey || file.file.storagePath || "").trim();
+  if (!storageKey) {
+    res.status(404).json({ error: "File storage key missing" });
+    return;
+  }
+
+  const [attachment] = await db
+    .select({ storageProvider: orderAttachments.storageProvider })
+    .from(orderAttachments)
+    .where(
+      and(
+        eq(orderAttachments.orderId, file.file.orderId),
+        eq(orderAttachments.orderLineItemId, file.file.lineItemId),
+        eq(orderAttachments.fileUrl, storageKey)
+      )
+    )
+    .limit(1);
+
+  if (attachment?.storageProvider === "supabase" && isSupabaseConfigured()) {
+    const supabase = new SupabaseStorageService();
+    const signedUrl = await supabase.getSignedDownloadUrl(storageKey, 3600);
+    const upstream = await fetch(signedUrl);
+    if (!upstream.ok || !upstream.body) {
+      res.status(404).json({ error: "File not found in storage" });
+      return;
+    }
+    const { Readable } = await import("stream");
+    Readable.fromWeb(upstream.body as any).pipe(res);
+    return;
+  }
+
+  try {
+    const { getAbsolutePath } = await import("./utils/fileStorage");
+    const fs = await import("fs");
+    const fsPromises = await import("fs/promises");
+    const abs = getAbsolutePath(storageKey);
+    await fsPromises.access(abs, fs.constants.R_OK);
+    fs.createReadStream(abs).pipe(res);
+    return;
+  } catch {
+    res.status(404).json({ error: "File not found in storage" });
+    return;
+  }
 }
 
 /**
