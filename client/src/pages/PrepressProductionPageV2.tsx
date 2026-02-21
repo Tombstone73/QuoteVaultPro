@@ -10,8 +10,6 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { formatDistanceToNow } from "date-fns";
 
-import { formatDistanceToNow } from "date-fns";
-
 // API Types
 type QueueItem = {
   lineItemId: string;
@@ -375,12 +373,24 @@ export default function PrepressProductionPageV2() {
 
         {/* Job List */}
         <div className="flex-1 overflow-y-auto p-2 space-y-2">
-          {jobs.map((job) => (
+          {queueLoading && (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
+            </div>
+          )}
+          {!queueLoading && queue.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <FileText className="w-12 h-12 text-slate-600 mb-3" />
+              <p className="text-sm font-medium text-slate-400">No jobs in prepress queue</p>
+              <p className="text-xs text-slate-600 mt-1">Adjust filters to see more jobs</p>
+            </div>
+          )}
+          {!queueLoading && queue.map((item) => (
             <JobCard
-              key={job.id}
-              job={job}
-              isSelected={selectedJobId === job.id}
-              onClick={() => setSelectedJobId(job.id)}
+              key={item.lineItemId}
+              item={item}
+              isSelected={selectedLineItemId === item.lineItemId}
+              onClick={() => setSelectedLineItemId(item.lineItemId)}
             />
           ))}
         </div>
@@ -732,8 +742,8 @@ export default function PrepressProductionPageV2() {
   );
 }
 
-function JobCard({ job, isSelected, onClick }: { job: Job; isSelected: boolean; onClick: () => void }) {
-  const statusConfig = {
+function JobCard({ item, isSelected, onClick }: { item: QueueItem; isSelected: boolean; onClick: () => void }) {
+  const statusConfig: Record<string, { label: string; bgClass: string; textClass: string; borderClass: string }> = {
     in_prepress: {
       label: "IN PREPRESS",
       bgClass: "bg-[#1773cf]/20",
@@ -746,7 +756,7 @@ function JobCard({ job, isSelected, onClick }: { job: Job; isSelected: boolean; 
       textClass: "text-slate-400",
       borderClass: "border-[#2d3748]",
     },
-    pending: {
+    pending_prepress: {
       label: "PENDING",
       bgClass: "bg-slate-700",
       textClass: "text-slate-300",
@@ -754,22 +764,24 @@ function JobCard({ job, isSelected, onClick }: { job: Job; isSelected: boolean; 
     },
   };
 
-  const config = statusConfig[job.status];
+  const isLocked = !!item.lockedBy;
+  const status = isLocked ? "locked" : item.status;
+  const config = statusConfig[status] || statusConfig.pending_prepress;
 
   return (
     <div
-      onClick={job.status !== "locked" ? onClick : undefined}
+      onClick={!isLocked ? onClick : undefined}
       className={cn(
         "p-2 rounded-lg flex gap-3 transition-colors relative",
-        job.status === "locked" && "opacity-70 cursor-not-allowed",
-        job.status !== "locked" && "cursor-pointer",
+        isLocked && "opacity-70 cursor-not-allowed",
+        !isLocked && "cursor-pointer",
         isSelected && "bg-[#1773cf]/10 border-l-4 border-[#1773cf] rounded-l-none rounded-r-lg",
-        !isSelected && job.status === "locked" && "bg-[#1a232e]/50 border border-[#2d3748]",
-        !isSelected && job.status !== "locked" && "bg-[#1a232e] border border-[#2d3748] hover:border-[#1773cf]/50"
+        !isSelected && isLocked && "bg-[#1a232e]/50 border border-[#2d3748]",
+        !isSelected && !isLocked && "bg-[#1a232e] border border-[#2d3748] hover:border-[#1773cf]/50"
       )}
     >
       <div className="relative w-16 h-16 flex-shrink-0 rounded-lg border border-[#2d3748] overflow-hidden bg-[#111921] flex items-center justify-center group">
-        {job.status === "locked" ? (
+        {isLocked ? (
           <>
             <svg className="w-6 h-6 text-[#d69e2e]/50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -784,9 +796,9 @@ function JobCard({ job, isSelected, onClick }: { job: Job; isSelected: boolean; 
               <ImageIcon className="w-8 h-8 text-slate-700" />
             </div>
             <div className="relative z-10 w-full h-full bg-slate-600"></div>
-            {job.fileCount && (
+            {item.fileCounts && (item.fileCounts.originals > 0 || item.fileCounts.finals > 0) && (
               <div className="absolute bottom-0 right-0 bg-[#1773cf] text-white text-[9px] font-black px-1 rounded-tl-sm shadow-lg z-20">
-                +{job.fileCount}
+                +{item.fileCounts.originals + item.fileCounts.finals}
               </div>
             )}
             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
@@ -798,25 +810,25 @@ function JobCard({ job, isSelected, onClick }: { job: Job; isSelected: boolean; 
 
       <div className="flex-1 min-w-0 flex flex-col justify-center">
         <div className="flex justify-between items-start">
-          <span className={cn("text-sm font-bold", isSelected ? "text-white" : job.status === "locked" ? "text-slate-400" : "text-white")}>
-            {job.jobNumber}
+          <span className={cn("text-sm font-bold", isSelected ? "text-white" : isLocked ? "text-slate-400" : "text-white")}>
+            {item.jobNumber}
           </span>
           <span className={cn("text-[8px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider", config.bgClass, config.textClass, config.borderClass)}>
             {config.label}
           </span>
         </div>
-        <p className={cn("text-xs font-semibold truncate", job.status === "locked" ? "text-slate-500" : "text-slate-200")}>{job.customer}</p>
-        <p className={cn("text-[10px] truncate", job.status === "locked" ? "text-slate-600" : "text-slate-400")}>{job.product}</p>
+        <p className={cn("text-xs font-semibold truncate", isLocked ? "text-slate-500" : "text-slate-200")}>{item.customerName}</p>
+        <p className={cn("text-[10px] truncate", isLocked ? "text-slate-600" : "text-slate-400")}>{item.productName}</p>
         <div className="flex items-center justify-between mt-1 text-[9px]">
-          {job.status === "locked" ? (
-            <span className="text-[#d69e2e]">Locked by {job.lockedBy}</span>
-          ) : job.assignedTo ? (
-            <span className="text-slate-500">Assigned: {job.assignedTo}</span>
+          {isLocked ? (
+            <span className="text-[#d69e2e]">Locked by {item.lockedBy}</span>
+          ) : item.assignedTo ? (
+            <span className="text-slate-500">Assigned: {item.assignedTo}</span>
           ) : (
             <span className="text-slate-500">Unassigned</span>
           )}
-          {job.isRush && <span className="text-[#e53e3e] font-bold">RUSH</span>}
-          {job.dueDate && !job.isRush && <span className="text-slate-400">{job.dueDate}</span>}
+          {item.rush && <span className="text-[#e53e3e] font-bold">RUSH</span>}
+          {item.dueDate && !item.rush && <span className="text-slate-400">{new Date(item.dueDate).toLocaleDateString()}</span>}
         </div>
       </div>
     </div>
