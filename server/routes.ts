@@ -11950,27 +11950,53 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .orderBy(desc(lineItemFiles.createdAt))
         : [];
 
-      const firstPreviewByLineItem = new Map<string, { thumbFileId: string; thumbnailUrl: string }>();
-      const previewCandidatesByLineItem = new Map<string, { original: string | null; final: string | null }>();
+      const firstPreviewByLineItem = new Map<string, {
+        thumbFileId: string | null;
+        thumbnailUrl: string | null;
+        thumbSelectionReason: 'original_fallback' | 'final_fallback' | 'none';
+        thumbCandidateMimeType: string | null;
+      }>();
+      const previewCandidatesByLineItem = new Map<string, {
+        originalImageId: string | null;
+        finalImageId: string | null;
+        firstOriginalMimeType: string | null;
+        firstFinalMimeType: string | null;
+      }>();
       for (const pf of previewFiles) {
-        const isImage = pf.mimeType?.startsWith("image/");
-        if (!isImage) continue;
+        const isImage = !!pf.mimeType?.startsWith("image/");
+        const bucket = previewCandidatesByLineItem.get(pf.lineItemId) || {
+          originalImageId: null,
+          finalImageId: null,
+          firstOriginalMimeType: null,
+          firstFinalMimeType: null,
+        };
 
-        const bucket = previewCandidatesByLineItem.get(pf.lineItemId) || { original: null, final: null };
-        if (pf.role === "original" && !bucket.original) {
-          bucket.original = pf.id;
-        } else if (pf.role === "final" && !bucket.final) {
-          bucket.final = pf.id;
+        if (pf.role === "original") {
+          if (!bucket.firstOriginalMimeType) bucket.firstOriginalMimeType = pf.mimeType || null;
+          if (isImage && !bucket.originalImageId) bucket.originalImageId = pf.id;
+        } else if (pf.role === "final") {
+          if (!bucket.firstFinalMimeType) bucket.firstFinalMimeType = pf.mimeType || null;
+          if (isImage && !bucket.finalImageId) bucket.finalImageId = pf.id;
         }
         previewCandidatesByLineItem.set(pf.lineItemId, bucket);
       }
 
       for (const [lineItemId, candidate] of previewCandidatesByLineItem.entries()) {
-        const thumbFileId = candidate.original || candidate.final;
-        if (!thumbFileId) continue;
+        const thumbFileId = candidate.originalImageId || candidate.finalImageId || null;
+        const thumbSelectionReason: 'original_fallback' | 'final_fallback' | 'none' =
+          candidate.originalImageId ? 'original_fallback' :
+          candidate.finalImageId ? 'final_fallback' :
+          'none';
+        const thumbCandidateMimeType =
+          candidate.originalImageId ? candidate.firstOriginalMimeType :
+          candidate.finalImageId ? candidate.firstFinalMimeType :
+          (candidate.firstOriginalMimeType || candidate.firstFinalMimeType || null);
+
         firstPreviewByLineItem.set(lineItemId, {
           thumbFileId,
-          thumbnailUrl: `/api/prepress/files/${thumbFileId}/download?inline=1`,
+          thumbnailUrl: thumbFileId ? `/api/prepress/files/${thumbFileId}/download?inline=1` : null,
+          thumbSelectionReason,
+          thumbCandidateMimeType,
         });
       }
 
@@ -12036,6 +12062,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           issueType: latestSession?.issueType ?? null,
           thumbFileId: firstPreviewByLineItem.get(item.lineItemId)?.thumbFileId ?? null,
           thumbnailUrl: firstPreviewByLineItem.get(item.lineItemId)?.thumbnailUrl ?? null,
+          thumbSelectionReason: firstPreviewByLineItem.get(item.lineItemId)?.thumbSelectionReason ?? 'none',
+          thumbCandidateMimeType: firstPreviewByLineItem.get(item.lineItemId)?.thumbCandidateMimeType ?? null,
           fileCounts: { originals, finals },
           quantity: Number(item.quantity) || 0,
           width: item.width != null ? Number(item.width) : null,
@@ -12932,10 +12960,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "File not found" });
       }
 
-      const isImage = fileRow.mimeType.startsWith("image/");
+      const isImage = !!fileRow.mimeType?.startsWith("image/");
       const key = (fileRow.storageKey || fileRow.storagePath || "").trim();
       if (!isImage || !key) {
-        return res.json({ success: true, data: { thumbnailUrl: null } });
+        return res.json({ success: true, data: { thumbnailUrl: null }, message: "File is not an image" });
       }
 
       if (fileRow.storageBucket) {

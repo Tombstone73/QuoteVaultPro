@@ -3430,6 +3430,8 @@ export async function registerOrderRoutes(
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
             const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+            const orderId = String(req.params.id);
 
             const {
                 fileName,
@@ -3450,6 +3452,16 @@ export async function registerOrderRoutes(
                 storageTarget
             } = req.body;
 
+            const [order] = await db
+                .select({ id: orders.id, orderNumber: orders.orderNumber })
+                .from(orders)
+                .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+                .limit(1);
+
+            if (!order) {
+                return res.status(404).json({ error: 'Order not found' });
+            }
+
             const requestedTarget =
                 (typeof requestedStorageTarget === 'string' ? requestedStorageTarget : null) ||
                 (typeof storageTarget === 'string' ? storageTarget : null);
@@ -3469,9 +3481,39 @@ export async function registerOrderRoutes(
                 return res.status(400).json({ error: `Invalid side. Must be one of: ${validSides.join(', ')}` });
             }
 
+            let resolvedLineItemId: string | null = orderLineItemId ? String(orderLineItemId) : null;
+            if (resolvedLineItemId) {
+                const [lineItem] = await db
+                    .select({ id: orderLineItems.id })
+                    .from(orderLineItems)
+                    .where(
+                        and(
+                            eq(orderLineItems.id, resolvedLineItemId),
+                            eq(orderLineItems.orderId, orderId)
+                        )
+                    )
+                    .limit(1);
+
+                if (!lineItem) {
+                    return res.status(404).json({ error: 'Line item not found' });
+                }
+            } else {
+                const candidateLineItems = await db
+                    .select({ id: orderLineItems.id })
+                    .from(orderLineItems)
+                    .where(eq(orderLineItems.orderId, orderId))
+                    .limit(2);
+
+                if (candidateLineItems.length === 1) {
+                    resolvedLineItemId = candidateLineItems[0].id;
+                } else if (candidateLineItems.length > 1) {
+                    return res.status(400).json({ error: 'lineItemId is required when an order has multiple line items' });
+                }
+            }
+
             let attachmentData: any = {
-                orderId: req.params.id,
-                orderLineItemId: orderLineItemId || null,
+                orderId,
+                orderLineItemId: resolvedLineItemId,
                 quoteId: quoteId || null,
                 uploadedByUserId: userId,
                 uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
@@ -3499,11 +3541,11 @@ export async function registerOrderRoutes(
                     const storedFilename = generateStoredFilename(originalFilename);
                     const relativePath = generateRelativePath({
                         organizationId,
-                        orderNumber: orderNumber ? String(orderNumber) : undefined,
-                        lineItemId: orderLineItemId ? String(orderLineItemId) : undefined,
+                        orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
+                        lineItemId: resolvedLineItemId || undefined,
                         storedFilename,
                         resourceType: 'order',
-                        resourceId: req.params.id,
+                        resourceId: orderId,
                     });
                     const checksum = computeChecksum(buffer);
                     const extension = getFileExtension(originalFilename);
@@ -3534,8 +3576,8 @@ export async function registerOrderRoutes(
                         buffer,
                         mimeType: mimeType || 'application/octet-stream',
                         organizationId,
-                        orderNumber,
-                        lineItemId: orderLineItemId,
+                        orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
+                        lineItemId: resolvedLineItemId || undefined,
                     });
 
                     attachmentData = {
@@ -3601,17 +3643,17 @@ export async function registerOrderRoutes(
 
             const [attachment] = await db.insert(orderAttachments).values(attachmentData).returning();
 
-            if (orderLineItemId) {
+            if (resolvedLineItemId) {
                 const storagePath =
                     (attachment.relativePath as string | null) ||
                     (attachment.fileUrl as string | null) ||
                     null;
 
-                if (storagePath && userId) {
+                if (storagePath) {
                     await createLineItemFileRecord({
                         organizationId,
-                        orderId: req.params.id,
-                        lineItemId: String(orderLineItemId),
+                        orderId,
+                        lineItemId: String(resolvedLineItemId),
                         role: 'original',
                         storagePath,
                         storageKey: storagePath,
