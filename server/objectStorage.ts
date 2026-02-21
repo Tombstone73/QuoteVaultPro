@@ -11,23 +11,75 @@ import {
 
 const REPLIT_SIDECAR_ENDPOINT = "http://127.0.0.1:1106";
 
-export const objectStorageClient = new Storage({
-  credentials: {
-    audience: "replit",
-    subject_token_type: "access_token",
-    token_url: `${REPLIT_SIDECAR_ENDPOINT}/token`,
-    type: "external_account",
-    credential_source: {
-      url: `${REPLIT_SIDECAR_ENDPOINT}/credential`,
-      format: {
-        type: "json",
-        subject_token_field_name: "access_token",
+type GcsAuthMode =
+  | "replit_sidecar"
+  | "google_application_credentials"
+  | "application_default";
+
+let cachedStorageClient: Storage | null = null;
+let cachedStorageAuthMode: GcsAuthMode | null = null;
+let hasLoggedStorageAuthMode = false;
+
+function shouldUseReplitSidecarAuth(): boolean {
+  const hasReplitEnv = !!process.env.REPL_ID;
+  const hasExplicitGoogleCredentials = !!process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  return hasReplitEnv && !hasExplicitGoogleCredentials;
+}
+
+function buildStorageClient(): { client: Storage; authMode: GcsAuthMode } {
+  const projectId = process.env.GCS_PROJECT_ID || undefined;
+
+  if (shouldUseReplitSidecarAuth()) {
+    const client = new Storage({
+      credentials: {
+        audience: "replit",
+        subject_token_type: "access_token",
+        token_url: `${REPLIT_SIDECAR_ENDPOINT}/token`,
+        type: "external_account",
+        credential_source: {
+          url: `${REPLIT_SIDECAR_ENDPOINT}/credential`,
+          format: {
+            type: "json",
+            subject_token_field_name: "access_token",
+          },
+        },
+        universe_domain: "googleapis.com",
       },
-    },
-    universe_domain: "googleapis.com",
-  },
-  projectId: "",
-});
+      projectId,
+    });
+    return { client, authMode: "replit_sidecar" };
+  }
+
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    const client = new Storage({ projectId });
+    return { client, authMode: "google_application_credentials" };
+  }
+
+  const client = new Storage({ projectId });
+  return { client, authMode: "application_default" };
+}
+
+export function getStorageClient(): Storage {
+  if (!cachedStorageClient || !cachedStorageAuthMode) {
+    const built = buildStorageClient();
+    cachedStorageClient = built.client;
+    cachedStorageAuthMode = built.authMode;
+  }
+
+  if (!hasLoggedStorageAuthMode && process.env.NODE_ENV !== "production") {
+    hasLoggedStorageAuthMode = true;
+    console.log(`[Storage] GCS auth mode: ${cachedStorageAuthMode}`);
+  }
+
+  return cachedStorageClient;
+}
+
+export function getStorageAuthMode(): GcsAuthMode {
+  getStorageClient();
+  return cachedStorageAuthMode as GcsAuthMode;
+}
+
+export const objectStorageClient = getStorageClient();
 
 export class ObjectNotFoundError extends Error {
   constructor() {
