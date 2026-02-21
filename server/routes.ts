@@ -50,10 +50,18 @@ import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/vali
 import { resolveInventoryPolicyFromOrgPreferences } from "@shared/inventoryPolicy";
 import { mergeInventoryPolicyIntoPreferences, normalizeInventoryPolicyPatch } from "@shared/inventoryPolicyPreferences";
 import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBooksPreferences";
+import { resolveMaterialsOverrideModeFromOrgPreferences } from "@shared/materialsOverrideMode";
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2OverrideConfig";
 import { createLineItemFileRecord } from "./services/lineItemFileRecordService";
 import { resolveVisibleNodes } from "@shared/optionTreeV2Runtime";
 import { computePlannedMaterialsForLineItem } from "./services/prepressPlannedMaterials";
+import {
+  appendMaterialOverrideToSpecsJson,
+  computeEffectiveMaterials,
+  materialOverrideOpInputSchema,
+  materialOverridesFromSpecsJson,
+  withServerDefaultsForOverride,
+} from "./services/prepressMaterialOverrides";
 
 // Auth provider selection logic
 // Priority: AUTH_PROVIDER env var > detection logic
@@ -1398,8 +1406,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Ensure stable defaults for QuickBooks preferences
       const quickBooks = resolveQuickBooksPreferencesFromOrgPreferences(preferences);
 
+      const materialsOverrideMode = resolveMaterialsOverrideModeFromOrgPreferences(preferences);
+
       res.json({
         ...(preferences as any),
+        production: {
+          ...(((preferences as any)?.production && typeof (preferences as any).production === "object") ? (preferences as any).production : {}),
+          materialsOverrideMode,
+        },
         inventoryPolicy,
         quickBooks,
         emailTemplates,
@@ -11987,6 +12001,159 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return rows;
   };
 
+  const PREPRESS_OVERRIDE_ALLOWED_STATUSES = new Set([
+    "queued",
+    "new",
+    "pending_prepress",
+    "in_prepress",
+    "prepress_complete",
+  ]);
+
+  const PRODUCTION_TERMINAL_STATUSES = new Set(["produced", "done", "complete", "canceled"]);
+
+  const getMaterialsOverrideMode = async (organizationId: string) => {
+    const [org] = await db
+      .select({ settings: organizations.settings })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .limit(1);
+
+    const prefs = ((org?.settings as any)?.preferences && typeof (org?.settings as any)?.preferences === "object")
+      ? (org?.settings as any).preferences
+      : {};
+
+    return resolveMaterialsOverrideModeFromOrgPreferences(prefs);
+  };
+
+  const evaluateMaterialsOverrideAccess = (statusRaw: unknown, mode: "prepress_only" | "prepress_and_production") => {
+    const status = String(statusRaw || "").trim().toLowerCase();
+
+    if (mode === "prepress_only") {
+      if (PREPRESS_OVERRIDE_ALLOWED_STATUSES.has(status)) {
+        return { allowed: true as const };
+      }
+      return {
+        allowed: false as const,
+        message: "Material overrides are allowed in prepress stages only for this organization",
+      };
+    }
+
+    if (PRODUCTION_TERMINAL_STATUSES.has(status)) {
+      return {
+        allowed: false as const,
+        message: "Material overrides are locked for terminal production statuses",
+      };
+    }
+
+    return { allowed: true as const };
+  };
+
+  const getPrepressMaterialContext = async (organizationId: string, lineItemId: string) => {
+    const [lineItem] = await db
+      .select({
+        id: orderLineItems.id,
+        orderId: orderLineItems.orderId,
+        status: orderLineItems.status,
+        quantity: orderLineItems.quantity,
+        width: orderLineItems.width,
+        height: orderLineItems.height,
+        specsJson: orderLineItems.specsJson,
+        optionSelectionsJson: orderLineItems.optionSelectionsJson,
+        pbv2TreeVersionId: orderLineItems.pbv2TreeVersionId,
+      })
+      .from(orderLineItems)
+      .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+      .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+      .limit(1);
+
+    if (!lineItem) return null;
+
+    if (!lineItem.pbv2TreeVersionId) {
+      return {
+        lineItem,
+        treeJson: null,
+      };
+    }
+
+    const [treeVersion] = await db
+      .select({ id: pbv2TreeVersions.id, treeJson: pbv2TreeVersions.treeJson })
+      .from(pbv2TreeVersions)
+      .where(
+        and(
+          eq(pbv2TreeVersions.id, lineItem.pbv2TreeVersionId),
+          eq(pbv2TreeVersions.organizationId, organizationId)
+        )
+      )
+      .limit(1);
+
+    return {
+      lineItem,
+      treeJson: (treeVersion?.treeJson as any) ?? null,
+    };
+  };
+
+  const resolveMaterialNamesForOrg = async (organizationId: string, materialIds: string[]) => {
+    const uniqueIds = Array.from(new Set(materialIds.filter((id) => typeof id === "string" && id.length > 0)));
+    if (uniqueIds.length === 0) return new Map<string, string>();
+
+    const rows = await db
+      .select({ id: materials.id, name: materials.name })
+      .from(materials)
+      .where(and(eq(materials.organizationId, organizationId), inArray(materials.id, uniqueIds)));
+
+    return new Map<string, string>(rows.map((row) => [row.id, row.name]));
+  };
+
+  const buildPrepressMaterialsEffectivePayload = async (args: {
+    organizationId: string;
+    lineItem: any;
+    treeJson: any;
+  }) => {
+    const overrideMode = await getMaterialsOverrideMode(args.organizationId);
+    const overrideAccess = evaluateMaterialsOverrideAccess(args.lineItem.status, overrideMode);
+
+    const plannedResult = args.treeJson && args.treeJson.schemaVersion === 2
+      ? computePlannedMaterialsForLineItem({ lineItem: args.lineItem, treeJson: args.treeJson as any })
+      : { materials: [], message: "PBV2 tree not available for planned material calculation" };
+
+    const overrides = materialOverridesFromSpecsJson(args.lineItem.specsJson);
+    const effectiveResult = computeEffectiveMaterials({
+      plannedMaterials: plannedResult.materials,
+      overrides,
+    });
+
+    const materialNameById = await resolveMaterialNamesForOrg(args.organizationId, [
+      ...plannedResult.materials.map((m) => m.materialId),
+      ...effectiveResult.effectiveMaterials.map((m) => m.materialId),
+    ]);
+
+    const plannedMaterials = plannedResult.materials.map((m) => ({
+      ...m,
+      materialName: materialNameById.get(m.materialId),
+    }));
+
+    const effectiveMaterials = effectiveResult.effectiveMaterials.map((m) => ({
+      ...m,
+      materialName: materialNameById.get(m.materialId),
+    }));
+
+    const messageParts: string[] = [];
+    if (plannedResult.message) messageParts.push(plannedResult.message);
+    if (!overrideAccess.allowed && overrideAccess.message) messageParts.push(overrideAccess.message);
+
+    return {
+      plannedMaterials,
+      effectiveMaterials,
+      overrides,
+      pricingReviewRequired: effectiveResult.pricingReviewRequired,
+      overrideMode,
+      overrideAllowed: overrideAccess.allowed,
+      overrideBlockedReason: overrideAccess.allowed ? null : (overrideAccess.message || null),
+      diffSummary: effectiveResult.diffSummary,
+      message: messageParts.length > 0 ? messageParts.join(" | ") : undefined,
+    };
+  };
+
   // GET /api/prepress/queue - List line items for prepress
   app.get("/api/prepress/queue", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -12267,68 +12434,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const { lineItemId } = req.params;
+      const context = await getPrepressMaterialContext(organizationId, lineItemId);
 
-      const [lineItem] = await db
-        .select({
-          id: orderLineItems.id,
-          quantity: orderLineItems.quantity,
-          width: orderLineItems.width,
-          height: orderLineItems.height,
-          optionSelectionsJson: orderLineItems.optionSelectionsJson,
-          pbv2TreeVersionId: orderLineItems.pbv2TreeVersionId,
-        })
-        .from(orderLineItems)
-        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
-        .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
-        .limit(1);
-
-      if (!lineItem) {
+      if (!context) {
         return res.status(404).json({ success: false, data: { materials: [] }, message: "Line item not found" });
       }
 
-      if (!lineItem.pbv2TreeVersionId) {
+      if (!context.lineItem.pbv2TreeVersionId || !context.treeJson || context.treeJson.schemaVersion !== 2) {
         return res.json({ success: true, data: { materials: [] }, message: "No PBV2 tree linked to this line item" });
       }
 
-      const [treeVersion] = await db
-        .select({ id: pbv2TreeVersions.id, treeJson: pbv2TreeVersions.treeJson })
-        .from(pbv2TreeVersions)
-        .where(
-          and(
-            eq(pbv2TreeVersions.id, lineItem.pbv2TreeVersionId),
-            eq(pbv2TreeVersions.organizationId, organizationId)
-          )
-        )
-        .limit(1);
-
-      if (!treeVersion?.treeJson || (treeVersion.treeJson as any)?.schemaVersion !== 2) {
-        return res.json({ success: true, data: { materials: [] }, message: "PBV2 tree not available for planned material calculation" });
-      }
-
-      const computed = computePlannedMaterialsForLineItem({
-        lineItem,
-        treeJson: treeVersion.treeJson as any,
+      const payload = await buildPrepressMaterialsEffectivePayload({
+        organizationId,
+        lineItem: context.lineItem,
+        treeJson: context.treeJson,
       });
-
-      const materialIds = Array.from(new Set(computed.materials.map((m) => m.materialId).filter(Boolean)));
-      const materialRows = materialIds.length > 0
-        ? await db
-            .select({ id: materials.id, name: materials.name })
-            .from(materials)
-            .where(and(eq(materials.organizationId, organizationId), inArray(materials.id, materialIds)))
-        : [];
-
-      const materialNameById = new Map<string, string>(materialRows.map((m) => [m.id, m.name]));
-
-      const resolvedMaterials = computed.materials.map((m) => ({
-        ...m,
-        materialName: materialNameById.get(m.materialId),
-      }));
 
       return res.json({
         success: true,
-        data: { materials: resolvedMaterials },
-        ...(computed.message ? { message: computed.message } : {}),
+        data: { materials: payload.plannedMaterials },
+        ...(payload.message ? { message: payload.message } : {}),
       });
     } catch (error: any) {
       console.error("[Prepress] Error computing planned materials:", error);
@@ -12337,6 +12462,170 @@ export async function registerRoutes(app: Express): Promise<Server> {
         data: { materials: [] },
         message: error?.message || "Failed to compute planned materials",
       });
+    }
+  });
+
+  // GET /api/prepress/line-items/:lineItemId/materials-effective - Planned + effective materials with overrides
+  app.get("/api/prepress/line-items/:lineItemId/materials-effective", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(500).json({ success: false, data: null, message: "Missing organization context" });
+      }
+
+      const { lineItemId } = req.params;
+      const context = await getPrepressMaterialContext(organizationId, lineItemId);
+      if (!context) {
+        return res.status(404).json({ success: false, data: null, message: "Line item not found" });
+      }
+
+      const payload = await buildPrepressMaterialsEffectivePayload({
+        organizationId,
+        lineItem: context.lineItem,
+        treeJson: context.treeJson,
+      });
+
+      return res.json({
+        success: true,
+        data: {
+          plannedMaterials: payload.plannedMaterials,
+          effectiveMaterials: payload.effectiveMaterials,
+          overrides: payload.overrides,
+          pricingReviewRequired: payload.pricingReviewRequired,
+          overrideMode: payload.overrideMode,
+          overrideAllowed: payload.overrideAllowed,
+          overrideBlockedReason: payload.overrideBlockedReason,
+        },
+        ...(payload.message ? { message: payload.message } : {}),
+      });
+    } catch (error: any) {
+      console.error("[Prepress] Error computing effective materials:", error);
+      return res.status(500).json({ success: false, data: null, message: error?.message || "Failed to compute effective materials" });
+    }
+  });
+
+  // POST /api/prepress/line-items/:lineItemId/material-overrides - Append a sparse material override op
+  app.post("/api/prepress/line-items/:lineItemId/material-overrides", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(500).json({ success: false, data: null, message: "Missing organization context" });
+      }
+
+      const userId = getUserId(req.user) || undefined;
+      const { lineItemId } = req.params;
+
+      const context = await getPrepressMaterialContext(organizationId, lineItemId);
+      if (!context) {
+        return res.status(404).json({ success: false, data: null, message: "Line item not found" });
+      }
+
+      const overrideMode = await getMaterialsOverrideMode(organizationId);
+      const access = evaluateMaterialsOverrideAccess(context.lineItem.status, overrideMode);
+      if (!access.allowed) {
+        return res.status(400).json({
+          success: false,
+          data: null,
+          message: access.message || "Material overrides are not allowed for the current line item status",
+        });
+      }
+
+      const parsed = materialOverrideOpInputSchema.safeParse((req.body as any)?.op);
+      if (!parsed.success) {
+        return res.status(400).json({
+          success: false,
+          data: null,
+          message: parsed.error.issues[0]?.message || "Invalid override payload",
+        });
+      }
+
+      const persistedOp = withServerDefaultsForOverride(parsed.data, userId);
+      let updatedSpecsJson: Record<string, any> | null = null;
+
+      await db.transaction(async (tx) => {
+        updatedSpecsJson = appendMaterialOverrideToSpecsJson(context.lineItem.specsJson, persistedOp);
+
+        await tx
+          .update(orderLineItems)
+          .set({
+            specsJson: updatedSpecsJson as any,
+            updatedAt: new Date(),
+          })
+          .where(eq(orderLineItems.id, lineItemId));
+
+        const [existingJob] = await tx
+          .select({ id: productionJobs.id })
+          .from(productionJobs)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.lineItemId, lineItemId)))
+          .limit(1);
+
+        const productionJobId = existingJob?.id || (
+          await tx
+            .insert(productionJobs)
+            .values({
+              organizationId,
+              orderId: context.lineItem.orderId,
+              lineItemId,
+              stationKey: "flatbed",
+              stepKey: "prepress",
+              status: "queued",
+              totalSeconds: 0,
+            })
+            .returning({ id: productionJobs.id })
+            .then((rows) => rows[0].id)
+        );
+
+        const plannedForAudit = context.treeJson && context.treeJson.schemaVersion === 2
+          ? computePlannedMaterialsForLineItem({ lineItem: context.lineItem, treeJson: context.treeJson as any })
+          : { materials: [] as any[] };
+
+        const effectiveForAudit = computeEffectiveMaterials({
+          plannedMaterials: plannedForAudit.materials,
+          overrides: materialOverridesFromSpecsJson(updatedSpecsJson),
+        });
+
+        await tx.insert(productionEvents).values({
+          organizationId,
+          productionJobId,
+          type: "note",
+          payload: {
+            eventType: "material_override",
+            lineItemId,
+            op: persistedOp,
+            reasonNote: persistedOp.reasonNote,
+            pricingReviewRequired: effectiveForAudit.pricingReviewRequired,
+            diffSummary: effectiveForAudit.diffSummary,
+          },
+        });
+      });
+
+      const payload = await buildPrepressMaterialsEffectivePayload({
+        organizationId,
+        lineItem: {
+          ...context.lineItem,
+          specsJson: updatedSpecsJson || context.lineItem.specsJson,
+        },
+        treeJson: context.treeJson,
+      });
+
+      return res.json({
+        success: true,
+        data: {
+          plannedMaterials: payload.plannedMaterials,
+          effectiveMaterials: payload.effectiveMaterials,
+          overrides: payload.overrides,
+          pricingReviewRequired: payload.pricingReviewRequired,
+          overrideMode: payload.overrideMode,
+          overrideAllowed: payload.overrideAllowed,
+          overrideBlockedReason: payload.overrideBlockedReason,
+        },
+        ...(payload.message ? { message: payload.message } : {}),
+      });
+    } catch (error: any) {
+      console.error("[Prepress] Error applying material override:", error);
+      return res.status(500).json({ success: false, data: null, message: error?.message || "Failed to apply material override" });
     }
   });
 

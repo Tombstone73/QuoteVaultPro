@@ -32,6 +32,10 @@ export interface OrgPreferences {
   quickBooks?: {
     syncPolicy?: QuickBooksSyncPolicy;
   };
+
+  production?: {
+    materialsOverrideMode?: "prepress_only" | "prepress_and_production";
+  };
 }
 
 type InventoryPolicyPatch = {

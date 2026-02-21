@@ -658,6 +658,18 @@ export function PreferencesSettings() {
       },
     });
   };
+
+  const materialsOverrideInProductionEnabled = (preferences as any)?.production?.materialsOverrideMode !== "prepress_only";
+
+  const handleMaterialsOverrideModeToggle = async (enabled: boolean) => {
+    await updatePreferences({
+      ...preferences,
+      production: {
+        ...(preferences as any)?.production,
+        materialsOverrideMode: enabled ? "prepress_and_production" : "prepress_only",
+      },
+    });
+  };
   
   if (isLoading) {
     return (
@@ -784,6 +796,23 @@ export function PreferencesSettings() {
                 id="require-line-items-done"
                 checked={preferences?.orders?.requireAllLineItemsDoneToComplete ?? true}
                 onCheckedChange={(checked) => handleOrderToggle('requireAllLineItemsDoneToComplete', checked)}
+                disabled={isUpdating}
+              />
+            </div>
+
+            <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+              <div className="flex-1 space-y-1">
+                <Label htmlFor="allow-material-overrides-production" className="text-titan-sm font-medium text-titan-text-primary cursor-pointer">
+                  Allow material overrides in production
+                </Label>
+                <p className="text-titan-xs text-titan-text-muted">
+                  Off: material overrides are limited to prepress stages. On: overrides remain available through production until terminal done/complete states.
+                </p>
+              </div>
+              <Switch
+                id="allow-material-overrides-production"
+                checked={materialsOverrideInProductionEnabled}
+                onCheckedChange={handleMaterialsOverrideModeToggle}
                 disabled={isUpdating}
               />
             </div>

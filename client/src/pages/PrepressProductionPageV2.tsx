@@ -114,6 +114,53 @@ type PlannedMaterial = {
   sources: Array<{ optionLabel: string; choiceLabel: string }>;
 };
 
+type EffectiveMaterial = {
+  materialId: string;
+  materialName?: string;
+  qty: number;
+  uom: "sqft" | "ft" | "each";
+  isOverridden?: boolean;
+};
+
+type MaterialOverrideOp =
+  | {
+      op: "replace";
+      fromMaterialId: string;
+      toMaterialId: string;
+      reasonNote: string;
+      priceImpact: "none" | "potential" | "confirmed";
+      createdAt: string;
+      createdByUserId?: string;
+    }
+  | {
+      op: "add" | "adjust_qty";
+      materialId: string;
+      qty: number;
+      uom: "sqft" | "ft" | "each";
+      reasonNote: string;
+      priceImpact: "none" | "potential" | "confirmed";
+      createdAt: string;
+      createdByUserId?: string;
+    }
+  | {
+      op: "remove";
+      materialId: string;
+      reasonNote: string;
+      priceImpact: "none" | "potential" | "confirmed";
+      createdAt: string;
+      createdByUserId?: string;
+    };
+
+type MaterialsEffectivePayload = {
+  plannedMaterials: PlannedMaterial[];
+  effectiveMaterials: EffectiveMaterial[];
+  overrides: MaterialOverrideOp[];
+  pricingReviewRequired: boolean;
+  overrideMode: "prepress_only" | "prepress_and_production";
+  overrideAllowed: boolean;
+  overrideBlockedReason?: string | null;
+};
+
 // Utility to format bytes
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -144,6 +191,14 @@ export default function PrepressProductionPageV2() {
   const [uploadingFiles, setUploadingFiles] = useState<UploadProgress[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [specSheetOpen, setSpecSheetOpen] = useState(false);
+  const [materialOverrideOpen, setMaterialOverrideOpen] = useState(false);
+  const [materialOverrideMode, setMaterialOverrideMode] = useState<"replace" | "add" | "remove" | "adjust_qty">("replace");
+  const [overrideFromMaterialId, setOverrideFromMaterialId] = useState("");
+  const [overrideToMaterialId, setOverrideToMaterialId] = useState("");
+  const [overrideMaterialId, setOverrideMaterialId] = useState("");
+  const [overrideQty, setOverrideQty] = useState("");
+  const [overrideUom, setOverrideUom] = useState<"sqft" | "ft" | "each">("sqft");
+  const [overrideReasonNote, setOverrideReasonNote] = useState("");
 
   // Queue Query
   const { data: queueData, isLoading: queueLoading } = useQuery({
@@ -205,17 +260,38 @@ export default function PrepressProductionPageV2() {
     enabled: !!selectedLineItemId && specSheetOpen,
   });
 
-  const { data: plannedMaterialsData, isLoading: plannedMaterialsLoading } = useQuery({
-    queryKey: ["/api/prepress/line-items", selectedLineItemId, "materials-planned"],
+  const { data: materialsEffectiveData, isLoading: materialsEffectiveLoading } = useQuery({
+    queryKey: ["/api/prepress/line-items", selectedLineItemId, "materials-effective"],
     queryFn: async () => {
-      if (!selectedLineItemId) return { materials: [] as PlannedMaterial[], message: undefined as string | undefined };
-      const res = await fetch(`/api/prepress/line-items/${selectedLineItemId}/materials-planned`, { credentials: "include" });
+      if (!selectedLineItemId) {
+        return {
+          data: {
+            plannedMaterials: [] as PlannedMaterial[],
+            effectiveMaterials: [] as EffectiveMaterial[],
+            overrides: [] as MaterialOverrideOp[],
+            pricingReviewRequired: false,
+            overrideMode: "prepress_and_production" as const,
+            overrideAllowed: true,
+            overrideBlockedReason: null,
+          } as MaterialsEffectivePayload,
+          message: undefined as string | undefined,
+        };
+      }
+
+      const res = await fetch(`/api/prepress/line-items/${selectedLineItemId}/materials-effective`, { credentials: "include" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data?.success) {
-        throw new Error(data?.message || "Failed to fetch planned materials");
+        throw new Error(data?.message || "Failed to fetch effective materials");
       }
       return {
-        materials: (data?.data?.materials || []) as PlannedMaterial[],
+        data: (data?.data || {
+          plannedMaterials: [],
+          effectiveMaterials: [],
+          overrides: [],
+          pricingReviewRequired: false,
+          overrideMode: "prepress_and_production",
+          overrideAllowed: true,
+        }) as MaterialsEffectivePayload,
         message: typeof data?.message === "string" ? data.message : undefined,
       };
     },
@@ -381,14 +457,50 @@ export default function PrepressProductionPageV2() {
     },
   });
 
+  const applyMaterialOverrideMutation = useMutation({
+    mutationFn: async (op: any) => {
+      if (!selectedLineItemId) throw new Error("No line item selected");
+      const res = await fetch(`/api/prepress/line-items/${selectedLineItemId}/material-overrides`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ op }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.message || "Failed to apply material override");
+      }
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/prepress/line-items", selectedLineItemId, "materials-effective"] });
+      toast({ title: "Material override applied" });
+      setMaterialOverrideOpen(false);
+      setOverrideReasonNote("");
+      setOverrideQty("");
+      setOverrideToMaterialId("");
+      setOverrideMaterialId("");
+    },
+    onError: (error: Error) => {
+      toast({ title: "Material override failed", description: error.message, variant: "destructive" });
+    },
+  });
+
   // Derived state
   const queue = queueData || [];
   const selectedItem = queue.find(q => q.lineItemId === selectedLineItemId);
   const originalFiles = filesData?.originals || [];
   const finalFiles = filesData?.finals || [];
   const hasFinalFiles = finalFiles.length > 0;
-  const plannedMaterials = plannedMaterialsData?.materials || [];
-  const plannedMaterialsMessage = plannedMaterialsData?.message;
+  const materialsPayload = materialsEffectiveData?.data;
+  const plannedMaterials = materialsPayload?.plannedMaterials || [];
+  const effectiveMaterials = materialsPayload?.effectiveMaterials || [];
+  const materialOverrides = materialsPayload?.overrides || [];
+  const pricingReviewRequired = materialsPayload?.pricingReviewRequired || false;
+  const overrideMode = materialsPayload?.overrideMode || "prepress_and_production";
+  const overrideAllowed = materialsPayload?.overrideAllowed ?? true;
+  const overrideBlockedReason = materialsPayload?.overrideBlockedReason || null;
+  const plannedMaterialsMessage = materialsEffectiveData?.message;
   const canComplete = hasFinalFiles && !!selectedItem?.sessionId;
   // PROMPT B: Enable "Send to Print Queue" when prepress is complete and has final files
   const canSendToPrint =
@@ -421,9 +533,21 @@ export default function PrepressProductionPageV2() {
     console.log("[Prepress Materials Needed]", {
       lineItemId: selectedItem.lineItemId,
       plannedMaterials: plannedMaterials.length,
+      effectiveMaterials: effectiveMaterials.length,
+      overrideCount: materialOverrides.length,
+      overrideMode,
+      overrideAllowed,
       message: plannedMaterialsMessage || null,
     });
-  }, [selectedItem?.lineItemId, plannedMaterials.length, plannedMaterialsMessage]);
+  }, [
+    selectedItem?.lineItemId,
+    plannedMaterials.length,
+    effectiveMaterials.length,
+    materialOverrides.length,
+    overrideMode,
+    overrideAllowed,
+    plannedMaterialsMessage,
+  ]);
 
   // Handlers
   const handleRefresh = () => {
@@ -502,6 +626,107 @@ export default function PrepressProductionPageV2() {
     if (selectedLineItemId) {
       window.open(`/api/prepress/line-item/${selectedLineItemId}/download-originals-zip`, "_blank");
     }
+  };
+
+  const openMaterialOverrideModal = (args: {
+    mode: "replace" | "add" | "remove" | "adjust_qty";
+    materialId?: string;
+    uom?: "sqft" | "ft" | "each";
+    qty?: number;
+  }) => {
+    setMaterialOverrideMode(args.mode);
+    setOverrideReasonNote("");
+
+    if (args.mode === "replace") {
+      setOverrideFromMaterialId(args.materialId || "");
+      setOverrideToMaterialId("");
+      setOverrideMaterialId("");
+      setOverrideQty("");
+    }
+
+    if (args.mode === "add") {
+      setOverrideMaterialId("");
+      setOverrideQty("");
+      setOverrideUom(args.uom || "sqft");
+    }
+
+    if (args.mode === "remove") {
+      setOverrideMaterialId(args.materialId || "");
+      setOverrideQty("");
+    }
+
+    if (args.mode === "adjust_qty") {
+      setOverrideMaterialId(args.materialId || "");
+      setOverrideQty(args.qty != null ? String(args.qty) : "");
+      setOverrideUom(args.uom || "sqft");
+    }
+
+    setMaterialOverrideOpen(true);
+  };
+
+  const handleSubmitMaterialOverride = () => {
+    const reasonNote = overrideReasonNote.trim();
+    if (!reasonNote) {
+      toast({ title: "Reason is required", description: "Provide a reason note for this material override", variant: "destructive" });
+      return;
+    }
+
+    if (materialOverrideMode === "replace") {
+      if (!overrideFromMaterialId.trim() || !overrideToMaterialId.trim()) {
+        toast({ title: "Material IDs required", description: "Both source and target material IDs are required", variant: "destructive" });
+        return;
+      }
+      applyMaterialOverrideMutation.mutate({
+        op: "replace",
+        fromMaterialId: overrideFromMaterialId.trim(),
+        toMaterialId: overrideToMaterialId.trim(),
+        reasonNote,
+        priceImpact: "potential",
+      });
+      return;
+    }
+
+    if (materialOverrideMode === "add") {
+      const qty = Number(overrideQty);
+      if (!overrideMaterialId.trim() || !Number.isFinite(qty) || qty <= 0) {
+        toast({ title: "Invalid material input", description: "Material ID and positive quantity are required", variant: "destructive" });
+        return;
+      }
+      applyMaterialOverrideMutation.mutate({
+        op: "add",
+        materialId: overrideMaterialId.trim(),
+        qty,
+        uom: overrideUom,
+        reasonNote,
+      });
+      return;
+    }
+
+    if (materialOverrideMode === "remove") {
+      if (!overrideMaterialId.trim()) {
+        toast({ title: "Material ID required", description: "Select a material to remove", variant: "destructive" });
+        return;
+      }
+      applyMaterialOverrideMutation.mutate({
+        op: "remove",
+        materialId: overrideMaterialId.trim(),
+        reasonNote,
+      });
+      return;
+    }
+
+    const qty = Number(overrideQty);
+    if (!overrideMaterialId.trim() || !Number.isFinite(qty) || qty <= 0) {
+      toast({ title: "Invalid quantity", description: "Material ID and positive quantity are required", variant: "destructive" });
+      return;
+    }
+    applyMaterialOverrideMutation.mutate({
+      op: "adjust_qty",
+      materialId: overrideMaterialId.trim(),
+      qty,
+      uom: overrideUom,
+      reasonNote,
+    });
   };
 
   return (
@@ -785,21 +1010,75 @@ export default function PrepressProductionPageV2() {
             </div>
 
             <div className="mt-4 bg-[#1a232e] p-5 border border-[#2d3748] rounded-lg shadow-sm">
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Materials Needed</p>
-                {plannedMaterialsLoading ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
+              <div className="flex items-center justify-between mb-2 gap-3">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Materials Needed</p>
+                  <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-slate-600 text-slate-300 bg-slate-700/40">
+                    Effective (including overrides)
+                  </span>
+                  {pricingReviewRequired ? (
+                    <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-amber-500 text-amber-300 bg-amber-900/20">
+                      Pricing Review Required
+                    </span>
+                  ) : null}
+                </div>
+                <div className="flex items-center gap-2">
+                  {materialsEffectiveLoading ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!overrideAllowed || !selectedItem}
+                    onClick={() => openMaterialOverrideModal({ mode: "add" })}
+                  >
+                    Add Material
+                  </Button>
+                </div>
               </div>
 
-              {plannedMaterials.length > 0 ? (
-                <ul className="space-y-1.5 text-sm">
-                  {plannedMaterials.map((material, index) => (
-                    <li key={`${material.materialId}-${material.basis}-${index}`} className="flex items-center justify-between gap-3">
-                      <span className="font-medium text-slate-200">
-                        {material.materialName || `Material ${material.materialId}`}
-                      </span>
-                      <span className="text-slate-300 font-mono">
-                        {material.qty} {material.uom}
-                      </span>
+              {effectiveMaterials.length > 0 ? (
+                <ul className="space-y-2 text-sm">
+                  {effectiveMaterials.map((material, index) => (
+                    <li key={`${material.materialId}-${material.uom}-${index}`} className="flex items-center justify-between gap-3 border border-slate-700 rounded p-2">
+                      <div className="flex flex-col gap-1">
+                        <span className="font-medium text-slate-200 flex items-center gap-2">
+                          {material.materialName || `Material ${material.materialId}`}
+                          {material.isOverridden ? (
+                            <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-cyan-500 text-cyan-300 bg-cyan-900/20">
+                              Overridden
+                            </span>
+                          ) : null}
+                        </span>
+                        <span className="text-xs text-slate-500">ID: {material.materialId}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-slate-300 font-mono min-w-[90px] text-right">
+                          {material.qty} {material.uom}
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!overrideAllowed}
+                          onClick={() => openMaterialOverrideModal({ mode: "replace", materialId: material.materialId, uom: material.uom })}
+                        >
+                          Swap
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!overrideAllowed}
+                          onClick={() => openMaterialOverrideModal({ mode: "adjust_qty", materialId: material.materialId, uom: material.uom, qty: material.qty })}
+                        >
+                          Adjust Qty
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!overrideAllowed}
+                          onClick={() => openMaterialOverrideModal({ mode: "remove", materialId: material.materialId })}
+                        >
+                          Remove
+                        </Button>
+                      </div>
                     </li>
                   ))}
                 </ul>
@@ -809,6 +1088,26 @@ export default function PrepressProductionPageV2() {
                   <p className="text-xs text-slate-500">Add inventory materials to PBV2 choices or set size/options</p>
                 </div>
               )}
+
+              {plannedMaterials.length > 0 ? (
+                <details className="mt-3">
+                  <summary className="text-xs text-slate-400 cursor-pointer">View planned baseline materials ({plannedMaterials.length})</summary>
+                  <ul className="mt-2 space-y-1.5 text-xs">
+                    {plannedMaterials.map((material, index) => (
+                      <li key={`planned-${material.materialId}-${material.basis}-${index}`} className="flex items-center justify-between gap-2 text-slate-300">
+                        <span>{material.materialName || `Material ${material.materialId}`}</span>
+                        <span className="font-mono">{material.qty} {material.uom}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
+
+              {!overrideAllowed ? (
+                <p className="text-xs text-amber-300 mt-2">
+                  Overrides are disabled by policy ({overrideMode}). {overrideBlockedReason || "Status is beyond allowed stage."}
+                </p>
+              ) : null}
 
               {plannedMaterialsMessage ? (
                 <p className="text-xs text-amber-300 mt-2">{plannedMaterialsMessage}</p>
@@ -1183,6 +1482,113 @@ export default function PrepressProductionPageV2() {
           </div>
         </div>
       </main>
+
+      <Dialog open={materialOverrideOpen} onOpenChange={setMaterialOverrideOpen}>
+        <DialogContent className="max-w-xl bg-[#111921] border-[#2d3748] text-slate-100">
+          <DialogHeader>
+            <DialogTitle>
+              {materialOverrideMode === "replace" && "Swap Material"}
+              {materialOverrideMode === "add" && "Add Material"}
+              {materialOverrideMode === "remove" && "Remove Material"}
+              {materialOverrideMode === "adjust_qty" && "Adjust Material Quantity"}
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            {materialOverrideMode === "replace" ? (
+              <>
+                <div>
+                  <Label className="text-xs text-slate-400 mb-1 block">From Material ID</Label>
+                  <Input value={overrideFromMaterialId} onChange={(e) => setOverrideFromMaterialId(e.target.value)} className="bg-[#0f172a] border-[#2d3748]" />
+                </div>
+                <div>
+                  <Label className="text-xs text-slate-400 mb-1 block">To Material ID</Label>
+                  <Input value={overrideToMaterialId} onChange={(e) => setOverrideToMaterialId(e.target.value)} className="bg-[#0f172a] border-[#2d3748]" />
+                </div>
+                <p className="text-xs text-amber-300">Replace operations auto-set potential price impact and trigger Pricing Review Required.</p>
+              </>
+            ) : null}
+
+            {materialOverrideMode === "add" ? (
+              <>
+                <div>
+                  <Label className="text-xs text-slate-400 mb-1 block">Material ID</Label>
+                  <Input value={overrideMaterialId} onChange={(e) => setOverrideMaterialId(e.target.value)} className="bg-[#0f172a] border-[#2d3748]" />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label className="text-xs text-slate-400 mb-1 block">Qty</Label>
+                    <Input type="number" step="0.01" min="0" value={overrideQty} onChange={(e) => setOverrideQty(e.target.value)} className="bg-[#0f172a] border-[#2d3748]" />
+                  </div>
+                  <div>
+                    <Label className="text-xs text-slate-400 mb-1 block">UOM</Label>
+                    <Select value={overrideUom} onValueChange={(value) => setOverrideUom(value as "sqft" | "ft" | "each")}>
+                      <SelectTrigger className="bg-[#0f172a] border-[#2d3748]"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="sqft">sqft</SelectItem>
+                        <SelectItem value="ft">ft</SelectItem>
+                        <SelectItem value="each">each</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </>
+            ) : null}
+
+            {materialOverrideMode === "remove" ? (
+              <div>
+                <Label className="text-xs text-slate-400 mb-1 block">Material ID</Label>
+                <Input value={overrideMaterialId} onChange={(e) => setOverrideMaterialId(e.target.value)} className="bg-[#0f172a] border-[#2d3748]" />
+              </div>
+            ) : null}
+
+            {materialOverrideMode === "adjust_qty" ? (
+              <>
+                <div>
+                  <Label className="text-xs text-slate-400 mb-1 block">Material ID</Label>
+                  <Input value={overrideMaterialId} onChange={(e) => setOverrideMaterialId(e.target.value)} className="bg-[#0f172a] border-[#2d3748]" />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label className="text-xs text-slate-400 mb-1 block">Qty</Label>
+                    <Input type="number" step="0.01" min="0" value={overrideQty} onChange={(e) => setOverrideQty(e.target.value)} className="bg-[#0f172a] border-[#2d3748]" />
+                  </div>
+                  <div>
+                    <Label className="text-xs text-slate-400 mb-1 block">UOM</Label>
+                    <Select value={overrideUom} onValueChange={(value) => setOverrideUom(value as "sqft" | "ft" | "each")}>
+                      <SelectTrigger className="bg-[#0f172a] border-[#2d3748]"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="sqft">sqft</SelectItem>
+                        <SelectItem value="ft">ft</SelectItem>
+                        <SelectItem value="each">each</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </>
+            ) : null}
+
+            <div>
+              <Label className="text-xs text-slate-400 mb-1 block">Reason Note *</Label>
+              <Textarea
+                value={overrideReasonNote}
+                onChange={(e) => setOverrideReasonNote(e.target.value)}
+                placeholder="Explain why this material override is needed"
+                className="bg-[#0f172a] border-[#2d3748] min-h-[90px]"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setMaterialOverrideOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleSubmitMaterialOverride} disabled={applyMaterialOverrideMutation.isPending || !overrideAllowed}>
+                {applyMaterialOverrideMutation.isPending ? "Saving..." : "Apply Override"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
         <SheetContent side="right" className="w-[520px] bg-[#111921] border-[#2d3748] text-slate-100">
