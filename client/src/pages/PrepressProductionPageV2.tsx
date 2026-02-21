@@ -47,6 +47,12 @@ type QueueItem = {
   bleed: string | null;
   finishing: string | null;
   finishingBullets?: string[];
+  optionsRows?: Array<{
+    groupLabel?: string | null;
+    optionLabel: string;
+    selectedLabel: string;
+    isDefault?: boolean;
+  }>;
 };
 
 type LineItemFile = {
@@ -374,6 +380,14 @@ export default function PrepressProductionPageV2() {
     setIssueType(selectedItem?.issueType || "");
   }, [selectedItem?.lineItemId, selectedItem?.prepressNotes, selectedItem?.issueFlag, selectedItem?.issueType]);
 
+  React.useEffect(() => {
+    if (!import.meta.env.DEV || !selectedItem) return;
+    console.log("[Prepress Options]", {
+      lineItemId: selectedItem.lineItemId,
+      optionsRows: selectedItem.optionsRows?.length ?? 0,
+    });
+  }, [selectedItem?.lineItemId, selectedItem?.optionsRows]);
+
   // Handlers
   const handleRefresh = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
@@ -684,15 +698,45 @@ export default function PrepressProductionPageV2() {
                 <p className="text-sm font-medium">{selectedItem?.bleed || "—"}</p>
               </div>
               <div>
-                <p className="text-[10px] text-slate-500 uppercase font-bold">Finishing</p>
-                {(selectedItem?.finishingBullets?.length || 0) > 0 ? (
-                  <ul className="text-sm font-medium list-disc pl-4 space-y-0.5">
-                    {selectedItem?.finishingBullets?.map((bullet, index) => (
-                      <li key={`${bullet}-${index}`}>{bullet}</li>
+                <p className="text-[10px] text-slate-500 uppercase font-bold">Options</p>
+                {(selectedItem?.optionsRows?.length || 0) > 0 ? (
+                  <div className="space-y-1.5">
+                    {Object.entries(
+                      (selectedItem?.optionsRows || []).reduce((acc, row) => {
+                        const key = row.groupLabel && row.groupLabel.trim() ? row.groupLabel.trim() : "Options";
+                        if (!acc[key]) acc[key] = [];
+                        acc[key].push(row);
+                        return acc;
+                      }, {} as Record<string, NonNullable<QueueItem["optionsRows"]>>)
+                    ).map(([groupLabel, rows]) => (
+                      <div key={groupLabel}>
+                        {groupLabel !== "Options" && (
+                          <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-0.5">{groupLabel}</p>
+                        )}
+                        <ul className="text-sm font-medium list-disc pl-4 space-y-0.5">
+                          {rows.map((row, index) => (
+                            <li key={`${groupLabel}-${row.optionLabel}-${row.selectedLabel}-${index}`} className="flex items-center gap-2 flex-wrap">
+                              <span>{row.optionLabel}: {row.selectedLabel}</span>
+                              {typeof row.isDefault === "boolean" ? (
+                                <span
+                                  className={cn(
+                                    "text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border",
+                                    row.isDefault
+                                      ? "border-slate-500 text-slate-300 bg-slate-700/40"
+                                      : "border-amber-500 text-amber-300 bg-amber-900/20"
+                                  )}
+                                >
+                                  {row.isDefault ? "Default" : "Changed"}
+                                </span>
+                              ) : null}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
                     ))}
-                  </ul>
+                  </div>
                 ) : (
-                  <p className="text-sm font-medium">—</p>
+                  <p className="text-sm font-medium text-slate-400">No options selected</p>
                 )}
               </div>
               <div>

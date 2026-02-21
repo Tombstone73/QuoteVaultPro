@@ -52,6 +52,7 @@ import { mergeInventoryPolicyIntoPreferences, normalizeInventoryPolicyPatch } fr
 import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBooksPreferences";
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2OverrideConfig";
 import { createLineItemFileRecord } from "./services/lineItemFileRecordService";
+import { resolveVisibleNodes } from "@shared/optionTreeV2Runtime";
 
 // Auth provider selection logic
 // Priority: AUTH_PROVIDER env var > detection logic
@@ -11857,6 +11858,134 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return Array.from(results);
   };
 
+  const normalizeSelectionValue = (raw: unknown): unknown => {
+    if (raw && typeof raw === "object" && "value" in (raw as any)) {
+      return (raw as any).value;
+    }
+    return raw;
+  };
+
+  const valuesEqualForDefault = (selected: unknown, def: unknown): boolean => {
+    if (Array.isArray(selected) || Array.isArray(def)) {
+      if (!Array.isArray(selected) || !Array.isArray(def)) return false;
+      const a = selected.map((v) => String(v)).sort();
+      const b = def.map((v) => String(v)).sort();
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) {
+        if (a[i] !== b[i]) return false;
+      }
+      return true;
+    }
+    return String(selected) === String(def);
+  };
+
+  const buildPrepressOptionRows = (lineItem: any, treeJson?: any): Array<{
+    groupLabel?: string | null;
+    optionLabel: string;
+    selectedLabel: string;
+    isDefault?: boolean;
+  }> => {
+    const rows: Array<{ groupLabel?: string | null; optionLabel: string; selectedLabel: string; isDefault?: boolean }> = [];
+    const optionSelections = lineItem?.optionSelectionsJson as any;
+    const selectedRecordRaw =
+      optionSelections && typeof optionSelections === "object" && optionSelections.selected && typeof optionSelections.selected === "object"
+        ? optionSelections.selected
+        : optionSelections && typeof optionSelections === "object"
+          ? optionSelections
+          : null;
+
+    const selectedRecord: Record<string, unknown> = selectedRecordRaw && typeof selectedRecordRaw === "object"
+      ? selectedRecordRaw
+      : {};
+
+    const normalizedNodes: any[] = treeJson
+      ? (Array.isArray(treeJson?.nodes) ? treeJson.nodes : Object.values(treeJson?.nodes || {}))
+      : [];
+
+    const selectionNodeByKey = new Map<string, any>();
+    for (const node of normalizedNodes) {
+      const selectionKey = node?.input?.selectionKey;
+      if (typeof selectionKey === "string" && selectionKey.trim()) {
+        selectionNodeByKey.set(selectionKey, node);
+      }
+    }
+
+    let visibleNodeIds = new Set<string>();
+    if (treeJson && treeJson.schemaVersion === 2) {
+      try {
+        const visible = resolveVisibleNodes(treeJson as any, {
+          schemaVersion: 2,
+          selected: Object.fromEntries(
+            Object.entries(selectedRecord).map(([key, value]) => [key, { value: normalizeSelectionValue(value) }])
+          ),
+        } as any);
+        visibleNodeIds = new Set(visible);
+      } catch {
+        visibleNodeIds = new Set<string>();
+      }
+    }
+
+    for (const [selectionKey, rawSelection] of Object.entries(selectedRecord)) {
+      const node = selectionNodeByKey.get(selectionKey);
+      if (node?.id && visibleNodeIds.size > 0 && !visibleNodeIds.has(node.id)) continue;
+
+      const selectedValue = normalizeSelectionValue(rawSelection);
+      if (selectedValue == null || selectedValue === "") continue;
+
+      const optionLabel = (typeof node?.label === "string" && node.label.trim())
+        ? node.label
+        : selectionKey;
+
+      const choiceList = Array.isArray(node?.choices)
+        ? node.choices
+        : (Array.isArray(node?.input?.constraints?.enum?.options)
+          ? node.input.constraints.enum.options
+          : []);
+
+      const toDisplayLabel = (value: unknown): string => {
+        if (Array.isArray(value)) {
+          return value
+            .map((entry) => {
+              const choice = choiceList.find((c: any) => String(c?.value) === String(entry));
+              return choice?.label || String(entry);
+            })
+            .join(", ");
+        }
+        const choice = choiceList.find((c: any) => String(c?.value) === String(value));
+        return choice?.label || String(value);
+      };
+
+      const selectedLabel = toDisplayLabel(selectedValue);
+      const defaultValue = node?.input && Object.prototype.hasOwnProperty.call(node.input, "defaultValue")
+        ? node.input.defaultValue
+        : undefined;
+
+      const row: { groupLabel?: string | null; optionLabel: string; selectedLabel: string; isDefault?: boolean } = {
+        groupLabel: typeof node?.ui?.groupKey === "string" ? node.ui.groupKey : null,
+        optionLabel,
+        selectedLabel,
+      };
+
+      if (defaultValue !== undefined) {
+        row.isDefault = valuesEqualForDefault(selectedValue, defaultValue);
+      }
+
+      rows.push(row);
+    }
+
+    if (rows.length === 0) {
+      const selectedOptions = Array.isArray(lineItem?.selectedOptions) ? lineItem.selectedOptions : [];
+      for (const opt of selectedOptions) {
+        const optionLabel = String(opt?.optionName || opt?.optionId || "Option").trim();
+        const selectedValue = opt?.value;
+        if (!optionLabel || selectedValue == null || selectedValue === "") continue;
+        rows.push({ optionLabel, selectedLabel: String(selectedValue) });
+      }
+    }
+
+    return rows;
+  };
+
   // GET /api/prepress/queue - List line items for prepress
   app.get("/api/prepress/queue", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -11892,6 +12021,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           status: orderLineItems.status,
           description: orderLineItems.description,
           productType: orderLineItems.productType,
+          pbv2TreeVersionId: orderLineItems.pbv2TreeVersionId,
           quantity: orderLineItems.quantity,
           width: orderLineItems.width,
           height: orderLineItems.height,
@@ -11949,6 +12079,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
             )
             .orderBy(desc(lineItemFiles.createdAt))
         : [];
+
+      const treeVersionIds = Array.from(new Set(items
+        .map((item) => item.pbv2TreeVersionId)
+        .filter((id): id is string => typeof id === "string" && id.length > 0)));
+
+      const treeVersions = treeVersionIds.length > 0
+        ? await db
+            .select({
+              id: pbv2TreeVersions.id,
+              treeJson: pbv2TreeVersions.treeJson,
+            })
+            .from(pbv2TreeVersions)
+            .where(
+              and(
+                eq(pbv2TreeVersions.organizationId, organizationId),
+                inArray(pbv2TreeVersions.id, treeVersionIds),
+              )
+            )
+        : [];
+
+      const treeByVersionId = new Map<string, any>(
+        treeVersions.map((tv) => [tv.id, tv.treeJson])
+      );
 
       const firstPreviewByLineItem = new Map<string, {
         thumbFileId: string | null;
@@ -12031,7 +12184,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Map to flat QueueItem shape the frontend expects
-      const queue = items.map((item) => {
+      const queue = items.map((item, index) => {
         const counts = fileCounts.filter((fc) => fc.lineItemId === item.lineItemId);
         const originals = counts.find((c) => c.role === "original")?.count || 0;
         const finals = counts.find((c) => c.role === "final")?.count || 0;
@@ -12043,6 +12196,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
           description: item.description,
         });
         const finishingBullets = extractFinishingBullets(item);
+        const optionsRows = buildPrepressOptionRows(item, item.pbv2TreeVersionId ? treeByVersionId.get(item.pbv2TreeVersionId) : undefined);
+
+        if (process.env.NODE_ENV !== "production" && index === 0) {
+          const selectedCount = (() => {
+            const source = item?.optionSelectionsJson as any;
+            if (source && typeof source === "object" && source.selected && typeof source.selected === "object") {
+              return Object.keys(source.selected).length;
+            }
+            if (source && typeof source === "object") {
+              return Object.keys(source).length;
+            }
+            return 0;
+          })();
+
+          console.log(`[Prepress Options] lineItemId=${item.lineItemId} selections=${selectedCount} displayRows=${optionsRows.length}`);
+        }
 
         return {
           lineItemId: item.lineItemId,
@@ -12072,6 +12241,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           bleed: null,
           finishing: finishingBullets.length > 0 ? finishingBullets.join(" • ") : null,
           finishingBullets,
+          optionsRows,
         };
       });
 
