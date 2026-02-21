@@ -11832,7 +11832,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           priority: orders.priority,
           customerName: customers.companyName,
           sessionId: prepressSessions.id,
-          lockedBy: prepressSessions.lockOwnerUserId,
         })
         .from(orderLineItems)
         .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
@@ -11883,7 +11882,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           status: item.status,
           rush: item.priority === "rush",
           assignedTo: null,
-          lockedBy: item.lockedBy ?? null,
           sessionId: item.sessionId ?? null,
           fileCounts: { originals, finals },
           quantity: Number(item.quantity) || 0,
@@ -11978,11 +11976,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           })
           .returning();
 
-        // Update line item status to IN_PREPRESS
-        await tx
-          .update(orderLineItems)
-          .set({ status: "in_prepress" })
-          .where(eq(orderLineItems.id, lineItemId));
+        // Transition to IN_PREPRESS only if currently pending (idempotent — never downgrade)
+        if (lineItem.status === "pending_prepress") {
+          await tx
+            .update(orderLineItems)
+            .set({ status: "in_prepress" })
+            .where(eq(orderLineItems.id, lineItemId));
+        }
 
         // Audit log
         await tx.insert(auditLogs).values({
@@ -12081,16 +12081,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const session = sessions[0];
 
         if (session.status === "complete") {
-          throw Object.assign(new Error("Session already complete"), { statusCode: 400 });
+          // Already complete — idempotent success, no error
+          return { id: session.id, lineItemId: session.lineItemId, status: "complete" };
         }
 
-        // Validate at least one FINAL file exists
+        // Validate at least one FINAL file exists for this line item (any session, any uploader)
         const finalFiles = await tx
           .select()
           .from(lineItemFiles)
           .where(
             and(
-              eq(lineItemFiles.prepressSessionId, sessionId),
+              eq(lineItemFiles.lineItemId, session.lineItemId),
               eq(lineItemFiles.role, "final"),
               eq(lineItemFiles.status, "active")
             )
@@ -12201,12 +12202,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "At least one final file is required before sending to print" });
       }
 
-      // 4. Check if already at or past print_ready
+      // 4. Already at or past print_ready → idempotent success (no-op)
       const ineligibleStatuses = ['print_ready', 'printing', 'done', 'complete'];
       if (ineligibleStatuses.includes(item.status)) {
-        return res.status(400).json({ 
-          error: "Line item is already in production queue",
-          currentStatus: item.status
+        return res.json({
+          success: true,
+          message: "Line item is already in production queue",
+          newStatus: item.status,
         });
       }
 
