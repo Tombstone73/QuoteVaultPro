@@ -17,7 +17,7 @@ import { ListViewSettings } from "@/components/list/ListViewSettings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Search, Mail, Phone, ArrowLeft, Building2, MoreHorizontal, Pencil, Trash2, Eye } from "lucide-react";
+import { Search, Mail, Phone, Building2, MoreHorizontal, Pencil, Trash2, Eye } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
@@ -49,6 +49,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Page, PageHeader, ContentLayout, DataCard, StatusPill } from "@/components/titan";
 import { useSmartBack } from "@/hooks/useSmartBack";
+import BackNavControls from "@/components/BackNavControls";
 
 const defaultColumns = [
   { id: "name", label: "Name", visible: true },
@@ -279,15 +280,7 @@ export default function ContactsPage() {
         subtitle="Manage all customer contacts across the system"
         className="pb-3"
         backButton={
-          <Button 
-            variant="ghost" 
-            size="sm" 
-            onClick={onSmartBack}
-            className="text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
-          >
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back
-          </Button>
+          <BackNavControls onBack={onSmartBack} />
         }
       />
 

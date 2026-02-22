@@ -73,6 +73,7 @@ import { useOrders, type Order } from "@/hooks/useOrders";
 import { useInvoices } from "@/hooks/useInvoices";
 import { ROUTES } from "@/config/routes";
 import { cn } from "@/lib/utils";
+import BackNavControls from "@/components/BackNavControls";
 
 // ============================================================
 // TYPE DEFINITIONS
@@ -196,25 +197,12 @@ function CustomerHeader({
         {/* LEFT: Company & Contact Info */}
         <div className="flex items-center gap-2.5 flex-1 min-w-0">
           {layoutMode === "full" && (
-            <div className="flex items-center gap-1.5">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="flex-shrink-0 h-8 w-8 text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated"
-                onClick={() => onBack ? onBack() : navigate(ROUTES.customers.list)}
-                aria-label="Back"
-              >
-                <ArrowLeft className="w-4 h-4" />
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 px-2 text-[11px] border-titan-border-subtle text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated"
-                onClick={() => onSectionHome ? onSectionHome() : navigate(ROUTES.customers.list)}
-              >
-                Customers
-              </Button>
-            </div>
+            <BackNavControls
+              onBack={() => (onBack ? onBack() : navigate(ROUTES.customers.list))}
+              onSectionHome={() => (onSectionHome ? onSectionHome() : navigate(ROUTES.customers.list))}
+              sectionLabel="Customers"
+              className="flex-shrink-0"
+            />
           )}
           
           {!isEmbedded && (

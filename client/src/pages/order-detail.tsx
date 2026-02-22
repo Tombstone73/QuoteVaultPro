@@ -28,7 +28,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Calendar, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown, Mail, Phone, ChevronsUpDown } from "lucide-react";
+import { Calendar, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown, Mail, Phone, ChevronsUpDown } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
@@ -68,6 +68,7 @@ import type { OrderState } from "@/hooks/useOrderState";
 import { isTerminalState as checkIfTerminalState } from "@/hooks/useOrderState";
 import { OrderLineItemsSection } from "@/components/orders/OrderLineItemsSection";
 import { ManualReservationsCard } from "@/components/orders/ManualReservationsCard";
+import BackNavControls from "@/components/BackNavControls";
 
 /**
  * OrderDetail renders some legacy "bill to / ship to / shipping" snapshot fields
@@ -1323,23 +1324,11 @@ export default function OrderDetail() {
       <div className="w-full max-w-none">
         <div className="flex items-center justify-between mb-6 pb-3">
           <div className="flex items-center gap-4 min-w-0">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onSmartBack}
-              className="text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
-            >
-              <ArrowLeft className="w-4 h-4 mr-2" />
-              Back
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => guardedNavigate("/orders")}
-              className="rounded-titan-md"
-            >
-              Orders
-            </Button>
+            <BackNavControls
+              onBack={onSmartBack}
+              onSectionHome={() => guardedNavigate("/orders")}
+              sectionLabel="Orders"
+            />
 
             <div className="flex flex-col justify-center min-w-0">
               <h1 className="text-titan-xl font-semibold tracking-tight text-titan-text-primary">

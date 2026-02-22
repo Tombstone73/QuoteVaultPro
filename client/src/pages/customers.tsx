@@ -11,8 +11,8 @@ import { useAuth } from "@/hooks/useAuth";
 import { Page, PageHeader, ContentLayout, DataCard } from "@/components/titan";
 import { cn } from "@/lib/utils";
 import { ROUTES } from "@/config/routes";
-import { ArrowLeft } from "lucide-react";
 import { useSmartBack } from "@/hooks/useSmartBack";
+import BackNavControls from "@/components/BackNavControls";
 
 // ============================================================
 // VIEW MODE TYPES AND STORAGE
@@ -221,15 +221,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
         subtitle="Manage your customer relationships and accounts"
         className="pb-3"
         backButton={
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onSmartBack}
-            className="text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
-          >
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back
-          </Button>
+          <BackNavControls onBack={onSmartBack} />
         }
         actions={
           <div className="flex items-center gap-3">
