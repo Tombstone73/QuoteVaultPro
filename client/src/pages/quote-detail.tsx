@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { ROUTES } from "@/config/routes";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -19,6 +19,7 @@ import { TimelinePanel } from "@/components/TimelinePanel";
 import { QuoteWorkflowBadge } from "@/components/QuoteWorkflowBadge";
 import { QuoteWorkflowActions } from "@/components/QuoteWorkflowActions";
 import { useQuoteWorkflowState } from "@/hooks/useQuoteWorkflowState";
+import { buildReferrer } from "@/lib/nav/smartBack";
 import type { QuoteWithRelations } from "@shared/schema";
 
 type QuoteDetailRouteParams = {
@@ -29,6 +30,7 @@ type QuoteDetailRouteParams = {
 export default function QuoteDetail() {
   const params = useParams<QuoteDetailRouteParams>();
   const navigate = useNavigate();
+  const location = useLocation();
   const quoteId = params.quoteId ?? params.id ?? null;
   const { user } = useAuth();
   const { toast } = useToast();
@@ -234,7 +236,7 @@ export default function QuoteDetail() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => navigate(ROUTES.orders.detail(convertedToOrderId))}
+                onClick={() => navigate(ROUTES.orders.detail(convertedToOrderId), { state: { referrer: buildReferrer(location) } })}
                 className="border-titan-border text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
               >
                 <Package className="w-4 h-4 mr-2" />

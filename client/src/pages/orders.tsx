@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef, Fragment } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,6 +17,7 @@ import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import { Page, PageHeader, ContentLayout, DataCard, ColumnConfig, useColumnSettings, isColumnVisible, getColumnOrder, getColumnDisplayName, type ColumnDefinition, type ColumnState } from "@/components/titan";
 import { ROUTES } from "@/config/routes";
+import { buildReferrer } from "@/lib/nav/smartBack";
 import { getDisplayOrderNumber } from "@/lib/orderUtils";
 // TitanOS State Architecture
 import { Badge } from "@/components/ui/badge";
@@ -122,6 +123,7 @@ export default function Orders() {
   const { user } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
   
   const [search, setSearch] = useState("");
@@ -477,7 +479,7 @@ export default function Orders() {
       case "orderNumber": {
         const { displayNumber, isTest } = getDisplayOrderNumber(row);
         return (
-          <Link to={ROUTES.orders.detail(row.id)} className="text-blue-600 hover:underline font-medium flex items-center gap-1.5">
+          <Link to={ROUTES.orders.detail(row.id)} state={{ referrer: buildReferrer(location) }} className="text-blue-600 hover:underline font-medium flex items-center gap-1.5">
             <span>{displayNumber}</span>
             {isTest && (
               <span className="text-[10px] bg-yellow-100 text-yellow-800 px-1.5 py-0.5 rounded font-medium">Test</span>
@@ -747,7 +749,7 @@ export default function Orders() {
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => navigate(ROUTES.orders.detail(row.id))}
+              onClick={() => navigate(ROUTES.orders.detail(row.id), { state: { referrer: buildReferrer(location) } })}
             >
               <Eye className="w-4 h-4" />
             </Button>
@@ -970,7 +972,7 @@ export default function Orders() {
                       className="cursor-pointer hover:bg-muted/50"
                       onClick={(e) => {
                         if (!shouldIgnoreRowNav(e)) {
-                          navigate(ROUTES.orders.detail(order.id));
+                          navigate(ROUTES.orders.detail(order.id), { state: { referrer: buildReferrer(location) } });
                         }
                       }}
                     >
