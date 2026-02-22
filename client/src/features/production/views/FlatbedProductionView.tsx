@@ -1493,7 +1493,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
 
   if (isLoading) {
     return (
-      <div className="grid grid-cols-1 lg:grid-cols-[180px_1fr] gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-[200px_1fr] gap-4">
         <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-3">
           <div className="h-9 w-full bg-titan-bg-muted rounded" />
           <div className="h-9 w-full bg-titan-bg-muted rounded mt-2" />
@@ -1553,7 +1553,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[180px_1fr] gap-4">
+    <div className="grid grid-cols-1 lg:grid-cols-[200px_1fr] gap-4">
       <div className="space-y-4">
         {selectedJob ? (
           <ActionRail job={selectedJob} timerSeconds={liveTimerSeconds} timerIsRunning={derivedTimer.isRunning} notes={recentNotes} />
