@@ -2978,8 +2978,32 @@ export async function registerOrderRoutes(
             const parsed = insertMaterialSchema.parse(req.body);
             const { organizationId: _orgId, ...materialData } =
                 parsed as typeof parsed & { organizationId?: string };
+
+            const normalizedName = String(materialData.name || '').trim().toLowerCase();
+            if (normalizedName) {
+                const [existing] = await db
+                    .select()
+                    .from(materials)
+                    .where(
+                        and(
+                            eq(materials.organizationId, organizationId),
+                            sql`lower(trim(${materials.name})) = ${normalizedName}`
+                        )
+                    )
+                    .limit(1);
+
+                if (existing) {
+                    return res.json({
+                        success: true,
+                        data: existing,
+                        created: false,
+                        duplicate: true,
+                    });
+                }
+            }
+
             const created = await storage.createMaterial(organizationId, materialData);
-            res.json({ success: true, data: created });
+            res.json({ success: true, data: created, created: true, duplicate: false });
         } catch (err) {
             if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
             res.status(500).json({ error: 'Failed to create material' });

@@ -9,7 +9,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 const optionalNumber = (schema: z.ZodNumber) =>
@@ -51,6 +50,11 @@ type CreatedMaterial = {
   id: string;
   name: string;
   unitOfMeasure?: string;
+};
+
+type CreateMaterialResult = {
+  material: CreatedMaterial;
+  duplicate: boolean;
 };
 
 export function CreateMaterialDialog({
@@ -108,18 +112,57 @@ export function CreateMaterialDialog({
 
   const createMutation = useMutation({
     mutationFn: async (values: CreateMaterialValues) => {
-      const res = await apiRequest("POST", "/api/materials", values);
-      const json = await res.json();
-      const material = (json?.success ? json.data : json) as any;
+      const res = await fetch("/api/materials", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(values),
+      });
+
+      const json = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        const message = json?.error || json?.message || `Failed to create material (${res.status})`;
+        const existing = json?.data?.material || json?.data || json?.material;
+        if (res.status === 409 && existing?.id) {
+          return {
+            material: {
+              id: existing.id,
+              name: existing.name,
+              unitOfMeasure: existing.unitOfMeasure,
+            },
+            duplicate: true,
+          } as CreateMaterialResult;
+        }
+        throw new Error(message);
+      }
+
+      const payload = json?.success ? json : { success: true, data: json };
+      const material = payload?.data?.material || payload?.data || payload?.material;
+      const duplicate = payload?.duplicate === true || payload?.data?.duplicate === true;
+
       if (!material?.id) {
         throw new Error("Create material: missing id in response");
       }
-      return material as CreatedMaterial;
+
+      return {
+        material: {
+          id: material.id,
+          name: material.name,
+          unitOfMeasure: material.unitOfMeasure,
+        },
+        duplicate,
+      } as CreateMaterialResult;
     },
-    onSuccess: async (created) => {
+    onSuccess: async (result) => {
       await queryClient.invalidateQueries({ queryKey: ["/api/materials"] });
-      onCreated({ id: created.id, name: created.name, unitOfMeasure: created.unitOfMeasure });
-      toast({ title: "Material created", description: created.name });
+      onCreated({ id: result.material.id, name: result.material.name, unitOfMeasure: result.material.unitOfMeasure });
+      toast({
+        title: result.duplicate ? "Material already exists" : "Material created",
+        description: result.duplicate
+          ? "Material already exists, selected it."
+          : result.material.name,
+      });
       setDialogOpen(false);
       form.reset({
         name: "",
@@ -134,7 +177,7 @@ export function CreateMaterialDialog({
     },
     onError: (err: any) => {
       toast({
-        title: "Failed to create material",
+        title: "Unable to create material",
         description: err?.message || "Unknown error",
         variant: "destructive",
       });
@@ -341,7 +384,7 @@ export function CreateMaterialDialog({
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setOpen(false)}
+                onClick={() => setDialogOpen(false)}
                 disabled={createMutation.isPending}
               >
                 Cancel
