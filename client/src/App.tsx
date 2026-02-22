@@ -63,6 +63,8 @@ import SelectOrgPage from "@/pages/SelectOrgPage";
 import BugReportsPage from "@/pages/admin/BugReportsPage";
 import ProductImportExport from "@/pages/admin/ProductImportExport";
 import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
+import FulfillmentPage from "@/pages/fulfillment";
+import FulfillmentShipmentDetailPage from "@/pages/fulfillment-shipment-detail";
 
 function Router() {
   const { user, isAuthenticated, isLoading, mustChangePassword } = useAuth();
@@ -188,6 +190,10 @@ function Router() {
         <Route path="/production/prepress" element={<PrepressProductionPageV2 />} />
         <Route path="/production/jobs/:jobId" element={<ProductionJobDetailPage />} />
         <Route path="/jobs/:id" element={<JobDetail />} />
+
+        {/* Fulfillment routes */}
+        <Route path={ROUTES.fulfillment.list} element={<FulfillmentPage />} />
+        <Route path="/fulfillment/shipments/:shipmentId" element={<FulfillmentShipmentDetailPage />} />
 
         {/* Product Catalog (standalone) */}
         <Route path="/products" element={<ProductsPage />} />
