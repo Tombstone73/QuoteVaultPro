@@ -1,12 +1,15 @@
 import { AlertCircle, BarChart3 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DASHBOARD_PANELS, type DashboardPanel } from "@/components/dashboard/dashboardPanels";
 
 type OrdersPipelineCardProps = {
   newOrders?: number | null;
   inProduction?: number | null;
   onHold?: number | null;
   slaRisk?: number | null;
+  selectedPanel?: DashboardPanel;
+  onSelectPanel?: (panel: DashboardPanel) => void;
 };
 
 function valueOrDash(value?: number | null) {
@@ -18,7 +21,15 @@ export default function OrdersPipelineCard({
   inProduction,
   onHold,
   slaRisk,
+  selectedPanel,
+  onSelectPanel,
 }: OrdersPipelineCardProps) {
+  const rows = [
+    { label: DASHBOARD_PANELS.orders_status_new.title.replace("Orders: ", ""), value: newOrders, panel: "orders_status_new" as const },
+    { label: DASHBOARD_PANELS.orders_status_in_production.title.replace("Orders: ", ""), value: inProduction, panel: "orders_status_in_production" as const },
+    { label: DASHBOARD_PANELS.orders_status_on_hold.title.replace("Orders: ", ""), value: onHold, panel: "orders_status_on_hold" as const },
+  ];
+
   return (
     <Card className="border-border bg-card h-full">
       <CardHeader className="flex-row items-center justify-between space-y-0 border-b border-border pb-3">
@@ -31,9 +42,21 @@ export default function OrdersPipelineCard({
         </Badge>
       </CardHeader>
       <CardContent className="space-y-3 pt-4">
-        <div className="flex items-center justify-between text-sm"><span className="text-muted-foreground">New Orders</span><span className="font-semibold">{valueOrDash(newOrders)}</span></div>
-        <div className="flex items-center justify-between text-sm"><span className="text-muted-foreground">In Production</span><span className="font-semibold">{valueOrDash(inProduction)}</span></div>
-        <div className="flex items-center justify-between text-sm"><span className="text-muted-foreground">On Hold</span><span className="font-semibold">{valueOrDash(onHold)}</span></div>
+        {rows.map((row) => {
+          const isActive = selectedPanel === row.panel;
+          return (
+            <button
+              key={row.panel}
+              type="button"
+              onClick={() => onSelectPanel?.(row.panel)}
+              aria-selected={isActive}
+              className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-sm transition hover:bg-muted/20 ${isActive ? "bg-muted/30" : ""}`}
+            >
+              <span className="text-muted-foreground">• {row.label}</span>
+              <span className="font-semibold">{valueOrDash(row.value)}</span>
+            </button>
+          );
+        })}
 
         {slaRisk != null && (
           <div className="border-t border-border pt-3">
