@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -55,6 +55,8 @@ import { cn, formatPhoneForDisplay, phoneToTelHref } from "@/lib/utils";
 import { resolveInventoryPolicyFromOrgPreferences } from "@shared/inventoryPolicy";
 import { useCreateProductionJobFromOrder } from "@/hooks/useProduction";
 import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
+import { useSmartBack } from "@/hooks/useSmartBack";
+import { buildReferrer } from "@/lib/nav/smartBack";
 // TitanOS State Architecture
 import { OrderStatusPillSelector } from "@/components/OrderStatusPillSelector";
 import { 
@@ -135,7 +137,9 @@ export default function OrderDetail() {
   const inventoryReservationsEnabled = inventoryPolicy.mode !== "off";
   const params = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { registerGuard, guardedNavigate } = useNavigationGuard();
+  const { onSmartBack } = useSmartBack();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const createProductionJob = useCreateProductionJobFromOrder();
@@ -1322,11 +1326,19 @@ export default function OrderDetail() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => guardedNavigate("/orders")}
+              onClick={onSmartBack}
               className="text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
             >
               <ArrowLeft className="w-4 h-4 mr-2" />
               Back
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => guardedNavigate("/orders")}
+              className="rounded-titan-md"
+            >
+              Orders
             </Button>
 
             <div className="flex flex-col justify-center min-w-0">
@@ -1498,6 +1510,7 @@ export default function OrderDetail() {
                                 {order.customer?.id && customerCompanyName ? (
                                   <Link
                                     to={`/customers/${order.customer.id}`}
+                                    state={{ referrer: buildReferrer(location) }}
                                     className="block truncate text-sm font-semibold leading-5 text-foreground hover:underline"
                                     title={customerCompanyName}
                                   >

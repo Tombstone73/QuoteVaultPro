@@ -8,13 +8,15 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { EnhancedCustomerView } from "@/features/customers";
 import { ROUTES } from "@/config/routes";
+import { useSmartBack } from "@/hooks/useSmartBack";
 
 export default function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { onSmartBack } = useSmartBack();
 
   // Handle back navigation
-  const handleBack = () => {
+  const handleSectionHome = () => {
     navigate(ROUTES.customers.list);
   };
 
@@ -30,7 +32,8 @@ export default function CustomerDetailPage() {
     <EnhancedCustomerView
       customerId={id}
       layoutMode="full"
-      onBack={handleBack}
+      onBack={onSmartBack}
+      onSectionHome={handleSectionHome}
     />
   );
 }

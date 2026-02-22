@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from "react";
-import { useNavigate, useParams, Link } from "react-router-dom";
+import { useNavigate, useParams, Link, useLocation } from "react-router-dom";
 import { Page, PageHeader, ContentLayout } from "@/components/titan";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,7 @@ import {
   ProductionOrderArtworkSummary,
 } from "@/hooks/useProduction";
 import { deriveLaminationDisplay, isRollJob, formatDimensions } from "@/lib/productionHelpers";
+import { buildReferrer } from "@/lib/nav/smartBack";
 import {
   Play,
   Square,
@@ -189,6 +190,7 @@ function normalizeArtworkForSides(
 export default function ProductionJobDetailPage() {
   const { jobId } = useParams<{ jobId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const { data, isLoading, error } = useProductionJob(jobId);
 
@@ -547,7 +549,7 @@ export default function ProductionJobDetailPage() {
                         Open File
                       </Button>
                     )}
-                    <Link to={ROUTES.orders.detail(data.order.id)}>
+                    <Link to={ROUTES.orders.detail(data.order.id)} state={{ referrer: buildReferrer(location) }}>
                       <Button size="sm" variant="ghost" className="gap-1.5">
                         <ExternalLink className="w-3.5 h-3.5" />
                         View Order
@@ -570,6 +572,7 @@ export default function ProductionJobDetailPage() {
                     {(data.order as any).customerId ? (
                       <Link
                         to={ROUTES.customers.detail((data.order as any).customerId)}
+                        state={{ referrer: buildReferrer(location) }}
                         className="font-medium text-blue-600 hover:text-blue-700 hover:underline"
                       >
                         {data.order.customerName}
@@ -584,6 +587,7 @@ export default function ProductionJobDetailPage() {
                     {data.order.id ? (
                       <Link
                         to={ROUTES.orders.detail(data.order.id)}
+                        state={{ referrer: buildReferrer(location) }}
                         className="font-medium text-blue-600 hover:text-blue-700 hover:underline"
                       >
                         {data.order.orderNumber}
