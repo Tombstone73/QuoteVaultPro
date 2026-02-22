@@ -721,7 +721,7 @@ function ActionRail({
             <Undo2 className="w-4 h-4 mr-2" /> LOG WASTE
           </Button>
           <Button className="w-full justify-start whitespace-nowrap bg-orange-600 hover:bg-orange-600/90 text-white" onClick={() => setSendToPrepressOpen(true)} disabled={isBusy || !job.lineItemId}>
-            <Square className="w-4 h-4 mr-2 shrink-0" /> SEND TO PREPRESS
+            <Square className="w-4 h-4 mr-2 shrink-0" /> Send to Prepress
           </Button>
         </div>
 
