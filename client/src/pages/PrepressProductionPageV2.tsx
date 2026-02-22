@@ -154,11 +154,26 @@ type MaterialOverrideOp =
 type MaterialsEffectivePayload = {
   plannedMaterials: PlannedMaterial[];
   effectiveMaterials: EffectiveMaterial[];
+  effectiveFingerprint: string;
   overrides: MaterialOverrideOp[];
   pricingReviewRequired: boolean;
   overrideMode: "prepress_only" | "prepress_and_production";
   overrideAllowed: boolean;
   overrideBlockedReason?: string | null;
+};
+
+type MaterialsAvailabilityPayload = {
+  effectiveFingerprint: string;
+  allAvailable: boolean;
+  items: Array<{
+    materialId: string;
+    materialName?: string;
+    uom: "sqft" | "ft" | "each";
+    requiredQty: number;
+    availableQty: number;
+    shortageQty: number;
+    isAvailable: boolean;
+  }>;
 };
 
 // Utility to format bytes
@@ -268,6 +283,7 @@ export default function PrepressProductionPageV2() {
           data: {
             plannedMaterials: [] as PlannedMaterial[],
             effectiveMaterials: [] as EffectiveMaterial[],
+            effectiveFingerprint: "",
             overrides: [] as MaterialOverrideOp[],
             pricingReviewRequired: false,
             overrideMode: "prepress_and_production" as const,
@@ -287,6 +303,7 @@ export default function PrepressProductionPageV2() {
         data: (data?.data || {
           plannedMaterials: [],
           effectiveMaterials: [],
+          effectiveFingerprint: "",
           overrides: [],
           pricingReviewRequired: false,
           overrideMode: "prepress_and_production",
@@ -294,6 +311,23 @@ export default function PrepressProductionPageV2() {
         }) as MaterialsEffectivePayload,
         message: typeof data?.message === "string" ? data.message : undefined,
       };
+    },
+    enabled: !!selectedLineItemId,
+  });
+
+  const { data: materialsAvailabilityData, isLoading: materialsAvailabilityLoading } = useQuery({
+    queryKey: ["/api/prepress/line-items", selectedLineItemId, "materials-availability"],
+    queryFn: async () => {
+      if (!selectedLineItemId) {
+        return { effectiveFingerprint: "", allAvailable: true, items: [] } as MaterialsAvailabilityPayload;
+      }
+
+      const res = await fetch(`/api/prepress/line-items/${selectedLineItemId}/materials-availability`, { credentials: "include" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.message || "Failed to fetch materials availability");
+      }
+      return (data?.data || { effectiveFingerprint: "", allAvailable: true, items: [] }) as MaterialsAvailabilityPayload;
     },
     enabled: !!selectedLineItemId,
   });
@@ -474,6 +508,7 @@ export default function PrepressProductionPageV2() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/prepress/line-items", selectedLineItemId, "materials-effective"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/prepress/line-items", selectedLineItemId, "materials-availability"] });
       toast({ title: "Material override applied" });
       setMaterialOverrideOpen(false);
       setOverrideReasonNote("");
@@ -495,12 +530,15 @@ export default function PrepressProductionPageV2() {
   const materialsPayload = materialsEffectiveData?.data;
   const plannedMaterials = materialsPayload?.plannedMaterials || [];
   const effectiveMaterials = materialsPayload?.effectiveMaterials || [];
+  const effectiveFingerprint = materialsPayload?.effectiveFingerprint || "";
   const materialOverrides = materialsPayload?.overrides || [];
   const pricingReviewRequired = materialsPayload?.pricingReviewRequired || false;
   const overrideMode = materialsPayload?.overrideMode || "prepress_and_production";
   const overrideAllowed = materialsPayload?.overrideAllowed ?? true;
   const overrideBlockedReason = materialsPayload?.overrideBlockedReason || null;
   const plannedMaterialsMessage = materialsEffectiveData?.message;
+  const materialsAvailability = materialsAvailabilityData?.items || [];
+  const materialsAllAvailable = materialsAvailabilityData?.allAvailable ?? true;
   const canComplete = hasFinalFiles && !!selectedItem?.sessionId;
   // PROMPT B: Enable "Send to Print Queue" when prepress is complete and has final files
   const canSendToPrint =
@@ -1016,6 +1054,22 @@ export default function PrepressProductionPageV2() {
                   <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-slate-600 text-slate-300 bg-slate-700/40">
                     Effective (including overrides)
                   </span>
+                  {materialsAvailabilityLoading ? (
+                    <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-slate-600 text-slate-300 bg-slate-700/40">
+                      Checking Stock...
+                    </span>
+                  ) : (
+                    <span
+                      className={cn(
+                        "text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border",
+                        materialsAllAvailable
+                          ? "border-emerald-500 text-emerald-300 bg-emerald-900/20"
+                          : "border-amber-500 text-amber-300 bg-amber-900/20"
+                      )}
+                    >
+                      {materialsAllAvailable ? "Stock Available" : "Stock Shortage"}
+                    </span>
+                  )}
                   {pricingReviewRequired ? (
                     <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-amber-500 text-amber-300 bg-amber-900/20">
                       Pricing Review Required
@@ -1049,6 +1103,26 @@ export default function PrepressProductionPageV2() {
                           ) : null}
                         </span>
                         <span className="text-xs text-slate-500">ID: {material.materialId}</span>
+                        {(() => {
+                          const availability = materialsAvailability.find(
+                            (a) => a.materialId === material.materialId && a.uom === material.uom
+                          );
+                          if (!availability) return null;
+                          return (
+                            <span
+                              className={cn(
+                                "text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border w-fit",
+                                availability.isAvailable
+                                  ? "border-emerald-600 text-emerald-300 bg-emerald-950/40"
+                                  : "border-amber-600 text-amber-300 bg-amber-950/40"
+                              )}
+                            >
+                              {availability.isAvailable
+                                ? `In Stock (${availability.availableQty} ${availability.uom})`
+                                : `Short ${availability.shortageQty} ${availability.uom}`}
+                            </span>
+                          );
+                        })()}
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-slate-300 font-mono min-w-[90px] text-right">
@@ -1111,6 +1185,10 @@ export default function PrepressProductionPageV2() {
 
               {plannedMaterialsMessage ? (
                 <p className="text-xs text-amber-300 mt-2">{plannedMaterialsMessage}</p>
+              ) : null}
+
+              {effectiveFingerprint ? (
+                <p className="text-[10px] text-slate-500 mt-2">Fingerprint: {effectiveFingerprint.slice(0, 12)}…</p>
               ) : null}
             </div>
           </section>
