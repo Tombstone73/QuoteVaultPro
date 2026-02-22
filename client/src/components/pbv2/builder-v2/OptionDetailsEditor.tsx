@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils';
 import type { EditorOption } from '@/lib/pbv2/pbv2ViewModel';
 import { CreateMaterialDialog } from '@/features/materials/CreateMaterialDialog';
 import { useMaterial, useMaterialsSearch, type MaterialSearchItem } from '@/hooks/useMaterials';
+import { useAuth } from '@/hooks/useAuth';
 
 interface OptionDetailsEditorProps {
   option: EditorOption;
@@ -45,6 +46,12 @@ export function OptionDetailsEditor({
   setEditingChoiceValue
 }: OptionDetailsEditorProps) {
   const queryClient = useQueryClient();
+  const auth = useAuth();
+  const canCreateMaterials = !auth.isLoading && !!auth.user && (
+    auth.isAdmin ||
+    auth.user?.role === 'owner' ||
+    auth.user?.role === 'admin'
+  );
 
   const [isAddMaterialOpen, setIsAddMaterialOpen] = React.useState(false);
   const [addMaterialTarget, setAddMaterialTarget] = React.useState<{ choiceIdx: number; entryIdx: number } | null>(null);
@@ -564,10 +571,12 @@ export function OptionDetailsEditor({
                                               value={entry?.materialId ?? ""}
                                               onChange={(nextMaterialId) => updateEntry({ materialId: nextMaterialId })}
                                               onRequestAddMaterial={() => {
+                                                if (!canCreateMaterials) return;
                                                 setAddMaterialTarget({ choiceIdx: index, entryIdx });
                                                 setIsAddMaterialOpen(true);
                                               }}
                                               createdMaterialOverride={recentlyCreatedByRowKey[rowKey] ?? null}
+                                              canCreateMaterials={canCreateMaterials}
                                             />
                                           </div>
 
@@ -892,52 +901,54 @@ export function OptionDetailsEditor({
         </div>
       )}
 
-      <CreateMaterialDialog
-        open={isAddMaterialOpen}
-        onOpenChange={setIsAddMaterialOpen}
-        hideTrigger
-        onCreated={async (material) => {
-          const target = addMaterialTarget;
-          if (!target || !material?.id) {
+      {canCreateMaterials ? (
+        <CreateMaterialDialog
+          open={isAddMaterialOpen}
+          onOpenChange={setIsAddMaterialOpen}
+          hideTrigger
+          onCreated={async (material) => {
+            const target = addMaterialTarget;
+            if (!target || !material?.id) {
+              setAddMaterialTarget(null);
+              return;
+            }
+
+            const targetChoice = choices[target.choiceIdx];
+            if (!targetChoice) {
+              setAddMaterialTarget(null);
+              return;
+            }
+
+            const currentConsumption = Array.isArray(targetChoice.inventoryConsumption) ? targetChoice.inventoryConsumption : [];
+            const nextConsumption = [...currentConsumption];
+            if (!nextConsumption[target.entryIdx]) {
+              setAddMaterialTarget(null);
+              return;
+            }
+
+            nextConsumption[target.entryIdx] = {
+              ...nextConsumption[target.entryIdx],
+              materialId: material.id,
+            };
+
+            onUpdateChoice(option.id, targetChoice.value, { inventoryConsumption: nextConsumption });
+
+            const rowKey = getRowKey(target.choiceIdx, target.entryIdx);
+            setRecentlyCreatedByRowKey((prev) => ({
+              ...prev,
+              [rowKey]: {
+                id: material.id,
+                name: material.name,
+                unitOfMeasure: material.unitOfMeasure || '',
+                isActive: true,
+              },
+            }));
+
+            await queryClient.invalidateQueries({ queryKey: ['/api/materials'] });
             setAddMaterialTarget(null);
-            return;
-          }
-
-          const targetChoice = choices[target.choiceIdx];
-          if (!targetChoice) {
-            setAddMaterialTarget(null);
-            return;
-          }
-
-          const currentConsumption = Array.isArray(targetChoice.inventoryConsumption) ? targetChoice.inventoryConsumption : [];
-          const nextConsumption = [...currentConsumption];
-          if (!nextConsumption[target.entryIdx]) {
-            setAddMaterialTarget(null);
-            return;
-          }
-
-          nextConsumption[target.entryIdx] = {
-            ...nextConsumption[target.entryIdx],
-            materialId: material.id,
-          };
-
-          onUpdateChoice(option.id, targetChoice.value, { inventoryConsumption: nextConsumption });
-
-          const rowKey = getRowKey(target.choiceIdx, target.entryIdx);
-          setRecentlyCreatedByRowKey((prev) => ({
-            ...prev,
-            [rowKey]: {
-              id: material.id,
-              name: material.name,
-              unitOfMeasure: material.unitOfMeasure || '',
-              isActive: true,
-            },
-          }));
-
-          await queryClient.invalidateQueries({ queryKey: ['/api/materials'] });
-          setAddMaterialTarget(null);
-        }}
-      />
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -947,11 +958,13 @@ function MaterialIdSearchField({
   onChange,
   onRequestAddMaterial,
   createdMaterialOverride,
+  canCreateMaterials,
 }: {
   value: string;
   onChange: (materialId: string) => void;
   onRequestAddMaterial: () => void;
   createdMaterialOverride?: MaterialSearchItem | null;
+  canCreateMaterials: boolean;
 }) {
   const [open, setOpen] = React.useState(false);
   const [searchText, setSearchText] = React.useState('');
@@ -1034,21 +1047,25 @@ function MaterialIdSearchField({
                   </div>
                 </CommandItem>
               ))}
-              <CommandSeparator />
-              <CommandItem
-                value="__add_new_material__"
-                onSelect={() => {
-                  setOpen(false);
-                  onRequestAddMaterial();
-                }}
-                className="text-xs"
-              >
-                <Plus className="mr-2 h-3 w-3" />
-                <div className="flex flex-col">
-                  <span>+ Add new material</span>
-                  <span className="text-[10px] text-slate-500">Create a material and select it</span>
-                </div>
-              </CommandItem>
+              {canCreateMaterials ? (
+                <>
+                  <CommandSeparator />
+                  <CommandItem
+                    value="__add_new_material__"
+                    onSelect={() => {
+                      setOpen(false);
+                      onRequestAddMaterial();
+                    }}
+                    className="text-xs"
+                  >
+                    <Plus className="mr-2 h-3 w-3" />
+                    <div className="flex flex-col">
+                      <span>+ Add new material</span>
+                      <span className="text-[10px] text-slate-500">Create a material and select it</span>
+                    </div>
+                  </CommandItem>
+                </>
+              ) : null}
             </CommandList>
           </Command>
         </PopoverContent>
