@@ -1,6 +1,6 @@
 import { and, eq, gte, inArray, lt, not, sql } from "drizzle-orm";
 import { db } from "../db";
-import { invoices, materials, orders, organizations, payments, productionJobs, quotes } from "@shared/schema";
+import { invoices, materials, orders, payments, productionJobs, quotes } from "@shared/schema";
 
 export type DashboardSummary = {
   criticalAlerts: {
@@ -66,18 +66,6 @@ const DEFAULT_SUMMARY: DashboardSummary = {
   },
 };
 
-type DashboardKpiStatusMap = {
-  ordersPipeline?: {
-    scheduled?: string[];
-    readyForPickup?: string[];
-  };
-  productionJobs?: {
-    printing?: string[];
-    finishing?: string[];
-    qaInspection?: string[];
-  };
-};
-
 function isDev() {
   return (process.env.NODE_ENV || "").toLowerCase() !== "production";
 }
@@ -112,41 +100,6 @@ async function countFrom(query: Promise<Array<{ count: number }>>): Promise<numb
   return Number(rows[0]?.count ?? 0);
 }
 
-function normalizeStringArray(raw: unknown): string[] | undefined {
-  if (raw == null) return undefined;
-  if (!Array.isArray(raw)) return undefined;
-  return raw.map((v) => String(v ?? "").trim()).filter((v) => v.length > 0);
-}
-
-async function loadDashboardKpiStatusMap(organizationId: string): Promise<DashboardKpiStatusMap | null> {
-  try {
-    const rows = await db
-      .select({ settings: organizations.settings })
-      .from(organizations)
-      .where(eq(organizations.id, organizationId))
-      .limit(1);
-
-    const settings = (rows[0]?.settings as any) ?? {};
-    const rawMap = settings?.preferences?.dashboardKpiStatusMap;
-    if (!rawMap || typeof rawMap !== "object") return null;
-
-    return {
-      ordersPipeline: {
-        scheduled: normalizeStringArray(rawMap?.ordersPipeline?.scheduled),
-        readyForPickup: normalizeStringArray(rawMap?.ordersPipeline?.readyForPickup),
-      },
-      productionJobs: {
-        printing: normalizeStringArray(rawMap?.productionJobs?.printing),
-        finishing: normalizeStringArray(rawMap?.productionJobs?.finishing),
-        qaInspection: normalizeStringArray(rawMap?.productionJobs?.qaInspection),
-      },
-    };
-  } catch (error) {
-    console.error("[dashboard-summary] loadDashboardKpiStatusMap failed:", error);
-    return null;
-  }
-}
-
 export async function getDashboardSummary(organizationId: string): Promise<DashboardSummary> {
   const now = new Date();
   const todayStart = startOfDay(now);
@@ -156,35 +109,6 @@ export async function getDashboardSummary(organizationId: string): Promise<Dashb
   const todayStartIso = todayStart.toISOString();
   const tomorrowStartIso = tomorrowStart.toISOString();
   const dayAfterTomorrowStartIso = dayAfterTomorrowStart.toISOString();
-  const kpiStatusMap = await loadDashboardKpiStatusMap(organizationId);
-
-  const countOrdersByMappedStatuses = async (statuses: string[] | undefined): Promise<number | null> => {
-    if (statuses === undefined) return null;
-    if (statuses.length === 0) return 0;
-    return countFrom(
-      db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(orders)
-        .where(and(eq(orders.organizationId, organizationId), inArray(orders.status, statuses))),
-    );
-  };
-
-  const countProductionByMappedStepKeys = async (stepKeys: string[] | undefined): Promise<number | null> => {
-    if (stepKeys === undefined) return null;
-    if (stepKeys.length === 0) return 0;
-    return countFrom(
-      db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(productionJobs)
-        .where(
-          and(
-            eq(productionJobs.organizationId, organizationId),
-            not(eq(productionJobs.status, "done")),
-            inArray(productionJobs.stepKey, stepKeys),
-          ),
-        ),
-    );
-  };
 
   const summary: DashboardSummary = {
     ...DEFAULT_SUMMARY,
@@ -290,15 +214,11 @@ export async function getDashboardSummary(organizationId: string): Promise<Dashb
         .where(and(eq(orders.organizationId, organizationId), eq(orders.status, "on_hold"))),
     );
 
-    summary.ordersPipeline.scheduled = await countOrdersByMappedStatuses(kpiStatusMap?.ordersPipeline?.scheduled);
-    summary.ordersPipeline.readyForPickup = await countOrdersByMappedStatuses(kpiStatusMap?.ordersPipeline?.readyForPickup);
+    summary.ordersPipeline.scheduled = null;
+    summary.ordersPipeline.readyForPickup = null;
     summary.ordersPipeline.slaRisk = null;
-    if (summary.ordersPipeline.scheduled === null) {
-      devWarn("ordersPipeline.scheduled is null (missing dashboardKpiStatusMap.ordersPipeline.scheduled)");
-    }
-    if (summary.ordersPipeline.readyForPickup === null) {
-      devWarn("ordersPipeline.readyForPickup is null (missing dashboardKpiStatusMap.ordersPipeline.readyForPickup)");
-    }
+    devWarn("ordersPipeline.scheduled is null (status not implemented)");
+    devWarn("ordersPipeline.readyForPickup is null (status not implemented)");
     devWarn("ordersPipeline.slaRisk is null (no SLA definition in schema)");
   } catch (error) {
     console.error("[dashboard-summary] ordersPipeline failed:", error);
@@ -319,45 +239,10 @@ export async function getDashboardSummary(organizationId: string): Promise<Dashb
         ),
     );
 
-    // Directly definable from current production stepKey usage.
-    const mappedPrinting = await countProductionByMappedStepKeys(kpiStatusMap?.productionJobs?.printing);
-    const mappedFinishing = await countProductionByMappedStepKeys(kpiStatusMap?.productionJobs?.finishing);
-    const mappedQaInspection = await countProductionByMappedStepKeys(kpiStatusMap?.productionJobs?.qaInspection);
-
-    summary.productionJobs.printing =
-      mappedPrinting ??
-      (await countFrom(
-        db
-          .select({ count: sql<number>`count(*)::int` })
-          .from(productionJobs)
-          .where(
-            and(
-              eq(productionJobs.organizationId, organizationId),
-              eq(productionJobs.stepKey, "printing"),
-              not(eq(productionJobs.status, "done")),
-            ),
-          ),
-      ));
-
-    summary.productionJobs.finishing =
-      mappedFinishing ??
-      (await countFrom(
-        db
-          .select({ count: sql<number>`count(*)::int` })
-          .from(productionJobs)
-          .where(
-            and(
-              eq(productionJobs.organizationId, organizationId),
-              eq(productionJobs.stepKey, "finishing"),
-              not(eq(productionJobs.status, "done")),
-            ),
-          ),
-      ));
-
-    summary.productionJobs.qaInspection = mappedQaInspection;
-    if (summary.productionJobs.qaInspection === null) {
-      devWarn("productionJobs.qaInspection is null (missing dashboardKpiStatusMap.productionJobs.qaInspection)");
-    }
+    summary.productionJobs.printing = null;
+    summary.productionJobs.finishing = null;
+    summary.productionJobs.qaInspection = null;
+    devWarn("productionJobs.printing/finishing/qaInspection are null (step states not implemented)");
   } catch (error) {
     console.error("[dashboard-summary] productionJobs failed:", error);
   }
