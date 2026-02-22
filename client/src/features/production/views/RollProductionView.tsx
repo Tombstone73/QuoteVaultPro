@@ -54,6 +54,7 @@ import {
   ArrowLeft,
   Printer,
   RotateCcw,
+  Square,
   Undo2,
   Download,
   Upload,
@@ -716,11 +717,11 @@ function ActionRail({
           <Button className="w-full justify-start bg-yellow-600 hover:bg-yellow-600/90 text-white" onClick={() => setReprintOpen(true)} disabled={isBusy || !job.lineItemId}>
             <Printer className="w-4 h-4 mr-2" /> REPRINT
           </Button>
-          <Button className="w-full inline-flex items-center justify-center gap-2 px-4 whitespace-nowrap bg-red-600 hover:bg-red-600/90 text-white" onClick={() => setWasteOpen(true)} disabled={isBusy}>
-            <Trash2 className="w-4 h-4" /> LOG WASTE
+          <Button className="w-full justify-start bg-red-600 hover:bg-red-600/90 text-white" onClick={() => setWasteOpen(true)} disabled={isBusy}>
+            <Undo2 className="w-4 h-4 mr-2" /> LOG WASTE
           </Button>
-          <Button className="w-full inline-flex items-center justify-center gap-2 px-4 whitespace-nowrap bg-orange-600 hover:bg-orange-600/90 text-white" onClick={() => setSendToPrepressOpen(true)} disabled={isBusy || !job.lineItemId}>
-            <Undo2 className="w-4 h-4" /> Send to Prepress
+          <Button className="w-full justify-start whitespace-nowrap bg-orange-600 hover:bg-orange-600/90 text-white" onClick={() => setSendToPrepressOpen(true)} disabled={isBusy || !job.lineItemId}>
+            <Square className="w-4 h-4 mr-2 shrink-0" /> Send to Prepress
           </Button>
         </div>
 
