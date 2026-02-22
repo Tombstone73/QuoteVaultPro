@@ -14,7 +14,8 @@ import ForgotPassword from "@/pages/forgot-password";
 import ResetPassword from "@/pages/reset-password";
 import SetPasswordPage from "@/pages/set-password";
 import ForcePasswordChange from "@/pages/force-password-change";
-import Home from "@/pages/home";
+import TitanDashboard from "@/pages/titan-dashboard";
+import AdminDashboard from "@/pages/admin-dashboard";
 import { QuoteEditorPage } from "@/features/quotes/editor/QuoteEditorPage";
 import CustomerQuotes from "@/pages/customer-quotes";
 import InternalQuotes from "@/pages/internal-quotes";
@@ -111,15 +112,18 @@ function Router() {
   return (
     <Routes>
       {/* Redirect login to dashboard if already authenticated */}
-      <Route path="/login" element={<Navigate to="/dashboard" replace />} />
+      <Route path="/login" element={<Navigate to="/" replace />} />
 
       {/* All authenticated routes share the AppLayout */}
       <Route element={<AppLayout />}>
-        {/* Root redirect to dashboard */}
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        {/* Titan landing dashboard */}
+        <Route path="/" element={<TitanDashboard />} />
 
-        {/* Dashboard */}
-        <Route path="/dashboard" element={<Home />} />
+        {/* Admin dashboard */}
+        <Route path="/system/admin" element={<AdminDashboard />} />
+
+        {/* Legacy dashboard route compatibility */}
+        <Route path="/dashboard" element={<Navigate to="/system/admin" replace />} />
 
         {/* Portal routes (customer-facing) */}
         <Route path="/portal/my-quotes" element={<MyQuotes />} />

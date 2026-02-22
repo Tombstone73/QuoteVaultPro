@@ -93,6 +93,7 @@
 export const ROUTES = {
   // Root & Dashboard
   root: "/",
+  titanDashboard: "/",
   dashboard: "/dashboard",
 
   // Portal (customer-facing)
@@ -181,6 +182,10 @@ export const ROUTES = {
     products: "/admin/products",
     productTypes: "/admin/product-types",
     bugReports: "/admin/bug-reports",
+  },
+
+  system: {
+    adminDashboard: "/system/admin",
   },
   
   users: {

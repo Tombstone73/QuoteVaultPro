@@ -24,7 +24,9 @@ import { OrgSwitcher } from "@/components/OrgSwitcher";
 // ============================================================
 
 const ROUTE_TITLES: Record<string, string> = {
+  "/": "Titan Dashboard",
   "/dashboard": "Dashboard",
+  "/system/admin": "Admin Dashboard",
   "/customers": "Customers",
   "/quotes": "Quotes",
   "/orders": "Orders",
