@@ -212,7 +212,9 @@ export const ROUTES = {
     list: "/fulfillment",
     shipmentDetail: (shipmentId: string) => `/fulfillment/shipments/${shipmentId}`,
   },
-  // reports: "/reports",
+  labels: "/shipping",
+  reports: "/reports",
+  finance: "/payments",
 
   // Misc
   debugUser: "/debug-user",
