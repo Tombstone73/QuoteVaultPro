@@ -4,9 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 type OrdersPipelineCardProps = {
   newOrders?: number | null;
-  scheduled?: number | null;
   inProduction?: number | null;
-  readyForPickup?: number | null;
   onHold?: number | null;
   slaRisk?: number | null;
 };
@@ -17,9 +15,7 @@ function valueOrDash(value?: number | null) {
 
 export default function OrdersPipelineCard({
   newOrders,
-  scheduled,
   inProduction,
-  readyForPickup,
   onHold,
   slaRisk,
 }: OrdersPipelineCardProps) {
@@ -36,9 +32,7 @@ export default function OrdersPipelineCard({
       </CardHeader>
       <CardContent className="space-y-3 pt-4">
         <div className="flex items-center justify-between text-sm"><span className="text-muted-foreground">New Orders</span><span className="font-semibold">{valueOrDash(newOrders)}</span></div>
-        <div className="flex items-center justify-between text-sm"><span className="text-muted-foreground">Scheduled</span><span className="font-semibold">{valueOrDash(scheduled)}</span></div>
         <div className="flex items-center justify-between text-sm"><span className="text-muted-foreground">In Production</span><span className="font-semibold">{valueOrDash(inProduction)}</span></div>
-        <div className="flex items-center justify-between text-sm"><span className="text-muted-foreground">Ready for Pickup</span><span className="font-semibold">{valueOrDash(readyForPickup)}</span></div>
         <div className="flex items-center justify-between text-sm"><span className="text-muted-foreground">On Hold</span><span className="font-semibold">{valueOrDash(onHold)}</span></div>
 
         {slaRisk != null && (

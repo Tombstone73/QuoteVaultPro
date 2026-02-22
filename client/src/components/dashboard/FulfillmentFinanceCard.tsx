@@ -33,6 +33,7 @@ export default function FulfillmentFinanceCard({
   collectionsPulsePercent,
 }: FulfillmentFinanceCardProps) {
   const pulseWidth = Math.min(100, Math.max(0, collectionsPulsePercent ?? 0));
+  const showCollections = collectedTodayCents != null || collectedWeekCents != null;
 
   return (
     <Card className="border-border bg-card h-full">
@@ -58,7 +59,7 @@ export default function FulfillmentFinanceCard({
           <div className="flex items-center justify-between text-sm">
             <div>
               <div className="text-muted-foreground">Invoices Unpaid</div>
-              <div className="text-xs text-rose-300">{overdueLabel || "Not available"}</div>
+              {overdueLabel ? <div className="text-xs text-rose-300">{overdueLabel}</div> : null}
             </div>
             <div className="text-right">
               <div className="font-semibold">{valueOrDash(invoicesUnpaid)}</div>
@@ -67,23 +68,25 @@ export default function FulfillmentFinanceCard({
           </div>
         </div>
 
-        <div className="rounded-md border border-border bg-muted/30 p-3">
-          <div className="mb-2 flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
-            <DollarSign className="h-3.5 w-3.5" />
-            Collections Pulse
+        {showCollections && (
+          <div className="rounded-md border border-border bg-muted/30 p-3">
+            <div className="mb-2 flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
+              <DollarSign className="h-3.5 w-3.5" />
+              Collections Pulse
+            </div>
+            <div className="mb-2 flex items-center justify-between text-sm">
+              <span className="text-muted-foreground">Collected Today</span>
+              <span className="font-semibold">{formatCurrency(collectedTodayCents)}</span>
+            </div>
+            <div className="mb-3 h-1.5 w-full rounded-full bg-muted">
+              <div className="h-1.5 rounded-full bg-emerald-500" style={{ width: `${pulseWidth}%` }} />
+            </div>
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted-foreground">This Week</span>
+              <span className="font-semibold">{formatCurrency(collectedWeekCents)}</span>
+            </div>
           </div>
-          <div className="mb-2 flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Collected Today</span>
-            <span className="font-semibold">{formatCurrency(collectedTodayCents)}</span>
-          </div>
-          <div className="mb-3 h-1.5 w-full rounded-full bg-muted">
-            <div className="h-1.5 rounded-full bg-emerald-500" style={{ width: `${pulseWidth}%` }} />
-          </div>
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">This Week</span>
-            <span className="font-semibold">{formatCurrency(collectedWeekCents)}</span>
-          </div>
-        </div>
+        )}
       </CardContent>
     </Card>
   );
