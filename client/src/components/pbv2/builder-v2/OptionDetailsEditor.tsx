@@ -1005,12 +1005,16 @@ function MaterialIdSearchField({
     ? createdMaterialOverride
     : null;
 
+  const resolvedIsActive = resolvedById && typeof resolvedById === 'object' && 'isActive' in resolvedById
+    ? (resolvedById as { isActive?: boolean }).isActive !== false
+    : true;
+
   const selectedMaterial = selectedInResults || selectedFromOverride || (resolvedById
     ? {
         id: resolvedById.id,
         name: resolvedById.name,
         unitOfMeasure: resolvedById.unitOfMeasure,
-        isActive: resolvedById.isActive !== false,
+        isActive: resolvedIsActive,
       }
     : null);
 
