@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 
 export interface Material {
@@ -90,6 +91,52 @@ interface MaterialFilters {
   lowStockOnly?: boolean;
 }
 
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState<T>(value);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [value, delayMs]);
+  return debounced;
+}
+
+export interface MaterialSearchItem {
+  id: string;
+  name: string;
+  unitOfMeasure: string;
+  isActive: boolean;
+}
+
+export function useMaterialsSearch(searchText: string, options?: { limit?: number; includeInactive?: boolean }) {
+  const debouncedSearch = useDebouncedValue(searchText, 250);
+  const limit = options?.limit ?? 20;
+  const includeInactive = options?.includeInactive ?? false;
+
+  return useQuery<MaterialSearchItem[]>({
+    queryKey: ["/api/materials", "search", debouncedSearch, limit, includeInactive],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
+      params.set("limit", String(limit));
+      if (includeInactive) params.set("includeInactive", "true");
+
+      const response = await fetch(`/api/materials?${params.toString()}`, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to search materials");
+
+      const json = await response.json();
+      const payload = json?.success ? json.data : json;
+      const list: any[] = Array.isArray(payload) ? payload : Array.isArray(payload?.materials) ? payload.materials : [];
+
+      return list.map((m: any) => ({
+        id: String(m.id || ""),
+        name: String(m.name || ""),
+        unitOfMeasure: String(m.unitOfMeasure || ""),
+        isActive: m?.isActive !== false,
+      })).filter((m) => !!m.id && !!m.name);
+    },
+  });
+}
+
 export function useMaterials(filters?: MaterialFilters) {
   return useQuery<Material[]>({
     queryKey: ["/api/materials", filters],
@@ -97,7 +144,8 @@ export function useMaterials(filters?: MaterialFilters) {
       const response = await fetch("/api/materials", { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch materials");
       const json = await response.json();
-      const list: Material[] = json.success ? json.data : json;
+      const payload = json?.success ? json.data : json;
+      const list: Material[] = Array.isArray(payload) ? payload : Array.isArray(payload?.materials) ? payload.materials : [];
       // Client-side filters until server supports them
       return list.filter(m => {
         if (filters?.search) {
