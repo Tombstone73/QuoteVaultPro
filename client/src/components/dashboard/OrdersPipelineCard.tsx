@@ -41,12 +41,14 @@ export default function OrdersPipelineCard({
         <div className="flex items-center justify-between text-sm"><span className="text-muted-foreground">Ready for Pickup</span><span className="font-semibold">{valueOrDash(readyForPickup)}</span></div>
         <div className="flex items-center justify-between text-sm"><span className="text-muted-foreground">On Hold</span><span className="font-semibold">{valueOrDash(onHold)}</span></div>
 
-        <div className="border-t border-border pt-3">
-          <div className="flex items-center gap-2 rounded-md border border-red-900/40 bg-red-950/20 p-2 text-sm text-red-300">
-            <AlertCircle className="h-4 w-4" />
-            <span>{slaRisk == null ? "Not available" : `${slaRisk} Orders at SLA Risk`}</span>
+        {slaRisk != null && (
+          <div className="border-t border-border pt-3">
+            <div className="flex items-center gap-2 rounded-md border border-red-900/40 bg-red-950/20 p-2 text-sm text-red-300">
+              <AlertCircle className="h-4 w-4" />
+              <span>{`${slaRisk} Orders at SLA Risk`}</span>
+            </div>
           </div>
-        </div>
+        )}
       </CardContent>
     </Card>
   );
