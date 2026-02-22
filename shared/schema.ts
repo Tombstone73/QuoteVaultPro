@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { relations } from 'drizzle-orm';
 import {
+  type AnyPgColumn,
   boolean,
   decimal,
   index,
@@ -94,11 +95,11 @@ export const organizations = pgTable("organizations", {
   // Soft delete lifecycle tracking
   deleteState: text("delete_state").notNull().default('active'), // 'active' | 'pending_delete' | 'soft_deleted'
   deleteRequestedAt: timestamp("delete_requested_at", { withTimezone: true }),
-  deleteRequestedByUserId: varchar("delete_requested_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  deleteRequestedByUserId: varchar("delete_requested_by_user_id").references((): AnyPgColumn => users.id, { onDelete: 'set null' }),
   deleteConfirmedAt: timestamp("delete_confirmed_at", { withTimezone: true }),
-  deleteConfirmedByUserId: varchar("delete_confirmed_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  deleteConfirmedByUserId: varchar("delete_confirmed_by_user_id").references((): AnyPgColumn => users.id, { onDelete: 'set null' }),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
-  deletedByUserId: varchar("deleted_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  deletedByUserId: varchar("deleted_by_user_id").references((): AnyPgColumn => users.id, { onDelete: 'set null' }),
   deleteReason: text("delete_reason"),
   deletedIp: text("deleted_ip"),
   deletedUserAgent: text("deleted_user_agent"),
@@ -195,7 +196,7 @@ export const users = pgTable("users", {
   role: varchar("role", { length: 50 }).default("employee").notNull(), // owner, admin, manager, employee
   mustSetPassword: boolean("must_set_password").default(false).notNull(), // True if invited with temp password, must set new password on first login
   lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
-  lastActiveOrgId: varchar("last_active_org_id").references(() => organizations.id, { onDelete: 'set null' }),
+  lastActiveOrgId: varchar("last_active_org_id").references((): AnyPgColumn => organizations.id, { onDelete: 'set null' }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
