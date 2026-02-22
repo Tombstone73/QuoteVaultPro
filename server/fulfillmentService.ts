@@ -123,9 +123,13 @@ export async function sendShipmentEmail(
 
   const lineItems = await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
 
-  const trackingLink = shipment.trackingNumber 
-    ? generateTrackingLink(shipment.carrier, shipment.trackingNumber)
+  const trackingNumber = shipment.trackingNumber || null;
+
+  const trackingLink = trackingNumber
+    ? generateTrackingLink(shipment.carrier || 'other', trackingNumber)
     : null;
+
+  const carrierLabel = String(shipment.carrier || 'Carrier').toUpperCase();
 
   const html = `
 <!DOCTYPE html>
@@ -150,12 +154,12 @@ export async function sendShipmentEmail(
   </div>
   <div class="content">
     <p>Hi ${customer.companyName},</p>
-    <p>Great news! Your order <strong>#${order.orderNumber}</strong> has been shipped via <strong>${shipment.carrier.toUpperCase()}</strong>.</p>
+    <p>Great news! Your order <strong>#${order.orderNumber}</strong> has been shipped via <strong>${carrierLabel}</strong>.</p>
     
-    ${shipment.trackingNumber ? `
+    ${trackingNumber ? `
       <div class="tracking">
         <p>Tracking Number:</p>
-        <p class="tracking-number">${shipment.trackingNumber}</p>
+        <p class="tracking-number">${trackingNumber}</p>
         ${trackingLink ? `<a href="${trackingLink}" class="btn">Track Your Package</a>` : ''}
       </div>
     ` : ''}

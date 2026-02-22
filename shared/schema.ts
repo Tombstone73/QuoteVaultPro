@@ -2916,24 +2916,61 @@ export type PaymentWebhookEvent = typeof paymentWebhookEvents.$inferSelect;
 
 // -------------------- Shipping & Fulfillment --------------------
 
-// Shipments table (tracks packages sent to customers)
+export const shipmentStatusSchema = z.enum(['DRAFT', 'SHIPPED', 'VOIDED']);
+export const shipmentScopeSchema = z.enum(['SINGLE_ORDER', 'MULTI_ORDER']);
+export const pickupTicketStatusSchema = z.enum(['DRAFT', 'READY_FOR_PICKUP', 'PICKED_UP']);
+export const outboundNotificationChannelSchema = z.enum(['email', 'sms']);
+export const outboundNotificationStatusSchema = z.enum(['PENDING', 'SENT', 'FAILED']);
+export const outboundNotificationRelatedTypeSchema = z.enum(['PICKUP_TICKET']);
+export const fulfillmentEntityTypeSchema = z.enum(['SHIPMENT', 'PICKUP_TICKET']);
+export const fulfillmentEventTypeSchema = z.enum([
+  'SHIPMENT_CREATED',
+  'SHIPMENT_UPDATED',
+  'SHIPMENT_SHIPPED',
+  'SHIPMENT_VOIDED',
+  'PICKUP_READY',
+  'PICKUP_PICKED_UP',
+  'NOTIFICATION_SENT',
+  'NOTIFICATION_FAILED',
+]);
+
+// Shipments table (legacy + v1 fulfillment architecture)
 export const shipments = pgTable("shipments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
-  carrier: varchar("carrier", { length: 100 }).notNull(), // ups, fedex, usps, dhl, other
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").references(() => orders.id, { onDelete: 'cascade' }), // legacy compatibility
+  status: varchar("status", { length: 20 }).notNull().default('DRAFT'), // DRAFT | SHIPPED | VOIDED
+  scope: varchar("scope", { length: 20 }).notNull().default('SINGLE_ORDER'), // SINGLE_ORDER | MULTI_ORDER
+  primaryOrderId: varchar("primary_order_id").references(() => orders.id, { onDelete: 'set null' }),
+  carrier: varchar("carrier", { length: 100 }), // UPS/FedEx/USPS/Freight/LocalDelivery (raw string)
+  serviceLevel: text("service_level"),
   trackingNumber: varchar("tracking_number", { length: 255 }),
-  shippedAt: timestamp("shipped_at", { withTimezone: true }).defaultNow().notNull(),
+  carrierShipmentId: text("carrier_shipment_id"),
+  labelStorageKey: text("label_storage_key"),
+  carrierLastStatus: text("carrier_last_status"),
+  carrierRawResponse: jsonb("carrier_raw_response").$type<Record<string, any>>().default(sql`'{}'::jsonb`).notNull(),
+  shipDate: timestamp("ship_date", { mode: "date" }),
+  shippedAt: timestamp("shipped_at", { withTimezone: true }), // legacy timestamp
   deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+  boxCount: integer("box_count"),
+  weightLbs: decimal("weight_lbs", { precision: 10, scale: 2 }),
+  dimLengthIn: decimal("dim_length_in", { precision: 10, scale: 2 }),
+  dimWidthIn: decimal("dim_width_in", { precision: 10, scale: 2 }),
+  dimHeightIn: decimal("dim_height_in", { precision: 10, scale: 2 }),
+  internalNotes: text("internal_notes"),
   notes: text("notes"),
   externalShippingId: varchar("external_shipping_id"), // ShipStation / carrier API ID
   syncStatus: varchar("sync_status", { length: 50 }).notNull().default('pending'), // pending, synced, error, skipped
   syncError: text("sync_error"),
   syncedAt: timestamp("synced_at", { withTimezone: true }),
-  createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
+  index("shipments_organization_id_idx").on(table.organizationId),
+  index("shipments_org_status_idx").on(table.organizationId, table.status),
   index("shipments_order_id_idx").on(table.orderId),
+  index("shipments_primary_order_id_idx").on(table.primaryOrderId),
   index("shipments_carrier_idx").on(table.carrier),
   index("shipments_tracking_number_idx").on(table.trackingNumber),
   index("shipments_sync_status_idx").on(table.syncStatus),
@@ -2944,9 +2981,25 @@ export const insertShipmentSchema = createInsertSchema(shipments).omit({
   createdAt: true,
   updatedAt: true,
   syncedAt: true,
+  organizationId: true,
 }).extend({
   carrier: z.string().min(1),
+  status: shipmentStatusSchema.optional(),
+  scope: shipmentScopeSchema.optional(),
   trackingNumber: z.string().optional().nullable(),
+  serviceLevel: z.string().optional().nullable(),
+  shipDate: z.preprocess((val) => {
+    if (!val) return null;
+    if (val instanceof Date) return val;
+    if (typeof val === 'string') return new Date(val);
+    return val;
+  }, z.date().nullable().optional()),
+  boxCount: z.coerce.number().int().min(0).optional().nullable(),
+  weightLbs: z.coerce.number().min(0).optional().nullable(),
+  dimLengthIn: z.coerce.number().min(0).optional().nullable(),
+  dimWidthIn: z.coerce.number().min(0).optional().nullable(),
+  dimHeightIn: z.coerce.number().min(0).optional().nullable(),
+  internalNotes: z.string().optional().nullable(),
   shippedAt: z.preprocess((val) => {
     if (!val) return new Date();
     if (val instanceof Date) return val;
@@ -2970,6 +3023,148 @@ export const updateShipmentSchema = insertShipmentSchema.partial().extend({
 export type InsertShipment = z.infer<typeof insertShipmentSchema>;
 export type UpdateShipment = z.infer<typeof updateShipmentSchema>;
 export type Shipment = typeof shipments.$inferSelect;
+
+// Shipment <-> Order join (multi-order shipments)
+export const shipmentOrders = pgTable("shipment_orders", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  shipmentId: varchar("shipment_id").notNull().references(() => shipments.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("shipment_orders_shipment_order_uidx").on(table.shipmentId, table.orderId),
+  index("shipment_orders_org_idx").on(table.organizationId),
+  index("shipment_orders_shipment_idx").on(table.shipmentId),
+  index("shipment_orders_order_idx").on(table.orderId),
+]);
+
+export const insertShipmentOrderSchema = createInsertSchema(shipmentOrders).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertShipmentOrder = z.infer<typeof insertShipmentOrderSchema>;
+export type ShipmentOrder = typeof shipmentOrders.$inferSelect;
+
+// Per-line-item partial shipment quantities
+export const shipmentItems = pgTable("shipment_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  shipmentId: varchar("shipment_id").notNull().references(() => shipments.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  orderLineItemId: varchar("order_line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  quantity: integer("quantity").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("shipment_items_org_order_idx").on(table.organizationId, table.orderId),
+  index("shipment_items_org_line_item_idx").on(table.organizationId, table.orderLineItemId),
+  index("shipment_items_shipment_idx").on(table.shipmentId),
+]);
+
+export const insertShipmentItemSchema = createInsertSchema(shipmentItems).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  quantity: z.coerce.number().int().positive(),
+});
+
+export type InsertShipmentItem = z.infer<typeof insertShipmentItemSchema>;
+export type ShipmentItem = typeof shipmentItems.$inferSelect;
+
+export const pickupTickets = pgTable("pickup_tickets", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  status: varchar("status", { length: 32 }).notNull().default('DRAFT'),
+  readyAt: timestamp("ready_at", { withTimezone: true }),
+  pickedUpAt: timestamp("picked_up_at", { withTimezone: true }),
+  stagingLocation: text("staging_location"),
+  pickupNotes: text("pickup_notes"),
+  contactName: text("contact_name"),
+  contactEmail: text("contact_email"),
+  contactPhone: text("contact_phone"),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("pickup_tickets_order_uidx").on(table.orderId),
+  index("pickup_tickets_org_status_idx").on(table.organizationId, table.status),
+  index("pickup_tickets_org_order_idx").on(table.organizationId, table.orderId),
+]);
+
+export const insertPickupTicketSchema = createInsertSchema(pickupTickets).omit({
+  id: true,
+  organizationId: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  status: pickupTicketStatusSchema.optional(),
+});
+
+export const updatePickupTicketSchema = insertPickupTicketSchema.partial().extend({
+  id: z.string(),
+});
+
+export type InsertPickupTicket = z.infer<typeof insertPickupTicketSchema>;
+export type UpdatePickupTicket = z.infer<typeof updatePickupTicketSchema>;
+export type PickupTicket = typeof pickupTickets.$inferSelect;
+
+export const outboundNotifications = pgTable("outbound_notifications", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  relatedType: varchar("related_type", { length: 40 }).notNull(),
+  relatedId: varchar("related_id").notNull(),
+  channel: varchar("channel", { length: 20 }).notNull(),
+  toAddress: text("to_address").notNull(),
+  status: varchar("status", { length: 20 }).notNull().default('PENDING'),
+  provider: text("provider"),
+  providerMessageId: text("provider_message_id"),
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+}, (table) => [
+  index("outbound_notifications_org_status_idx").on(table.organizationId, table.status),
+  index("outbound_notifications_related_idx").on(table.relatedType, table.relatedId),
+]);
+
+export const insertOutboundNotificationSchema = createInsertSchema(outboundNotifications).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  relatedType: outboundNotificationRelatedTypeSchema,
+  channel: outboundNotificationChannelSchema,
+  status: outboundNotificationStatusSchema.default('PENDING'),
+});
+
+export type InsertOutboundNotification = z.infer<typeof insertOutboundNotificationSchema>;
+export type OutboundNotification = typeof outboundNotifications.$inferSelect;
+
+export const fulfillmentEvents = pgTable("fulfillment_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  actorUserId: varchar("actor_user_id").references(() => users.id, { onDelete: 'set null' }),
+  entityType: varchar("entity_type", { length: 40 }).notNull(),
+  entityId: varchar("entity_id").notNull(),
+  eventType: varchar("event_type", { length: 64 }).notNull(),
+  payloadJson: jsonb("payload_json").$type<Record<string, any>>().default(sql`'{}'::jsonb`).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("fulfillment_events_org_entity_created_idx").on(table.organizationId, table.entityType, table.entityId, table.createdAt),
+  index("fulfillment_events_org_event_created_idx").on(table.organizationId, table.eventType, table.createdAt),
+]);
+
+export const insertFulfillmentEventSchema = createInsertSchema(fulfillmentEvents).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  entityType: fulfillmentEntityTypeSchema,
+  eventType: fulfillmentEventTypeSchema,
+});
+
+export type InsertFulfillmentEvent = z.infer<typeof insertFulfillmentEventSchema>;
+export type FulfillmentEvent = typeof fulfillmentEvents.$inferSelect;
 
 // Append-only job notes & status log tables (no duplicate jobs table)
 export const jobNotes = pgTable('job_notes', {
@@ -3803,13 +3998,90 @@ export const paymentsRelations = relations(payments, ({ one }) => ({
   }),
 }));
 
-export const shipmentsRelations = relations(shipments, ({ one }) => ({
+export const shipmentsRelations = relations(shipments, ({ one, many }) => ({
+  organization: one(organizations, {
+    fields: [shipments.organizationId],
+    references: [organizations.id],
+  }),
   order: one(orders, {
     fields: [shipments.orderId],
     references: [orders.id],
   }),
+  primaryOrder: one(orders, {
+    fields: [shipments.primaryOrderId],
+    references: [orders.id],
+  }),
   createdByUser: one(users, {
     fields: [shipments.createdByUserId],
+    references: [users.id],
+  }),
+  shipmentOrders: many(shipmentOrders),
+  shipmentItems: many(shipmentItems),
+}));
+
+export const shipmentOrdersRelations = relations(shipmentOrders, ({ one }) => ({
+  organization: one(organizations, {
+    fields: [shipmentOrders.organizationId],
+    references: [organizations.id],
+  }),
+  shipment: one(shipments, {
+    fields: [shipmentOrders.shipmentId],
+    references: [shipments.id],
+  }),
+  order: one(orders, {
+    fields: [shipmentOrders.orderId],
+    references: [orders.id],
+  }),
+}));
+
+export const shipmentItemsRelations = relations(shipmentItems, ({ one }) => ({
+  organization: one(organizations, {
+    fields: [shipmentItems.organizationId],
+    references: [organizations.id],
+  }),
+  shipment: one(shipments, {
+    fields: [shipmentItems.shipmentId],
+    references: [shipments.id],
+  }),
+  order: one(orders, {
+    fields: [shipmentItems.orderId],
+    references: [orders.id],
+  }),
+  orderLineItem: one(orderLineItems, {
+    fields: [shipmentItems.orderLineItemId],
+    references: [orderLineItems.id],
+  }),
+}));
+
+export const pickupTicketsRelations = relations(pickupTickets, ({ one }) => ({
+  organization: one(organizations, {
+    fields: [pickupTickets.organizationId],
+    references: [organizations.id],
+  }),
+  order: one(orders, {
+    fields: [pickupTickets.orderId],
+    references: [orders.id],
+  }),
+  createdByUser: one(users, {
+    fields: [pickupTickets.createdByUserId],
+    references: [users.id],
+  }),
+}));
+
+export const outboundNotificationsRelations = relations(outboundNotifications, ({ one }) => ({
+  organization: one(organizations, {
+    fields: [outboundNotifications.organizationId],
+    references: [organizations.id],
+  }),
+}));
+
+export const fulfillmentEventsRelations = relations(fulfillmentEvents, ({ one }) => ({
+  organization: one(organizations, {
+    fields: [fulfillmentEvents.organizationId],
+    references: [organizations.id],
+  }),
+  actorUser: one(users, {
+    fields: [fulfillmentEvents.actorUserId],
     references: [users.id],
   }),
 }));
