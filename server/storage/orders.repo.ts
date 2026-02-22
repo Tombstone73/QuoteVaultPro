@@ -1101,14 +1101,61 @@ export class OrdersRepository {
     }
 
     async createShipment(shipment: InsertShipment): Promise<Shipment> {
-        const [created] = await this.dbInstance.insert(shipments).values(shipment).returning();
+        let organizationId = (shipment as any).organizationId as string | undefined;
+
+        if (!organizationId && shipment.orderId) {
+            const [order] = await this.dbInstance
+                .select({ organizationId: orders.organizationId })
+                .from(orders)
+                .where(eq(orders.id, shipment.orderId))
+                .limit(1);
+            organizationId = order?.organizationId;
+        }
+
+        if (!organizationId) {
+            throw new Error('organizationId is required to create shipment');
+        }
+
+        const insertPayload: any = {
+            ...shipment,
+            organizationId,
+        };
+
+        if (insertPayload.weightLbs !== undefined && insertPayload.weightLbs !== null) {
+            insertPayload.weightLbs = String(insertPayload.weightLbs);
+        }
+        if (insertPayload.dimLengthIn !== undefined && insertPayload.dimLengthIn !== null) {
+            insertPayload.dimLengthIn = String(insertPayload.dimLengthIn);
+        }
+        if (insertPayload.dimWidthIn !== undefined && insertPayload.dimWidthIn !== null) {
+            insertPayload.dimWidthIn = String(insertPayload.dimWidthIn);
+        }
+        if (insertPayload.dimHeightIn !== undefined && insertPayload.dimHeightIn !== null) {
+            insertPayload.dimHeightIn = String(insertPayload.dimHeightIn);
+        }
+
+        const [created] = await this.dbInstance.insert(shipments).values(insertPayload).returning();
         return created;
     }
 
     async updateShipment(id: string, shipmentData: Partial<InsertShipment>): Promise<Shipment> {
+        const setPayload: any = { ...shipmentData, updatedAt: new Date() };
+        if (setPayload.weightLbs !== undefined && setPayload.weightLbs !== null) {
+            setPayload.weightLbs = String(setPayload.weightLbs);
+        }
+        if (setPayload.dimLengthIn !== undefined && setPayload.dimLengthIn !== null) {
+            setPayload.dimLengthIn = String(setPayload.dimLengthIn);
+        }
+        if (setPayload.dimWidthIn !== undefined && setPayload.dimWidthIn !== null) {
+            setPayload.dimWidthIn = String(setPayload.dimWidthIn);
+        }
+        if (setPayload.dimHeightIn !== undefined && setPayload.dimHeightIn !== null) {
+            setPayload.dimHeightIn = String(setPayload.dimHeightIn);
+        }
+
         const [updated] = await this.dbInstance
             .update(shipments)
-            .set({ ...shipmentData, updatedAt: new Date() })
+            .set(setPayload)
             .where(eq(shipments.id, id))
             .returning();
         if (!updated) throw new Error('Shipment not found');
