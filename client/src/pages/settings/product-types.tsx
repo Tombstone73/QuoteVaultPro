@@ -47,7 +47,6 @@ export default function ProductTypesSettings() {
       defaultStationKey: formData.defaultStationKey || null,
       defaultStepKey: formData.defaultStepKey || null,
       sendToProductionDefault: formData.sendToProductionDefault,
-      requiresPrepressOverride: formData.requiresPrepressOverride,
     });
     setIsCreateOpen(false);
     setFormData({ name: "", description: "", sortOrder: 0, defaultStationKey: null, defaultStepKey: null, sendToProductionDefault: false, requiresPrepressOverride: null });
@@ -64,7 +63,6 @@ export default function ProductTypesSettings() {
         defaultStationKey: formData.defaultStationKey || null,
         defaultStepKey: formData.defaultStepKey || null,
         sendToProductionDefault: formData.sendToProductionDefault,
-        requiresPrepressOverride: formData.requiresPrepressOverride,
       },
     });
     setEditingType(null);
