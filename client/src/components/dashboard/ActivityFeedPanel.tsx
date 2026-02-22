@@ -13,28 +13,63 @@ export type ActivityFeedItem = {
 type ActivityFeedPanelProps = {
   items?: ActivityFeedItem[];
   onViewAll?: () => void;
+  collapsed?: boolean;
+  onCollapsedChange?: (collapsed: boolean) => void;
 };
 
-export default function ActivityFeedPanel({ items = [], onViewAll }: ActivityFeedPanelProps) {
+export default function ActivityFeedPanel({
+  items = [],
+  onViewAll,
+  collapsed,
+  onCollapsedChange,
+}: ActivityFeedPanelProps) {
   const storageKey = "titan:dashboard:activityFeedCollapsed";
-  const [collapsed, setCollapsed] = useState(false);
+  const [internalCollapsed, setInternalCollapsed] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem(storageKey) === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  const isCollapsed = collapsed ?? internalCollapsed;
+
+  const setCollapsed = (next: boolean | ((current: boolean) => boolean)) => {
+    const resolved = typeof next === "function" ? next(isCollapsed) : next;
+    if (onCollapsedChange) {
+      onCollapsedChange(resolved);
+      return;
+    }
+    setInternalCollapsed(resolved);
+  };
 
   useEffect(() => {
     try {
-      const raw = window.localStorage.getItem(storageKey);
-      setCollapsed(raw === "true");
+      window.localStorage.setItem(storageKey, isCollapsed ? "true" : "false");
     } catch {
       // noop
     }
-  }, []);
+  }, [isCollapsed]);
 
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(storageKey, collapsed ? "true" : "false");
-    } catch {
-      // noop
-    }
-  }, [collapsed]);
+  if (isCollapsed) {
+    return (
+      <Card className="border-border bg-card h-full">
+        <CardContent className="h-full p-0">
+          <button
+            type="button"
+            className="flex h-full w-full flex-col items-center justify-center gap-2 text-muted-foreground hover:text-foreground"
+            onClick={() => setCollapsed(false)}
+            aria-label="Expand activity feed"
+            title="Expand activity feed"
+          >
+            <ChevronDown className="h-4 w-4" />
+            <span className="text-[10px] font-medium uppercase tracking-widest [writing-mode:vertical-rl] rotate-180">Activity</span>
+          </button>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card className="border-border bg-card h-full">
