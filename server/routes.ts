@@ -53,6 +53,7 @@ import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBoo
 import { resolveMaterialsOverrideModeFromOrgPreferences } from "@shared/materialsOverrideMode";
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2OverrideConfig";
 import { createLineItemFileRecord } from "./services/lineItemFileRecordService";
+import { getDashboardSummary } from "./services/dashboardSummaryService";
 import { resolveVisibleNodes } from "@shared/optionTreeV2Runtime";
 import { computePlannedMaterialsForLineItem } from "./services/prepressPlannedMaterials";
 import {
@@ -574,6 +575,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Bug report routes (submit + admin list/view)
   registerBugReportRoutes(app, { isAuthenticated, tenantContext });
+
+  // Dashboard summary (KPI cards only, org-scoped)
+  app.get('/api/dashboard/summary', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(500).json({ success: false, message: 'Missing organization context' });
+      }
+
+      const data = await getDashboardSummary(organizationId);
+      return res.json({ success: true, data, message: 'Dashboard summary fetched' });
+    } catch (error) {
+      console.error('[DashboardSummary:GET] failed:', error);
+      return res.status(500).json({ success: false, message: 'Failed to fetch dashboard summary' });
+    }
+  });
 
   // Dev-only debug: verify status pills exist per org/state
   if (nodeEnv === 'development') {
