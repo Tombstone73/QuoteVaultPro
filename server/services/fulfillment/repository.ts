@@ -158,6 +158,14 @@ export class ShipmentRepo {
 
   async markShipped(orgId: string, shipmentId: string, actorUserId?: string | null) {
     return this.dbInstance.transaction(async (tx) => {
+      await tx.execute(sql`
+        SELECT ${shipments.id}
+        FROM ${shipments}
+        WHERE ${shipments.id} = ${shipmentId}
+          AND ${shipments.organizationId} = ${orgId}
+        FOR UPDATE
+      `);
+
       const [shipment] = await tx
         .select()
         .from(shipments)
@@ -630,9 +638,9 @@ export class FulfillmentDashboardRepo {
   constructor(private readonly dbInstance: DbExecutor = db) {}
 
   private deriveShipStatus(ordered: number, shipped: number): DerivedOrderFulfillmentStatus {
-    if (ordered <= 0 || shipped <= 0) return 'NOT_FULFILLED';
-    if (shipped >= ordered) return 'FULFILLED';
-    return 'PARTIALLY_FULFILLED';
+    if (shipped <= 0) return 'READY';
+    if (shipped >= ordered) return 'SHIPPED';
+    return 'PARTIAL';
   }
 
   async listFulfillmentQueue(orgId: string, filters: {
@@ -755,9 +763,9 @@ export class FulfillmentDashboardRepo {
         ? (nowMs - readySinceMs) > (SHIP_READY_OVERDUE_HOURS * 60 * 60 * 1000)
         : false;
 
-      const shipStatusForFilter = shipStatus === 'FULFILLED'
+      const shipStatusForFilter = shipStatus === 'SHIPPED'
         ? 'shipped'
-        : shipStatus === 'PARTIALLY_FULFILLED'
+        : shipStatus === 'PARTIAL'
           ? 'ready'
           : 'draft';
 
