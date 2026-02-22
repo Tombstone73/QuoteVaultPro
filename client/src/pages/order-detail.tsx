@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -34,7 +34,7 @@ import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
-import { useOrder, useDeleteOrder, useUpdateOrder, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, areLineItemsEditable, isOrderEditable } from "@/hooks/useOrders";
+import { useOrder, useDeleteOrder, useUpdateOrder, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, areLineItemsEditable, isOrderEditable, useOrderWorkflow } from "@/hooks/useOrders";
 import { useCreateOrderInvoice, useInvoices } from "@/hooks/useInvoices";
 import { OrderAttachmentsPanel } from "@/components/OrderAttachmentsPanel";
 import { useQuery } from "@tanstack/react-query";
@@ -233,6 +233,7 @@ export default function OrderDetail() {
   const deleteOrder = useDeleteOrder();
   const updateOrder = useUpdateOrder(orderId!);
   const transitionStatus = useTransitionOrderStatus(orderId!);
+  const workflowQuery = useOrderWorkflow();
   const bulkUpdateLineItemStatus = useBulkUpdateOrderLineItemStatus(orderId!);
 
   // Fulfillment hooks
@@ -358,7 +359,28 @@ export default function OrderDetail() {
   // Check editability based on order status
   const canEditLineItems = order ? areLineItemsEditable(order.status) : false;
   const baseCanEditOrder = order ? isOrderEditable(order.status) : false;
-  const allowedNextStatuses = order ? getAllowedNextStatuses(order.status) : [];
+  const allowedNextStatuses = useMemo(() => {
+    if (!order) return [] as string[];
+
+    const statuses = workflowQuery.data?.statuses ?? [];
+    if (statuses.length === 0) {
+      return getAllowedNextStatuses(order.status);
+    }
+
+    const current = statuses.find((s) => s.id === order.workflowStatusId) ?? statuses.find((s) => s.key === order.status);
+    const activeStatuses = statuses.filter((s) => s.isActive);
+
+    const transitions = workflowQuery.data?.transitions ?? [];
+    if (current && transitions.length > 0) {
+      const toIds = transitions.filter((t) => t.fromStatusId === current.id).map((t) => t.toStatusId);
+      const keys = activeStatuses.filter((s) => toIds.includes(s.id)).map((s) => s.key);
+      return Array.from(new Set(keys));
+    }
+
+    return activeStatuses
+      .filter((s) => s.key !== order.status)
+      .map((s) => s.key);
+  }, [order, workflowQuery.data]);
   const isTerminal = allowedNextStatuses.length === 0;
   
   // Admin/Owner override: allow editing terminal orders if setting enabled
