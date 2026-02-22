@@ -3005,6 +3005,37 @@ export async function registerOrderRoutes(
             const created = await storage.createMaterial(organizationId, materialData);
             res.json({ success: true, data: created, created: true, duplicate: false });
         } catch (err) {
+            if ((err as any)?.code === '23505') {
+                try {
+                    const organizationId = getRequestOrganizationId(req);
+                    if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+                    const parsed = insertMaterialSchema.parse(req.body);
+                    const normalizedName = String(parsed.name || '').trim().toLowerCase();
+                    if (normalizedName) {
+                        const [existing] = await db
+                            .select()
+                            .from(materials)
+                            .where(
+                                and(
+                                    eq(materials.organizationId, organizationId),
+                                    sql`lower(trim(${materials.name})) = ${normalizedName}`
+                                )
+                            )
+                            .limit(1);
+
+                        if (existing) {
+                            return res.json({
+                                success: true,
+                                data: existing,
+                                created: false,
+                                duplicate: true,
+                            });
+                        }
+                    }
+                } catch {
+                    // fallthrough to generic handling
+                }
+            }
             if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
             res.status(500).json({ error: 'Failed to create material' });
         }
@@ -3017,9 +3048,40 @@ export async function registerOrderRoutes(
             const parsed = updateMaterialSchema.parse(req.body);
             const { organizationId: _orgId, ...materialData } =
                 parsed as typeof parsed & { organizationId?: string };
+
+            if (typeof (materialData as any).name === 'string') {
+                const normalizedName = String((materialData as any).name || '').trim().toLowerCase();
+                if (normalizedName) {
+                    const [existing] = await db
+                        .select({ id: materials.id, name: materials.name })
+                        .from(materials)
+                        .where(
+                            and(
+                                eq(materials.organizationId, organizationId),
+                                sql`lower(trim(${materials.name})) = ${normalizedName}`,
+                                sql`${materials.id} <> ${req.params.id}`
+                            )
+                        )
+                        .limit(1);
+                    if (existing) {
+                        return res.status(409).json({
+                            error: 'Material name already exists in this organization',
+                            duplicate: true,
+                            data: existing,
+                        });
+                    }
+                }
+            }
+
             const updated = await storage.updateMaterial(organizationId, req.params.id, materialData);
             res.json({ success: true, data: updated });
         } catch (err) {
+            if ((err as any)?.code === '23505') {
+                return res.status(409).json({
+                    error: 'Material name already exists in this organization',
+                    duplicate: true,
+                });
+            }
             if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
             res.status(500).json({ error: 'Failed to update material' });
         }

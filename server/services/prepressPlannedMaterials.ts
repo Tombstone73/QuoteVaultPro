@@ -18,6 +18,7 @@ export type PlannedMaterial = {
   uom: "sqft" | "ft" | "each";
   basis: string;
   sources: Array<{ optionLabel: string; choiceLabel: string }>;
+  uomMismatch?: { materialUom: string; impliedUom: string };
 };
 
 export type PlannedMaterialsResult = {
