@@ -8,7 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { ArrowLeft, Plus, Search, Calendar, DollarSign, Package, Check, X, Eye, ChevronUp, ChevronDown, Copy, Edit, Printer, Loader2, FileText, Download } from "lucide-react";
+import { Plus, Search, Calendar, DollarSign, Package, Check, X, Eye, ChevronUp, ChevronDown, Copy, Edit, Printer, Loader2, FileText, Download } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrders, type OrderRow, type OrdersListResponse, orderDetailQueryKey, orderTimelineQueryKey } from "@/hooks/useOrders";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -28,6 +28,7 @@ import { useAssignOrderStatusPill, useOrderStatusPills } from "@/hooks/useOrderS
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
+import BackNavControls from "@/components/BackNavControls";
 
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "paymentStatus";
 
@@ -796,9 +797,7 @@ export default function Orders() {
         subtitle="Manage production orders and track fulfillment"
         className="pb-3"
         backButton={
-          <Button variant="ghost" size="sm" onClick={onSmartBack}>
-            <ArrowLeft className="w-5 h-5" />
-          </Button>
+          <BackNavControls onBack={onSmartBack} />
         }
         actions={
           <Link to={ROUTES.orders.new}>

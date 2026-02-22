@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Edit, Package, FileText } from "lucide-react";
+import { Edit, Package, FileText } from "lucide-react";
 import { format } from "date-fns";
 import { QuoteSourceBadge } from "@/components/quote-source-badge";
 import { useAuth } from "@/hooks/useAuth";
@@ -20,6 +20,7 @@ import { QuoteWorkflowBadge } from "@/components/QuoteWorkflowBadge";
 import { QuoteWorkflowActions } from "@/components/QuoteWorkflowActions";
 import { useQuoteWorkflowState } from "@/hooks/useQuoteWorkflowState";
 import { buildReferrer } from "@/lib/nav/smartBack";
+import BackNavControls from "@/components/BackNavControls";
 import type { QuoteWithRelations } from "@shared/schema";
 
 type QuoteDetailRouteParams = {
@@ -173,15 +174,7 @@ export default function QuoteDetail() {
         subtitle={`Created ${format(new Date(quote.createdAt), 'MMMM d, yyyy')}`}
         className="pb-3"
         backButton={
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={handleBack}
-            className="text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
-          >
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back
-          </Button>
+          <BackNavControls onBack={handleBack} />
         }
         actions={
           <div className="flex items-center gap-2">

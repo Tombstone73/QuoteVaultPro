@@ -42,7 +42,6 @@ import {
   Edit,
   Package,
   Eye,
-  ArrowLeft,
   ChevronUp,
   ChevronDown,
   Check,
@@ -76,6 +75,7 @@ import type { QuoteWithRelations, Product } from "@shared/schema";
 import type { Organization } from "@shared/schema";
 import type { QuoteWorkflowState } from "@shared/quoteWorkflow";
 import { useSmartBack } from "@/hooks/useSmartBack";
+import BackNavControls from "@/components/BackNavControls";
 
 type SortKey = "date" | "quoteNumber" | "customer" | "total" | "items" | "source" | "createdBy" | "listLabel" | "jobLabel";
 
@@ -1142,10 +1142,7 @@ export default function InternalQuotes() {
           subtitle="Manage internal quotes and convert them to orders"
           className="pb-3"
           backButton={
-            <Button variant="ghost" size="sm" onClick={onSmartBack}>
-              <ArrowLeft className="mr-2 h-4 w-4" />
-              Back
-            </Button>
+            <BackNavControls onBack={onSmartBack} />
           }
           actions={<NewQuoteButton />}
         />
@@ -1172,10 +1169,7 @@ export default function InternalQuotes() {
           subtitle="Loading internal quotes..."
           className="pb-3"
           backButton={
-            <Button variant="ghost" size="sm" onClick={onSmartBack}>
-              <ArrowLeft className="mr-2 h-4 w-4" />
-              Back
-            </Button>
+            <BackNavControls onBack={onSmartBack} />
           }
           actions={<NewQuoteButton />}
         />
@@ -1211,10 +1205,7 @@ export default function InternalQuotes() {
         subtitle="Manage internal quotes and convert them to orders"
         className="pb-3"
         backButton={
-          <Button variant="ghost" size="sm" onClick={onSmartBack}>
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Back
-          </Button>
+          <BackNavControls onBack={onSmartBack} />
         }
         actions={
           <NewQuoteButton />
