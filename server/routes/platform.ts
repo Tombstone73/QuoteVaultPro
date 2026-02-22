@@ -114,7 +114,7 @@ const orgCreateRateLimit = rateLimit({
   max: 5,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => {
+  keyGenerator: (req: Request) => {
     // Combine IPv6-safe IP + userId for per-user limiting where possible.
     // ipKeyGenerator normalises IPv6 addresses to avoid ERR_ERL_KEY_GEN_IPV6.
     const ipKey = ipKeyGenerator(req.ip ?? "unknown");
