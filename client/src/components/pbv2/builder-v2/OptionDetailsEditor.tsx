@@ -16,6 +16,23 @@ import { CreateMaterialDialog } from '@/features/materials/CreateMaterialDialog'
 import { useMaterial, useMaterialsSearch, type MaterialSearchItem } from '@/hooks/useMaterials';
 import { useAuth } from '@/hooks/useAuth';
 
+type QuantityBasis = 'area_sqft' | 'perimeter_ft' | 'linear_ft' | 'each' | 'fixed';
+
+function impliedUomForBasis(basis: QuantityBasis): 'sqft' | 'ft' | 'each' {
+  if (basis === 'area_sqft') return 'sqft';
+  if (basis === 'perimeter_ft' || basis === 'linear_ft') return 'ft';
+  return 'each';
+}
+
+function normalizeMaterialUom(value: string | null | undefined): 'sqft' | 'ft' | 'each' | null {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return null;
+  if (raw === 'sqft' || raw === 'sf' || raw === 'square_foot' || raw === 'square_feet') return 'sqft';
+  if (raw === 'ft' || raw === 'foot' || raw === 'feet' || raw === 'linear_ft') return 'ft';
+  if (raw === 'each' || raw === 'ea' || raw === 'sheet' || raw === 'roll') return 'each';
+  return null;
+}
+
 interface OptionDetailsEditorProps {
   option: EditorOption;
   treeJson: any;
@@ -570,6 +587,7 @@ export function OptionDetailsEditor({
                                             <MaterialIdSearchField
                                               value={entry?.materialId ?? ""}
                                               onChange={(nextMaterialId) => updateEntry({ materialId: nextMaterialId })}
+                                              quantityBasis={basis as QuantityBasis}
                                               onRequestAddMaterial={() => {
                                                 if (!canCreateMaterials) return;
                                                 setAddMaterialTarget({ choiceIdx: index, entryIdx });
@@ -956,12 +974,14 @@ export function OptionDetailsEditor({
 function MaterialIdSearchField({
   value,
   onChange,
+  quantityBasis,
   onRequestAddMaterial,
   createdMaterialOverride,
   canCreateMaterials,
 }: {
   value: string;
   onChange: (materialId: string) => void;
+  quantityBasis: QuantityBasis;
   onRequestAddMaterial: () => void;
   createdMaterialOverride?: MaterialSearchItem | null;
   canCreateMaterials: boolean;
@@ -995,6 +1015,10 @@ function MaterialIdSearchField({
     : null);
 
   const isMissingMaterial = !!value && !selectedMaterial && !materialByIdQuery.isLoading;
+
+  const impliedUom = impliedUomForBasis(quantityBasis);
+  const selectedMaterialUom = normalizeMaterialUom(selectedMaterial?.unitOfMeasure);
+  const hasUomMismatch = !!selectedMaterial && !!selectedMaterialUom && selectedMaterialUom !== impliedUom;
 
   return (
     <div className="space-y-1">
@@ -1085,6 +1109,13 @@ function MaterialIdSearchField({
         <div className="text-[10px] text-amber-300 flex items-center gap-1">
           <AlertCircle className="h-3 w-3" />
           Missing material. Saved ID retained: {value}
+        </div>
+      ) : null}
+
+      {hasUomMismatch ? (
+        <div className="text-[10px] text-amber-300 flex items-center gap-1">
+          <AlertCircle className="h-3 w-3" />
+          Warning: Material unit is &lt;{selectedMaterialUom}&gt; but this rule consumes &lt;{impliedUom}&gt;. Check configuration.
         </div>
       ) : null}
     </div>

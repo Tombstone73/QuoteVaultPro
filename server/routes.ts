@@ -12114,16 +12114,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
     };
   };
 
-  const resolveMaterialNamesForOrg = async (organizationId: string, materialIds: string[]) => {
+  const resolveMaterialMetaForOrg = async (organizationId: string, materialIds: string[]) => {
     const uniqueIds = Array.from(new Set(materialIds.filter((id) => typeof id === "string" && id.length > 0)));
-    if (uniqueIds.length === 0) return new Map<string, string>();
+    if (uniqueIds.length === 0) return new Map<string, { name: string; unitOfMeasure: string | null }>();
 
     const rows = await db
-      .select({ id: materials.id, name: materials.name })
+      .select({ id: materials.id, name: materials.name, unitOfMeasure: materials.unitOfMeasure })
       .from(materials)
       .where(and(eq(materials.organizationId, organizationId), inArray(materials.id, uniqueIds)));
 
-    return new Map<string, string>(rows.map((row) => [row.id, row.name]));
+    return new Map<string, { name: string; unitOfMeasure: string | null }>(
+      rows.map((row) => [row.id, { name: row.name, unitOfMeasure: row.unitOfMeasure ?? null }])
+    );
+  };
+
+  const normalizeMaterialUomForPlanning = (value: unknown): "sqft" | "ft" | "each" | null => {
+    const raw = String(value ?? "").trim().toLowerCase();
+    if (!raw) return null;
+    if (raw === "sqft" || raw === "sf" || raw === "square_foot" || raw === "square_feet") return "sqft";
+    if (raw === "ft" || raw === "foot" || raw === "feet" || raw === "linear_ft") return "ft";
+    if (raw === "ea" || raw === "each" || raw === "sheet" || raw === "roll") return "each";
+    return null;
   };
 
   const buildPrepressMaterialsEffectivePayload = async (args: {
@@ -12144,19 +12155,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
       overrides,
     });
 
-    const materialNameById = await resolveMaterialNamesForOrg(args.organizationId, [
+    const materialMetaById = await resolveMaterialMetaForOrg(args.organizationId, [
       ...plannedResult.materials.map((m) => m.materialId),
       ...effectiveResult.effectiveMaterials.map((m) => m.materialId),
     ]);
 
-    const plannedMaterials = plannedResult.materials.map((m) => ({
-      ...m,
-      materialName: materialNameById.get(m.materialId),
-    }));
+    const plannedMaterials = plannedResult.materials.map((m) => {
+      const meta = materialMetaById.get(m.materialId);
+      const normalizedMaterialUom = normalizeMaterialUomForPlanning(meta?.unitOfMeasure);
+      const hasUomMismatch = !!normalizedMaterialUom && normalizedMaterialUom !== m.uom;
+
+      return {
+        ...m,
+        materialName: meta?.name,
+        ...(hasUomMismatch
+          ? {
+              uomMismatch: {
+                materialUom: normalizedMaterialUom,
+                impliedUom: m.uom,
+              },
+            }
+          : {}),
+      };
+    });
 
     const effectiveMaterials = effectiveResult.effectiveMaterials.map((m) => ({
       ...m,
-      materialName: materialNameById.get(m.materialId),
+      materialName: materialMetaById.get(m.materialId)?.name,
     }));
     const effectiveFingerprint = buildEffectiveMaterialsFingerprint(effectiveMaterials);
 
