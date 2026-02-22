@@ -323,6 +323,13 @@
       "when": 1771632000000,
       "tag": "0053_materials_name_uniqueness",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1771718400000,
+      "tag": "0054_order_workflow_status_system",
+      "breakpoints": true
     }
   ]
 }
