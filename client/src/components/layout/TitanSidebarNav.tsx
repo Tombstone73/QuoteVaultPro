@@ -36,6 +36,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ROUTES } from "@/config/routes";
+import { buildReferrer } from "@/lib/nav/smartBack";
 
 // ============================================================
 // NAV CONFIG - AUTHORITATIVE TITANOS NAVIGATION
@@ -252,7 +253,11 @@ function NavItem({ item, isCollapsed, badgeCount }: NavItemProps) {
   return (
     <button
       type="button"
-      onClick={() => guardedNavigate(item.path)}
+      onClick={() =>
+        guardedNavigate(item.path, {
+          state: { referrer: buildReferrer(location) },
+        })
+      }
       title={isCollapsed ? item.name : undefined}
       className={cn(
         "w-full flex items-center gap-3 rounded-titan-md px-3 py-1.5 text-sm font-medium transition-colors",
