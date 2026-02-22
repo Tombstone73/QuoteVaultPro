@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, lt, not, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lt, not, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import { invoices, materials, orders, payments, productionJobs, quotes } from "@shared/schema";
 
@@ -197,21 +197,45 @@ export async function getDashboardSummary(organizationId: string): Promise<Dashb
       db
         .select({ count: sql<number>`count(*)::int` })
         .from(orders)
-        .where(and(eq(orders.organizationId, organizationId), eq(orders.status, "new"))),
+        .where(
+          and(
+            eq(orders.organizationId, organizationId),
+            or(
+              eq(orders.canonicalState, "new"),
+              and(isNull(orders.canonicalState), eq(orders.status, "new")),
+            ),
+          ),
+        ),
     );
 
     summary.ordersPipeline.inProduction = await countFrom(
       db
         .select({ count: sql<number>`count(*)::int` })
         .from(orders)
-        .where(and(eq(orders.organizationId, organizationId), eq(orders.status, "in_production"))),
+        .where(
+          and(
+            eq(orders.organizationId, organizationId),
+            or(
+              eq(orders.canonicalState, "active"),
+              and(isNull(orders.canonicalState), eq(orders.status, "in_production")),
+            ),
+          ),
+        ),
     );
 
     summary.ordersPipeline.onHold = await countFrom(
       db
         .select({ count: sql<number>`count(*)::int` })
         .from(orders)
-        .where(and(eq(orders.organizationId, organizationId), eq(orders.status, "on_hold"))),
+        .where(
+          and(
+            eq(orders.organizationId, organizationId),
+            or(
+              eq(orders.canonicalState, "on_hold"),
+              and(isNull(orders.canonicalState), eq(orders.status, "on_hold")),
+            ),
+          ),
+        ),
     );
 
     summary.ordersPipeline.scheduled = null;
@@ -253,7 +277,15 @@ export async function getDashboardSummary(organizationId: string): Promise<Dashb
       db
         .select({ count: sql<number>`count(*)::int` })
         .from(orders)
-        .where(and(eq(orders.organizationId, organizationId), eq(orders.status, "ready_for_shipment"))),
+        .where(
+          and(
+            eq(orders.organizationId, organizationId),
+            or(
+              eq(orders.canonicalState, "ready"),
+              and(isNull(orders.canonicalState), eq(orders.status, "ready_for_shipment")),
+            ),
+          ),
+        ),
     );
 
     summary.fulfillmentFinance.shippedToday = await countFrom(
