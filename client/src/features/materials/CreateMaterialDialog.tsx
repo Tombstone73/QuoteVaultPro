@@ -50,18 +50,36 @@ type CreateMaterialValues = z.infer<typeof createMaterialSchema>;
 type CreatedMaterial = {
   id: string;
   name: string;
+  unitOfMeasure?: string;
 };
 
 export function CreateMaterialDialog({
   onCreated,
   triggerClassName,
+  open,
+  onOpenChange,
+  hideTrigger,
 }: {
   onCreated: (material: CreatedMaterial) => void;
   triggerClassName?: string;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  hideTrigger?: boolean;
 }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [open, setOpen] = React.useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = React.useState(false);
+  const isControlled = typeof open === "boolean";
+  const dialogOpen = isControlled ? !!open : uncontrolledOpen;
+  const setDialogOpen = React.useCallback(
+    (nextOpen: boolean) => {
+      if (!isControlled) {
+        setUncontrolledOpen(nextOpen);
+      }
+      onOpenChange?.(nextOpen);
+    },
+    [isControlled, onOpenChange]
+  );
 
   const form = useForm<CreateMaterialValues>({
     resolver: zodResolver(createMaterialSchema),
@@ -100,9 +118,9 @@ export function CreateMaterialDialog({
     },
     onSuccess: async (created) => {
       await queryClient.invalidateQueries({ queryKey: ["/api/materials"] });
-      onCreated({ id: created.id, name: created.name });
+      onCreated({ id: created.id, name: created.name, unitOfMeasure: created.unitOfMeasure });
       toast({ title: "Material created", description: created.name });
-      setOpen(false);
+      setDialogOpen(false);
       form.reset({
         name: "",
         sku: "",
@@ -124,12 +142,14 @@ export function CreateMaterialDialog({
   });
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button type="button" variant="link" size="sm" className={triggerClassName}>
-          Add material
-        </Button>
-      </DialogTrigger>
+    <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      {!hideTrigger ? (
+        <DialogTrigger asChild>
+          <Button type="button" variant="link" size="sm" className={triggerClassName}>
+            Add material
+          </Button>
+        </DialogTrigger>
+      ) : null}
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>Create Material</DialogTitle>
