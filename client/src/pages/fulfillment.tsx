@@ -1,0 +1,440 @@
+import { useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import {
+  AlertTriangle,
+  Bell,
+  Box,
+  Check,
+  Factory,
+  Filter,
+  Loader2,
+  Search,
+  Settings,
+  Truck,
+} from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { FulfillmentDebugPanel } from "@/components/fulfillment/FulfillmentDebugPanel";
+import {
+  FulfillmentQueueRow,
+  getOrderShipments,
+  toFulfillmentError,
+  useCreatePickupTicketMutation,
+  useCreateShipmentMutation,
+  useFulfillmentQueueQuery,
+} from "@/hooks/useFulfillment";
+import { formatDistanceToNowStrict } from "date-fns";
+
+const statusOptions = [
+  { value: "all", label: "All" },
+  { value: "draft", label: "Draft" },
+  { value: "ready", label: "Ready" },
+  { value: "shipped", label: "Shipped" },
+  { value: "ready_for_pickup", label: "Ready for Pickup" },
+  { value: "picked_up", label: "Picked Up" },
+];
+
+function parseItemsRemaining(value: string): number {
+  const match = value.match(/\d+/);
+  return match ? Number(match[0]) : 0;
+}
+
+function statusBadgeClass(status: string): string {
+  const normalized = status.toUpperCase();
+  if (normalized === "READY") return "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400";
+  if (normalized === "SHIPPED") return "bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400";
+  if (normalized === "PARTIAL") return "bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400";
+  if (normalized === "READY_FOR_PICKUP") return "bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400";
+  if (normalized === "PICKED_UP") return "bg-slate-100 dark:bg-slate-800/50 text-slate-400";
+  return "bg-slate-100 dark:bg-slate-800 text-slate-500";
+}
+
+export default function FulfillmentPage() {
+  const { toast } = useToast();
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const [type, setType] = useState<"all" | "ship" | "pickup">("all");
+  const [status, setStatus] = useState("all");
+  const [overdueOnly, setOverdueOnly] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  const [search, setSearch] = useState("");
+  const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
+  const [busyOrderId, setBusyOrderId] = useState<string | null>(null);
+  const [lastResponse, setLastResponse] = useState<unknown>(null);
+  const [lastError, setLastError] = useState<{ code?: string; message?: string } | null>(null);
+
+  const debugEnabled = useMemo(() => new URLSearchParams(location.search).get("debug") === "1", [location.search]);
+  const pickupTicketId = useMemo(() => new URLSearchParams(location.search).get("pickupTicketId"), [location.search]);
+
+  const queueQuery = useFulfillmentQueueQuery({
+    type,
+    status,
+    overdueOnly,
+    showArchived,
+    search,
+  });
+
+  const createShipment = useCreateShipmentMutation();
+  const createPickupTicket = useCreatePickupTicketMutation();
+
+  const rows = queueQuery.data?.rows ?? [];
+  const selectedRows = rows.filter((row) => selectedOrderIds.has(row.orderId));
+
+  const disableCombinedReason = useMemo(() => {
+    if (selectedRows.length === 0) return "Select at least one order";
+    const hasPickup = selectedRows.some((row) => row.fulfillmentType === "PICKUP");
+    if (hasPickup) return "Combined shipment supports shipping orders only";
+    const uniqueTypes = new Set(selectedRows.map((row) => row.fulfillmentType));
+    if (uniqueTypes.size > 1) return "Selected orders include mixed fulfillment types";
+
+    const uniqueAddresses = new Set(selectedRows.map((row) => row.shipTo.trim().toLowerCase()));
+    if (uniqueAddresses.size > 1) return "Selected orders have different delivery addresses";
+
+    const hasRemaining = selectedRows.some((row) => parseItemsRemaining(row.itemsRemaining) > 0);
+    if (!hasRemaining) return "No shippable items remaining";
+
+    return null;
+  }, [selectedRows]);
+
+  const handleToggleRow = (orderId: string, checked: boolean) => {
+    setSelectedOrderIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(orderId);
+      else next.delete(orderId);
+      return next;
+    });
+  };
+
+  const handleOpenShipOrder = async (row: FulfillmentQueueRow) => {
+    try {
+      setBusyOrderId(row.orderId);
+      setLastError(null);
+
+      const existing = await getOrderShipments(row.orderId);
+      setLastResponse(existing);
+
+      const draft = existing
+        .filter((s) => String(s.status || "").toUpperCase() === "DRAFT")
+        .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))[0];
+
+      if (draft?.id) {
+        navigate(`/fulfillment/shipments/${draft.id}${debugEnabled ? "?debug=1" : ""}`);
+        return;
+      }
+
+      const created = await createShipment.mutateAsync({
+        scope: "SINGLE_ORDER",
+        orderIds: [row.orderId],
+        primaryOrderId: row.orderId,
+      });
+      setLastResponse(created);
+
+      navigate(`/fulfillment/shipments/${created.shipmentId}${debugEnabled ? "?debug=1" : ""}`);
+    } catch (error) {
+      const parsed = toFulfillmentError(error);
+      setLastError({ code: parsed.code, message: parsed.message });
+      toast({ title: "Open failed", description: parsed.message, variant: "destructive" });
+    } finally {
+      setBusyOrderId(null);
+    }
+  };
+
+  const handleOpenPickupOrder = async (row: FulfillmentQueueRow) => {
+    try {
+      setBusyOrderId(row.orderId);
+      setLastError(null);
+      const ticket = await createPickupTicket.mutateAsync(row.orderId);
+      setLastResponse(ticket);
+      toast({ title: "Pickup ticket ready", description: `Ticket ${ticket.id}` });
+      navigate(`/fulfillment?pickupTicketId=${ticket.id}${debugEnabled ? "&debug=1" : ""}`, {
+        state: { pickupTicket: ticket },
+      });
+    } catch (error) {
+      const parsed = toFulfillmentError(error);
+      setLastError({ code: parsed.code, message: parsed.message });
+      toast({ title: "Pickup failed", description: parsed.message, variant: "destructive" });
+    } finally {
+      setBusyOrderId(null);
+    }
+  };
+
+  const handleOpen = async (row: FulfillmentQueueRow) => {
+    if (row.fulfillmentType === "SHIP") {
+      await handleOpenShipOrder(row);
+      return;
+    }
+    await handleOpenPickupOrder(row);
+  };
+
+  const handleCreateCombined = async () => {
+    if (disableCombinedReason) return;
+    try {
+      setLastError(null);
+      const selectedShipOrderIds = selectedRows.map((row) => row.orderId);
+      const response = await createShipment.mutateAsync({
+        scope: "MULTI_ORDER",
+        orderIds: selectedShipOrderIds,
+      });
+      setLastResponse(response);
+      navigate(`/fulfillment/shipments/${response.shipmentId}${debugEnabled ? "?debug=1" : ""}`);
+    } catch (error) {
+      const parsed = toFulfillmentError(error);
+      setLastError({ code: parsed.code, message: parsed.message });
+      toast({ title: "Combined shipment failed", description: parsed.message, variant: "destructive" });
+    }
+  };
+
+  return (
+    <div className="min-h-full bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100">
+      <header className="sticky top-0 z-30 border-b border-slate-200 bg-background-light dark:border-slate-800 dark:bg-background-dark">
+        <div className="flex items-center justify-between gap-4 px-6 py-3">
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-2 text-primary">
+              <Truck className="h-6 w-6" />
+              <h2 className="text-lg font-medium">Fulfillment</h2>
+            </div>
+          </div>
+          <div className="max-w-xl flex-1">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input
+                className="w-full rounded-lg border border-slate-200 bg-slate-100 py-2 pl-10 pr-4 text-sm focus:border-primary focus:ring-primary dark:border-slate-800 dark:bg-slate-900/50"
+                placeholder="Search orders, customers, or tracking numbers..."
+                type="text"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <button className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800" type="button">
+              <Bell className="h-4 w-4" />
+            </button>
+            <button className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800" type="button">
+              <Settings className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-6 py-2 dark:border-slate-800 dark:bg-slate-900/30">
+          <div className="flex items-center gap-2 overflow-x-auto">
+            <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-1 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <span className="px-2 text-[10px] font-bold uppercase text-slate-400">Type</span>
+              {([
+                ["all", "All"],
+                ["ship", "Ship"],
+                ["pickup", "Pickup"],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setType(value)}
+                  className={`rounded px-3 py-1 text-xs font-medium ${type === value ? "bg-primary text-white" : "hover:bg-slate-100 dark:hover:bg-slate-800"}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-1 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <span className="px-2 text-[10px] font-bold uppercase text-slate-400">Status</span>
+              {statusOptions.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => setStatus(option.value)}
+                  className={`rounded px-3 py-1 text-xs font-medium ${status === option.value ? "bg-primary text-white" : "hover:bg-slate-100 dark:hover:bg-slate-800"}`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-6">
+            <label className="group flex cursor-pointer items-center gap-2">
+              <input
+                type="checkbox"
+                checked={showArchived}
+                onChange={(event) => setShowArchived(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-primary focus:ring-primary"
+              />
+              <span className="text-xs font-medium text-slate-600 group-hover:text-slate-900 dark:text-slate-400 dark:group-hover:text-slate-100">Show Archived</span>
+            </label>
+            <label className="group flex cursor-pointer items-center gap-2">
+              <input
+                type="checkbox"
+                checked={overdueOnly}
+                onChange={(event) => setOverdueOnly(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-primary focus:ring-primary"
+              />
+              <span className="text-xs font-medium text-slate-600 group-hover:text-slate-900 dark:text-slate-400 dark:group-hover:text-slate-100">Overdue Only</span>
+            </label>
+            <button className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium transition-colors hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800" type="button">
+              <Filter className="h-3.5 w-3.5" />
+              More Filters
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="flex-1 overflow-auto p-6 pb-24">
+        {pickupTicketId && (
+          <div className="mb-4 rounded-xl border border-primary/30 bg-primary/10 p-3 text-sm">
+            <p className="font-semibold">Pickup ticket selected</p>
+            <p className="text-xs text-slate-500">Ticket ID: {pickupTicketId}</p>
+          </div>
+        )}
+
+        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900/40">
+          <table className="w-full border-collapse text-left">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900">
+                <th className="w-10 px-4 py-4">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-slate-300 bg-transparent text-primary focus:ring-primary"
+                    checked={rows.length > 0 && selectedOrderIds.size === rows.length}
+                    onChange={(event) => {
+                      if (event.target.checked) {
+                        setSelectedOrderIds(new Set(rows.map((row) => row.orderId)));
+                      } else {
+                        setSelectedOrderIds(new Set());
+                      }
+                    }}
+                  />
+                </th>
+                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Order #</th>
+                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Customer</th>
+                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Fulfillment</th>
+                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Status</th>
+                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Items Remaining</th>
+                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Ready Since</th>
+                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Ship To</th>
+                <th className="px-4 py-4 text-right text-xs font-bold uppercase tracking-wider text-slate-500">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+              {queueQuery.isLoading && (
+                <tr>
+                  <td colSpan={9} className="px-4 py-12 text-center text-sm text-muted-foreground">
+                    <div className="inline-flex items-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Loading queue...
+                    </div>
+                  </td>
+                </tr>
+              )}
+
+              {!queueQuery.isLoading && rows.length === 0 && (
+                <tr>
+                  <td colSpan={9} className="px-4 py-12 text-center">
+                    <div className="mx-auto mb-4 w-fit rounded-full bg-slate-100 p-4 dark:bg-slate-800/50">
+                      <Box className="h-8 w-8 text-slate-400" />
+                    </div>
+                    <h3 className="mb-1 text-lg font-bold">No orders ready for fulfillment</h3>
+                    <p className="text-sm text-slate-500">Try adjusting your filters to find what you're looking for.</p>
+                  </td>
+                </tr>
+              )}
+
+              {rows.map((row) => {
+                const isSelected = selectedOrderIds.has(row.orderId);
+                const readySince = row.readySince ? `${formatDistanceToNowStrict(new Date(row.readySince), { addSuffix: true })}` : "--";
+
+                return (
+                  <tr key={row.orderId} className={`transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50 ${isSelected ? "bg-primary/10" : ""}`}>
+                    <td className="px-4 py-4">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-slate-300 bg-transparent text-primary focus:ring-primary"
+                        checked={isSelected}
+                        onChange={(event) => handleToggleRow(row.orderId, event.target.checked)}
+                      />
+                    </td>
+                    <td className="px-4 py-4">
+                      <div className="flex flex-col">
+                        <span className="text-sm font-bold">#{row.orderNumber}</span>
+                        {row.overdue && (
+                          <span className="flex items-center gap-0.5 text-[10px] font-bold text-red-500">
+                            <AlertTriangle className="h-3 w-3" /> OVERDUE
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 text-sm font-medium">{row.customerName}</td>
+                    <td className="px-4 py-4">
+                      <span className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-bold ${row.fulfillmentType === "SHIP" ? "border border-primary/20 bg-primary/10 text-primary" : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"}`}>
+                        {row.fulfillmentType === "SHIP" ? <Truck className="h-3.5 w-3.5" /> : <Factory className="h-3.5 w-3.5" />}
+                        {row.fulfillmentType}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4">
+                      <span className={`inline-flex items-center rounded px-2 py-1 text-[11px] font-bold ${statusBadgeClass(row.status)}`}>
+                        {row.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4 text-sm font-medium">{row.itemsRemaining}</td>
+                    <td className="px-4 py-4 text-sm text-slate-500">{readySince}</td>
+                    <td className="px-4 py-4 text-sm text-slate-500">{row.shipTo}</td>
+                    <td className="px-4 py-4 text-right">
+                      <button
+                        type="button"
+                        className="rounded bg-primary px-3 py-1 text-xs font-bold text-white transition-colors hover:bg-primary/90 disabled:opacity-60"
+                        onClick={() => void handleOpen(row)}
+                        disabled={busyOrderId === row.orderId}
+                      >
+                        {busyOrderId === row.orderId ? "..." : "OPEN"}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <FulfillmentDebugPanel enabled={debugEnabled} lastResponse={lastResponse ?? queueQuery.data ?? null} lastError={lastError} />
+      </main>
+
+      {selectedOrderIds.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 z-50 flex w-[90%] max-w-2xl -translate-x-1/2 items-center justify-between gap-4 rounded-xl border border-slate-700 bg-slate-900 p-4 text-white shadow-2xl dark:border-slate-200 dark:bg-slate-100 dark:text-slate-900">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center justify-center rounded-lg bg-primary p-2">
+              <Check className="h-4 w-4 text-white" />
+            </div>
+            <div>
+              <p className="text-sm font-bold">{selectedOrderIds.size} Orders Selected</p>
+              <p className="text-[10px] uppercase tracking-wider opacity-70">Batch Operations Enabled</p>
+              {disableCombinedReason && (
+                <div className="mt-1 flex items-center gap-1.5 text-amber-500">
+                  <AlertTriangle className="h-3 w-3" />
+                  <p className="text-[9px] font-bold uppercase tracking-tight">{disableCombinedReason}</p>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold transition-all ${disableCombinedReason ? "cursor-not-allowed bg-slate-700 text-white opacity-50" : "bg-primary text-white hover:bg-primary/90"}`}
+              disabled={!!disableCombinedReason || createShipment.isPending}
+              onClick={() => void handleCreateCombined()}
+              title={disableCombinedReason || "Create combined shipment"}
+            >
+              {createShipment.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Box className="h-4 w-4" />}
+              Create Combined Shipment
+            </button>
+            <button
+              type="button"
+              className="rounded-lg bg-slate-800 px-4 py-2 text-sm font-bold text-slate-300 transition-all hover:bg-slate-700 dark:bg-slate-200 dark:text-slate-600 dark:hover:bg-slate-300"
+              onClick={() => setSelectedOrderIds(new Set())}
+            >
+              Clear Selection
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

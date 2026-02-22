@@ -110,7 +110,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     section: "SHIPPING & FULFILLMENT",
     sectionKey: "shipping",
     items: [
-      { id: "fulfillment", name: "Fulfillment", icon: Truck, path: "/fulfillment" },
+      { id: "fulfillment", name: "Fulfillment", icon: Truck, path: ROUTES.fulfillment.list },
       { id: "shipping", name: "Shipping Labels", icon: Tag, path: "/shipping" },
       { id: "reports", name: "Reports", icon: BarChart3, path: "/reports" },
     ],
