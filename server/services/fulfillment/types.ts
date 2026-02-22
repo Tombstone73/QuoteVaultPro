@@ -1,9 +1,9 @@
 export type FulfillmentType = 'SHIP' | 'PICKUP';
 
 export type DerivedOrderFulfillmentStatus =
-  | 'NOT_FULFILLED'
-  | 'PARTIALLY_FULFILLED'
-  | 'FULFILLED';
+  | 'READY'
+  | 'PARTIAL'
+  | 'SHIPPED';
 
 export interface QueueRowDto {
   orderId: string;
