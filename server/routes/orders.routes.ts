@@ -2692,7 +2692,39 @@ export async function registerOrderRoutes(
         try {
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
-            const list = await storage.getAllMaterials(organizationId);
+            const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+            const includeInactive = String(req.query.includeInactive || '').toLowerCase() === 'true';
+            const limitRaw = Number(req.query.limit);
+            const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 20;
+
+            let list = await storage.getAllMaterials(organizationId);
+
+            if (!includeInactive) {
+                list = list.filter((m: any) => m?.isActive !== false);
+            }
+
+            if (search) {
+                const s = search.toLowerCase();
+                list = list.filter((m: any) => {
+                    const name = String(m?.name || '').toLowerCase();
+                    const sku = String(m?.sku || '').toLowerCase();
+                    return name.includes(s) || sku.includes(s);
+                });
+            }
+
+            // Search mode: compact payload for dropdowns/search selectors
+            if (search || req.query.limit !== undefined || req.query.includeInactive !== undefined) {
+                const materialsList = list
+                    .slice(0, limit)
+                    .map((m: any) => ({
+                        id: m.id,
+                        name: m.name,
+                        unitOfMeasure: m.unitOfMeasure,
+                        isActive: m.isActive,
+                    }));
+                return res.json({ success: true, data: { materials: materialsList } });
+            }
+
             res.json({ success: true, data: list });
         } catch (err) {
             console.error('Error listing materials', err);
