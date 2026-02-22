@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -9,6 +9,7 @@ import { ROUTES } from "@/config/routes";
 import { useOrders } from "@/hooks/useOrders";
 import { useInvoices } from "@/hooks/useInvoices";
 import { DASHBOARD_PANELS, getPanelOpenTarget, type DashboardPanel } from "@/components/dashboard/dashboardPanels";
+import { buildReferrer } from "@/lib/nav/smartBack";
 
 type QuoteRow = {
   id: string;
@@ -69,6 +70,7 @@ function DetailErrorState({ message }: { message: string }) {
 
 export default function DashboardDetailsView({ panel }: { panel: DashboardPanel }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const ordersQuery = useOrders();
   const invoicesQuery = useInvoices();
   const openTarget = getPanelOpenTarget(panel);
@@ -215,7 +217,7 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
               {rows.length === 0 ? (
                 <TableRow><TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">No results.</TableCell></TableRow>
               ) : rows.map((q) => (
-                <TableRow key={q.id} className="cursor-pointer" onClick={() => navigate(ROUTES.quotes.detail(q.id))}>
+                <TableRow key={q.id} className="cursor-pointer" onClick={() => navigate(ROUTES.quotes.detail(q.id), { state: { referrer: buildReferrer(location) } })}>
                   <TableCell className="font-medium">#{q.quoteNumber ?? "—"}</TableCell>
                   <TableCell>{q.customer?.companyName || "—"}</TableCell>
                   <TableCell>{q.status || "—"}</TableCell>
@@ -256,7 +258,7 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
               {filteredInvoices.length === 0 ? (
                 <TableRow><TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">No results.</TableCell></TableRow>
               ) : filteredInvoices.map((inv: any) => (
-                <TableRow key={inv.id} className="cursor-pointer" onClick={() => navigate(ROUTES.invoices.detail(inv.id))}>
+                <TableRow key={inv.id} className="cursor-pointer" onClick={() => navigate(ROUTES.invoices.detail(inv.id), { state: { referrer: buildReferrer(location) } })}>
                   <TableCell className="font-medium">#{inv.invoiceNumber ?? "—"}</TableCell>
                   <TableCell>{inv.status || "—"}</TableCell>
                   <TableCell>{formatDate(inv.dueDate)}</TableCell>
@@ -296,7 +298,7 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
             {filteredOrders.length === 0 ? (
               <TableRow><TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">No results.</TableCell></TableRow>
             ) : filteredOrders.map((o: any) => (
-              <TableRow key={o.id} className="cursor-pointer" onClick={() => navigate(ROUTES.orders.detail(o.id))}>
+              <TableRow key={o.id} className="cursor-pointer" onClick={() => navigate(ROUTES.orders.detail(o.id), { state: { referrer: buildReferrer(location) } })}>
                 <TableCell className="font-medium">{o.orderNumber || "—"}</TableCell>
                 <TableCell>{o.status || "—"}</TableCell>
                 <TableCell>{formatDate(o.dueDate)}</TableCell>

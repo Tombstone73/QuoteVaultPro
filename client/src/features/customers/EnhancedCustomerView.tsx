@@ -86,6 +86,7 @@ interface EnhancedCustomerViewProps {
   customerId: string;
   layoutMode?: LayoutMode;
   onBack?: () => void;
+  onSectionHome?: () => void;
 }
 
 interface StatCardConfig {
@@ -163,10 +164,12 @@ function CustomerHeader({
   customer,
   layoutMode,
   onBack,
+  onSectionHome,
 }: {
   customer: CustomerWithRelations;
   layoutMode: LayoutMode;
   onBack?: () => void;
+  onSectionHome?: () => void;
 }) {
   const [showEditForm, setShowEditForm] = useState(false);
   const primaryContact = customer.contacts?.find((c) => c.isPrimary) || customer.contacts?.[0];
@@ -193,15 +196,25 @@ function CustomerHeader({
         {/* LEFT: Company & Contact Info */}
         <div className="flex items-center gap-2.5 flex-1 min-w-0">
           {layoutMode === "full" && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="flex-shrink-0 h-8 w-8 text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated"
-              onClick={() => onBack ? onBack() : navigate(ROUTES.customers.list)}
-              aria-label="Back to customers"
-            >
-              <ArrowLeft className="w-4 h-4" />
-            </Button>
+            <div className="flex items-center gap-1.5">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="flex-shrink-0 h-8 w-8 text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated"
+                onClick={() => onBack ? onBack() : navigate(ROUTES.customers.list)}
+                aria-label="Back"
+              >
+                <ArrowLeft className="w-4 h-4" />
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-[11px] border-titan-border-subtle text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated"
+                onClick={() => onSectionHome ? onSectionHome() : navigate(ROUTES.customers.list)}
+              >
+                Customers
+              </Button>
+            </div>
           )}
           
           {!isEmbedded && (
@@ -1849,6 +1862,7 @@ export default function EnhancedCustomerView({
   customerId,
   layoutMode = "full",
   onBack,
+  onSectionHome,
 }: EnhancedCustomerViewProps) {
   const [activeTab, setActiveTab] = useState<TabType>("orders");
   const [period, setPeriod] = useState<TimePeriod>("month");
@@ -1916,7 +1930,12 @@ export default function EnhancedCustomerView({
       isEmbedded ? "p-4" : "p-6"
     )}>
       {/* Customer Header Card */}
-      <CustomerHeader customer={customer} layoutMode={layoutMode} onBack={onBack} />
+      <CustomerHeader
+        customer={customer}
+        layoutMode={layoutMode}
+        onBack={onBack}
+        onSectionHome={onSectionHome}
+      />
 
       {/* Stats Cards Grid */}
       <CustomerStatsGrid
