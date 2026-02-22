@@ -208,7 +208,10 @@ export const ROUTES = {
   },
 
   // TODO: These routes are referenced in nav but not implemented
-  // fulfillment: "/fulfillment",
+  fulfillment: {
+    list: "/fulfillment",
+    shipmentDetail: (shipmentId: string) => `/fulfillment/shipments/${shipmentId}`,
+  },
   // reports: "/reports",
 
   // Misc
