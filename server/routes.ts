@@ -10,7 +10,7 @@ import busboy from "busboy";
 import { storage } from "./storage";
 import * as prepressFileService from "./prepressFileService";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, authIdentities, bugReports, prepressSessions, lineItemFiles, reprintRequests } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, inventoryReservations, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, authIdentities, bugReports, prepressSessions, lineItemFiles, reprintRequests } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, asc, inArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -11195,6 +11195,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
       const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
 
       const jobId = req.params.jobId;
       const now = new Date();
@@ -11250,6 +11251,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .set({ status: "done", completedAt: now, updatedAt: now })
           .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
 
+        if (job.lineItemId && job.orderId) {
+          await consumeReservedMaterialsForLineItem(tx, {
+            organizationId,
+            orderId: job.orderId,
+            lineItemId: job.lineItemId,
+            productionJobId: jobId,
+            userId,
+          });
+        }
+
         await tx.insert(auditLogs).values({
           organizationId,
           userId: userId ?? null,
@@ -11288,6 +11299,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
       const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
 
       const jobId = req.params.jobId;
       const now = new Date();
@@ -11723,6 +11735,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .set(updateData)
           .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
 
+        if (newStatus === "done" && job.lineItemId && job.orderId) {
+          await consumeReservedMaterialsForLineItem(tx, {
+            organizationId,
+            orderId: job.orderId,
+            lineItemId: job.lineItemId,
+            productionJobId: jobId,
+            userId,
+          });
+        }
+
         await tx.insert(auditLogs).values({
           organizationId,
           userId: userId ?? null,
@@ -12136,6 +12158,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       ...m,
       materialName: materialNameById.get(m.materialId),
     }));
+    const effectiveFingerprint = buildEffectiveMaterialsFingerprint(effectiveMaterials);
 
     const messageParts: string[] = [];
     if (plannedResult.message) messageParts.push(plannedResult.message);
@@ -12146,12 +12169,330 @@ export async function registerRoutes(app: Express): Promise<Server> {
       effectiveMaterials,
       overrides,
       pricingReviewRequired: effectiveResult.pricingReviewRequired,
+      effectiveFingerprint,
       overrideMode,
       overrideAllowed: overrideAccess.allowed,
       overrideBlockedReason: overrideAccess.allowed ? null : (overrideAccess.message || null),
       diffSummary: effectiveResult.diffSummary,
       message: messageParts.length > 0 ? messageParts.join(" | ") : undefined,
     };
+  };
+
+  const normalizeQty2dp = (value: unknown): string => {
+    const n = typeof value === "number" ? value : Number(String(value));
+    if (!Number.isFinite(n)) return (0).toFixed(2);
+    return (Math.round(n * 100) / 100).toFixed(2);
+  };
+
+  const toQtyNumber2dp = (value: unknown): number => Number(normalizeQty2dp(value));
+
+  const buildEffectiveMaterialsFingerprint = (
+    materialsInput: Array<{ materialId: string; uom: string; qty: number }>
+  ): string => {
+    const canonical = (materialsInput || [])
+      .map((m) => ({
+        materialId: String(m.materialId || "").trim(),
+        uom: String(m.uom || "").trim(),
+        qty: normalizeQty2dp(m.qty),
+      }))
+      .filter((m) => !!m.materialId && !!m.uom && Number(m.qty) > 0)
+      .sort((a, b) => `${a.materialId}:${a.uom}`.localeCompare(`${b.materialId}:${b.uom}`));
+
+    const serialized = JSON.stringify(canonical);
+    return crypto.createHash("sha256").update(serialized).digest("hex");
+  };
+
+  const buildReservedFingerprintFromRows = (
+    rows: Array<{ sourceKey: string; uom: string; qty: string | number }>
+  ): string => {
+    return buildEffectiveMaterialsFingerprint(
+      (rows || []).map((r) => ({
+        materialId: String(r.sourceKey || "").trim(),
+        uom: String(r.uom || "").trim(),
+        qty: toQtyNumber2dp(r.qty),
+      }))
+    );
+  };
+
+  const ensureProductionJobForLineItem = async (tx: any, args: { organizationId: string; orderId: string; lineItemId: string }) => {
+    const [existingJob] = await tx
+      .select({ id: productionJobs.id })
+      .from(productionJobs)
+      .where(
+        and(
+          eq(productionJobs.organizationId, args.organizationId),
+          eq(productionJobs.orderId, args.orderId),
+          eq(productionJobs.lineItemId, args.lineItemId)
+        )
+      )
+      .limit(1);
+
+    if (existingJob?.id) return existingJob.id;
+
+    const inserted = await tx
+      .insert(productionJobs)
+      .values({
+        organizationId: args.organizationId,
+        orderId: args.orderId,
+        lineItemId: args.lineItemId,
+        stationKey: "flatbed",
+        stepKey: "prepress",
+        status: "queued",
+        totalSeconds: 0,
+      })
+      .returning({ id: productionJobs.id });
+
+    return inserted[0]?.id as string;
+  };
+
+  const listReservedMaterialsForLineItem = async (tx: any, args: { organizationId: string; orderId: string; lineItemId: string }) => {
+    return tx
+      .select({
+        id: inventoryReservations.id,
+        sourceKey: inventoryReservations.sourceKey,
+        uom: inventoryReservations.uom,
+        qty: inventoryReservations.qty,
+      })
+      .from(inventoryReservations)
+      .where(
+        and(
+          eq(inventoryReservations.organizationId, args.organizationId),
+          eq(inventoryReservations.orderId, args.orderId),
+          eq(inventoryReservations.orderLineItemId, args.lineItemId),
+          eq(inventoryReservations.sourceType, "PBV2_MATERIAL"),
+          eq(inventoryReservations.status, "RESERVED")
+        )
+      );
+  };
+
+  const syncReservedMaterialsForLineItem = async (
+    tx: any,
+    args: {
+      organizationId: string;
+      orderId: string;
+      lineItemId: string;
+      createdByUserId: string | null;
+      effectiveMaterials: Array<{ materialId: string; uom: "sqft" | "ft" | "each"; qty: number }>;
+    }
+  ) => {
+    const now = new Date();
+    const existing = await listReservedMaterialsForLineItem(tx, {
+      organizationId: args.organizationId,
+      orderId: args.orderId,
+      lineItemId: args.lineItemId,
+    });
+
+    const existingByKey = new Map<string, { id: string; qty: string }>();
+    for (const row of existing) {
+      existingByKey.set(`${row.sourceKey}::${row.uom}`, { id: row.id, qty: normalizeQty2dp(row.qty) });
+    }
+
+    const desiredByKey = new Map<string, { materialId: string; uom: "sqft" | "ft" | "each"; qty: string }>();
+    for (const item of args.effectiveMaterials || []) {
+      const materialId = String(item.materialId || "").trim();
+      const uom = String(item.uom || "").trim() as "sqft" | "ft" | "each";
+      const qty = normalizeQty2dp(item.qty);
+      if (!materialId || !uom || Number(qty) <= 0) continue;
+      desiredByKey.set(`${materialId}::${uom}`, { materialId, uom, qty });
+    }
+
+    let insertedCount = 0;
+    let updatedCount = 0;
+    let releasedCount = 0;
+
+    for (const [key, desired] of desiredByKey.entries()) {
+      const existingRow = existingByKey.get(key);
+      if (!existingRow) {
+        await tx.insert(inventoryReservations).values({
+          organizationId: args.organizationId,
+          orderId: args.orderId,
+          orderLineItemId: args.lineItemId,
+          sourceType: "PBV2_MATERIAL",
+          sourceKey: desired.materialId,
+          uom: desired.uom,
+          qty: desired.qty,
+          status: "RESERVED",
+          createdByUserId: args.createdByUserId,
+          createdAt: now,
+          updatedAt: now,
+        } as any);
+        insertedCount += 1;
+        continue;
+      }
+
+      if (normalizeQty2dp(existingRow.qty) !== desired.qty) {
+        await tx
+          .update(inventoryReservations)
+          .set({ qty: desired.qty, updatedAt: now } as any)
+          .where(
+            and(
+              eq(inventoryReservations.organizationId, args.organizationId),
+              eq(inventoryReservations.orderId, args.orderId),
+              eq(inventoryReservations.id, existingRow.id),
+              eq(inventoryReservations.status, "RESERVED")
+            )
+          );
+        updatedCount += 1;
+      }
+    }
+
+    for (const [key, existingRow] of existingByKey.entries()) {
+      if (desiredByKey.has(key)) continue;
+      await tx
+        .update(inventoryReservations)
+        .set({ status: "RELEASED", updatedAt: now } as any)
+        .where(
+          and(
+            eq(inventoryReservations.organizationId, args.organizationId),
+            eq(inventoryReservations.orderId, args.orderId),
+            eq(inventoryReservations.id, existingRow.id),
+            eq(inventoryReservations.status, "RESERVED")
+          )
+        );
+      releasedCount += 1;
+    }
+
+    const nextReserved = await listReservedMaterialsForLineItem(tx, {
+      organizationId: args.organizationId,
+      orderId: args.orderId,
+      lineItemId: args.lineItemId,
+    });
+
+    return {
+      insertedCount,
+      updatedCount,
+      releasedCount,
+      changed: insertedCount > 0 || updatedCount > 0 || releasedCount > 0,
+      previousFingerprint: buildReservedFingerprintFromRows(existing),
+      nextFingerprint: buildReservedFingerprintFromRows(nextReserved),
+      nextCount: nextReserved.length,
+    };
+  };
+
+  const wasMaterialsLifecycleEventProcessed = async (
+    tx: any,
+    args: { organizationId: string; productionJobId: string; eventType: string; fingerprint: string }
+  ) => {
+    const rows = await tx
+      .select({ payload: productionEvents.payload })
+      .from(productionEvents)
+      .where(
+        and(
+          eq(productionEvents.organizationId, args.organizationId),
+          eq(productionEvents.productionJobId, args.productionJobId),
+          eq(productionEvents.type, "note")
+        )
+      )
+      .orderBy(desc(productionEvents.createdAt))
+      .limit(200);
+
+    return rows.some((row: any) => {
+      const payload = row?.payload as any;
+      return (
+        payload &&
+        payload.eventType === args.eventType &&
+        String(payload.materialFingerprint || "") === args.fingerprint
+      );
+    });
+  };
+
+  const consumeReservedMaterialsForLineItem = async (
+    tx: any,
+    args: {
+      organizationId: string;
+      orderId: string;
+      lineItemId: string;
+      productionJobId: string;
+      userId: string;
+    }
+  ) => {
+    const reserved = await listReservedMaterialsForLineItem(tx, {
+      organizationId: args.organizationId,
+      orderId: args.orderId,
+      lineItemId: args.lineItemId,
+    });
+
+    if (!reserved.length) {
+      return { consumed: false, reason: "no_reserved_rows" as const, fingerprint: buildReservedFingerprintFromRows([]), consumedCount: 0 };
+    }
+
+    const fingerprint = buildReservedFingerprintFromRows(reserved);
+    const alreadyConsumed = await wasMaterialsLifecycleEventProcessed(tx, {
+      organizationId: args.organizationId,
+      productionJobId: args.productionJobId,
+      eventType: "materials_consumed",
+      fingerprint,
+    });
+
+    if (alreadyConsumed) {
+      return { consumed: false, reason: "idempotent_skip" as const, fingerprint, consumedCount: 0 };
+    }
+
+    const now = new Date();
+    let consumedCount = 0;
+
+    for (const row of reserved) {
+      const materialId = String(row.sourceKey || "").trim();
+      if (!materialId) continue;
+      const qty = toQtyNumber2dp(row.qty);
+      if (!Number.isFinite(qty) || qty <= 0) continue;
+
+      await tx.insert(orderMaterialUsage).values({
+        orderId: args.orderId,
+        orderLineItemId: args.lineItemId,
+        materialId,
+        quantityUsed: normalizeQty2dp(qty),
+        unitOfMeasure: String(row.uom || "each"),
+        calculatedBy: "auto",
+      } as any);
+
+      await tx.insert(inventoryAdjustments).values({
+        materialId,
+        type: "job_usage",
+        quantityChange: normalizeQty2dp(-qty),
+        reason: `Auto-consumed from reservation for line item ${args.lineItemId}`,
+        orderId: args.orderId,
+        userId: args.userId,
+      } as any);
+
+      await tx
+        .update(materials)
+        .set({
+          stockQuantity: sql`${materials.stockQuantity} - ${normalizeQty2dp(qty)}`,
+          updatedAt: now,
+        } as any)
+        .where(and(eq(materials.organizationId, args.organizationId), eq(materials.id, materialId)));
+
+      consumedCount += 1;
+    }
+
+    await tx
+      .update(inventoryReservations)
+      .set({ status: "RELEASED", updatedAt: now } as any)
+      .where(
+        and(
+          eq(inventoryReservations.organizationId, args.organizationId),
+          eq(inventoryReservations.orderId, args.orderId),
+          eq(inventoryReservations.orderLineItemId, args.lineItemId),
+          eq(inventoryReservations.sourceType, "PBV2_MATERIAL"),
+          eq(inventoryReservations.status, "RESERVED")
+        )
+      );
+
+    await tx.insert(productionEvents).values({
+      organizationId: args.organizationId,
+      productionJobId: args.productionJobId,
+      type: "note",
+      payload: {
+        eventType: "materials_consumed",
+        lineItemId: args.lineItemId,
+        orderId: args.orderId,
+        materialFingerprint: fingerprint,
+        consumedCount,
+      },
+    });
+
+    return { consumed: true, reason: "ok" as const, fingerprint, consumedCount };
   };
 
   // GET /api/prepress/queue - List line items for prepress
@@ -12491,6 +12832,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         data: {
           plannedMaterials: payload.plannedMaterials,
           effectiveMaterials: payload.effectiveMaterials,
+          effectiveFingerprint: payload.effectiveFingerprint,
           overrides: payload.overrides,
           pricingReviewRequired: payload.pricingReviewRequired,
           overrideMode: payload.overrideMode,
@@ -12502,6 +12844,68 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("[Prepress] Error computing effective materials:", error);
       return res.status(500).json({ success: false, data: null, message: error?.message || "Failed to compute effective materials" });
+    }
+  });
+
+  // GET /api/prepress/line-items/:lineItemId/materials-availability - Effective materials with live stock availability
+  app.get("/api/prepress/line-items/:lineItemId/materials-availability", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(500).json({ success: false, data: null, message: "Missing organization context" });
+      }
+
+      const { lineItemId } = req.params;
+      const context = await getPrepressMaterialContext(organizationId, lineItemId);
+      if (!context) {
+        return res.status(404).json({ success: false, data: null, message: "Line item not found" });
+      }
+
+      const payload = await buildPrepressMaterialsEffectivePayload({
+        organizationId,
+        lineItem: context.lineItem,
+        treeJson: context.treeJson,
+      });
+
+      const materialIds = Array.from(new Set(payload.effectiveMaterials.map((m) => String(m.materialId || "")).filter(Boolean)));
+      const materialRows = materialIds.length
+        ? await db
+            .select({ id: materials.id, stockQuantity: materials.stockQuantity })
+            .from(materials)
+            .where(and(eq(materials.organizationId, organizationId), inArray(materials.id, materialIds)))
+        : [];
+
+      const stockByMaterialId = new Map<string, number>(
+        materialRows.map((row) => [row.id, toQtyNumber2dp(row.stockQuantity)])
+      );
+
+      const items = payload.effectiveMaterials.map((m) => {
+        const requiredQty = toQtyNumber2dp(m.qty);
+        const availableQty = toQtyNumber2dp(stockByMaterialId.get(m.materialId) ?? 0);
+        const shortageQty = Math.max(0, toQtyNumber2dp(requiredQty - availableQty));
+        return {
+          materialId: m.materialId,
+          materialName: m.materialName,
+          uom: m.uom,
+          requiredQty,
+          availableQty,
+          shortageQty,
+          isAvailable: shortageQty <= 0,
+        };
+      });
+
+      return res.json({
+        success: true,
+        data: {
+          effectiveFingerprint: payload.effectiveFingerprint,
+          allAvailable: items.every((i) => i.isAvailable),
+          items,
+        },
+      });
+    } catch (error: any) {
+      console.error("[Prepress] Error computing materials availability:", error);
+      return res.status(500).json({ success: false, data: null, message: error?.message || "Failed to compute materials availability" });
     }
   });
 
@@ -12555,27 +12959,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           })
           .where(eq(orderLineItems.id, lineItemId));
 
-        const [existingJob] = await tx
-          .select({ id: productionJobs.id })
-          .from(productionJobs)
-          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.lineItemId, lineItemId)))
-          .limit(1);
-
-        const productionJobId = existingJob?.id || (
-          await tx
-            .insert(productionJobs)
-            .values({
-              organizationId,
-              orderId: context.lineItem.orderId,
-              lineItemId,
-              stationKey: "flatbed",
-              stepKey: "prepress",
-              status: "queued",
-              totalSeconds: 0,
-            })
-            .returning({ id: productionJobs.id })
-            .then((rows) => rows[0].id)
-        );
+        const productionJobId = await ensureProductionJobForLineItem(tx, {
+          organizationId,
+          orderId: context.lineItem.orderId,
+          lineItemId,
+        });
 
         const plannedForAudit = context.treeJson && context.treeJson.schemaVersion === 2
           ? computePlannedMaterialsForLineItem({ lineItem: context.lineItem, treeJson: context.treeJson as any })
@@ -12585,6 +12973,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
           plannedMaterials: plannedForAudit.materials,
           overrides: materialOverridesFromSpecsJson(updatedSpecsJson),
         });
+        const effectiveFingerprint = buildEffectiveMaterialsFingerprint(effectiveForAudit.effectiveMaterials);
+
+        const currentReserved = await listReservedMaterialsForLineItem(tx, {
+          organizationId,
+          orderId: context.lineItem.orderId,
+          lineItemId,
+        });
+
+        if (currentReserved.length > 0 && !PRODUCTION_TERMINAL_STATUSES.has(String(context.lineItem.status || "").toLowerCase())) {
+          const rebalance = await syncReservedMaterialsForLineItem(tx, {
+            organizationId,
+            orderId: context.lineItem.orderId,
+            lineItemId,
+            createdByUserId: userId ?? null,
+            effectiveMaterials: effectiveForAudit.effectiveMaterials,
+          });
+
+          await tx.insert(productionEvents).values({
+            organizationId,
+            productionJobId,
+            type: "note",
+            payload: {
+              eventType: "materials_rebalanced",
+              lineItemId,
+              previousFingerprint: rebalance.previousFingerprint,
+              materialFingerprint: rebalance.nextFingerprint,
+              changed: rebalance.changed,
+              insertedCount: rebalance.insertedCount,
+              updatedCount: rebalance.updatedCount,
+              releasedCount: rebalance.releasedCount,
+              reservationCount: rebalance.nextCount,
+            },
+          });
+        }
 
         await tx.insert(productionEvents).values({
           organizationId,
@@ -12596,6 +13018,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             op: persistedOp,
             reasonNote: persistedOp.reasonNote,
             pricingReviewRequired: effectiveForAudit.pricingReviewRequired,
+            materialFingerprint: effectiveFingerprint,
             diffSummary: effectiveForAudit.diffSummary,
           },
         });
@@ -12615,6 +13038,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         data: {
           plannedMaterials: payload.plannedMaterials,
           effectiveMaterials: payload.effectiveMaterials,
+          effectiveFingerprint: payload.effectiveFingerprint,
           overrides: payload.overrides,
           pricingReviewRequired: payload.pricingReviewRequired,
           overrideMode: payload.overrideMode,
@@ -13200,29 +13624,83 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // 5. Transition to PRINT_READY
-      await db.update(orderLineItems)
-        .set({
-          status: 'print_ready',
-          updatedAt: new Date()
-        })
-        .where(eq(orderLineItems.id, lineItemId));
+      const materialContext = await getPrepressMaterialContext(organizationId, lineItemId);
+      const effectivePayload = materialContext
+        ? await buildPrepressMaterialsEffectivePayload({
+            organizationId,
+            lineItem: materialContext.lineItem,
+            treeJson: materialContext.treeJson,
+          })
+        : null;
 
-      // 6. Create audit log
-      await db.insert(auditLogs).values({
-        organizationId,
-        userId,
-        userName: req.user?.email || req.user?.name || null,
-        actionType: "UPDATE",
-        entityType: "order_line_item",
-        entityId: lineItemId,
-        entityName: `Line item ${lineItemId}`,
-        description: "Sent to print queue from prepress",
-        oldValues: { status: item.status },
-        newValues: { status: 'print_ready' },
-        ipAddress: req.ip || null,
-        userAgent: req.headers["user-agent"] || null,
-      } as any);
+      const effectiveMaterials = effectivePayload?.effectiveMaterials || [];
+      const effectiveFingerprint = effectivePayload?.effectiveFingerprint || buildEffectiveMaterialsFingerprint([]);
+
+      // 5. Transition to PRINT_READY
+      await db.transaction(async (tx) => {
+        await tx.update(orderLineItems)
+          .set({
+            status: 'print_ready',
+            updatedAt: new Date()
+          })
+          .where(eq(orderLineItems.id, lineItemId));
+
+        const productionJobId = await ensureProductionJobForLineItem(tx, {
+          organizationId,
+          orderId: materialContext?.lineItem.orderId || (item as any).orderId,
+          lineItemId,
+        });
+
+        if (materialContext?.lineItem?.orderId) {
+          const alreadyReserved = await wasMaterialsLifecycleEventProcessed(tx, {
+            organizationId,
+            productionJobId,
+            eventType: "materials_reserved",
+            fingerprint: effectiveFingerprint,
+          });
+
+          if (!alreadyReserved) {
+            const reserveSync = await syncReservedMaterialsForLineItem(tx, {
+              organizationId,
+              orderId: materialContext.lineItem.orderId,
+              lineItemId,
+              createdByUserId: userId ?? null,
+              effectiveMaterials,
+            });
+
+            await tx.insert(productionEvents).values({
+              organizationId,
+              productionJobId,
+              type: "note",
+              payload: {
+                eventType: "materials_reserved",
+                lineItemId,
+                orderId: materialContext.lineItem.orderId,
+                previousFingerprint: reserveSync.previousFingerprint,
+                materialFingerprint: reserveSync.nextFingerprint,
+                changed: reserveSync.changed,
+                reservationCount: reserveSync.nextCount,
+              },
+            });
+          }
+        }
+
+        // 6. Create audit log
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "UPDATE",
+          entityType: "order_line_item",
+          entityId: lineItemId,
+          entityName: `Line item ${lineItemId}`,
+          description: "Sent to print queue from prepress",
+          oldValues: { status: item.status },
+          newValues: { status: 'print_ready', materialFingerprint: effectiveFingerprint },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+      });
 
       if (process.env.NODE_ENV !== "production") {
         console.log(`[Send to Print] Line item ${lineItemId} sent to print queue by user ${userId}`);
@@ -13231,7 +13709,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ 
         success: true, 
         message: "Sent to print queue successfully",
-        newStatus: 'print_ready'
+        newStatus: 'print_ready',
+        materialFingerprint: effectiveFingerprint,
       });
 
     } catch (error) {
