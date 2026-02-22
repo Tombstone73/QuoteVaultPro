@@ -11736,12 +11736,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
 
         if (newStatus === "done" && job.lineItemId && job.orderId) {
+          const actorUserId = userId;
+          if (!actorUserId) {
+            throw new Error("Missing user id for inventory consumption");
+          }
           await consumeReservedMaterialsForLineItem(tx, {
             organizationId,
             orderId: job.orderId,
             lineItemId: job.lineItemId,
             productionJobId: jobId,
-            userId,
+            userId: actorUserId,
           });
         }
 
@@ -12325,7 +12329,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     let updatedCount = 0;
     let releasedCount = 0;
 
-    for (const [key, desired] of desiredByKey.entries()) {
+    for (const [key, desired] of Array.from(desiredByKey.entries())) {
       const existingRow = existingByKey.get(key);
       if (!existingRow) {
         await tx.insert(inventoryReservations).values({
@@ -12361,7 +12365,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     }
 
-    for (const [key, existingRow] of existingByKey.entries()) {
+    for (const [key, existingRow] of Array.from(existingByKey.entries())) {
       if (desiredByKey.has(key)) continue;
       await tx
         .update(inventoryReservations)
@@ -12668,7 +12672,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         previewCandidatesByLineItem.set(pf.lineItemId, bucket);
       }
 
-      for (const [lineItemId, candidate] of previewCandidatesByLineItem.entries()) {
+      for (const [lineItemId, candidate] of Array.from(previewCandidatesByLineItem.entries())) {
         const thumbFileId = candidate.originalImageId || candidate.finalImageId || null;
         const thumbSelectionReason: 'original_fallback' | 'final_fallback' | 'none' =
           candidate.originalImageId ? 'original_fallback' :
