@@ -2057,6 +2057,9 @@ export const orders = pgTable("orders", {
   status: varchar("status", { length: 50 }).notNull().default("new"), // new, in_production, on_hold, ready_for_shipment, completed, canceled [DEPRECATED: use state instead]
   // TitanOS State Architecture (canonical workflow states)
   state: varchar("state", { length: 50 }).notNull().default("open"), // open, production_complete, closed, canceled
+  // Per-org configurable workflow status system (Phase 1)
+  workflowStatusId: varchar("workflow_status_id", { length: 64 }),
+  canonicalState: varchar("canonical_state", { length: 32 }),
   statusPillValue: varchar("status_pill_value", { length: 100 }), // Org-configurable status pill within current state
   paymentStatus: varchar("payment_status", { length: 50 }).default("unpaid"), // unpaid, partial, paid
   routingTarget: varchar("routing_target", { length: 50 }), // 'fulfillment' or 'invoicing' (set on production_complete)
@@ -2149,6 +2152,8 @@ export const orders = pgTable("orders", {
   index("orders_organization_id_idx").on(table.organizationId),
   index("orders_order_number_idx").on(table.orderNumber),
   index("orders_customer_id_idx").on(table.customerId),
+  index("orders_workflow_status_id_idx").on(table.workflowStatusId),
+  index("orders_canonical_state_idx").on(table.canonicalState),
   index("orders_status_idx").on(table.status),
   index("orders_state_idx").on(table.state), // NEW: Index for state filtering
   index("orders_payment_status_idx").on(table.paymentStatus), // NEW: Index for payment status
@@ -2425,6 +2430,79 @@ export const updateOrderLineItemSchema = insertOrderLineItemSchema.partial().ext
 export type InsertOrderLineItem = z.infer<typeof insertOrderLineItemSchema>;
 export type UpdateOrderLineItem = z.infer<typeof updateOrderLineItemSchema>;
 export type OrderLineItem = typeof orderLineItems.$inferSelect;
+
+// ============================================================
+// Order Workflow Status System (Per-Org, Configurable)
+// ============================================================
+
+export const orderWorkflowVersions = pgTable("order_workflow_versions", {
+  id: varchar("id", { length: 64 }).primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  name: text("name").notNull().default("Default Workflow"),
+  isActive: boolean("is_active").notNull().default(false),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  publishedAt: timestamp("published_at", { withTimezone: true }),
+}, (table) => [
+  index("order_workflow_versions_org_idx").on(table.organizationId),
+  index("order_workflow_versions_org_active_idx").on(table.organizationId, table.isActive),
+]);
+
+export const orderWorkflowStatuses = pgTable("order_workflow_statuses", {
+  id: varchar("id", { length: 64 }).primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  workflowVersionId: varchar("workflow_version_id", { length: 64 }).notNull().references(() => orderWorkflowVersions.id, { onDelete: 'cascade' }),
+  key: text("key").notNull(),
+  label: text("label").notNull(),
+  category: varchar("category", { length: 32 }).notNull(), // new | active | ready | completed | canceled | on_hold
+  color: text("color"),
+  sortOrder: integer("sort_order").notNull().default(0),
+  isDefaultForNew: boolean("is_default_for_new").notNull().default(false),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("order_workflow_statuses_org_idx").on(table.organizationId),
+  index("order_workflow_statuses_version_idx").on(table.workflowVersionId),
+  index("order_workflow_statuses_category_idx").on(table.category),
+  uniqueIndex("order_workflow_statuses_version_key_uidx").on(table.workflowVersionId, table.key),
+]);
+
+export const orderWorkflowTransitions = pgTable("order_workflow_transitions", {
+  id: varchar("id", { length: 64 }).primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  workflowVersionId: varchar("workflow_version_id", { length: 64 }).notNull().references(() => orderWorkflowVersions.id, { onDelete: 'cascade' }),
+  fromStatusId: varchar("from_status_id", { length: 64 }).notNull().references(() => orderWorkflowStatuses.id, { onDelete: 'cascade' }),
+  toStatusId: varchar("to_status_id", { length: 64 }).notNull().references(() => orderWorkflowStatuses.id, { onDelete: 'cascade' }),
+}, (table) => [
+  index("order_workflow_transitions_org_idx").on(table.organizationId),
+  index("order_workflow_transitions_version_idx").on(table.workflowVersionId),
+  uniqueIndex("order_workflow_transitions_unique").on(table.workflowVersionId, table.fromStatusId, table.toStatusId),
+]);
+
+export const orderStatusEvents = pgTable("order_status_events", {
+  id: varchar("id", { length: 64 }).primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  fromStatusId: varchar("from_status_id", { length: 64 }).references(() => orderWorkflowStatuses.id, { onDelete: 'set null' }),
+  toStatusId: varchar("to_status_id", { length: 64 }).references(() => orderWorkflowStatuses.id, { onDelete: 'set null' }),
+  fromStatusLabel: text("from_status_label"),
+  toStatusLabel: text("to_status_label"),
+  changedByUserId: varchar("changed_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  changedAt: timestamp("changed_at", { withTimezone: true }).notNull().defaultNow(),
+  note: text("note"),
+}, (table) => [
+  index("order_status_events_org_order_idx").on(table.organizationId, table.orderId),
+  index("order_status_events_changed_at_idx").on(table.changedAt),
+]);
+
+export type OrderWorkflowVersion = typeof orderWorkflowVersions.$inferSelect;
+export type InsertOrderWorkflowVersion = typeof orderWorkflowVersions.$inferInsert;
+export type OrderWorkflowStatus = typeof orderWorkflowStatuses.$inferSelect;
+export type InsertOrderWorkflowStatus = typeof orderWorkflowStatuses.$inferInsert;
+export type OrderWorkflowTransition = typeof orderWorkflowTransitions.$inferSelect;
+export type InsertOrderWorkflowTransition = typeof orderWorkflowTransitions.$inferInsert;
+export type OrderStatusEvent = typeof orderStatusEvents.$inferSelect;
+export type InsertOrderStatusEvent = typeof orderStatusEvents.$inferInsert;
 
 // Order Status Pills (TitanOS State Architecture)
 // Org-configurable status pills scoped within canonical states
