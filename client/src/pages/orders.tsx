@@ -18,6 +18,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Page, PageHeader, ContentLayout, DataCard, ColumnConfig, useColumnSettings, isColumnVisible, getColumnOrder, getColumnDisplayName, type ColumnDefinition, type ColumnState } from "@/components/titan";
 import { ROUTES } from "@/config/routes";
 import { buildReferrer } from "@/lib/nav/smartBack";
+import { useSmartBack } from "@/hooks/useSmartBack";
 import { getDisplayOrderNumber } from "@/lib/orderUtils";
 // TitanOS State Architecture
 import { Badge } from "@/components/ui/badge";
@@ -125,6 +126,7 @@ export default function Orders() {
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
+  const { onSmartBack } = useSmartBack();
   
   const [search, setSearch] = useState("");
   const [stateFilter, setStateFilter] = useState<OrderState | "all">("open"); // TitanOS: Default to open (WIP)
@@ -794,7 +796,7 @@ export default function Orders() {
         subtitle="Manage production orders and track fulfillment"
         className="pb-3"
         backButton={
-          <Button variant="ghost" size="sm" onClick={() => navigate(ROUTES.dashboard)}>
+          <Button variant="ghost" size="sm" onClick={onSmartBack}>
             <ArrowLeft className="w-5 h-5" />
           </Button>
         }

@@ -48,6 +48,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Page, PageHeader, ContentLayout, DataCard, StatusPill } from "@/components/titan";
+import { useSmartBack } from "@/hooks/useSmartBack";
 
 const defaultColumns = [
   { id: "name", label: "Name", visible: true },
@@ -63,6 +64,7 @@ const defaultColumns = [
 export default function ContactsPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const { onSmartBack } = useSmartBack();
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [editingContact, setEditingContact] = useState<ContactWithStats | null>(null);
@@ -280,7 +282,7 @@ export default function ContactsPage() {
           <Button 
             variant="ghost" 
             size="sm" 
-            onClick={() => navigate("/")}
+            onClick={onSmartBack}
             className="text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
           >
             <ArrowLeft className="w-4 h-4 mr-2" />

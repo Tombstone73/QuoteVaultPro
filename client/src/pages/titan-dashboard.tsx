@@ -9,7 +9,7 @@ import { ROUTES } from "@/config/routes";
 import { useDashboardSelection } from "@/hooks/useDashboardSelection";
 import { useDashboardSummary } from "@/hooks/useDashboardSummary";
 import { FilePlus2, ShoppingCart } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 export default function TitanDashboard() {
@@ -34,6 +34,14 @@ export default function TitanDashboard() {
   const handleTabChange = (tab: "my_work" | "details") => {
     setActiveTab(tab);
   };
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("titan:dashboard:activityFeedCollapsed", isActivityCollapsed ? "true" : "false");
+    } catch {
+      // noop
+    }
+  }, [isActivityCollapsed]);
 
   return (
     <div className="w-full p-4 md:p-6 space-y-6">
@@ -62,7 +70,7 @@ export default function TitanDashboard() {
         <FulfillmentFinanceCard {...summary?.fulfillmentFinance} selectedPanel={selectedPanel} onSelectPanel={handleSelectPanel} />
       </section>
 
-      <section className="flex items-stretch gap-4 overflow-hidden">
+      <section className="flex items-stretch gap-4">
         <div className="min-w-0 flex-1">
           <DashboardDetailPanel activeTab={activeTab} onTabChange={handleTabChange} selectedPanel={selectedPanel} />
         </div>
