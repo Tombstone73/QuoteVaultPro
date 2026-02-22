@@ -65,6 +65,9 @@ import ProductImportExport from "@/pages/admin/ProductImportExport";
 import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
 import FulfillmentPage from "@/pages/fulfillment";
 import FulfillmentShipmentDetailPage from "@/pages/fulfillment-shipment-detail";
+import LabelsPage from "@/pages/labels";
+import ReportsPage from "@/pages/reports";
+import FinancePage from "@/pages/finance";
 
 function Router() {
   const { user, isAuthenticated, isLoading, mustChangePassword } = useAuth();
@@ -194,6 +197,9 @@ function Router() {
         {/* Fulfillment routes */}
         <Route path={ROUTES.fulfillment.list} element={<FulfillmentPage />} />
         <Route path="/fulfillment/shipments/:shipmentId" element={<FulfillmentShipmentDetailPage />} />
+        <Route path={ROUTES.labels} element={<LabelsPage />} />
+        <Route path={ROUTES.reports} element={<ReportsPage />} />
+        <Route path={ROUTES.finance} element={<FinancePage />} />
 
         {/* Product Catalog (standalone) */}
         <Route path="/products" element={<ProductsPage />} />

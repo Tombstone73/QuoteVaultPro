@@ -111,7 +111,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     sectionKey: "shipping",
     items: [
       { id: "fulfillment", name: "Fulfillment", icon: Truck, path: ROUTES.fulfillment.list },
-      { id: "shipping", name: "Shipping Labels", icon: Tag, path: "/shipping" },
+      { id: "shipping", name: "Labels", icon: Tag, path: "/shipping" },
       { id: "reports", name: "Reports", icon: BarChart3, path: "/reports" },
     ],
   },
@@ -120,7 +120,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     sectionKey: "accounting",
     items: [
       { id: "invoices", name: "Invoices", icon: Receipt, path: ROUTES.invoices.list },
-      { id: "payments", name: "Payments", icon: CreditCard, path: "/payments" },
+      { id: "payments", name: "Finance", icon: CreditCard, path: "/payments" },
     ],
   },
   {
