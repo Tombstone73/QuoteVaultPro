@@ -2490,7 +2490,7 @@ export default function OrderDetail() {
                                   <div className="space-y-1">
                                     <div className="flex items-center gap-2">
                                       <Badge variant="outline" className="text-xs">
-                                        {shipment.carrier}
+                                        {shipment.carrier || 'Carrier'}
                                       </Badge>
                                       {shipment.deliveredAt && (
                                         <Badge className="bg-green-500/10 text-green-500 border-green-500/20 text-xs">
@@ -2502,9 +2502,9 @@ export default function OrderDetail() {
                                       <span className="text-sm font-mono">
                                         {shipment.trackingNumber}
                                       </span>
-                                      {shipment.carrier !== "Other" && shipment.trackingNumber && (
+                                      {(shipment.carrier || 'Other') !== "Other" && shipment.trackingNumber && (
                                         <a
-                                          href={getTrackingUrl(shipment.carrier, shipment.trackingNumber)}
+                                          href={getTrackingUrl(shipment.carrier || 'Other', shipment.trackingNumber)}
                                           target="_blank"
                                           rel="noopener noreferrer"
                                           className="text-primary hover:underline"
@@ -2513,9 +2513,11 @@ export default function OrderDetail() {
                                         </a>
                                       )}
                                     </div>
-                                    <div className="text-xs text-muted-foreground">
-                                      Shipped: {format(new Date(shipment.shippedAt), "MMM d, yyyy h:mm a")}
-                                    </div>
+                                    {shipment.shippedAt && (
+                                      <div className="text-xs text-muted-foreground">
+                                        Shipped: {format(new Date(shipment.shippedAt), "MMM d, yyyy h:mm a")}
+                                      </div>
+                                    )}
                                     {shipment.deliveredAt && (
                                       <div className="text-xs text-muted-foreground">
                                         Delivered: {format(new Date(shipment.deliveredAt), "MMM d, yyyy h:mm a")}
