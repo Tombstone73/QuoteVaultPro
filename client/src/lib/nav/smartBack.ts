@@ -5,11 +5,13 @@ export type ReferrerRoute = {
 };
 
 export function getDefaultSectionRoute(pathname: string): string {
+  if (pathname.startsWith("/system/admin")) return "/system/admin";
   if (pathname.startsWith("/orders")) return "/orders";
   if (pathname.startsWith("/customers")) return "/customers";
   if (pathname.startsWith("/quotes")) return "/quotes";
   if (pathname.startsWith("/invoices")) return "/invoices";
   if (pathname.startsWith("/contacts")) return "/contacts";
+  if (pathname.startsWith("/production")) return "/production";
   if (pathname.startsWith("/materials")) return "/materials";
   if (pathname.startsWith("/vendors")) return "/vendors";
   if (pathname.startsWith("/purchase-orders")) return "/purchase-orders";

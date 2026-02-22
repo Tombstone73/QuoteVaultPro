@@ -1,7 +1,6 @@
 import { Activity, ChevronDown, ChevronUp } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { useEffect, useState } from "react";
 
 export type ActivityFeedItem = {
   id: string;
@@ -13,8 +12,8 @@ export type ActivityFeedItem = {
 type ActivityFeedPanelProps = {
   items?: ActivityFeedItem[];
   onViewAll?: () => void;
-  collapsed?: boolean;
-  onCollapsedChange?: (collapsed: boolean) => void;
+  collapsed: boolean;
+  onCollapsedChange: (collapsed: boolean) => void;
 };
 
 export default function ActivityFeedPanel({
@@ -23,43 +22,14 @@ export default function ActivityFeedPanel({
   collapsed,
   onCollapsedChange,
 }: ActivityFeedPanelProps) {
-  const storageKey = "titan:dashboard:activityFeedCollapsed";
-  const [internalCollapsed, setInternalCollapsed] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false;
-    try {
-      return window.localStorage.getItem(storageKey) === "true";
-    } catch {
-      return false;
-    }
-  });
-
-  const isCollapsed = collapsed ?? internalCollapsed;
-
-  const setCollapsed = (next: boolean | ((current: boolean) => boolean)) => {
-    const resolved = typeof next === "function" ? next(isCollapsed) : next;
-    if (onCollapsedChange) {
-      onCollapsedChange(resolved);
-      return;
-    }
-    setInternalCollapsed(resolved);
-  };
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(storageKey, isCollapsed ? "true" : "false");
-    } catch {
-      // noop
-    }
-  }, [isCollapsed]);
-
-  if (isCollapsed) {
+  if (collapsed) {
     return (
       <Card className="border-border bg-card h-full">
         <CardContent className="h-full p-0">
           <button
             type="button"
             className="flex h-full w-full flex-col items-center justify-center gap-2 text-muted-foreground hover:text-foreground"
-            onClick={() => setCollapsed(false)}
+            onClick={() => onCollapsedChange(false)}
             aria-label="Expand activity feed"
             title="Expand activity feed"
           >
@@ -79,7 +49,7 @@ export default function ActivityFeedPanel({
           <button type="button" onClick={onViewAll} className="text-xs font-medium text-muted-foreground hover:text-foreground">
             View All
           </button>
-          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={() => setCollapsed((v) => !v)} aria-label="Toggle activity feed">
+          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={() => onCollapsedChange(!collapsed)} aria-label="Toggle activity feed">
             {collapsed ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
           </Button>
         </div>
