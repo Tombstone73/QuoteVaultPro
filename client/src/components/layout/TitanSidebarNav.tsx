@@ -67,7 +67,6 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     section: "SALES",
     sectionKey: "sales",
     items: [
-      { id: "dashboard", name: "Dashboard", icon: Home, path: ROUTES.dashboard },
       { id: "customers", name: "Customers", icon: Users, path: ROUTES.customers.list },
       { id: "contacts", name: "Contacts", icon: Contact2, path: ROUTES.contacts.list },
       { id: "quotes", name: "Quotes", icon: FileText, path: ROUTES.quotes.list },
@@ -126,6 +125,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     section: "SYSTEM",
     sectionKey: "system",
     items: [
+      { id: "admin-dashboard", name: "Admin Dashboard", icon: Home, path: ROUTES.system.adminDashboard, roles: ["admin", "owner"] },
       { id: "settings", name: "Settings", icon: Settings, path: ROUTES.settings.root, roles: ["admin", "owner"] },
       { id: "users", name: "Users", icon: UserCog, path: ROUTES.users.list, roles: ["admin", "owner"] },
       { id: "bug-reports", name: "Bug Reports", icon: Bug, path: ROUTES.admin.bugReports, roles: ["admin", "owner"] },
