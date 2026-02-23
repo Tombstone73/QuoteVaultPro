@@ -6,11 +6,11 @@ if (!process.env.DATABASE_URL) {
 }
 
 export default defineConfig({
-  out: "./server/db/migrations",
+  out: "./server/db/migrations_v2",
   schema: "./shared/schema.ts",
   dialect: "postgresql",
   migrations: {
-    table: "__drizzle_migrations",
+    table: "__drizzle_migrations_v2",
     schema: "public",
   },
   dbCredentials: {
