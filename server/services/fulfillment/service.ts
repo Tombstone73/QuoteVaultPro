@@ -138,6 +138,10 @@ export class FulfillmentService {
 
     const parsedShipDate = payload.shipDate ? new Date(payload.shipDate) : null;
 
+    if (payload.shipDate && Number.isNaN(parsedShipDate?.getTime())) {
+      throw new FulfillmentHttpError(400, 'Invalid shipDate', 'VALIDATION_ERROR');
+    }
+
     const updated = await this.shipmentRepo.patchDraftShipment(orgId, shipmentId, {
       carrier: payload.carrier,
       serviceLevel: payload.serviceLevel,

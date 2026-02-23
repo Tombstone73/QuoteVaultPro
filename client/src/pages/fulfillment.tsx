@@ -13,9 +13,12 @@ import {
   Truck,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { ROUTES } from "@/config/routes";
+import { buildReferrer } from "@/lib/nav/smartBack";
 import { FulfillmentDebugPanel } from "@/components/fulfillment/FulfillmentDebugPanel";
 import {
   FulfillmentQueueRow,
+  getOrderDetails,
   getOrderShipments,
   toFulfillmentError,
   useCreatePickupTicketMutation,
@@ -118,7 +121,9 @@ export default function FulfillmentPage() {
         .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))[0];
 
       if (draft?.id) {
-        navigate(`/fulfillment/shipments/${draft.id}${debugEnabled ? "?debug=1" : ""}`);
+        navigate(`/fulfillment/shipments/${draft.id}${debugEnabled ? "?debug=1" : ""}`, {
+          state: { referrer: buildReferrer(location) },
+        });
         return;
       }
 
@@ -129,7 +134,9 @@ export default function FulfillmentPage() {
       });
       setLastResponse(created);
 
-      navigate(`/fulfillment/shipments/${created.shipmentId}${debugEnabled ? "?debug=1" : ""}`);
+      navigate(`/fulfillment/shipments/${created.shipmentId}${debugEnabled ? "?debug=1" : ""}`, {
+        state: { referrer: buildReferrer(location) },
+      });
     } catch (error) {
       const parsed = toFulfillmentError(error);
       setLastError({ code: parsed.code, message: parsed.message });
@@ -147,7 +154,7 @@ export default function FulfillmentPage() {
       setLastResponse(ticket);
       toast({ title: "Pickup ticket ready", description: `Ticket ${ticket.id}` });
       navigate(`/fulfillment?pickupTicketId=${ticket.id}${debugEnabled ? "&debug=1" : ""}`, {
-        state: { pickupTicket: ticket },
+        state: { pickupTicket: ticket, referrer: buildReferrer(location) },
       });
     } catch (error) {
       const parsed = toFulfillmentError(error);
@@ -166,6 +173,22 @@ export default function FulfillmentPage() {
     await handleOpenPickupOrder(row);
   };
 
+  const handleOpenCustomer = async (row: FulfillmentQueueRow) => {
+    try {
+      const order = await getOrderDetails(row.orderId);
+      const customerId = order?.customerId || order?.customer?.id;
+      if (!customerId) {
+        toast({ title: "Customer not linked", description: "This order does not have a linked customer record.", variant: "destructive" });
+        return;
+      }
+
+      navigate(ROUTES.customers.detail(String(customerId)), { state: { referrer: buildReferrer(location) } });
+    } catch (error) {
+      const parsed = toFulfillmentError(error);
+      toast({ title: "Open customer failed", description: parsed.message, variant: "destructive" });
+    }
+  };
+
   const handleCreateCombined = async () => {
     if (disableCombinedReason) return;
     try {
@@ -176,7 +199,9 @@ export default function FulfillmentPage() {
         orderIds: selectedShipOrderIds,
       });
       setLastResponse(response);
-      navigate(`/fulfillment/shipments/${response.shipmentId}${debugEnabled ? "?debug=1" : ""}`);
+      navigate(`/fulfillment/shipments/${response.shipmentId}${debugEnabled ? "?debug=1" : ""}`, {
+        state: { referrer: buildReferrer(location) },
+      });
     } catch (error) {
       const parsed = toFulfillmentError(error);
       setLastError({ code: parsed.code, message: parsed.message });
@@ -185,8 +210,8 @@ export default function FulfillmentPage() {
   };
 
   return (
-    <div className="min-h-full bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100">
-      <header className="sticky top-0 z-30 border-b border-slate-200 bg-background-light dark:border-slate-800 dark:bg-background-dark">
+    <div className="min-h-full bg-background font-display text-foreground">
+      <header className="sticky top-0 z-30 border-b border-border bg-background">
         <div className="flex items-center justify-between gap-4 px-6 py-3">
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-2 text-primary">
@@ -198,7 +223,7 @@ export default function FulfillmentPage() {
             <div className="relative">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
               <input
-                className="w-full rounded-lg border border-slate-200 bg-slate-100 py-2 pl-10 pr-4 text-sm focus:border-primary focus:ring-primary dark:border-slate-800 dark:bg-slate-900/50"
+                className="w-full rounded-lg border border-input bg-muted/30 py-2 pl-10 pr-4 text-sm focus:border-primary focus:ring-primary"
                 placeholder="Search orders, customers, or tracking numbers..."
                 type="text"
                 value={search}
@@ -207,18 +232,18 @@ export default function FulfillmentPage() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <button className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800" type="button">
+            <button className="rounded-lg p-2 text-muted-foreground hover:bg-accent" type="button">
               <Bell className="h-4 w-4" />
             </button>
-            <button className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800" type="button">
+            <button className="rounded-lg p-2 text-muted-foreground hover:bg-accent" type="button">
               <Settings className="h-4 w-4" />
             </button>
           </div>
         </div>
 
-        <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-6 py-2 dark:border-slate-800 dark:bg-slate-900/30">
+        <div className="flex items-center justify-between border-t border-border bg-muted/20 px-6 py-2">
           <div className="flex items-center gap-2 overflow-x-auto">
-            <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-1 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-1 shadow-sm">
               <span className="px-2 text-[10px] font-bold uppercase text-slate-400">Type</span>
               {([
                 ["all", "All"],
@@ -229,21 +254,21 @@ export default function FulfillmentPage() {
                   key={value}
                   type="button"
                   onClick={() => setType(value)}
-                  className={`rounded px-3 py-1 text-xs font-medium ${type === value ? "bg-primary text-white" : "hover:bg-slate-100 dark:hover:bg-slate-800"}`}
+                  className={`rounded px-3 py-1 text-xs font-medium ${type === value ? "bg-primary text-primary-foreground" : "hover:bg-accent"}`}
                 >
                   {label}
                 </button>
               ))}
             </div>
 
-            <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-1 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-1 shadow-sm">
               <span className="px-2 text-[10px] font-bold uppercase text-slate-400">Status</span>
               {statusOptions.map((option) => (
                 <button
                   key={option.value}
                   type="button"
                   onClick={() => setStatus(option.value)}
-                  className={`rounded px-3 py-1 text-xs font-medium ${status === option.value ? "bg-primary text-white" : "hover:bg-slate-100 dark:hover:bg-slate-800"}`}
+                  className={`rounded px-3 py-1 text-xs font-medium ${status === option.value ? "bg-primary text-primary-foreground" : "hover:bg-accent"}`}
                 >
                   {option.label}
                 </button>
@@ -259,7 +284,7 @@ export default function FulfillmentPage() {
                 onChange={(event) => setShowArchived(event.target.checked)}
                 className="h-4 w-4 rounded border-slate-300 text-primary focus:ring-primary"
               />
-              <span className="text-xs font-medium text-slate-600 group-hover:text-slate-900 dark:text-slate-400 dark:group-hover:text-slate-100">Show Archived</span>
+              <span className="text-xs font-medium text-muted-foreground group-hover:text-foreground">Show Archived</span>
             </label>
             <label className="group flex cursor-pointer items-center gap-2">
               <input
@@ -268,9 +293,9 @@ export default function FulfillmentPage() {
                 onChange={(event) => setOverdueOnly(event.target.checked)}
                 className="h-4 w-4 rounded border-slate-300 text-primary focus:ring-primary"
               />
-              <span className="text-xs font-medium text-slate-600 group-hover:text-slate-900 dark:text-slate-400 dark:group-hover:text-slate-100">Overdue Only</span>
+              <span className="text-xs font-medium text-muted-foreground group-hover:text-foreground">Overdue Only</span>
             </label>
-            <button className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium transition-colors hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800" type="button">
+            <button className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium transition-colors hover:bg-accent" type="button">
               <Filter className="h-3.5 w-3.5" />
               More Filters
             </button>
@@ -286,10 +311,10 @@ export default function FulfillmentPage() {
           </div>
         )}
 
-        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900/40">
+        <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
           <table className="w-full border-collapse text-left">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900">
+              <tr className="border-b border-border bg-muted/30">
                 <th className="w-10 px-4 py-4">
                   <input
                     type="checkbox"
@@ -311,13 +336,12 @@ export default function FulfillmentPage() {
                 <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Items Remaining</th>
                 <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Ready Since</th>
                 <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Ship To</th>
-                <th className="px-4 py-4 text-right text-xs font-bold uppercase tracking-wider text-slate-500">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
               {queueQuery.isLoading && (
                 <tr>
-                  <td colSpan={9} className="px-4 py-12 text-center text-sm text-muted-foreground">
+                  <td colSpan={8} className="px-4 py-12 text-center text-sm text-muted-foreground">
                     <div className="inline-flex items-center gap-2">
                       <Loader2 className="h-4 w-4 animate-spin" />
                       Loading queue...
@@ -328,7 +352,7 @@ export default function FulfillmentPage() {
 
               {!queueQuery.isLoading && rows.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-4 py-12 text-center">
+                  <td colSpan={8} className="px-4 py-12 text-center">
                     <div className="mx-auto mb-4 w-fit rounded-full bg-slate-100 p-4 dark:bg-slate-800/50">
                       <Box className="h-8 w-8 text-slate-400" />
                     </div>
@@ -354,7 +378,14 @@ export default function FulfillmentPage() {
                     </td>
                     <td className="px-4 py-4">
                       <div className="flex flex-col">
-                        <span className="text-sm font-bold">#{row.orderNumber}</span>
+                        <button
+                          type="button"
+                          className="w-fit text-sm font-bold text-primary underline-offset-2 hover:underline"
+                          onClick={() => void handleOpen(row)}
+                          disabled={busyOrderId === row.orderId}
+                        >
+                          #{row.orderNumber}
+                        </button>
                         {row.overdue && (
                           <span className="flex items-center gap-0.5 text-[10px] font-bold text-red-500">
                             <AlertTriangle className="h-3 w-3" /> OVERDUE
@@ -362,7 +393,15 @@ export default function FulfillmentPage() {
                         )}
                       </div>
                     </td>
-                    <td className="px-4 py-4 text-sm font-medium">{row.customerName}</td>
+                    <td className="px-4 py-4 text-sm font-medium">
+                      <button
+                        type="button"
+                        className="text-primary underline-offset-2 hover:underline"
+                        onClick={() => void handleOpenCustomer(row)}
+                      >
+                        {row.customerName}
+                      </button>
+                    </td>
                     <td className="px-4 py-4">
                       <span className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-bold ${row.fulfillmentType === "SHIP" ? "border border-primary/20 bg-primary/10 text-primary" : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"}`}>
                         {row.fulfillmentType === "SHIP" ? <Truck className="h-3.5 w-3.5" /> : <Factory className="h-3.5 w-3.5" />}
@@ -377,16 +416,6 @@ export default function FulfillmentPage() {
                     <td className="px-4 py-4 text-sm font-medium">{row.itemsRemaining}</td>
                     <td className="px-4 py-4 text-sm text-slate-500">{readySince}</td>
                     <td className="px-4 py-4 text-sm text-slate-500">{row.shipTo}</td>
-                    <td className="px-4 py-4 text-right">
-                      <button
-                        type="button"
-                        className="rounded bg-primary px-3 py-1 text-xs font-bold text-white transition-colors hover:bg-primary/90 disabled:opacity-60"
-                        onClick={() => void handleOpen(row)}
-                        disabled={busyOrderId === row.orderId}
-                      >
-                        {busyOrderId === row.orderId ? "..." : "OPEN"}
-                      </button>
-                    </td>
                   </tr>
                 );
               })}
