@@ -124,6 +124,8 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
     if (!isProd()) {
       console.warn('[TitanOS] Running DEV environment build');
     }
+    // DEBUG: log resolved env value to confirm Vercel injection — remove when confirmed
+    console.log('[TitanOS DEBUG] Resolved App Environment:', getAppEnv());
   }, []);
 
   // Prefix document.title with [DEV] when not in prod
@@ -268,6 +270,10 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
             {getEnvLabel()}
           </Badge>
         )}
+        {/* DEBUG: visible env value — remove when confirmed */}
+        <span className="text-xs text-muted-foreground select-none">
+          ENV: {getAppEnv()}
+        </span>
       </div>
 
       {/* Center - Search (hidden on mobile) */}
