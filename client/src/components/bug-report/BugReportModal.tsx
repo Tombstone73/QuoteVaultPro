@@ -30,11 +30,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useToast } from "@/hooks/use-toast";
 
 // ─── Zod schema (mirrors backend validation) ─────────────────────────────────
 
 const bugReportSchema = z.object({
+  type:        z.enum(["bug", "feature"]).default("bug"),
   title:       z.string().min(3, "Title must be at least 3 characters").max(200),
   description: z.string().min(3, "Description must be at least 3 characters").max(5000),
   severity:    z.enum(["low", "medium", "high", "critical"]),
@@ -81,7 +83,8 @@ async function createBugReport(payload: object): Promise<{ id: string }> {
     throw new Error(body.message ?? "Failed to submit bug report");
   }
 
-  return res.json();
+  const body = await res.json();
+  return (body.data ?? {}) as { id: string };
 }
 
 // ─── Severity display helpers ─────────────────────────────────────────────────
@@ -116,6 +119,7 @@ export function BugReportModal({ open, onClose }: BugReportModalProps) {
   const form = useForm<BugReportFormValues>({
     resolver: zodResolver(bugReportSchema),
     defaultValues: {
+      type:        "bug",
       title:       "",
       description: "",
       severity:    "medium",
@@ -126,12 +130,20 @@ export function BugReportModal({ open, onClose }: BugReportModalProps) {
   const mutation = useMutation({
     mutationFn: async (values: BugReportFormValues) => {
       let screenshotUrls: string[] = [];
+      let screenshotUploadWarning: string | null = null;
 
       if (values.screenshots && values.screenshots.length > 0) {
-        screenshotUrls = await uploadScreenshots(values.screenshots);
+        try {
+          screenshotUrls = await uploadScreenshots(values.screenshots);
+        } catch (err) {
+          screenshotUploadWarning = err instanceof Error
+            ? err.message
+            : "Screenshot upload failed";
+        }
       }
 
-      return createBugReport({
+      const created = await createBugReport({
+        type:         values.type,
         title:        values.title,
         description:  values.description,
         severity:     values.severity,
@@ -140,9 +152,21 @@ export function BugReportModal({ open, onClose }: BugReportModalProps) {
         screenHeight: typeof window !== "undefined" ? window.screen.height : undefined,
         screenshotUrls,
       });
+
+      return {
+        ...created,
+        screenshotUploadWarning,
+      };
     },
-    onSuccess: () => {
-      toast({ title: "Bug report submitted", description: "Thank you! We'll look into it." });
+    onSuccess: (result) => {
+      toast({ title: "Feedback submitted", description: "Thank you! We'll look into it." });
+      if (result.screenshotUploadWarning) {
+        toast({
+          title: "Submitted without screenshots",
+          description: result.screenshotUploadWarning,
+          variant: "destructive",
+        });
+      }
       form.reset();
       setSelectedFiles([]);
       onClose();
@@ -202,10 +226,10 @@ export function BugReportModal({ open, onClose }: BugReportModalProps) {
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Bug className="h-5 w-5 text-destructive" />
-            Report a Bug
+            Send Feedback
           </DialogTitle>
           <DialogDescription>
-            Describe the issue you encountered. Your session context will be captured automatically.
+            Send a bug report or feature request. Your session context will be captured automatically.
           </DialogDescription>
         </DialogHeader>
 
@@ -214,6 +238,34 @@ export function BugReportModal({ open, onClose }: BugReportModalProps) {
             onSubmit={form.handleSubmit((v) => mutation.mutate(v))}
             className="space-y-4"
           >
+            {/* Feedback type */}
+            <FormField
+              control={form.control}
+              name="type"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Feedback type</FormLabel>
+                  <FormControl>
+                    <RadioGroup
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      className="flex items-center gap-6"
+                    >
+                      <label htmlFor="feedback-type-bug" className="flex items-center gap-2 text-sm">
+                        <RadioGroupItem value="bug" id="feedback-type-bug" />
+                        Bug Report
+                      </label>
+                      <label htmlFor="feedback-type-feature" className="flex items-center gap-2 text-sm">
+                        <RadioGroupItem value="feature" id="feedback-type-feature" />
+                        Feature Request
+                      </label>
+                    </RadioGroup>
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
             {/* Title */}
             <FormField
               control={form.control}
@@ -222,7 +274,7 @@ export function BugReportModal({ open, onClose }: BugReportModalProps) {
                 <FormItem>
                   <FormLabel>Title</FormLabel>
                   <FormControl>
-                    <Input placeholder="Brief summary of the bug…" {...field} />
+                    <Input placeholder="Brief summary of your feedback…" {...field} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -264,7 +316,7 @@ export function BugReportModal({ open, onClose }: BugReportModalProps) {
                   <FormLabel>Description</FormLabel>
                   <FormControl>
                     <Textarea
-                      placeholder="Steps to reproduce, expected vs actual behaviour…"
+                      placeholder="Describe the issue or request in detail…"
                       className="min-h-[120px] resize-y"
                       {...field}
                     />
@@ -341,7 +393,7 @@ export function BugReportModal({ open, onClose }: BugReportModalProps) {
                 Cancel
               </Button>
               <Button type="submit" disabled={mutation.isPending}>
-                {mutation.isPending ? "Submitting…" : "Submit report"}
+                {mutation.isPending ? "Submitting…" : "Submit feedback"}
               </Button>
             </DialogFooter>
           </form>
