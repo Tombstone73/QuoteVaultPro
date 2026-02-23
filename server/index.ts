@@ -12,6 +12,17 @@ import { listQuickBooksConnectedOrganizationIds, runQuickBooksSyncWorkerForOrg }
 import { isWorkerEnabled, logWorkerStatus, getWorkerIntervalOverride, logWorkerTick } from "./workers/workerGates";
 
 const app = express();
+const bootstrapModeEnabled = (process.env.BOOTSTRAP_MODE ?? "").trim().toLowerCase() === "true";
+
+if (bootstrapModeEnabled) {
+  console.warn("[BOOTSTRAP] ****************************************************************");
+  console.warn("[BOOTSTRAP] BOOTSTRAP_MODE=true — bootstrap admin endpoint is ENABLED.");
+  console.warn("[BOOTSTRAP] This must be temporary. Disable BOOTSTRAP_MODE after first use.");
+  if (!(process.env.BOOTSTRAP_TOKEN ?? "").trim()) {
+    console.warn("[BOOTSTRAP] BOOTSTRAP_TOKEN is missing while bootstrap mode is enabled.");
+  }
+  console.warn("[BOOTSTRAP] ****************************************************************");
+}
 
 // CORS configuration for production frontend
 // Note: Same-origin requests from Vercel proxy (www.printershero.com/api/* → Railway)
