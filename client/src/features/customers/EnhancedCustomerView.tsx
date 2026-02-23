@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { formatDistanceToNow, format } from "date-fns";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import CustomerForm from "@/components/customer-form";
@@ -22,7 +22,6 @@ import {
   MoreHorizontal,
   Package,
   Edit,
-  ArrowLeft,
   Receipt,
   Users,
   SlidersHorizontal,
@@ -1852,6 +1851,7 @@ export default function EnhancedCustomerView({
   onBack,
   onSectionHome,
 }: EnhancedCustomerViewProps) {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<TabType>("orders");
   const [period, setPeriod] = useState<TimePeriod>("month");
   const [searchQuery, setSearchQuery] = useState("");
@@ -1900,12 +1900,13 @@ export default function EnhancedCustomerView({
             The customer you're looking for doesn't exist or has been removed.
           </p>
           {!isEmbedded && (
-            <Link to={ROUTES.customers.list}>
-              <Button className="bg-titan-accent hover:bg-titan-accent-hover text-white rounded-titan-md">
-                <ArrowLeft className="w-4 h-4 mr-2" />
-                Back to Customers
-              </Button>
-            </Link>
+            <div className="flex items-center justify-center">
+              <BackNavControls
+                onBack={() => (onBack ? onBack() : navigate(ROUTES.customers.list))}
+                sectionLabel="Customers"
+                onSectionHome={() => (onSectionHome ? onSectionHome() : navigate(ROUTES.customers.list))}
+              />
+            </div>
           )}
         </div>
       </div>
