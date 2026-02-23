@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef, Fragment } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,7 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { ArrowLeft, Plus, Search, Calendar, DollarSign, Package, Check, X, Eye, ChevronUp, ChevronDown, Copy, Edit, Printer, Loader2, FileText, Download } from "lucide-react";
+import { Plus, Search, Calendar, DollarSign, Package, Check, X, Eye, ChevronUp, ChevronDown, Copy, Edit, Printer, Loader2, FileText, Download } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrders, type OrderRow, type OrdersListResponse, orderDetailQueryKey, orderTimelineQueryKey } from "@/hooks/useOrders";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -17,6 +17,8 @@ import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import { Page, PageHeader, ContentLayout, DataCard, ColumnConfig, useColumnSettings, isColumnVisible, getColumnOrder, getColumnDisplayName, type ColumnDefinition, type ColumnState } from "@/components/titan";
 import { ROUTES } from "@/config/routes";
+import { buildReferrer } from "@/lib/nav/smartBack";
+import { useSmartBack } from "@/hooks/useSmartBack";
 import { getDisplayOrderNumber } from "@/lib/orderUtils";
 // TitanOS State Architecture
 import { Badge } from "@/components/ui/badge";
@@ -26,6 +28,7 @@ import { useAssignOrderStatusPill, useOrderStatusPills } from "@/hooks/useOrderS
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
+import BackNavControls from "@/components/BackNavControls";
 
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "paymentStatus";
 
@@ -122,7 +125,9 @@ export default function Orders() {
   const { user } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
+  const { onSmartBack } = useSmartBack();
   
   const [search, setSearch] = useState("");
   const [stateFilter, setStateFilter] = useState<OrderState | "all">("open"); // TitanOS: Default to open (WIP)
@@ -477,7 +482,7 @@ export default function Orders() {
       case "orderNumber": {
         const { displayNumber, isTest } = getDisplayOrderNumber(row);
         return (
-          <Link to={ROUTES.orders.detail(row.id)} className="text-blue-600 hover:underline font-medium flex items-center gap-1.5">
+          <Link to={ROUTES.orders.detail(row.id)} state={{ referrer: buildReferrer(location) }} className="text-blue-600 hover:underline font-medium flex items-center gap-1.5">
             <span>{displayNumber}</span>
             {isTest && (
               <span className="text-[10px] bg-yellow-100 text-yellow-800 px-1.5 py-0.5 rounded font-medium">Test</span>
@@ -747,7 +752,7 @@ export default function Orders() {
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => navigate(ROUTES.orders.detail(row.id))}
+              onClick={() => navigate(ROUTES.orders.detail(row.id), { state: { referrer: buildReferrer(location) } })}
             >
               <Eye className="w-4 h-4" />
             </Button>
@@ -792,9 +797,7 @@ export default function Orders() {
         subtitle="Manage production orders and track fulfillment"
         className="pb-3"
         backButton={
-          <Button variant="ghost" size="sm" onClick={() => navigate(ROUTES.dashboard)}>
-            <ArrowLeft className="w-5 h-5" />
-          </Button>
+          <BackNavControls onBack={onSmartBack} />
         }
         actions={
           <Link to={ROUTES.orders.new}>
@@ -970,7 +973,7 @@ export default function Orders() {
                       className="cursor-pointer hover:bg-muted/50"
                       onClick={(e) => {
                         if (!shouldIgnoreRowNav(e)) {
-                          navigate(ROUTES.orders.detail(order.id));
+                          navigate(ROUTES.orders.detail(order.id), { state: { referrer: buildReferrer(location) } });
                         }
                       }}
                     >

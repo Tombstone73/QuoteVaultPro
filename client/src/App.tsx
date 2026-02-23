@@ -14,7 +14,8 @@ import ForgotPassword from "@/pages/forgot-password";
 import ResetPassword from "@/pages/reset-password";
 import SetPasswordPage from "@/pages/set-password";
 import ForcePasswordChange from "@/pages/force-password-change";
-import Home from "@/pages/home";
+import TitanDashboard from "@/pages/titan-dashboard";
+import AdminDashboard from "@/pages/admin-dashboard";
 import { QuoteEditorPage } from "@/features/quotes/editor/QuoteEditorPage";
 import CustomerQuotes from "@/pages/customer-quotes";
 import InternalQuotes from "@/pages/internal-quotes";
@@ -42,6 +43,7 @@ import JobDetail from "@/pages/job-detail";
 import ProductTypesSettings from "@/pages/settings/product-types";
 import PricingFormulasSettings from "@/pages/settings/pricing-formulas";
 import SettingsIntegrations from "@/pages/settings/integrations";
+import AdminTools from "@/pages/settings/admin-tools";
 import InvoicesListPage from "@/pages/invoices";
 import InvoiceDetailPage from "@/pages/invoice-detail";
 import MaterialsListPage from "@/pages/materials";
@@ -53,12 +55,19 @@ import PurchaseOrderDetailPage from "@/pages/purchase-order-detail";
 import ProductsPage from "@/pages/products";
 import ProductEditorPage from "@/pages/ProductEditorPage";
 import PrepressPage from "@/pages/prepress";
+import PrepressProductionPageV2 from "@/pages/PrepressProductionPageV2";
 import ProductBuilderV2Page from "@/pages/product-builder-v2";
 import PlatformOrgCreatePage from "@/pages/platform/PlatformOrgCreatePage";
 import AcceptInvitePage from "@/pages/accept-invite";
 import SelectOrgPage from "@/pages/SelectOrgPage";
 import BugReportsPage from "@/pages/admin/BugReportsPage";
+import ProductImportExport from "@/pages/admin/ProductImportExport";
 import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
+import FulfillmentPage from "@/pages/fulfillment";
+import FulfillmentShipmentDetailPage from "@/pages/fulfillment-shipment-detail";
+import LabelsPage from "@/pages/labels";
+import ReportsPage from "@/pages/reports";
+import FinancePage from "@/pages/finance";
 
 function Router() {
   const { user, isAuthenticated, isLoading, mustChangePassword } = useAuth();
@@ -108,15 +117,18 @@ function Router() {
   return (
     <Routes>
       {/* Redirect login to dashboard if already authenticated */}
-      <Route path="/login" element={<Navigate to="/dashboard" replace />} />
+      <Route path="/login" element={<Navigate to="/" replace />} />
 
       {/* All authenticated routes share the AppLayout */}
       <Route element={<AppLayout />}>
-        {/* Root redirect to dashboard */}
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        {/* Titan landing dashboard */}
+        <Route path="/" element={<TitanDashboard />} />
 
-        {/* Dashboard */}
-        <Route path="/dashboard" element={<Home />} />
+        {/* Admin dashboard */}
+        <Route path="/system/admin" element={<AdminDashboard />} />
+
+        {/* Legacy dashboard route compatibility */}
+        <Route path="/dashboard" element={<Navigate to="/system/admin" replace />} />
 
         {/* Portal routes (customer-facing) */}
         <Route path="/portal/my-quotes" element={<MyQuotes />} />
@@ -136,6 +148,7 @@ function Router() {
         <Route path="/admin/products" element={<ProductsPage />} />
         <Route path="/admin/product-types" element={<ProductTypesSettings />} />
         <Route path="/admin/bug-reports" element={<BugReportsPage />} />
+        <Route path="/admin/products/import-export" element={<ProductImportExport />} />
         <Route path="/users" element={<UserManagement />} />
         <Route path="/admin" element={<Admin />} />
         
@@ -177,8 +190,16 @@ function Router() {
         <Route path="/production/flatbed" element={<ProductionBoard />} />
         <Route path="/production/roll" element={<ProductionBoard />} />
         <Route path="/production/apparel" element={<ProductionBoard />} />
+        <Route path="/production/prepress" element={<PrepressProductionPageV2 />} />
         <Route path="/production/jobs/:jobId" element={<ProductionJobDetailPage />} />
         <Route path="/jobs/:id" element={<JobDetail />} />
+
+        {/* Fulfillment routes */}
+        <Route path={ROUTES.fulfillment.list} element={<FulfillmentPage />} />
+        <Route path="/fulfillment/shipments/:shipmentId" element={<FulfillmentShipmentDetailPage />} />
+        <Route path={ROUTES.labels} element={<LabelsPage />} />
+        <Route path={ROUTES.reports} element={<ReportsPage />} />
+        <Route path={ROUTES.finance} element={<FinancePage />} />
 
         {/* Product Catalog (standalone) */}
         <Route path="/products" element={<ProductsPage />} />
@@ -205,6 +226,7 @@ function Router() {
           <Route path="inventory" element={<InventorySettings />} />
           <Route path="notifications" element={<NotificationsSettings />} />
           <Route path="appearance" element={<AppearanceSettings />} />
+          <Route path="admin-tools" element={<AdminTools />} />
         </Route>
 
         {/* Misc */}

@@ -43,6 +43,9 @@ export const orderDetailQueryKey = (orderId: string) =>
 export const orderTimelineQueryKey = (orderId: string) => 
   ["orders", "timeline", orderId] as const;
 
+export const orderWorkflowQueryKey = () =>
+  ["orders", "workflow"] as const;
+
 // ============================================================
 // TYPE DEFINITIONS
 // ============================================================
@@ -54,6 +57,8 @@ export type Order = {
   customerId: string;
   contactId: string | null;
   status: string;
+  workflowStatusId?: string | null;
+  canonicalState?: "new" | "active" | "ready" | "completed" | "canceled" | "on_hold" | string | null;
   // Billing readiness (persisted)
   billingStatus?: "not_ready" | "ready" | "billed" | string;
   billingReadyAt?: string | null;
@@ -227,6 +232,100 @@ export function useOrder(id: string | undefined) {
       return response.json();
     },
     enabled: !!id,
+  });
+}
+
+export type OrderWorkflowStatus = {
+  id: string;
+  workflowVersionId: string;
+  key: string;
+  label: string;
+  category: "new" | "active" | "ready" | "completed" | "canceled" | "on_hold";
+  color?: string | null;
+  sortOrder: number;
+  isDefaultForNew: boolean;
+  isActive: boolean;
+};
+
+export type OrderWorkflowResponse = {
+  version: {
+    id: string;
+    name: string;
+    isActive: boolean;
+    publishedAt?: string | null;
+    createdAt: string;
+  };
+  statuses: OrderWorkflowStatus[];
+  transitions: Array<{ id: string; fromStatusId: string; toStatusId: string }>;
+};
+
+export function useOrderWorkflow() {
+  return useQuery<OrderWorkflowResponse>({
+    queryKey: orderWorkflowQueryKey(),
+    queryFn: async () => {
+      const response = await fetch("/api/workflow/order", { credentials: "include" });
+      const data = await response.json();
+      if (!response.ok || !data?.success) {
+        throw new Error(data?.message || "Failed to load order workflow");
+      }
+      return data.data as OrderWorkflowResponse;
+    },
+    staleTime: 60_000,
+  });
+}
+
+export function useSaveOrderWorkflowDraft() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async (payload: { name?: string; statuses?: Array<Partial<OrderWorkflowStatus>> }) => {
+      const response = await fetch("/api/workflow/order/draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        credentials: "include",
+      });
+      const data = await response.json();
+      if (!response.ok || !data?.success) {
+        throw new Error(data?.message || "Failed to save draft workflow");
+      }
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: orderWorkflowQueryKey() });
+      toast({ title: "Success", description: "Workflow draft saved" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+}
+
+export function usePublishOrderWorkflow() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/workflow/order/publish", {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await response.json();
+      if (!response.ok || !data?.success) {
+        throw new Error(data?.message || "Failed to publish workflow");
+      }
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: orderWorkflowQueryKey() });
+      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+      toast({ title: "Success", description: "Workflow published" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
   });
 }
 
@@ -674,7 +773,7 @@ export function useTransitionOrderStatus(orderId: string) {
 
   return useMutation({
     mutationFn: async ({ toStatus, reason }: { toStatus: string; reason?: string }) => {
-      const response = await fetch(`/api/orders/${orderId}/transition`, {
+      const response = await fetch(`/api/orders/${orderId}/status`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ toStatus, reason }),

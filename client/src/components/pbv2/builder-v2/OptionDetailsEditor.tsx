@@ -1,5 +1,6 @@
 import React from 'react';
-import { Plus, ChevronDown, ChevronUp, AlertCircle, Trash2 } from 'lucide-react';
+import { Plus, ChevronDown, ChevronUp, AlertCircle, Trash2, Check, ChevronsUpDown } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -7,7 +8,30 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Command, CommandEmpty, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command';
+import { cn } from '@/lib/utils';
 import type { EditorOption } from '@/lib/pbv2/pbv2ViewModel';
+import { CreateMaterialDialog } from '@/features/materials/CreateMaterialDialog';
+import { useMaterial, useMaterialsSearch, type MaterialSearchItem } from '@/hooks/useMaterials';
+import { useAuth } from '@/hooks/useAuth';
+
+type QuantityBasis = 'area_sqft' | 'perimeter_ft' | 'linear_ft' | 'each' | 'fixed';
+
+function impliedUomForBasis(basis: QuantityBasis): 'sqft' | 'ft' | 'each' {
+  if (basis === 'area_sqft') return 'sqft';
+  if (basis === 'perimeter_ft' || basis === 'linear_ft') return 'ft';
+  return 'each';
+}
+
+function normalizeMaterialUom(value: string | null | undefined): 'sqft' | 'ft' | 'each' | null {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return null;
+  if (raw === 'sqft' || raw === 'sf' || raw === 'square_foot' || raw === 'square_feet') return 'sqft';
+  if (raw === 'ft' || raw === 'foot' || raw === 'feet' || raw === 'linear_ft') return 'ft';
+  if (raw === 'each' || raw === 'ea' || raw === 'sheet' || raw === 'roll') return 'each';
+  return null;
+}
 
 interface OptionDetailsEditorProps {
   option: EditorOption;
@@ -38,6 +62,20 @@ export function OptionDetailsEditor({
   editingChoiceValue,
   setEditingChoiceValue
 }: OptionDetailsEditorProps) {
+  const queryClient = useQueryClient();
+  const auth = useAuth();
+  const canCreateMaterials = !auth.isLoading && !!auth.user && (
+    auth.isAdmin ||
+    auth.user?.role === 'owner' ||
+    auth.user?.role === 'admin'
+  );
+
+  const [isAddMaterialOpen, setIsAddMaterialOpen] = React.useState(false);
+  const [addMaterialTarget, setAddMaterialTarget] = React.useState<{ choiceIdx: number; entryIdx: number } | null>(null);
+  const [recentlyCreatedByRowKey, setRecentlyCreatedByRowKey] = React.useState<Record<string, MaterialSearchItem>>({});
+
+  const getRowKey = React.useCallback((choiceIdx: number, entryIdx: number) => `${choiceIdx}:${entryIdx}`, []);
+
   // Get actual node data from tree
   const nodeData = React.useMemo(() => {
     const nodesRaw = treeJson?.nodes;
@@ -75,6 +113,14 @@ export function OptionDetailsEditor({
   const hasEmptyLabels = choices.some((c: any) => !c.label?.trim());
   const hasEmptyValues = choices.some((c: any) => !c.value?.trim());
   const hasInvalidDefault = defaultValue && !choices.some((c: any) => c.value === defaultValue);
+
+  const quantityBasisOptions: Array<{ value: "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed"; label: string }> = [
+    { value: "area_sqft", label: "Area (sqft)" },
+    { value: "perimeter_ft", label: "Perimeter (ft)" },
+    { value: "linear_ft", label: "Linear (ft)" },
+    { value: "each", label: "Each" },
+    { value: "fixed", label: "Fixed Qty" },
+  ];
 
   return (
     <div className="space-y-4">
@@ -488,6 +534,177 @@ export function OptionDetailsEditor({
                               <div className="text-xs text-slate-500 italic">No pricing impacts defined</div>
                             )}
                           </div>
+
+                          <div className="mt-3 pt-3 border-t border-slate-700">
+                            <div className="flex items-center justify-between mb-2">
+                              <div>
+                                <Label className="text-xs text-slate-400">Materials / Inventory</Label>
+                                <p className="text-[11px] text-slate-500 mt-0.5">Planned material usage metadata for Prepress</p>
+                              </div>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => {
+                                  const currentConsumption = Array.isArray(choice.inventoryConsumption) ? choice.inventoryConsumption : [];
+                                  onUpdateChoice(option.id, choice.value, {
+                                    inventoryConsumption: [
+                                      ...currentConsumption,
+                                      {
+                                        materialId: "",
+                                        quantityBasis: "area_sqft",
+                                        multiplier: 1,
+                                      },
+                                    ],
+                                  });
+                                }}
+                                className="h-6 text-xs text-slate-400 hover:text-slate-200"
+                              >
+                                <Plus className="h-3 w-3 mr-1" />
+                                Add Material
+                              </Button>
+                            </div>
+
+                            {Array.isArray(choice.inventoryConsumption) && choice.inventoryConsumption.length > 0 ? (
+                              <div className="space-y-2">
+                                {choice.inventoryConsumption.map((entry: any, entryIdx: number) => {
+                                  const basis = entry?.quantityBasis || "area_sqft";
+                                  const showFixedQty = basis === "fixed" || basis === "each";
+                                  const rowKey = getRowKey(index, entryIdx);
+
+                                  const updateEntry = (entryUpdates: Record<string, unknown>) => {
+                                    const updated = [...(choice.inventoryConsumption || [])];
+                                    updated[entryIdx] = { ...updated[entryIdx], ...entryUpdates };
+                                    onUpdateChoice(option.id, choice.value, { inventoryConsumption: updated });
+                                  };
+
+                                  return (
+                                    <div key={entryIdx} className="bg-[#0f172a] border border-slate-600 rounded p-2 space-y-2">
+                                      <div className="flex items-start gap-2">
+                                        <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-2">
+                                          <div>
+                                            <Label className="text-xs text-slate-500 mb-1 block">Material ID *</Label>
+                                            <MaterialIdSearchField
+                                              value={entry?.materialId ?? ""}
+                                              onChange={(nextMaterialId) => updateEntry({ materialId: nextMaterialId })}
+                                              quantityBasis={basis as QuantityBasis}
+                                              onRequestAddMaterial={() => {
+                                                if (!canCreateMaterials) return;
+                                                setAddMaterialTarget({ choiceIdx: index, entryIdx });
+                                                setIsAddMaterialOpen(true);
+                                              }}
+                                              createdMaterialOverride={recentlyCreatedByRowKey[rowKey] ?? null}
+                                              canCreateMaterials={canCreateMaterials}
+                                            />
+                                          </div>
+
+                                          <div>
+                                            <Label className="text-xs text-slate-500 mb-1 block">Quantity Basis</Label>
+                                            <Select
+                                              value={basis}
+                                              onValueChange={(value) => {
+                                                const nextBasis = value as "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed";
+                                                const next: Record<string, unknown> = { quantityBasis: nextBasis };
+                                                if (nextBasis !== "fixed" && nextBasis !== "each") {
+                                                  next.fixedQty = undefined;
+                                                }
+                                                updateEntry(next);
+                                              }}
+                                            >
+                                              <SelectTrigger className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7">
+                                                <SelectValue />
+                                              </SelectTrigger>
+                                              <SelectContent>
+                                                {quantityBasisOptions.map((qb) => (
+                                                  <SelectItem key={qb.value} value={qb.value}>{qb.label}</SelectItem>
+                                                ))}
+                                              </SelectContent>
+                                            </Select>
+                                          </div>
+
+                                          <div>
+                                            <Label className="text-xs text-slate-500 mb-1 block">Multiplier</Label>
+                                            <Input
+                                              type="number"
+                                              step="0.01"
+                                              min="0.01"
+                                              value={entry?.multiplier ?? 1}
+                                              onChange={(e) => {
+                                                const val = Number(e.target.value);
+                                                updateEntry({ multiplier: Number.isFinite(val) && val > 0 ? val : 1 });
+                                              }}
+                                              className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7"
+                                            />
+                                          </div>
+
+                                          <div>
+                                            <Label className="text-xs text-slate-500 mb-1 block">Waste % (optional)</Label>
+                                            <Input
+                                              type="number"
+                                              step="0.01"
+                                              min="0"
+                                              max="100"
+                                              value={entry?.wastePercent ?? ""}
+                                              onChange={(e) => {
+                                                const raw = e.target.value;
+                                                if (raw === "") {
+                                                  updateEntry({ wastePercent: undefined });
+                                                  return;
+                                                }
+                                                const val = Number(raw);
+                                                if (!Number.isFinite(val)) return;
+                                                updateEntry({ wastePercent: Math.max(0, Math.min(100, val)) });
+                                              }}
+                                              className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7"
+                                            />
+                                          </div>
+
+                                          {showFixedQty && (
+                                            <div>
+                                              <Label className="text-xs text-slate-500 mb-1 block">Fixed Qty {basis === "fixed" ? "*" : "(optional)"}</Label>
+                                              <Input
+                                                type="number"
+                                                step="0.01"
+                                                min="0"
+                                                value={entry?.fixedQty ?? ""}
+                                                onChange={(e) => {
+                                                  const raw = e.target.value;
+                                                  if (raw === "") {
+                                                    updateEntry({ fixedQty: undefined });
+                                                    return;
+                                                  }
+                                                  const val = Number(raw);
+                                                  if (!Number.isFinite(val)) return;
+                                                  updateEntry({ fixedQty: Math.max(0, val) });
+                                                }}
+                                                className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7"
+                                              />
+                                            </div>
+                                          )}
+                                        </div>
+
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={() => {
+                                            const updated = [...(choice.inventoryConsumption || [])];
+                                            updated.splice(entryIdx, 1);
+                                            onUpdateChoice(option.id, choice.value, { inventoryConsumption: updated });
+                                          }}
+                                          className="text-red-400 hover:text-red-300 h-6 w-6 p-0 mt-1"
+                                        >
+                                          <Trash2 className="h-3 w-3" />
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <div className="text-xs text-slate-500 italic">No materials defined</div>
+                            )}
+                          </div>
                         </div>
 
                         <Button
@@ -701,6 +918,210 @@ export function OptionDetailsEditor({
           {duplicateValues.size > 0 && <div className="text-xs text-red-400">• Duplicate choice values detected</div>}
         </div>
       )}
+
+      {canCreateMaterials ? (
+        <CreateMaterialDialog
+          open={isAddMaterialOpen}
+          onOpenChange={setIsAddMaterialOpen}
+          hideTrigger
+          onCreated={async (material) => {
+            const target = addMaterialTarget;
+            if (!target || !material?.id) {
+              setAddMaterialTarget(null);
+              return;
+            }
+
+            const targetChoice = choices[target.choiceIdx];
+            if (!targetChoice) {
+              setAddMaterialTarget(null);
+              return;
+            }
+
+            const currentConsumption = Array.isArray(targetChoice.inventoryConsumption) ? targetChoice.inventoryConsumption : [];
+            const nextConsumption = [...currentConsumption];
+            if (!nextConsumption[target.entryIdx]) {
+              setAddMaterialTarget(null);
+              return;
+            }
+
+            nextConsumption[target.entryIdx] = {
+              ...nextConsumption[target.entryIdx],
+              materialId: material.id,
+            };
+
+            onUpdateChoice(option.id, targetChoice.value, { inventoryConsumption: nextConsumption });
+
+            const rowKey = getRowKey(target.choiceIdx, target.entryIdx);
+            setRecentlyCreatedByRowKey((prev) => ({
+              ...prev,
+              [rowKey]: {
+                id: material.id,
+                name: material.name,
+                unitOfMeasure: material.unitOfMeasure || '',
+                isActive: true,
+              },
+            }));
+
+            await queryClient.invalidateQueries({ queryKey: ['/api/materials'] });
+            setAddMaterialTarget(null);
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function MaterialIdSearchField({
+  value,
+  onChange,
+  quantityBasis,
+  onRequestAddMaterial,
+  createdMaterialOverride,
+  canCreateMaterials,
+}: {
+  value: string;
+  onChange: (materialId: string) => void;
+  quantityBasis: QuantityBasis;
+  onRequestAddMaterial: () => void;
+  createdMaterialOverride?: MaterialSearchItem | null;
+  canCreateMaterials: boolean;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const [searchText, setSearchText] = React.useState('');
+
+  const materialsQuery = useMaterialsSearch(searchText, { limit: 20, includeInactive: false });
+  const searchResults = materialsQuery.data || [];
+
+  const selectedInResults = React.useMemo(
+    () => searchResults.find((m) => m.id === value),
+    [searchResults, value]
+  );
+
+  // Resolve saved IDs that are not present in current search results.
+  const materialByIdQuery = useMaterial(value && !selectedInResults ? value : undefined);
+  const resolvedById = materialByIdQuery.data;
+
+  const selectedFromOverride = createdMaterialOverride && createdMaterialOverride.id === value
+    ? createdMaterialOverride
+    : null;
+
+  const resolvedIsActive = resolvedById && typeof resolvedById === 'object' && 'isActive' in resolvedById
+    ? (resolvedById as { isActive?: boolean }).isActive !== false
+    : true;
+
+  const selectedMaterial = selectedInResults || selectedFromOverride || (resolvedById
+    ? {
+        id: resolvedById.id,
+        name: resolvedById.name,
+        unitOfMeasure: resolvedById.unitOfMeasure,
+        isActive: resolvedIsActive,
+      }
+    : null);
+
+  const isMissingMaterial = !!value && !selectedMaterial && !materialByIdQuery.isLoading;
+
+  const impliedUom = impliedUomForBasis(quantityBasis);
+  const selectedMaterialUom = normalizeMaterialUom(selectedMaterial?.unitOfMeasure);
+  const hasUomMismatch = !!selectedMaterial && !!selectedMaterialUom && selectedMaterialUom !== impliedUom;
+
+  return (
+    <div className="space-y-1">
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            className="w-full justify-between bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7"
+          >
+            <span className="truncate text-left">
+              {selectedMaterial
+                ? `${selectedMaterial.name}`
+                : value
+                  ? `Missing material (${value})`
+                  : 'Select material...'}
+            </span>
+            <ChevronsUpDown className="ml-2 h-3 w-3 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[420px] p-0" align="start">
+          <Command>
+            <CommandInput
+              placeholder="Search materials by name or SKU..."
+              value={searchText}
+              onValueChange={setSearchText}
+            />
+            <CommandList>
+              <CommandEmpty>
+                {materialsQuery.isLoading ? 'Searching materials...' : 'No materials found'}
+              </CommandEmpty>
+              {searchResults.map((material) => (
+                <CommandItem
+                  key={material.id}
+                  value={`${material.name} ${material.id} ${material.unitOfMeasure}`}
+                  onSelect={() => {
+                    onChange(material.id);
+                    setOpen(false);
+                  }}
+                  className="text-xs"
+                >
+                  <Check
+                    className={cn('mr-2 h-3 w-3', value === material.id ? 'opacity-100' : 'opacity-0')}
+                  />
+                  <div className="flex items-center justify-between w-full gap-2">
+                    <span className="truncate">{material.name}</span>
+                    <span className="text-[10px] text-slate-500 whitespace-nowrap">{material.unitOfMeasure}</span>
+                  </div>
+                </CommandItem>
+              ))}
+              {canCreateMaterials ? (
+                <>
+                  <CommandSeparator />
+                  <CommandItem
+                    value="__add_new_material__"
+                    onSelect={() => {
+                      setOpen(false);
+                      onRequestAddMaterial();
+                    }}
+                    className="text-xs"
+                  >
+                    <Plus className="mr-2 h-3 w-3" />
+                    <div className="flex flex-col">
+                      <span>+ Add new material</span>
+                      <span className="text-[10px] text-slate-500">Create a material and select it</span>
+                    </div>
+                  </CommandItem>
+                </>
+              ) : null}
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+
+      {selectedMaterial ? (
+        <div className="text-[10px] text-slate-500 flex items-center gap-2">
+          <span>ID: {selectedMaterial.id}</span>
+          <span>UOM: {selectedMaterial.unitOfMeasure || '—'}</span>
+          {!selectedMaterial.isActive ? (
+            <span className="text-amber-300">Inactive material</span>
+          ) : null}
+        </div>
+      ) : null}
+
+      {isMissingMaterial ? (
+        <div className="text-[10px] text-amber-300 flex items-center gap-1">
+          <AlertCircle className="h-3 w-3" />
+          Missing material. Saved ID retained: {value}
+        </div>
+      ) : null}
+
+      {hasUomMismatch ? (
+        <div className="text-[10px] text-amber-300 flex items-center gap-1">
+          <AlertCircle className="h-3 w-3" />
+          Warning: Material unit is &lt;{selectedMaterialUom}&gt; but this rule consumes &lt;{impliedUom}&gt;. Check configuration.
+        </div>
+      ) : null}
     </div>
   );
 }

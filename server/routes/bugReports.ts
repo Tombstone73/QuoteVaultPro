@@ -26,6 +26,11 @@ import { eq, and, desc, asc, sql } from "drizzle-orm";
 import { getRequestOrganizationId } from "../tenantContext";
 import { isSupabaseConfigured } from "../supabaseStorage";
 
+// ─── Bug report screenshot storage configuration ─────────────────────────────
+
+// Use "titan-private" bucket for bug screenshots (stored in org-scoped bug-screenshots/ folder)
+const BUG_REPORT_SCREENSHOT_BUCKET = process.env.SUPABASE_BUG_REPORT_BUCKET ?? "titan-private";
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Handles both Replit (claims.sub) and local (id) auth user objects. */
@@ -53,21 +58,25 @@ const requireOrgAdmin: RequestHandler = (req, res, next) => {
 // ─── Zod schemas ─────────────────────────────────────────────────────────────
 
 const SEVERITY_VALUES = ["low", "medium", "high", "critical"] as const;
+const BUG_REPORT_TYPE_VALUES = ["bug", "feature"] as const;
 
 const createBugReportSchema = z.object({
+  type:             z.enum(BUG_REPORT_TYPE_VALUES).optional().default("bug"),
   title:            z.string().min(3, "Title must be at least 3 characters").max(200),
   description:      z.string().min(3, "Description must be at least 3 characters").max(5000),
   severity:         z.enum(SEVERITY_VALUES),
   url:              z.string().min(1).max(2000),
   screenWidth:      z.number().int().positive().optional(),
   screenHeight:     z.number().int().positive().optional(),
-  screenshotUrl:    z.string().url().max(4000).optional().nullable(),
+  screenshotUrl:    z.string().max(4000).optional().nullable(), // DEPRECATED: backward compatibility (URL or path)
+  screenshotUrls:   z.array(z.string().max(4000)).max(5).optional(), // Storage paths or URLs
   metadata:         z.record(z.unknown()).optional(),
 });
 
 const listBugReportsQuerySchema = z.object({
   status:   z.string().optional(),
   severity: z.enum(SEVERITY_VALUES).optional(),
+  type:     z.enum(["bug", "feature", "all"]).default("all"),
   limit:    z.coerce.number().int().min(1).max(200).default(50),
   cursor:   z.string().optional(), // createdAt-based ISO string cursor
 });
@@ -89,30 +98,53 @@ const MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024; // 5 MB
 
 // ─── Screenshot storage ───────────────────────────────────────────────────────
 
+/**
+ * Store screenshot and return STORAGE PATH (not URL).
+ * Paths will be converted to signed URLs at view time.
+ * 
+ * @returns Storage path like "bug-reports/{bugReportId}/{timestamp}-{random}.png"
+ */
 async function storeScreenshot(
-  orgId: string,
+  bugReportId: string,
   fileBuffer: Buffer,
   mimeType: string,
   originalExt: string,
   req: Request
 ): Promise<string> {
-  const filename = `${randomUUID()}${originalExt}`;
-  const storageKey = `bug-screenshots/${orgId}/${filename}`;
+  const orgId = getRequestOrganizationId(req);
+  const timestamp = Date.now();
+  const random = randomUUID().split('-')[0]; // First segment for brevity
+  const filename = `${timestamp}-${random}${originalExt}`;
+  const storagePath = `org_${orgId}/bug-screenshots/${bugReportId}/${filename}`;
 
   if (isSupabaseConfigured()) {
     const { SupabaseStorageService } = await import("../supabaseStorage");
-    const svc = new SupabaseStorageService();
-    const result = await svc.uploadFile(storageKey, fileBuffer, mimeType);
-    return result.publicUrl ?? `/api/bug-reports/screenshot/file/${orgId}/${filename}`;
+    const svc = new SupabaseStorageService(BUG_REPORT_SCREENSHOT_BUCKET);
+    
+    console.log('[BugReports] Uploading screenshot:', {
+      bucket: BUG_REPORT_SCREENSHOT_BUCKET,
+      path: storagePath,
+      size: fileBuffer.length,
+      mimeType
+    });
+    
+    try {
+      await svc.uploadFile(storagePath, fileBuffer, mimeType);
+      console.log('[BugReports] Upload successful:', storagePath);
+      return storagePath; // Return PATH, not URL
+    } catch (err) {
+      console.error('[BugReports] Supabase upload failed:', err);
+      throw err;
+    }
   }
 
-  // Local-dev fallback: write to disk, serve via static handler registered in route
-  const uploadDir = path.resolve(process.cwd(), "uploads", "bug-screenshots", orgId);
+  // Local-dev fallback: write to disk, return local path
+  const uploadDir = path.resolve(process.cwd(), "uploads", "bug-screenshots", bugReportId);
   await fs.mkdir(uploadDir, { recursive: true });
   await fs.writeFile(path.join(uploadDir, filename), fileBuffer);
-
-  const baseUrl = (process.env.APP_URL ?? `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
-  return `${baseUrl}/api/bug-reports/screenshot/file/${orgId}/${filename}`;
+  
+  // Return path format (will be converted to URL at view time)
+  return `local:bug-screenshots/${bugReportId}/${filename}`;
 }
 
 // ─── Route registration ───────────────────────────────────────────────────────
@@ -128,24 +160,15 @@ export function registerBugReportRoutes(
   const router = Router();
 
   // ── Serve locally stored screenshots (dev only) ─────────────────────────────
-  router.get("/screenshot/file/:orgId/:filename", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
-    const { orgId, filename } = req.params;
-    // Validate org matches session
-    try {
-      const sessionOrgId = getRequestOrganizationId(req);
-      if (sessionOrgId !== orgId) {
-        return res.status(403).json({ success: false, message: "Forbidden" });
-      }
-    } catch {
-      return res.status(403).json({ success: false, message: "Forbidden" });
-    }
+  router.get("/screenshot/file/:bugReportId/:filename", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    const { bugReportId, filename } = req.params;
 
     // Basic path sanitisation
-    if (!/^[a-zA-Z0-9_.-]+$/.test(filename)) {
-      return res.status(400).json({ success: false, message: "Invalid filename" });
+    if (!/^[a-zA-Z0-9_.-]+$/.test(filename) || !/^[a-zA-Z0-9_.-]+$/.test(bugReportId)) {
+      return res.status(400).json({ success: false, message: "Invalid path" });
     }
 
-    const filePath = path.resolve(process.cwd(), "uploads", "bug-screenshots", orgId, filename);
+    const filePath = path.resolve(process.cwd(), "uploads", "bug-screenshots", bugReportId, filename);
     try {
       await fs.access(filePath);
       res.sendFile(filePath);
@@ -156,8 +179,9 @@ export function registerBugReportRoutes(
 
   // ── POST /screenshot ─────────────────────────────────────────────────────────
   /**
-   * Upload a screenshot image. Returns { screenshotUrl }.
-   * Accepts multipart/form-data with a single "screenshot" file field.
+   * Upload screenshot images (up to 5). Returns { screenshotUrls: string[] }.
+   * Accepts multipart/form-data with "screenshots" file field(s).
+   * Each file must be under 5MB.
    */
   router.post("/screenshot", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
     const orgId = getRequestOrganizationId(req);
@@ -176,19 +200,24 @@ export function registerBugReportRoutes(
     };
 
     try {
-      const bb = BusBoy({ headers: req.headers, limits: { files: 1, fileSize: MAX_SCREENSHOT_BYTES + 1 } });
+      const bb = BusBoy({ headers: req.headers, limits: { files: 5, fileSize: MAX_SCREENSHOT_BYTES + 1 } });
 
-      let fileReceived = false;
+      const uploadedUrls: string[] = [];
+      const uploadErrors: string[] = [];
+      let filesProcessed = 0;
+      let totalFiles = 0;
 
       bb.on("file", async (fieldname, file, info) => {
         const { filename, mimeType } = info;
+        totalFiles++;
 
         if (!ALLOWED_MIME_TYPES.has(mimeType)) {
           file.resume(); // drain
-          return respond(400, { success: false, message: "Only PNG, JPEG, and WebP images are allowed." });
+          uploadErrors.push(`File ${filename}: Only PNG, JPEG, and WebP images are allowed.`);
+          filesProcessed++;
+          return;
         }
 
-        fileReceived = true;
         const chunks: Buffer[] = [];
         let totalBytes = 0;
         let tooLarge = false;
@@ -209,30 +238,46 @@ export function registerBugReportRoutes(
 
         file.on("close", async () => {
           if (tooLarge) {
-            return respond(413, { success: false, message: "Screenshot must be under 5 MB." });
+            uploadErrors.push(`File ${filename}: Must be under 5 MB.`);
+            filesProcessed++;
+            return;
           }
 
           try {
             const buffer = Buffer.concat(chunks);
             const ext = path.extname(filename || "screenshot.png") || ".png";
-            const screenshotUrl = await storeScreenshot(orgId, buffer, mimeType, ext, req);
-            respond(200, { success: true, screenshotUrl });
+            // Use temp ID for pre-create uploads (will be organized by bug report ID later)
+            const tempId = `temp-${randomUUID()}`;
+            const storagePath = await storeScreenshot(tempId, buffer, mimeType, ext, req);
+            uploadedUrls.push(storagePath); // Store PATH, not URL
           } catch (err) {
             console.error("[BugReports] Screenshot upload failed:", err);
-            respond(500, { success: false, message: "Screenshot upload failed." });
+            uploadErrors.push(`File ${filename}: Upload failed.`);
           }
+          filesProcessed++;
         });
 
         file.on("error", (err: Error) => {
           console.error("[BugReports] File stream error:", err);
-          respond(500, { success: false, message: "File read error." });
+          uploadErrors.push(`File ${filename}: Read error.`);
+          filesProcessed++;
         });
       });
 
       bb.on("finish", () => {
-        if (!fileReceived && !resolved) {
-          respond(400, { success: false, message: "No file provided. Include a 'screenshot' field." });
-        }
+        // Wait for all file processing to complete
+        const checkComplete = setInterval(() => {
+          if (filesProcessed >= totalFiles && !resolved) {
+            clearInterval(checkComplete);
+            if (uploadedUrls.length === 0 && uploadErrors.length === 0) {
+              respond(400, { success: false, message: "No files provided. Include 'screenshots' field(s)." });
+            } else if (uploadedUrls.length > 0) {
+              respond(200, { success: true, screenshotUrls: uploadedUrls, errors: uploadErrors.length > 0 ? uploadErrors : undefined });
+            } else {
+              respond(400, { success: false, message: "All uploads failed.", errors: uploadErrors });
+            }
+          }
+        }, 50);
       });
 
       bb.on("error", (err: Error) => {
@@ -258,12 +303,20 @@ export function registerBugReportRoutes(
       });
     }
 
-    const { title, description, severity, url, screenWidth, screenHeight, screenshotUrl, metadata } = parse.data;
+    const { type, title, description, severity, url, screenWidth, screenHeight, screenshotUrl, screenshotUrls, metadata } = parse.data;
 
     const orgId = getRequestOrganizationId(req);
     const userId = getUserId(req.user) ?? null;
     const email = getUserEmail(req.user);
     const userAgent = (req.get("user-agent") ?? "").slice(0, 1024);
+
+    // Merge screenshotUrls (new) and screenshotUrl (legacy) into screenshotUrls array
+    let finalScreenshotUrls: string[] = [];
+    if (screenshotUrls && screenshotUrls.length > 0) {
+      finalScreenshotUrls = screenshotUrls;
+    } else if (screenshotUrl) {
+      finalScreenshotUrls = [screenshotUrl];
+    }
 
     try {
       const [created] = await db
@@ -272,6 +325,7 @@ export function registerBugReportRoutes(
           orgId,
           createdByUserId: userId,
           createdByEmail: email,
+          type,
           title,
           description,
           severity,
@@ -279,7 +333,8 @@ export function registerBugReportRoutes(
           userAgent,
           screenWidth: screenWidth ?? null,
           screenHeight: screenHeight ?? null,
-          screenshotUrl: screenshotUrl ?? null,
+          screenshotUrl: screenshotUrl ?? null, // Keep for backward compatibility
+          screenshotUrls: finalScreenshotUrls,
           status: "open",
           metadata: (metadata as Record<string, unknown>) ?? {},
         })
@@ -295,15 +350,16 @@ export function registerBugReportRoutes(
           entityType: "bug_report",
           entityId: created.id,
           entityName: title,
-          description: `Bug report submitted: [${severity}] ${title}`,
+          description: `Feedback submitted: [${type}] [${severity}] ${title}`,
           ipAddress: req.ip ?? null,
           userAgent,
+          newValues: { type },
         });
       } catch (auditErr) {
         console.error("[BugReports] Audit log failed:", auditErr);
       }
 
-      return res.status(201).json({ success: true, id: created.id });
+      return res.status(201).json({ success: true, data: { id: created.id }, message: "Bug report created." });
     } catch (err) {
       console.error("[BugReports] Create failed:", err);
       return res.status(500).json({ success: false, message: "Failed to create bug report." });
@@ -317,13 +373,14 @@ export function registerBugReportRoutes(
       return res.status(400).json({ success: false, message: "Invalid query parameters." });
     }
 
-    const { status, severity, limit, cursor } = parseQ.data;
+    const { status, severity, type, limit, cursor } = parseQ.data;
     const orgId = getRequestOrganizationId(req);
 
     try {
       const conditions = [eq(bugReports.orgId, orgId)];
       if (status)   conditions.push(eq(bugReports.status, status));
       if (severity) conditions.push(eq(bugReports.severity, severity));
+      if (type !== "all") conditions.push(eq(bugReports.type, type));
       if (cursor) {
         conditions.push(sql`${bugReports.createdAt} < ${cursor}::timestamptz`);
       }
@@ -331,6 +388,7 @@ export function registerBugReportRoutes(
       const rows = await db
         .select({
           id:               bugReports.id,
+          type:             bugReports.type,
           title:            bugReports.title,
           severity:         bugReports.severity,
           status:           bugReports.status,
@@ -347,7 +405,7 @@ export function registerBugReportRoutes(
         ? rows[rows.length - 1].createdAt?.toISOString() ?? null
         : null;
 
-      return res.json({ success: true, data: rows, nextCursor });
+      return res.json({ success: true, data: rows, message: "Bug reports fetched.", nextCursor });
     } catch (err) {
       console.error("[BugReports] List failed:", err);
       return res.status(500).json({ success: false, message: "Failed to fetch bug reports." });
@@ -394,6 +452,82 @@ export function registerBugReportRoutes(
     } catch (err) {
       console.error("[BugReports] Get by ID failed:", err);
       return res.status(500).json({ success: false, message: "Failed to fetch bug report." });
+    }
+  });
+
+  // ── GET /:id/screenshot-urls (get signed URLs for screenshots) ───────────────
+  /**
+   * Generate signed URLs for bug report screenshots.
+   * Converts stored paths to temporary signed URLs (1 hour expiry).
+   */
+  router.get("/:id/screenshot-urls", isAuthenticated, tenantContext, requireOrgAdmin, async (req: Request, res: Response) => {
+    const orgId = getRequestOrganizationId(req);
+    const { id } = req.params;
+
+    try {
+      const [row] = await db
+        .select({ screenshotUrls: bugReports.screenshotUrls, screenshotUrl: bugReports.screenshotUrl })
+        .from(bugReports)
+        .where(and(eq(bugReports.orgId, orgId), eq(bugReports.id, id)))
+        .limit(1);
+
+      if (!row) {
+        return res.status(404).json({ success: false, message: "Bug report not found." });
+      }
+
+      const urls: Array<{ path: string; url: string }> = [];
+
+      // Process new screenshot_urls array
+      if (row.screenshotUrls && row.screenshotUrls.length > 0) {
+        for (const path of row.screenshotUrls) {
+          // If path is already a full URL (legacy data), pass through
+          if (path.startsWith('http://') || path.startsWith('https://')) {
+            urls.push({ path, url: path });
+            continue;
+          }
+
+          // Handle local dev paths
+          if (path.startsWith('local:')) {
+            const localPath = path.replace('local:', '');
+            const baseUrl = (process.env.APP_URL ?? `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+            const parts = localPath.split('/');
+            const bugReportId = parts[1];
+            const filename = parts[2];
+            urls.push({ 
+              path, 
+              url: `${baseUrl}/api/bug-reports/screenshot/file/${bugReportId}/${filename}` 
+            });
+            continue;
+          }
+
+          // Generate signed URL for Supabase path
+          if (isSupabaseConfigured()) {
+            try {
+              const { SupabaseStorageService } = await import("../supabaseStorage");
+              const svc = new SupabaseStorageService(BUG_REPORT_SCREENSHOT_BUCKET);
+              const signedUrl = await svc.getSignedDownloadUrl(path, 3600); // 1 hour
+              urls.push({ path, url: signedUrl });
+            } catch (err) {
+              console.error(`[BugReports] Failed to generate signed URL:`, {
+                bucket: BUG_REPORT_SCREENSHOT_BUCKET,
+                path,
+                error: err
+              });
+              // Skip failed URLs rather than breaking entire request
+            }
+          }
+        }
+      }
+
+      // Process legacy screenshot_url field (backward compatibility)
+      if (row.screenshotUrl && urls.length === 0) {
+        urls.push({ path: row.screenshotUrl, url: row.screenshotUrl });
+      }
+
+      return res.json({ success: true, data: urls });
+    } catch (err) {
+      console.error("[BugReports] Screenshot URL generation failed:", err);
+      return res.status(500).json({ success: false, message: "Failed to generate screenshot URLs." });
     }
   });
 
@@ -451,7 +585,7 @@ export function registerBugReportRoutes(
         console.error("[BugReports] Status update audit log failed:", auditErr);
       }
 
-      return res.json({ success: true, id: updated.id, status: updated.status });
+      return res.json({ success: true, data: { id: updated.id, status: updated.status }, message: "Bug report status updated." });
     } catch (err) {
       console.error("[BugReports] Status update failed:", err);
       return res.status(500).json({ success: false, message: "Failed to update status." });

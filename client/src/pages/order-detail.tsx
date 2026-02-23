@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -28,13 +28,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Calendar, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown, Mail, Phone, ChevronsUpDown } from "lucide-react";
+import { Calendar, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown, Mail, Phone, ChevronsUpDown } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
-import { useOrder, useDeleteOrder, useUpdateOrder, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, areLineItemsEditable, isOrderEditable } from "@/hooks/useOrders";
+import { useOrder, useDeleteOrder, useUpdateOrder, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, areLineItemsEditable, isOrderEditable, useOrderWorkflow } from "@/hooks/useOrders";
 import { useCreateOrderInvoice, useInvoices } from "@/hooks/useInvoices";
 import { OrderAttachmentsPanel } from "@/components/OrderAttachmentsPanel";
 import { useQuery } from "@tanstack/react-query";
@@ -55,6 +55,8 @@ import { cn, formatPhoneForDisplay, phoneToTelHref } from "@/lib/utils";
 import { resolveInventoryPolicyFromOrgPreferences } from "@shared/inventoryPolicy";
 import { useCreateProductionJobFromOrder } from "@/hooks/useProduction";
 import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
+import { useSmartBack } from "@/hooks/useSmartBack";
+import { buildReferrer } from "@/lib/nav/smartBack";
 // TitanOS State Architecture
 import { OrderStatusPillSelector } from "@/components/OrderStatusPillSelector";
 import { 
@@ -66,6 +68,7 @@ import type { OrderState } from "@/hooks/useOrderState";
 import { isTerminalState as checkIfTerminalState } from "@/hooks/useOrderState";
 import { OrderLineItemsSection } from "@/components/orders/OrderLineItemsSection";
 import { ManualReservationsCard } from "@/components/orders/ManualReservationsCard";
+import BackNavControls from "@/components/BackNavControls";
 
 /**
  * OrderDetail renders some legacy "bill to / ship to / shipping" snapshot fields
@@ -135,7 +138,9 @@ export default function OrderDetail() {
   const inventoryReservationsEnabled = inventoryPolicy.mode !== "off";
   const params = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { registerGuard, guardedNavigate } = useNavigationGuard();
+  const { onSmartBack } = useSmartBack();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const createProductionJob = useCreateProductionJobFromOrder();
@@ -233,6 +238,7 @@ export default function OrderDetail() {
   const deleteOrder = useDeleteOrder();
   const updateOrder = useUpdateOrder(orderId!);
   const transitionStatus = useTransitionOrderStatus(orderId!);
+  const workflowQuery = useOrderWorkflow();
   const bulkUpdateLineItemStatus = useBulkUpdateOrderLineItemStatus(orderId!);
 
   // Fulfillment hooks
@@ -358,7 +364,28 @@ export default function OrderDetail() {
   // Check editability based on order status
   const canEditLineItems = order ? areLineItemsEditable(order.status) : false;
   const baseCanEditOrder = order ? isOrderEditable(order.status) : false;
-  const allowedNextStatuses = order ? getAllowedNextStatuses(order.status) : [];
+  const allowedNextStatuses = useMemo(() => {
+    if (!order) return [] as string[];
+
+    const statuses = workflowQuery.data?.statuses ?? [];
+    if (statuses.length === 0) {
+      return getAllowedNextStatuses(order.status);
+    }
+
+    const current = statuses.find((s) => s.id === order.workflowStatusId) ?? statuses.find((s) => s.key === order.status);
+    const activeStatuses = statuses.filter((s) => s.isActive);
+
+    const transitions = workflowQuery.data?.transitions ?? [];
+    if (current && transitions.length > 0) {
+      const toIds = transitions.filter((t) => t.fromStatusId === current.id).map((t) => t.toStatusId);
+      const keys = activeStatuses.filter((s) => toIds.includes(s.id)).map((s) => s.key);
+      return Array.from(new Set(keys));
+    }
+
+    return activeStatuses
+      .filter((s) => s.key !== order.status)
+      .map((s) => s.key);
+  }, [order, workflowQuery.data]);
   const isTerminal = allowedNextStatuses.length === 0;
   
   // Admin/Owner override: allow editing terminal orders if setting enabled
@@ -1297,15 +1324,11 @@ export default function OrderDetail() {
       <div className="w-full max-w-none">
         <div className="flex items-center justify-between mb-6 pb-3">
           <div className="flex items-center gap-4 min-w-0">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => guardedNavigate("/orders")}
-              className="text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
-            >
-              <ArrowLeft className="w-4 h-4 mr-2" />
-              Back
-            </Button>
+            <BackNavControls
+              onBack={onSmartBack}
+              onSectionHome={() => guardedNavigate("/orders")}
+              sectionLabel="Orders"
+            />
 
             <div className="flex flex-col justify-center min-w-0">
               <h1 className="text-titan-xl font-semibold tracking-tight text-titan-text-primary">
@@ -1476,6 +1499,7 @@ export default function OrderDetail() {
                                 {order.customer?.id && customerCompanyName ? (
                                   <Link
                                     to={`/customers/${order.customer.id}`}
+                                    state={{ referrer: buildReferrer(location) }}
                                     className="block truncate text-sm font-semibold leading-5 text-foreground hover:underline"
                                     title={customerCompanyName}
                                   >
@@ -2466,7 +2490,7 @@ export default function OrderDetail() {
                                   <div className="space-y-1">
                                     <div className="flex items-center gap-2">
                                       <Badge variant="outline" className="text-xs">
-                                        {shipment.carrier}
+                                        {shipment.carrier || 'Carrier'}
                                       </Badge>
                                       {shipment.deliveredAt && (
                                         <Badge className="bg-green-500/10 text-green-500 border-green-500/20 text-xs">
@@ -2478,9 +2502,9 @@ export default function OrderDetail() {
                                       <span className="text-sm font-mono">
                                         {shipment.trackingNumber}
                                       </span>
-                                      {shipment.carrier !== "Other" && shipment.trackingNumber && (
+                                      {(shipment.carrier || 'Other') !== "Other" && shipment.trackingNumber && (
                                         <a
-                                          href={getTrackingUrl(shipment.carrier, shipment.trackingNumber)}
+                                          href={getTrackingUrl(shipment.carrier || 'Other', shipment.trackingNumber)}
                                           target="_blank"
                                           rel="noopener noreferrer"
                                           className="text-primary hover:underline"
@@ -2489,9 +2513,11 @@ export default function OrderDetail() {
                                         </a>
                                       )}
                                     </div>
-                                    <div className="text-xs text-muted-foreground">
-                                      Shipped: {format(new Date(shipment.shippedAt), "MMM d, yyyy h:mm a")}
-                                    </div>
+                                    {shipment.shippedAt && (
+                                      <div className="text-xs text-muted-foreground">
+                                        Shipped: {format(new Date(shipment.shippedAt), "MMM d, yyyy h:mm a")}
+                                      </div>
+                                    )}
                                     {shipment.deliveredAt && (
                                       <div className="text-xs text-muted-foreground">
                                         Delivered: {format(new Date(shipment.deliveredAt), "MMM d, yyyy h:mm a")}

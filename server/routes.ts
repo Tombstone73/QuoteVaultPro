@@ -6,9 +6,11 @@ import { randomUUID } from "crypto";
 import crypto from "crypto";
 import { evaluate } from "mathjs";
 import Papa from "papaparse";
+import busboy from "busboy";
 import { storage } from "./storage";
+import * as prepressFileService from "./prepressFileService";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, authIdentities, bugReports } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, inventoryReservations, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, authIdentities, bugReports, prepressSessions, lineItemFiles, reprintRequests } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, asc, inArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -48,7 +50,19 @@ import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/vali
 import { resolveInventoryPolicyFromOrgPreferences } from "@shared/inventoryPolicy";
 import { mergeInventoryPolicyIntoPreferences, normalizeInventoryPolicyPatch } from "@shared/inventoryPolicyPreferences";
 import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBooksPreferences";
+import { resolveMaterialsOverrideModeFromOrgPreferences } from "@shared/materialsOverrideMode";
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2OverrideConfig";
+import { createLineItemFileRecord } from "./services/lineItemFileRecordService";
+import { getDashboardSummary } from "./services/dashboardSummaryService";
+import { resolveVisibleNodes } from "@shared/optionTreeV2Runtime";
+import { computePlannedMaterialsForLineItem } from "./services/prepressPlannedMaterials";
+import {
+  appendMaterialOverrideToSpecsJson,
+  computeEffectiveMaterials,
+  materialOverrideOpInputSchema,
+  materialOverridesFromSpecsJson,
+  withServerDefaultsForOverride,
+} from "./services/prepressMaterialOverrides";
 
 // Auth provider selection logic
 // Priority: AUTH_PROVIDER env var > detection logic
@@ -98,6 +112,8 @@ if (authProviderEnv) {
 }
 
 console.log(`[Auth] Selected provider: ${authProvider} (NODE_ENV=${nodeEnv}, REPL_ID=${isReplit ? 'present' : 'absent'})`);
+
+let hasLoggedPrepressStorageAuthMode = false;
 
 const { setupAuth, isAuthenticated, isAdmin } = auth;
 
@@ -274,6 +290,7 @@ import { fromZodError } from "zod-validation-error";
 import {
   ObjectStorageService,
   ObjectNotFoundError,
+  getStorageAuthMode,
 } from "./objectStorage";
 import { ObjectPermission } from "./objectAcl";
 import { SupabaseStorageService, isSupabaseConfigured } from "./supabaseStorage";
@@ -289,6 +306,14 @@ import { getInvoiceWithRelations, applyPayment, refreshInvoiceStatus } from './i
 import { generatePackingSlipHTML, sendShipmentEmail, updateOrderFulfillmentStatus } from './fulfillmentService';
 import { registerMvpInvoicingRoutes } from './routes/mvpInvoicing.routes';
 import { getQuickBooksSyncQueueCountsForOrg, listQuickBooksConnectedOrganizationIds, runQuickBooksSyncWorkerForOrg } from './services/quickbooksSyncQueueWorker';
+import {
+  createShipmentSchema as createFulfillmentShipmentSchema,
+  listQueueQuerySchema,
+  patchShipmentSchema as patchFulfillmentShipmentSchema,
+  pickupReadySchema,
+} from './services/fulfillment/schemas';
+import { FulfillmentHttpError } from './services/fulfillment/types';
+import { fulfillmentServiceV2 } from './services/fulfillment/service';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -558,6 +583,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Bug report routes (submit + admin list/view)
   registerBugReportRoutes(app, { isAuthenticated, tenantContext });
+
+  // Dashboard summary (KPI cards only, org-scoped)
+  app.get('/api/dashboard/summary', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(500).json({ success: false, message: 'Missing organization context' });
+      }
+
+      const data = await getDashboardSummary(organizationId);
+      return res.json({ success: true, data, message: 'Dashboard summary fetched' });
+    } catch (error) {
+      console.error('[DashboardSummary:GET] failed:', error);
+      return res.status(500).json({ success: false, message: 'Failed to fetch dashboard summary' });
+    }
+  });
 
   // Dev-only debug: verify status pills exist per org/state
   if (nodeEnv === 'development') {
@@ -1390,8 +1431,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Ensure stable defaults for QuickBooks preferences
       const quickBooks = resolveQuickBooksPreferencesFromOrgPreferences(preferences);
 
+      const materialsOverrideMode = resolveMaterialsOverrideModeFromOrgPreferences(preferences);
+
       res.json({
         ...(preferences as any),
+        production: {
+          ...(((preferences as any)?.production && typeof (preferences as any).production === "object") ? (preferences as any).production : {}),
+          materialsOverrideMode,
+        },
         inventoryPolicy,
         quickBooks,
         emailTemplates,
@@ -1839,6 +1886,353 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error importing products:", error);
       res.status(500).json({ message: "Failed to import products" });
+    }
+  });
+
+  // ============================================================================
+  // PBV2-Aware Product Import/Export (v2)
+  // ============================================================================
+
+  /**
+   * GET /api/admin/products/export
+   * Export all products with full PBV2 tree definitions
+   * Org-scoped, admin-only
+   */
+  app.get("/api/admin/products/export", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const { exportProducts } = await import("./services/pbv2ExportMapper");
+
+      // Fetch all products for org
+      const allProducts = await db
+        .select()
+        .from(products)
+        .where(eq(products.organizationId, organizationId))
+        .orderBy(asc(products.name));
+
+      // Fetch all PBV2 trees for these products
+      const productIds = allProducts.map(p => p.id);
+      const pbv2Trees = new Map<string, { active?: any; draft?: any }>();
+
+      if (productIds.length > 0) {
+        const allTreeVersions = await db
+          .select()
+          .from(pbv2TreeVersions)
+          .where(
+            and(
+              eq(pbv2TreeVersions.organizationId, organizationId),
+              inArray(pbv2TreeVersions.productId, productIds)
+            )
+          );
+
+        for (const tree of allTreeVersions) {
+          if (!pbv2Trees.has(tree.productId)) {
+            pbv2Trees.set(tree.productId, {});
+          }
+          const entry = pbv2Trees.get(tree.productId)!;
+          if (tree.status === "ACTIVE") entry.active = tree;
+          if (tree.status === "DRAFT") entry.draft = tree;
+        }
+      }
+
+      // Fetch reference data
+      const [allProductTypes, allMaterials, org] = await Promise.all([
+        db.select().from(productTypes).where(eq(productTypes.organizationId, organizationId)),
+        db.select().from(materials).where(eq(materials.organizationId, organizationId)),
+        db.select().from(organizations).where(eq(organizations.id, organizationId)).limit(1),
+      ]);
+
+      const exportData = await exportProducts(
+        {
+          db,
+          organizationId,
+          orgName: org[0]?.name,
+        },
+        allProducts,
+        pbv2Trees,
+        allProductTypes,
+        allMaterials
+      );
+
+      // Audit log
+      await db.insert(auditLogs).values({
+        organizationId,
+        userId: userId || null,
+        actionType: "EXPORT",
+        entityType: "product",
+        entityId: null,
+        description: `Exported ${exportData.products.length} products`,
+        newValues: { count: exportData.products.length },
+      });
+
+      res.json(exportData);
+    } catch (error: any) {
+      console.error("[Product Export] Error:", error);
+      res.status(500).json({ error: error.message || "Failed to export products" });
+    }
+  });
+
+  /**
+   * POST /api/admin/products/import?dryRun=1|0
+   * Import products with PBV2 trees
+   * Org-scoped, admin-only
+   */
+  app.post("/api/admin/products/import", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const dryRun = req.query.dryRun === "1" || req.query.dryRun === "true";
+      const mode = (req.body.mode || "upsertBySlug") as any;
+
+      const { productImportV2RequestSchema } = await import("@shared/importExportSchemas");
+      const { buildImportPlan, applyImport } = await import("./services/pbv2ImportMapper");
+
+      // Validate request body
+      const validation = productImportV2RequestSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({
+          error: "Invalid import request",
+          details: validation.error.errors,
+        });
+      }
+
+      const importRequest = validation.data;
+
+      if (!userId) {
+        return res.status(403).json({ error: "User ID required" });
+      }
+
+      const ctx = {
+        db,
+        organizationId,
+        userId,
+        mode,
+      };
+
+      if (dryRun) {
+        // Dry-run: validate and return plan
+        const plan = await buildImportPlan(ctx, importRequest);
+
+        // Audit log
+        await db.insert(auditLogs).values({
+          organizationId,
+          userId,
+          actionType: "VALIDATE",
+          entityType: "product",
+          entityId: null,
+          description: `Dry-run validation: ${plan.counts.total} products, ${plan.errors.length} errors`,
+          newValues: {
+            total: plan.counts.total,
+            create: plan.counts.create,
+            update: plan.counts.update,
+            skip: plan.counts.skip,
+            errorCount: plan.errors.length,
+          },
+        });
+
+        res.json(plan);
+      } else {
+        // Apply import
+        const result = await applyImport(ctx, importRequest);
+
+        // Audit log
+        await db.insert(auditLogs).values({
+          organizationId,
+          userId,
+          actionType: "IMPORT",
+          entityType: "product",
+          entityId: null,
+          description: `Imported products: ${result.counts.created} created, ${result.counts.updated} updated, ${result.counts.failed} failed`,
+          newValues: {
+            total: result.counts.total,
+            created: result.counts.created,
+            updated: result.counts.updated,
+            skipped: result.counts.skipped,
+            failed: result.counts.failed,
+          },
+        });
+
+        res.json(result);
+      }
+    } catch (error: any) {
+      console.error("[Product Import] Error:", error);
+      res.status(500).json({ error: error.message || "Failed to import products" });
+    }
+  });
+
+  // ============================================================
+  // DANGER ZONE: Organization Reset/Disable/Delete (Stubs)
+  // ============================================================
+
+  /**
+   * POST /api/admin/org/reset
+   * Reset organization transactional data (orders, invoices, quotes, production records).
+   * Preserves organization, users, and core configuration.
+   * Requires owner/admin role.
+   */
+  app.post("/api/admin/org/reset", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+
+      if (!userId) {
+        return res.status(401).json({ message: "User ID not found" });
+      }
+
+      // Audit log
+      await db.insert(auditLogs).values({
+        organizationId,
+        userId,
+        actionType: "org.reset.requested",
+        entityType: "organization",
+        entityId: organizationId,
+        description: "Organization data reset requested",
+        newValues: {},
+      });
+
+      // Return 501 Not Implemented
+      return res.status(501).json({
+        code: "NOT_IMPLEMENTED",
+        message: "Organization reset functionality is not yet implemented. Please contact system administrator.",
+      });
+    } catch (error: any) {
+      console.error("[Org Reset] Error:", error);
+      res.status(500).json({ message: error.message || "Failed to reset organization" });
+    }
+  });
+
+  /**
+   * POST /api/admin/org/disable
+   * Disable organization - prevents non-admin access.
+   * Organization remains in system.
+   * Requires owner/admin role.
+   */
+  app.post("/api/admin/org/disable", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+
+      if (!userId) {
+        return res.status(401).json({ message: "User ID not found" });
+      }
+
+      // Audit log
+      await db.insert(auditLogs).values({
+        organizationId,
+        userId,
+        actionType: "org.disable.requested",
+        entityType: "organization",
+        entityId: organizationId,
+        description: "Organization disable requested",
+        newValues: {},
+      });
+
+      // Return 501 Not Implemented
+      return res.status(501).json({
+        code: "NOT_IMPLEMENTED",
+        message: "Organization disable functionality is not yet implemented. Please contact system administrator.",
+      });
+    } catch (error: any) {
+      console.error("[Org Disable] Error:", error);
+      res.status(500).json({ message: error.message || "Failed to disable organization" });
+    }
+  });
+
+  /**
+   * DELETE /api/admin/org
+   * Request organization deletion (sets pending_delete state).
+   * Only org owner/admin can request. Platform admin must finalize.
+   * Requires owner/admin role.
+   */
+  app.delete("/api/admin/org", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+
+      if (!userId) {
+        return res.status(401).json({ message: "User ID not found" });
+      }
+
+      // Get current org state
+      const [org] = await db
+        .select({
+          id: organizations.id,
+          deleteState: organizations.deleteState,
+          slug: organizations.slug,
+        })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      if (!org) {
+        return res.status(404).json({ message: "Organization not found" });
+      }
+
+      // Validate org is active (not already pending/deleted)
+      if (org.deleteState !== 'active') {
+        return res.status(409).json({
+          code: "ORG_ALREADY_PENDING_DELETE",
+          message: `Organization is already in ${org.deleteState} state`,
+          deleteState: org.deleteState,
+        });
+      }
+
+      // Extract optional reason from body
+      const { reason } = req.body || {};
+
+      // Update org to pending_delete state
+      await db
+        .update(organizations)
+        .set({
+          deleteState: 'pending_delete',
+          deleteRequestedAt: new Date(),
+          deleteRequestedByUserId: userId,
+          deleteReason: reason || null,
+        })
+        .where(eq(organizations.id, organizationId));
+
+      // Audit log
+      await db.insert(auditLogs).values({
+        organizationId,
+        userId,
+        actionType: "org.delete.requested",
+        entityType: "organization",
+        entityId: organizationId,
+        description: `Organization deletion requested${reason ? `: ${reason}` : ''}`,
+        newValues: {
+          deleteState: 'pending_delete',
+          reason: reason || null,
+        },
+      });
+
+      // Notify devs
+      const { notifyDev } = await import('./services/devNotify');
+      await notifyDev({
+        eventName: 'org.delete.requested',
+        priority: 'high',
+        organizationId,
+        userId,
+        message: `Organization "${org.slug}" deletion requested by user ${userId}`,
+        metadata: {
+          orgId: organizationId,
+          orgSlug: org.slug,
+          reason: reason || 'No reason provided',
+        },
+      });
+
+      return res.json({
+        success: true,
+        message: "Deletion request submitted. A platform administrator must finalize this action.",
+        deleteState: 'pending_delete',
+      });
+    } catch (error: any) {
+      console.error("[Org Delete Request] Error:", error);
+      res.status(500).json({ message: error.message || "Failed to request organization deletion" });
     }
   });
 
@@ -8956,6 +9350,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             id: orderLineItems.id,
             orderId: orderLineItems.orderId,
             status: orderLineItems.status,
+            requiresPrepress: orderLineItems.requiresPrepress,
           })
           .from(orderLineItems)
           .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
@@ -9043,6 +9438,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 stepKey,
               },
             });
+
+            // Set line item status based on requiresPrepress:
+            //   requiresPrepress=true  → pending_prepress (goes to prepress queue first)
+            //   requiresPrepress=false → print_ready      (goes directly to production board)
+            // Only set status when the item is in a neutral/initial state (don't override
+            // an item that already has an active prepress workflow state).
+            const neutralStatuses = ['queued', 'new', ''];
+            if (neutralStatuses.includes(li.status || '')) {
+              const targetStatus = li.requiresPrepress ? 'pending_prepress' : 'print_ready';
+              await tx
+                .update(orderLineItems)
+                .set({ status: targetStatus, updatedAt: new Date() })
+                .where(eq(orderLineItems.id, li.id));
+
+              if (process.env.NODE_ENV !== "production") {
+                console.log(`[ProductionIntake] Set lineItem ${li.id} status: ${li.status} → ${targetStatus} (requiresPrepress=${li.requiresPrepress})`);
+              }
+            }
 
             return inserted;
           }
@@ -9355,6 +9768,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         orderIdRaw ? eq(productionJobs.orderId, orderIdRaw) : undefined,
       );
 
+      // PROMPT A (revised): Prepress Gate Enforcement — DENY-LIST approach
+      // Block items that are ACTIVELY in prepress workflow states.
+      // Items with status "queued" (legacy/unprocessed) are ALLOWED so existing roll/flatbed jobs
+      // are not accidentally hidden. New items will be set to "pending_prepress" at intake time.
+      //
+      // EXCLUDED from boards: requiresPrepress=true AND status IN (pending_prepress, in_prepress, prepress_complete)
+      // ALLOWED: requiresPrepress=false, OR status is anything else (queued, print_ready, printing, done, complete, etc.)
+      //
+      // NULL handling:
+      //   - requiresPrepress NULL → treat as true (hide until corrected)
+      //   - status NULL → hide and log so we can spot bad data
+      const prepressGateApplies = station && (station === 'flatbed' || station === 'roll');
+
       const baseRows = await db
         .select({
           id: productionJobs.id,
@@ -9375,18 +9801,57 @@ export async function registerRoutes(app: Express): Promise<Server> {
           routingTarget: orders.routingTarget,
           customerId: customers.id,
           customerName: customers.companyName,
+          // Prepress gate fields (null when no line item linked)
+          lineItemRequiresPrepress: orderLineItems.requiresPrepress,
+          lineItemStatus: orderLineItems.status,
         })
         .from(productionJobs)
         .innerJoin(orders, eq(productionJobs.orderId, orders.id))
         .innerJoin(customers, eq(orders.customerId, customers.id))
+        .leftJoin(orderLineItems, eq(productionJobs.lineItemId, orderLineItems.id))
         .where(whereClause)
         .orderBy(desc(productionJobs.updatedAt));
 
-      if (baseRows.length === 0) {
+      // Deny-list gate: only exclude jobs that are explicitly mid-prepress
+      const PREPRESS_BLOCKED_STATUSES = ['pending_prepress', 'in_prepress', 'prepress_complete'] as const;
+      const filteredRows = prepressGateApplies
+        ? baseRows.filter(row => {
+            // No line item linked → allow (intake/unlinked jobs)
+            if (!row.lineItemId) return true;
+
+            // requiresPrepress NULL → treat as true (hide until data corrected)
+            const reqPrepress = row.lineItemRequiresPrepress ?? true;
+
+            // If doesn't require prepress → always allow
+            if (!reqPrepress) return true;
+
+            // Status NULL → hide and log
+            if (row.lineItemStatus === null) {
+              if (process.env.NODE_ENV !== "production") {
+                console.warn(`[Prepress Gate] Job ${row.id}: lineItemId ${row.lineItemId} has NULL status — hiding from board`);
+              }
+              return false;
+            }
+
+            // Requires prepress: BLOCK only if in a prepress workflow state
+            // "queued", "print_ready", "printing", "done", "complete" → ALLOW
+            return !PREPRESS_BLOCKED_STATUSES.includes(row.lineItemStatus as any);
+          })
+        : baseRows;
+
+      // DEV-only logging: show how many items were gated
+      if (process.env.NODE_ENV !== "production" && prepressGateApplies) {
+        const gatedCount = baseRows.length - filteredRows.length;
+        if (gatedCount > 0) {
+          console.log(`[Prepress Gate] ${station} board: Excluded ${gatedCount} of ${baseRows.length} jobs requiring prepress`);
+        }
+      }
+
+      if (filteredRows.length === 0) {
         return res.json({ success: true, data: [] });
       }
 
-      const jobIds = baseRows.map((r) => r.id);
+      const jobIds = filteredRows.map((r) => r.id);
 
       const timerEventRows = await db
         .select({
@@ -9460,14 +9925,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Batched order enrichment for cockpit UI (no schema changes, no N+1)
-      const orderIds = Array.from(new Set(baseRows.map((r) => r.orderId)));
+      const orderIds = Array.from(new Set(filteredRows.map((r) => r.orderId)));
 
       // Collect BOTH order IDs (for context) AND explicit line item IDs from production_jobs
       // This ensures we fetch the specific line item each job references, even if it's
       // not the first/default line item for the order
       const productionLineItemIds = Array.from(
         new Set(
-          baseRows
+          filteredRows
             .map((r) => r.lineItemId)
             .filter((v): v is string => typeof v === "string" && !!v.trim()),
         ),
@@ -9814,7 +10279,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       };
 
       const now = Date.now();
-      const data = baseRows.map((row) => {
+      const data = filteredRows.map((row) => {
         const lastTimer = latestTimerEventByJobId.get(row.id);
         const isRunning = lastTimer?.type === "timer_started";
         const runningSince = isRunning ? new Date(lastTimer!.createdAt as any).toISOString() : null;
@@ -10755,6 +11220,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
       const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
 
       const jobId = req.params.jobId;
       const now = new Date();
@@ -10810,6 +11276,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .set({ status: "done", completedAt: now, updatedAt: now })
           .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
 
+        if (job.lineItemId && job.orderId) {
+          await consumeReservedMaterialsForLineItem(tx, {
+            organizationId,
+            orderId: job.orderId,
+            lineItemId: job.lineItemId,
+            productionJobId: jobId,
+            userId,
+          });
+        }
+
         await tx.insert(auditLogs).values({
           organizationId,
           userId: userId ?? null,
@@ -10848,6 +11324,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
       const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
 
       const jobId = req.params.jobId;
       const now = new Date();
@@ -10938,6 +11415,79 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // PROMPT E: POST /api/production/line-item/:lineItemId/reprint
+  // Creates a detailed reprint request record from the production board.
+  app.post("/api/production/line-item/:lineItemId/reprint", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const { lineItemId } = req.params;
+
+      const bodySchema = z.object({
+        fileId: z.string().optional(),
+        filename: z.string().trim().min(1, "Filename required").max(512),
+        quantity: z.coerce.number().positive("Quantity must be greater than 0"),
+        units: z.string().trim().min(1, "Units required").max(64),
+        reason: z.string().trim().min(1, "Reason required").max(2000),
+        noPrintsCompletedYet: z.boolean().optional().default(false),
+      });
+      const parsed = bodySchema.safeParse(req.body || {});
+      if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });
+
+      const { fileId, filename, quantity, units, reason, noPrintsCompletedYet } = parsed.data;
+
+      // Verify line item belongs to this org
+      const [lineItem] = await db
+        .select({ id: orderLineItems.id, orderId: orderLineItems.orderId })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+      if (!lineItem) return res.status(404).json({ error: "Line item not found" });
+
+      // Insert reprint request
+      const [reprintReq] = await db
+        .insert(reprintRequests)
+        .values({
+          organizationId,
+          lineItemId,
+          fileId: fileId || null,
+          filename,
+          quantity: String(quantity),
+          units,
+          reason,
+          noPrintsCompletedYet: noPrintsCompletedYet ?? false,
+          createdByUserId: userId,
+          status: 'open',
+        })
+        .returning({ id: reprintRequests.id });
+
+      // Audit log
+      await db.insert(auditLogs).values({
+        organizationId,
+        userId,
+        userName: (req.user as any)?.email || (req.user as any)?.name || null,
+        actionType: "CREATE",
+        entityType: "reprint_request",
+        entityId: reprintReq?.id || lineItemId,
+        entityName: `Reprint – ${filename}`,
+        description: "Reprint request created from production board",
+        newValues: { filename, quantity, units, reason, noPrintsCompletedYet },
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+      } as any);
+
+      res.json({ success: true, data: { id: reprintReq?.id } });
+    } catch (error: any) {
+      console.error("[Reprint Request] Error:", error);
+      res.status(500).json({ error: error?.message || "Failed to create reprint request" });
+    }
+  });
+
   // 8) PUT /api/production/jobs/:jobId/media-used
   app.put("/api/production/jobs/:jobId/media-used", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -10950,6 +11500,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         text: z.string().trim().min(1).max(500),
         qty: z.coerce.number().optional(),
         unit: z.string().trim().max(32).optional(),
+        comment: z.string().trim().min(1, "Reason is required").max(2000),
       });
       const parsed = mediaSchema.safeParse(req.body || {});
       if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });
@@ -11209,6 +11760,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .set(updateData)
           .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
 
+        if (newStatus === "done" && job.lineItemId && job.orderId) {
+          const actorUserId = userId;
+          if (!actorUserId) {
+            throw new Error("Missing user id for inventory consumption");
+          }
+          await consumeReservedMaterialsForLineItem(tx, {
+            organizationId,
+            orderId: job.orderId,
+            lineItemId: job.lineItemId,
+            productionJobId: jobId,
+            userId: actorUserId,
+          });
+        }
+
         await tx.insert(auditLogs).values({
           organizationId,
           userId: userId ?? null,
@@ -11288,6 +11853,2354 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting job status:", error);
       res.status(500).json({ error: "Failed to delete job status" });
+    }
+  });
+
+  // ============================================================
+  // MANUAL PREPRESS PRODUCTION WORKFLOW
+  // ============================================================
+
+  const parseDimensionsFromDescription = (description?: string | null): { widthIn: number | null; heightIn: number | null } => {
+    if (!description) return { widthIn: null, heightIn: null };
+    const match = description.match(/(\d+(?:\.\d+)?)\s*(?:"|in|inch|inches)?\s*[x×]\s*(\d+(?:\.\d+)?)/i);
+    if (!match) return { widthIn: null, heightIn: null };
+    return {
+      widthIn: Number(match[1]) || null,
+      heightIn: Number(match[2]) || null,
+    };
+  };
+
+  const computeTotalSqFt = (params: { width: unknown; height: unknown; quantity: unknown; description?: string | null }): number | null => {
+    const quantity = Number(params.quantity ?? 0);
+    if (!Number.isFinite(quantity) || quantity <= 0) return null;
+
+    const width = params.width != null ? Number(params.width) : null;
+    const height = params.height != null ? Number(params.height) : null;
+    const parsed = parseDimensionsFromDescription(params.description);
+    const widthIn = width && width > 0 ? width : parsed.widthIn;
+    const heightIn = height && height > 0 ? height : parsed.heightIn;
+    if (!widthIn || !heightIn) return null;
+
+    const areaSqFtPerUnit = (widthIn * heightIn) / 144;
+    return areaSqFtPerUnit * quantity;
+  };
+
+  const extractFinishingBullets = (lineItem: any): string[] => {
+    const results = new Set<string>();
+    const pushIfFinishingLike = (label?: string, value?: unknown) => {
+      const l = String(label || "").trim();
+      if (!l) return;
+      const lv = l.toLowerCase();
+      if (!/(finish|laminat|grommet|hem|trim|weld|mount|sew|pocket|tape|edge)/.test(lv)) return;
+      const v = typeof value === "string" ? value.trim() : value;
+      if (v === undefined || v === null || v === "") {
+        results.add(l);
+      } else if (typeof v === "boolean") {
+        if (v) results.add(l);
+      } else {
+        results.add(`${l}: ${String(v)}`);
+      }
+    };
+
+    const selectedOptions = Array.isArray(lineItem?.selectedOptions) ? lineItem.selectedOptions : [];
+    for (const opt of selectedOptions) {
+      pushIfFinishingLike(opt?.optionName, opt?.value);
+    }
+
+    const optionSelections = lineItem?.optionSelectionsJson;
+    if (optionSelections && typeof optionSelections === "object") {
+      for (const [key, value] of Object.entries(optionSelections)) {
+        pushIfFinishingLike(key, value as unknown);
+      }
+    }
+
+    const specs = lineItem?.specsJson;
+    if (specs && typeof specs === "object") {
+      for (const [key, value] of Object.entries(specs)) {
+        pushIfFinishingLike(key, value as unknown);
+      }
+    }
+
+    return Array.from(results);
+  };
+
+  const normalizeSelectionValue = (raw: unknown): unknown => {
+    if (raw && typeof raw === "object" && "value" in (raw as any)) {
+      return (raw as any).value;
+    }
+    return raw;
+  };
+
+  const valuesEqualForDefault = (selected: unknown, def: unknown): boolean => {
+    if (Array.isArray(selected) || Array.isArray(def)) {
+      if (!Array.isArray(selected) || !Array.isArray(def)) return false;
+      const a = selected.map((v) => String(v)).sort();
+      const b = def.map((v) => String(v)).sort();
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) {
+        if (a[i] !== b[i]) return false;
+      }
+      return true;
+    }
+    return String(selected) === String(def);
+  };
+
+  const buildPrepressOptionRows = (lineItem: any, treeJson?: any): Array<{
+    groupLabel?: string | null;
+    optionLabel: string;
+    selectedLabel: string;
+    isDefault?: boolean;
+  }> => {
+    const rows: Array<{ groupLabel?: string | null; optionLabel: string; selectedLabel: string; isDefault?: boolean }> = [];
+    const optionSelections = lineItem?.optionSelectionsJson as any;
+    const selectedRecordRaw =
+      optionSelections && typeof optionSelections === "object" && optionSelections.selected && typeof optionSelections.selected === "object"
+        ? optionSelections.selected
+        : optionSelections && typeof optionSelections === "object"
+          ? optionSelections
+          : null;
+
+    const selectedRecord: Record<string, unknown> = selectedRecordRaw && typeof selectedRecordRaw === "object"
+      ? selectedRecordRaw
+      : {};
+
+    const normalizedNodes: any[] = treeJson
+      ? (Array.isArray(treeJson?.nodes) ? treeJson.nodes : Object.values(treeJson?.nodes || {}))
+      : [];
+
+    const selectionNodeByKey = new Map<string, any>();
+    for (const node of normalizedNodes) {
+      const selectionKey = node?.input?.selectionKey;
+      if (typeof selectionKey === "string" && selectionKey.trim()) {
+        selectionNodeByKey.set(selectionKey, node);
+      }
+    }
+
+    let visibleNodeIds = new Set<string>();
+    if (treeJson && treeJson.schemaVersion === 2) {
+      try {
+        const visible = resolveVisibleNodes(treeJson as any, {
+          schemaVersion: 2,
+          selected: Object.fromEntries(
+            Object.entries(selectedRecord).map(([key, value]) => [key, { value: normalizeSelectionValue(value) }])
+          ),
+        } as any);
+        visibleNodeIds = new Set(visible);
+      } catch {
+        visibleNodeIds = new Set<string>();
+      }
+    }
+
+    for (const [selectionKey, rawSelection] of Object.entries(selectedRecord)) {
+      const node = selectionNodeByKey.get(selectionKey);
+      if (node?.id && visibleNodeIds.size > 0 && !visibleNodeIds.has(node.id)) continue;
+
+      const selectedValue = normalizeSelectionValue(rawSelection);
+      if (selectedValue == null || selectedValue === "") continue;
+
+      const optionLabel = (typeof node?.label === "string" && node.label.trim())
+        ? node.label
+        : selectionKey;
+
+      const choiceList = Array.isArray(node?.choices)
+        ? node.choices
+        : (Array.isArray(node?.input?.constraints?.enum?.options)
+          ? node.input.constraints.enum.options
+          : []);
+
+      const toDisplayLabel = (value: unknown): string => {
+        if (Array.isArray(value)) {
+          return value
+            .map((entry) => {
+              const choice = choiceList.find((c: any) => String(c?.value) === String(entry));
+              return choice?.label || String(entry);
+            })
+            .join(", ");
+        }
+        const choice = choiceList.find((c: any) => String(c?.value) === String(value));
+        return choice?.label || String(value);
+      };
+
+      const selectedLabel = toDisplayLabel(selectedValue);
+      const defaultValue = node?.input && Object.prototype.hasOwnProperty.call(node.input, "defaultValue")
+        ? node.input.defaultValue
+        : undefined;
+
+      const row: { groupLabel?: string | null; optionLabel: string; selectedLabel: string; isDefault?: boolean } = {
+        groupLabel: typeof node?.ui?.groupKey === "string" ? node.ui.groupKey : null,
+        optionLabel,
+        selectedLabel,
+      };
+
+      if (defaultValue !== undefined) {
+        row.isDefault = valuesEqualForDefault(selectedValue, defaultValue);
+      }
+
+      rows.push(row);
+    }
+
+    if (rows.length === 0) {
+      const selectedOptions = Array.isArray(lineItem?.selectedOptions) ? lineItem.selectedOptions : [];
+      for (const opt of selectedOptions) {
+        const optionLabel = String(opt?.optionName || opt?.optionId || "Option").trim();
+        const selectedValue = opt?.value;
+        if (!optionLabel || selectedValue == null || selectedValue === "") continue;
+        rows.push({ optionLabel, selectedLabel: String(selectedValue) });
+      }
+    }
+
+    return rows;
+  };
+
+  const PREPRESS_OVERRIDE_ALLOWED_STATUSES = new Set([
+    "queued",
+    "new",
+    "pending_prepress",
+    "in_prepress",
+    "prepress_complete",
+  ]);
+
+  const PRODUCTION_TERMINAL_STATUSES = new Set(["produced", "done", "complete", "canceled"]);
+
+  const getMaterialsOverrideMode = async (organizationId: string) => {
+    const [org] = await db
+      .select({ settings: organizations.settings })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .limit(1);
+
+    const prefs = ((org?.settings as any)?.preferences && typeof (org?.settings as any)?.preferences === "object")
+      ? (org?.settings as any).preferences
+      : {};
+
+    return resolveMaterialsOverrideModeFromOrgPreferences(prefs);
+  };
+
+  const evaluateMaterialsOverrideAccess = (statusRaw: unknown, mode: "prepress_only" | "prepress_and_production") => {
+    const status = String(statusRaw || "").trim().toLowerCase();
+
+    if (mode === "prepress_only") {
+      if (PREPRESS_OVERRIDE_ALLOWED_STATUSES.has(status)) {
+        return { allowed: true as const };
+      }
+      return {
+        allowed: false as const,
+        message: "Material overrides are allowed in prepress stages only for this organization",
+      };
+    }
+
+    if (PRODUCTION_TERMINAL_STATUSES.has(status)) {
+      return {
+        allowed: false as const,
+        message: "Material overrides are locked for terminal production statuses",
+      };
+    }
+
+    return { allowed: true as const };
+  };
+
+  const getPrepressMaterialContext = async (organizationId: string, lineItemId: string) => {
+    const [lineItem] = await db
+      .select({
+        id: orderLineItems.id,
+        orderId: orderLineItems.orderId,
+        status: orderLineItems.status,
+        quantity: orderLineItems.quantity,
+        width: orderLineItems.width,
+        height: orderLineItems.height,
+        specsJson: orderLineItems.specsJson,
+        optionSelectionsJson: orderLineItems.optionSelectionsJson,
+        pbv2TreeVersionId: orderLineItems.pbv2TreeVersionId,
+      })
+      .from(orderLineItems)
+      .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+      .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+      .limit(1);
+
+    if (!lineItem) return null;
+
+    if (!lineItem.pbv2TreeVersionId) {
+      return {
+        lineItem,
+        treeJson: null,
+      };
+    }
+
+    const [treeVersion] = await db
+      .select({ id: pbv2TreeVersions.id, treeJson: pbv2TreeVersions.treeJson })
+      .from(pbv2TreeVersions)
+      .where(
+        and(
+          eq(pbv2TreeVersions.id, lineItem.pbv2TreeVersionId),
+          eq(pbv2TreeVersions.organizationId, organizationId)
+        )
+      )
+      .limit(1);
+
+    return {
+      lineItem,
+      treeJson: (treeVersion?.treeJson as any) ?? null,
+    };
+  };
+
+  const resolveMaterialMetaForOrg = async (organizationId: string, materialIds: string[]) => {
+    const uniqueIds = Array.from(new Set(materialIds.filter((id) => typeof id === "string" && id.length > 0)));
+    if (uniqueIds.length === 0) return new Map<string, { name: string; unitOfMeasure: string | null }>();
+
+    const rows = await db
+      .select({ id: materials.id, name: materials.name, unitOfMeasure: materials.unitOfMeasure })
+      .from(materials)
+      .where(and(eq(materials.organizationId, organizationId), inArray(materials.id, uniqueIds)));
+
+    return new Map<string, { name: string; unitOfMeasure: string | null }>(
+      rows.map((row) => [row.id, { name: row.name, unitOfMeasure: row.unitOfMeasure ?? null }])
+    );
+  };
+
+  const normalizeMaterialUomForPlanning = (value: unknown): "sqft" | "ft" | "each" | null => {
+    const raw = String(value ?? "").trim().toLowerCase();
+    if (!raw) return null;
+    if (raw === "sqft" || raw === "sf" || raw === "square_foot" || raw === "square_feet") return "sqft";
+    if (raw === "ft" || raw === "foot" || raw === "feet" || raw === "linear_ft") return "ft";
+    if (raw === "ea" || raw === "each" || raw === "sheet" || raw === "roll") return "each";
+    return null;
+  };
+
+  const buildPrepressMaterialsEffectivePayload = async (args: {
+    organizationId: string;
+    lineItem: any;
+    treeJson: any;
+  }) => {
+    const overrideMode = await getMaterialsOverrideMode(args.organizationId);
+    const overrideAccess = evaluateMaterialsOverrideAccess(args.lineItem.status, overrideMode);
+
+    const plannedResult = args.treeJson && args.treeJson.schemaVersion === 2
+      ? computePlannedMaterialsForLineItem({ lineItem: args.lineItem, treeJson: args.treeJson as any })
+      : { materials: [], message: "PBV2 tree not available for planned material calculation" };
+
+    const overrides = materialOverridesFromSpecsJson(args.lineItem.specsJson);
+    const effectiveResult = computeEffectiveMaterials({
+      plannedMaterials: plannedResult.materials,
+      overrides,
+    });
+
+    const materialMetaById = await resolveMaterialMetaForOrg(args.organizationId, [
+      ...plannedResult.materials.map((m) => m.materialId),
+      ...effectiveResult.effectiveMaterials.map((m) => m.materialId),
+    ]);
+
+    const plannedMaterials = plannedResult.materials.map((m) => {
+      const meta = materialMetaById.get(m.materialId);
+      const normalizedMaterialUom = normalizeMaterialUomForPlanning(meta?.unitOfMeasure);
+      const hasUomMismatch = !!normalizedMaterialUom && normalizedMaterialUom !== m.uom;
+
+      return {
+        ...m,
+        materialName: meta?.name,
+        ...(hasUomMismatch
+          ? {
+              uomMismatch: {
+                materialUom: normalizedMaterialUom,
+                impliedUom: m.uom,
+              },
+            }
+          : {}),
+      };
+    });
+
+    const effectiveMaterials = effectiveResult.effectiveMaterials.map((m) => ({
+      ...m,
+      materialName: materialMetaById.get(m.materialId)?.name,
+    }));
+    const effectiveFingerprint = buildEffectiveMaterialsFingerprint(effectiveMaterials);
+
+    const messageParts: string[] = [];
+    if (plannedResult.message) messageParts.push(plannedResult.message);
+    if (!overrideAccess.allowed && overrideAccess.message) messageParts.push(overrideAccess.message);
+
+    return {
+      plannedMaterials,
+      effectiveMaterials,
+      overrides,
+      pricingReviewRequired: effectiveResult.pricingReviewRequired,
+      effectiveFingerprint,
+      overrideMode,
+      overrideAllowed: overrideAccess.allowed,
+      overrideBlockedReason: overrideAccess.allowed ? null : (overrideAccess.message || null),
+      diffSummary: effectiveResult.diffSummary,
+      message: messageParts.length > 0 ? messageParts.join(" | ") : undefined,
+    };
+  };
+
+  const normalizeQty2dp = (value: unknown): string => {
+    const n = typeof value === "number" ? value : Number(String(value));
+    if (!Number.isFinite(n)) return (0).toFixed(2);
+    return (Math.round(n * 100) / 100).toFixed(2);
+  };
+
+  const toQtyNumber2dp = (value: unknown): number => Number(normalizeQty2dp(value));
+
+  const buildEffectiveMaterialsFingerprint = (
+    materialsInput: Array<{ materialId: string; uom: string; qty: number }>
+  ): string => {
+    const canonical = (materialsInput || [])
+      .map((m) => ({
+        materialId: String(m.materialId || "").trim(),
+        uom: String(m.uom || "").trim(),
+        qty: normalizeQty2dp(m.qty),
+      }))
+      .filter((m) => !!m.materialId && !!m.uom && Number(m.qty) > 0)
+      .sort((a, b) => `${a.materialId}:${a.uom}`.localeCompare(`${b.materialId}:${b.uom}`));
+
+    const serialized = JSON.stringify(canonical);
+    return crypto.createHash("sha256").update(serialized).digest("hex");
+  };
+
+  const buildReservedFingerprintFromRows = (
+    rows: Array<{ sourceKey: string; uom: string; qty: string | number }>
+  ): string => {
+    return buildEffectiveMaterialsFingerprint(
+      (rows || []).map((r) => ({
+        materialId: String(r.sourceKey || "").trim(),
+        uom: String(r.uom || "").trim(),
+        qty: toQtyNumber2dp(r.qty),
+      }))
+    );
+  };
+
+  const ensureProductionJobForLineItem = async (tx: any, args: { organizationId: string; orderId: string; lineItemId: string }) => {
+    const [existingJob] = await tx
+      .select({ id: productionJobs.id })
+      .from(productionJobs)
+      .where(
+        and(
+          eq(productionJobs.organizationId, args.organizationId),
+          eq(productionJobs.orderId, args.orderId),
+          eq(productionJobs.lineItemId, args.lineItemId)
+        )
+      )
+      .limit(1);
+
+    if (existingJob?.id) return existingJob.id;
+
+    const inserted = await tx
+      .insert(productionJobs)
+      .values({
+        organizationId: args.organizationId,
+        orderId: args.orderId,
+        lineItemId: args.lineItemId,
+        stationKey: "flatbed",
+        stepKey: "prepress",
+        status: "queued",
+        totalSeconds: 0,
+      })
+      .returning({ id: productionJobs.id });
+
+    return inserted[0]?.id as string;
+  };
+
+  const listReservedMaterialsForLineItem = async (tx: any, args: { organizationId: string; orderId: string; lineItemId: string }) => {
+    return tx
+      .select({
+        id: inventoryReservations.id,
+        sourceKey: inventoryReservations.sourceKey,
+        uom: inventoryReservations.uom,
+        qty: inventoryReservations.qty,
+      })
+      .from(inventoryReservations)
+      .where(
+        and(
+          eq(inventoryReservations.organizationId, args.organizationId),
+          eq(inventoryReservations.orderId, args.orderId),
+          eq(inventoryReservations.orderLineItemId, args.lineItemId),
+          eq(inventoryReservations.sourceType, "PBV2_MATERIAL"),
+          eq(inventoryReservations.status, "RESERVED")
+        )
+      );
+  };
+
+  const syncReservedMaterialsForLineItem = async (
+    tx: any,
+    args: {
+      organizationId: string;
+      orderId: string;
+      lineItemId: string;
+      createdByUserId: string | null;
+      effectiveMaterials: Array<{ materialId: string; uom: "sqft" | "ft" | "each"; qty: number }>;
+    }
+  ) => {
+    const now = new Date();
+    const existing = await listReservedMaterialsForLineItem(tx, {
+      organizationId: args.organizationId,
+      orderId: args.orderId,
+      lineItemId: args.lineItemId,
+    });
+
+    const existingByKey = new Map<string, { id: string; qty: string }>();
+    for (const row of existing) {
+      existingByKey.set(`${row.sourceKey}::${row.uom}`, { id: row.id, qty: normalizeQty2dp(row.qty) });
+    }
+
+    const desiredByKey = new Map<string, { materialId: string; uom: "sqft" | "ft" | "each"; qty: string }>();
+    for (const item of args.effectiveMaterials || []) {
+      const materialId = String(item.materialId || "").trim();
+      const uom = String(item.uom || "").trim() as "sqft" | "ft" | "each";
+      const qty = normalizeQty2dp(item.qty);
+      if (!materialId || !uom || Number(qty) <= 0) continue;
+      desiredByKey.set(`${materialId}::${uom}`, { materialId, uom, qty });
+    }
+
+    let insertedCount = 0;
+    let updatedCount = 0;
+    let releasedCount = 0;
+
+    for (const [key, desired] of Array.from(desiredByKey.entries())) {
+      const existingRow = existingByKey.get(key);
+      if (!existingRow) {
+        await tx.insert(inventoryReservations).values({
+          organizationId: args.organizationId,
+          orderId: args.orderId,
+          orderLineItemId: args.lineItemId,
+          sourceType: "PBV2_MATERIAL",
+          sourceKey: desired.materialId,
+          uom: desired.uom,
+          qty: desired.qty,
+          status: "RESERVED",
+          createdByUserId: args.createdByUserId,
+          createdAt: now,
+          updatedAt: now,
+        } as any);
+        insertedCount += 1;
+        continue;
+      }
+
+      if (normalizeQty2dp(existingRow.qty) !== desired.qty) {
+        await tx
+          .update(inventoryReservations)
+          .set({ qty: desired.qty, updatedAt: now } as any)
+          .where(
+            and(
+              eq(inventoryReservations.organizationId, args.organizationId),
+              eq(inventoryReservations.orderId, args.orderId),
+              eq(inventoryReservations.id, existingRow.id),
+              eq(inventoryReservations.status, "RESERVED")
+            )
+          );
+        updatedCount += 1;
+      }
+    }
+
+    for (const [key, existingRow] of Array.from(existingByKey.entries())) {
+      if (desiredByKey.has(key)) continue;
+      await tx
+        .update(inventoryReservations)
+        .set({ status: "RELEASED", updatedAt: now } as any)
+        .where(
+          and(
+            eq(inventoryReservations.organizationId, args.organizationId),
+            eq(inventoryReservations.orderId, args.orderId),
+            eq(inventoryReservations.id, existingRow.id),
+            eq(inventoryReservations.status, "RESERVED")
+          )
+        );
+      releasedCount += 1;
+    }
+
+    const nextReserved = await listReservedMaterialsForLineItem(tx, {
+      organizationId: args.organizationId,
+      orderId: args.orderId,
+      lineItemId: args.lineItemId,
+    });
+
+    return {
+      insertedCount,
+      updatedCount,
+      releasedCount,
+      changed: insertedCount > 0 || updatedCount > 0 || releasedCount > 0,
+      previousFingerprint: buildReservedFingerprintFromRows(existing),
+      nextFingerprint: buildReservedFingerprintFromRows(nextReserved),
+      nextCount: nextReserved.length,
+    };
+  };
+
+  const wasMaterialsLifecycleEventProcessed = async (
+    tx: any,
+    args: { organizationId: string; productionJobId: string; eventType: string; fingerprint: string }
+  ) => {
+    const rows = await tx
+      .select({ payload: productionEvents.payload })
+      .from(productionEvents)
+      .where(
+        and(
+          eq(productionEvents.organizationId, args.organizationId),
+          eq(productionEvents.productionJobId, args.productionJobId),
+          eq(productionEvents.type, "note")
+        )
+      )
+      .orderBy(desc(productionEvents.createdAt))
+      .limit(200);
+
+    return rows.some((row: any) => {
+      const payload = row?.payload as any;
+      return (
+        payload &&
+        payload.eventType === args.eventType &&
+        String(payload.materialFingerprint || "") === args.fingerprint
+      );
+    });
+  };
+
+  const consumeReservedMaterialsForLineItem = async (
+    tx: any,
+    args: {
+      organizationId: string;
+      orderId: string;
+      lineItemId: string;
+      productionJobId: string;
+      userId: string;
+    }
+  ) => {
+    const reserved = await listReservedMaterialsForLineItem(tx, {
+      organizationId: args.organizationId,
+      orderId: args.orderId,
+      lineItemId: args.lineItemId,
+    });
+
+    if (!reserved.length) {
+      return { consumed: false, reason: "no_reserved_rows" as const, fingerprint: buildReservedFingerprintFromRows([]), consumedCount: 0 };
+    }
+
+    const fingerprint = buildReservedFingerprintFromRows(reserved);
+    const alreadyConsumed = await wasMaterialsLifecycleEventProcessed(tx, {
+      organizationId: args.organizationId,
+      productionJobId: args.productionJobId,
+      eventType: "materials_consumed",
+      fingerprint,
+    });
+
+    if (alreadyConsumed) {
+      return { consumed: false, reason: "idempotent_skip" as const, fingerprint, consumedCount: 0 };
+    }
+
+    const now = new Date();
+    let consumedCount = 0;
+
+    for (const row of reserved) {
+      const materialId = String(row.sourceKey || "").trim();
+      if (!materialId) continue;
+      const qty = toQtyNumber2dp(row.qty);
+      if (!Number.isFinite(qty) || qty <= 0) continue;
+
+      await tx.insert(orderMaterialUsage).values({
+        orderId: args.orderId,
+        orderLineItemId: args.lineItemId,
+        materialId,
+        quantityUsed: normalizeQty2dp(qty),
+        unitOfMeasure: String(row.uom || "each"),
+        calculatedBy: "auto",
+      } as any);
+
+      await tx.insert(inventoryAdjustments).values({
+        materialId,
+        type: "job_usage",
+        quantityChange: normalizeQty2dp(-qty),
+        reason: `Auto-consumed from reservation for line item ${args.lineItemId}`,
+        orderId: args.orderId,
+        userId: args.userId,
+      } as any);
+
+      await tx
+        .update(materials)
+        .set({
+          stockQuantity: sql`${materials.stockQuantity} - ${normalizeQty2dp(qty)}`,
+          updatedAt: now,
+        } as any)
+        .where(and(eq(materials.organizationId, args.organizationId), eq(materials.id, materialId)));
+
+      consumedCount += 1;
+    }
+
+    await tx
+      .update(inventoryReservations)
+      .set({ status: "RELEASED", updatedAt: now } as any)
+      .where(
+        and(
+          eq(inventoryReservations.organizationId, args.organizationId),
+          eq(inventoryReservations.orderId, args.orderId),
+          eq(inventoryReservations.orderLineItemId, args.lineItemId),
+          eq(inventoryReservations.sourceType, "PBV2_MATERIAL"),
+          eq(inventoryReservations.status, "RESERVED")
+        )
+      );
+
+    await tx.insert(productionEvents).values({
+      organizationId: args.organizationId,
+      productionJobId: args.productionJobId,
+      type: "note",
+      payload: {
+        eventType: "materials_consumed",
+        lineItemId: args.lineItemId,
+        orderId: args.orderId,
+        materialFingerprint: fingerprint,
+        consumedCount,
+      },
+    });
+
+    return { consumed: true, reason: "ok" as const, fingerprint, consumedCount };
+  };
+
+  // GET /api/prepress/queue - List line items for prepress
+  app.get("/api/prepress/queue", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const statusFilter = req.query.status ? String(req.query.status).split(",") : [];
+      const printTypeFilter = req.query.printType as string | undefined;
+      const searchQuery = req.query.search as string | undefined;
+
+      // Build WHERE conditions.
+      // Prepress queue shows ONLY items that require prepress (requiresPrepress=true).
+      // Default (no status filter) shows all active prepress states; caller can override.
+      const defaultStatuses = ['pending_prepress', 'in_prepress', 'prepress_complete'];
+      const activeStatusFilter = statusFilter.length > 0 ? statusFilter : defaultStatuses;
+
+      const conditions: any[] = [
+        eq(orders.organizationId, organizationId),           // Always filter by org
+        eq(orderLineItems.requiresPrepress, true),           // Prepress queue = prepress items only
+        inArray(orderLineItems.status, activeStatusFilter),  // Status filter (default: prepress states)
+      ];
+
+      if (printTypeFilter && printTypeFilter !== 'all') {
+        conditions.push(eq(orderLineItems.productType, printTypeFilter));
+      }
+
+      // Get line items with order/customer/material data (session is resolved separately)
+      const items = await db
+        .select({
+          lineItemId: orderLineItems.id,
+          orderId: orders.id,
+          status: orderLineItems.status,
+          description: orderLineItems.description,
+          productType: orderLineItems.productType,
+          pbv2TreeVersionId: orderLineItems.pbv2TreeVersionId,
+          quantity: orderLineItems.quantity,
+          width: orderLineItems.width,
+          height: orderLineItems.height,
+          sqft: orderLineItems.sqft,
+          materialName: materials.name,
+          specsJson: orderLineItems.specsJson,
+          optionSelectionsJson: orderLineItems.optionSelectionsJson,
+          selectedOptions: orderLineItems.selectedOptions,
+          orderNumber: orders.orderNumber,
+          dueDate: orders.dueDate,
+          priority: orders.priority,
+          customerName: customers.companyName,
+        })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .innerJoin(customers, eq(orders.customerId, customers.id))
+        .leftJoin(materials, eq(orderLineItems.materialId, materials.id))
+        .where(and(...conditions))
+        .orderBy(asc(orders.dueDate), desc(orders.priority));
+
+      // Get file counts for each line item
+      const lineItemIds = items.map((i) => i.lineItemId);
+      const fileCounts = lineItemIds.length > 0
+        ? await db
+            .select({
+              lineItemId: lineItemFiles.lineItemId,
+              role: lineItemFiles.role,
+              count: sql<number>`count(*)::int`,
+            })
+            .from(lineItemFiles)
+            .where(
+              and(
+                inArray(lineItemFiles.lineItemId, lineItemIds),
+                eq(lineItemFiles.status, "active")
+              )
+            )
+            .groupBy(lineItemFiles.lineItemId, lineItemFiles.role)
+        : [];
+
+      const previewFiles = lineItemIds.length > 0
+        ? await db
+            .select({
+              id: lineItemFiles.id,
+              lineItemId: lineItemFiles.lineItemId,
+              role: lineItemFiles.role,
+              mimeType: lineItemFiles.mimeType,
+              createdAt: lineItemFiles.createdAt,
+            })
+            .from(lineItemFiles)
+            .where(
+              and(
+                inArray(lineItemFiles.lineItemId, lineItemIds),
+                eq(lineItemFiles.status, "active")
+              )
+            )
+            .orderBy(desc(lineItemFiles.createdAt))
+        : [];
+
+      const treeVersionIds = Array.from(new Set(items
+        .map((item) => item.pbv2TreeVersionId)
+        .filter((id): id is string => typeof id === "string" && id.length > 0)));
+
+      const treeVersions = treeVersionIds.length > 0
+        ? await db
+            .select({
+              id: pbv2TreeVersions.id,
+              treeJson: pbv2TreeVersions.treeJson,
+            })
+            .from(pbv2TreeVersions)
+            .where(
+              and(
+                eq(pbv2TreeVersions.organizationId, organizationId),
+                inArray(pbv2TreeVersions.id, treeVersionIds),
+              )
+            )
+        : [];
+
+      const treeByVersionId = new Map<string, any>(
+        treeVersions.map((tv) => [tv.id, tv.treeJson])
+      );
+
+      const firstPreviewByLineItem = new Map<string, {
+        thumbFileId: string | null;
+        thumbnailUrl: string | null;
+        thumbSelectionReason: 'original_fallback' | 'final_fallback' | 'none';
+        thumbCandidateMimeType: string | null;
+      }>();
+      const previewCandidatesByLineItem = new Map<string, {
+        originalImageId: string | null;
+        finalImageId: string | null;
+        firstOriginalMimeType: string | null;
+        firstFinalMimeType: string | null;
+      }>();
+      for (const pf of previewFiles) {
+        const isImage = !!pf.mimeType?.startsWith("image/");
+        const bucket = previewCandidatesByLineItem.get(pf.lineItemId) || {
+          originalImageId: null,
+          finalImageId: null,
+          firstOriginalMimeType: null,
+          firstFinalMimeType: null,
+        };
+
+        if (pf.role === "original") {
+          if (!bucket.firstOriginalMimeType) bucket.firstOriginalMimeType = pf.mimeType || null;
+          if (isImage && !bucket.originalImageId) bucket.originalImageId = pf.id;
+        } else if (pf.role === "final") {
+          if (!bucket.firstFinalMimeType) bucket.firstFinalMimeType = pf.mimeType || null;
+          if (isImage && !bucket.finalImageId) bucket.finalImageId = pf.id;
+        }
+        previewCandidatesByLineItem.set(pf.lineItemId, bucket);
+      }
+
+      for (const [lineItemId, candidate] of Array.from(previewCandidatesByLineItem.entries())) {
+        const thumbFileId = candidate.originalImageId || candidate.finalImageId || null;
+        const thumbSelectionReason: 'original_fallback' | 'final_fallback' | 'none' =
+          candidate.originalImageId ? 'original_fallback' :
+          candidate.finalImageId ? 'final_fallback' :
+          'none';
+        const thumbCandidateMimeType =
+          candidate.originalImageId ? candidate.firstOriginalMimeType :
+          candidate.finalImageId ? candidate.firstFinalMimeType :
+          (candidate.firstOriginalMimeType || candidate.firstFinalMimeType || null);
+
+        firstPreviewByLineItem.set(lineItemId, {
+          thumbFileId,
+          thumbnailUrl: thumbFileId ? `/api/prepress/files/${thumbFileId}/download?inline=1` : null,
+          thumbSelectionReason,
+          thumbCandidateMimeType,
+        });
+      }
+
+      // Resolve latest active session per line item (non-exclusive sessions supported)
+      const activeSessions = lineItemIds.length > 0
+        ? await db
+            .select({
+              id: prepressSessions.id,
+              lineItemId: prepressSessions.lineItemId,
+              notesText: prepressSessions.notesText,
+              issueFlag: prepressSessions.issueFlag,
+              issueType: prepressSessions.issueType,
+              updatedAt: prepressSessions.updatedAt,
+              startedAt: prepressSessions.startedAt,
+            })
+            .from(prepressSessions)
+            .where(
+              and(
+                inArray(prepressSessions.lineItemId, lineItemIds),
+                eq(prepressSessions.organizationId, organizationId),
+                eq(prepressSessions.status, "active")
+              )
+            )
+            .orderBy(desc(prepressSessions.updatedAt), desc(prepressSessions.startedAt))
+        : [];
+
+      const latestSessionByLineItem = new Map<string, typeof activeSessions[number]>();
+      for (const session of activeSessions) {
+        if (!latestSessionByLineItem.has(session.lineItemId)) {
+          latestSessionByLineItem.set(session.lineItemId, session);
+        }
+      }
+
+      // Map to flat QueueItem shape the frontend expects
+      const queue = items.map((item, index) => {
+        const counts = fileCounts.filter((fc) => fc.lineItemId === item.lineItemId);
+        const originals = counts.find((c) => c.role === "original")?.count || 0;
+        const finals = counts.find((c) => c.role === "final")?.count || 0;
+        const latestSession = latestSessionByLineItem.get(item.lineItemId);
+        const computedSqFt = computeTotalSqFt({
+          width: item.width,
+          height: item.height,
+          quantity: item.quantity,
+          description: item.description,
+        });
+        const finishingBullets = extractFinishingBullets(item);
+        const optionsRows = buildPrepressOptionRows(item, item.pbv2TreeVersionId ? treeByVersionId.get(item.pbv2TreeVersionId) : undefined);
+
+        if (process.env.NODE_ENV !== "production" && index === 0) {
+          const selectedCount = (() => {
+            const source = item?.optionSelectionsJson as any;
+            if (source && typeof source === "object" && source.selected && typeof source.selected === "object") {
+              return Object.keys(source.selected).length;
+            }
+            if (source && typeof source === "object") {
+              return Object.keys(source).length;
+            }
+            return 0;
+          })();
+
+          console.log(`[Prepress Options] lineItemId=${item.lineItemId} selections=${selectedCount} displayRows=${optionsRows.length}`);
+        }
+
+        return {
+          lineItemId: item.lineItemId,
+          orderId: item.orderId,
+          jobNumber: item.orderNumber,
+          customerName: item.customerName ?? "—",
+          productName: item.description,
+          printType: item.productType ?? null,
+          media: item.materialName ?? null,
+          dueDate: item.dueDate ?? null,
+          status: item.status,
+          rush: item.priority === "rush",
+          assignedTo: null,
+          sessionId: latestSession?.id ?? null,
+          prepressNotes: latestSession?.notesText ?? null,
+          issueFlag: latestSession?.issueFlag ?? false,
+          issueType: latestSession?.issueType ?? null,
+          thumbFileId: firstPreviewByLineItem.get(item.lineItemId)?.thumbFileId ?? null,
+          thumbnailUrl: firstPreviewByLineItem.get(item.lineItemId)?.thumbnailUrl ?? null,
+          thumbSelectionReason: firstPreviewByLineItem.get(item.lineItemId)?.thumbSelectionReason ?? 'none',
+          thumbCandidateMimeType: firstPreviewByLineItem.get(item.lineItemId)?.thumbCandidateMimeType ?? null,
+          fileCounts: { originals, finals },
+          quantity: Number(item.quantity) || 0,
+          width: item.width != null ? Number(item.width) : null,
+          height: item.height != null ? Number(item.height) : null,
+          sqFootage: computedSqFt ?? (item.sqft != null ? Number(item.sqft) : null),
+          bleed: null,
+          finishing: finishingBullets.length > 0 ? finishingBullets.join(" • ") : null,
+          finishingBullets,
+          optionsRows,
+        };
+      });
+
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[Prepress Queue] org=${organizationId} statuses=${activeStatusFilter.join(",")} → ${queue.length} items`);
+      }
+
+      res.json({ success: true, data: queue });
+    } catch (error: any) {
+      console.error("[Prepress] Error fetching queue:", error);
+      res.status(500).json({ error: error?.message || "Failed to fetch prepress queue" });
+    }
+  });
+
+  // GET /api/prepress/line-items/:lineItemId/materials-planned - Planned materials from PBV2 selected choices
+  app.get("/api/prepress/line-items/:lineItemId/materials-planned", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(500).json({ success: false, data: { materials: [] }, message: "Missing organization context" });
+      }
+
+      const { lineItemId } = req.params;
+      const context = await getPrepressMaterialContext(organizationId, lineItemId);
+
+      if (!context) {
+        return res.status(404).json({ success: false, data: { materials: [] }, message: "Line item not found" });
+      }
+
+      if (!context.lineItem.pbv2TreeVersionId || !context.treeJson || context.treeJson.schemaVersion !== 2) {
+        return res.json({ success: true, data: { materials: [] }, message: "No PBV2 tree linked to this line item" });
+      }
+
+      const payload = await buildPrepressMaterialsEffectivePayload({
+        organizationId,
+        lineItem: context.lineItem,
+        treeJson: context.treeJson,
+      });
+
+      return res.json({
+        success: true,
+        data: { materials: payload.plannedMaterials },
+        ...(payload.message ? { message: payload.message } : {}),
+      });
+    } catch (error: any) {
+      console.error("[Prepress] Error computing planned materials:", error);
+      return res.status(500).json({
+        success: false,
+        data: { materials: [] },
+        message: error?.message || "Failed to compute planned materials",
+      });
+    }
+  });
+
+  // GET /api/prepress/line-items/:lineItemId/materials-effective - Planned + effective materials with overrides
+  app.get("/api/prepress/line-items/:lineItemId/materials-effective", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(500).json({ success: false, data: null, message: "Missing organization context" });
+      }
+
+      const { lineItemId } = req.params;
+      const context = await getPrepressMaterialContext(organizationId, lineItemId);
+      if (!context) {
+        return res.status(404).json({ success: false, data: null, message: "Line item not found" });
+      }
+
+      const payload = await buildPrepressMaterialsEffectivePayload({
+        organizationId,
+        lineItem: context.lineItem,
+        treeJson: context.treeJson,
+      });
+
+      return res.json({
+        success: true,
+        data: {
+          plannedMaterials: payload.plannedMaterials,
+          effectiveMaterials: payload.effectiveMaterials,
+          effectiveFingerprint: payload.effectiveFingerprint,
+          overrides: payload.overrides,
+          pricingReviewRequired: payload.pricingReviewRequired,
+          overrideMode: payload.overrideMode,
+          overrideAllowed: payload.overrideAllowed,
+          overrideBlockedReason: payload.overrideBlockedReason,
+        },
+        ...(payload.message ? { message: payload.message } : {}),
+      });
+    } catch (error: any) {
+      console.error("[Prepress] Error computing effective materials:", error);
+      return res.status(500).json({ success: false, data: null, message: error?.message || "Failed to compute effective materials" });
+    }
+  });
+
+  // GET /api/prepress/line-items/:lineItemId/materials-availability - Effective materials with live stock availability
+  app.get("/api/prepress/line-items/:lineItemId/materials-availability", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(500).json({ success: false, data: null, message: "Missing organization context" });
+      }
+
+      const { lineItemId } = req.params;
+      const context = await getPrepressMaterialContext(organizationId, lineItemId);
+      if (!context) {
+        return res.status(404).json({ success: false, data: null, message: "Line item not found" });
+      }
+
+      const payload = await buildPrepressMaterialsEffectivePayload({
+        organizationId,
+        lineItem: context.lineItem,
+        treeJson: context.treeJson,
+      });
+
+      const materialIds = Array.from(new Set(payload.effectiveMaterials.map((m) => String(m.materialId || "")).filter(Boolean)));
+      const materialRows = materialIds.length
+        ? await db
+            .select({ id: materials.id, stockQuantity: materials.stockQuantity })
+            .from(materials)
+            .where(and(eq(materials.organizationId, organizationId), inArray(materials.id, materialIds)))
+        : [];
+
+      const stockByMaterialId = new Map<string, number>(
+        materialRows.map((row) => [row.id, toQtyNumber2dp(row.stockQuantity)])
+      );
+
+      const items = payload.effectiveMaterials.map((m) => {
+        const requiredQty = toQtyNumber2dp(m.qty);
+        const availableQty = toQtyNumber2dp(stockByMaterialId.get(m.materialId) ?? 0);
+        const shortageQty = Math.max(0, toQtyNumber2dp(requiredQty - availableQty));
+        return {
+          materialId: m.materialId,
+          materialName: m.materialName,
+          uom: m.uom,
+          requiredQty,
+          availableQty,
+          shortageQty,
+          isAvailable: shortageQty <= 0,
+        };
+      });
+
+      return res.json({
+        success: true,
+        data: {
+          effectiveFingerprint: payload.effectiveFingerprint,
+          allAvailable: items.every((i) => i.isAvailable),
+          items,
+        },
+      });
+    } catch (error: any) {
+      console.error("[Prepress] Error computing materials availability:", error);
+      return res.status(500).json({ success: false, data: null, message: error?.message || "Failed to compute materials availability" });
+    }
+  });
+
+  // POST /api/prepress/line-items/:lineItemId/material-overrides - Append a sparse material override op
+  app.post("/api/prepress/line-items/:lineItemId/material-overrides", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(500).json({ success: false, data: null, message: "Missing organization context" });
+      }
+
+      const userId = getUserId(req.user) || undefined;
+      const { lineItemId } = req.params;
+
+      const context = await getPrepressMaterialContext(organizationId, lineItemId);
+      if (!context) {
+        return res.status(404).json({ success: false, data: null, message: "Line item not found" });
+      }
+
+      const overrideMode = await getMaterialsOverrideMode(organizationId);
+      const access = evaluateMaterialsOverrideAccess(context.lineItem.status, overrideMode);
+      if (!access.allowed) {
+        return res.status(400).json({
+          success: false,
+          data: null,
+          message: access.message || "Material overrides are not allowed for the current line item status",
+        });
+      }
+
+      const parsed = materialOverrideOpInputSchema.safeParse((req.body as any)?.op);
+      if (!parsed.success) {
+        return res.status(400).json({
+          success: false,
+          data: null,
+          message: parsed.error.issues[0]?.message || "Invalid override payload",
+        });
+      }
+
+      const persistedOp = withServerDefaultsForOverride(parsed.data, userId);
+      let updatedSpecsJson: Record<string, any> | null = null;
+
+      await db.transaction(async (tx) => {
+        updatedSpecsJson = appendMaterialOverrideToSpecsJson(context.lineItem.specsJson, persistedOp);
+
+        await tx
+          .update(orderLineItems)
+          .set({
+            specsJson: updatedSpecsJson as any,
+            updatedAt: new Date(),
+          })
+          .where(eq(orderLineItems.id, lineItemId));
+
+        const productionJobId = await ensureProductionJobForLineItem(tx, {
+          organizationId,
+          orderId: context.lineItem.orderId,
+          lineItemId,
+        });
+
+        const plannedForAudit = context.treeJson && context.treeJson.schemaVersion === 2
+          ? computePlannedMaterialsForLineItem({ lineItem: context.lineItem, treeJson: context.treeJson as any })
+          : { materials: [] as any[] };
+
+        const effectiveForAudit = computeEffectiveMaterials({
+          plannedMaterials: plannedForAudit.materials,
+          overrides: materialOverridesFromSpecsJson(updatedSpecsJson),
+        });
+        const effectiveFingerprint = buildEffectiveMaterialsFingerprint(effectiveForAudit.effectiveMaterials);
+
+        const currentReserved = await listReservedMaterialsForLineItem(tx, {
+          organizationId,
+          orderId: context.lineItem.orderId,
+          lineItemId,
+        });
+
+        if (currentReserved.length > 0 && !PRODUCTION_TERMINAL_STATUSES.has(String(context.lineItem.status || "").toLowerCase())) {
+          const rebalance = await syncReservedMaterialsForLineItem(tx, {
+            organizationId,
+            orderId: context.lineItem.orderId,
+            lineItemId,
+            createdByUserId: userId ?? null,
+            effectiveMaterials: effectiveForAudit.effectiveMaterials,
+          });
+
+          await tx.insert(productionEvents).values({
+            organizationId,
+            productionJobId,
+            type: "note",
+            payload: {
+              eventType: "materials_rebalanced",
+              lineItemId,
+              previousFingerprint: rebalance.previousFingerprint,
+              materialFingerprint: rebalance.nextFingerprint,
+              changed: rebalance.changed,
+              insertedCount: rebalance.insertedCount,
+              updatedCount: rebalance.updatedCount,
+              releasedCount: rebalance.releasedCount,
+              reservationCount: rebalance.nextCount,
+            },
+          });
+        }
+
+        await tx.insert(productionEvents).values({
+          organizationId,
+          productionJobId,
+          type: "note",
+          payload: {
+            eventType: "material_override",
+            lineItemId,
+            op: persistedOp,
+            reasonNote: persistedOp.reasonNote,
+            pricingReviewRequired: effectiveForAudit.pricingReviewRequired,
+            materialFingerprint: effectiveFingerprint,
+            diffSummary: effectiveForAudit.diffSummary,
+          },
+        });
+      });
+
+      const payload = await buildPrepressMaterialsEffectivePayload({
+        organizationId,
+        lineItem: {
+          ...context.lineItem,
+          specsJson: updatedSpecsJson || context.lineItem.specsJson,
+        },
+        treeJson: context.treeJson,
+      });
+
+      return res.json({
+        success: true,
+        data: {
+          plannedMaterials: payload.plannedMaterials,
+          effectiveMaterials: payload.effectiveMaterials,
+          effectiveFingerprint: payload.effectiveFingerprint,
+          overrides: payload.overrides,
+          pricingReviewRequired: payload.pricingReviewRequired,
+          overrideMode: payload.overrideMode,
+          overrideAllowed: payload.overrideAllowed,
+          overrideBlockedReason: payload.overrideBlockedReason,
+        },
+        ...(payload.message ? { message: payload.message } : {}),
+      });
+    } catch (error: any) {
+      console.error("[Prepress] Error applying material override:", error);
+      return res.status(500).json({ success: false, data: null, message: error?.message || "Failed to apply material override" });
+    }
+  });
+
+  // GET /api/prepress/line-item/:lineItemId/history - Timeline for prepress/production activity
+  app.get("/api/prepress/line-item/:lineItemId/history", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const { lineItemId } = req.params;
+
+      const [lineItem] = await db
+        .select({ id: orderLineItems.id })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+
+      if (!lineItem) {
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      const sessions = await db
+        .select({
+          id: prepressSessions.id,
+          startedAt: prepressSessions.startedAt,
+          updatedAt: prepressSessions.updatedAt,
+          completedAt: prepressSessions.completedAt,
+          status: prepressSessions.status,
+          notesText: prepressSessions.notesText,
+          issueFlag: prepressSessions.issueFlag,
+          issueType: prepressSessions.issueType,
+        })
+        .from(prepressSessions)
+        .where(
+          and(
+            eq(prepressSessions.organizationId, organizationId),
+            eq(prepressSessions.lineItemId, lineItemId)
+          )
+        )
+        .orderBy(desc(prepressSessions.updatedAt));
+
+      const sessionIds = sessions.map((s) => s.id);
+
+      const events = await db
+        .select({
+          createdAt: productionEvents.createdAt,
+          type: productionEvents.type,
+          payload: productionEvents.payload,
+        })
+        .from(productionEvents)
+        .innerJoin(productionJobs, eq(productionEvents.productionJobId, productionJobs.id))
+        .where(
+          and(
+            eq(productionEvents.organizationId, organizationId),
+            eq(productionJobs.lineItemId, lineItemId)
+          )
+        )
+        .orderBy(desc(productionEvents.createdAt));
+
+      const auditFilter = sessionIds.length > 0
+        ? or(
+            and(eq(auditLogs.entityType, "order_line_item"), eq(auditLogs.entityId, lineItemId)),
+            and(eq(auditLogs.entityType, "prepress_session"), inArray(auditLogs.entityId, sessionIds))
+          )
+        : and(eq(auditLogs.entityType, "order_line_item"), eq(auditLogs.entityId, lineItemId));
+
+      const audits = await db
+        .select({
+          createdAt: auditLogs.createdAt,
+          actionType: auditLogs.actionType,
+          entityType: auditLogs.entityType,
+          description: auditLogs.description,
+        })
+        .from(auditLogs)
+        .where(and(eq(auditLogs.organizationId, organizationId), auditFilter!))
+        .orderBy(desc(auditLogs.createdAt));
+
+      const timeline = [
+        ...sessions.map((s) => ({
+          at: s.updatedAt || s.startedAt,
+          source: "prepress_session",
+          type: s.status,
+          description: s.status === "complete"
+            ? "Prepress session completed"
+            : s.notesText
+              ? `Session notes updated: ${s.notesText}`
+              : "Prepress session active",
+        })),
+        ...events.map((e) => ({
+          at: e.createdAt,
+          source: "production_event",
+          type: e.type,
+          description: typeof e.payload?.text === "string" && e.payload.text.trim().length > 0
+            ? e.payload.text
+            : `${e.type}`,
+        })),
+        ...audits.map((a) => ({
+          at: a.createdAt,
+          source: "audit_log",
+          type: `${a.entityType}:${a.actionType}`,
+          description: a.description,
+        })),
+      ]
+        .filter((entry) => !!entry.at)
+        .sort((a, b) => new Date(b.at as any).getTime() - new Date(a.at as any).getTime());
+
+      res.json({ success: true, data: timeline });
+    } catch (error: any) {
+      console.error("[Prepress] Error fetching history:", error);
+      res.status(500).json({ error: error?.message || "Failed to fetch prepress history" });
+    }
+  });
+
+  // GET /api/prepress/line-item/:lineItemId/spec-sheet - Printable prepress spec payload
+  app.get("/api/prepress/line-item/:lineItemId/spec-sheet", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const { lineItemId } = req.params;
+
+      const rows = await db
+        .select({
+          lineItem: orderLineItems,
+          orderNumber: orders.orderNumber,
+          customerName: customers.companyName,
+          materialName: materials.name,
+        })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .innerJoin(customers, eq(orders.customerId, customers.id))
+        .leftJoin(materials, eq(orderLineItems.materialId, materials.id))
+        .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+
+      if (!rows[0]) {
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      const row = rows[0];
+      const li = row.lineItem;
+      const filesGrouped = await prepressFileService.getLineItemFiles(lineItemId, organizationId);
+      const allFiles = [...filesGrouped.originals, ...filesGrouped.finals, ...filesGrouped.references].map((f) => ({
+        ...f,
+        computedDisplayFilename: prepressFileService.buildComputedDisplayFilename({
+          role: f.role,
+          originalFilename: f.originalFilename,
+          tag: f.tag,
+        }),
+      }));
+
+      const computedSqFt = computeTotalSqFt({
+        width: li.width,
+        height: li.height,
+        quantity: li.quantity,
+        description: li.description,
+      });
+
+      const parsedDimensions = parseDimensionsFromDescription(li.description);
+      const width = li.width != null ? Number(li.width) : parsedDimensions.widthIn;
+      const height = li.height != null ? Number(li.height) : parsedDimensions.heightIn;
+
+      res.json({
+        success: true,
+        data: {
+          lineItemId: li.id,
+          jobNumber: row.orderNumber,
+          customerName: row.customerName,
+          productName: li.description,
+          quantity: li.quantity,
+          width,
+          height,
+          sqFootage: computedSqFt ?? (li.sqft != null ? Number(li.sqft) : null),
+          media: row.materialName ?? null,
+          printType: li.productType,
+          bleed: null,
+          finishingBullets: extractFinishingBullets(li),
+          originals: allFiles.filter((f) => f.role === "original"),
+          finals: allFiles.filter((f) => f.role === "final"),
+          references: allFiles.filter((f) => f.role === "reference"),
+        },
+      });
+    } catch (error: any) {
+      console.error("[Prepress] Error building spec sheet:", error);
+      res.status(500).json({ error: error?.message || "Failed to build spec sheet" });
+    }
+  });
+
+  // PATCH /api/prepress/line-item/:lineItemId/print-type
+  app.patch("/api/prepress/line-item/:lineItemId/print-type", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const schema = z.object({ printType: z.enum(["flatbed", "wide_roll", "roll"]) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const { lineItemId } = req.params;
+      const { printType } = parsed.data;
+
+      const rows = await db
+        .select({
+          id: orderLineItems.id,
+          productType: orderLineItems.productType,
+        })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+
+      if (!rows[0]) {
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      if (rows[0].productType === printType) {
+        return res.json({ success: true, data: { lineItemId, printType } });
+      }
+
+      await db
+        .update(orderLineItems)
+        .set({ productType: printType, updatedAt: new Date() })
+        .where(eq(orderLineItems.id, lineItemId));
+
+      await db.insert(auditLogs).values({
+        organizationId,
+        userId,
+        userName: req.user?.email || req.user?.name || null,
+        actionType: "UPDATE",
+        entityType: "order_line_item",
+        entityId: lineItemId,
+        entityName: `Line item ${lineItemId}`,
+        description: "Updated prepress print type",
+        oldValues: { printType: rows[0].productType },
+        newValues: { printType },
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+      } as any);
+
+      res.json({ success: true, data: { lineItemId, printType } });
+    } catch (error: any) {
+      console.error("[Prepress] Error updating print type:", error);
+      res.status(500).json({ error: error?.message || "Failed to update print type" });
+    }
+  });
+
+  // POST /api/prepress/session/start - Start prepress session
+  app.post("/api/prepress/session/start", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const schema = z.object({ lineItemId: z.string() });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const { lineItemId } = parsed.data;
+
+      const result = await db.transaction(async (tx) => {
+        // Get line item
+        const lineItems = await tx
+          .select({
+            lineItem: orderLineItems,
+            order: orders,
+          })
+          .from(orderLineItems)
+          .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+          .where(
+            and(
+              eq(orderLineItems.id, lineItemId),
+              eq(orders.organizationId, organizationId)
+            )
+          )
+          .limit(1);
+
+        if (!lineItems[0]) {
+          throw Object.assign(new Error("Line item not found"), { statusCode: 404 });
+        }
+
+        const lineItem = lineItems[0].lineItem;
+        const order = lineItems[0].order;
+
+        // Create new session
+        const [session] = await tx
+          .insert(prepressSessions)
+          .values({
+            organizationId,
+            orderId: order.id,
+            lineItemId,
+            status: "active",
+            startedByUserId: userId,
+            lockOwnerUserId: userId,
+            issueFlag: false,
+          })
+          .returning();
+
+        // Transition to IN_PREPRESS only if currently pending (idempotent — never downgrade)
+        if (lineItem.status === "pending_prepress") {
+          await tx
+            .update(orderLineItems)
+            .set({ status: "in_prepress" })
+            .where(eq(orderLineItems.id, lineItemId));
+        }
+
+        // Audit log
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "CREATE",
+          entityType: "prepress_session",
+          entityId: session.id,
+          entityName: `Session for line item ${lineItemId}`,
+          description: "Started prepress session",
+          newValues: { status: "active", lineItemId },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        return session;
+      });
+
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Prepress] Error starting session:", error);
+      res.status(status).json({ error: error?.message || "Failed to start session" });
+    }
+  });
+
+  // POST /api/prepress/session/:id/note - Update session notes
+  app.post("/api/prepress/session/:id/note", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const sessionId = req.params.id;
+      const schema = z.object({
+        note: z.string().optional(),
+        notesText: z.string().optional(),
+        flaggedForQc: z.boolean().optional(),
+        issueFlag: z.boolean().optional(),
+        issueType: z.string().optional().nullable(),
+        ifMatchUpdatedAt: z.string().optional(),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const [existingSession] = await db
+        .select({ updatedAt: prepressSessions.updatedAt })
+        .from(prepressSessions)
+        .where(
+          and(
+            eq(prepressSessions.id, sessionId),
+            eq(prepressSessions.organizationId, organizationId)
+          )
+        )
+        .limit(1);
+
+      if (!existingSession) {
+        return res.status(404).json({ error: "Session not found" });
+      }
+
+      if (parsed.data.ifMatchUpdatedAt) {
+        const expected = new Date(parsed.data.ifMatchUpdatedAt).getTime();
+        const actual = existingSession.updatedAt ? new Date(existingSession.updatedAt).getTime() : NaN;
+        if (Number.isFinite(expected) && Number.isFinite(actual) && expected !== actual) {
+          return res.status(409).json({ error: "Notes changed by another user; reload before saving." });
+        }
+      }
+
+      const updates: any = {};
+      if (parsed.data.note !== undefined) updates.notesText = parsed.data.note;
+      if (parsed.data.notesText !== undefined) updates.notesText = parsed.data.notesText;
+      if (parsed.data.flaggedForQc !== undefined) updates.issueFlag = parsed.data.flaggedForQc;
+      if (parsed.data.issueFlag !== undefined) updates.issueFlag = parsed.data.issueFlag;
+      if (parsed.data.issueType !== undefined) updates.issueType = parsed.data.issueType;
+      updates.updatedAt = new Date();
+
+      await db
+        .update(prepressSessions)
+        .set(updates)
+        .where(
+          and(
+            eq(prepressSessions.id, sessionId),
+            eq(prepressSessions.organizationId, organizationId)
+          )
+        );
+
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("[Prepress] Error updating notes:", error);
+      res.status(500).json({ error: error?.message || "Failed to update notes" });
+    }
+  });
+
+  // POST /api/prepress/session/:id/complete - Mark prepress complete
+  app.post("/api/prepress/session/:id/complete", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const sessionId = req.params.id;
+
+      const result = await db.transaction(async (tx) => {
+        // Get session
+        const sessions = await tx
+          .select()
+          .from(prepressSessions)
+          .where(
+            and(
+              eq(prepressSessions.id, sessionId),
+              eq(prepressSessions.organizationId, organizationId)
+            )
+          )
+          .limit(1);
+
+        if (!sessions[0]) {
+          throw Object.assign(new Error("Session not found"), { statusCode: 404 });
+        }
+
+        const session = sessions[0];
+
+        if (session.status === "complete") {
+          // Already complete — idempotent success, no error
+          return { id: session.id, lineItemId: session.lineItemId, status: "complete" };
+        }
+
+        // Validate at least one FINAL file exists for this line item (any session, any uploader)
+        const finalFiles = await tx
+          .select()
+          .from(lineItemFiles)
+          .where(
+            and(
+              eq(lineItemFiles.lineItemId, session.lineItemId),
+              eq(lineItemFiles.role, "final"),
+              eq(lineItemFiles.status, "active")
+            )
+          )
+          .limit(1);
+
+        if (!finalFiles[0]) {
+          throw Object.assign(
+            new Error("Cannot complete prepress without at least one final file"),
+            { statusCode: 400 }
+          );
+        }
+
+        // Mark session complete
+        await tx
+          .update(prepressSessions)
+          .set({
+            status: "complete",
+            completedAt: new Date(),
+            completedByUserId: userId,
+          })
+          .where(eq(prepressSessions.id, sessionId));
+
+        // Update line item status to PREPRESS_COMPLETE
+        await tx
+          .update(orderLineItems)
+          .set({ status: "prepress_complete" })
+          .where(eq(orderLineItems.id, session.lineItemId));
+
+        // Audit log
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "UPDATE",
+          entityType: "prepress_session",
+          entityId: sessionId,
+          entityName: `Session for line item ${session.lineItemId}`,
+          description: "Completed prepress session",
+          oldValues: { status: "active" },
+          newValues: { status: "complete" },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        return session;
+      });
+
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Prepress] Error completing session:", error);
+      res.status(status).json({ error: error?.message || "Failed to complete session" });
+    }
+  });
+
+  // PROMPT B: POST /api/prepress/line-item/:lineItemId/send-to-print
+  // Transitions prepress_complete → print_ready (explicit handoff to production boards)
+  app.post("/api/prepress/line-item/:lineItemId/send-to-print", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+      
+      const { lineItemId } = req.params;
+
+      // 1. Verify line item exists and belongs to org
+      const [lineItem] = await db.select({
+          id: orderLineItems.id,
+          status: orderLineItems.status,
+          requiresPrepress: orderLineItems.requiresPrepress,
+        })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .where(and(
+          eq(orderLineItems.id, lineItemId),
+          eq(orders.organizationId, organizationId)
+        ))
+        .limit(1);
+
+      if (!lineItem) {
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      const item = lineItem;
+
+      // 2. Verify prepress requirement and status
+      if (item.requiresPrepress && item.status !== 'prepress_complete') {
+        return res.status(400).json({ 
+          error: "Line item must complete prepress first",
+          currentStatus: item.status
+        });
+      }
+
+      // 3. Verify at least one FINAL file exists
+      const finalFiles = await db.select()
+        .from(lineItemFiles)
+        .where(and(
+          eq(lineItemFiles.lineItemId, lineItemId),
+          eq(lineItemFiles.role, 'final'),
+          eq(lineItemFiles.status, 'active')
+        ))
+        .limit(1);
+
+      if (finalFiles.length === 0) {
+        return res.status(400).json({ error: "At least one final file is required before sending to print" });
+      }
+
+      // 4. Already at or past print_ready → idempotent success (no-op)
+      const ineligibleStatuses = ['print_ready', 'printing', 'done', 'complete'];
+      if (ineligibleStatuses.includes(item.status)) {
+        return res.json({
+          success: true,
+          message: "Line item is already in production queue",
+          newStatus: item.status,
+        });
+      }
+
+      const materialContext = await getPrepressMaterialContext(organizationId, lineItemId);
+      const effectivePayload = materialContext
+        ? await buildPrepressMaterialsEffectivePayload({
+            organizationId,
+            lineItem: materialContext.lineItem,
+            treeJson: materialContext.treeJson,
+          })
+        : null;
+
+      const effectiveMaterials = effectivePayload?.effectiveMaterials || [];
+      const effectiveFingerprint = effectivePayload?.effectiveFingerprint || buildEffectiveMaterialsFingerprint([]);
+
+      // 5. Transition to PRINT_READY
+      await db.transaction(async (tx) => {
+        await tx.update(orderLineItems)
+          .set({
+            status: 'print_ready',
+            updatedAt: new Date()
+          })
+          .where(eq(orderLineItems.id, lineItemId));
+
+        const productionJobId = await ensureProductionJobForLineItem(tx, {
+          organizationId,
+          orderId: materialContext?.lineItem.orderId || (item as any).orderId,
+          lineItemId,
+        });
+
+        if (materialContext?.lineItem?.orderId) {
+          const alreadyReserved = await wasMaterialsLifecycleEventProcessed(tx, {
+            organizationId,
+            productionJobId,
+            eventType: "materials_reserved",
+            fingerprint: effectiveFingerprint,
+          });
+
+          if (!alreadyReserved) {
+            const reserveSync = await syncReservedMaterialsForLineItem(tx, {
+              organizationId,
+              orderId: materialContext.lineItem.orderId,
+              lineItemId,
+              createdByUserId: userId ?? null,
+              effectiveMaterials,
+            });
+
+            await tx.insert(productionEvents).values({
+              organizationId,
+              productionJobId,
+              type: "note",
+              payload: {
+                eventType: "materials_reserved",
+                lineItemId,
+                orderId: materialContext.lineItem.orderId,
+                previousFingerprint: reserveSync.previousFingerprint,
+                materialFingerprint: reserveSync.nextFingerprint,
+                changed: reserveSync.changed,
+                reservationCount: reserveSync.nextCount,
+              },
+            });
+          }
+        }
+
+        // 6. Create audit log
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "UPDATE",
+          entityType: "order_line_item",
+          entityId: lineItemId,
+          entityName: `Line item ${lineItemId}`,
+          description: "Sent to print queue from prepress",
+          oldValues: { status: item.status },
+          newValues: { status: 'print_ready', materialFingerprint: effectiveFingerprint },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+      });
+
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[Send to Print] Line item ${lineItemId} sent to print queue by user ${userId}`);
+      }
+
+      res.json({ 
+        success: true, 
+        message: "Sent to print queue successfully",
+        newStatus: 'print_ready',
+        materialFingerprint: effectiveFingerprint,
+      });
+
+    } catch (error) {
+      console.error("[Send to Print] Error:", error);
+      res.status(500).json({ error: "Failed to send to print queue" });
+    }
+  });
+
+  // PROMPT D: POST /api/production/line-item/:lineItemId/send-to-prepress
+  // Kickback from production board to prepress with a required edit-request note.
+  app.post("/api/production/line-item/:lineItemId/send-to-prepress", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const { lineItemId } = req.params;
+      const { note, noPrintsCompletedYet } = req.body;
+
+      // Validate note (required)
+      if (!note || typeof note !== 'string' || !note.trim()) {
+        return res.status(400).json({ error: "Note is required" });
+      }
+
+      // Verify line item belongs to org
+      const [lineItem] = await db.select({
+          id: orderLineItems.id,
+          status: orderLineItems.status,
+          orderId: orderLineItems.orderId,
+        })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .where(and(
+          eq(orderLineItems.id, lineItemId),
+          eq(orders.organizationId, organizationId)
+        ))
+        .limit(1);
+
+      if (!lineItem) {
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      // Create new prepress session as edit request
+      const editNote = `[EDIT REQUEST FROM PRODUCTION]\n${note.trim()}`;
+      const [session] = await db.insert(prepressSessions).values({
+        organizationId,
+        orderId: lineItem.orderId,
+        lineItemId,
+        status: "active",
+        startedByUserId: userId,
+        lockOwnerUserId: userId,
+        issueFlag: true,
+        issueType: "production_edit_request",
+        notesText: editNote,
+      }).returning({ id: prepressSessions.id });
+
+      // Update line item status back to pending_prepress
+      await db.update(orderLineItems)
+        .set({ status: 'pending_prepress', updatedAt: new Date() })
+        .where(eq(orderLineItems.id, lineItemId));
+
+      // Audit log
+      await db.insert(auditLogs).values({
+        organizationId,
+        userId,
+        userName: req.user?.email || req.user?.name || null,
+        actionType: "UPDATE",
+        entityType: "order_line_item",
+        entityId: lineItemId,
+        entityName: `Line item ${lineItemId}`,
+        description: "Sent to prepress for editing from production board",
+        oldValues: { status: lineItem.status },
+        newValues: { status: 'pending_prepress', note: note.trim(), noPrintsCompletedYet: noPrintsCompletedYet || false },
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+      } as any);
+
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[Send to Prepress] Line item ${lineItemId} sent back to prepress by user ${userId}`);
+      }
+
+      res.json({ success: true, message: "Sent to prepress for editing", sessionId: session?.id });
+
+    } catch (error) {
+      console.error("[Send to Prepress] Error:", error);
+      res.status(500).json({ error: "Failed to send to prepress" });
+    }
+  });
+
+  // POST /api/prepress/files/upload - Upload file (multipart)
+  app.post("/api/prepress/files/upload", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      // Parse multipart upload
+      const bb = busboy({ headers: req.headers });
+      
+      let fileBuffer: Buffer | null = null;
+      let fileName = '';
+      let fileMimeType = '';
+      const fields: Record<string, string> = {};
+      let fileSize = 0;
+      const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024;
+      
+      bb.on('file', (name, file, info) => {
+        const { filename, mimeType } = info;
+        fileName = filename;
+        fileMimeType = mimeType;
+        
+        const chunks: Buffer[] = [];
+        
+        file.on('data', (chunk: Buffer) => {
+          fileSize += chunk.length;
+          if (fileSize > MAX_FILE_SIZE_BYTES) {
+            file.resume();
+            return;
+          }
+          chunks.push(chunk);
+        });
+        
+        file.on('end', () => {
+          if (fileSize <= MAX_FILE_SIZE_BYTES) {
+            fileBuffer = Buffer.concat(chunks);
+          }
+        });
+      });
+      
+      bb.on('field', (name, value) => {
+        fields[name] = value;
+      });
+      
+      bb.on('finish', async () => {
+        try {
+          if (fileSize > MAX_FILE_SIZE_BYTES) {
+            return res.status(400).json({ error: "File size exceeds maximum allowed size of 250MB" });
+          }
+
+          if (!fileBuffer) {
+            return res.status(400).json({ error: 'No file uploaded' });
+          }
+
+          // Validate required fields
+          if (!fields.lineItemId || !fields.role) {
+            return res.status(400).json({ error: "Missing required fields: lineItemId, role" });
+          }
+
+          // Get line item to validate org and get order ID
+          const lineItems = await db
+            .select({
+              lineItem: orderLineItems,
+              order: orders,
+            })
+            .from(orderLineItems)
+            .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+            .where(
+              and(
+                eq(orderLineItems.id, fields.lineItemId),
+                eq(orders.organizationId, organizationId)
+              )
+            )
+            .limit(1);
+
+          if (!lineItems[0]) {
+            return res.status(404).json({ error: "Line item not found" });
+          }
+
+          if (!hasLoggedPrepressStorageAuthMode && process.env.NODE_ENV !== "production") {
+            hasLoggedPrepressStorageAuthMode = true;
+            console.log(`[Prepress] GCS auth mode: ${getStorageAuthMode()}`);
+          }
+
+          const lineItem = lineItems[0].lineItem;
+          const order = lineItems[0].order;
+
+          // Upload file
+          const uploadedFile = await prepressFileService.uploadLineItemFile({
+            organizationId,
+            orderId: order.id,
+            lineItemId: fields.lineItemId,
+            prepressSessionId: fields.sessionId || undefined,
+            role: fields.role as "original" | "final" | "reference",
+            tag: fields.tag || undefined,
+            buffer: fileBuffer,
+            originalFilename: fileName,
+            mimeType: fileMimeType,
+            createdByUserId: userId,
+          });
+
+          res.json({ success: true, data: uploadedFile });
+        } catch (uploadError: any) {
+          console.error("[Prepress] File upload error:", uploadError);
+          const upstreamMessage = String(uploadError?.message || uploadError || "upload_failed");
+          const isStorageAuthFailure =
+            upstreamMessage.includes("127.0.0.1:1106") ||
+            upstreamMessage.includes("ECONNREFUSED") ||
+            upstreamMessage.toLowerCase().includes("credential");
+
+          res.status(500).json({
+            error: "Failed to upload file",
+            code: isStorageAuthFailure ? "storage_auth_unavailable" : "prepress_upload_failed",
+            message: upstreamMessage.slice(0, 280),
+          });
+        }
+      });
+      
+      bb.on('error', (error) => {
+        console.error("[Prepress] Busboy error:", error);
+        res.status(500).json({ error: "Upload parsing failed" });
+      });
+      
+      req.pipe(bb);
+    } catch (error: any) {
+      console.error("[Prepress] Upload error:", error);
+      res.status(500).json({ error: error?.message || "Failed to upload file" });
+    }
+  });
+
+  // GET /api/prepress/files/:fileId/download - Download file with job number prefix
+  app.get("/api/prepress/files/:fileId/download", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const inline = String(req.query.inline || "").toLowerCase() === "1" || String(req.query.inline || "").toLowerCase() === "true";
+      await prepressFileService.downloadLineItemFile(req.params.fileId, organizationId, res, { inline });
+    } catch (error: any) {
+      console.error("[Prepress] Download error:", error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: error?.message || "Failed to download file" });
+      }
+    }
+  });
+
+  // GET /api/prepress/files/:fileId/thumbnail - Preview URL (thumbnail/inline fallback)
+  app.get("/api/prepress/files/:fileId/thumbnail", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const [fileRow] = await db
+        .select({
+          id: lineItemFiles.id,
+          orderId: lineItemFiles.orderId,
+          lineItemId: lineItemFiles.lineItemId,
+          storageBucket: lineItemFiles.storageBucket,
+          storagePath: lineItemFiles.storagePath,
+          storageKey: lineItemFiles.storageKey,
+          mimeType: lineItemFiles.mimeType,
+        })
+        .from(lineItemFiles)
+        .where(
+          and(
+            eq(lineItemFiles.id, req.params.fileId),
+            eq(lineItemFiles.organizationId, organizationId),
+            eq(lineItemFiles.status, "active")
+          )
+        )
+        .limit(1);
+
+      if (!fileRow) {
+        return res.status(404).json({ error: "File not found" });
+      }
+
+      const isImage = !!fileRow.mimeType?.startsWith("image/");
+      const key = (fileRow.storageKey || fileRow.storagePath || "").trim();
+      if (!isImage || !key) {
+        return res.json({ success: true, data: { thumbnailUrl: null }, message: "File is not an image" });
+      }
+
+      if (fileRow.storageBucket) {
+        return res.json({
+          success: true,
+          data: { thumbnailUrl: `/api/prepress/files/${fileRow.id}/download?inline=1` },
+        });
+      }
+
+      const [attachment] = await db
+        .select({
+          storageProvider: orderAttachments.storageProvider,
+        })
+        .from(orderAttachments)
+        .where(
+          and(
+            eq(orderAttachments.orderId, fileRow.orderId),
+            eq(orderAttachments.orderLineItemId, fileRow.lineItemId),
+            eq(orderAttachments.fileUrl, key),
+          )
+        )
+        .limit(1);
+
+      if (attachment?.storageProvider === "supabase" && isSupabaseConfigured()) {
+        const supabase = new SupabaseStorageService();
+        const signedUrl = await supabase.getSignedDownloadUrl(key, 3600);
+        return res.json({ success: true, data: { thumbnailUrl: signedUrl } });
+      }
+
+      return res.json({ success: true, data: { thumbnailUrl: `/objects/${key}` } });
+    } catch (error: any) {
+      console.error("[Prepress] Thumbnail URL error:", error);
+      res.status(500).json({ error: error?.message || "Failed to resolve thumbnail URL" });
+    }
+  });
+
+  // GET /api/prepress/line-item/:lineItemId/download-originals-zip - Download all originals as ZIP
+  app.get("/api/prepress/line-item/:lineItemId/download-originals-zip", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      await prepressFileService.downloadOriginalsAsZip(req.params.lineItemId, organizationId, res);
+    } catch (error: any) {
+      console.error("[Prepress] ZIP download error:", error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: error?.message || "Failed to download originals" });
+      }
+    }
+  });
+
+  // GET /api/prepress/line-item/:lineItemId/files - Get all files for a line item
+  app.get("/api/prepress/line-item/:lineItemId/files", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const files = await prepressFileService.getLineItemFiles(req.params.lineItemId, organizationId);
+      const enhance = (f: any) => ({
+        ...f,
+        computedDisplayFilename: prepressFileService.buildComputedDisplayFilename({
+          role: f.role,
+          originalFilename: f.originalFilename,
+          tag: f.tag,
+        }),
+        thumbnailUrl: f.mimeType?.startsWith("image/")
+          ? `/api/prepress/files/${f.id}/download?inline=1`
+          : null,
+      });
+
+      const data = {
+        originals: files.originals.map(enhance),
+        finals: files.finals.map(enhance),
+        references: files.references.map(enhance),
+      };
+
+      res.json({ success: true, data, files: [...data.originals, ...data.finals, ...data.references] });
+    } catch (error: any) {
+      console.error("[Prepress] Error fetching files:", error);
+      res.status(500).json({ error: error?.message || "Failed to fetch files" });
+    }
+  });
+
+  // POST /api/prepress/files/:fileId/replace - Replace existing file
+  app.post("/api/prepress/files/:fileId/replace", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      // Parse multipart upload (same pattern as upload)
+      const bb = busboy({ headers: req.headers });
+      
+      let fileBuffer: Buffer | null = null;
+      let fileName = '';
+      let fileMimeType = '';
+      let fileSize = 0;
+      const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024;
+      
+      bb.on('file', (name, file, info) => {
+        const { filename, mimeType } = info;
+        fileName = filename;
+        fileMimeType = mimeType;
+        
+        const chunks: Buffer[] = [];
+        
+        file.on('data', (chunk: Buffer) => {
+          fileSize += chunk.length;
+          if (fileSize > MAX_FILE_SIZE_BYTES) {
+            file.resume();
+            return;
+          }
+          chunks.push(chunk);
+        });
+        
+        file.on('end', () => {
+          if (fileSize <= MAX_FILE_SIZE_BYTES) {
+            fileBuffer = Buffer.concat(chunks);
+          }
+        });
+      });
+      
+      bb.on('finish', async () => {
+        try {
+          if (fileSize > MAX_FILE_SIZE_BYTES) {
+            return res.status(400).json({ error: "File size exceeds maximum allowed size of 250MB" });
+          }
+
+          if (!fileBuffer) {
+            return res.status(400).json({ error: 'No file uploaded' });
+          }
+
+          const replacedFile = await prepressFileService.replaceLineItemFile({
+            fileId: req.params.fileId,
+            organizationId,
+            buffer: fileBuffer,
+            originalFilename: fileName,
+            mimeType: fileMimeType,
+            createdByUserId: userId,
+          });
+
+          res.json({ success: true, data: replacedFile });
+        } catch (replaceError: any) {
+          console.error("[Prepress] File replace error:", replaceError);
+          res.status(500).json({ error: replaceError?.message || "Failed to replace file" });
+        }
+      });
+      
+      bb.on('error', (error) => {
+        console.error("[Prepress] Busboy error:", error);
+        res.status(500).json({ error: "Upload parsing failed" });
+      });
+      
+      req.pipe(bb);
+    } catch (error: any) {
+      console.error("[Prepress] Replace error:", error);
+      res.status(500).json({ error: error?.message || "Failed to replace file" });
     }
   });
 
@@ -11427,6 +14340,198 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ===== SHIPMENT & FULFILLMENT ROUTES =====
+
+  // Fulfillment Queue Dashboard (backend-only; UI wiring follows separately)
+  app.get('/api/fulfillment/queue', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const parsed = listQueueQuerySchema.parse(req.query || {});
+
+      const data = await fulfillmentServiceV2.listQueue(organizationId, {
+        type: parsed.type,
+        status: parsed.status,
+        overdueOnly: parsed.overdueOnly,
+        search: parsed.search,
+        page: parsed.page,
+        pageSize: parsed.pageSize,
+      });
+
+      return res.json({ success: true, data: { rows: data.rows, total: data.total } });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ success: false, message: 'Invalid query params', code: 'VALIDATION_ERROR' });
+      }
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] queue error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to fetch fulfillment queue' });
+    }
+  });
+
+  app.post('/api/fulfillment/shipments', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) || null;
+      const parsed = createFulfillmentShipmentSchema.parse(req.body || {});
+
+      const shipment = await fulfillmentServiceV2.createShipment(organizationId, {
+        scope: parsed.scope,
+        orderIds: parsed.orderIds,
+        primaryOrderId: parsed.primaryOrderId,
+        actorUserId,
+      });
+
+      return res.json({ success: true, data: { shipmentId: shipment.id, shipment } });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ success: false, message: 'Invalid shipment payload', code: 'VALIDATION_ERROR' });
+      }
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] create shipment error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to create shipment' });
+    }
+  });
+
+  app.get('/api/fulfillment/shipments/:shipmentId', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const shipment = await fulfillmentServiceV2.getShipment(organizationId, req.params.shipmentId);
+
+      if (!shipment) {
+        return res.status(404).json({ success: false, message: 'Shipment not found', code: 'NOT_FOUND' });
+      }
+
+      return res.json({ success: true, data: shipment });
+    } catch (error) {
+      console.error('[fulfillment] get shipment error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to fetch shipment' });
+    }
+  });
+
+  app.patch('/api/fulfillment/shipments/:shipmentId', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) || null;
+      const parsed = patchFulfillmentShipmentSchema.parse(req.body || {});
+
+      const shipment = await fulfillmentServiceV2.patchShipment(organizationId, req.params.shipmentId, {
+        carrier: parsed.carrier,
+        serviceLevel: parsed.serviceLevel,
+        trackingNumber: parsed.trackingNumber,
+        shipDate: parsed.shipDate,
+        boxCount: parsed.boxCount,
+        weight: parsed.weight,
+        dims: parsed.dims,
+        internalNotes: parsed.internalNotes,
+        shipmentItems: parsed.shipmentItems,
+        actorUserId,
+      });
+
+      return res.json({ success: true, data: shipment });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ success: false, message: 'Invalid shipment patch payload', code: 'VALIDATION_ERROR' });
+      }
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] patch shipment error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to update shipment' });
+    }
+  });
+
+  app.post('/api/fulfillment/shipments/:shipmentId/mark-shipped', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) || null;
+
+      const shipment = await fulfillmentServiceV2.markShipmentShipped(organizationId, req.params.shipmentId, actorUserId);
+      return res.json({ success: true, data: shipment });
+    } catch (error: any) {
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] mark shipped error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to mark shipment shipped' });
+    }
+  });
+
+  app.post('/api/fulfillment/shipments/:shipmentId/void', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) || null;
+
+      const shipment = await fulfillmentServiceV2.voidShipment(organizationId, req.params.shipmentId, actorUserId);
+      return res.json({ success: true, data: shipment });
+    } catch (error: any) {
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] void shipment error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to void shipment' });
+    }
+  });
+
+  app.post('/api/fulfillment/pickup/:orderId', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) || null;
+
+      const ticket = await fulfillmentServiceV2.createOrGetPickupTicket(organizationId, req.params.orderId, actorUserId);
+      return res.json({ success: true, data: ticket });
+    } catch (error: any) {
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] create pickup ticket error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to create pickup ticket' });
+    }
+  });
+
+  app.post('/api/fulfillment/pickup/:ticketId/ready', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) || null;
+      const parsed = pickupReadySchema.parse(req.body || {});
+
+      const result = await fulfillmentServiceV2.markPickupReady(organizationId, req.params.ticketId, parsed, actorUserId);
+      return res.json({
+        success: true,
+        data: {
+          ticket: result.ticket,
+          notification: result.notification,
+        },
+      });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ success: false, message: 'Invalid pickup ready payload', code: 'VALIDATION_ERROR' });
+      }
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] mark pickup ready error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to mark pickup ready' });
+    }
+  });
+
+  app.post('/api/fulfillment/pickup/:ticketId/picked-up', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) || null;
+
+      const ticket = await fulfillmentServiceV2.markPickupPickedUp(organizationId, req.params.ticketId, actorUserId);
+      return res.json({ success: true, data: ticket });
+    } catch (error: any) {
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] mark pickup picked-up error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to mark pickup picked-up' });
+    }
+  });
 
   // Get all shipments for an order
   app.get('/api/orders/:id/shipments', isAuthenticated, async (req: any, res) => {
@@ -11825,6 +14930,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         } as any);
 
         await assetRepository.linkAsset(organizationId, asset.id, 'order_line_item', lineItemId, normalizeRole(c.role) as any);
+
+        if (userId) {
+          await createLineItemFileRecord({
+            organizationId,
+            orderId,
+            lineItemId,
+            role: 'original',
+            storagePath: c.fileKey,
+            storageKey: c.fileKey,
+            storageBucket: null,
+            originalFilename: c.fileName || guessFileNameFromKey(c.fileKey),
+            mimeType: c.mimeType || null,
+            sizeBytes: c.sizeBytes || null,
+            uploadedByUserId: userId,
+          });
+        }
 
         setImmediate(() => {
           assetPreviewGenerator.generatePreviews(asset).catch((err) => {

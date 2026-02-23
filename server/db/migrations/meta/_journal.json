@@ -267,6 +267,90 @@
       "when": 1771804800000,
       "tag": "0045_user_last_active_org",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1739318963482,
+      "tag": "0046_bug_reports",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1739318963483,
+      "tag": "0047_bug_report_notes",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1739318963484,
+      "tag": "0048_org_soft_delete",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1739318963485,
+      "tag": "0049_add_bug_report_screenshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1739318963486,
+      "tag": "0050_manual_prepress_production",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1739318963487,
+      "tag": "0051_prepress_default_system",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1740182400000,
+      "tag": "0052_reprint_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1771632000000,
+      "tag": "0053_materials_name_uniqueness",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1771718400000,
+      "tag": "0054_order_workflow_status_system",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 0,
+      "tag": "0055_fulfillment_backend_architecture",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 0,
+      "tag": "0056_fulfillment_architecture_lock",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 0,
+      "tag": "0057_bug_report_type",
+      "breakpoints": true
     }
   ]
 }

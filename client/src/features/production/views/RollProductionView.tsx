@@ -37,11 +37,12 @@ import {
   useProductionJob,
   useProductionJobs,
   useReopenProductionJob,
-  useReprintProductionJob,
+  useSubmitReprintRequest,
   useSetProductionMediaUsed,
   useStartProductionTimer,
   useStopProductionTimer,
   useUpdateProductionJobStatus,
+  useSendLineItemToPrepress,
 } from "@/hooks/useProduction";
 import {
   CheckCircle2,
@@ -568,11 +569,17 @@ function ActionRail({
   const stop = useStopProductionTimer(job.id);
   const complete = useCompleteProductionJob(job.id);
   const reopen = useReopenProductionJob(job.id);
-  const reprint = useReprintProductionJob(job.id);
+  const submitReprint = useSubmitReprintRequest(job.id);
   const addNote = useAddProductionNote(job.id);
   const editNote = useEditProductionNote(job.id);
   const deleteNote = useDeleteProductionNote(job.id);
   const setMedia = useSetProductionMediaUsed(job.id);
+
+  const defaultReprintFilename = useMemo(() => {
+    const aw = [...(job.artwork ?? []), ...(job.order?.artwork ?? [])];
+    const front = aw.find(a => a.isPrimary) ?? aw.find(a => a.side === "front") ?? aw[0];
+    return front?.fileName ?? null;
+  }, [job.artwork, job.order?.artwork]);
 
   const [skipCompleteOpen, setSkipCompleteOpen] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
@@ -583,17 +590,40 @@ function ActionRail({
   const [wasteText, setWasteText] = useState("");
   const [wasteQty, setWasteQty] = useState<string>("");
   const [wasteUnit, setWasteUnit] = useState("");
+  const [wasteComment, setWasteComment] = useState("");
+  const [sendToPrepressOpen, setSendToPrepressOpen] = useState(false);
+  const [sendToPrepressNote, setSendToPrepressNote] = useState("");
+  const [sendToPrepressNoPrints, setSendToPrepressNoPrints] = useState(false);
+  const sendToPrepress = useSendLineItemToPrepress();
+  const [reprintOpen, setReprintOpen] = useState(false);
+  const [reprintQty, setReprintQty] = useState("");
+  const [reprintUnit, setReprintUnit] = useState("");
+  const [reprintReason, setReprintReason] = useState("");
+  const [reprintNoPrints, setReprintNoPrints] = useState(false);
+  const [reprintSendToPrepress, setReprintSendToPrepress] = useState(false);
+  const [reprintEditNotes, setReprintEditNotes] = useState("");
+
+  const resetReprintModal = () => {
+    setReprintQty("");
+    setReprintUnit("");
+    setReprintReason("");
+    setReprintNoPrints(false);
+    setReprintSendToPrepress(false);
+    setReprintEditNotes("");
+    setReprintOpen(false);
+  };
 
   const isBusy =
     start.isPending ||
     stop.isPending ||
     complete.isPending ||
     reopen.isPending ||
-    reprint.isPending ||
+    submitReprint.isPending ||
     addNote.isPending ||
     editNote.isPending ||
     deleteNote.isPending ||
-    setMedia.isPending;
+    setMedia.isPending ||
+    sendToPrepress.isPending;
 
   const canAct = job.status !== "done";
   const canStart = canAct && !timerIsRunning;
@@ -684,11 +714,14 @@ function ActionRail({
         <div className="h-px bg-titan-border-subtle" />
 
         <div className="space-y-2">
-          <Button className="w-full justify-start bg-yellow-600 hover:bg-yellow-600/90 text-white" onClick={() => reprint.mutate()} disabled={isBusy}>
+          <Button className="w-full justify-start bg-yellow-600 hover:bg-yellow-600/90 text-white" onClick={() => setReprintOpen(true)} disabled={isBusy || !job.lineItemId}>
             <Printer className="w-4 h-4 mr-2" /> REPRINT
           </Button>
           <Button className="w-full justify-start bg-red-600 hover:bg-red-600/90 text-white" onClick={() => setWasteOpen(true)} disabled={isBusy}>
             <Undo2 className="w-4 h-4 mr-2" /> LOG WASTE
+          </Button>
+          <Button className="w-full justify-start whitespace-nowrap bg-orange-600 hover:bg-orange-600/90 text-white" onClick={() => setSendToPrepressOpen(true)} disabled={isBusy || !job.lineItemId}>
+            <Square className="w-4 h-4 mr-2 shrink-0" /> Send to Prepress
           </Button>
         </div>
 
@@ -890,33 +923,245 @@ function ActionRail({
                 <Input value={wasteQty} onChange={(e) => setWasteQty(e.target.value)} placeholder="Qty" disabled={isBusy} />
                 <Input value={wasteUnit} onChange={(e) => setWasteUnit(e.target.value)} placeholder="Unit" disabled={isBusy} />
               </div>
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">Reason <span className="text-destructive">*</span></div>
+                <Textarea
+                  value={wasteComment}
+                  onChange={(e) => setWasteComment(e.target.value)}
+                  placeholder="Why did this waste occur?"
+                  className="min-h-[72px] resize-none"
+                  disabled={isBusy}
+                />
+              </div>
             </div>
             <AlertDialogFooter>
               <AlertDialogCancel disabled={isBusy}>Cancel</AlertDialogCancel>
               <AlertDialogAction
                 onClick={() => {
                   const text = wasteText.trim();
-                  if (!text) return;
+                  const comment = wasteComment.trim();
+                  if (!text || !comment) return;
                   const qtyNum = wasteQty.trim() ? Number(wasteQty) : undefined;
                   setMedia.mutate(
                     {
                       text,
                       qty: Number.isFinite(qtyNum as any) ? qtyNum : undefined,
                       unit: wasteUnit.trim() || undefined,
+                      comment,
                     },
                     {
                       onSuccess: () => {
                         setWasteText("");
                         setWasteQty("");
                         setWasteUnit("");
+                        setWasteComment("");
                         setWasteOpen(false);
                       },
                     },
                   );
                 }}
-                disabled={isBusy || !wasteText.trim()}
+                disabled={isBusy || !wasteText.trim() || !wasteComment.trim()}
               >
                 Save
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        <AlertDialog open={sendToPrepressOpen} onOpenChange={(open) => { setSendToPrepressOpen(open); if (!open) { setSendToPrepressNote(""); setSendToPrepressNoPrints(false); } }}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Send to Prepress</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will move the job back to the Prepress queue for file edits. It will be removed from this board until prepress completes it again.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="space-y-3">
+              <Textarea
+                value={sendToPrepressNote}
+                onChange={(e) => setSendToPrepressNote(e.target.value)}
+                placeholder="Describe what needs to change (required)..."
+                className="min-h-[96px] resize-none"
+                disabled={sendToPrepress.isPending}
+              />
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="roll-no-prints"
+                  checked={sendToPrepressNoPrints}
+                  onChange={(e) => setSendToPrepressNoPrints(e.target.checked)}
+                  disabled={sendToPrepress.isPending}
+                  className="h-4 w-4 rounded border-gray-300"
+                />
+                <label htmlFor="roll-no-prints" className="text-sm cursor-pointer select-none">
+                  No prints completed yet
+                </label>
+              </div>
+            </div>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={sendToPrepress.isPending}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  const note = sendToPrepressNote.trim();
+                  if (!note || !job.lineItemId) return;
+                  sendToPrepress.mutate(
+                    { lineItemId: job.lineItemId, note, noPrintsCompletedYet: sendToPrepressNoPrints },
+                    {
+                      onSuccess: () => {
+                        setSendToPrepressOpen(false);
+                        setSendToPrepressNote("");
+                        setSendToPrepressNoPrints(false);
+                      },
+                    },
+                  );
+                }}
+                disabled={sendToPrepress.isPending || !sendToPrepressNote.trim()}
+              >
+                {sendToPrepress.isPending ? "Sending..." : "Send to Prepress"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        {/* REPRINT REQUEST MODAL */}
+        <AlertDialog open={reprintOpen} onOpenChange={(open) => { if (!open) resetReprintModal(); else setReprintOpen(true); }}>
+          <AlertDialogContent className="max-w-lg">
+            <AlertDialogHeader>
+              <AlertDialogTitle>Reprint Request</AlertDialogTitle>
+              <AlertDialogDescription>
+                Record a reprint. Fill in quantity, units, and reason. Optionally send the job back to prepress for file edits.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="space-y-3">
+              {/* Filename — read-only */}
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">File</div>
+                <Input
+                  value={defaultReprintFilename ?? "No final file selected"}
+                  readOnly
+                  className="bg-muted text-muted-foreground cursor-default"
+                />
+              </div>
+              {/* Quantity + Units */}
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">Quantity <span className="text-destructive">*</span></div>
+                  <Input
+                    type="number"
+                    min="1"
+                    value={reprintQty}
+                    onChange={(e) => setReprintQty(e.target.value)}
+                    placeholder="e.g. 10"
+                    disabled={submitReprint.isPending}
+                  />
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">Units <span className="text-destructive">*</span></div>
+                  <Select value={reprintUnit} onValueChange={setReprintUnit} disabled={submitReprint.isPending}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select units" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="pieces">Pieces</SelectItem>
+                      <SelectItem value="sheets">Sheets</SelectItem>
+                      <SelectItem value="prints">Prints</SelectItem>
+                      <SelectItem value="banners">Banners</SelectItem>
+                      <SelectItem value="rolls">Rolls</SelectItem>
+                      <SelectItem value="feet">Feet</SelectItem>
+                      <SelectItem value="meters">Meters</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              {/* Reason */}
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">Reason <span className="text-destructive">*</span></div>
+                <Textarea
+                  value={reprintReason}
+                  onChange={(e) => setReprintReason(e.target.value)}
+                  placeholder="Why is a reprint needed?"
+                  className="min-h-[72px] resize-none"
+                  disabled={submitReprint.isPending}
+                />
+              </div>
+              {/* Checkboxes */}
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="roll-rp-noprints"
+                    checked={reprintNoPrints}
+                    onChange={(e) => setReprintNoPrints(e.target.checked)}
+                    disabled={submitReprint.isPending}
+                    className="h-4 w-4 rounded border-gray-300"
+                  />
+                  <label htmlFor="roll-rp-noprints" className="text-sm cursor-pointer select-none">No prints completed yet</label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="roll-rp-prepress"
+                    checked={reprintSendToPrepress}
+                    onChange={(e) => setReprintSendToPrepress(e.target.checked)}
+                    disabled={submitReprint.isPending || !job.lineItemId}
+                    className="h-4 w-4 rounded border-gray-300"
+                  />
+                  <label htmlFor="roll-rp-prepress" className="text-sm cursor-pointer select-none">Send to Prepress for edits</label>
+                </div>
+              </div>
+              {/* Conditional prepress edit notes */}
+              {reprintSendToPrepress && (
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">Prepress edit notes <span className="text-destructive">*</span></div>
+                  <Textarea
+                    value={reprintEditNotes}
+                    onChange={(e) => setReprintEditNotes(e.target.value)}
+                    placeholder="Describe what needs to change in the file..."
+                    className="min-h-[72px] resize-none"
+                    disabled={submitReprint.isPending}
+                  />
+                </div>
+              )}
+            </div>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={submitReprint.isPending} onClick={resetReprintModal}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                disabled={
+                  submitReprint.isPending ||
+                  !(Number(reprintQty) > 0) ||
+                  !reprintUnit ||
+                  !reprintReason.trim() ||
+                  (reprintSendToPrepress && !reprintEditNotes.trim()) ||
+                  !job.lineItemId
+                }
+                onClick={() => {
+                  if (!job.lineItemId) return;
+                  const filename = defaultReprintFilename ?? job.jobDescription ?? "Unknown";
+                  submitReprint.mutate(
+                    {
+                      lineItemId: job.lineItemId,
+                      filename,
+                      quantity: Number(reprintQty),
+                      units: reprintUnit,
+                      reason: reprintReason.trim(),
+                      noPrintsCompletedYet: reprintNoPrints,
+                    },
+                    {
+                      onSuccess: () => {
+                        if (reprintSendToPrepress && reprintEditNotes.trim()) {
+                          sendToPrepress.mutate(
+                            { lineItemId: job.lineItemId!, note: reprintEditNotes.trim(), noPrintsCompletedYet: reprintNoPrints },
+                            { onSuccess: resetReprintModal },
+                          );
+                        } else {
+                          resetReprintModal();
+                        }
+                      },
+                    },
+                  );
+                }}
+              >
+                {submitReprint.isPending ? "Submitting..." : "Submit Reprint"}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
@@ -1295,7 +1540,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
 
   if (isLoading) {
     return (
-      <div className="grid grid-cols-1 lg:grid-cols-[180px_1fr] gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-4">
         <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-3">
           <div className="h-9 w-full bg-titan-bg-muted rounded" />
           <div className="h-9 w-full bg-titan-bg-muted rounded mt-2" />
@@ -1355,7 +1600,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[180px_1fr] gap-4">
+    <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-4">
       <div className="space-y-4">
         {selectedJob ? (
           <ActionRail job={selectedJob} timerSeconds={liveTimerSeconds} timerIsRunning={derivedTimer.isRunning} notes={recentNotes} />
