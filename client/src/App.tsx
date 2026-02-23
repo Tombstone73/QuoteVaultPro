@@ -204,7 +204,7 @@ function Router() {
         {/* Product Catalog (standalone) */}
         <Route path="/products" element={<ProductsPage />} />
 
-        {/* Product Editor (legacy V1 with V1 tree view) */}
+        {/* Product Editor */}
         <Route path="/products/new" element={<ProductEditorPage />} />
         <Route path="/products/:productId/edit" element={<ProductEditorPage />} />
 
