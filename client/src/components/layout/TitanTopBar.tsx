@@ -19,7 +19,7 @@ import { ROUTES } from "@/config/routes";
 import { GlobalSearchOverlay } from "./GlobalSearchOverlay";
 import { OrgSwitcher } from "@/components/OrgSwitcher";
 import { Badge } from "@/components/ui/badge";
-import { isProd, getEnvLabel } from "@/lib/appEnv";
+import { getAppEnv, isProd, getEnvLabel } from "@/lib/appEnv";
 
 // ============================================================
 // ROUTE TITLE MAPPING
