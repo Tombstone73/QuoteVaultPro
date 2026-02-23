@@ -17,6 +17,7 @@
 import { Router, type RequestHandler } from "express";
 import type { Request, Response, NextFunction } from "express";
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { z } from "zod";
 import { db } from "../db";
@@ -26,6 +27,7 @@ import { writePlatformAuditLog } from "../services/platformAuditLogService";
 import { createOrgWithInvite, slugify, DuplicateInviteError } from "../services/orgOnboardingService";
 import { organizations, auditLogs } from "@shared/schema";
 import { notifyDevCritical, notifyDev } from "../services/devNotify";
+import { bootstrapAdminBodySchema, bootstrapPlatformAdmin } from "../services/bootstrapAdminService";
 
 // ─── Session type augmentation ────────────────────────────────────────────────
 declare module "express-session" {
@@ -44,6 +46,19 @@ function getUserId(user: any): string | undefined {
 /** Base URL for invite links: prefer APP_URL env var, then fall back to request origin. */
 function getBaseUrl(req: Request): string {
   return (process.env.APP_URL ?? `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+}
+
+function isBootstrapModeEnabled(): boolean {
+  return (process.env.BOOTSTRAP_MODE ?? "").trim().toLowerCase() === "true";
+}
+
+function timingSafeTokenMatch(expected: string, provided: string): boolean {
+  const a = Buffer.from(expected);
+  const b = Buffer.from(provided);
+  if (a.length !== b.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(a, b);
 }
 
 // ─── Middleware: requirePlatformAdminOr404 ────────────────────────────────────
@@ -138,6 +153,94 @@ const createOrgBodySchema = z.object({
 // ─── Router ───────────────────────────────────────────────────────────────────
 export function registerPlatformRoutes(app: import("express").Express): void {
   const router = Router();
+
+  /**
+   * POST /api/platform/bootstrap-admin
+   * One-time bootstrap path to create the first platform admin.
+   *
+   * Guardrails:
+   * - Disabled unless BOOTSTRAP_MODE=true
+   * - Requires x-bootstrap-token header matching BOOTSTRAP_TOKEN
+   * - Refuses once any platform admin exists
+   */
+  router.post("/bootstrap-admin", async (req: Request, res: Response) => {
+    if (!isBootstrapModeEnabled()) {
+      return res.status(404).json({ success: false, data: null, message: "Not Found" });
+    }
+
+    const configuredToken = (process.env.BOOTSTRAP_TOKEN ?? "").trim();
+    if (!configuredToken) {
+      return res.status(503).json({
+        success: false,
+        data: null,
+        message: "Bootstrap is enabled but BOOTSTRAP_TOKEN is not configured.",
+      });
+    }
+
+    const providedToken = (req.get("x-bootstrap-token") ?? "").trim();
+    if (!providedToken || !timingSafeTokenMatch(configuredToken, providedToken)) {
+      return res.status(403).json({ success: false, data: null, message: "Forbidden" });
+    }
+
+    const parse = bootstrapAdminBodySchema.safeParse(req.body);
+    if (!parse.success) {
+      return res.status(400).json({
+        success: false,
+        data: null,
+        message: parse.error.issues[0]?.message ?? "Validation failed",
+      });
+    }
+
+    try {
+      const result = await bootstrapPlatformAdmin(parse.data);
+
+      if (result.status === "already_bootstrapped") {
+        return res.status(409).json({
+          success: false,
+          data: { existingAdminId: result.existingAdminId },
+          message: "Bootstrap already completed. Platform admin already exists.",
+        });
+      }
+
+      await writePlatformAuditLog({
+        action: "platform.bootstrap_admin",
+        actorUserId: result.userId,
+        actorEmail: result.email,
+        req,
+        orgId: result.organizationId,
+        metadata: {
+          bootstrap: true,
+          userId: result.userId,
+          email: result.email,
+          organizationId: result.organizationId,
+        },
+      });
+
+      return res.status(201).json({
+        success: true,
+        data: {
+          userId: result.userId,
+          organizationId: result.organizationId,
+        },
+        message: "Initial platform admin created.",
+      });
+    } catch (err: any) {
+      if (err?.code === "23505") {
+        return res.status(409).json({
+          success: false,
+          data: null,
+          message: "Bootstrap conflict: user or organization already exists.",
+        });
+      }
+
+      console.error("[platform/bootstrap-admin] error:", err);
+      return res.status(500).json({
+        success: false,
+        data: null,
+        message: "Failed to bootstrap platform admin.",
+      });
+    }
+  });
 
   /**
    * POST /api/platform/reauth
