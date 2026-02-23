@@ -2,6 +2,9 @@ import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 
+const MIGRATIONS_DIR = path.join("server", "db", "migrations_v2");
+const MIGRATIONS_LEDGER = "public.__drizzle_migrations_v2";
+
 type Journal = {
   entries?: Array<{ idx: number; tag: string; when?: number }>;
 };
@@ -45,7 +48,7 @@ function redactDatabaseUrl(url: string) {
 }
 
 function readLocalMigrationTags(repoRoot: string) {
-  const migrationsDir = path.join(repoRoot, "server", "db", "migrations");
+  const migrationsDir = path.join(repoRoot, MIGRATIONS_DIR);
   const sqlFiles = fs
     .readdirSync(migrationsDir)
     .filter((f) => f.endsWith(".sql"))
@@ -74,13 +77,13 @@ async function queryAppliedMigrations() {
   const { sql } = await import("drizzle-orm");
   const { db } = await import("../server/db");
 
-  // Drizzle-kit creates __drizzle_migrations. Column names vary by version; we only need ids.
+  // Drizzle-kit creates the configured migration ledger table. Column names vary by version.
   // Prefer selecting all columns and printing what exists.
-  const result = await db.execute(sql`
+  const result = await db.execute(sql.raw(`
     SELECT *
-    FROM __drizzle_migrations
+    FROM ${MIGRATIONS_LEDGER}
     ORDER BY created_at ASC
-  `);
+  `));
 
   return result.rows as AppliedRow[];
 }
@@ -119,7 +122,7 @@ async function main() {
   try {
     applied = await queryAppliedMigrations();
   } catch (e: any) {
-    console.error("[db:status] Failed to query __drizzle_migrations:", e?.message || e);
+    console.error(`[db:status] Failed to query ${MIGRATIONS_LEDGER}:`, e?.message || e);
     process.exit(1);
   }
 
@@ -131,7 +134,7 @@ async function main() {
     highestId = highestId == null ? n : Math.max(highestId, n);
   }
 
-  console.log(`[db:status] Applied migrations (DB __drizzle_migrations): ${appliedCount}`);
+  console.log(`[db:status] Applied migrations (DB ${MIGRATIONS_LEDGER}): ${appliedCount}`);
   console.log(`[db:status] Highest applied id (numeric): ${highestId ?? 'unknown'}`);
 
   // Print a compact list. (The id/tag convention is: <tag> from the journal.)
