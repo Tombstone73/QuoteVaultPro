@@ -4401,6 +4401,7 @@ export const bugReports = pgTable("bug_reports", {
   orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   createdByEmail: text("created_by_email").notNull(),
+  type: text("type").notNull().default('bug'), // 'bug' | 'feature'
   title: text("title").notNull(),
   description: text("description").notNull(),
   severity: text("severity").notNull(), // 'low' | 'medium' | 'high' | 'critical'
