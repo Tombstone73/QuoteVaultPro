@@ -17,26 +17,28 @@ export default function BackNavControls({
   onSectionHome,
   className,
 }: BackNavControlsProps) {
+  const secondaryLabel = sectionLabel ? `Open ${sectionLabel}` : "Section Home";
+
   return (
-    <div className={cn("flex items-center gap-1.5", className)}>
+    <div className={cn("flex items-center gap-2", className)}>
       <Button
         variant="ghost"
         size="sm"
         onClick={onBack}
-        className="text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
+        className="h-8 rounded-titan-md text-titan-text-secondary hover:bg-titan-bg-card-elevated hover:text-titan-text-primary"
       >
-        <ArrowLeft className="w-4 h-4 mr-2" />
+        <ArrowLeft className="mr-2 h-4 w-4" />
         {backLabel}
       </Button>
 
       {onSectionHome ? (
         <Button
-          variant="outline"
+          variant="secondary"
           size="sm"
           onClick={onSectionHome}
-          className="h-8 px-2 border-titan-border-subtle text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated"
+          className="h-8 px-2 text-titan-text-secondary hover:bg-titan-bg-card-elevated hover:text-titan-text-primary"
         >
-          {sectionLabel || "Section Home"}
+          {secondaryLabel}
         </Button>
       ) : null}
     </div>
