@@ -10,6 +10,7 @@ import { assetPreviewWorker } from "./workers/assetPreviewWorker";
 import { assertStripeServerConfig } from "./lib/stripe";
 import { listQuickBooksConnectedOrganizationIds, runQuickBooksSyncWorkerForOrg } from "./services/quickbooksSyncQueueWorker";
 import { isWorkerEnabled, logWorkerStatus, getWorkerIntervalOverride, logWorkerTick } from "./workers/workerGates";
+import { runMigrations } from "./runMigrations";
 
 const app = express();
 const bootstrapModeEnabled = (process.env.BOOTSTRAP_MODE ?? "").trim().toLowerCase() === "true";
@@ -130,6 +131,10 @@ process.on('uncaughtException', (error) => {
   try {
     // Stripe configuration preflight (safe, logs once, never prints secrets)
     assertStripeServerConfig({ logOnce: true });
+
+    // Run Drizzle migrations before anything that depends on schema.
+    // Set DRIZZLE_AUTO_MIGRATE=0 to disable in an emergency.
+    await runMigrations();
 
     // Probe database schema before starting server
     const { probeDatabaseSchema } = await import('./db');
