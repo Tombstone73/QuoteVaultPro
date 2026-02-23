@@ -32,6 +32,16 @@ export type WeightImpact =
   | { mode: "addPerQty"; oz: number; applyWhen?: ConditionExpr; label?: string }
   | { mode: "addPerSqft"; oz: number; applyWhen?: ConditionExpr; label?: string };
 
+export type InventoryConsumptionBasis = "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed";
+
+export type InventoryConsumption = {
+  materialId: string;
+  quantityBasis: InventoryConsumptionBasis;
+  multiplier: number;
+  wastePercent?: number;
+  fixedQty?: number;
+};
+
 export type PricingV2Tier = {
   minQty?: number;
   minSqft?: number;
@@ -97,6 +107,7 @@ export type OptionNodeV2 = {
     sortOrder?: number; 
     weightOz?: number;
     pricingImpact?: PricingImpact[]; // v2.1: Choice-level pricing impacts
+    inventoryConsumption?: InventoryConsumption[];
   }>;
   visibility?: { condition?: ConditionExpr };
   edges?: { children?: BranchEdge[] };
@@ -184,6 +195,26 @@ export const weightImpactSchema: z.ZodType<WeightImpact> = z.discriminatedUnion(
   z.object({ mode: z.literal("addPerSqft"), oz: z.number(), applyWhen: conditionExprSchema.optional(), label: z.string().optional() }),
 ]);
 
+export const inventoryConsumptionBasisSchema = z.enum(["area_sqft", "perimeter_ft", "linear_ft", "each", "fixed"]);
+
+export const inventoryConsumptionSchema: z.ZodType<InventoryConsumption> = z
+  .object({
+    materialId: z.string().min(1),
+    quantityBasis: inventoryConsumptionBasisSchema,
+    multiplier: z.number().positive(),
+    wastePercent: z.number().min(0).max(100).optional(),
+    fixedQty: z.number().nonnegative().optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.quantityBasis === "fixed" && (value.fixedQty === undefined || value.fixedQty === null)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "fixedQty is required when quantityBasis is fixed",
+        path: ["fixedQty"],
+      });
+    }
+  });
+
 export const pricingV2TierSchema: z.ZodType<PricingV2Tier> = z.object({
   minQty: z.number().int().min(1).optional(),
   minSqft: z.number().positive().optional(),
@@ -261,6 +292,7 @@ export const optionNodeV2Schema: z.ZodType<OptionNodeV2> = z.object({
         sortOrder: z.number().optional(),
         weightOz: z.number().optional(),
         pricingImpact: z.array(pricingImpactSchema).optional(), // v2.1: Choice-level pricing
+        inventoryConsumption: z.array(inventoryConsumptionSchema).optional(),
       })
     )
     .optional(),

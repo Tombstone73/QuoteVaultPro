@@ -93,6 +93,7 @@
 export const ROUTES = {
   // Root & Dashboard
   root: "/",
+  titanDashboard: "/",
   dashboard: "/dashboard",
 
   // Portal (customer-facing)
@@ -182,6 +183,10 @@ export const ROUTES = {
     productTypes: "/admin/product-types",
     bugReports: "/admin/bug-reports",
   },
+
+  system: {
+    adminDashboard: "/system/admin",
+  },
   
   users: {
     list: "/users",
@@ -203,8 +208,13 @@ export const ROUTES = {
   },
 
   // TODO: These routes are referenced in nav but not implemented
-  // fulfillment: "/fulfillment",
-  // reports: "/reports",
+  fulfillment: {
+    list: "/fulfillment",
+    shipmentDetail: (shipmentId: string) => `/fulfillment/shipments/${shipmentId}`,
+  },
+  labels: "/shipping",
+  reports: "/reports",
+  finance: "/payments",
 
   // Misc
   debugUser: "/debug-user",

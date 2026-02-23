@@ -81,6 +81,13 @@ import {
     getManualReservationById,
     listManualReservationsForOrder,
 } from "../lib/manualInventoryReservationsRepo";
+import { createLineItemFileRecord } from "../services/lineItemFileRecordService";
+import {
+    getOrderWorkflow,
+    publishOrderWorkflowDraft,
+    upsertOrderWorkflowDraft,
+    updateOrderWorkflowStatus,
+} from "../services/orderWorkflowService";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -109,6 +116,25 @@ const productionLineItemStatusRuleSchema = z
     .strict();
 
 const productionLineItemStatusRulesSchema = z.array(productionLineItemStatusRuleSchema);
+
+const workflowStatusInputSchema = z
+    .object({
+        key: z.string().min(1),
+        label: z.string().min(1),
+        category: z.enum(["new", "active", "ready", "completed", "canceled", "on_hold"]),
+        color: z.string().optional().nullable(),
+        sortOrder: z.number().int().optional(),
+        isDefaultForNew: z.boolean().optional(),
+        isActive: z.boolean().optional(),
+    })
+    .strict();
+
+const workflowDraftPayloadSchema = z
+    .object({
+        name: z.string().min(1).max(120).optional(),
+        statuses: z.array(workflowStatusInputSchema).min(1).optional(),
+    })
+    .strict();
 
 const SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES = [
     {
@@ -524,6 +550,133 @@ export async function registerOrderRoutes(
     }
 ) {
     const { isAuthenticated, tenantContext, isAdmin, isAdminOrOwner } = deps;
+
+    app.get("/api/workflow/order", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+            const userId = getUserId(req.user);
+            const data = await getOrderWorkflow(organizationId, userId ?? null);
+            return res.json({ success: true, data });
+        } catch (error: any) {
+            console.error("[GET /api/workflow/order]", error);
+            return res.status(500).json({ success: false, message: "Failed to load order workflow", error: error?.message });
+        }
+    });
+
+    app.post("/api/workflow/order/draft", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+            const parsed = workflowDraftPayloadSchema.safeParse(req.body ?? {});
+            if (!parsed.success) {
+                return res.status(400).json({ success: false, message: fromZodError(parsed.error).message });
+            }
+
+            const userId = getUserId(req.user);
+            const data = await upsertOrderWorkflowDraft(organizationId, userId ?? null, parsed.data);
+            return res.json({ success: true, data, message: "Draft workflow saved" });
+        } catch (error: any) {
+            console.error("[POST /api/workflow/order/draft]", error);
+            return res.status(500).json({ success: false, message: "Failed to save draft workflow", error: error?.message });
+        }
+    });
+
+    app.post("/api/workflow/order/publish", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+            const data = await publishOrderWorkflowDraft(organizationId);
+            return res.json({ success: true, data, message: "Workflow published" });
+        } catch (error: any) {
+            const message = String(error?.message || "Failed to publish workflow");
+            if (message.includes("No draft workflow")) {
+                return res.status(400).json({ success: false, message });
+            }
+            console.error("[POST /api/workflow/order/publish]", error);
+            return res.status(500).json({ success: false, message: "Failed to publish workflow", error: error?.message });
+        }
+    });
+
+    app.post("/api/orders/:orderId/status", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+            const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+            const { orderId } = req.params;
+            const { workflowStatusId, toStatus, reason } = req.body ?? {};
+
+            let resolvedWorkflowStatusId: string | undefined = typeof workflowStatusId === "string" && workflowStatusId.trim().length > 0
+                ? workflowStatusId.trim()
+                : undefined;
+
+            if (!resolvedWorkflowStatusId && typeof toStatus === "string" && toStatus.trim().length > 0) {
+                const workflow = await getOrderWorkflow(organizationId, userId);
+                const matched = workflow.statuses.find((s: any) => s.key === toStatus.trim().toLowerCase());
+                resolvedWorkflowStatusId = matched?.id;
+            }
+
+            if (!resolvedWorkflowStatusId) {
+                return res.status(400).json({ success: false, message: "workflowStatusId or valid toStatus is required" });
+            }
+
+            const transition = await updateOrderWorkflowStatus({
+                organizationId,
+                orderId,
+                workflowStatusId: resolvedWorkflowStatusId,
+                changedByUserId: userId,
+                note: typeof reason === "string" ? reason : null,
+            });
+
+            const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+            await storage.createAuditLog(organizationId, {
+                userId,
+                userName,
+                actionType: 'UPDATE',
+                entityType: 'order',
+                entityId: transition.order.id,
+                entityName: transition.order.orderNumber,
+                description: `Changed order status to ${transition.toStatusLabel}${reason ? `: ${reason}` : ''}`,
+                oldValues: { workflowStatusId: transition.fromStatusId, status: transition.fromStatusLabel },
+                newValues: { workflowStatusId: transition.toStatusId, status: transition.toStatusLabel, canonicalState: transition.canonicalState },
+            });
+
+            await storage.createOrderAuditLog({
+                orderId: transition.order.id,
+                userId,
+                userName,
+                actionType: 'status_transition',
+                fromStatus: transition.fromStatusLabel,
+                toStatus: transition.toStatusLabel,
+                note: typeof reason === "string" ? reason : null,
+                metadata: { workflowStatusId: transition.toStatusId, canonicalState: transition.canonicalState },
+            });
+
+            return res.json({
+                success: true,
+                data: transition.order,
+                message: `Order status changed to ${transition.toStatusLabel}`,
+            });
+        } catch (error: any) {
+            const message = String(error?.message || "Failed to change order status");
+            if (
+                message.includes("Transition not allowed") ||
+                message.includes("Invalid workflowStatusId") ||
+                message.includes("Order not found")
+            ) {
+                const status = message.includes("Order not found") ? 404 : 400;
+                return res.status(status).json({ success: false, message });
+            }
+            console.error('[POST /api/orders/:orderId/status] Error:', error);
+            return res.status(500).json({ success: false, message: "Failed to change order status", error: error?.message });
+        }
+    });
 
     // Orders routes
     app.get("/api/orders", isAuthenticated, tenantContext, async (req: any, res) => {
@@ -2691,7 +2844,39 @@ export async function registerOrderRoutes(
         try {
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
-            const list = await storage.getAllMaterials(organizationId);
+            const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+            const includeInactive = String(req.query.includeInactive || '').toLowerCase() === 'true';
+            const limitRaw = Number(req.query.limit);
+            const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 20;
+
+            let list = await storage.getAllMaterials(organizationId);
+
+            if (!includeInactive) {
+                list = list.filter((m: any) => m?.isActive !== false);
+            }
+
+            if (search) {
+                const s = search.toLowerCase();
+                list = list.filter((m: any) => {
+                    const name = String(m?.name || '').toLowerCase();
+                    const sku = String(m?.sku || '').toLowerCase();
+                    return name.includes(s) || sku.includes(s);
+                });
+            }
+
+            // Search mode: compact payload for dropdowns/search selectors
+            if (search || req.query.limit !== undefined || req.query.includeInactive !== undefined) {
+                const materialsList = list
+                    .slice(0, limit)
+                    .map((m: any) => ({
+                        id: m.id,
+                        name: m.name,
+                        unitOfMeasure: m.unitOfMeasure,
+                        isActive: m.isActive,
+                    }));
+                return res.json({ success: true, data: { materials: materialsList } });
+            }
+
             res.json({ success: true, data: list });
         } catch (err) {
             console.error('Error listing materials', err);
@@ -2945,9 +3130,64 @@ export async function registerOrderRoutes(
             const parsed = insertMaterialSchema.parse(req.body);
             const { organizationId: _orgId, ...materialData } =
                 parsed as typeof parsed & { organizationId?: string };
+
+            const normalizedName = String(materialData.name || '').trim().toLowerCase();
+            if (normalizedName) {
+                const [existing] = await db
+                    .select()
+                    .from(materials)
+                    .where(
+                        and(
+                            eq(materials.organizationId, organizationId),
+                            sql`lower(trim(${materials.name})) = ${normalizedName}`
+                        )
+                    )
+                    .limit(1);
+
+                if (existing) {
+                    return res.json({
+                        success: true,
+                        data: existing,
+                        created: false,
+                        duplicate: true,
+                    });
+                }
+            }
+
             const created = await storage.createMaterial(organizationId, materialData);
-            res.json({ success: true, data: created });
+            res.json({ success: true, data: created, created: true, duplicate: false });
         } catch (err) {
+            if ((err as any)?.code === '23505') {
+                try {
+                    const organizationId = getRequestOrganizationId(req);
+                    if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+                    const parsed = insertMaterialSchema.parse(req.body);
+                    const normalizedName = String(parsed.name || '').trim().toLowerCase();
+                    if (normalizedName) {
+                        const [existing] = await db
+                            .select()
+                            .from(materials)
+                            .where(
+                                and(
+                                    eq(materials.organizationId, organizationId),
+                                    sql`lower(trim(${materials.name})) = ${normalizedName}`
+                                )
+                            )
+                            .limit(1);
+
+                        if (existing) {
+                            return res.json({
+                                success: true,
+                                data: existing,
+                                created: false,
+                                duplicate: true,
+                            });
+                        }
+                    }
+                } catch {
+                    // fallthrough to generic handling
+                }
+            }
             if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
             res.status(500).json({ error: 'Failed to create material' });
         }
@@ -2960,9 +3200,40 @@ export async function registerOrderRoutes(
             const parsed = updateMaterialSchema.parse(req.body);
             const { organizationId: _orgId, ...materialData } =
                 parsed as typeof parsed & { organizationId?: string };
+
+            if (typeof (materialData as any).name === 'string') {
+                const normalizedName = String((materialData as any).name || '').trim().toLowerCase();
+                if (normalizedName) {
+                    const [existing] = await db
+                        .select({ id: materials.id, name: materials.name })
+                        .from(materials)
+                        .where(
+                            and(
+                                eq(materials.organizationId, organizationId),
+                                sql`lower(trim(${materials.name})) = ${normalizedName}`,
+                                sql`${materials.id} <> ${req.params.id}`
+                            )
+                        )
+                        .limit(1);
+                    if (existing) {
+                        return res.status(409).json({
+                            error: 'Material name already exists in this organization',
+                            duplicate: true,
+                            data: existing,
+                        });
+                    }
+                }
+            }
+
             const updated = await storage.updateMaterial(organizationId, req.params.id, materialData);
             res.json({ success: true, data: updated });
         } catch (err) {
+            if ((err as any)?.code === '23505') {
+                return res.status(409).json({
+                    error: 'Material name already exists in this organization',
+                    duplicate: true,
+                });
+            }
             if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
             res.status(500).json({ error: 'Failed to update material' });
         }
@@ -3429,6 +3700,8 @@ export async function registerOrderRoutes(
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
             const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+            const orderId = String(req.params.id);
 
             const {
                 fileName,
@@ -3449,6 +3722,16 @@ export async function registerOrderRoutes(
                 storageTarget
             } = req.body;
 
+            const [order] = await db
+                .select({ id: orders.id, orderNumber: orders.orderNumber })
+                .from(orders)
+                .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+                .limit(1);
+
+            if (!order) {
+                return res.status(404).json({ error: 'Order not found' });
+            }
+
             const requestedTarget =
                 (typeof requestedStorageTarget === 'string' ? requestedStorageTarget : null) ||
                 (typeof storageTarget === 'string' ? storageTarget : null);
@@ -3468,9 +3751,39 @@ export async function registerOrderRoutes(
                 return res.status(400).json({ error: `Invalid side. Must be one of: ${validSides.join(', ')}` });
             }
 
+            let resolvedLineItemId: string | null = orderLineItemId ? String(orderLineItemId) : null;
+            if (resolvedLineItemId) {
+                const [lineItem] = await db
+                    .select({ id: orderLineItems.id })
+                    .from(orderLineItems)
+                    .where(
+                        and(
+                            eq(orderLineItems.id, resolvedLineItemId),
+                            eq(orderLineItems.orderId, orderId)
+                        )
+                    )
+                    .limit(1);
+
+                if (!lineItem) {
+                    return res.status(404).json({ error: 'Line item not found' });
+                }
+            } else {
+                const candidateLineItems = await db
+                    .select({ id: orderLineItems.id })
+                    .from(orderLineItems)
+                    .where(eq(orderLineItems.orderId, orderId))
+                    .limit(2);
+
+                if (candidateLineItems.length === 1) {
+                    resolvedLineItemId = candidateLineItems[0].id;
+                } else if (candidateLineItems.length > 1) {
+                    return res.status(400).json({ error: 'lineItemId is required when an order has multiple line items' });
+                }
+            }
+
             let attachmentData: any = {
-                orderId: req.params.id,
-                orderLineItemId: orderLineItemId || null,
+                orderId,
+                orderLineItemId: resolvedLineItemId,
                 quoteId: quoteId || null,
                 uploadedByUserId: userId,
                 uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
@@ -3498,11 +3811,11 @@ export async function registerOrderRoutes(
                     const storedFilename = generateStoredFilename(originalFilename);
                     const relativePath = generateRelativePath({
                         organizationId,
-                        orderNumber: orderNumber ? String(orderNumber) : undefined,
-                        lineItemId: orderLineItemId ? String(orderLineItemId) : undefined,
+                        orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
+                        lineItemId: resolvedLineItemId || undefined,
                         storedFilename,
                         resourceType: 'order',
-                        resourceId: req.params.id,
+                        resourceId: orderId,
                     });
                     const checksum = computeChecksum(buffer);
                     const extension = getFileExtension(originalFilename);
@@ -3533,8 +3846,8 @@ export async function registerOrderRoutes(
                         buffer,
                         mimeType: mimeType || 'application/octet-stream',
                         organizationId,
-                        orderNumber,
-                        lineItemId: orderLineItemId,
+                        orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
+                        lineItemId: resolvedLineItemId || undefined,
                     });
 
                     attachmentData = {
@@ -3599,6 +3912,29 @@ export async function registerOrderRoutes(
             }
 
             const [attachment] = await db.insert(orderAttachments).values(attachmentData).returning();
+
+            if (resolvedLineItemId) {
+                const storagePath =
+                    (attachment.relativePath as string | null) ||
+                    (attachment.fileUrl as string | null) ||
+                    null;
+
+                if (storagePath) {
+                    await createLineItemFileRecord({
+                        organizationId,
+                        orderId,
+                        lineItemId: String(resolvedLineItemId),
+                        role: 'original',
+                        storagePath,
+                        storageKey: storagePath,
+                        storageBucket: null,
+                        originalFilename: (attachment.originalFilename as string | null) || (attachment.fileName as string),
+                        mimeType: attachment.mimeType,
+                        sizeBytes: attachment.sizeBytes ?? attachment.fileSize,
+                        uploadedByUserId: userId,
+                    });
+                }
+            }
 
             await storage.createOrderAuditLog({
                 orderId: req.params.id,

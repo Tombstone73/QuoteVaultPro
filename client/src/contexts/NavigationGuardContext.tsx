@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useCallback, useRef, useEffect, useMemo } from 'react';
-import { useNavigate, useLocation, useNavigationType } from 'react-router-dom';
+import { useNavigate, useLocation, useNavigationType, type NavigateOptions } from 'react-router-dom';
 
 /**
  * NavigationGuardContext
@@ -18,7 +18,7 @@ type NavigationGuardFn = (targetPath: string) => string | boolean;
 
 interface NavigationGuardContextValue {
   registerGuard: (guard: NavigationGuardFn, shouldBlock: () => boolean) => () => void;
-  guardedNavigate: (to: string) => void;
+  guardedNavigate: (to: string, options?: NavigateOptions) => void;
   isGuardActive: () => boolean; // Check if guard would block
 }
 
@@ -50,7 +50,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
   }, []);
 
   // Guarded navigate for PUSH navigation (sidebar clicks, programmatic nav)
-  const guardedNavigate = useCallback((to: string) => {
+  const guardedNavigate = useCallback((to: string, options?: NavigateOptions) => {
     if (import.meta.env.DEV) {
       console.log('[guardedNavigate] Called', {
         to,
@@ -67,7 +67,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
       if (import.meta.env.DEV) {
         console.log('[guardedNavigate] shouldBlock returned false, navigating immediately');
       }
-      navigate(to);
+      navigate(to, options);
       return;
     }
     
@@ -81,7 +81,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
       if (import.meta.env.DEV) {
         console.log('[guardedNavigate] No guard function, navigating anyway');
       }
-      navigate(to);
+      navigate(to, options);
       return;
     }
 
@@ -96,7 +96,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
       if (import.meta.env.DEV) {
         console.log('[guardedNavigate] Guard allowed navigation (falsy result)');
       }
-      navigate(to);
+      navigate(to, options);
       return;
     }
 
@@ -117,7 +117,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
       console.log('[guardedNavigate] User response:', { confirmed });
     }
     if (confirmed) {
-      navigate(to);
+      navigate(to, options);
     }
   }, [navigate]);
 

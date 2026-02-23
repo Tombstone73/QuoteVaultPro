@@ -329,7 +329,7 @@ type PBV2Node = {
   };
   label?: string;
   description?: string;
-  choices?: Array<{ value: string; label: string; description?: string; sortOrder?: number; weightOz?: number }>;
+  choices?: Array<{ value: string; label: string; description?: string; sortOrder?: number; weightOz?: number; inventoryConsumption?: Array<{ materialId: string; quantityBasis: "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed"; multiplier: number; wastePercent?: number; fixedQty?: number }> }>;
   data?: any;
   priceComponents?: any[];
   pricingImpact?: any[];
@@ -734,7 +734,7 @@ export function createUpdateOptionPatch(
     isRequired?: boolean; // UI field
     defaultValue?: any;
     isDefault?: boolean; // UI field
-    choices?: Array<{ value: string; label: string; description?: string; sortOrder?: number }>;
+    choices?: Array<{ value: string; label: string; description?: string; sortOrder?: number; inventoryConsumption?: Array<{ materialId: string; quantityBasis: "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed"; multiplier: number; wastePercent?: number; fixedQty?: number }> }>;
   }
 ): { patch: any } {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
@@ -862,7 +862,14 @@ export function createUpdateChoicePatch(
   treeJson: unknown,
   optionId: string,
   choiceValue: string,
-  updates: { label?: string; value?: string; description?: string; priceDeltaCents?: number; pricingImpact?: PricingImpact[] }
+  updates: {
+    label?: string;
+    value?: string;
+    description?: string;
+    priceDeltaCents?: number;
+    pricingImpact?: PricingImpact[];
+    inventoryConsumption?: Array<{ materialId: string; quantityBasis: "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed"; multiplier: number; wastePercent?: number; fixedQty?: number }>;
+  }
 ): { patch: any; validationError?: string } {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
   
@@ -909,6 +916,7 @@ export function createUpdateChoicePatch(
       if (updates.description !== undefined) updated.description = updates.description;
       if (updates.priceDeltaCents !== undefined) updated.priceDeltaCents = updates.priceDeltaCents;
       if (updates.pricingImpact !== undefined) updated.pricingImpact = updates.pricingImpact;
+      if (updates.inventoryConsumption !== undefined) updated.inventoryConsumption = updates.inventoryConsumption;
       return updated;
     });
 

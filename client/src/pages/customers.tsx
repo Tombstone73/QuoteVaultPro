@@ -11,6 +11,8 @@ import { useAuth } from "@/hooks/useAuth";
 import { Page, PageHeader, ContentLayout, DataCard } from "@/components/titan";
 import { cn } from "@/lib/utils";
 import { ROUTES } from "@/config/routes";
+import { useSmartBack } from "@/hooks/useSmartBack";
+import BackNavControls from "@/components/BackNavControls";
 
 // ============================================================
 // VIEW MODE TYPES AND STORAGE
@@ -111,6 +113,7 @@ interface CustomersProps {
 export default function Customers({ embedded = false }: CustomersProps) {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { onSmartBack } = useSmartBack();
   
   // View mode state with localStorage persistence
   const [viewMode, setViewMode] = useState<CustomersViewMode>(getStoredViewMode);
@@ -217,6 +220,9 @@ export default function Customers({ embedded = false }: CustomersProps) {
         title="Customers"
         subtitle="Manage your customer relationships and accounts"
         className="pb-3"
+        backButton={
+          <BackNavControls onBack={onSmartBack} />
+        }
         actions={
           <div className="flex items-center gap-3">
             {/* View Mode Toggle */}
