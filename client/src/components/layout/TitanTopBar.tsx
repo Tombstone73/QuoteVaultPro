@@ -19,7 +19,7 @@ import { ROUTES } from "@/config/routes";
 import { GlobalSearchOverlay } from "./GlobalSearchOverlay";
 import { OrgSwitcher } from "@/components/OrgSwitcher";
 import { Badge } from "@/components/ui/badge";
-import { getAppEnv, isProd, getEnvLabel } from "@/lib/appEnv";
+import { isProd, getEnvLabel } from "@/lib/appEnv";
 
 // ============================================================
 // ROUTE TITLE MAPPING
@@ -124,8 +124,6 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
     if (!isProd()) {
       console.warn('[TitanOS] Running DEV environment build');
     }
-    // DEBUG: log resolved env value to confirm Vercel injection — remove when confirmed
-    console.log('[TitanOS DEBUG] Resolved App Environment:', getAppEnv());
   }, []);
 
   // Prefix document.title with [DEV] when not in prod
@@ -265,15 +263,11 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
         {!isProd() && (
           <Badge
             variant="outline"
-            className="text-[10px] font-bold tracking-widest text-amber-500 border-amber-500/60 bg-amber-500/10 px-1.5 py-0 h-5 select-none"
+            className="text-sm font-bold tracking-widest text-amber-500 border-amber-500 bg-amber-500/20 px-2 py-0.5 rounded-md select-none"
           >
             {getEnvLabel()}
           </Badge>
         )}
-        {/* DEBUG: visible env value — remove when confirmed */}
-        <span className="text-xs text-muted-foreground select-none">
-          ENV: {getAppEnv()}
-        </span>
       </div>
 
       {/* Center - Search (hidden on mobile) */}
