@@ -344,6 +344,13 @@
       "when": 0,
       "tag": "0056_fulfillment_architecture_lock",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 0,
+      "tag": "0057_bug_report_type",
+      "breakpoints": true
     }
   ]
 }

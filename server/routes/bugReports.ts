@@ -58,8 +58,10 @@ const requireOrgAdmin: RequestHandler = (req, res, next) => {
 // ─── Zod schemas ─────────────────────────────────────────────────────────────
 
 const SEVERITY_VALUES = ["low", "medium", "high", "critical"] as const;
+const BUG_REPORT_TYPE_VALUES = ["bug", "feature"] as const;
 
 const createBugReportSchema = z.object({
+  type:             z.enum(BUG_REPORT_TYPE_VALUES).optional().default("bug"),
   title:            z.string().min(3, "Title must be at least 3 characters").max(200),
   description:      z.string().min(3, "Description must be at least 3 characters").max(5000),
   severity:         z.enum(SEVERITY_VALUES),
@@ -74,6 +76,7 @@ const createBugReportSchema = z.object({
 const listBugReportsQuerySchema = z.object({
   status:   z.string().optional(),
   severity: z.enum(SEVERITY_VALUES).optional(),
+  type:     z.enum(["bug", "feature", "all"]).default("all"),
   limit:    z.coerce.number().int().min(1).max(200).default(50),
   cursor:   z.string().optional(), // createdAt-based ISO string cursor
 });
@@ -300,7 +303,7 @@ export function registerBugReportRoutes(
       });
     }
 
-    const { title, description, severity, url, screenWidth, screenHeight, screenshotUrl, screenshotUrls, metadata } = parse.data;
+    const { type, title, description, severity, url, screenWidth, screenHeight, screenshotUrl, screenshotUrls, metadata } = parse.data;
 
     const orgId = getRequestOrganizationId(req);
     const userId = getUserId(req.user) ?? null;
@@ -322,6 +325,7 @@ export function registerBugReportRoutes(
           orgId,
           createdByUserId: userId,
           createdByEmail: email,
+          type,
           title,
           description,
           severity,
@@ -346,15 +350,16 @@ export function registerBugReportRoutes(
           entityType: "bug_report",
           entityId: created.id,
           entityName: title,
-          description: `Bug report submitted: [${severity}] ${title}`,
+          description: `Feedback submitted: [${type}] [${severity}] ${title}`,
           ipAddress: req.ip ?? null,
           userAgent,
+          newValues: { type },
         });
       } catch (auditErr) {
         console.error("[BugReports] Audit log failed:", auditErr);
       }
 
-      return res.status(201).json({ success: true, id: created.id });
+      return res.status(201).json({ success: true, data: { id: created.id }, message: "Bug report created." });
     } catch (err) {
       console.error("[BugReports] Create failed:", err);
       return res.status(500).json({ success: false, message: "Failed to create bug report." });
@@ -368,13 +373,14 @@ export function registerBugReportRoutes(
       return res.status(400).json({ success: false, message: "Invalid query parameters." });
     }
 
-    const { status, severity, limit, cursor } = parseQ.data;
+    const { status, severity, type, limit, cursor } = parseQ.data;
     const orgId = getRequestOrganizationId(req);
 
     try {
       const conditions = [eq(bugReports.orgId, orgId)];
       if (status)   conditions.push(eq(bugReports.status, status));
       if (severity) conditions.push(eq(bugReports.severity, severity));
+      if (type !== "all") conditions.push(eq(bugReports.type, type));
       if (cursor) {
         conditions.push(sql`${bugReports.createdAt} < ${cursor}::timestamptz`);
       }
@@ -382,6 +388,7 @@ export function registerBugReportRoutes(
       const rows = await db
         .select({
           id:               bugReports.id,
+          type:             bugReports.type,
           title:            bugReports.title,
           severity:         bugReports.severity,
           status:           bugReports.status,
@@ -398,7 +405,7 @@ export function registerBugReportRoutes(
         ? rows[rows.length - 1].createdAt?.toISOString() ?? null
         : null;
 
-      return res.json({ success: true, data: rows, nextCursor });
+      return res.json({ success: true, data: rows, message: "Bug reports fetched.", nextCursor });
     } catch (err) {
       console.error("[BugReports] List failed:", err);
       return res.status(500).json({ success: false, message: "Failed to fetch bug reports." });
@@ -578,7 +585,7 @@ export function registerBugReportRoutes(
         console.error("[BugReports] Status update audit log failed:", auditErr);
       }
 
-      return res.json({ success: true, id: updated.id, status: updated.status });
+      return res.json({ success: true, data: { id: updated.id, status: updated.status }, message: "Bug report status updated." });
     } catch (err) {
       console.error("[BugReports] Status update failed:", err);
       return res.status(500).json({ success: false, message: "Failed to update status." });

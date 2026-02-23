@@ -287,12 +287,12 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
         {/* Org Switcher (multi-org users only) */}
         <OrgSwitcher />
 
-        {/* Report a bug */}
+        {/* Send feedback */}
         <Button
           variant="ghost"
           size="icon"
           className="h-9 w-9 text-muted-foreground hover:text-foreground"
-          title="Report a bug"
+          title="Send feedback"
           onClick={() => setBugReportOpen(true)}
         >
           <Bug className="h-4 w-4" />
@@ -352,7 +352,7 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
       </div>
     </header>
 
-    {/* Bug Report Modal — rendered outside header to avoid stacking context issues */}
+    {/* Feedback Modal — rendered outside header to avoid stacking context issues */}
     <BugReportModal open={bugReportOpen} onClose={() => setBugReportOpen(false)} />
     </>
   );
