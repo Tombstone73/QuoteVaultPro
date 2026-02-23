@@ -36,6 +36,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ROUTES } from "@/config/routes";
+import { buildReferrer } from "@/lib/nav/smartBack";
 
 // ============================================================
 // NAV CONFIG - AUTHORITATIVE TITANOS NAVIGATION
@@ -67,7 +68,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     section: "SALES",
     sectionKey: "sales",
     items: [
-      { id: "dashboard", name: "Dashboard", icon: Home, path: ROUTES.dashboard },
+      { id: "dashboard", name: "Dashboard", icon: Home, path: ROUTES.root },
       { id: "customers", name: "Customers", icon: Users, path: ROUTES.customers.list },
       { id: "contacts", name: "Contacts", icon: Contact2, path: ROUTES.contacts.list },
       { id: "quotes", name: "Quotes", icon: FileText, path: ROUTES.quotes.list },
@@ -91,6 +92,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     sectionKey: "production",
     items: [
       { id: "production-overview", name: "Overview", icon: LayoutGrid, path: "/production" },
+      { id: "production-prepress", name: "Prepress", icon: FileText, path: "/production/prepress" },
       { id: "production-flatbed", name: "Flatbed", icon: Factory, path: "/production/flatbed" },
       { id: "production-roll", name: "Roll", icon: Factory, path: "/production/roll" },
     ],
@@ -108,8 +110,8 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     section: "SHIPPING & FULFILLMENT",
     sectionKey: "shipping",
     items: [
-      { id: "fulfillment", name: "Fulfillment", icon: Truck, path: "/fulfillment" },
-      { id: "shipping", name: "Shipping Labels", icon: Tag, path: "/shipping" },
+      { id: "fulfillment", name: "Fulfillment", icon: Truck, path: ROUTES.fulfillment.list },
+      { id: "shipping", name: "Labels", icon: Tag, path: "/shipping" },
       { id: "reports", name: "Reports", icon: BarChart3, path: "/reports" },
     ],
   },
@@ -118,13 +120,14 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     sectionKey: "accounting",
     items: [
       { id: "invoices", name: "Invoices", icon: Receipt, path: ROUTES.invoices.list },
-      { id: "payments", name: "Payments", icon: CreditCard, path: "/payments" },
+      { id: "payments", name: "Finance", icon: CreditCard, path: "/payments" },
     ],
   },
   {
     section: "SYSTEM",
     sectionKey: "system",
     items: [
+      { id: "admin-dashboard", name: "Admin Dashboard", icon: Home, path: ROUTES.system.adminDashboard, roles: ["admin", "owner"] },
       { id: "settings", name: "Settings", icon: Settings, path: ROUTES.settings.root, roles: ["admin", "owner"] },
       { id: "users", name: "Users", icon: UserCog, path: ROUTES.users.list, roles: ["admin", "owner"] },
       { id: "bug-reports", name: "Bug Reports", icon: Bug, path: ROUTES.admin.bugReports, roles: ["admin", "owner"] },
@@ -250,7 +253,11 @@ function NavItem({ item, isCollapsed, badgeCount }: NavItemProps) {
   return (
     <button
       type="button"
-      onClick={() => guardedNavigate(item.path)}
+      onClick={() =>
+        guardedNavigate(item.path, {
+          state: { referrer: buildReferrer(location) },
+        })
+      }
       title={isCollapsed ? item.name : undefined}
       className={cn(
         "w-full flex items-center gap-3 rounded-titan-md px-3 py-1.5 text-sm font-medium transition-colors",

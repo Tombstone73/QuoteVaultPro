@@ -32,6 +32,11 @@ import {
   type ProductionLineItemStatusRule,
 } from "@/hooks/useProductionSettings";
 import {
+  useOrderWorkflow,
+  usePublishOrderWorkflow,
+  useSaveOrderWorkflowDraft,
+} from "@/hooks/useOrders";
+import {
   Settings,
   Users,
   Package,
@@ -44,6 +49,7 @@ import {
   PlugZap,
   Sliders,
   Mail,
+  Wrench,
   type LucideIcon,
 } from "lucide-react";
 
@@ -141,6 +147,12 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     path: "/settings/appearance", 
     icon: Palette,
     description: "UI theme and visual preferences"
+  },
+  { 
+    label: "Admin Tools", 
+    path: "/settings/admin-tools", 
+    icon: Wrench,
+    description: "Data portability and system administration"
   },
 ];
 
@@ -275,10 +287,38 @@ export function ProductionSettings() {
   const { data, isLoading, isError, error } = useProductionLineItemStatusRules();
   const save = useSaveProductionLineItemStatusRules();
   const [draft, setDraft] = React.useState<ProductionLineItemStatusRule[]>([]);
+  const workflow = useOrderWorkflow();
+  const saveWorkflowDraft = useSaveOrderWorkflowDraft();
+  const publishWorkflow = usePublishOrderWorkflow();
+  const [workflowDraft, setWorkflowDraft] = React.useState<Array<{
+    key: string;
+    label: string;
+    category: "new" | "active" | "ready" | "completed" | "canceled" | "on_hold";
+    color?: string | null;
+    sortOrder: number;
+    isDefaultForNew: boolean;
+    isActive: boolean;
+  }>>([]);
 
   React.useEffect(() => {
     if (Array.isArray(data)) setDraft(data);
   }, [data]);
+
+  React.useEffect(() => {
+    if (workflow.data?.statuses) {
+      setWorkflowDraft(
+        workflow.data.statuses.map((s) => ({
+          key: s.key,
+          label: s.label,
+          category: s.category,
+          color: s.color ?? null,
+          sortOrder: s.sortOrder,
+          isDefaultForNew: s.isDefaultForNew,
+          isActive: s.isActive,
+        })),
+      );
+    }
+  }, [workflow.data]);
 
   const validation = React.useMemo(() => {
     const errors: string[] = [];
@@ -322,6 +362,47 @@ export function ProductionSettings() {
   const removeRule = (idx: number) => {
     setDraft((prev) => prev.filter((_, i) => i !== idx));
   };
+
+  const setWorkflowRule = (idx: number, patch: Partial<(typeof workflowDraft)[number]>) => {
+    setWorkflowDraft((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  };
+
+  const addWorkflowRule = () => {
+    setWorkflowDraft((prev) => [
+      ...prev,
+      {
+        key: "",
+        label: "",
+        category: "active",
+        color: null,
+        sortOrder: prev.length * 10 + 10,
+        isDefaultForNew: prev.length === 0,
+        isActive: true,
+      },
+    ]);
+  };
+
+  const removeWorkflowRule = (idx: number) => {
+    setWorkflowDraft((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const workflowValidation = React.useMemo(() => {
+    const errors: string[] = [];
+    const keys = new Set<string>();
+    for (const row of workflowDraft) {
+      const key = row.key.trim().toLowerCase();
+      if (!key) errors.push("Each order status requires a key.");
+      if (!row.label.trim()) errors.push("Each order status requires a label.");
+      if (key) {
+        if (keys.has(key)) errors.push(`Duplicate order status key: ${key}`);
+        keys.add(key);
+      }
+    }
+    if (workflowDraft.length > 0 && !workflowDraft.some((r) => r.isDefaultForNew)) {
+      errors.push("At least one order status must be marked as default for new orders.");
+    }
+    return { isValid: errors.length === 0, errors };
+  }, [workflowDraft]);
 
   return (
     <TitanCard className="p-6">
@@ -485,6 +566,145 @@ export function ProductionSettings() {
                 )}
               </TableBody>
             </Table>
+          </div>
+
+          <div className="h-px bg-titan-border-subtle" />
+
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-titan-md font-semibold text-titan-text-primary">Order Workflow Statuses</h3>
+                <p className="text-titan-sm text-titan-text-muted mt-1">
+                  Configure organization-specific order statuses and publish changes.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Button variant="outline" onClick={addWorkflowRule}>Add status</Button>
+                <Button
+                  variant="outline"
+                  onClick={() => saveWorkflowDraft.mutate({ statuses: workflowDraft })}
+                  disabled={saveWorkflowDraft.isPending || !workflowValidation.isValid}
+                >
+                  {saveWorkflowDraft.isPending ? "Saving…" : "Save Draft"}
+                </Button>
+                <Button
+                  onClick={() => publishWorkflow.mutate()}
+                  disabled={publishWorkflow.isPending}
+                >
+                  {publishWorkflow.isPending ? "Publishing…" : "Publish"}
+                </Button>
+              </div>
+            </div>
+
+            {workflow.isLoading ? (
+              <div className="flex items-center gap-2 text-titan-sm text-titan-text-muted">
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading workflow…
+              </div>
+            ) : workflow.isError ? (
+              <div className="text-titan-sm text-red-600">{(workflow.error as any)?.message || "Failed to load order workflow"}</div>
+            ) : null}
+
+            {workflowValidation.errors.length > 0 ? (
+              <div className="rounded-md border border-titan-border-subtle bg-titan-bg-subtle p-3 text-titan-sm text-titan-text-secondary">
+                <div className="font-medium text-titan-text-primary">Fix these before saving draft:</div>
+                <ul className="list-disc pl-5 mt-1 space-y-1">
+                  {Array.from(new Set(workflowValidation.errors)).slice(0, 6).map((e) => (
+                    <li key={e}>{e}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            <div className="rounded-md border border-titan-border-subtle overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[170px]">Key</TableHead>
+                    <TableHead>Label</TableHead>
+                    <TableHead className="w-[140px]">Category</TableHead>
+                    <TableHead className="w-[120px]">Default</TableHead>
+                    <TableHead className="w-[120px]">Active</TableHead>
+                    <TableHead className="w-[100px]">Sort</TableHead>
+                    <TableHead className="w-[100px]"></TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {workflowDraft.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={7} className="text-titan-sm text-titan-text-muted">
+                        No order statuses configured.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    workflowDraft.map((r, idx) => (
+                      <TableRow key={`${r.key}-${idx}`}>
+                        <TableCell>
+                          <Input
+                            value={r.key}
+                            onChange={(e) => setWorkflowRule(idx, { key: e.target.value })}
+                            placeholder="in_production"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Input
+                            value={r.label}
+                            onChange={(e) => setWorkflowRule(idx, { label: e.target.value })}
+                            placeholder="In Production"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Select
+                            value={r.category}
+                            onValueChange={(v: any) => setWorkflowRule(idx, { category: v })}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Category" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="new">new</SelectItem>
+                              <SelectItem value="active">active</SelectItem>
+                              <SelectItem value="ready">ready</SelectItem>
+                              <SelectItem value="on_hold">on_hold</SelectItem>
+                              <SelectItem value="completed">completed</SelectItem>
+                              <SelectItem value="canceled">canceled</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </TableCell>
+                        <TableCell>
+                          <Switch
+                            checked={r.isDefaultForNew}
+                            onCheckedChange={(v) => {
+                              if (!v) {
+                                setWorkflowRule(idx, { isDefaultForNew: false });
+                                return;
+                              }
+                              setWorkflowDraft((prev) => prev.map((row, i) => ({ ...row, isDefaultForNew: i === idx })));
+                            }}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Switch
+                            checked={r.isActive}
+                            onCheckedChange={(v) => setWorkflowRule(idx, { isActive: v })}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Input
+                            inputMode="numeric"
+                            value={r.sortOrder}
+                            onChange={(e) => setWorkflowRule(idx, { sortOrder: Number(e.target.value || 0) })}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Button variant="outline" onClick={() => removeWorkflowRule(idx)}>Remove</Button>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
           </div>
         </div>
       </div>
@@ -651,6 +871,18 @@ export function PreferencesSettings() {
       },
     });
   };
+
+  const materialsOverrideInProductionEnabled = (preferences as any)?.production?.materialsOverrideMode !== "prepress_only";
+
+  const handleMaterialsOverrideModeToggle = async (enabled: boolean) => {
+    await updatePreferences({
+      ...preferences,
+      production: {
+        ...(preferences as any)?.production,
+        materialsOverrideMode: enabled ? "prepress_and_production" : "prepress_only",
+      },
+    });
+  };
   
   if (isLoading) {
     return (
@@ -777,6 +1009,23 @@ export function PreferencesSettings() {
                 id="require-line-items-done"
                 checked={preferences?.orders?.requireAllLineItemsDoneToComplete ?? true}
                 onCheckedChange={(checked) => handleOrderToggle('requireAllLineItemsDoneToComplete', checked)}
+                disabled={isUpdating}
+              />
+            </div>
+
+            <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+              <div className="flex-1 space-y-1">
+                <Label htmlFor="allow-material-overrides-production" className="text-titan-sm font-medium text-titan-text-primary cursor-pointer">
+                  Allow material overrides in production
+                </Label>
+                <p className="text-titan-xs text-titan-text-muted">
+                  Off: material overrides are limited to prepress stages. On: overrides remain available through production until terminal done/complete states.
+                </p>
+              </div>
+              <Switch
+                id="allow-material-overrides-production"
+                checked={materialsOverrideInProductionEnabled}
+                onCheckedChange={handleMaterialsOverrideModeToggle}
                 disabled={isUpdating}
               />
             </div>

@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { formatDistanceToNow, format } from "date-fns";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import CustomerForm from "@/components/customer-form";
@@ -22,7 +22,6 @@ import {
   MoreHorizontal,
   Package,
   Edit,
-  ArrowLeft,
   Receipt,
   Users,
   SlidersHorizontal,
@@ -73,6 +72,7 @@ import { useOrders, type Order } from "@/hooks/useOrders";
 import { useInvoices } from "@/hooks/useInvoices";
 import { ROUTES } from "@/config/routes";
 import { cn } from "@/lib/utils";
+import BackNavControls from "@/components/BackNavControls";
 
 // ============================================================
 // TYPE DEFINITIONS
@@ -86,6 +86,7 @@ interface EnhancedCustomerViewProps {
   customerId: string;
   layoutMode?: LayoutMode;
   onBack?: () => void;
+  onSectionHome?: () => void;
 }
 
 interface StatCardConfig {
@@ -163,10 +164,12 @@ function CustomerHeader({
   customer,
   layoutMode,
   onBack,
+  onSectionHome,
 }: {
   customer: CustomerWithRelations;
   layoutMode: LayoutMode;
   onBack?: () => void;
+  onSectionHome?: () => void;
 }) {
   const [showEditForm, setShowEditForm] = useState(false);
   const primaryContact = customer.contacts?.find((c) => c.isPrimary) || customer.contacts?.[0];
@@ -193,15 +196,12 @@ function CustomerHeader({
         {/* LEFT: Company & Contact Info */}
         <div className="flex items-center gap-2.5 flex-1 min-w-0">
           {layoutMode === "full" && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="flex-shrink-0 h-8 w-8 text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated"
-              onClick={() => onBack ? onBack() : navigate(ROUTES.customers.list)}
-              aria-label="Back to customers"
-            >
-              <ArrowLeft className="w-4 h-4" />
-            </Button>
+            <BackNavControls
+              onBack={() => (onBack ? onBack() : navigate(ROUTES.customers.list))}
+              onSectionHome={() => (onSectionHome ? onSectionHome() : navigate(ROUTES.customers.list))}
+              sectionLabel="Customers"
+              className="flex-shrink-0"
+            />
           )}
           
           {!isEmbedded && (
@@ -1849,7 +1849,9 @@ export default function EnhancedCustomerView({
   customerId,
   layoutMode = "full",
   onBack,
+  onSectionHome,
 }: EnhancedCustomerViewProps) {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<TabType>("orders");
   const [period, setPeriod] = useState<TimePeriod>("month");
   const [searchQuery, setSearchQuery] = useState("");
@@ -1898,12 +1900,13 @@ export default function EnhancedCustomerView({
             The customer you're looking for doesn't exist or has been removed.
           </p>
           {!isEmbedded && (
-            <Link to={ROUTES.customers.list}>
-              <Button className="bg-titan-accent hover:bg-titan-accent-hover text-white rounded-titan-md">
-                <ArrowLeft className="w-4 h-4 mr-2" />
-                Back to Customers
-              </Button>
-            </Link>
+            <div className="flex items-center justify-center">
+              <BackNavControls
+                onBack={() => (onBack ? onBack() : navigate(ROUTES.customers.list))}
+                sectionLabel="Customers"
+                onSectionHome={() => (onSectionHome ? onSectionHome() : navigate(ROUTES.customers.list))}
+              />
+            </div>
           )}
         </div>
       </div>
@@ -1916,7 +1919,12 @@ export default function EnhancedCustomerView({
       isEmbedded ? "p-4" : "p-6"
     )}>
       {/* Customer Header Card */}
-      <CustomerHeader customer={customer} layoutMode={layoutMode} onBack={onBack} />
+      <CustomerHeader
+        customer={customer}
+        layoutMode={layoutMode}
+        onBack={onBack}
+        onSectionHome={onSectionHome}
+      />
 
       {/* Stats Cards Grid */}
       <CustomerStatsGrid

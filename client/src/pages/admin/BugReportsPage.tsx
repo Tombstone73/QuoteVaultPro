@@ -23,6 +23,7 @@ import { useAuth } from "@/hooks/useAuth";
 
 interface BugReportListItem {
   id: string;
+  type: "bug" | "feature";
   title: string;
   severity: "low" | "medium" | "high" | "critical";
   status: string;
@@ -36,7 +37,8 @@ interface BugReportDetail extends BugReportListItem {
   userAgent: string;
   screenWidth: number | null;
   screenHeight: number | null;
-  screenshotUrl: string | null;
+  screenshotUrl: string | null; // DEPRECATED: backward compatibility
+  screenshotUrls: string[];
   metadata: Record<string, unknown>;
 }
 
@@ -73,12 +75,23 @@ const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "
   closed:    "outline",
 };
 
+const TYPE_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
+  bug: "destructive",
+  feature: "secondary",
+};
+
+const TYPE_LABELS: Record<string, string> = {
+  bug: "Bug",
+  feature: "Feature",
+};
+
 // ─── API helpers ──────────────────────────────────────────────────────────────
 
-async function fetchBugReports(params: { status?: string; severity?: string }) {
+async function fetchBugReports(params: { status?: string; severity?: string; type?: string }) {
   const qs = new URLSearchParams();
   if (params.status && params.status !== "all")   qs.set("status", params.status);
   if (params.severity && params.severity !== "all") qs.set("severity", params.severity);
+  if (params.type && params.type !== "all") qs.set("type", params.type);
   const res = await fetch(`/api/bug-reports?${qs.toString()}`, { credentials: "include" });
   if (!res.ok) throw new Error("Failed to fetch bug reports");
   const body = await res.json();
@@ -92,6 +105,16 @@ async function fetchBugReportDetail(id: string): Promise<BugReportDetail> {
   return body.data as BugReportDetail;
 }
 
+async function fetchScreenshotUrls(id: string): Promise<Array<{ path: string; url: string }>> {
+  const res = await fetch(`/api/bug-reports/${id}/screenshot-urls`, { credentials: "include" });
+  if (!res.ok) {
+    console.error("Failed to fetch screenshot URLs");
+    return [];
+  }
+  const body = await res.json();
+  return body.data || [];
+}
+
 async function patchBugReportStatus(id: string, status: string): Promise<{ id: string; status: string }> {
   const res = await fetch(`/api/bug-reports/${id}`, {
     method: "PATCH",
@@ -103,7 +126,8 @@ async function patchBugReportStatus(id: string, status: string): Promise<{ id: s
     const body = await res.json().catch(() => ({}));
     throw new Error((body as { message?: string }).message ?? "Failed to update status");
   }
-  return res.json();
+  const body = await res.json();
+  return (body.data ?? {}) as { id: string; status: string };
 }
 
 async function fetchNotes(bugReportId: string): Promise<BugReportNote[]> {
@@ -136,6 +160,7 @@ export default function BugReportsPage() {
   const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter]     = useState("all");
   const [severityFilter, setSeverityFilter] = useState("all");
+  const [typeFilter, setTypeFilter]         = useState("all");
   const [selectedId, setSelectedId]         = useState<string | null>(null);
   const [noteText, setNoteText]             = useState("");
   const noteRef = useRef<HTMLTextAreaElement>(null);
@@ -143,14 +168,20 @@ export default function BugReportsPage() {
   const isAdminOrOwner = user?.role === "admin" || user?.role === "owner";
 
   const { data: reports, isLoading, refetch, isRefetching } = useQuery<BugReportListItem[]>({
-    queryKey: ["/api/bug-reports", statusFilter, severityFilter],
-    queryFn: () => fetchBugReports({ status: statusFilter, severity: severityFilter }),
+    queryKey: ["/api/bug-reports", statusFilter, severityFilter, typeFilter],
+    queryFn: () => fetchBugReports({ status: statusFilter, severity: severityFilter, type: typeFilter }),
     enabled: isAdminOrOwner,
   });
 
   const { data: detail, isLoading: detailLoading } = useQuery<BugReportDetail>({
     queryKey: ["/api/bug-reports/detail", selectedId],
     queryFn: () => fetchBugReportDetail(selectedId!),
+    enabled: !!selectedId,
+  });
+
+  const { data: screenshotUrls, isLoading: screenshotsLoading } = useQuery<Array<{ path: string; url: string }>>({
+    queryKey: ["/api/bug-reports/screenshots", selectedId],
+    queryFn: () => fetchScreenshotUrls(selectedId!),
     enabled: !!selectedId,
   });
 
@@ -169,7 +200,7 @@ export default function BugReportsPage() {
         (old) => old ? { ...old, status: result.status } : old,
       );
       queryClient.setQueryData<BugReportListItem[]>(
-        ["/api/bug-reports", statusFilter, severityFilter],
+        ["/api/bug-reports", statusFilter, severityFilter, typeFilter],
         (old) => old?.map((r) => r.id === result.id ? { ...r, status: result.status } : r),
       );
       toast({ title: "Status updated" });
@@ -213,7 +244,7 @@ export default function BugReportsPage() {
           <Bug className="h-6 w-6 text-destructive" />
           <div>
             <h1 className="text-xl font-semibold text-foreground">Bug Reports</h1>
-            <p className="text-sm text-muted-foreground">User-submitted bug reports for your organization</p>
+            <p className="text-sm text-muted-foreground">User-submitted bug reports and feature requests for your organization</p>
           </div>
         </div>
         <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isRefetching} className="gap-2">
@@ -258,6 +289,19 @@ export default function BugReportsPage() {
                 </SelectContent>
               </Select>
             </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">Type</span>
+              <Select value={typeFilter} onValueChange={setTypeFilter}>
+                <SelectTrigger className="h-8 w-[130px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All types</SelectItem>
+                  <SelectItem value="bug">Bug Reports</SelectItem>
+                  <SelectItem value="feature">Feature Requests</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -269,6 +313,7 @@ export default function BugReportsPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Created</TableHead>
+                <TableHead>Type</TableHead>
                 <TableHead>Severity</TableHead>
                 <TableHead className="w-full">Title</TableHead>
                 <TableHead>Submitted by</TableHead>
@@ -279,15 +324,15 @@ export default function BugReportsPage() {
               {isLoading ? (
                 Array.from({ length: 5 }).map((_, i) => (
                   <TableRow key={i}>
-                    {Array.from({ length: 5 }).map((__, j) => (
+                    {Array.from({ length: 6 }).map((__, j) => (
                       <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>
                     ))}
                   </TableRow>
                 ))
               ) : !reports || reports.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">
-                    No bug reports found matching current filters.
+                  <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
+                    No feedback items found matching current filters.
                   </TableCell>
                 </TableRow>
               ) : (
@@ -299,6 +344,11 @@ export default function BugReportsPage() {
                   >
                     <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                       {format(new Date(r.createdAt), "MMM d, yyyy HH:mm")}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={TYPE_VARIANT[r.type] ?? "outline"} className="text-xs">
+                        {TYPE_LABELS[r.type] ?? r.type}
+                      </Badge>
                     </TableCell>
                     <TableCell>
                       <Badge variant={SEVERITY_VARIANT[r.severity] ?? "default"} className="capitalize text-xs">
@@ -341,6 +391,9 @@ export default function BugReportsPage() {
                   {detail.title}
                 </SheetTitle>
                 <SheetDescription className="flex flex-wrap gap-2 items-center">
+                  <Badge variant={TYPE_VARIANT[detail.type] ?? "outline"}>
+                    {TYPE_LABELS[detail.type] ?? detail.type}
+                  </Badge>
                   <Badge variant={SEVERITY_VARIANT[detail.severity] ?? "default"} className="capitalize">
                     {detail.severity}
                   </Badge>
@@ -399,19 +452,45 @@ export default function BugReportsPage() {
                   <p className="text-xs text-muted-foreground break-all">{detail.userAgent}</p>
                 </DetailSection>
 
-                {/* Screenshot */}
-                {detail.screenshotUrl && (
-                  <DetailSection label="Screenshot">
-                    <a href={detail.screenshotUrl} target="_blank" rel="noopener noreferrer">
-                      <img
-                        src={detail.screenshotUrl}
-                        alt="Bug report screenshot"
-                        className="max-w-full rounded-md border border-border object-contain"
-                        style={{ maxHeight: 320 }}
-                      />
-                    </a>
-                  </DetailSection>
-                )}
+                {/* Screenshots */}
+                {(() => {
+                  if (screenshotsLoading) {
+                    return (
+                      <DetailSection label="Screenshots">
+                        <Skeleton className="h-32 w-full" />
+                      </DetailSection>
+                    );
+                  }
+
+                  if (!screenshotUrls || screenshotUrls.length === 0) return null;
+
+                  return (
+                    <DetailSection label={screenshotUrls.length === 1 ? "Screenshot" : `Screenshots (${screenshotUrls.length})`}>
+                      <div className={screenshotUrls.length === 1 ? "" : "grid grid-cols-2 gap-2"}>
+                        {screenshotUrls.map((item, index) => (
+                          <a
+                            key={index}
+                            href={item.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="block"
+                          >
+                            <img
+                              src={item.url}
+                              alt={`Screenshot ${index + 1}`}
+                              className="max-w-full rounded-md border border-border object-contain hover:opacity-90 transition-opacity"
+                              style={{ maxHeight: screenshotUrls.length === 1 ? 320 : 200 }}
+                              onError={(e) => {
+                                console.error("Failed to load screenshot:", item.path);
+                                e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Crect fill='%23f0f0f0' width='200' height='200'/%3E%3Ctext x='50%25' y='50%25' font-family='Arial' font-size='14' fill='%23666' text-anchor='middle' dy='.3em'%3EImage unavailable%3C/text%3E%3C/svg%3E";
+                              }}
+                            />
+                          </a>
+                        ))}
+                      </div>
+                    </DetailSection>
+                  );
+                })()}
 
                 {/* Metadata */}
                 {Object.keys(detail.metadata ?? {}).length > 0 && (

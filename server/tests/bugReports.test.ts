@@ -16,8 +16,10 @@ import { z } from "zod";
 // Must stay in sync with server/routes/bugReports.ts createBugReportSchema.
 
 const SEVERITY_VALUES = ["low", "medium", "high", "critical"] as const;
+const BUG_REPORT_TYPE_VALUES = ["bug", "feature"] as const;
 
 const createBugReportSchema = z.object({
+  type:          z.enum(BUG_REPORT_TYPE_VALUES).optional().default("bug"),
   title:         z.string().min(3, "Title must be at least 3 characters").max(200),
   description:   z.string().min(3, "Description must be at least 3 characters").max(5000),
   severity:      z.enum(SEVERITY_VALUES),
@@ -33,6 +35,7 @@ const createBugReportSchema = z.object({
 const listBugReportsQuerySchema = z.object({
   status:   z.string().optional(),
   severity: z.enum(SEVERITY_VALUES).optional(),
+  type:     z.enum(["bug", "feature", "all"]).default("all"),
   limit:    z.coerce.number().int().min(1).max(200).default(50),
   cursor:   z.string().optional(),
 });
@@ -69,6 +72,7 @@ describe("createBugReportSchema", () => {
   it("accepts a full payload with all optional fields", () => {
     const result = createBugReportSchema.safeParse({
       ...validPayload,
+      type:          "feature",
       screenWidth:   1920,
       screenHeight:  1080,
       screenshotUrl: "https://cdn.example.com/screenshots/abc.png",
@@ -164,6 +168,20 @@ describe("listBugReportsQuerySchema", () => {
   it("accepts valid severity filter", () => {
     const result = listBugReportsQuerySchema.safeParse({ severity: "critical" });
     expect(result.success).toBe(true);
+  });
+
+  it("accepts valid type filter values", () => {
+    const bug = listBugReportsQuerySchema.safeParse({ type: "bug" });
+    const feature = listBugReportsQuerySchema.safeParse({ type: "feature" });
+    const all = listBugReportsQuerySchema.safeParse({ type: "all" });
+    expect(bug.success).toBe(true);
+    expect(feature.success).toBe(true);
+    expect(all.success).toBe(true);
+  });
+
+  it("rejects invalid type filter value", () => {
+    const result = listBugReportsQuerySchema.safeParse({ type: "other" });
+    expect(result.success).toBe(false);
   });
 
   it("rejects invalid severity filter", () => {

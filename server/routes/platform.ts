@@ -17,6 +17,7 @@
 import { Router, type RequestHandler } from "express";
 import type { Request, Response, NextFunction } from "express";
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { z } from "zod";
 import { db } from "../db";
@@ -24,6 +25,9 @@ import { authIdentities, users } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 import { writePlatformAuditLog } from "../services/platformAuditLogService";
 import { createOrgWithInvite, slugify, DuplicateInviteError } from "../services/orgOnboardingService";
+import { organizations, auditLogs } from "@shared/schema";
+import { notifyDevCritical, notifyDev } from "../services/devNotify";
+import { bootstrapAdminBodySchema, bootstrapPlatformAdmin } from "../services/bootstrapAdminService";
 
 // ─── Session type augmentation ────────────────────────────────────────────────
 declare module "express-session" {
@@ -42,6 +46,19 @@ function getUserId(user: any): string | undefined {
 /** Base URL for invite links: prefer APP_URL env var, then fall back to request origin. */
 function getBaseUrl(req: Request): string {
   return (process.env.APP_URL ?? `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+}
+
+function isBootstrapModeEnabled(): boolean {
+  return (process.env.BOOTSTRAP_MODE ?? "").trim().toLowerCase() === "true";
+}
+
+function timingSafeTokenMatch(expected: string, provided: string): boolean {
+  const a = Buffer.from(expected);
+  const b = Buffer.from(provided);
+  if (a.length !== b.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(a, b);
 }
 
 // ─── Middleware: requirePlatformAdminOr404 ────────────────────────────────────
@@ -112,7 +129,7 @@ const orgCreateRateLimit = rateLimit({
   max: 5,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => {
+  keyGenerator: (req: Request) => {
     // Combine IPv6-safe IP + userId for per-user limiting where possible.
     // ipKeyGenerator normalises IPv6 addresses to avoid ERR_ERL_KEY_GEN_IPV6.
     const ipKey = ipKeyGenerator(req.ip ?? "unknown");
@@ -136,6 +153,94 @@ const createOrgBodySchema = z.object({
 // ─── Router ───────────────────────────────────────────────────────────────────
 export function registerPlatformRoutes(app: import("express").Express): void {
   const router = Router();
+
+  /**
+   * POST /api/platform/bootstrap-admin
+   * One-time bootstrap path to create the first platform admin.
+   *
+   * Guardrails:
+   * - Disabled unless BOOTSTRAP_MODE=true
+   * - Requires x-bootstrap-token header matching BOOTSTRAP_TOKEN
+   * - Refuses once any platform admin exists
+   */
+  router.post("/bootstrap-admin", async (req: Request, res: Response) => {
+    if (!isBootstrapModeEnabled()) {
+      return res.status(404).json({ success: false, data: null, message: "Not Found" });
+    }
+
+    const configuredToken = (process.env.BOOTSTRAP_TOKEN ?? "").trim();
+    if (!configuredToken) {
+      return res.status(503).json({
+        success: false,
+        data: null,
+        message: "Bootstrap is enabled but BOOTSTRAP_TOKEN is not configured.",
+      });
+    }
+
+    const providedToken = (req.get("x-bootstrap-token") ?? "").trim();
+    if (!providedToken || !timingSafeTokenMatch(configuredToken, providedToken)) {
+      return res.status(403).json({ success: false, data: null, message: "Forbidden" });
+    }
+
+    const parse = bootstrapAdminBodySchema.safeParse(req.body);
+    if (!parse.success) {
+      return res.status(400).json({
+        success: false,
+        data: null,
+        message: parse.error.issues[0]?.message ?? "Validation failed",
+      });
+    }
+
+    try {
+      const result = await bootstrapPlatformAdmin(parse.data);
+
+      if (result.status === "already_bootstrapped") {
+        return res.status(409).json({
+          success: false,
+          data: { existingAdminId: result.existingAdminId },
+          message: "Bootstrap already completed. Platform admin already exists.",
+        });
+      }
+
+      await writePlatformAuditLog({
+        action: "platform.bootstrap_admin",
+        actorUserId: result.userId,
+        actorEmail: result.email,
+        req,
+        orgId: result.organizationId,
+        metadata: {
+          bootstrap: true,
+          userId: result.userId,
+          email: result.email,
+          organizationId: result.organizationId,
+        },
+      });
+
+      return res.status(201).json({
+        success: true,
+        data: {
+          userId: result.userId,
+          organizationId: result.organizationId,
+        },
+        message: "Initial platform admin created.",
+      });
+    } catch (err: any) {
+      if (err?.code === "23505") {
+        return res.status(409).json({
+          success: false,
+          data: null,
+          message: "Bootstrap conflict: user or organization already exists.",
+        });
+      }
+
+      console.error("[platform/bootstrap-admin] error:", err);
+      return res.status(500).json({
+        success: false,
+        data: null,
+        message: "Failed to bootstrap platform admin.",
+      });
+    }
+  });
 
   /**
    * POST /api/platform/reauth
@@ -280,6 +385,241 @@ export function registerPlatformRoutes(app: import("express").Express): void {
         }
         console.error("[platform/orgs] create error:", err);
         return res.status(500).json({ success: false, message: "Failed to create organization." });
+      }
+    }
+  );
+
+  /**
+   * POST /api/platform/orgs/:orgId/finalize-delete
+   * Platform admin finalizes organization deletion (soft delete).
+   * Requires step-up auth + platform admin.
+   */
+  router.post(
+    "/orgs/:orgId/finalize-delete",
+    requirePlatformAdminOr404,
+    requireStepUp,
+    async (req: Request, res: Response) => {
+      const { orgId } = req.params;
+      const userId = getUserId(req.user);
+      const actorEmail = (req.user as any)?.email || "unknown";
+
+      if (!userId) {
+        return res.status(401).json({ success: false, message: "Unauthorized" });
+      }
+
+      try {
+        // Get org details
+        const [org] = await db
+          .select({
+            id: organizations.id,
+            slug: organizations.slug,
+            name: organizations.name,
+            deleteState: organizations.deleteState,
+          })
+          .from(organizations)
+          .where(eq(organizations.id, orgId))
+          .limit(1);
+
+        if (!org) {
+          return res.status(404).json({ success: false, message: "Organization not found" });
+        }
+
+        // Validate org is in pending_delete state
+        if (org.deleteState !== 'pending_delete') {
+          return res.status(409).json({
+            success: false,
+            code: "ORG_NOT_PENDING_DELETE",
+            message: `Organization is in ${org.deleteState} state, must be pending_delete to finalize`,
+            deleteState: org.deleteState,
+          });
+        }
+
+        // Extract IP and user agent
+        const ip = req.ip || req.socket.remoteAddress || 'unknown';
+        const userAgent = req.get('user-agent') || 'unknown';
+
+        // Update org to soft_deleted state
+        await db
+          .update(organizations)
+          .set({
+            deleteState: 'soft_deleted',
+            deletedAt: new Date(),
+            deletedByUserId: userId,
+            deleteConfirmedAt: new Date(),
+            deleteConfirmedByUserId: userId,
+            deletedIp: ip,
+            deletedUserAgent: userAgent,
+          })
+          .where(eq(organizations.id, orgId));
+
+        // Audit log
+        await db.insert(auditLogs).values({
+          organizationId: orgId,
+          userId,
+          actionType: "org.delete.finalized",
+          entityType: "organization",
+          entityId: orgId,
+          description: `Organization "${org.slug}" soft-deleted by platform admin`,
+          newValues: {
+            deleteState: 'soft_deleted',
+            orgSlug: org.slug,
+            orgName: org.name,
+            ip,
+            userAgent,
+          },
+        });
+
+        // Platform audit log
+        await writePlatformAuditLog({
+          action: "org.delete.finalized",
+          actorUserId: userId,
+          actorEmail,
+          req,
+          metadata: {
+            orgId,
+            orgSlug: org.slug,
+            orgName: org.name,
+          },
+        });
+
+        // Notify devs (critical priority)
+        await notifyDevCritical(
+          'org.delete.finalized',
+          `Organization "${org.slug}" (${org.name}) soft-deleted by platform admin ${actorEmail}`,
+          {
+            orgId,
+            orgSlug: org.slug,
+            orgName: org.name,
+            platformAdminId: userId,
+            platformAdminEmail: actorEmail,
+          }
+        );
+
+        return res.json({
+          success: true,
+          message: `Organization "${org.slug}" has been soft-deleted and is no longer accessible`,
+          deleteState: 'soft_deleted',
+        });
+      } catch (error: any) {
+        console.error("[Platform] Finalize delete error:", error);
+        return res.status(500).json({ success: false, message: "Failed to finalize organization deletion" });
+      }
+    }
+  );
+
+  /**
+   * POST /api/platform/orgs/:orgId/restore
+   * Platform admin restores soft-deleted organization.
+   * Requires step-up auth + platform admin.
+   */
+  router.post(
+    "/orgs/:orgId/restore",
+    requirePlatformAdminOr404,
+    requireStepUp,
+    async (req: Request, res: Response) => {
+      const { orgId } = req.params;
+      const userId = getUserId(req.user);
+      const actorEmail = (req.user as any)?.email || "unknown";
+
+      if (!userId) {
+        return res.status(401).json({ success: false, message: "Unauthorized" });
+      }
+
+      try {
+        // Get org details
+        const [org] = await db
+          .select({
+            id: organizations.id,
+            slug: organizations.slug,
+            name: organizations.name,
+            deleteState: organizations.deleteState,
+          })
+          .from(organizations)
+          .where(eq(organizations.id, orgId))
+          .limit(1);
+
+        if (!org) {
+          return res.status(404).json({ success: false, message: "Organization not found" });
+        }
+
+        // Validate org is soft_deleted or pending_delete
+        if (org.deleteState === 'active') {
+          return res.status(409).json({
+            success: false,
+            code: "ORG_ALREADY_ACTIVE",
+            message: "Organization is already active",
+          });
+        }
+
+        // Restore org to active state (clear delete tracking fields)
+        await db
+          .update(organizations)
+          .set({
+            deleteState: 'active',
+            deleteRequestedAt: null,
+            deleteRequestedByUserId: null,
+            deleteConfirmedAt: null,
+            deleteConfirmedByUserId: null,
+            deletedAt: null,
+            deletedByUserId: null,
+            deleteReason: null,
+            deletedIp: null,
+            deletedUserAgent: null,
+          })
+          .where(eq(organizations.id, orgId));
+
+        // Audit log
+        await db.insert(auditLogs).values({
+          organizationId: orgId,
+          userId,
+          actionType: "org.delete.restored",
+          entityType: "organization",
+          entityId: orgId,
+          description: `Organization "${org.slug}" restored by platform admin`,
+          newValues: {
+            deleteState: 'active',
+            orgSlug: org.slug,
+            orgName: org.name,
+          },
+        });
+
+        // Platform audit log
+        await writePlatformAuditLog({
+          action: "org.delete.restored",
+          actorUserId: userId,
+          actorEmail,
+          req,
+          metadata: {
+            orgId,
+            orgSlug: org.slug,
+            orgName: org.name,
+          },
+        });
+
+        // Notify devs
+        await notifyDev({
+          eventName: 'org.delete.restored',
+          priority: 'high',
+          organizationId: orgId,
+          userId,
+          message: `Organization "${org.slug}" (${org.name}) restored by platform admin ${actorEmail}`,
+          metadata: {
+            orgId,
+            orgSlug: org.slug,
+            orgName: org.name,
+            platformAdminId: userId,
+            platformAdminEmail: actorEmail,
+          },
+        });
+
+        return res.json({
+          success: true,
+          message: `Organization "${org.slug}" has been restored and is now accessible`,
+          deleteState: 'active',
+        });
+      } catch (error: any) {
+        console.error("[Platform] Restore org error:", error);
+        return res.status(500).json({ success: false, message: "Failed to restore organization" });
       }
     }
   );

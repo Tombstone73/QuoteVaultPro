@@ -374,7 +374,7 @@ export function useSetProductionMediaUsed(jobId: string) {
   const qc = useQueryClient();
   const { toast } = useToast();
   return useMutation({
-    mutationFn: async (data: { text: string; qty?: number; unit?: string }) => {
+    mutationFn: async (data: { text: string; qty?: number; unit?: string; comment: string }) => {
       const res = await fetch(`/api/production/jobs/${jobId}/media-used`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -387,7 +387,7 @@ export function useSetProductionMediaUsed(jobId: string) {
     },
     onSuccess: () => {
       invalidateProduction(qc, jobId);
-      toast({ title: "Media used saved" });
+      toast({ title: "Waste logged" });
     },
     onError: (e: Error) => {
       toast({ title: "Save failed", description: e.message, variant: "destructive" });
@@ -489,6 +489,74 @@ export function useUpdateProductionJobStatus(jobId: string) {
     },
     onError: (e: Error) => {
       toast({ title: "Status update failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useSendLineItemToPrepress() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { lineItemId: string; note: string; noPrintsCompletedYet?: boolean }) => {
+      const res = await fetch(`/api/production/line-item/${args.lineItemId}/send-to-prepress`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note: args.note, noPrintsCompletedYet: args.noPrintsCompletedYet ?? false }),
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to send to prepress");
+      return json;
+    },
+    onSuccess: (_data, args) => {
+      // Invalidate production boards so the job disappears
+      qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      // Invalidate prepress queue so the item appears
+      qc.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      toast({ title: "Sent to prepress", description: "Job moved to prepress queue for editing" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Send to prepress failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useSubmitReprintRequest(jobId: string) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: {
+      lineItemId: string;
+      filename: string;
+      quantity: number;
+      units: string;
+      reason: string;
+      noPrintsCompletedYet?: boolean;
+      fileId?: string;
+    }) => {
+      const res = await fetch(`/api/production/line-item/${args.lineItemId}/reprint`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileId: args.fileId,
+          filename: args.filename,
+          quantity: args.quantity,
+          units: args.units,
+          reason: args.reason,
+          noPrintsCompletedYet: args.noPrintsCompletedYet ?? false,
+        }),
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to create reprint request");
+      return json;
+    },
+    onSuccess: () => {
+      invalidateProduction(qc, jobId);
+      toast({ title: "Reprint request created" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Reprint request failed", description: e.message, variant: "destructive" });
     },
   });
 }

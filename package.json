@@ -15,6 +15,7 @@
     "db:status": "tsx scripts/db-status.ts",
     "db:verify:stripe": "tsx scripts/db-verify-stripe.ts",
     "db:pbv2:check": "tsx scripts/db/pbv2-schema-check.ts",
+    "db:bootstrap-admin": "tsx scripts/db/bootstrapAdmin.ts",
     "db:sync-users": "tsx sync-users-customers.ts",
     "pbv2:smoke": "tsx scripts/pbv2-smoke.ts",
     "pbv2:http:smoke": "tsx scripts/pbv2-http-smoke.ts",
