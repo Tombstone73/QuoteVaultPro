@@ -369,12 +369,12 @@ export default function FulfillmentShipmentDetailPage() {
                   {shipment.status}
                 </span>
               </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400">/ fulfillment / shipments / {shipment.id}</p>
+              <p className="text-xs text-muted-foreground">/ fulfillment / shipments / {shipment.id}</p>
             </div>
           </div>
           <div className="flex items-center gap-6">
             <div className="flex flex-col items-end">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Last Updated</span>
+              <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Last Updated</span>
               <span className="text-sm font-medium">{updatedAgo}</span>
             </div>
           </div>
@@ -385,8 +385,8 @@ export default function FulfillmentShipmentDetailPage() {
         <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[320px_1fr_300px]">
           <aside className="flex flex-col gap-4">
             <div className="mb-2 flex items-center justify-between px-1">
-              <h3 className="text-sm font-bold uppercase tracking-widest text-slate-500">Orders Included</h3>
-              <span className="rounded bg-surface-dark px-2 py-0.5 text-xs font-mono">{shipment.orders.length.toString().padStart(2, "0")}</span>
+              <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">Orders Included</h3>
+              <span className="rounded bg-muted px-2 py-0.5 text-xs font-mono text-foreground">{shipment.orders.length.toString().padStart(2, "0")}</span>
             </div>
 
             {shipment.orders.map((orderRef) => {
@@ -418,7 +418,7 @@ export default function FulfillmentShipmentDetailPage() {
                           {order?.customer?.companyName || orderRef.customerName || "Customer"}
                         </button>
                       ) : (
-                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{order?.customer?.companyName || orderRef.customerName || "Customer"}</p>
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{order?.customer?.companyName || orderRef.customerName || "Customer"}</p>
                       )}
                     </div>
                     <span className="rounded border border-blue-500/20 bg-blue-500/10 px-2 py-0.5 text-[10px] font-bold uppercase text-blue-500">
@@ -426,15 +426,15 @@ export default function FulfillmentShipmentDetailPage() {
                     </span>
                   </div>
                   <div className="mb-3">
-                    <p className="text-xs font-medium text-slate-300">{allocatedForOrder} allocated across {lineCount} items</p>
-                    <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-background-dark">
+                    <p className="text-xs font-medium text-muted-foreground">{allocatedForOrder} allocated across {lineCount} items</p>
+                    <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-muted">
                       <div className="h-full bg-primary" style={{ width: lineCount > 0 ? `${Math.min(100, (allocatedForOrder / (lineCount || 1)) * 100)}%` : "0%" }} />
                     </div>
                   </div>
-                  <div className="space-y-1.5 border-t border-slate-100 pt-2 dark:border-border-dark">
+                  <div className="space-y-1.5 border-t border-border pt-2">
                     <div className="flex items-start gap-2">
-                      <MapPinned className="mt-0.5 h-3.5 w-3.5 text-slate-500" />
-                      <p className="text-[10px] leading-tight text-slate-400">{addressPreview}</p>
+                      <MapPinned className="mt-0.5 h-3.5 w-3.5 text-muted-foreground" />
+                      <p className="text-[10px] leading-tight text-muted-foreground">{addressPreview}</p>
                     </div>
                   </div>
                 </div>
@@ -446,45 +446,45 @@ export default function FulfillmentShipmentDetailPage() {
             {addressMismatch && (
               <div className="mb-6 flex items-center gap-3 rounded-xl border border-amber-500/20 bg-amber-500/10 p-4">
                 <AlertTriangle className="h-4 w-4 text-amber-500" />
-                <p className="text-sm font-medium text-amber-200">Orders in this shipment have different delivery addresses</p>
+                <p className="text-sm font-medium text-amber-500">Orders in this shipment have different delivery addresses</p>
               </div>
             )}
 
             <div className="overflow-hidden rounded-xl border border-border bg-card">
-              <div className="border-b border-slate-200 bg-slate-50 px-6 py-3 dark:border-border-dark dark:bg-slate-800/50">
+              <div className="border-b border-border bg-muted/30 px-6 py-3">
                 <h3 className="text-sm font-bold uppercase tracking-wider">Logistics & Carrier Details</h3>
               </div>
               <div className="grid grid-cols-2 gap-6 p-6 md:grid-cols-4">
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Carrier</label>
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Carrier</label>
                   <input
-                    className="h-10 rounded border-none bg-slate-100 text-sm focus:ring-2 focus:ring-primary dark:bg-background-dark"
+                    className="h-10 rounded border border-input bg-background px-3 text-sm focus:ring-2 focus:ring-primary"
                     value={form.carrier}
                     onChange={(event) => setForm((prev) => ({ ...prev, carrier: event.target.value }))}
                     disabled={!isDraft}
                   />
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Service Level</label>
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Service Level</label>
                   <input
-                    className="h-10 rounded border-none bg-slate-100 text-sm focus:ring-2 focus:ring-primary dark:bg-background-dark"
+                    className="h-10 rounded border border-input bg-background px-3 text-sm focus:ring-2 focus:ring-primary"
                     value={form.serviceLevel}
                     onChange={(event) => setForm((prev) => ({ ...prev, serviceLevel: event.target.value }))}
                     disabled={!isDraft}
                   />
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Tracking Number</label>
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Tracking Number</label>
                   <div className="relative">
                     <input
-                      className="h-10 w-full rounded border-none bg-slate-100 font-mono text-sm focus:ring-2 focus:ring-primary dark:bg-background-dark"
+                      className="h-10 w-full rounded border border-input bg-background px-3 font-mono text-sm focus:ring-2 focus:ring-primary"
                       value={form.trackingNumber}
                       onChange={(event) => setForm((prev) => ({ ...prev, trackingNumber: event.target.value }))}
                       disabled={!isDraft}
                     />
                     <button
                       type="button"
-                      className="absolute right-2 top-2 text-slate-400"
+                      className="absolute right-2 top-2 text-muted-foreground"
                       onClick={() => navigator.clipboard?.writeText(form.trackingNumber || "")}
                     >
                       <Copy className="h-4 w-4" />
@@ -492,10 +492,10 @@ export default function FulfillmentShipmentDetailPage() {
                   </div>
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Ship Date</label>
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Ship Date</label>
                   <input
                     type="date"
-                    className="h-10 rounded border-none bg-slate-100 text-sm focus:ring-2 focus:ring-primary dark:bg-background-dark"
+                    className="h-10 rounded border border-input bg-background px-3 text-sm focus:ring-2 focus:ring-primary"
                     value={form.shipDate}
                     onChange={(event) => setForm((prev) => ({ ...prev, shipDate: event.target.value }))}
                     disabled={!isDraft}
@@ -504,8 +504,8 @@ export default function FulfillmentShipmentDetailPage() {
               </div>
             </div>
 
-            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-border-dark dark:bg-surface-dark">
-              <div className="border-b border-slate-200 bg-slate-50 px-6 py-3 dark:border-border-dark dark:bg-slate-800/50">
+            <div className="overflow-hidden rounded-xl border border-border bg-card">
+              <div className="border-b border-border bg-muted/30 px-6 py-3">
                 <h3 className="text-sm font-bold uppercase tracking-wider">Package Dimensions & Weight</h3>
               </div>
               <div className="p-6">
@@ -518,10 +518,10 @@ export default function FulfillmentShipmentDetailPage() {
                     ["Height (in)", "height"],
                   ].map(([label, key]) => (
                     <div key={key} className="flex flex-col gap-1.5">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">{label}</label>
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{label}</label>
                       <input
                         type="number"
-                        className="h-10 rounded border-none bg-slate-100 text-sm focus:ring-2 focus:ring-primary dark:bg-background-dark"
+                        className="h-10 rounded border border-input bg-background px-3 text-sm focus:ring-2 focus:ring-primary"
                         value={form[key as keyof ShipmentFormState]}
                         onChange={(event) => setForm((prev) => ({ ...prev, [key]: event.target.value }))}
                         disabled={!isDraft}
@@ -530,9 +530,9 @@ export default function FulfillmentShipmentDetailPage() {
                   ))}
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Package Notes</label>
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Package Notes</label>
                   <textarea
-                    className="w-full resize-none rounded border-none bg-slate-100 text-sm focus:ring-2 focus:ring-primary dark:bg-background-dark"
+                    className="w-full resize-none rounded border border-input bg-background p-3 text-sm focus:ring-2 focus:ring-primary"
                     rows={2}
                     placeholder="Add any special handling instructions..."
                     value={form.internalNotes}
@@ -543,23 +543,23 @@ export default function FulfillmentShipmentDetailPage() {
               </div>
             </div>
 
-            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-border-dark dark:bg-surface-dark">
-              <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-6 py-3 dark:border-border-dark dark:bg-slate-800/50">
+            <div className="overflow-hidden rounded-xl border border-border bg-card">
+              <div className="flex items-center justify-between border-b border-border bg-muted/30 px-6 py-3">
                 <h3 className="text-sm font-bold uppercase tracking-wider">Items in Shipment</h3>
-                <span className="text-xs text-slate-500">{lineItemsByOrder.reduce((acc, group) => acc + group.lineItems.length, 0)} items total across {lineItemsByOrder.length} orders</span>
+                <span className="text-xs text-muted-foreground">{lineItemsByOrder.reduce((acc, group) => acc + group.lineItems.length, 0)} items total across {lineItemsByOrder.length} orders</span>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse text-left">
                   <thead>
-                    <tr className="border-b border-slate-200 bg-slate-50/50 dark:border-border-dark dark:bg-slate-800/30">
-                      <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Order Ref</th>
-                      <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Product SKU / Name</th>
-                      <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-slate-500">Ordered</th>
-                      <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-slate-500">Remaining</th>
-                      <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-slate-500">In Shipment</th>
+                    <tr className="border-b border-border bg-muted/30">
+                      <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Order Ref</th>
+                      <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Product SKU / Name</th>
+                      <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Ordered</th>
+                      <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Remaining</th>
+                      <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-muted-foreground">In Shipment</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-border-dark">
+                  <tbody className="divide-y divide-border">
                     {loadingOrders && (
                       <tr>
                         <td colSpan={5} className="px-6 py-6 text-center text-sm text-muted-foreground">
@@ -573,11 +573,11 @@ export default function FulfillmentShipmentDetailPage() {
 
                     {!loadingOrders && lineItemsByOrder.map((group) => (
                       <>
-                        <tr key={`${group.orderId}-header`} className="bg-slate-50/30 dark:bg-slate-800/20">
+                        <tr key={`${group.orderId}-header`} className="bg-muted/20">
                           <td className="px-6 py-2" colSpan={5}>
                             <div className="flex items-center gap-2">
                               <span className="text-[10px] font-bold uppercase text-primary">Order #{group.orderNumber}</span>
-                              <span className="h-px flex-1 bg-slate-200 dark:border-border-dark" />
+                              <span className="h-px flex-1 bg-border" />
                             </div>
                           </td>
                         </tr>
@@ -587,20 +587,20 @@ export default function FulfillmentShipmentDetailPage() {
                           const hasError = validationErrors.has(item.id);
                           return (
                             <tr key={item.id}>
-                              <td className="px-6 py-4 text-xs font-mono text-slate-500">--</td>
+                              <td className="px-6 py-4 text-xs font-mono text-muted-foreground">--</td>
                               <td className="px-6 py-4">
                                 <p className="text-sm font-bold">{item.label}</p>
-                                <p className="text-xs font-mono text-slate-500">SKU: {item.sku}</p>
+                                <p className="text-xs font-mono text-muted-foreground">SKU: {item.sku}</p>
                               </td>
                               <td className="px-6 py-4 text-center text-sm">{item.orderedQty}</td>
-                              <td className={`px-6 py-4 text-center text-sm font-medium ${item.remainingQty === 0 ? "text-slate-400" : "text-amber-500"}`}>{item.remainingQty}</td>
+                              <td className={`px-6 py-4 text-center text-sm font-medium ${item.remainingQty === 0 ? "text-muted-foreground" : "text-amber-500"}`}>{item.remainingQty}</td>
                               <td className="px-6 py-4 text-center">
                                 <div className="inline-flex items-center gap-2">
                                   <input
                                     type="number"
                                     value={value}
                                     disabled={!isDraft}
-                                    className={`h-8 w-16 rounded border-2 bg-slate-100 text-center text-sm font-bold focus:border-primary focus:ring-0 dark:bg-background-dark ${hasError ? "border-red-500" : "border-primary/20"}`}
+                                    className={`h-8 w-16 rounded border-2 bg-background text-center text-sm font-bold focus:border-primary focus:ring-0 ${hasError ? "border-red-500" : "border-primary/20"}`}
                                     onChange={(event) => {
                                       const next = Math.max(0, Number(event.target.value || 0));
                                       setAllocatedByLineItemId((prev) => ({ ...prev, [item.id]: next }));
@@ -621,15 +621,15 @@ export default function FulfillmentShipmentDetailPage() {
           </section>
 
           <aside className="sticky top-24 flex flex-col gap-6">
-            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-border-dark dark:bg-surface-dark">
-              <label className="mb-3 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Shipment Status</label>
+            <div className="rounded-xl border border-border bg-card p-5 shadow-sm">
+              <label className="mb-3 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Shipment Status</label>
               <div className="mb-4 flex items-center gap-4">
                 <div className="rounded-lg bg-primary/10 p-3 text-primary">
                   <Truck className="h-7 w-7" />
                 </div>
                 <div>
                   <p className="text-2xl font-black tracking-tight">{shipment.status}</p>
-                  <p className="text-xs text-slate-500">Created {toDateInput(shipment.createdAt) || "--"}</p>
+                  <p className="text-xs text-muted-foreground">Created {toDateInput(shipment.createdAt) || "--"}</p>
                 </div>
               </div>
               {isDraft && (
@@ -655,7 +655,7 @@ export default function FulfillmentShipmentDetailPage() {
               </button>
               <button
                 type="button"
-                className="w-full rounded-lg border border-slate-200 bg-white py-3 text-sm font-bold transition-colors hover:bg-slate-50 dark:border-border-dark dark:bg-surface-dark dark:hover:bg-slate-800"
+                className="w-full rounded-lg border border-border bg-background py-3 text-sm font-bold transition-colors hover:bg-muted/50"
                 disabled={!isDraft || updateShipment.isPending}
                 onClick={() => void saveDraft()}
               >
@@ -663,39 +663,39 @@ export default function FulfillmentShipmentDetailPage() {
               </button>
             </div>
 
-            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-border-dark dark:bg-surface-dark">
-              <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-5 py-3 dark:border-border-dark dark:bg-slate-800/50">
-                <h3 className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Documents</h3>
-                <FileText className="h-3.5 w-3.5 text-slate-400" />
+            <div className="overflow-hidden rounded-xl border border-border bg-card">
+              <div className="flex items-center justify-between border-b border-border bg-muted/30 px-5 py-3">
+                <h3 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Documents</h3>
+                <FileText className="h-3.5 w-3.5 text-muted-foreground" />
               </div>
               <div className="space-y-1 p-2">
-                <a className="group flex items-center justify-between rounded p-3 transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50" href="#">
+                <a className="group flex items-center justify-between rounded p-3 transition-colors hover:bg-muted/50" href="#">
                   <div className="flex items-center gap-3"><FileText className="h-4 w-4 text-primary" /><span className="text-xs font-medium">Combined Packing Slip</span></div>
-                  <Package className="h-3.5 w-3.5 text-slate-400 group-hover:text-primary" />
+                  <Package className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary" />
                 </a>
-                <a className="group flex items-center justify-between rounded p-3 transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50" href="#">
+                <a className="group flex items-center justify-between rounded p-3 transition-colors hover:bg-muted/50" href="#">
                   <div className="flex items-center gap-3"><Printer className="h-4 w-4 text-primary" /><span className="text-xs font-medium">Print Preview (Labels)</span></div>
-                  <Package className="h-3.5 w-3.5 text-slate-400 group-hover:text-primary" />
+                  <Package className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary" />
                 </a>
-                <a className="group flex items-center justify-between rounded p-3 transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50" href="#">
+                <a className="group flex items-center justify-between rounded p-3 transition-colors hover:bg-muted/50" href="#">
                   <div className="flex items-center gap-3"><Download className="h-4 w-4 text-primary" /><span className="text-xs font-medium">Download Full Manifest</span></div>
-                  <Package className="h-3.5 w-3.5 text-slate-400 group-hover:text-primary" />
+                  <Package className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary" />
                 </a>
               </div>
             </div>
 
-            <div className="relative h-32 overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-border-dark dark:bg-surface-dark" title="Available with carrier integrations">
+            <div className="relative h-32 overflow-hidden rounded-xl border border-border bg-card" title="Available with carrier integrations">
               <div className="absolute inset-0 z-10 flex cursor-help flex-col items-center justify-center bg-slate-900/80 p-4 text-center backdrop-blur-[2px]">
                 <div className="rounded border border-border-dark bg-surface-dark p-2 shadow-xl">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Route Visualization</p>
-                  <p className="mt-1 text-[9px] text-slate-400">Available with carrier integrations</p>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Route Visualization</p>
+                  <p className="mt-1 text-[9px] text-muted-foreground">Available with carrier integrations</p>
                 </div>
               </div>
               <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-surface-dark opacity-30" />
             </div>
 
-            <div className="mt-2 border-t border-slate-200 pt-4 dark:border-border-dark">
-              <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Danger Zone</p>
+            <div className="mt-2 border-t border-border pt-4">
+              <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Danger Zone</p>
               <button
                 type="button"
                 className="w-full rounded border border-red-500/30 py-2 text-[10px] font-bold uppercase tracking-wider text-red-500 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-40"

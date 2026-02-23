@@ -43,12 +43,12 @@ function parseItemsRemaining(value: string): number {
 
 function statusBadgeClass(status: string): string {
   const normalized = status.toUpperCase();
-  if (normalized === "READY") return "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400";
-  if (normalized === "SHIPPED") return "bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400";
-  if (normalized === "PARTIAL") return "bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400";
-  if (normalized === "READY_FOR_PICKUP") return "bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400";
-  if (normalized === "PICKED_UP") return "bg-slate-100 dark:bg-slate-800/50 text-slate-400";
-  return "bg-slate-100 dark:bg-slate-800 text-slate-500";
+  if (normalized === "READY") return "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20";
+  if (normalized === "SHIPPED") return "bg-blue-500/10 text-blue-500 border border-blue-500/20";
+  if (normalized === "PARTIAL") return "bg-amber-500/10 text-amber-500 border border-amber-500/20";
+  if (normalized === "READY_FOR_PICKUP") return "bg-amber-500/10 text-amber-500 border border-amber-500/20";
+  if (normalized === "PICKED_UP") return "bg-muted text-muted-foreground border border-border";
+  return "bg-muted text-muted-foreground border border-border";
 }
 
 export default function FulfillmentPage() {
@@ -221,7 +221,7 @@ export default function FulfillmentPage() {
           </div>
           <div className="max-w-xl flex-1">
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <input
                 className="w-full rounded-lg border border-input bg-muted/30 py-2 pl-10 pr-4 text-sm focus:border-primary focus:ring-primary"
                 placeholder="Search orders, customers, or tracking numbers..."
@@ -244,7 +244,7 @@ export default function FulfillmentPage() {
         <div className="flex items-center justify-between border-t border-border bg-muted/20 px-6 py-2">
           <div className="flex items-center gap-2 overflow-x-auto">
             <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-1 shadow-sm">
-              <span className="px-2 text-[10px] font-bold uppercase text-slate-400">Type</span>
+              <span className="px-2 text-[10px] font-bold uppercase text-muted-foreground">Type</span>
               {([
                 ["all", "All"],
                 ["ship", "Ship"],
@@ -262,7 +262,7 @@ export default function FulfillmentPage() {
             </div>
 
             <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-1 shadow-sm">
-              <span className="px-2 text-[10px] font-bold uppercase text-slate-400">Status</span>
+              <span className="px-2 text-[10px] font-bold uppercase text-muted-foreground">Status</span>
               {statusOptions.map((option) => (
                 <button
                   key={option.value}
@@ -282,7 +282,7 @@ export default function FulfillmentPage() {
                 type="checkbox"
                 checked={showArchived}
                 onChange={(event) => setShowArchived(event.target.checked)}
-                className="h-4 w-4 rounded border-slate-300 text-primary focus:ring-primary"
+                className="h-4 w-4 rounded border-input text-primary focus:ring-primary"
               />
               <span className="text-xs font-medium text-muted-foreground group-hover:text-foreground">Show Archived</span>
             </label>
@@ -291,7 +291,7 @@ export default function FulfillmentPage() {
                 type="checkbox"
                 checked={overdueOnly}
                 onChange={(event) => setOverdueOnly(event.target.checked)}
-                className="h-4 w-4 rounded border-slate-300 text-primary focus:ring-primary"
+                className="h-4 w-4 rounded border-input text-primary focus:ring-primary"
               />
               <span className="text-xs font-medium text-muted-foreground group-hover:text-foreground">Overdue Only</span>
             </label>
@@ -307,7 +307,7 @@ export default function FulfillmentPage() {
         {pickupTicketId && (
           <div className="mb-4 rounded-xl border border-primary/30 bg-primary/10 p-3 text-sm">
             <p className="font-semibold">Pickup ticket selected</p>
-            <p className="text-xs text-slate-500">Ticket ID: {pickupTicketId}</p>
+            <p className="text-xs text-muted-foreground">Ticket ID: {pickupTicketId}</p>
           </div>
         )}
 
@@ -318,7 +318,7 @@ export default function FulfillmentPage() {
                 <th className="w-10 px-4 py-4">
                   <input
                     type="checkbox"
-                    className="h-4 w-4 rounded border-slate-300 bg-transparent text-primary focus:ring-primary"
+                    className="h-4 w-4 rounded border-input bg-transparent text-primary focus:ring-primary"
                     checked={rows.length > 0 && selectedOrderIds.size === rows.length}
                     onChange={(event) => {
                       if (event.target.checked) {
@@ -329,16 +329,16 @@ export default function FulfillmentPage() {
                     }}
                   />
                 </th>
-                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Order #</th>
-                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Customer</th>
-                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Fulfillment</th>
-                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Status</th>
-                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Items Remaining</th>
-                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Ready Since</th>
-                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Ship To</th>
+                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Order #</th>
+                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Customer</th>
+                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Fulfillment</th>
+                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Status</th>
+                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Items Remaining</th>
+                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Ready Since</th>
+                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Ship To</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+            <tbody className="divide-y divide-border">
               {queueQuery.isLoading && (
                 <tr>
                   <td colSpan={8} className="px-4 py-12 text-center text-sm text-muted-foreground">
@@ -353,11 +353,11 @@ export default function FulfillmentPage() {
               {!queueQuery.isLoading && rows.length === 0 && (
                 <tr>
                   <td colSpan={8} className="px-4 py-12 text-center">
-                    <div className="mx-auto mb-4 w-fit rounded-full bg-slate-100 p-4 dark:bg-slate-800/50">
-                      <Box className="h-8 w-8 text-slate-400" />
+                    <div className="mx-auto mb-4 w-fit rounded-full bg-muted p-4">
+                      <Box className="h-8 w-8 text-muted-foreground" />
                     </div>
                     <h3 className="mb-1 text-lg font-bold">No orders ready for fulfillment</h3>
-                    <p className="text-sm text-slate-500">Try adjusting your filters to find what you're looking for.</p>
+                    <p className="text-sm text-muted-foreground">Try adjusting your filters to find what you're looking for.</p>
                   </td>
                 </tr>
               )}
@@ -367,11 +367,11 @@ export default function FulfillmentPage() {
                 const readySince = row.readySince ? `${formatDistanceToNowStrict(new Date(row.readySince), { addSuffix: true })}` : "--";
 
                 return (
-                  <tr key={row.orderId} className={`transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50 ${isSelected ? "bg-primary/10" : ""}`}>
+                  <tr key={row.orderId} className={`transition-colors hover:bg-muted/50 ${isSelected ? "bg-primary/10" : ""}`}>
                     <td className="px-4 py-4">
                       <input
                         type="checkbox"
-                        className="h-4 w-4 rounded border-slate-300 bg-transparent text-primary focus:ring-primary"
+                        className="h-4 w-4 rounded border-input bg-transparent text-primary focus:ring-primary"
                         checked={isSelected}
                         onChange={(event) => handleToggleRow(row.orderId, event.target.checked)}
                       />
@@ -403,7 +403,7 @@ export default function FulfillmentPage() {
                       </button>
                     </td>
                     <td className="px-4 py-4">
-                      <span className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-bold ${row.fulfillmentType === "SHIP" ? "border border-primary/20 bg-primary/10 text-primary" : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"}`}>
+                      <span className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-bold ${row.fulfillmentType === "SHIP" ? "border border-primary/20 bg-primary/10 text-primary" : "border border-border bg-muted text-muted-foreground"}`}>
                         {row.fulfillmentType === "SHIP" ? <Truck className="h-3.5 w-3.5" /> : <Factory className="h-3.5 w-3.5" />}
                         {row.fulfillmentType}
                       </span>
@@ -414,8 +414,8 @@ export default function FulfillmentPage() {
                       </span>
                     </td>
                     <td className="px-4 py-4 text-sm font-medium">{row.itemsRemaining}</td>
-                    <td className="px-4 py-4 text-sm text-slate-500">{readySince}</td>
-                    <td className="px-4 py-4 text-sm text-slate-500">{row.shipTo}</td>
+                    <td className="px-4 py-4 text-sm text-muted-foreground">{readySince}</td>
+                    <td className="px-4 py-4 text-sm text-muted-foreground">{row.shipTo}</td>
                   </tr>
                 );
               })}
@@ -427,14 +427,14 @@ export default function FulfillmentPage() {
       </main>
 
       {selectedOrderIds.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 z-50 flex w-[90%] max-w-2xl -translate-x-1/2 items-center justify-between gap-4 rounded-xl border border-slate-700 bg-slate-900 p-4 text-white shadow-2xl dark:border-slate-200 dark:bg-slate-100 dark:text-slate-900">
+        <div className="fixed bottom-6 left-1/2 z-50 flex w-[90%] max-w-2xl -translate-x-1/2 items-center justify-between gap-4 rounded-xl border border-border bg-card p-4 text-foreground shadow-2xl">
           <div className="flex items-center gap-3">
             <div className="flex items-center justify-center rounded-lg bg-primary p-2">
               <Check className="h-4 w-4 text-white" />
             </div>
             <div>
               <p className="text-sm font-bold">{selectedOrderIds.size} Orders Selected</p>
-              <p className="text-[10px] uppercase tracking-wider opacity-70">Batch Operations Enabled</p>
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Batch Operations Enabled</p>
               {disableCombinedReason && (
                 <div className="mt-1 flex items-center gap-1.5 text-amber-500">
                   <AlertTriangle className="h-3 w-3" />
@@ -446,7 +446,7 @@ export default function FulfillmentPage() {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold transition-all ${disableCombinedReason ? "cursor-not-allowed bg-slate-700 text-white opacity-50" : "bg-primary text-white hover:bg-primary/90"}`}
+              className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold transition-all ${disableCombinedReason ? "cursor-not-allowed bg-muted text-muted-foreground opacity-50" : "bg-primary text-primary-foreground hover:bg-primary/90"}`}
               disabled={!!disableCombinedReason || createShipment.isPending}
               onClick={() => void handleCreateCombined()}
               title={disableCombinedReason || "Create combined shipment"}
@@ -456,7 +456,7 @@ export default function FulfillmentPage() {
             </button>
             <button
               type="button"
-              className="rounded-lg bg-slate-800 px-4 py-2 text-sm font-bold text-slate-300 transition-all hover:bg-slate-700 dark:bg-slate-200 dark:text-slate-600 dark:hover:bg-slate-300"
+              className="rounded-lg border border-border bg-background px-4 py-2 text-sm font-bold text-foreground transition-all hover:bg-muted/50"
               onClick={() => setSelectedOrderIds(new Set())}
             >
               Clear Selection
