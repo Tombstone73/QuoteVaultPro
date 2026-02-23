@@ -1,9 +1,7 @@
 /**
  * PBV2 Product Builder V2 - Full-screen page
  * Provides a dedicated, non-constrained layout for the 3-column builder interface.
- * 
- * This is the primary route for editing PBV2 product trees with full viewport responsiveness.
- * Legacy V1 editor remains at /products/:productId/edit
+ * This is the primary route for editing product option trees.
  */
 
 import { useParams } from 'react-router-dom';
