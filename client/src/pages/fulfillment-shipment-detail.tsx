@@ -26,11 +26,15 @@ import {
   useVoidShipmentMutation,
 } from "@/hooks/useFulfillment";
 import { formatDistanceToNowStrict } from "date-fns";
+import { ROUTES } from "@/config/routes";
+import { useSmartBack } from "@/hooks/useSmartBack";
+import { buildReferrer } from "@/lib/nav/smartBack";
 
 interface OrderDetailLite {
   id: string;
   orderNumber: string;
-  customer?: { companyName?: string | null } | null;
+  customerId?: string | null;
+  customer?: { id?: string | null; companyName?: string | null } | null;
   shipToAddress1?: string | null;
   shipToAddress2?: string | null;
   shipToCity?: string | null;
@@ -94,6 +98,7 @@ function parseNumber(value: string): number | null {
 export default function FulfillmentShipmentDetailPage() {
   const { toast } = useToast();
   const navigate = useNavigate();
+  const { onSmartBack } = useSmartBack();
   const { shipmentId } = useParams<{ shipmentId: string }>();
   const location = useLocation();
 
@@ -340,17 +345,22 @@ export default function FulfillmentShipmentDetailPage() {
   const isDraft = shipment.status === "DRAFT";
   const updatedAgo = formatDistanceToNowStrict(new Date(shipment.updatedAt), { addSuffix: true });
 
+  const resolveCustomerId = (orderId: string): string | null => {
+    const order = ordersById[orderId];
+    return String(order?.customerId || order?.customer?.id || "") || null;
+  };
+
   return (
-    <div className="min-h-full bg-background-light font-display text-slate-900 dark:bg-background-dark dark:text-slate-100">
-      <header className="sticky top-0 z-50 border-b border-slate-200 bg-background-light px-6 py-3 dark:border-border-dark dark:bg-background-dark">
+    <div className="min-h-full bg-background font-display text-foreground">
+      <header className="sticky top-0 z-50 border-b border-border bg-background px-6 py-3">
         <div className="mx-auto flex max-w-[1600px] items-center justify-between">
           <div className="flex items-center gap-4">
             <button
-              className="rounded-lg p-2 transition-colors hover:bg-slate-200 dark:hover:bg-surface-dark"
+              className="rounded-lg p-2 transition-colors hover:bg-accent"
               type="button"
-              onClick={() => navigate("/fulfillment")}
+              onClick={onSmartBack}
             >
-              <ArrowLeft className="h-4 w-4 text-slate-600 dark:text-slate-400" />
+              <ArrowLeft className="h-4 w-4 text-muted-foreground" />
             </button>
             <div className="flex flex-col">
               <div className="flex items-center gap-3">
@@ -389,11 +399,27 @@ export default function FulfillmentShipmentDetailPage() {
               const addressPreview = [order?.shipToAddress1, order?.shipToCity, order?.shipToState].filter(Boolean).join(", ") || "Address unavailable";
 
               return (
-                <div key={orderRef.orderId} className="group relative mb-4 cursor-default rounded-lg border border-slate-200 bg-white p-4 transition-colors hover:border-primary/50 dark:border-border-dark dark:bg-surface-dark">
+                <div key={orderRef.orderId} className="group relative mb-4 cursor-default rounded-lg border border-border bg-card p-4 transition-colors hover:border-primary/50">
                   <div className="mb-2 flex items-start justify-between">
                     <div>
-                      <p className="text-sm font-bold text-primary">#{orderRef.orderNumber}</p>
-                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{order?.customer?.companyName || orderRef.customerName || "Customer"}</p>
+                      <button
+                        type="button"
+                        className="text-sm font-bold text-primary underline-offset-2 hover:underline"
+                        onClick={() => navigate(ROUTES.orders.detail(orderRef.orderId), { state: { referrer: buildReferrer(location) } })}
+                      >
+                        #{orderRef.orderNumber}
+                      </button>
+                      {resolveCustomerId(orderRef.orderId) ? (
+                        <button
+                          type="button"
+                          className="block text-[10px] font-bold uppercase tracking-wider text-primary/90 underline-offset-2 hover:underline"
+                          onClick={() => navigate(ROUTES.customers.detail(resolveCustomerId(orderRef.orderId) as string), { state: { referrer: buildReferrer(location) } })}
+                        >
+                          {order?.customer?.companyName || orderRef.customerName || "Customer"}
+                        </button>
+                      ) : (
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{order?.customer?.companyName || orderRef.customerName || "Customer"}</p>
+                      )}
                     </div>
                     <span className="rounded border border-blue-500/20 bg-blue-500/10 px-2 py-0.5 text-[10px] font-bold uppercase text-blue-500">
                       {isDraft ? "Draft" : shipment.status}
@@ -424,7 +450,7 @@ export default function FulfillmentShipmentDetailPage() {
               </div>
             )}
 
-            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-border-dark dark:bg-surface-dark">
+            <div className="overflow-hidden rounded-xl border border-border bg-card">
               <div className="border-b border-slate-200 bg-slate-50 px-6 py-3 dark:border-border-dark dark:bg-slate-800/50">
                 <h3 className="text-sm font-bold uppercase tracking-wider">Logistics & Carrier Details</h3>
               </div>
