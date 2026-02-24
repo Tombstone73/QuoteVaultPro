@@ -1,6 +1,7 @@
 import { db } from "../db";
 import { orderLineItems, products, productTypes, productionJobs, productionEvents, orders, materials } from "@shared/schema";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, sql } from "drizzle-orm";
+import { stationResolver } from "./stations/stationResolver";
 
 /**
  * scheduleOrderLineItemsForProduction
@@ -201,6 +202,11 @@ export async function scheduleOrderLineItemsForProduction(args: {
       }
 
       // Create production job
+      const resolvedStationId = await stationResolver.resolveStationId({
+        organizationId,
+        stationKey,
+      });
+
       const [inserted] = await tx
         .insert(productionJobs)
         .values({
@@ -213,6 +219,15 @@ export async function scheduleOrderLineItemsForProduction(args: {
           totalSeconds: 0,
         })
         .returning({ id: productionJobs.id });
+
+      if (resolvedStationId) {
+        await tx.execute(sql`
+          update production_jobs
+          set station_id = ${resolvedStationId}
+          where organization_id = ${organizationId}
+            and id = ${inserted.id}
+        `);
+      }
 
       // Log intake event
       await appendEvent({
