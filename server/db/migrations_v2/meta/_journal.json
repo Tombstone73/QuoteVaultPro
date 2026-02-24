@@ -15,6 +15,13 @@
       "when": 0,
       "tag": "0001_stations",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1771953200001,
+      "tag": "0002_production_jobs_station_uniqueness",
+      "breakpoints": true
     }
   ]
 }
