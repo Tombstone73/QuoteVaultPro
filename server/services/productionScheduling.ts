@@ -1,7 +1,7 @@
 import { db } from "../db";
-import { orderLineItems, products, productTypes, productionJobs, productionEvents, orders, materials } from "@shared/schema";
-import { eq, and, inArray, sql } from "drizzle-orm";
-import { stationResolver } from "./stations/stationResolver";
+import { orderLineItems, products, productTypes, productionJobs, orders, materials } from "@shared/schema";
+import { eq, and, inArray } from "drizzle-orm";
+import { routeLineItemToProduction } from "./productionRoutingService";
 
 /**
  * scheduleOrderLineItemsForProduction
@@ -201,51 +201,28 @@ export async function scheduleOrderLineItemsForProduction(args: {
         }
       }
 
-      // Create production job
-      const resolvedStationId = await stationResolver.resolveStationId({
-        organizationId,
-        stationKey,
-      });
-
-      const [inserted] = await tx
-        .insert(productionJobs)
-        .values({
-          organizationId,
-          orderId,
-          lineItemId: item.lineItemId,
-          stationKey,
-          stepKey,
-          status: "queued",
-          totalSeconds: 0,
-        })
-        .returning({ id: productionJobs.id });
-
-      if (resolvedStationId) {
-        await tx.execute(sql`
-          update production_jobs
-          set station_id = ${resolvedStationId}
-          where organization_id = ${organizationId}
-            and id = ${inserted.id}
-        `);
-      }
-
-      // Log intake event
-      await appendEvent({
+      // Create production job via canonical routing service
+      const routingResult = await routeLineItemToProduction({
         tx,
         organizationId,
-        productionJobId: inserted.id,
-        type: "intake",
-        payload: {
+        orderId,
+        lineItemId: item.lineItemId,
+        stationKey,
+        stepKey,
+        trigger: "scheduler",
+        extraEventPayload: {
           fromStatus: null,
           toStatus: item.status,
-          stationKey,
-          stepKey,
           source: "bulk_schedule",
           usedDefaultRouting: usedDefaults,
         },
       });
 
-      createdCount++;
+      if (routingResult.outcome === "created") {
+        createdCount++;
+      } else {
+        existingCount++;
+      }
       affectedIds.push(item.lineItemId);
     }
 
