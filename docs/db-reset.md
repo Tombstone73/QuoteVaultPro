@@ -12,12 +12,9 @@ npm run db:migrate
 ```
 This runs all pending SQL migrations in order and tracks which have been applied.
 
-### Generate a New Migration
-When you modify `shared/schema.ts`, generate a migration:
-```bash
-npx drizzle-kit generate
-```
-This creates a new SQL file in `/migrations/` that you should review before running.
+### V2 Migration Authoring (Manual Only)
+For `server/db/migrations_v2`, **do not run** `npx drizzle-kit generate`.
+Author SQL files manually (deterministic/minimal diffs), then update `server/db/migrations_v2/meta/_journal.json` explicitly.
 
 ### View Migration Status
 ```bash
@@ -79,9 +76,9 @@ The migrations have dependencies. Ensure you run them in order using `npm run db
 This usually means the migration was partially applied. You may need to reset the database and run migrations fresh.
 
 ### Schema out of sync
-If `shared/schema.ts` differs from the database:
-1. Generate a new migration: `npx drizzle-kit generate`
-2. Review the generated SQL file
+If `shared/schema.ts` differs from the database for v2 lineage:
+1. Author a manual SQL migration in `server/db/migrations_v2`
+2. Add/update the corresponding entry in `server/db/migrations_v2/meta/_journal.json`
 3. Run: `npm run db:migrate`
 
 ## Multi-Tenant Architecture
