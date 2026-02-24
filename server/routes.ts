@@ -9651,6 +9651,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const stepKeyRaw = req.query.stepKey as string | undefined;
 
         const stationCandidate = stationRaw ?? viewRaw;
+        const resolvedStationId = stationCandidate
+          ? await stationResolver.resolveStationId({ organizationId, stationKey: stationCandidate })
+          : null;
 
         // Count by org only
         const [countByOrg] = await db
@@ -9666,7 +9669,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .from(productionJobs)
             .where(and(
               eq(productionJobs.organizationId, organizationId),
-              eq(productionJobs.stationKey, stationCandidate)
+              resolvedStationId
+                ? sql`production_jobs.station_id = ${resolvedStationId}`
+                : eq(productionJobs.stationKey, stationCandidate)
             ));
           countByOrgStation = result?.count || 0;
         }
@@ -9679,7 +9684,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .from(productionJobs)
             .where(and(
               eq(productionJobs.organizationId, organizationId),
-              eq(productionJobs.stationKey, stationCandidate),
+              resolvedStationId
+                ? sql`production_jobs.station_id = ${resolvedStationId}`
+                : eq(productionJobs.stationKey, stationCandidate),
               eq(productionJobs.status, statusRaw)
             ));
           countByOrgStationStatus = result?.count || 0;
@@ -9687,7 +9694,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         // Fetch first 10 rows matching filters
         const whereConditions = [eq(productionJobs.organizationId, organizationId)];
-        if (stationCandidate) whereConditions.push(eq(productionJobs.stationKey, stationCandidate));
+        if (stationCandidate) {
+          whereConditions.push(
+            resolvedStationId
+              ? sql`production_jobs.station_id = ${resolvedStationId}`
+              : eq(productionJobs.stationKey, stationCandidate)
+          );
+        }
         if (statusRaw) whereConditions.push(eq(productionJobs.status, statusRaw));
         if (stepKeyRaw) whereConditions.push(eq(productionJobs.stepKey, stepKeyRaw));
 
