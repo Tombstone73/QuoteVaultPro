@@ -54,6 +54,7 @@ import { resolveMaterialsOverrideModeFromOrgPreferences } from "@shared/material
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2OverrideConfig";
 import { createLineItemFileRecord } from "./services/lineItemFileRecordService";
 import { stationResolver } from "./services/stations/stationResolver";
+import { routeLineItemToProduction } from "./services/productionRoutingService";
 import { getDashboardSummary } from "./services/dashboardSummaryService";
 import { resolveVisibleNodes } from "@shared/optionTreeV2Runtime";
 import { computePlannedMaterialsForLineItem } from "./services/prepressPlannedMaterials";
@@ -9394,71 +9395,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
           });
         }
 
-        const resolvedStationId = await stationResolver.resolveStationId({
-          organizationId,
-          stationKey,
-        });
-
         const job = await db.transaction(async (tx) => {
-          const existing = await tx
-            .select({
-              id: productionJobs.id,
-              status: productionJobs.status,
-              stationKey: productionJobs.stationKey,
-              stepKey: productionJobs.stepKey,
-            })
-            .from(productionJobs)
-            .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.lineItemId, li.id)))
-            .limit(1);
+          const routingResult = await routeLineItemToProduction({
+            tx,
+            organizationId,
+            orderId: li.orderId,
+            lineItemId: li.id,
+            stationKey,
+            stepKey,
+            trigger: "intake",
+            extraEventPayload: { fromStatus: null, toStatus: li.status },
+          });
 
-          if (!existing[0]) {
-            const [inserted] = await tx
-              .insert(productionJobs)
-              .values({
-                organizationId,
-                orderId: li.orderId,
-                lineItemId: li.id,
-                stationKey,
-                stepKey,
-                status: "queued",
-                totalSeconds: 0,
-              })
-              .returning({
-                id: productionJobs.id,
-                orderId: productionJobs.orderId,
-                lineItemId: productionJobs.lineItemId,
-                stationKey: productionJobs.stationKey,
-                stepKey: productionJobs.stepKey,
-                status: productionJobs.status,
-              });
-
-            if (resolvedStationId) {
-              await tx.execute(sql`
-                update production_jobs
-                set station_id = ${resolvedStationId}
-                where organization_id = ${organizationId}
-                  and id = ${inserted.id}
-              `);
-            }
-
-            await appendEvent({
-              tx,
-              organizationId,
-              productionJobId: inserted.id,
-              type: "intake",
-              payload: {
-                fromStatus: null,
-                toStatus: li.status,
-                stationKey,
-                stepKey,
-              },
-            });
-
-            // Set line item status based on requiresPrepress:
-            //   requiresPrepress=true  → pending_prepress (goes to prepress queue first)
-            //   requiresPrepress=false → print_ready      (goes directly to production board)
-            // Only set status when the item is in a neutral/initial state (don't override
-            // an item that already has an active prepress workflow state).
+          // Set line item status based on requiresPrepress only for newly created jobs.
+          //   requiresPrepress=true  → pending_prepress
+          //   requiresPrepress=false → print_ready
+          // Only applies when item is in a neutral/initial state.
+          if (routingResult.outcome === "created") {
             const neutralStatuses = ['queued', 'new', ''];
             if (neutralStatuses.includes(li.status || '')) {
               const targetStatus = li.requiresPrepress ? 'pending_prepress' : 'print_ready';
@@ -9471,44 +9424,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 console.log(`[ProductionIntake] Set lineItem ${li.id} status: ${li.status} → ${targetStatus} (requiresPrepress=${li.requiresPrepress})`);
               }
             }
-
-            return inserted;
           }
-
-          const ex = existing[0];
-          // No implicit routing changes. If the job already exists, keep its routing unless an explicit override is used.
-          const isDone = ex.status === "done";
-          const routingDiffers = ex.stationKey !== stationKey || ex.stepKey !== stepKey;
-          if (!isDone && routingDiffers) {
-            console.warn(
-              `[ProductionIntake] Routing differs for existing jobId=${ex.id}; ignoring requested routing (${stationKey}/${stepKey}) and keeping existing (${ex.stationKey}/${ex.stepKey}). Use /api/production/jobs/:jobId/routing for explicit override.`,
-            );
-          }
-          if (!isDone) {
-            await tx
-              .update(productionJobs)
-              .set({
-                orderId: li.orderId,
-                updatedAt: new Date(),
-              })
-              .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, ex.id)));
-          }
-
-          await appendEvent({
-            tx,
-            organizationId,
-            productionJobId: ex.id,
-            type: "intake",
-            payload: {
-              fromStatus: null,
-              toStatus: li.status,
-              requested: { stationKey, stepKey },
-              applied: { stationKey: ex.stationKey, stepKey: ex.stepKey },
-              duplicate: true,
-              ignoredDueToDone: isDone,
-              ignoredDueToExistingRouting: !isDone && routingDiffers,
-            },
-          });
 
           const [out] = await tx
             .select({
@@ -9520,7 +9436,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               status: productionJobs.status,
             })
             .from(productionJobs)
-            .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, ex.id)))
+            .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, routingResult.jobId)))
             .limit(1);
           return out;
         });
@@ -12304,49 +12220,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   };
 
   const ensureProductionJobForLineItem = async (tx: any, args: { organizationId: string; orderId: string; lineItemId: string }) => {
-    const [existingJob] = await tx
-      .select({ id: productionJobs.id })
-      .from(productionJobs)
-      .where(
-        and(
-          eq(productionJobs.organizationId, args.organizationId),
-          eq(productionJobs.orderId, args.orderId),
-          eq(productionJobs.lineItemId, args.lineItemId)
-        )
-      )
-      .limit(1);
-
-    if (existingJob?.id) return existingJob.id;
-
-    const stationKey = "flatbed";
-    const resolvedStationId = await stationResolver.resolveStationId({
+    const result = await routeLineItemToProduction({
+      tx,
       organizationId: args.organizationId,
-      stationKey,
+      orderId: args.orderId,
+      lineItemId: args.lineItemId,
+      stationKey: "flatbed",
+      stepKey: "prepress",
+      trigger: "prepress",
     });
-
-    const inserted = await tx
-      .insert(productionJobs)
-      .values({
-        organizationId: args.organizationId,
-        orderId: args.orderId,
-        lineItemId: args.lineItemId,
-        stationKey,
-        stepKey: "prepress",
-        status: "queued",
-        totalSeconds: 0,
-      })
-      .returning({ id: productionJobs.id });
-
-    if (resolvedStationId && inserted[0]?.id) {
-      await tx.execute(sql`
-        update production_jobs
-        set station_id = ${resolvedStationId}
-        where organization_id = ${args.organizationId}
-          and id = ${inserted[0].id}
-      `);
-    }
-
-    return inserted[0]?.id as string;
+    return result.jobId;
   };
 
   const listReservedMaterialsForLineItem = async (tx: any, args: { organizationId: string; orderId: string; lineItemId: string }) => {
