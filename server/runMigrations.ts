@@ -8,6 +8,8 @@ import { db, pool } from "./db";
  * Any constant integer works; unique to this application to avoid collisions.
  */
 const ADVISORY_LOCK_KEY = 928372001;
+const MIGRATIONS_TABLE = "__drizzle_migrations_v2";
+const MIGRATIONS_SCHEMA = "public";
 
 /**
  * Run Drizzle migrations at server startup.
@@ -52,7 +54,11 @@ export async function runMigrations(): Promise<void> {
     await client.query(`SELECT pg_advisory_lock(${ADVISORY_LOCK_KEY})`);
     console.log("[Migrations] Advisory lock acquired");
 
-    await migrate(db, { migrationsFolder });
+    await migrate(db, {
+      migrationsFolder,
+      migrationsTable: MIGRATIONS_TABLE,
+      migrationsSchema: MIGRATIONS_SCHEMA,
+    });
 
     console.log("[Migrations] Complete");
   } catch (err) {

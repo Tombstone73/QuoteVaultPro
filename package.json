@@ -12,6 +12,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:migrate:dotenv": "node -r dotenv/config ./node_modules/drizzle-kit/bin.cjs migrate",
     "db:migrate:verbose": "tsx scripts/db-migrate-verbose.ts",
+    "db:migrations:v2:generate": "node -e \"console.error('Blocked: do not run drizzle-kit generate for v2. Author SQL manually in server/db/migrations_v2 and update meta/_journal.json.'); process.exit(1);\"",
     "db:migrations:v2:init-baseline": "tsx scripts/db/initMigrationsV2Baseline.ts",
     "db:status": "tsx scripts/db-status.ts",
     "db:verify:stripe": "tsx scripts/db-verify-stripe.ts",
