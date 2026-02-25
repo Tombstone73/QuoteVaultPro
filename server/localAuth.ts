@@ -57,33 +57,32 @@ export function getSession() {
     tableName: "sessions",
   });
   
-  // Same-origin cookie config: Vercel proxy makes all /api/* requests same-origin.
-  // - secure: true (HTTPS required in production)
-  // - sameSite: 'lax' (safe for same-origin, prevents CSRF)
-  // - httpOnly: true (security: JS can't access cookie)
-  // Frontend calls /api/* on printershero.com → Vercel rewrites to Railway backend.
+  // Session cookie config:
+  // - production cross-origin UI->API requires SameSite=None + Secure=true
+  // - local/dev keeps SameSite=Lax + Secure=false for localhost HTTP
   const cookieConfig = {
     httpOnly: true,
     secure: isProduction, // HTTPS only in production
     maxAge: sessionTtl,
-    sameSite: 'lax' as const, // Safe for same-origin requests
+    sameSite: (isProduction ? 'none' : 'lax') as const,
   };
   
   // Diagnostic logging (non-sensitive)
-  if (!isProduction || process.env.DEBUG_AUTH === 'true') {
-    console.log('[Session] Cookie config:', {
-      secure: cookieConfig.secure,
-      sameSite: cookieConfig.sameSite,
-      httpOnly: cookieConfig.httpOnly,
-      maxAge: `${cookieConfig.maxAge / 1000 / 60 / 60 / 24} days`,
-    });
-  }
+  console.log('[Session] Cookie policy:', {
+    env: nodeEnv,
+    secure: cookieConfig.secure,
+    sameSite: cookieConfig.sameSite,
+    httpOnly: cookieConfig.httpOnly,
+    maxAgeDays: cookieConfig.maxAge / 1000 / 60 / 60 / 24,
+    trustProxy: true,
+  });
   
   return session({
     secret: process.env.SESSION_SECRET!,
     store: sessionStore,
     resave: false,
     saveUninitialized: false,
+    proxy: isProduction,
     cookie: cookieConfig,
   });
 }
@@ -279,7 +278,7 @@ export async function setupAuth(app: Express) {
           path: "/",
           httpOnly: true,
           secure: isProduction,
-          sameSite: 'lax', // Must match login cookie config
+          sameSite: isProduction ? 'none' : 'lax', // Must match login cookie config
         });
         res.json({ success: true });
       });
