@@ -55,6 +55,31 @@ function getApiBaseUrl(): string {
   return "";
 }
 
+function normalizePath(path: string): string {
+  return path.startsWith("/") ? path : `/${path}`;
+}
+
+export function getApiBaseUrlValue(): string {
+  return getApiBaseUrl();
+}
+
+export function isApiRequestUrl(url: string): boolean {
+  if (!url) return false;
+  if (url.startsWith("/api") || url === "/api") return true;
+
+  const apiBase = getApiBaseUrl();
+  if (!apiBase) return false;
+
+  if (url === apiBase || url.startsWith(`${apiBase}/`)) return true;
+
+  try {
+    const parsed = new URL(url);
+    return parsed.pathname === "/api" || parsed.pathname.startsWith("/api/");
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Get the full API URL for a given path.
  * 
@@ -66,9 +91,7 @@ function getApiBaseUrl(): string {
  */
 export function getApiUrl(path: string): string {
   const baseUrl = getApiBaseUrl();
-  
-  // Ensure path starts with /
-  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const normalizedPath = normalizePath(path);
   
   const fullUrl = baseUrl ? `${baseUrl}${normalizedPath}` : normalizedPath;
   
