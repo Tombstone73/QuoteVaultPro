@@ -61,7 +61,7 @@ import {
   Edit2,
   Trash2,
 } from "lucide-react";
-import { objectsUrl } from "@/lib/apiConfig";
+import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
 import { sanitizeDisplayText } from "@/lib/sanitizeDisplayText";
@@ -120,8 +120,7 @@ function logArtworkDetails(artwork: ProductionOrderArtworkSummary | null, contex
 function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): string | null {
   if (!artwork) return null;
 
-  const normalizeArtworkImageUrl = (value: string): string =>
-    value.startsWith('/objects/') ? objectsUrl(value) : value;
+  const normalizeArtworkImageUrl = (value: string): string | null => resolveObjectsPublicUrl(value);
   
   // 1. Prefer thumbnailUrl (always an image if present)
   if (artwork.thumbnailUrl && artwork.thumbnailUrl.trim()) {
@@ -183,9 +182,10 @@ function ArtworkImage({
   }, [artwork]);
 
   const handleError = () => {
-    if (!hasError && artwork?.fileUrl && src !== artwork.fileUrl) {
+    const fallbackSrc = artwork?.fileUrl ? resolveObjectsPublicUrl(artwork.fileUrl) : null;
+    if (!hasError && fallbackSrc && src !== fallbackSrc) {
       // Fallback to fileUrl if thumbnail fails
-      setSrc(artwork.fileUrl);
+      setSrc(fallbackSrc);
       setHasError(false);
     } else {
       setHasError(true);
@@ -198,6 +198,9 @@ function ArtworkImage({
         <div className="text-center p-2">
           <FileText className="mx-auto h-8 w-8 text-titan-text-muted" />
           <div className="mt-1 text-[10px] text-titan-text-muted">No Preview</div>
+          {import.meta.env.DEV && hasError && src ? (
+            <div className="mt-1 text-[9px] text-amber-400">thumb failed</div>
+          ) : null}
         </div>
       </div>
     );
@@ -263,18 +266,8 @@ function ProductionThumbnail({
       className={className}
       onClick={onClick}
       onError={() => {
-        // DEV-only: log thumbnail load failures
-        if (process.env.NODE_ENV === 'development') {
-          console.error(`[ProductionThumbnail] Failed to load:`, {
-            src,
-            artwork: artwork ? {
-              id: artwork.id,
-              fileName: artwork.fileName,
-              fileUrl: artwork.fileUrl,
-              thumbnailUrl: artwork.thumbnailUrl,
-              side: artwork.side
-            } : null
-          });
+        if (import.meta.env.DEV) {
+          console.info(`[thumb] failed url=${src}`);
         }
         setFailed(true);
       }}

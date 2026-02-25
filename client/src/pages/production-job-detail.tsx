@@ -27,7 +27,7 @@ import {
   ProductionOrderArtworkSummary,
 } from "@/hooks/useProduction";
 import { deriveLaminationDisplay, isRollJob, formatDimensions } from "@/lib/productionHelpers";
-import { objectsUrl } from "@/lib/apiConfig";
+import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { buildReferrer } from "@/lib/nav/smartBack";
 import {
   Play,
@@ -76,8 +76,7 @@ function formatEventLabel(type: string) {
 function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): string | null {
   if (!artwork) return null;
 
-  const normalizeArtworkImageUrl = (value: string): string =>
-    value.startsWith('/objects/') ? objectsUrl(value) : value;
+  const normalizeArtworkImageUrl = (value: string): string | null => resolveObjectsPublicUrl(value);
 
   // 1. Prefer thumbnailUrl (always an image if present)
   if (artwork.thumbnailUrl && artwork.thumbnailUrl.trim()) {
@@ -125,6 +124,9 @@ function ProductionThumbnail({
         <div className="text-center p-2">
           <FileText className="mx-auto h-8 w-8 text-muted-foreground" />
           <div className="mt-1 text-[10px] text-muted-foreground">No Preview</div>
+          {import.meta.env.DEV && failed && src ? (
+            <div className="mt-1 text-[9px] text-amber-500">thumb failed</div>
+          ) : null}
         </div>
       </div>
     );
@@ -136,7 +138,12 @@ function ProductionThumbnail({
       alt={alt}
       className={className}
       onClick={onClick}
-      onError={() => setFailed(true)}
+      onError={(e) => {
+        if (import.meta.env.DEV) {
+          console.info(`[thumb] failed url=${e.currentTarget.src}`);
+        }
+        setFailed(true);
+      }}
       style={onClick ? { cursor: "pointer" } : undefined}
     />
   );
