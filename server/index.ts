@@ -42,7 +42,15 @@ const _extraOrigins = (process.env.CORS_EXTRA_ORIGINS ?? "")
   .map((o) => o.trim())
   .filter(Boolean);
 
-const allowedOrigins = Array.from(new Set([..._staticOrigins, ..._extraOrigins]));
+const _envOrigins = [
+  process.env.FRONTEND_URL,
+  process.env.UI_ORIGIN,
+  process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : undefined,
+]
+  .map((o) => (o ?? "").trim())
+  .filter(Boolean);
+
+const allowedOrigins = Array.from(new Set([..._staticOrigins, ..._extraOrigins, ..._envOrigins]));
 
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
