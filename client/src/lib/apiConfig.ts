@@ -1,22 +1,11 @@
 /**
- * API Configuration
- * 
- * Centralized API URL management for frontend requests.
- * 
- * STRATEGY:
- * - Production (Vercel): Use same-origin /api/* paths which proxy to Railway backend via vercel.json.
- *   This enables session cookies to work correctly (same-origin = no cross-site cookie issues).
- * - Development: Use relative /api/* paths which hit local dev server.
- * 
- * ENVIRONMENT VARIABLES:
- * - VITE_API_BASE_URL: (Optional) Override base URL for direct Railway calls. 
- *   Default behavior is to use same-origin /api/* which proxies through Vercel.
- * 
- * SESSION COOKIE REQUIREMENTS:
- * - Backend must set: cookie.secure=true, cookie.sameSite='none', cookie.httpOnly=true in production
- * - Backend must set: trust proxy = 1 (Railway runs behind proxy)
- * - CORS must allow origin: https://www.printershero.com with credentials: true
- * - Frontend must use: credentials: 'include' in fetch calls
+ * API/Object URL Configuration
+ *
+ * Environment-driven frontend routing:
+ * - `VITE_API_BASE_URL` for `/api/*`
+ * - `VITE_OBJECTS_BASE_URL` for `/objects/*`
+ *
+ * Missing env vars default to empty string, preserving same-origin/local-dev behavior.
  */
 
 /**
@@ -26,53 +15,73 @@
  * @returns Object with isValid flag and error message if invalid
  */
 export function checkApiConfig(): { isValid: boolean; error?: string } {
-  // Always valid - we use same-origin paths in production
+  // Always valid: empty env vars intentionally fall back to same-origin paths.
   return { isValid: true };
 }
 
 /**
- * Get the API base URL.
- * 
- * STRATEGY: Use same-origin /api/* paths which are proxied by Vercel to Railway backend.
- * This ensures session cookies work correctly (no cross-site issues).
- * 
- * VITE_API_BASE_URL can optionally override this for direct Railway calls,
- * but this is NOT recommended as it requires complex cross-site cookie setup.
- * 
- * @returns Base URL for API (empty string = same-origin)
+ * Remove trailing slashes from env-provided base URLs.
  */
-function getApiBaseUrl(): string {
-  // Prefer same-origin /api/* paths (proxied by Vercel in production)
-  // Only use VITE_API_BASE_URL if explicitly set (for testing/debugging)
-  const baseUrl = import.meta.env.VITE_API_BASE_URL || "";
-  
-  if (baseUrl) {
-    console.log("[API CONFIG] Using explicit VITE_API_BASE_URL:", baseUrl);
-    return baseUrl.replace(/\/$/, "");
-  }
-  
-  // Default: empty string = same-origin paths (recommended)
-  return "";
+function normalizeBaseUrl(value: string | undefined): string {
+  const trimmed = (value ?? "").trim();
+  return trimmed.replace(/\/+$/, "");
 }
 
 /**
- * Get the full API URL for a given path.
- * 
- * @param path - API path (e.g., "/api/users" or "/api/auth/login")
- * @returns Full URL for the API endpoint
- * 
- * In production: /api/auth/login (same-origin, proxied by Vercel to Railway)
- * In development: /api/auth/login (same-origin, hits local backend)
+ * Ensure path starts with exactly one leading slash.
+ */
+function normalizePath(path: string): string {
+  return path.startsWith("/") ? path : `/${path}`;
+}
+
+const apiBaseUrl = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL);
+const objectsBaseUrl = normalizeBaseUrl(import.meta.env.VITE_OBJECTS_BASE_URL);
+
+/**
+ * Build a full API URL from a path.
+ */
+export function apiUrl(path: string): string {
+  const normalizedPath = normalizePath(path);
+  return apiBaseUrl ? `${apiBaseUrl}${normalizedPath}` : normalizedPath;
+}
+
+/**
+ * Build a full objects URL from a path.
+ */
+export function objectsUrl(path: string): string {
+  const normalizedPath = normalizePath(path);
+  return objectsBaseUrl ? `${objectsBaseUrl}${normalizedPath}` : normalizedPath;
+}
+
+/**
+ * Backward-compatible alias used across existing code.
  */
 export function getApiUrl(path: string): string {
-  const baseUrl = getApiBaseUrl();
-  
-  // Ensure path starts with /
-  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  
-  const fullUrl = baseUrl ? `${baseUrl}${normalizedPath}` : normalizedPath;
-  
-  return fullUrl;
+  return apiUrl(path);
+}
+
+/**
+ * Infer API environment marker from VITE_API_BASE_URL hostname.
+ */
+export function getApiEnvironmentLabel(): "dev" | "prod" | "local" | "custom" {
+  if (!apiBaseUrl) return "local";
+
+  try {
+    const hostname = new URL(apiBaseUrl).hostname.toLowerCase();
+    if (hostname.includes("dev") || hostname.includes("staging") || hostname.includes("test")) {
+      return "dev";
+    }
+    if (hostname.includes("prod") || hostname.includes("production")) {
+      return "prod";
+    }
+    return "custom";
+  } catch {
+    return "custom";
+  }
+}
+
+export function getApiBaseUrlForDebug(): string {
+  return apiBaseUrl;
 }
 
 /**

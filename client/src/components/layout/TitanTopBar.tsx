@@ -20,6 +20,7 @@ import { GlobalSearchOverlay } from "./GlobalSearchOverlay";
 import { OrgSwitcher } from "@/components/OrgSwitcher";
 import { Badge } from "@/components/ui/badge";
 import { isProd, getEnvLabel } from "@/lib/appEnv";
+import { getApiBaseUrlForDebug, getApiEnvironmentLabel } from "@/lib/apiConfig";
 
 // ============================================================
 // ROUTE TITLE MAPPING
@@ -261,12 +262,21 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
 
         {/* DEV environment badge — hidden in prod */}
         {!isProd() && (
-          <Badge
-            variant="outline"
-            className="text-sm font-bold tracking-widest text-amber-500 border-amber-500 bg-amber-500/20 px-2 py-0.5 rounded-md select-none"
-          >
-            {getEnvLabel()}
-          </Badge>
+          <div className="flex items-center gap-2">
+            <Badge
+              variant="outline"
+              className="text-sm font-bold tracking-widest text-amber-500 border-amber-500 bg-amber-500/20 px-2 py-0.5 rounded-md select-none"
+            >
+              {getEnvLabel()}
+            </Badge>
+            <Badge
+              variant="outline"
+              className="text-[10px] uppercase tracking-wide"
+              title={getApiBaseUrlForDebug() || "same-origin"}
+            >
+              API: {getApiEnvironmentLabel()}
+            </Badge>
+          </div>
         )}
       </div>
 

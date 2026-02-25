@@ -3,6 +3,8 @@
  * PACK P6: Regression locks via pure functions
  */
 
+import { objectsUrl } from "@/lib/apiConfig";
+
 /**
  * Build same-origin view URL for PDF iframe embedding
  */
@@ -14,7 +16,7 @@ export function buildPdfViewUrl(objectPath: string | null | undefined): string |
     return null;
   }
   
-  return `/objects/${encodeURIComponent(objectPath)}`;
+  return objectsUrl(`/objects/${encodeURIComponent(objectPath)}`);
 }
 
 /**
@@ -31,7 +33,7 @@ export function buildPdfDownloadUrl(
     return null;
   }
   
-  return `/objects/${encodeURIComponent(objectPath)}?download=1&filename=${encodeURIComponent(filename)}`;
+  return objectsUrl(`/objects/${encodeURIComponent(objectPath)}?download=1&filename=${encodeURIComponent(filename)}`);
 }
 
 /**
