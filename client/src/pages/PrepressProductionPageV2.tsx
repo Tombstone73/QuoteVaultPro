@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { formatDistanceToNow } from "date-fns";
+import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 
 // API Types
 type QueueItem = {
@@ -1843,6 +1844,7 @@ function FileThumbnail({
 }) {
   const isImage = !!mimeType?.startsWith("image/");
   const isPdf = !!mimeType?.includes("pdf") || filename.toLowerCase().endsWith(".pdf");
+  const [thumbFailed, setThumbFailed] = useState(false);
 
   const { data: resolvedThumbnailUrl } = useQuery({
     queryKey: ["/api/prepress/files", fileId, "thumbnail"],
@@ -1859,13 +1861,36 @@ function FileThumbnail({
     retry: 1,
   });
 
-  const finalThumbnailUrl = thumbnailUrl || resolvedThumbnailUrl || undefined;
+  const normalizeThumbnailUrl = (value?: string | null): string | undefined => {
+    if (!value) return undefined;
+    return resolveObjectsPublicUrl(value) ?? undefined;
+  };
+
+  const finalThumbnailUrl =
+    normalizeThumbnailUrl(thumbnailUrl) ||
+    normalizeThumbnailUrl(resolvedThumbnailUrl) ||
+    undefined;
   const baseClass = compact ? "w-16 h-16" : "w-20 h-20";
+
+  React.useEffect(() => {
+    setThumbFailed(false);
+  }, [finalThumbnailUrl]);
 
   return (
     <div className={cn("relative rounded-lg border border-[#2d3748] overflow-hidden bg-[#111921] flex items-center justify-center group", baseClass)}>
       {finalThumbnailUrl ? (
-        <img src={finalThumbnailUrl} alt={filename} className="absolute inset-0 w-full h-full object-cover" loading="lazy" />
+        <img
+          src={finalThumbnailUrl}
+          alt={filename}
+          className="absolute inset-0 w-full h-full object-cover"
+          loading="lazy"
+          onError={(e) => {
+            setThumbFailed(true);
+            if (import.meta.env.DEV) {
+              console.info(`[thumb] failed url=${e.currentTarget.src}`);
+            }
+          }}
+        />
       ) : isPdf ? (
         <div className="absolute inset-0 bg-slate-700/60 flex items-center justify-center">
           <svg className={cn(compact ? "w-6 h-6" : "w-8 h-8", "text-white")} fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1881,6 +1906,9 @@ function FileThumbnail({
       <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
         <ZoomIn className="w-5 h-5 text-white" />
       </div>
+      {import.meta.env.DEV && thumbFailed ? (
+        <div className="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-0.5 text-[9px] text-amber-300">thumb failed</div>
+      ) : null}
     </div>
   );
 }
