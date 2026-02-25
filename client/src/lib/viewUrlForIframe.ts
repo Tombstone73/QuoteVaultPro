@@ -6,6 +6,8 @@
  * 
  * Returns null if no suitable same-origin URL is available.
  */
+import { objectsUrl } from "@/lib/apiConfig";
+
 export function viewUrlForIframe(attachment: any): string | null {
   if (!attachment || typeof attachment !== 'object') return null;
 
@@ -21,7 +23,7 @@ export function viewUrlForIframe(attachment: any): string | null {
   if (isPdf) {
     // Construct same-origin proxy URL from objectPath
     if (typeof objectPath === 'string' && objectPath.length > 0) {
-      return `/objects/${objectPath}?filename=${encodeURIComponent(fileName)}`;
+      return objectsUrl(`/objects/${objectPath}?filename=${encodeURIComponent(fileName)}`);
     }
 
     // If objectPath is missing, check if originalUrl is already a same-origin path
@@ -60,7 +62,7 @@ export function viewUrlForIframe(attachment: any): string | null {
 
   // Fallback: construct from objectPath
   if (typeof objectPath === 'string' && objectPath.length > 0) {
-    return `/objects/${objectPath}?filename=${encodeURIComponent(fileName)}`;
+    return objectsUrl(`/objects/${objectPath}?filename=${encodeURIComponent(fileName)}`);
   }
 
   return null;

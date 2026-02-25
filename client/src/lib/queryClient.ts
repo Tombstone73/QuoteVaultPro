@@ -1,5 +1,5 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
-import { getApiUrl } from "./apiConfig";
+import { apiUrl } from "./apiConfig";
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
@@ -31,8 +31,8 @@ export async function apiRequest(
     headers.set("Content-Type", "application/json");
   }
 
-  // If url is a path (not absolute), resolve it with getApiUrl
-  const fullUrl = url.startsWith("http") ? url : getApiUrl(url);
+  // If url is a path (not absolute), resolve it with apiUrl
+  const fullUrl = url.startsWith("http") ? url : apiUrl(url);
 
   const res = await fetch(fullUrl, {
     method,
@@ -56,8 +56,8 @@ export const getQueryFn: <T>(options: {
     const path = queryKey.join("/") as string;
     
     // If path is already absolute (starts with http), use as-is
-    // Otherwise, resolve with getApiUrl to handle production Railway backend
-    const url = path.startsWith("http") ? path : getApiUrl(path);
+    // Otherwise, resolve with apiUrl to handle environment-based backend routing
+    const url = path.startsWith("http") ? path : apiUrl(path);
     
     const res = await fetch(url, {
       credentials: "include",

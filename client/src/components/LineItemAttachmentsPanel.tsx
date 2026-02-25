@@ -10,6 +10,7 @@ import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { getThumbSrc } from "@/lib/getThumbSrc";
+import { objectsUrl } from "@/lib/apiConfig";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { setPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
 import { SUPABASE_MAX_UPLOAD_BYTES } from "@/lib/config/storage";
@@ -626,7 +627,7 @@ export function LineItemAttachmentsPanel({
         let downloadUrl: string | null = null;
         
         if (file?.objectPath) {
-          downloadUrl = `/objects/${file.objectPath}?download=1&filename=${encodeURIComponent(fileName)}`;
+          downloadUrl = objectsUrl(`/objects/${file.objectPath}?download=1&filename=${encodeURIComponent(fileName)}`);
         } else {
           const directUrl = file?.originalUrl ?? file?.previewUrl;
           if (typeof directUrl === "string") {
