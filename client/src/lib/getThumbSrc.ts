@@ -65,7 +65,7 @@ function coerceRenderableUrl(value: unknown): string | null {
 
   // Renderable URLs only.
   if (v.startsWith("http://") || v.startsWith("https://")) return v;
-  if (v.startsWith("/objects/")) return v;
+  if (v.startsWith("/objects/")) return objectsUrl(v);
 
   // Everything else (including "thumbs/..." keys) is not safe to render as a URL.
   return null;

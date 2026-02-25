@@ -49,6 +49,7 @@ import {
 } from "@/hooks/useProduction";
 import { format, isPast, parseISO } from "date-fns";
 import { cn } from "@/lib/utils";
+import { objectsUrl } from "@/lib/apiConfig";
 import { ROUTES } from "@/config/routes";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { productionCardTheme, computeUrgency, statusColors } from "../theme/productionCardTheme";
@@ -186,10 +187,13 @@ type GlobalSearchResults = {
  */
 function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): string | null {
   if (!artwork) return null;
+
+  const normalizeArtworkImageUrl = (value: string): string =>
+    value.startsWith('/objects/') ? objectsUrl(value) : value;
   
   // 1. Prefer thumbnailUrl (always an image if present)
   if (artwork.thumbnailUrl && artwork.thumbnailUrl.trim()) {
-    return artwork.thumbnailUrl;
+    return normalizeArtworkImageUrl(artwork.thumbnailUrl);
   }
   
   // 2. Fallback to fileUrl, but ONLY if it's an image file
@@ -199,7 +203,7 @@ function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): str
     const isImageFile = imageExtensions.some((ext) => fileName.endsWith(ext));
     
     if (isImageFile) {
-      return artwork.fileUrl;
+      return normalizeArtworkImageUrl(artwork.fileUrl);
     }
   }
   
