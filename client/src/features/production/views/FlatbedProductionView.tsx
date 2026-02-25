@@ -61,6 +61,7 @@ import {
   Edit2,
   Trash2,
 } from "lucide-react";
+import { objectsUrl } from "@/lib/apiConfig";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
 import { sanitizeDisplayText } from "@/lib/sanitizeDisplayText";
@@ -118,13 +119,16 @@ function logArtworkDetails(artwork: ProductionOrderArtworkSummary | null, contex
  */
 function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): string | null {
   if (!artwork) return null;
+
+  const normalizeArtworkImageUrl = (value: string): string =>
+    value.startsWith('/objects/') ? objectsUrl(value) : value;
   
   // 1. Prefer thumbnailUrl (always an image if present)
   if (artwork.thumbnailUrl && artwork.thumbnailUrl.trim()) {
     if (process.env.NODE_ENV === 'development') {
       console.log(`[DEV:getBestArtworkImage] Using thumbnailUrl: ${artwork.thumbnailUrl}`);
     }
-    return artwork.thumbnailUrl;
+    return normalizeArtworkImageUrl(artwork.thumbnailUrl);
   }
   
   // 2. Fallback to fileUrl, but ONLY if it's an image file
@@ -138,7 +142,7 @@ function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): str
       if (process.env.NODE_ENV === 'development') {
         console.log(`[DEV:getBestArtworkImage] Using fileUrl (image): ${artwork.fileUrl}`);
       }
-      return artwork.fileUrl;
+      return normalizeArtworkImageUrl(artwork.fileUrl);
     } else if (process.env.NODE_ENV === 'development') {
       console.log(`[DEV:getBestArtworkImage] fileUrl exists but not an image file: ${fileName}`);
     }

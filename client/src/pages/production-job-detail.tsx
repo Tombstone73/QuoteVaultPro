@@ -27,6 +27,7 @@ import {
   ProductionOrderArtworkSummary,
 } from "@/hooks/useProduction";
 import { deriveLaminationDisplay, isRollJob, formatDimensions } from "@/lib/productionHelpers";
+import { objectsUrl } from "@/lib/apiConfig";
 import { buildReferrer } from "@/lib/nav/smartBack";
 import {
   Play,
@@ -75,9 +76,12 @@ function formatEventLabel(type: string) {
 function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): string | null {
   if (!artwork) return null;
 
+  const normalizeArtworkImageUrl = (value: string): string =>
+    value.startsWith('/objects/') ? objectsUrl(value) : value;
+
   // 1. Prefer thumbnailUrl (always an image if present)
   if (artwork.thumbnailUrl && artwork.thumbnailUrl.trim()) {
-    return artwork.thumbnailUrl;
+    return normalizeArtworkImageUrl(artwork.thumbnailUrl);
   }
 
   // 2. Fallback to fileUrl, but ONLY if it's an image file
@@ -87,7 +91,7 @@ function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): str
     const isImageFile = imageExtensions.some((ext) => fileName.endsWith(ext));
 
     if (isImageFile) {
-      return artwork.fileUrl;
+      return normalizeArtworkImageUrl(artwork.fileUrl);
     }
   }
 

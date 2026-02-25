@@ -26,6 +26,7 @@ import type { OrderState } from "@/hooks/useOrderState";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAssignOrderStatusPill, useOrderStatusPills } from "@/hooks/useOrderStatusPills";
 import { getThumbSrc } from "@/lib/getThumbSrc";
+import { objectsUrl } from "@/lib/apiConfig";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import BackNavControls from "@/components/BackNavControls";
@@ -553,7 +554,7 @@ export default function Orders() {
                   {loadingAttachments === row.id ? (
                     <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
                   ) : (
-                    <img src={src} alt="Preview" className="w-full h-full object-cover" />
+                    <img src={src.startsWith("/objects/") ? objectsUrl(src) : src} alt="Preview" className="w-full h-full object-cover" />
                   )}
                 </button>
               ))}
