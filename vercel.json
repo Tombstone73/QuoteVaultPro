@@ -1,14 +1,6 @@
 {
   "rewrites": [
     {
-      "source": "/api/:path*",
-      "destination": "https://printershero-production.up.railway.app/api/:path*"
-    },
-    {
-      "source": "/objects/:path*",
-      "destination": "https://printershero-production.up.railway.app/objects/:path*"
-    },
-    {
       "source": "/:path*",
       "destination": "/index.html"
     }
