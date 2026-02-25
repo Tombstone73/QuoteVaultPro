@@ -26,7 +26,6 @@ import {
     orderMaterialUsage,
     inventoryReservations,
     productionJobs,
-    productionEvents,
     productTypes,
     insertOrderSchema,
     updateOrderSchema,
@@ -88,7 +87,6 @@ import {
     upsertOrderWorkflowDraft,
     updateOrderWorkflowStatus,
 } from "../services/orderWorkflowService";
-import { stationResolver } from "../services/stations/stationResolver";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -5265,7 +5263,7 @@ export async function registerOrderRoutes(
             }
 
             await recomputeOrderBillingStatus({ organizationId, orderId });
-            
+            let productionJobHandledByTrigger = false;
             // Trigger: Auto-schedule production when single line item moves into in_production
             if (status === 'in_production' && oldLineItem.status !== 'in_production') {
                 if (process.env.NODE_ENV === 'development') {
@@ -5283,7 +5281,7 @@ export async function registerOrderRoutes(
                         loadRoutingRules: loadProductionLineItemStatusRulesForOrganization,
                         appendEvent,
                     });
-                    
+                    productionJobHandledByTrigger = true;
                     if (process.env.NODE_ENV === 'development') {
                         console.log(`[SingleLineItemStatus:TRIGGER] Auto-scheduled production for item ${lineItemId}:`, scheduleResult.data);
                     }
@@ -5299,7 +5297,7 @@ export async function registerOrderRoutes(
                 warnings.push('Production routing config missing/invalid; no job created.');
             } else if (!rule) {
                 warnings.push('Status saved. No production routing rule found for this status.');
-            } else if (rule.sendToProduction) {
+            } else if (rule.sendToProduction && !productionJobHandledByTrigger) {
                 const stationKey = String(rule.stationKey ?? '').trim();
                 const stepKey = String((rule as any).stepKey ?? '').trim();
 
@@ -5308,96 +5306,20 @@ export async function registerOrderRoutes(
                     warnings.push('Routing rule missing station/step; no job created.');
                 } else {
                     try {
+                        const { routeLineItemToProduction: _routeLineItem } = await import('../services/productionRoutingService');
                         await db.transaction(async (tx) => {
-                            const existing = await tx
-                                .select({
-                                    id: productionJobs.id,
-                                    status: productionJobs.status,
-                                    stationKey: productionJobs.stationKey,
-                                    stepKey: productionJobs.stepKey,
-                                })
-                                .from(productionJobs)
-                                .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.lineItemId, lineItemId)))
-                                .limit(1);
-
-                            let jobId: string;
-                            let created = false;
-                            let appliedStationKey = stationKey;
-                            let appliedStepKey = stepKey;
-                            let ignoredDueToDone = false;
-                            let ignoredDueToExistingRouting = false;
-
-                            if (!existing[0]) {
-                                const resolvedStationId = await stationResolver.resolveStationId({
-                                    organizationId,
-                                    stationKey,
-                                });
-
-                                // New job MUST be line-item backed.
-                                const [inserted] = await tx
-                                    .insert(productionJobs)
-                                    .values({
-                                        organizationId,
-                                        orderId,
-                                        lineItemId,
-                                        stationKey,
-                                        stepKey,
-                                        status: 'queued',
-                                        totalSeconds: 0,
-                                    })
-                                    .returning({ id: productionJobs.id });
-
-                                if (resolvedStationId) {
-                                    await tx.execute(sql`
-                                        update production_jobs
-                                        set station_id = ${resolvedStationId}
-                                        where organization_id = ${organizationId}
-                                          and id = ${inserted.id}
-                                    `);
-                                }
-                                jobId = inserted.id;
-                                created = true;
-                            } else {
-                                jobId = existing[0].id;
-
-                                // No implicit routing changes. Keep existing station/step unless explicit override is used.
-                                appliedStationKey = existing[0].stationKey;
-                                appliedStepKey = existing[0].stepKey;
-                                ignoredDueToDone = existing[0].status === 'done';
-                                ignoredDueToExistingRouting =
-                                    existing[0].status !== 'done' &&
-                                    (existing[0].stationKey !== stationKey || existing[0].stepKey !== stepKey);
-
-                                if (ignoredDueToExistingRouting) {
-                                    console.warn(
-                                        `[OrderLineItemStatus] Routing differs for existing jobId=${jobId}; ignoring requested routing (${stationKey}/${stepKey}) and keeping existing (${existing[0].stationKey}/${existing[0].stepKey}). Use /api/production/jobs/:jobId/routing for explicit override.`,
-                                    );
-                                }
-
-                                if (existing[0].status !== 'done') {
-                                    await tx
-                                        .update(productionJobs)
-                                        .set({
-                                            orderId,
-                                            updatedAt: new Date(),
-                                        })
-                                        .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
-                                }
-                            }
-
-                            await tx.insert(productionEvents).values({
+                            await _routeLineItem({
+                                tx,
                                 organizationId,
-                                productionJobId: jobId,
-                                type: 'intake',
-                                payload: {
+                                orderId,
+                                lineItemId,
+                                stationKey,
+                                stepKey,
+                                trigger: "line_item_status",
+                                extraEventPayload: {
                                     fromStatus: oldLineItem.status,
                                     toStatus: status,
                                     requested: { stationKey, stepKey },
-                                    applied: { stationKey: appliedStationKey, stepKey: appliedStepKey },
-                                    created,
-                                    duplicate: !created,
-                                    ignoredDueToDone,
-                                    ignoredDueToExistingRouting,
                                 },
                             });
                         });
