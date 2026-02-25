@@ -53,6 +53,7 @@ import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBoo
 import { resolveMaterialsOverrideModeFromOrgPreferences } from "@shared/materialsOverrideMode";
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2OverrideConfig";
 import { createLineItemFileRecord } from "./services/lineItemFileRecordService";
+import { stationResolver } from "./services/stations/stationResolver";
 import { getDashboardSummary } from "./services/dashboardSummaryService";
 import { resolveVisibleNodes } from "@shared/optionTreeV2Runtime";
 import { computePlannedMaterialsForLineItem } from "./services/prepressPlannedMaterials";
@@ -9393,6 +9394,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           });
         }
 
+        const resolvedStationId = await stationResolver.resolveStationId({
+          organizationId,
+          stationKey,
+        });
+
         const job = await db.transaction(async (tx) => {
           const existing = await tx
             .select({
@@ -9425,6 +9431,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 stepKey: productionJobs.stepKey,
                 status: productionJobs.status,
               });
+
+            if (resolvedStationId) {
+              await tx.execute(sql`
+                update production_jobs
+                set station_id = ${resolvedStationId}
+                where organization_id = ${organizationId}
+                  and id = ${inserted.id}
+              `);
+            }
 
             await appendEvent({
               tx,
@@ -9636,6 +9651,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const stepKeyRaw = req.query.stepKey as string | undefined;
 
         const stationCandidate = stationRaw ?? viewRaw;
+        const resolvedStationId = stationCandidate
+          ? await stationResolver.resolveStationId({ organizationId, stationKey: stationCandidate })
+          : null;
 
         // Count by org only
         const [countByOrg] = await db
@@ -9651,7 +9669,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .from(productionJobs)
             .where(and(
               eq(productionJobs.organizationId, organizationId),
-              eq(productionJobs.stationKey, stationCandidate)
+              resolvedStationId
+                ? sql`production_jobs.station_id = ${resolvedStationId}`
+                : eq(productionJobs.stationKey, stationCandidate)
             ));
           countByOrgStation = result?.count || 0;
         }
@@ -9664,7 +9684,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .from(productionJobs)
             .where(and(
               eq(productionJobs.organizationId, organizationId),
-              eq(productionJobs.stationKey, stationCandidate),
+              resolvedStationId
+                ? sql`production_jobs.station_id = ${resolvedStationId}`
+                : eq(productionJobs.stationKey, stationCandidate),
               eq(productionJobs.status, statusRaw)
             ));
           countByOrgStationStatus = result?.count || 0;
@@ -9672,7 +9694,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         // Fetch first 10 rows matching filters
         const whereConditions = [eq(productionJobs.organizationId, organizationId)];
-        if (stationCandidate) whereConditions.push(eq(productionJobs.stationKey, stationCandidate));
+        if (stationCandidate) {
+          whereConditions.push(
+            resolvedStationId
+              ? sql`production_jobs.station_id = ${resolvedStationId}`
+              : eq(productionJobs.stationKey, stationCandidate)
+          );
+        }
         if (statusRaw) whereConditions.push(eq(productionJobs.status, statusRaw));
         if (stepKeyRaw) whereConditions.push(eq(productionJobs.stepKey, stepKeyRaw));
 
@@ -9744,6 +9772,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const status = statusParsed?.success ? statusParsed.data : undefined;
       const view = viewParsed?.success ? viewParsed.data : undefined;
       const station = stationParsed?.data; // May be undefined for "all stations" query
+      const resolvedStationId = station
+        ? await stationResolver.resolveStationId({ organizationId, stationKey: station })
+        : null;
       const search = typeof searchRaw === "string" ? searchRaw.trim() : "";
 
       const config = await getProductionConfigForOrganization(organizationId);
@@ -9763,7 +9794,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // orderId filtering for sibling production jobs on same order
       const whereClause = and(
         eq(productionJobs.organizationId, organizationId),
-        station ? eq(productionJobs.stationKey, station) : undefined,
+        station
+          ? (resolvedStationId
+              ? sql`production_jobs.station_id = ${resolvedStationId}`
+              : eq(productionJobs.stationKey, station))
+          : undefined,
         status ? eq(productionJobs.status, status) : undefined,
         orderIdRaw ? eq(productionJobs.orderId, orderIdRaw) : undefined,
       );
@@ -12283,18 +12318,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     if (existingJob?.id) return existingJob.id;
 
+    const stationKey = "flatbed";
+    const resolvedStationId = await stationResolver.resolveStationId({
+      organizationId: args.organizationId,
+      stationKey,
+    });
+
     const inserted = await tx
       .insert(productionJobs)
       .values({
         organizationId: args.organizationId,
         orderId: args.orderId,
         lineItemId: args.lineItemId,
-        stationKey: "flatbed",
+        stationKey,
         stepKey: "prepress",
         status: "queued",
         totalSeconds: 0,
       })
       .returning({ id: productionJobs.id });
+
+    if (resolvedStationId && inserted[0]?.id) {
+      await tx.execute(sql`
+        update production_jobs
+        set station_id = ${resolvedStationId}
+        where organization_id = ${args.organizationId}
+          and id = ${inserted[0].id}
+      `);
+    }
 
     return inserted[0]?.id as string;
   };

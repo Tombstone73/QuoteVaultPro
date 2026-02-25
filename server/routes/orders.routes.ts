@@ -88,6 +88,7 @@ import {
     upsertOrderWorkflowDraft,
     updateOrderWorkflowStatus,
 } from "../services/orderWorkflowService";
+import { stationResolver } from "../services/stations/stationResolver";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -5327,6 +5328,11 @@ export async function registerOrderRoutes(
                             let ignoredDueToExistingRouting = false;
 
                             if (!existing[0]) {
+                                const resolvedStationId = await stationResolver.resolveStationId({
+                                    organizationId,
+                                    stationKey,
+                                });
+
                                 // New job MUST be line-item backed.
                                 const [inserted] = await tx
                                     .insert(productionJobs)
@@ -5340,6 +5346,15 @@ export async function registerOrderRoutes(
                                         totalSeconds: 0,
                                     })
                                     .returning({ id: productionJobs.id });
+
+                                if (resolvedStationId) {
+                                    await tx.execute(sql`
+                                        update production_jobs
+                                        set station_id = ${resolvedStationId}
+                                        where organization_id = ${organizationId}
+                                          and id = ${inserted.id}
+                                    `);
+                                }
                                 jobId = inserted.id;
                                 created = true;
                             } else {
