@@ -56,6 +56,25 @@ import type { DownloadIntent } from "@shared/schema";
 
 let hasLoggedPdfObjectsResponse = false;
 
+function isThumbDiagnosticsPath(keyOrPath: string | null | undefined): boolean {
+  const raw = (keyOrPath ?? "").trim().toLowerCase();
+  if (!raw) return false;
+  const normalized = raw.startsWith("/") ? raw.slice(1) : raw;
+  return (
+    normalized.startsWith("thumbs/") ||
+    normalized.startsWith("thumbnails/") ||
+    normalized.startsWith("objects/thumbs/") ||
+    normalized.startsWith("objects/thumbnails/")
+  );
+}
+
+function logThumb4xx(req: any, status: number, reason: "not_found" | "unauthorized" | "error", keyOrPath: string): void {
+  if (!isThumbDiagnosticsPath(keyOrPath)) return;
+  const host = typeof req.get === "function" ? req.get("host") : req.headers?.host;
+  const cleanPath = keyOrPath.replace(/\?.*$/, "").replace(/^\/+/, "");
+  console.warn(`[objects:thumb4xx] method=${req.method} path=/${cleanPath} status=${status} host=${host || "unknown"} reason=${reason}`);
+}
+
 function isNotFoundError(err: any): boolean {
   if (!err) return false;
   const code = (err as any)?.code;
@@ -237,6 +256,14 @@ export async function registerAttachmentRoutes(
   }
 ) {
   const { isAuthenticated, isAdmin } = middleware;
+
+  app.get("/objects/health", (req: any, res) => {
+    return res.json({
+      ok: true,
+      host: req.get("host") ?? null,
+      time: new Date().toISOString(),
+    });
+  });
 
   // ══════════════════════════════════════════════════════════════════════════
   // OBJECT STORAGE PROXY ROUTES
@@ -420,6 +447,7 @@ export async function registerAttachmentRoutes(
     }
 
     if (!requestedKeyRaw) {
+      logThumb4xx(req, 400, "error", objectPath);
       return res.status(400).json({ error: "Invalid object path" });
     }
 
@@ -428,6 +456,7 @@ export async function registerAttachmentRoutes(
     // - Otherwise allow (mirrors existing behavior while still avoiding obvious cross-tenant reads).
     const orgInKey = extractNormalizedOrgIdFromKey(requestedKeyRaw);
     if (orgInKey && orgInKey !== organizationId) {
+      logThumb4xx(req, 403, "unauthorized", requestedKeyRaw);
       return res.status(403).json({ error: "Access denied" });
     }
 
@@ -673,6 +702,7 @@ export async function registerAttachmentRoutes(
         if (isDev) {
           console.log(`[objects] 404 - File not found in any storage. Object path: "${requestedKey}"`);
         }
+        logThumb4xx(req, 404, "not_found", requestedKey);
         return res.status(404).json({
           error: "File not found",
           message: "File not available in Supabase or local storage, and GCS not configured",
@@ -698,6 +728,7 @@ export async function registerAttachmentRoutes(
             if (isDev) {
               console.log(`[objects] 403 - Access denied. Object path: "${keyToTry}"`);
             }
+            logThumb4xx(req, 403, "unauthorized", keyToTry);
             return res.status(403).json({ error: "Access denied", path: req.path, objectPath: keyToTry });
           }
 
@@ -729,6 +760,7 @@ export async function registerAttachmentRoutes(
         if (isDev) {
           console.log(`[objects] 404 - Object not found. Object path: "${objectPath}", Error:`, error.message);
         }
+        logThumb4xx(req, 404, "not_found", requestedKeyRaw || objectPath);
         return res.status(404).json({ error: "Object not found", path: req.path, objectPath });
       }
 
