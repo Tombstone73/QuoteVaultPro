@@ -15,7 +15,6 @@
 import { db } from "../db";
 import { and, eq, sql } from "drizzle-orm";
 import { productionJobs } from "@shared/schema";
-import { stationResolver } from "./stations/stationResolver";
 import { appendEvent } from "../productionHelpers";
 
 export type RouteLineItemTrigger = "scheduler" | "intake" | "line_item_status" | "prepress";
@@ -66,8 +65,26 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
 
   const runner = passedTx ?? db;
 
-  // A) Resolve station_id (fail-soft — never throws)
-  const stationId = await stationResolver.resolveStationId({ organizationId, stationKey });
+  // Resolve station_id from station_key for uniqueness alignment.
+  let stationId: string | null = null;
+  if (stationKey) {
+    try {
+      const stationResult = await runner.execute(sql`
+        select id
+        from stations
+        where organization_id = ${organizationId}
+          and station_key = ${stationKey}
+        limit 1
+      `);
+      const stationRow = stationResult.rows[0] as { id?: string } | undefined;
+      stationId = stationRow?.id ? String(stationRow.id) : null;
+    } catch (error) {
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("[productionRoutingService] station_id resolution failed; continuing with station_key only", error);
+      }
+      stationId = null;
+    }
+  }
 
   // B) Station-aware dedup matching the DB unique index:
   //    UNIQUE (organization_id, line_item_id, station_id) WHERE station_id IS NOT NULL
@@ -127,33 +144,58 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
   }
 
   // C) Insert new production job
-  const [inserted] = await runner
-    .insert(productionJobs)
-    .values({
-      organizationId,
-      orderId,
-      lineItemId,
-      stationKey,
-      stepKey,
-      status: "queued",
-      totalSeconds: 0,
-    })
-    .returning({
-      id: productionJobs.id,
-      stationKey: productionJobs.stationKey,
-      stepKey: productionJobs.stepKey,
-      status: productionJobs.status,
-    });
+  const insertedResult = stationId
+    ? await runner.execute(sql`
+        insert into production_jobs (
+          organization_id,
+          order_id,
+          line_item_id,
+          station_id,
+          station_key,
+          step_key,
+          status,
+          total_seconds
+        )
+        values (
+          ${organizationId},
+          ${orderId},
+          ${lineItemId},
+          ${stationId},
+          ${stationKey},
+          ${stepKey},
+          ${"queued"},
+          ${0}
+        )
+        returning id, station_key as "stationKey", step_key as "stepKey", status
+      `)
+    : await runner.execute(sql`
+        insert into production_jobs (
+          organization_id,
+          order_id,
+          line_item_id,
+          station_key,
+          step_key,
+          status,
+          total_seconds
+        )
+        values (
+          ${organizationId},
+          ${orderId},
+          ${lineItemId},
+          ${stationKey},
+          ${stepKey},
+          ${"queued"},
+          ${0}
+        )
+        returning id, station_key as "stationKey", step_key as "stepKey", status
+      `);
 
-  // Set station_id via raw SQL (column exists in DB but not in Drizzle schema typings)
-  if (stationId) {
-    await runner.execute(sql`
-      update production_jobs
-      set station_id = ${stationId}
-      where organization_id = ${organizationId}
-        and id = ${inserted.id}
-    `);
-  }
+  const inserted = insertedResult.rows[0] as {
+    id: string;
+    stationKey: string;
+    stepKey: string;
+    status: string;
+  };
 
   // D) Audit event for new job
   try {
