@@ -64,7 +64,7 @@ export function getSession() {
     httpOnly: true,
     secure: isProduction, // HTTPS only in production
     maxAge: sessionTtl,
-    sameSite: (isProduction ? 'none' : 'lax') as const,
+    sameSite: (isProduction ? 'none' : 'lax') as 'none' | 'lax',
   };
   
   // Diagnostic logging (non-sensitive)
