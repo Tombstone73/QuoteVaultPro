@@ -18,6 +18,8 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ROUTES } from "@/config/routes";
 import { GlobalSearchOverlay } from "./GlobalSearchOverlay";
 import { OrgSwitcher } from "@/components/OrgSwitcher";
+import { Badge } from "@/components/ui/badge";
+import { isProd, getEnvLabel } from "@/lib/appEnv";
 
 // ============================================================
 // ROUTE TITLE MAPPING
@@ -116,6 +118,19 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
 
   const pageTitle = getPageTitle(location.pathname);
   const breadcrumbs = getBreadcrumbs(location.pathname);
+
+  // Warn once on mount in non-prod environments
+  React.useEffect(() => {
+    if (!isProd()) {
+      console.warn('[TitanOS] Running DEV environment build');
+    }
+  }, []);
+
+  // Prefix document.title with [DEV] when not in prod
+  React.useEffect(() => {
+    const label = getEnvLabel();
+    document.title = label ? `[${label}] ${pageTitle}` : pageTitle;
+  }, [pageTitle]);
 
   const handleLogout = () => {
     logout();
@@ -243,6 +258,16 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
 
         {/* Mobile title */}
         <span className="font-semibold text-foreground md:hidden">{pageTitle}</span>
+
+        {/* DEV environment badge — hidden in prod */}
+        {!isProd() && (
+          <Badge
+            variant="outline"
+            className="text-sm font-bold tracking-widest text-amber-500 border-amber-500 bg-amber-500/20 px-2 py-0.5 rounded-md select-none"
+          >
+            {getEnvLabel()}
+          </Badge>
+        )}
       </div>
 
       {/* Center - Search (hidden on mobile) */}

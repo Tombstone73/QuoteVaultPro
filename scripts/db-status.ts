@@ -2,14 +2,19 @@ import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 
+const MIGRATIONS_DIR = path.join("server", "db", "migrations_v2");
+const MIGRATIONS_LEDGER = "public.__drizzle_migrations_v2";
+const BASELINE_TAG = "0000_baseline";
+const STATIONS_TAG = "0001_stations";
+
 type Journal = {
   entries?: Array<{ idx: number; tag: string; when?: number }>;
 };
 
 type AppliedRow = {
-  id?: string;
+  id?: number;
   hash?: string;
-  created_at?: string;
+  created_at?: number;
 };
 
 function requireDatabaseUrl(): string {
@@ -19,16 +24,6 @@ function requireDatabaseUrl(): string {
     process.exit(1);
   }
   return url;
-}
-
-function parseNumericMigrationId(id: string | undefined): number | null {
-  if (!id) return null;
-  const s = String(id);
-  // Supports "27", "0026_stripe_payments_v1", "0018_mvp_invoicing_billing_ready"
-  const m = s.match(/^(\d+)/);
-  if (!m) return null;
-  const n = Number(m[1]);
-  return Number.isFinite(n) ? n : null;
 }
 
 function redactDatabaseUrl(url: string) {
@@ -45,7 +40,7 @@ function redactDatabaseUrl(url: string) {
 }
 
 function readLocalMigrationTags(repoRoot: string) {
-  const migrationsDir = path.join(repoRoot, "server", "db", "migrations");
+  const migrationsDir = path.join(repoRoot, MIGRATIONS_DIR);
   const sqlFiles = fs
     .readdirSync(migrationsDir)
     .filter((f) => f.endsWith(".sql"))
@@ -74,15 +69,28 @@ async function queryAppliedMigrations() {
   const { sql } = await import("drizzle-orm");
   const { db } = await import("../server/db");
 
-  // Drizzle-kit creates __drizzle_migrations. Column names vary by version; we only need ids.
-  // Prefer selecting all columns and printing what exists.
-  const result = await db.execute(sql`
-    SELECT *
-    FROM __drizzle_migrations
-    ORDER BY created_at ASC
-  `);
+  const existsResult = await db.execute(sql.raw(`
+    SELECT to_regclass('${MIGRATIONS_LEDGER}') AS ledger
+  `));
 
-  return result.rows as AppliedRow[];
+  const ledgerExists = Boolean((existsResult.rows as Array<{ ledger?: string | null }>)[0]?.ledger);
+  if (!ledgerExists) {
+    return {
+      ledgerExists,
+      rows: [] as AppliedRow[],
+    };
+  }
+
+  const result = await db.execute(sql.raw(`
+    SELECT id, hash, created_at
+    FROM ${MIGRATIONS_LEDGER}
+    ORDER BY id ASC
+  `));
+
+  return {
+    ledgerExists,
+    rows: result.rows as AppliedRow[],
+  };
 }
 
 async function main() {
@@ -115,30 +123,38 @@ async function main() {
   const databaseUrl = requireDatabaseUrl();
   console.log("[db:status] DATABASE_URL:", redactDatabaseUrl(databaseUrl));
 
+  let ledgerExists = false;
   let applied: AppliedRow[] = [];
   try {
-    applied = await queryAppliedMigrations();
+    const queried = await queryAppliedMigrations();
+    ledgerExists = queried.ledgerExists;
+    applied = queried.rows;
   } catch (e: any) {
-    console.error("[db:status] Failed to query __drizzle_migrations:", e?.message || e);
+    console.error(`[db:status] Failed to query ${MIGRATIONS_LEDGER}:`, e?.message || e);
     process.exit(1);
   }
 
-  const appliedCount = applied.length;
-  let highestId: number | null = null;
-  for (const row of applied) {
-    const n = parseNumericMigrationId(row.id);
-    if (n == null) continue;
-    highestId = highestId == null ? n : Math.max(highestId, n);
+  if (!ledgerExists) {
+    console.log(`[db:status] Ledger table missing: ${MIGRATIONS_LEDGER}`);
+    process.exit(0);
   }
 
-  console.log(`[db:status] Applied migrations (DB __drizzle_migrations): ${appliedCount}`);
-  console.log(`[db:status] Highest applied id (numeric): ${highestId ?? 'unknown'}`);
+  const appliedCount = applied.length;
+  const baselineRows = applied.filter((row) => row.hash === BASELINE_TAG);
+  const stationsRows = applied.filter((row) => row.hash === STATIONS_TAG);
+  const hasBaselineId1 = baselineRows.some((row) => row.id === 1);
 
-  // Print a compact list. (The id/tag convention is: <tag> from the journal.)
+  console.log(`[db:status] Applied migrations (DB ${MIGRATIONS_LEDGER}): ${appliedCount}`);
+  console.log(`[db:status] Baseline present (${BASELINE_TAG}): ${baselineRows.length > 0 ? 'yes' : 'no'}`);
+  console.log(`[db:status] Baseline id=1: ${hasBaselineId1 ? 'yes' : 'no'}`);
+  console.log(`[db:status] Stations present (${STATIONS_TAG}): ${stationsRows.length > 0 ? 'yes' : 'no'}`);
+
+  // Print a compact list.
   for (const row of applied) {
     const id = row.id ?? "<no id>";
+    const hash = row.hash ?? "<no hash>";
     const createdAt = row.created_at ?? "";
-    console.log(`  - ${id}${createdAt ? ` (${createdAt})` : ""}`);
+    console.log(`  - id=${id} hash=${hash}${createdAt ? ` created_at=${createdAt}` : ""}`);
   }
 }
 
