@@ -3,6 +3,9 @@ import fs from 'fs';
 import path from 'path';
 import { spawnSync } from 'child_process';
 
+const MIGRATIONS_DIR = path.join('server', 'db', 'migrations_v2');
+const MIGRATIONS_LEDGER = 'public.__drizzle_migrations_v2';
+
 type AppliedRow = {
   id?: string;
   created_at?: string;
@@ -33,7 +36,7 @@ function redactDatabaseUrl(url: string) {
 function main() {
   const repoRoot = process.cwd();
   const configPath = path.join(repoRoot, 'drizzle.config.ts');
-  const migrationsDir = path.join(repoRoot, 'server', 'db', 'migrations');
+  const migrationsDir = path.join(repoRoot, MIGRATIONS_DIR);
   const journalPath = path.join(migrationsDir, 'meta', '_journal.json');
 
   console.log('[db:migrate:verbose] Repo:', repoRoot);
@@ -90,11 +93,11 @@ function main() {
       const { sql } = await import('drizzle-orm');
       const { db } = await import('../server/db');
 
-      const result = await db.execute(sql`
+      const result = await db.execute(sql.raw(`
         SELECT *
-        FROM __drizzle_migrations
+        FROM ${MIGRATIONS_LEDGER}
         ORDER BY created_at ASC
-      `);
+      `));
 
       const applied = result.rows as AppliedRow[];
       let highestId: number | null = null;
@@ -104,7 +107,7 @@ function main() {
         highestId = highestId == null ? n : Math.max(highestId, n);
       }
 
-      console.log(`[db:migrate:verbose] Applied migrations (DB __drizzle_migrations): ${applied.length}`);
+      console.log(`[db:migrate:verbose] Applied migrations (DB ${MIGRATIONS_LEDGER}): ${applied.length}`);
       console.log(`[db:migrate:verbose] Highest applied id (numeric): ${highestId ?? 'unknown'}`);
 
       const forceDrizzleMigrate = (process.env.FORCE_DRIZZLE_MIGRATE || '').trim() === '1';
@@ -119,7 +122,7 @@ function main() {
         process.exit(0);
       }
     } catch (e: any) {
-      console.warn('[db:migrate:verbose] Failed to query __drizzle_migrations:', e?.message || e);
+      console.warn(`[db:migrate:verbose] Failed to query ${MIGRATIONS_LEDGER}:`, e?.message || e);
       // Continue to attempt drizzle-kit migrate; it will surface its own errors.
     }
 

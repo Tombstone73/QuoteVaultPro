@@ -1,0 +1,3 @@
+-- 0000_baseline (v2)
+-- Baseline marker migration for production-aligned lineage.
+-- Intentionally no schema changes.
