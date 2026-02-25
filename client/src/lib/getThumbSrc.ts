@@ -10,6 +10,8 @@
  * without triggering 404 spam).
  */
 
+import { objectsUrl } from "@/lib/apiConfig";
+
 export function getThumbSrc(obj: unknown): string | null {
   if (!obj || typeof obj !== "object") return null;
 
@@ -53,7 +55,7 @@ export function objectsUrlFromKey(key: unknown): string | null {
   // Reject anything that looks like a full path (avoid accidental "/thumbs/..." src)
   if (trimmed.startsWith("/")) return null;
 
-  return `/objects/${trimmed}`;
+  return objectsUrl(`/objects/${trimmed}`);
 }
 
 function coerceRenderableUrl(value: unknown): string | null {

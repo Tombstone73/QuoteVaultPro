@@ -35,6 +35,7 @@ import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTre
 import { isPbv2Product, getPbv2Tree } from "@/lib/pbv2Utils";
 import { cn, isValidHttpUrl } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
+import { objectsUrl } from "@/lib/apiConfig";
 import { getAttachmentDisplayName, getPdfPageCount, isPdfAttachment } from "@/lib/attachments";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
@@ -1878,7 +1879,7 @@ export function OrderLineItemsSection({
             let iframeViewUrl: string | null = null;
             
             if (isPdf && typeof objectPath === "string" && objectPath.length) {
-              iframeViewUrl = "/objects/" + objectPath + "?filename=" + encodeURIComponent(fileName);
+              iframeViewUrl = objectsUrl(`/objects/${objectPath}?filename=${encodeURIComponent(fileName)}`);
             } else if (isPdf && previewFile.originalUrl && previewFile.originalUrl.startsWith('/objects/')) {
               iframeViewUrl = previewFile.originalUrl;
             }
@@ -1890,7 +1891,7 @@ export function OrderLineItemsSection({
             // Construct download URL
             let downloadUrl: string | null = null;
             if (typeof objectPath === "string" && objectPath.length) {
-              downloadUrl = "/objects/" + objectPath + "?download=1&filename=" + encodeURIComponent(fileName);
+              downloadUrl = objectsUrl(`/objects/${objectPath}?download=1&filename=${encodeURIComponent(fileName)}`);
             } else if (previewFile.originalUrl) {
               downloadUrl = previewFile.originalUrl;
             }
