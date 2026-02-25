@@ -28,15 +28,13 @@ export function getSession() {
     tableName: "sessions",
   });
   
-  // Same-origin cookie config for production (Vercel proxy makes requests same-origin)
-  // - secure: true (HTTPS required in production)
-  // - sameSite: 'lax' (safe for same-origin, prevents CSRF)
-  // - httpOnly: true (security: JS can't access cookie)
+  // Session cookie config for production cross-origin auth.
+  // Railway API + Vercel UI requires SameSite=None and Secure=true.
   const cookieConfig = {
     httpOnly: true,
     secure: true,
     maxAge: sessionTtl,
-    sameSite: 'lax' as const, // Safe for same-origin requests via Vercel proxy
+    sameSite: 'none' as const,
   };
   
   console.log('[Session] Replit auth cookie config:', {
@@ -50,6 +48,7 @@ export function getSession() {
     store: sessionStore,
     resave: false,
     saveUninitialized: false,
+    proxy: true,
     cookie: cookieConfig,
   });
 }

@@ -2,7 +2,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import "./index.css";
-import { apiUrl, checkApiConfig, objectsUrl } from "./lib/apiConfig";
+import { apiUrl, objectsUrl, checkApiConfig } from "./lib/apiConfig";
 import { ConfigError } from "./components/ConfigError";
 
 function resolveFetchUrl(url: string): string {
@@ -17,26 +17,33 @@ function resolveFetchUrl(url: string): string {
 
 function installUrlAwareFetch(): void {
   if (typeof window === "undefined") return;
-  const globalWindow = window as Window & { __titanUrlAwareFetchInstalled?: boolean };
+
+  const globalWindow = window as Window & {
+    __titanUrlAwareFetchInstalled?: boolean;
+  };
+
   if (globalWindow.__titanUrlAwareFetchInstalled) return;
 
   const originalFetch = window.fetch.bind(window);
 
   window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+    let finalInput: RequestInfo | URL = input;
+
     if (typeof input === "string") {
-      return originalFetch(resolveFetchUrl(input), init);
-    }
-    if (input instanceof URL) {
-      return originalFetch(resolveFetchUrl(input.toString()), init);
-    }
-    if (input instanceof Request) {
+      finalInput = resolveFetchUrl(input);
+    } else if (input instanceof URL) {
+      finalInput = resolveFetchUrl(input.toString());
+    } else if (input instanceof Request) {
       const rewrittenUrl = resolveFetchUrl(input.url);
       if (rewrittenUrl !== input.url) {
-        const rewrittenRequest = new Request(rewrittenUrl, input);
-        return originalFetch(rewrittenRequest, init);
+        finalInput = new Request(rewrittenUrl, input);
       }
     }
-    return originalFetch(input, init);
+
+    return originalFetch(finalInput, {
+      ...init,
+      credentials: init?.credentials ?? "include",
+    });
   };
 
   globalWindow.__titanUrlAwareFetchInstalled = true;
@@ -47,16 +54,13 @@ installUrlAwareFetch();
 const container = document.getElementById("root");
 
 if (container) {
-  // Check API configuration before rendering app
   const configCheck = checkApiConfig();
-  
+
   if (!configCheck.isValid) {
-    // Show configuration error instead of crashing
     createRoot(container).render(
       <ConfigError error={configCheck.error || "Unknown configuration error"} />
     );
   } else {
-    // Config is valid, render app normally
     createRoot(container).render(
       <BrowserRouter>
         <App />
