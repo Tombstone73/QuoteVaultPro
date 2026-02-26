@@ -9299,6 +9299,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/production/stations", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const result = await db.execute(sql`
+        select
+          key as "key",
+          name as "name",
+          sort as "sort"
+        from stations
+        where organization_id = ${organizationId}
+          and active = true
+        order by sort asc, name asc
+      `);
+
+      const data = (result.rows ?? []).map((row: any) => ({
+        key: String(row.key ?? "").trim(),
+        name: String(row.name ?? row.key ?? "").trim(),
+        sort: Number(row.sort ?? 0),
+      })).filter((row: any) => row.key.length > 0);
+
+      res.json({ success: true, data });
+    } catch (error) {
+      console.error("Error fetching production stations:", error);
+      res.status(500).json({ error: "Failed to fetch production stations" });
+    }
+  });
+
   // 10) Settings: Line item status routing rules
   app.get(
     "/api/production/settings/line-item-statuses",

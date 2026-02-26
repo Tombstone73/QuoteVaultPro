@@ -28,6 +28,7 @@ import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   useProductionLineItemStatusRules,
+  useProductionStations,
   useSaveProductionLineItemStatusRules,
   type ProductionLineItemStatusRule,
 } from "@/hooks/useProductionSettings";
@@ -285,6 +286,12 @@ export function AccountingSettings() {
 
 export function ProductionSettings() {
   const { data, isLoading, isError, error } = useProductionLineItemStatusRules();
+  const {
+    data: stations,
+    isLoading: isStationsLoading,
+    isError: isStationsError,
+    error: stationsError,
+  } = useProductionStations();
   const save = useSaveProductionLineItemStatusRules();
   const {
     preferences,
@@ -345,6 +352,17 @@ export function ProductionSettings() {
     }
     return { isValid: errors.length === 0, errors };
   }, [draft]);
+
+  const stationOptions = React.useMemo(() => {
+    const list = Array.isArray(stations) ? stations : [];
+    return list
+      .map((s) => ({ key: String(s.key ?? "").trim(), name: String(s.name ?? s.key ?? "").trim() }))
+      .filter((s) => s.key.length > 0);
+  }, [stations]);
+
+  const stationLoadError = isStationsError
+    ? ((stationsError as any)?.message || "Unable to load stations")
+    : null;
 
   const setRule = (idx: number, patch: Partial<ProductionLineItemStatusRule>) => {
     setDraft((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
@@ -498,6 +516,10 @@ export function ProductionSettings() {
             </div>
           ) : null}
 
+          {stationLoadError ? (
+            <div className="text-xs text-red-600">Unable to load stations: {stationLoadError}</div>
+          ) : null}
+
           <div className="rounded-md border border-titan-border-subtle overflow-hidden">
             <Table>
               <TableHeader>
@@ -558,31 +580,27 @@ export function ProductionSettings() {
                         <Select
                           value={(r.stationKey ?? "").trim() || "flatbed"}
                           onValueChange={(v) => setRule(idx, { stationKey: v })}
-                          disabled={!r.sendToProduction}
+                          disabled={!r.sendToProduction || isStationsLoading || !!stationLoadError}
                         >
                           <SelectTrigger>
                             <SelectValue placeholder="Station" />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="flatbed">Flatbed</SelectItem>
+                            {stationOptions.map((station) => (
+                              <SelectItem key={station.key} value={station.key}>
+                                {station.name}
+                              </SelectItem>
+                            ))}
                           </SelectContent>
                         </Select>
                       </TableCell>
                       <TableCell>
-                        <Select
-                          value={String((r.stepKey ?? r.defaultStepKey ?? "")).trim() || "prepress"}
-                          onValueChange={(v) => setRule(idx, { stepKey: v })}
+                        <Input
+                          value={String((r.stepKey ?? r.defaultStepKey ?? "")).trim() || "queued"}
+                          onChange={(e) => setRule(idx, { stepKey: e.target.value })}
                           disabled={!r.sendToProduction}
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Step" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="prepress">Prepress</SelectItem>
-                            <SelectItem value="print">Print</SelectItem>
-                            <SelectItem value="finish">Finish</SelectItem>
-                          </SelectContent>
-                        </Select>
+                          placeholder="queued"
+                        />
                       </TableCell>
                       <TableCell>
                         <Input

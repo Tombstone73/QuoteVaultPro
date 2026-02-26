@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useProductTypes, useCreateProductType, useUpdateProductType, useDeleteProductType } from "@/hooks/useProductTypes";
+import { useProductionStations } from "@/hooks/useProductionSettings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -12,19 +13,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Loader2, Plus, Pencil, Trash2, GripVertical } from "lucide-react";
 import { TitanCard } from "@/components/ui/TitanCard";
 
-const STATION_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: "prepress", label: "Prepress" },
-  { value: "flatbed", label: "Flatbed" },
-  { value: "roll", label: "Roll" },
-  { value: "cnc", label: "CNC" },
-  { value: "lamination", label: "Lamination" },
-  { value: "fabrication", label: "Fabrication" },
-  { value: "design", label: "Design" },
-  { value: "finishing", label: "Finishing" },
-];
-
 export default function ProductTypesSettings() {
   const { data: productTypes, isLoading } = useProductTypes();
+  const {
+    data: stations,
+    isLoading: isStationsLoading,
+    isError: isStationsError,
+    error: stationsError,
+  } = useProductionStations();
   const createMutation = useCreateProductType();
   const updateMutation = useUpdateProductType();
   const deleteMutation = useDeleteProductType();
@@ -49,6 +45,14 @@ export default function ProductTypesSettings() {
     requiresPrepressOverride: null,
   });
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+
+  const stationOptions = (stations ?? [])
+    .map((station) => ({ value: String(station.key ?? "").trim(), label: String(station.name ?? station.key ?? "").trim() }))
+    .filter((station) => station.value.length > 0);
+
+  const stationLoadError = isStationsError
+    ? ((stationsError as any)?.message || "Unable to load stations")
+    : null;
 
   const handleCreate = async () => {
     await createMutation.mutateAsync({
@@ -196,19 +200,23 @@ export default function ProductTypesSettings() {
                     <Select
                       value={formData.defaultStationKey || "__none__"}
                       onValueChange={(v) => setFormData({ ...formData, defaultStationKey: v === "__none__" ? null : v })}
+                      disabled={isStationsLoading || !!stationLoadError}
                     >
                       <SelectTrigger>
                         <SelectValue placeholder="— None —" />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="__none__">— None —</SelectItem>
-                        {STATION_OPTIONS.map((station) => (
+                        {stationOptions.map((station) => (
                           <SelectItem key={station.value} value={station.value}>
                             {station.label}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
+                    {stationLoadError ? (
+                      <p className="text-xs text-red-600 mt-1">Unable to load stations: {stationLoadError}</p>
+                    ) : null}
                   </div>
                   <div>
                     <Label>Default Step</Label>
@@ -356,19 +364,23 @@ export default function ProductTypesSettings() {
                   <Select
                     value={formData.defaultStationKey || "__none__"}
                     onValueChange={(v) => setFormData({ ...formData, defaultStationKey: v === "__none__" ? null : v })}
+                    disabled={isStationsLoading || !!stationLoadError}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="— None —" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="__none__">— None —</SelectItem>
-                      {STATION_OPTIONS.map((station) => (
+                      {stationOptions.map((station) => (
                         <SelectItem key={station.value} value={station.value}>
                           {station.label}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
+                  {stationLoadError ? (
+                    <p className="text-xs text-red-600 mt-1">Unable to load stations: {stationLoadError}</p>
+                  ) : null}
                 </div>
                 <div>
                   <Label>Default Step</Label>
