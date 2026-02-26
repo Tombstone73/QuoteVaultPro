@@ -1,7 +1,8 @@
 import { db } from "../db";
-import { orderLineItems, products, productTypes, productionJobs, orders, materials } from "@shared/schema";
+import { orderLineItems, products, productionJobs, orders } from "@shared/schema";
 import { eq, and, inArray } from "drizzle-orm";
 import { routeLineItemToProduction } from "./productionRoutingService";
+import { resolveInitialProductionRoute } from "./productionRoutingResolver";
 
 /**
  * scheduleOrderLineItemsForProduction
@@ -34,7 +35,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
   };
   message: string;
 }> {
-  const { organizationId, orderId, lineItemIds, loadRoutingRules, appendEvent } = args;
+  const { organizationId, orderId, lineItemIds, loadRoutingRules: _loadRoutingRules, appendEvent } = args;
 
   if (process.env.NODE_ENV === 'development') {
     console.log(`[ProductionScheduling] Starting schedule for orderId=${orderId}, targetLineItems=${lineItemIds?.length ?? 'ALL'}`);
@@ -58,18 +59,14 @@ export async function scheduleOrderLineItemsForProduction(args: {
       .select({
         lineItemId: orderLineItems.id,
         productId: orderLineItems.productId,
+        productTypeId: products.productTypeId,
         materialId: orderLineItems.materialId,
         status: orderLineItems.status,
+        lineItemRequiresPrepressSnapshot: orderLineItems.requiresPrepress,
         requiresProductionJob: products.requiresProductionJob,
-        materialType: materials.type,
-        // ProductType production defaults (preferred over material-based routing)
-        productTypeDefaultStationKey: productTypes.defaultStationKey,
-        productTypeDefaultStepKey: productTypes.defaultStepKey,
       })
       .from(orderLineItems)
       .innerJoin(products, eq(orderLineItems.productId, products.id))
-      .leftJoin(productTypes, eq(products.productTypeId, productTypes.id))
-      .leftJoin(materials, eq(orderLineItems.materialId, materials.id))
       .where(and(
         eq(orderLineItems.orderId, orderId),
         // Filter to selected items if specified
@@ -109,18 +106,6 @@ export async function scheduleOrderLineItemsForProduction(args: {
       };
     }
 
-    // Load production routing config (fail-soft: use defaults if missing)
-    const routing = await loadRoutingRules(organizationId);
-    const hasOrgRouting = routing.source === "org";
-    
-    // Default routing values when org config is missing/invalid
-    const DEFAULT_STATION_KEY = "flatbed";
-    const DEFAULT_STEP_KEY = "queued";
-    
-    if (!hasOrgRouting) {
-      console.warn(`[ProductionScheduling] No org routing config (source=${routing.source}) for org ${organizationId}; using defaults`);
-    }
-
     // Check existing production jobs for these line items
     const lineItemIdsToProcess = productionRequiredItems.map((item) => item.lineItemId);
     
@@ -156,50 +141,18 @@ export async function scheduleOrderLineItemsForProduction(args: {
         continue;
       }
 
-      // --- Station / step resolution (priority order) ---
-      // 1. ProductType.defaultStationKey  (explicit production routing default)
-      // 2. Material-type fallback          (roll material → roll station, else flatbed)
-      // Step resolution:
-      // 1. ProductType.defaultStepKey (if set)
-      // 2. Routing rule stepKey       (org-configured status → step mapping)
-      // 3. System default step
-      const ptStationKey = (item.productTypeDefaultStationKey ?? "").trim();
-      const ptStepKey    = (item.productTypeDefaultStepKey    ?? "").trim();
-      const materialBasedStation = item.materialType === "roll" ? "roll" : "flatbed";
-      const resolvedStation = ptStationKey || materialBasedStation;
+      // TODO: keep line-item status lifecycle-only; routing is resolved from org/productType/snapshot fields.
+      const route = await resolveInitialProductionRoute({
+        organizationId,
+        productTypeId: item.productTypeId,
+        lineItemRequiresPrepressSnapshot:
+          typeof item.lineItemRequiresPrepressSnapshot === "boolean"
+            ? item.lineItemRequiresPrepressSnapshot
+            : undefined,
+      });
 
-      let stationKey: string;
-      let stepKey: string;
-      let usedDefaults = false;
-
-      // Determine routing rule from line item status
-      const rule = routing.rules.find((r: any) => r.id === item.status);
-
-      if (!rule || rule.sendToProduction !== true) {
-        // No applicable routing rule — fall back to productType or material defaults
-        stationKey = resolvedStation;
-        stepKey = ptStepKey || DEFAULT_STEP_KEY;
-        usedDefaults = true;
-        console.warn(
-          `[ProductionScheduling] No routing rule for lineItemId=${item.lineItemId} status=${item.status}; using productType station=${stationKey}, step=${stepKey}`
-        );
-      } else {
-        const ruleStepKey = String((rule as any).stepKey ?? "").trim();
-
-        if (!ruleStepKey) {
-          // Rule exists but step is unset — use productType defaults
-          stationKey = resolvedStation;
-          stepKey = ptStepKey || DEFAULT_STEP_KEY;
-          usedDefaults = true;
-          console.warn(
-            `[ProductionScheduling] Incomplete routing rule for lineItemId=${item.lineItemId}; using productType station=${stationKey}, step=${stepKey}`
-          );
-        } else {
-          // Rule provides a step; station always comes from productType (or material fallback)
-          stationKey = resolvedStation;
-          stepKey = ruleStepKey;
-        }
-      }
+      const stationKey = route.stationKey;
+      const stepKey = route.stepKey;
 
       // Create production job via canonical routing service
       const routingResult = await routeLineItemToProduction({
@@ -214,9 +167,15 @@ export async function scheduleOrderLineItemsForProduction(args: {
           fromStatus: null,
           toStatus: item.status,
           source: "bulk_schedule",
-          usedDefaultRouting: usedDefaults,
+          routingReason: route.reason,
         },
       });
+
+      if (routingResult.outcome === "existing" && routingResult.reason) {
+        console.warn(
+          `[ProductionScheduling] lineItemId=${item.lineItemId} not re-routed to ${stationKey}/${stepKey}: ${routingResult.reason}`,
+        );
+      }
 
       if (routingResult.outcome === "created") {
         createdCount++;
@@ -244,9 +203,6 @@ export async function scheduleOrderLineItemsForProduction(args: {
 
     if (process.env.NODE_ENV === 'development') {
       console.log(`[ProductionScheduling] Completed for orderId=${orderId}: created=${createdCount}, existing=${existingCount}, skipped=${skippedCount}`);
-      if (createdCount > 0) {
-        console.log(`[ProductionScheduling] Sample job: orderId=${orderId}, station=${DEFAULT_STATION_KEY}, step=${DEFAULT_STEP_KEY}`);
-      }
     }
 
     return {
