@@ -50,6 +50,12 @@ export async function apiFetch(url: string, init?: RequestInit): Promise<Respons
   });
 }
 
+export async function apiFetchBlob(url: string, init?: RequestInit): Promise<Blob> {
+  const response = await apiFetch(url, init);
+  await throwIfResNotOk(response);
+  return response.blob();
+}
+
 type UnauthorizedBehavior = "returnNull" | "throw";
 export const getQueryFn: <T>(options: {
   on401: UnauthorizedBehavior;
