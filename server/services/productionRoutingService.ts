@@ -95,7 +95,6 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
       stationKey: productionJobs.stationKey,
       stepKey: productionJobs.stepKey,
       status: productionJobs.status,
-      stationId: productionJobs.stationId,
     })
     .from(productionJobs)
     .where(
@@ -107,8 +106,7 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
     );
 
   const existingExact = existingNonVoidJobs.find((job: any) => {
-    const sameStation = stationId ? job.stationId === stationId : job.stationKey === stationKey;
-    return sameStation && job.stepKey === stepKey;
+    return job.stationKey === stationKey && job.stepKey === stepKey;
   });
 
   const existing = existingExact ?? existingNonVoidJobs[0];
