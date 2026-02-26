@@ -31,12 +31,8 @@ export async function apiRequest(
     headers.set("Content-Type", "application/json");
   }
 
-  // If url is a path (not absolute), resolve it with apiUrl
-  const fullUrl = url.startsWith("http") ? url : apiUrl(url);
-
-  const res = await fetch(fullUrl, {
+  const res = await apiFetch(url, {
     method,
-    credentials: "include",
     ...init,
     headers,
     body: data !== undefined ? JSON.stringify(data) : undefined,
@@ -44,6 +40,14 @@ export async function apiRequest(
 
   await throwIfResNotOk(res);
   return res;
+}
+
+export async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
+  const fullUrl = url.startsWith("http") ? url : apiUrl(url);
+  return fetch(fullUrl, {
+    credentials: "include",
+    ...init,
+  });
 }
 
 type UnauthorizedBehavior = "returnNull" | "throw";
@@ -59,9 +63,7 @@ export const getQueryFn: <T>(options: {
     // Otherwise, resolve with apiUrl to handle environment-based backend routing
     const url = path.startsWith("http") ? path : apiUrl(path);
     
-    const res = await fetch(url, {
-      credentials: "include",
-    });
+    const res = await apiFetch(url);
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
       return null;
