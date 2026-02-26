@@ -8,6 +8,7 @@ import { Calculator, Loader2 } from "lucide-react";
 import { getApiUrl } from "@/lib/apiConfig";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
+import { apiFetch } from "@/lib/queryClient";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -30,7 +31,7 @@ export default function Login() {
     setLoading(true);
 
     try {
-      const response = await fetch(getApiUrl("/api/auth/login"), {
+      const response = await apiFetch(getApiUrl("/api/auth/login"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
@@ -44,13 +45,20 @@ export default function Login() {
       const data = await response.json();
 
       if (data.success) {
+        if (process.env.NODE_ENV !== "production") {
+          const sessionCheck = await apiFetch(getApiUrl("/api/auth/session"), {
+            credentials: "include",
+          });
+          console.log(`[AuthDiag] post-login /api/auth/session status=${sessionCheck.status}`);
+        }
+
         // Debug logging (non-production only)
         if (process.env.NODE_ENV !== "production") {
           console.log("[Login] Success, invalidating auth query and redirecting to /dashboard");
         }
         
         // Invalidate auth query to trigger refetch with new session
-        await queryClient.invalidateQueries({ queryKey: [getApiUrl("/api/auth/user")] });
+        await queryClient.invalidateQueries({ queryKey: [getApiUrl("/api/auth/session")], exact: true });
         
         toast({
           title: "Logged in",
