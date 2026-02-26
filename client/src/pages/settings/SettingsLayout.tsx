@@ -286,6 +286,12 @@ export function AccountingSettings() {
 export function ProductionSettings() {
   const { data, isLoading, isError, error } = useProductionLineItemStatusRules();
   const save = useSaveProductionLineItemStatusRules();
+  const {
+    preferences,
+    updatePreferences,
+    isLoading: isOrgPreferencesLoading,
+    isUpdating: isOrgPreferencesUpdating,
+  } = useOrgPreferences();
   const [draft, setDraft] = React.useState<ProductionLineItemStatusRule[]>([]);
   const workflow = useOrderWorkflow();
   const saveWorkflowDraft = useSaveOrderWorkflowDraft();
@@ -386,6 +392,15 @@ export function ProductionSettings() {
     setWorkflowDraft((prev) => prev.filter((_, i) => i !== idx));
   };
 
+  const prepressDefaultEnabled = (preferences as any)?.prepressDefaultEnabled ?? true;
+
+  const handlePrepressDefaultToggle = async (enabled: boolean) => {
+    await updatePreferences({
+      ...preferences,
+      prepressDefaultEnabled: enabled,
+    });
+  };
+
   const workflowValidation = React.useMemo(() => {
     const errors: string[] = [];
     const keys = new Set<string>();
@@ -415,6 +430,32 @@ export function ProductionSettings() {
         </div>
         
         <div className="h-px bg-titan-border-subtle" />
+
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-titan-md font-semibold text-titan-text-primary">Initial Production Routing</h3>
+            <p className="text-titan-sm text-titan-text-muted mt-1">
+              Organization default routing. Product Type overrides can force or skip prepress.
+            </p>
+          </div>
+
+          <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+            <div className="flex-1 space-y-1">
+              <Label htmlFor="prepress-default-enabled" className="text-titan-sm font-medium text-titan-text-primary cursor-pointer">
+                Default: Send all production to Prepress first
+              </Label>
+              <p className="text-titan-xs text-titan-text-muted">
+                When enabled, new production routing starts at prepress unless the product type override explicitly skips it.
+              </p>
+            </div>
+            <Switch
+              id="prepress-default-enabled"
+              checked={prepressDefaultEnabled}
+              onCheckedChange={handlePrepressDefaultToggle}
+              disabled={isOrgPreferencesLoading || isOrgPreferencesUpdating}
+            />
+          </div>
+        </div>
         
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-3">

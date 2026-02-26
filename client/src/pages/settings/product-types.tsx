@@ -12,6 +12,17 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Loader2, Plus, Pencil, Trash2, GripVertical } from "lucide-react";
 import { TitanCard } from "@/components/ui/TitanCard";
 
+const STATION_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "prepress", label: "Prepress" },
+  { value: "flatbed", label: "Flatbed" },
+  { value: "roll", label: "Roll" },
+  { value: "cnc", label: "CNC" },
+  { value: "lamination", label: "Lamination" },
+  { value: "fabrication", label: "Fabrication" },
+  { value: "design", label: "Design" },
+  { value: "finishing", label: "Finishing" },
+];
+
 export default function ProductTypesSettings() {
   const { data: productTypes, isLoading } = useProductTypes();
   const createMutation = useCreateProductType();
@@ -47,6 +58,7 @@ export default function ProductTypesSettings() {
       defaultStationKey: formData.defaultStationKey || null,
       defaultStepKey: formData.defaultStepKey || null,
       sendToProductionDefault: formData.sendToProductionDefault,
+      requiresPrepressOverride: formData.requiresPrepressOverride,
     });
     setIsCreateOpen(false);
     setFormData({ name: "", description: "", sortOrder: 0, defaultStationKey: null, defaultStepKey: null, sendToProductionDefault: false, requiresPrepressOverride: null });
@@ -63,6 +75,7 @@ export default function ProductTypesSettings() {
         defaultStationKey: formData.defaultStationKey || null,
         defaultStepKey: formData.defaultStepKey || null,
         sendToProductionDefault: formData.sendToProductionDefault,
+        requiresPrepressOverride: formData.requiresPrepressOverride,
       },
     });
     setEditingType(null);
@@ -182,36 +195,28 @@ export default function ProductTypesSettings() {
                     <Label>Default Station</Label>
                     <Select
                       value={formData.defaultStationKey || "__none__"}
-                      onValueChange={(v) => setFormData({ ...formData, defaultStationKey: v === "__none__" ? null : v, defaultStepKey: null })}
+                      onValueChange={(v) => setFormData({ ...formData, defaultStationKey: v === "__none__" ? null : v })}
                     >
                       <SelectTrigger>
                         <SelectValue placeholder="— None —" />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="__none__">— None —</SelectItem>
-                        <SelectItem value="flatbed">Flatbed</SelectItem>
-                        <SelectItem value="roll">Roll</SelectItem>
+                        {STATION_OPTIONS.map((station) => (
+                          <SelectItem key={station.value} value={station.value}>
+                            {station.label}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
                   <div>
                     <Label>Default Step</Label>
-                    <Select
-                      value={formData.defaultStepKey || "__none__"}
-                      onValueChange={(v) => setFormData({ ...formData, defaultStepKey: v === "__none__" ? null : v })}
-                      disabled={!formData.defaultStationKey}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="— None —" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="__none__">— None —</SelectItem>
-                        <SelectItem value="prepress">Prepress</SelectItem>
-                        <SelectItem value="print">Print</SelectItem>
-                        <SelectItem value="laminate">Laminate</SelectItem>
-                        <SelectItem value="finishing">Finishing</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <Input
+                      value={formData.defaultStepKey ?? ""}
+                      onChange={(e) => setFormData({ ...formData, defaultStepKey: e.target.value || null })}
+                      placeholder="queued"
+                    />
                   </div>
                   <div className="flex items-center justify-between py-1">
                     <Label htmlFor="create-sendToProduction" className="font-normal">
@@ -350,36 +355,28 @@ export default function ProductTypesSettings() {
                   <Label>Default Station</Label>
                   <Select
                     value={formData.defaultStationKey || "__none__"}
-                    onValueChange={(v) => setFormData({ ...formData, defaultStationKey: v === "__none__" ? null : v, defaultStepKey: null })}
+                    onValueChange={(v) => setFormData({ ...formData, defaultStationKey: v === "__none__" ? null : v })}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="— None —" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="__none__">— None —</SelectItem>
-                      <SelectItem value="flatbed">Flatbed</SelectItem>
-                      <SelectItem value="roll">Roll</SelectItem>
+                      {STATION_OPTIONS.map((station) => (
+                        <SelectItem key={station.value} value={station.value}>
+                          {station.label}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
                 <div>
                   <Label>Default Step</Label>
-                  <Select
-                    value={formData.defaultStepKey || "__none__"}
-                    onValueChange={(v) => setFormData({ ...formData, defaultStepKey: v === "__none__" ? null : v })}
-                    disabled={!formData.defaultStationKey}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="— None —" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__none__">— None —</SelectItem>
-                      <SelectItem value="prepress">Prepress</SelectItem>
-                      <SelectItem value="print">Print</SelectItem>
-                      <SelectItem value="laminate">Laminate</SelectItem>
-                      <SelectItem value="finishing">Finishing</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <Input
+                    value={formData.defaultStepKey ?? ""}
+                    onChange={(e) => setFormData({ ...formData, defaultStepKey: e.target.value || null })}
+                    placeholder="queued"
+                  />
                 </div>
                 <div className="flex items-center justify-between py-1">
                   <Label htmlFor="edit-sendToProduction" className="font-normal">

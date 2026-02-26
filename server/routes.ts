@@ -1414,7 +1414,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const [org] = await db
-        .select({ settings: organizations.settings })
+        .select({
+          settings: organizations.settings,
+          prepressDefaultEnabled: organizations.prepressDefaultEnabled,
+        })
         .from(organizations)
         .where(eq(organizations.id, organizationId))
         .limit(1);
@@ -1440,6 +1443,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json({
         ...(preferences as any),
+        prepressDefaultEnabled: org.prepressDefaultEnabled,
         production: {
           ...(((preferences as any)?.production && typeof (preferences as any).production === "object") ? (preferences as any).production : {}),
           materialsOverrideMode,
@@ -1471,11 +1475,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const newPreferences = req.body;
 
       // Extract emailTemplates if present (will be stored at settings.emailTemplates)
-      const { emailTemplates, ...otherPreferences } = newPreferences;
+      const { emailTemplates, prepressDefaultEnabled, ...otherPreferences } = newPreferences;
 
       // Get current settings
       const [org] = await db
-        .select({ settings: organizations.settings })
+        .select({
+          settings: organizations.settings,
+          prepressDefaultEnabled: organizations.prepressDefaultEnabled,
+        })
         .from(organizations)
         .where(eq(organizations.id, organizationId))
         .limit(1);
@@ -1497,11 +1504,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .update(organizations)
         .set({
           settings: updatedSettings as any,
+          ...(typeof prepressDefaultEnabled === "boolean" ? { prepressDefaultEnabled } : {}),
           updatedAt: new Date(),
         })
         .where(eq(organizations.id, organizationId));
 
-      res.json({ success: true, preferences: otherPreferences, emailTemplates });
+      res.json({
+        success: true,
+        preferences: otherPreferences,
+        emailTemplates,
+        prepressDefaultEnabled:
+          typeof prepressDefaultEnabled === "boolean"
+            ? prepressDefaultEnabled
+            : org.prepressDefaultEnabled,
+      });
     } catch (error) {
       console.error("Error updating organization preferences:", error);
       res.status(500).json({ message: "Failed to update preferences" });
@@ -9485,7 +9501,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         res.json(result);
       } catch (error: any) {
-        console.error("Error scheduling line items for production:", error);
+        const formatError = (input: any) => {
+          if (!input || typeof input !== "object") return null;
+          return {
+            code: input.code,
+            constraint: input.constraint,
+            table: input.table,
+            detail: input.detail,
+            message: input.message,
+          };
+        };
+
+        console.error("Error scheduling line items for production:", {
+          error: formatError(error),
+          cause: formatError(error?.cause),
+        });
         res.status(500).json({
           success: false,
           error: error?.message || "Failed to schedule line items for production",
