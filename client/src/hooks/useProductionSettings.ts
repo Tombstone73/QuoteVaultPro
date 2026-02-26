@@ -14,6 +14,12 @@ export type ProductionLineItemStatusRule = {
   defaultStepKey?: string | null;
 };
 
+export type ProductionStation = {
+  key: string;
+  name: string;
+  sort: number;
+};
+
 export function useProductionLineItemStatusRules() {
   return useQuery<ProductionLineItemStatusRule[]>({
     queryKey: ["/api/production/settings/line-item-statuses"],
@@ -48,6 +54,18 @@ export function useSaveProductionLineItemStatusRules() {
     },
     onError: (e: Error) => {
       toast({ title: "Save failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useProductionStations() {
+  return useQuery<ProductionStation[]>({
+    queryKey: ["/api/production/stations"],
+    queryFn: async () => {
+      const res = await fetch("/api/production/stations", { credentials: "include" });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || json.message || "Failed to fetch stations");
+      return (json.data ?? []) as ProductionStation[];
     },
   });
 }
