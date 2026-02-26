@@ -185,8 +185,9 @@ export function AttachmentViewerDialog({
   const attachment = isGalleryMode 
     ? attachments[selectedIndex] ?? null
     : singleAttachment ?? null;
-  
-  if (!attachment) return null;
+  const attachmentId = attachment?.id ?? null;
+  const fileName = attachment ? getAttachmentDisplayName(attachment) : "Attachment";
+  const objectPath = (attachment?.objectPath as string | null | undefined) ?? null;
   
   // Navigation handlers
   const canGoPrev = isGalleryMode && selectedIndex > 0;
@@ -204,11 +205,8 @@ export function AttachmentViewerDialog({
     }
   };
 
-  const fileName = getAttachmentDisplayName(attachment);
-  const objectPath = attachment.objectPath as string | null | undefined;
-  
   // PACK P2: Use URL builder helpers
-  const isPdf = isPdfFile(attachment.mimeType, fileName);
+  const isPdf = isPdfFile(attachment?.mimeType, fileName);
   const pdfViewUrl = isPdf ? buildPdfViewUrl(objectPath) : null;
   const pdfDownloadUrl = isPdf ? buildPdfDownloadUrl(objectPath, fileName) : null;
 
@@ -224,15 +222,17 @@ export function AttachmentViewerDialog({
     return null;
   };
 
-  const effectiveMimeType = attachment.mimeType ?? inferMimeType(fileName);
+  const effectiveMimeType = attachment?.mimeType ?? inferMimeType(fileName);
   const isImage = typeof effectiveMimeType === "string" && effectiveMimeType.startsWith("image/");
   
-  const imageViewUrl = isImage ? (attachment.previewUrl ?? attachment.originalUrl ?? null) : null;
+  const imageViewUrl = isImage ? (attachment?.previewUrl ?? attachment?.originalUrl ?? null) : null;
   
   // Fallback download URL for non-PDFs
-  const genericDownloadUrl = !isPdf ? (attachment.originalUrl ?? null) : null;
+  const genericDownloadUrl = !isPdf ? (attachment?.originalUrl ?? null) : null;
 
   const handleDownloadClick = () => {
+    if (!attachment) return;
+
     if (onDownload) {
       onDownload(attachment);
       return;
@@ -255,7 +255,7 @@ export function AttachmentViewerDialog({
     setImagePreviewLoading(false);
     setImagePreviewError(null);
 
-    if (!open || !attachment || !isImage) {
+    if (!open || !attachmentId || !isImage) {
       return () => {
         revokeBlobUrl();
       };
@@ -297,7 +297,9 @@ export function AttachmentViewerDialog({
       cancelled = true;
       revokeBlobUrl();
     };
-  }, [open, attachment?.id, isImage, imageViewUrl]);
+  }, [open, attachmentId, isImage, imageViewUrl]);
+
+  if (!attachment) return null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
