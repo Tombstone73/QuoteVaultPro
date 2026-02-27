@@ -49,6 +49,7 @@ import {
 } from "@/hooks/useProduction";
 import { format, isPast, parseISO } from "date-fns";
 import { cn } from "@/lib/utils";
+import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { ROUTES } from "@/config/routes";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { productionCardTheme, computeUrgency, statusColors } from "../theme/productionCardTheme";
@@ -186,10 +187,12 @@ type GlobalSearchResults = {
  */
 function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): string | null {
   if (!artwork) return null;
+
+  const normalizeArtworkImageUrl = (value: string): string | null => resolveObjectsPublicUrl(value);
   
   // 1. Prefer thumbnailUrl (always an image if present)
   if (artwork.thumbnailUrl && artwork.thumbnailUrl.trim()) {
-    return artwork.thumbnailUrl;
+    return normalizeArtworkImageUrl(artwork.thumbnailUrl);
   }
   
   // 2. Fallback to fileUrl, but ONLY if it's an image file
@@ -199,7 +202,7 @@ function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): str
     const isImageFile = imageExtensions.some((ext) => fileName.endsWith(ext));
     
     if (isImageFile) {
-      return artwork.fileUrl;
+      return normalizeArtworkImageUrl(artwork.fileUrl);
     }
   }
   
@@ -2163,11 +2166,17 @@ function JobRow({ job, visibleColumns, onArtworkClick }: { job: ProductionJobLis
 
 function PreviewThumb({ src, alt }: { src?: string; alt: string }) {
   const [failed, setFailed] = useState(false);
+  const resolvedSrc = resolveObjectsPublicUrl(src ?? null) ?? src;
 
-  if (!src || failed) {
+  if (!resolvedSrc || failed) {
     return (
       <div className="w-12 h-12 rounded border border-dashed border-muted-foreground/30 bg-muted/20 flex items-center justify-center">
-        <FileText className="w-4 h-4 text-muted-foreground/50" />
+        <div className="text-center leading-none">
+          <FileText className="mx-auto w-4 h-4 text-muted-foreground/50" />
+          {import.meta.env.DEV && failed && resolvedSrc ? (
+            <div className="mt-1 text-[9px] text-amber-500">thumb failed</div>
+          ) : null}
+        </div>
       </div>
     );
   }
@@ -2175,10 +2184,15 @@ function PreviewThumb({ src, alt }: { src?: string; alt: string }) {
   return (
     <div className="w-12 h-12 rounded border border-border overflow-hidden bg-muted">
       <img
-        src={src}
+        src={resolvedSrc}
         alt={alt}
         className="w-full h-full object-cover"
-        onError={() => setFailed(true)}
+        onError={(e) => {
+          if (import.meta.env.DEV) {
+            console.info(`[thumb] failed url=${e.currentTarget.src}`);
+          }
+          setFailed(true);
+        }}
       />
     </div>
   );

@@ -11,6 +11,7 @@ import { assertStripeServerConfig } from "./lib/stripe";
 import { listQuickBooksConnectedOrganizationIds, runQuickBooksSyncWorkerForOrg } from "./services/quickbooksSyncQueueWorker";
 import { isWorkerEnabled, logWorkerStatus, getWorkerIntervalOverride, logWorkerTick } from "./workers/workerGates";
 import { runMigrations } from "./runMigrations";
+import { getAllowedCorsOrigins, getRuntimeConfigLogLine } from "./lib/appRuntimeConfig";
 
 const app = express();
 const bootstrapModeEnabled = (process.env.BOOTSTRAP_MODE ?? "").trim().toLowerCase() === "true";
@@ -25,32 +26,7 @@ if (bootstrapModeEnabled) {
   console.warn("[BOOTSTRAP] ****************************************************************");
 }
 
-// CORS configuration for production frontend
-// Note: Same-origin requests from Vercel proxy (www.printershero.com/api/* → Railway)
-// will have no Origin header, so they're allowed by default.
-//
-// Add extra allowed origins at runtime via CORS_EXTRA_ORIGINS env var (comma-separated).
-const _staticOrigins = [
-  "https://www.printershero.com",
-  "https://quotevaultpro-production.up.railway.app", // Railway deployment
-  "http://localhost:5173", // Vite dev server
-  "http://localhost:5000", // Local backend
-];
-
-const _extraOrigins = (process.env.CORS_EXTRA_ORIGINS ?? "")
-  .split(",")
-  .map((o) => o.trim())
-  .filter(Boolean);
-
-const _envOrigins = [
-  process.env.FRONTEND_URL,
-  process.env.UI_ORIGIN,
-  process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : undefined,
-]
-  .map((o) => (o ?? "").trim())
-  .filter(Boolean);
-
-const allowedOrigins = Array.from(new Set([..._staticOrigins, ..._extraOrigins, ..._envOrigins]));
+const allowedOrigins = getAllowedCorsOrigins();
 
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
@@ -78,10 +54,10 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions)); // Handle preflight requests
 
-// Trust proxy for secure cookies behind Railway/Vercel proxy
-if (process.env.NODE_ENV === "production") {
-  app.set("trust proxy", 1);
-}
+// Trust first reverse proxy hop for secure cookies behind hosting proxies.
+app.set("trust proxy", 1);
+
+console.log(getRuntimeConfigLogLine());
 
 declare module 'http' {
   interface IncomingMessage {

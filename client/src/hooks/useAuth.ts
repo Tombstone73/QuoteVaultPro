@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { User } from "@shared/schema";
 import { getApiUrl } from "@/lib/apiConfig";
+import { apiFetch } from "@/lib/queryClient";
 
 type SessionResponse = {
   authenticated: boolean;
@@ -8,18 +9,35 @@ type SessionResponse = {
   mustChangePassword?: boolean;
 };
 
+let authSessionSoftFailUntil = 0;
+
 export function useAuth() {
   const { data: sessionData, isLoading, error } = useQuery<SessionResponse>({
     queryKey: [getApiUrl("/api/auth/session")],
     queryFn: async () => {
-      const response = await fetch(getApiUrl("/api/auth/session"), {
-        credentials: "include",
-      });
+      const isLoginLikeRoute =
+        typeof window !== "undefined" &&
+        /^\/(login|forgot-password|reset-password|set-password|accept-invite)(\/|$)/i.test(window.location.pathname);
+
+      if (isLoginLikeRoute && Date.now() < authSessionSoftFailUntil) {
+        return { authenticated: false };
+      }
+
+      let response: Response;
+      try {
+        response = await apiFetch(getApiUrl("/api/auth/session"), {
+          credentials: "include",
+        });
+      } catch {
+        authSessionSoftFailUntil = Date.now() + 15_000;
+        return { authenticated: false };
+      }
       
-      // If 401, user is not authenticated
-      if (response.status === 401) {
+      // Fail soft: treat auth/cookie/CORS permission failures as unauthenticated.
+      if (response.status === 401 || response.status === 403) {
+        authSessionSoftFailUntil = Date.now() + 15_000;
         if (process.env.NODE_ENV !== "production") {
-          console.log("[Auth] GET /api/auth/session returned 401 (not authenticated)");
+          console.log(`[Auth] GET /api/auth/session returned ${response.status} (not authenticated)`);
         }
         return { authenticated: false };
       }
@@ -42,7 +60,11 @@ export function useAuth() {
       return sessionData;
     },
     retry: false,
-    staleTime: 5 * 60 * 1000, // Consider data fresh for 5 minutes
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
+    refetchInterval: false,
+    staleTime: 5 * 60 * 1000,
   });
 
   // User is authenticated if session says so and we have user data
@@ -70,7 +92,7 @@ export function useLogout() {
 
   const logout = async () => {
     try {
-      await fetch(getApiUrl("/api/auth/logout"), {
+      await apiFetch(getApiUrl("/api/auth/logout"), {
         method: "POST",
         credentials: "include",
       });

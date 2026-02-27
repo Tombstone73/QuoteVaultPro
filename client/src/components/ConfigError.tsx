@@ -32,13 +32,15 @@ export function ConfigError({ error }: ConfigErrorProps) {
             <div>
               <h3 className="font-semibold mb-2">For Administrators:</h3>
               <p className="text-sm text-muted-foreground mb-3">
-                This application requires the <code className="bg-muted px-1.5 py-0.5 rounded text-xs">VITE_API_BASE_URL</code> environment variable to be set in your deployment platform (Vercel).
+                This application requires API/Object base URL environment variables to be set in your deployment platform.
               </p>
               
               <div className="bg-muted/50 rounded-lg p-4 space-y-2">
-                <p className="text-xs font-semibold text-muted-foreground">Required Environment Variable:</p>
+                <p className="text-xs font-semibold text-muted-foreground">Recommended Environment Variables:</p>
                 <code className="block text-xs bg-background p-2 rounded border">
-                  VITE_API_BASE_URL=https://quotevaultpro-production.up.railway.app
+                  VITE_API_BASE_URL=https://api.printershero.com
+                  <br />
+                  VITE_OBJECTS_BASE_URL=https://objects.printershero.com
                 </code>
               </div>
             </div>
@@ -48,7 +50,7 @@ export function ConfigError({ error }: ConfigErrorProps) {
               <ol className="text-sm text-muted-foreground space-y-2 list-decimal list-inside">
                 <li>Go to your Vercel project dashboard</li>
                 <li>Navigate to Settings → Environment Variables</li>
-                <li>Add <code className="bg-muted px-1 py-0.5 rounded text-xs">VITE_API_BASE_URL</code> with the Railway backend URL</li>
+                <li>Add <code className="bg-muted px-1 py-0.5 rounded text-xs">VITE_API_BASE_URL</code> and <code className="bg-muted px-1 py-0.5 rounded text-xs">VITE_OBJECTS_BASE_URL</code> with the proper environment subdomains</li>
                 <li>Redeploy the application</li>
               </ol>
             </div>

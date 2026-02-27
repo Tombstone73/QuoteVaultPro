@@ -27,6 +27,7 @@ import {
   ProductionOrderArtworkSummary,
 } from "@/hooks/useProduction";
 import { deriveLaminationDisplay, isRollJob, formatDimensions } from "@/lib/productionHelpers";
+import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { buildReferrer } from "@/lib/nav/smartBack";
 import {
   Play,
@@ -75,9 +76,11 @@ function formatEventLabel(type: string) {
 function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): string | null {
   if (!artwork) return null;
 
+  const normalizeArtworkImageUrl = (value: string): string | null => resolveObjectsPublicUrl(value);
+
   // 1. Prefer thumbnailUrl (always an image if present)
   if (artwork.thumbnailUrl && artwork.thumbnailUrl.trim()) {
-    return artwork.thumbnailUrl;
+    return normalizeArtworkImageUrl(artwork.thumbnailUrl);
   }
 
   // 2. Fallback to fileUrl, but ONLY if it's an image file
@@ -87,7 +90,7 @@ function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): str
     const isImageFile = imageExtensions.some((ext) => fileName.endsWith(ext));
 
     if (isImageFile) {
-      return artwork.fileUrl;
+      return normalizeArtworkImageUrl(artwork.fileUrl);
     }
   }
 
@@ -121,6 +124,9 @@ function ProductionThumbnail({
         <div className="text-center p-2">
           <FileText className="mx-auto h-8 w-8 text-muted-foreground" />
           <div className="mt-1 text-[10px] text-muted-foreground">No Preview</div>
+          {import.meta.env.DEV && failed && src ? (
+            <div className="mt-1 text-[9px] text-amber-500">thumb failed</div>
+          ) : null}
         </div>
       </div>
     );
@@ -132,7 +138,12 @@ function ProductionThumbnail({
       alt={alt}
       className={className}
       onClick={onClick}
-      onError={() => setFailed(true)}
+      onError={(e) => {
+        if (import.meta.env.DEV) {
+          console.info(`[thumb] failed url=${e.currentTarget.src}`);
+        }
+        setFailed(true);
+      }}
       style={onClick ? { cursor: "pointer" } : undefined}
     />
   );
