@@ -26,6 +26,7 @@ import type { OrderState } from "@/hooks/useOrderState";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAssignOrderStatusPill, useOrderStatusPills } from "@/hooks/useOrderStatusPills";
 import { getThumbSrc } from "@/lib/getThumbSrc";
+import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import BackNavControls from "@/components/BackNavControls";
@@ -553,7 +554,16 @@ export default function Orders() {
                   {loadingAttachments === row.id ? (
                     <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
                   ) : (
-                    <img src={src} alt="Preview" className="w-full h-full object-cover" />
+                    <img
+                      src={resolveObjectsPublicUrl(src) ?? src}
+                      alt="Preview"
+                      className="w-full h-full object-cover"
+                      onError={(e) => {
+                        if (import.meta.env.DEV) {
+                          console.info(`[thumb] failed url=${e.currentTarget.src}`);
+                        }
+                      }}
+                    />
                   )}
                 </button>
               ))}
@@ -1106,7 +1116,16 @@ export default function Orders() {
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="w-10 h-10 rounded overflow-hidden border border-border bg-muted/30 flex items-center justify-center shrink-0">
                         {hasThumb ? (
-                          <img src={thumbUrl as string} alt={filename} className="w-full h-full object-cover" />
+                          <img
+                            src={resolveObjectsPublicUrl(thumbUrl as string) ?? (thumbUrl as string)}
+                            alt={filename}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              if (import.meta.env.DEV) {
+                                console.info(`[thumb] failed url=${e.currentTarget.src}`);
+                              }
+                            }}
+                          />
                         ) : (
                           <FileText className="w-5 h-5 text-muted-foreground" />
                         )}

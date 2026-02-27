@@ -7,6 +7,7 @@ import type { Express, RequestHandler } from "express";
 import memoize from "memoizee";
 import connectPg from "connect-pg-simple";
 import { storage } from "./storage";
+import { getSessionCookieConfig } from "./lib/appRuntimeConfig";
 
 const getOidcConfig = memoize(
   async () => {
@@ -28,18 +29,12 @@ export function getSession() {
     tableName: "sessions",
   });
   
-  // Session cookie config for production cross-origin auth.
-  // Railway API + Vercel UI requires SameSite=None and Secure=true.
-  const cookieConfig = {
-    httpOnly: true,
-    secure: true,
-    maxAge: sessionTtl,
-    sameSite: 'none' as const,
-  };
+  const cookieConfig = getSessionCookieConfig(sessionTtl);
   
   console.log('[Session] Replit auth cookie config:', {
     secure: cookieConfig.secure,
     sameSite: cookieConfig.sameSite,
+    domain: cookieConfig.domain ?? '(host-only)',
     httpOnly: cookieConfig.httpOnly,
   });
   
