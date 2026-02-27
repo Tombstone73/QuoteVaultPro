@@ -10,7 +10,7 @@
  * without triggering 404 spam).
  */
 
-import { objectsUrl } from "@/lib/apiConfig";
+import { objectsUrl, resolveObjectsPublicUrl } from "@/lib/apiConfig";
 
 export function getThumbSrc(obj: unknown): string | null {
   if (!obj || typeof obj !== "object") return null;
@@ -22,6 +22,9 @@ export function getThumbSrc(obj: unknown): string | null {
     o.previewThumbnailUrl,
     o.thumbnailUrl,
     o.thumbUrl,
+    o.thumb_path,
+    o.preview_url,
+    o.url,
     o.pages?.[0]?.thumbUrl,
     o.previewUrl,
   ];
@@ -63,10 +66,5 @@ function coerceRenderableUrl(value: unknown): string | null {
   const v = value.trim();
   if (!v) return null;
 
-  // Renderable URLs only.
-  if (v.startsWith("http://") || v.startsWith("https://")) return v;
-  if (v.startsWith("/objects/")) return v;
-
-  // Everything else (including "thumbs/..." keys) is not safe to render as a URL.
-  return null;
+  return resolveObjectsPublicUrl(v);
 }

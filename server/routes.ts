@@ -65,6 +65,7 @@ import {
   materialOverridesFromSpecsJson,
   withServerDefaultsForOverride,
 } from "./services/prepressMaterialOverrides";
+import { getAppEnv, getCookieDomain, getPublicWebOrigin } from "./lib/appRuntimeConfig";
 
 // Auth provider selection logic
 // Priority: AUTH_PROVIDER env var > detection logic
@@ -558,11 +559,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Health check endpoint (no auth required)
   app.get('/api/health', (req, res) => {
-    res.json({ 
-      status: 'ok', 
-      timestamp: new Date().toISOString(),
-      auth: authProvider,
-      env: nodeEnv
+    res.json({
+      ok: true,
+      env: getAppEnv(),
+      publicWebOrigin: getPublicWebOrigin(),
+      cookieDomain: getCookieDomain() ?? null,
+      apiHost: req.get('host') ?? null,
+      time: new Date().toISOString(),
     });
   });
 

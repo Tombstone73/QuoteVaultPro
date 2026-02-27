@@ -12,6 +12,7 @@ import { pgTable, varchar, text, timestamp, index, uniqueIndex } from "drizzle-o
 import { sql, eq, and, gt, isNull } from "drizzle-orm";
 import crypto from "crypto";
 import { authIdentities, users } from "@shared/schema";
+import { getPublicWebOrigin, getSessionCookieConfig } from "./lib/appRuntimeConfig";
 
 // Helper: Check if user must change password (invited state)
 async function getMustChangePassword(userId: string): Promise<boolean> {
@@ -57,23 +58,16 @@ export function getSession() {
     tableName: "sessions",
   });
   
-  // Session cookie config:
-  // - production cross-origin UI->API requires SameSite=None + Secure=true
-  // - local/dev keeps SameSite=Lax + Secure=false for localhost HTTP
-  const cookieConfig = {
-    httpOnly: true,
-    secure: isProduction, // HTTPS only in production
-    maxAge: sessionTtl,
-    sameSite: (isProduction ? 'none' : 'lax') as const,
-  };
+  const cookieConfig = getSessionCookieConfig(sessionTtl);
   
   // Diagnostic logging (non-sensitive)
   console.log('[Session] Cookie policy:', {
     env: nodeEnv,
     secure: cookieConfig.secure,
     sameSite: cookieConfig.sameSite,
+    domain: cookieConfig.domain ?? '(host-only)',
     httpOnly: cookieConfig.httpOnly,
-    maxAgeDays: cookieConfig.maxAge / 1000 / 60 / 60 / 24,
+    maxAgeDays: sessionTtl / 1000 / 60 / 60 / 24,
     trustProxy: true,
   });
   
@@ -274,11 +268,13 @@ export async function setupAuth(app: Express) {
           console.error("Session destroy error:", destroyErr);
         }
         // Clear the session cookie
+        const sessionCookieConfig = getSessionCookieConfig(7 * 24 * 60 * 60 * 1000);
         res.clearCookie("connect.sid", {
           path: "/",
           httpOnly: true,
-          secure: isProduction,
-          sameSite: isProduction ? 'none' : 'lax', // Must match login cookie config
+          secure: sessionCookieConfig.secure === true,
+          sameSite: sessionCookieConfig.sameSite,
+          ...(sessionCookieConfig.domain ? { domain: sessionCookieConfig.domain } : {}),
         });
         res.json({ success: true });
       });
@@ -346,7 +342,8 @@ export async function setupAuth(app: Express) {
           console.log(`[Password Reset] Token generated and stored for user ${user.id}`);
 
           // Build reset link
-          const resetUrl = `https://www.printershero.com/reset-password?token=${resetToken}`;
+          const resetBaseUrl = getPublicWebOrigin() || "https://www.printershero.com";
+          const resetUrl = `${resetBaseUrl}/reset-password?token=${resetToken}`;
 
           // Get user's organization for email settings
           const userMemberships = await getUserOrganizations(user.id);

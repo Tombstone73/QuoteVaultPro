@@ -2,17 +2,11 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import "./index.css";
-import { apiUrl, objectsUrl, checkApiConfig } from "./lib/apiConfig";
+import { checkApiConfig, resolveAppRequestUrl } from "./lib/apiConfig";
 import { ConfigError } from "./components/ConfigError";
 
 function resolveFetchUrl(url: string): string {
-  if (url.startsWith("/api") || url === "/api") {
-    return apiUrl(url);
-  }
-  if (url.startsWith("/objects") || url === "/objects") {
-    return objectsUrl(url);
-  }
-  return url;
+  return resolveAppRequestUrl(url, window.location.origin);
 }
 
 function installUrlAwareFetch(): void {
