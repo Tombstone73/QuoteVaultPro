@@ -8,6 +8,7 @@ import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import {
   Table,
@@ -28,9 +29,12 @@ import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   useProductionLineItemStatusRules,
+  useProductionStationSteps,
+  useProductionStations,
   useSaveProductionLineItemStatusRules,
   type ProductionLineItemStatusRule,
 } from "@/hooks/useProductionSettings";
+import { ManageProductionStepsDialog } from "@/components/production/ManageProductionStepsDialog";
 import {
   useOrderWorkflow,
   usePublishOrderWorkflow,
@@ -285,7 +289,25 @@ export function AccountingSettings() {
 
 export function ProductionSettings() {
   const { data, isLoading, isError, error } = useProductionLineItemStatusRules();
+  const {
+    data: stations,
+    isLoading: isStationsLoading,
+    isError: isStationsError,
+    error: stationsError,
+  } = useProductionStations();
+  const {
+    data: stationSteps,
+    isLoading: isStepsLoading,
+    isError: isStepsError,
+    error: stepsError,
+  } = useProductionStationSteps();
   const save = useSaveProductionLineItemStatusRules();
+  const {
+    preferences,
+    updatePreferences,
+    isLoading: isOrgPreferencesLoading,
+    isUpdating: isOrgPreferencesUpdating,
+  } = useOrgPreferences();
   const [draft, setDraft] = React.useState<ProductionLineItemStatusRule[]>([]);
   const workflow = useOrderWorkflow();
   const saveWorkflowDraft = useSaveOrderWorkflowDraft();
@@ -335,10 +357,35 @@ export function ProductionSettings() {
       if (r.sendToProduction) {
         const station = (r.stationKey || "").trim();
         if (!station) errors.push(`Status '${k || "(missing key)"}' routes to production but has no station.`);
+        const stepKey = String((r.stepKey ?? r.defaultStepKey ?? "")).trim();
+        if (stepKey && station && !isStepsLoading && !isStepsError) {
+          const stationStepList = stationSteps?.[station] ?? [];
+          const match = stationStepList.find((step) => step.key === stepKey);
+          if (!match) {
+            errors.push(`Status '${k || "(missing key)"}' references missing step '${stepKey}' for station '${station}'.`);
+          } else if (match.active === false) {
+            errors.push(`Status '${k || "(missing key)"}' references inactive step '${stepKey}' for station '${station}'.`);
+          }
+        }
       }
     }
     return { isValid: errors.length === 0, errors };
-  }, [draft]);
+  }, [draft, stationSteps, isStepsLoading, isStepsError]);
+
+  const stationOptions = React.useMemo(() => {
+    const list = Array.isArray(stations) ? stations : [];
+    return list
+      .map((s) => ({ key: String(s.key ?? "").trim(), name: String(s.name ?? s.key ?? "").trim() }))
+      .filter((s) => s.key.length > 0);
+  }, [stations]);
+
+  const stationLoadError = isStationsError
+    ? ((stationsError as any)?.message || "Unable to load stations")
+    : null;
+
+  const stepLoadError = isStepsError
+    ? ((stepsError as any)?.message || "Unable to load managed steps")
+    : null;
 
   const setRule = (idx: number, patch: Partial<ProductionLineItemStatusRule>) => {
     setDraft((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
@@ -386,6 +433,15 @@ export function ProductionSettings() {
     setWorkflowDraft((prev) => prev.filter((_, i) => i !== idx));
   };
 
+  const prepressDefaultEnabled = (preferences as any)?.prepressDefaultEnabled ?? true;
+
+  const handlePrepressDefaultToggle = async (enabled: boolean) => {
+    await updatePreferences({
+      ...preferences,
+      prepressDefaultEnabled: enabled,
+    });
+  };
+
   const workflowValidation = React.useMemo(() => {
     const errors: string[] = [];
     const keys = new Set<string>();
@@ -415,6 +471,32 @@ export function ProductionSettings() {
         </div>
         
         <div className="h-px bg-titan-border-subtle" />
+
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-titan-md font-semibold text-titan-text-primary">Initial Production Routing</h3>
+            <p className="text-titan-sm text-titan-text-muted mt-1">
+              Organization default routing. Product Type overrides can force or skip prepress.
+            </p>
+          </div>
+
+          <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+            <div className="flex-1 space-y-1">
+              <Label htmlFor="prepress-default-enabled" className="text-titan-sm font-medium text-titan-text-primary cursor-pointer">
+                Default: Send all production to Prepress first
+              </Label>
+              <p className="text-titan-xs text-titan-text-muted">
+                When enabled, new production routing starts at prepress unless the product type override explicitly skips it.
+              </p>
+            </div>
+            <Switch
+              id="prepress-default-enabled"
+              checked={prepressDefaultEnabled}
+              onCheckedChange={handlePrepressDefaultToggle}
+              disabled={isOrgPreferencesLoading || isOrgPreferencesUpdating}
+            />
+          </div>
+        </div>
         
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-3">
@@ -455,6 +537,14 @@ export function ProductionSettings() {
                 ))}
               </ul>
             </div>
+          ) : null}
+
+          {stationLoadError ? (
+            <div className="text-xs text-red-600">Unable to load stations: {stationLoadError}</div>
+          ) : null}
+
+          {stepLoadError ? (
+            <div className="text-xs text-red-600">Unable to load steps: {stepLoadError}</div>
           ) : null}
 
           <div className="rounded-md border border-titan-border-subtle overflow-hidden">
@@ -517,31 +607,67 @@ export function ProductionSettings() {
                         <Select
                           value={(r.stationKey ?? "").trim() || "flatbed"}
                           onValueChange={(v) => setRule(idx, { stationKey: v })}
-                          disabled={!r.sendToProduction}
+                          disabled={!r.sendToProduction || isStationsLoading || !!stationLoadError}
                         >
                           <SelectTrigger>
                             <SelectValue placeholder="Station" />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="flatbed">Flatbed</SelectItem>
+                            {stationOptions.map((station) => (
+                              <SelectItem key={station.key} value={station.key}>
+                                {station.name}
+                              </SelectItem>
+                            ))}
                           </SelectContent>
                         </Select>
                       </TableCell>
                       <TableCell>
-                        <Select
-                          value={String((r.stepKey ?? r.defaultStepKey ?? "")).trim() || "prepress"}
-                          onValueChange={(v) => setRule(idx, { stepKey: v })}
-                          disabled={!r.sendToProduction}
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Step" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="prepress">Prepress</SelectItem>
-                            <SelectItem value="print">Print</SelectItem>
-                            <SelectItem value="finish">Finish</SelectItem>
-                          </SelectContent>
-                        </Select>
+                        {(() => {
+                          const selectedStationKey = (r.stationKey ?? "").trim() || "flatbed";
+                          const allStationSteps = stationSteps?.[selectedStationKey] ?? [];
+                          const activeStationSteps = allStationSteps.filter((step) => step.active !== false);
+                          const selectedStepKey = String((r.stepKey ?? r.defaultStepKey ?? "")).trim();
+                          const selectedStepMeta = allStationSteps.find((step) => step.key === selectedStepKey) ?? null;
+                          const hasMissingStep = !!selectedStepKey && !selectedStepMeta;
+                          const hasInactiveStep = !!selectedStepMeta && selectedStepMeta.active === false;
+
+                          return (
+                            <div className="space-y-1">
+                              <Select
+                                value={selectedStepKey || "__none__"}
+                                onValueChange={(v) => setRule(idx, { stepKey: v === "__none__" ? null : v })}
+                                disabled={!r.sendToProduction || isStepsLoading || !selectedStationKey}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="queued (fallback)" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="__none__">queued (fallback)</SelectItem>
+                                  {activeStationSteps.map((step) => (
+                                    <SelectItem key={step.key} value={step.key}>
+                                      {step.label}
+                                    </SelectItem>
+                                  ))}
+                                  {(hasMissingStep || hasInactiveStep) && selectedStepKey ? (
+                                    <SelectItem value={selectedStepKey}>
+                                      {hasInactiveStep ? `${selectedStepMeta?.label ?? selectedStepKey} (inactive)` : `${selectedStepKey} (missing)`}
+                                    </SelectItem>
+                                  ) : null}
+                                </SelectContent>
+                              </Select>
+                              {(hasMissingStep || hasInactiveStep) && r.sendToProduction ? (
+                                <Badge variant="destructive" className="text-[11px]">
+                                  {hasInactiveStep ? "Selected step is inactive" : "Selected step is missing"}
+                                </Badge>
+                              ) : null}
+                              <ManageProductionStepsDialog
+                                stationKey={selectedStationKey}
+                                stationLabel={stationOptions.find((station) => station.key === selectedStationKey)?.name || selectedStationKey}
+                                disabled={!r.sendToProduction}
+                              />
+                            </div>
+                          );
+                        })()}
                       </TableCell>
                       <TableCell>
                         <Input

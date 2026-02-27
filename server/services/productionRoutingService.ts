@@ -13,7 +13,7 @@
  */
 
 import { db } from "../db";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { productionJobs } from "@shared/schema";
 import { appendEvent } from "../productionHelpers";
 
@@ -48,6 +48,7 @@ export interface RouteLineItemResult {
   stationId: string | null;
   ignoredDueToDone: boolean;
   ignoredDueToExistingRouting: boolean;
+  reason?: string;
 }
 
 export async function routeLineItemToProduction(args: RouteLineItemArgs): Promise<RouteLineItemResult> {
@@ -86,15 +87,8 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
     }
   }
 
-  // B) Station-aware dedup matching the DB unique index:
-  //    UNIQUE (organization_id, line_item_id, station_id) WHERE station_id IS NOT NULL
-  //    - When station_id resolved: match on (org, lineItem, station_id)
-  //    - Fallback (no station_id): match on (org, lineItem, station_key)
-  const stationCondition = stationId
-    ? sql`station_id = ${stationId}`
-    : eq(productionJobs.stationKey, stationKey);
-
-  const [existing] = await runner
+  // B) Non-void idempotency guard: if any active job exists for this line item, never create a second one silently.
+  const existingNonVoidJobs = await runner
     .select({
       id: productionJobs.id,
       orderId: productionJobs.orderId,
@@ -107,14 +101,22 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
       and(
         eq(productionJobs.organizationId, organizationId),
         eq(productionJobs.lineItemId, lineItemId),
-        stationCondition,
+        ne(productionJobs.status, "void"),
       ),
-    )
-    .limit(1);
+    );
+
+  const existingExact = existingNonVoidJobs.find((job: any) => {
+    return job.stationKey === stationKey && job.stepKey === stepKey;
+  });
+
+  const existing = existingExact ?? existingNonVoidJobs[0];
 
   if (existing) {
     const isDone = existing.status === "done";
     const routingDiffers = existing.stationKey !== stationKey || existing.stepKey !== stepKey;
+    const reason = routingDiffers
+      ? `existing_non_void_job_with_different_route:${existing.stationKey}/${existing.stepKey}`
+      : "existing_non_void_job_same_route";
 
     // Sync orderId if it drifted (non-terminal jobs only)
     if (!isDone && existing.orderId !== orderId) {
@@ -140,6 +142,7 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
       stationId,
       ignoredDueToDone: isDone,
       ignoredDueToExistingRouting: !isDone && routingDiffers,
+      reason,
     };
   }
 

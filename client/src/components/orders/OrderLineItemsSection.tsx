@@ -34,7 +34,7 @@ import { ProductOptionsPanelV2 } from "@/features/quotes/editor/components/Produ
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import { isPbv2Product, getPbv2Tree } from "@/lib/pbv2Utils";
 import { cn, isValidHttpUrl } from "@/lib/utils";
-import { apiRequest } from "@/lib/queryClient";
+import { apiFetch, apiRequest } from "@/lib/queryClient";
 import { objectsUrl } from "@/lib/apiConfig";
 import { getAttachmentDisplayName, getPdfPageCount, isPdfAttachment } from "@/lib/attachments";
 import { getThumbSrc } from "@/lib/getThumbSrc";
@@ -656,6 +656,8 @@ export function OrderLineItemsSection({
 
   // Preview modal state (shared with artwork panel)
   const [previewFile, setPreviewFile] = useState<AttachmentForPreview | null>(null);
+  const [authenticatedPreviewImageUrl, setAuthenticatedPreviewImageUrl] = useState<string | null>(null);
+  const authenticatedPreviewImageUrlRef = useRef<string | null>(null);
 
   const [artworkModalLineItemId, setArtworkModalLineItemId] = useState<string | null>(null);
 
@@ -670,6 +672,62 @@ export function OrderLineItemsSection({
   useEffect(() => {
     setPdfEmbedError(false);
   }, [previewFile?.id]);
+
+  useEffect(() => {
+    const revokePreviewUrl = () => {
+      if (!authenticatedPreviewImageUrlRef.current) return;
+      URL.revokeObjectURL(authenticatedPreviewImageUrlRef.current);
+      authenticatedPreviewImageUrlRef.current = null;
+    };
+
+    revokePreviewUrl();
+    setAuthenticatedPreviewImageUrl(null);
+
+    if (!previewFile) return () => {
+      revokePreviewUrl();
+    };
+
+    const fileName = previewFile.originalFilename || previewFile.fileName || "";
+    const previewUrl = previewFile.previewUrl ?? previewFile.originalUrl ?? null;
+    const mimeType = (previewFile.mimeType || "").toLowerCase();
+    const isImagePreview = mimeType.startsWith("image/") || /\.(png|jpe?g)$/i.test(fileName);
+
+    if (!previewUrl || !isImagePreview) {
+      return () => {
+        revokePreviewUrl();
+      };
+    }
+
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const response = await apiFetch(previewUrl, { credentials: "include" });
+        if (!response.ok) {
+          if (import.meta.env.DEV) {
+            console.log(`[OrderLineItemsSection] preview fetch failed status=${response.status} url=${previewUrl}`);
+          }
+          return;
+        }
+
+        const blob = await response.blob();
+        if (cancelled) return;
+
+        const objectUrl = URL.createObjectURL(blob);
+        authenticatedPreviewImageUrlRef.current = objectUrl;
+        setAuthenticatedPreviewImageUrl(objectUrl);
+      } catch {
+        if (import.meta.env.DEV) {
+          console.log(`[OrderLineItemsSection] preview fetch failed status=network url=${previewUrl}`);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      revokePreviewUrl();
+    };
+  }, [previewFile]);
 
   const artworkModalLineItem = useMemo(
     () => lineItems.find((li) => li.id === artworkModalLineItemId) ?? null,
@@ -1885,8 +1943,11 @@ export function OrderLineItemsSection({
             }
             
             // Non-PDF preview URL
-            const previewUrl = previewFile.previewUrl ?? previewFile.originalUrl;
-            const hasValidPreview = !isPdf && previewUrl && isValidHttpUrl(previewUrl);
+            const previewUrl = authenticatedPreviewImageUrl ?? previewFile.previewUrl ?? previewFile.originalUrl;
+            const hasValidPreview =
+              !isPdf &&
+              !!previewUrl &&
+              (previewUrl.startsWith("blob:") || previewUrl.startsWith("/") || isValidHttpUrl(previewUrl));
             
             // Construct download URL
             let downloadUrl: string | null = null;

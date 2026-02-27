@@ -8,6 +8,8 @@ import { useToast } from "./use-toast";
 import type { QuickBooksSyncPolicy } from "@shared/quickBooksPreferences";
 
 export interface OrgPreferences {
+  prepressDefaultEnabled?: boolean;
+
   quotes?: {
     requireApproval?: boolean;
   };
