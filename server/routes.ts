@@ -9264,6 +9264,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return normalized;
   };
 
+  const DEFAULT_PRODUCTION_MANAGED_STEP = {
+    key: "queued",
+    label: "Queued",
+    active: true,
+  } as const;
+
+  const getActiveProductionStationsForOrganization = async (organizationId: string) => {
+    const result = await db.execute(sql`
+      select
+        key as "key",
+        name as "name",
+        sort as "sort"
+      from stations
+      where organization_id = ${organizationId}
+        and active = true
+      order by sort asc, name asc
+    `);
+
+    return (result.rows ?? [])
+      .map((row: any) => ({
+        key: String(row.key ?? "").trim(),
+        name: String(row.name ?? row.key ?? "").trim(),
+        sort: Number(row.sort ?? 0),
+      }))
+      .filter((row: any) => row.key.length > 0);
+  };
+
+  const getProductionStationStepsWithComputedDefaultsForOrganization = async (organizationId: string) => {
+    const stationSteps = await getProductionStationStepsForOrganization(organizationId);
+    const activeStations = await getActiveProductionStationsForOrganization(organizationId);
+
+    const withComputedDefaults: Record<string, Array<{ key: string; label: string; active: boolean }>> = {
+      ...stationSteps,
+    };
+
+    for (const station of activeStations) {
+      const existing = withComputedDefaults[station.key];
+      if (Array.isArray(existing) && existing.length > 0) continue;
+      withComputedDefaults[station.key] = [{ ...DEFAULT_PRODUCTION_MANAGED_STEP }];
+    }
+
+    return withComputedDefaults;
+  };
+
   const setProductionStationStepsForOrganization = async (
     organizationId: string,
     stationSteps: Record<string, Array<{ key: string; label: string; active: boolean }>>,
@@ -9392,22 +9436,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
-      const result = await db.execute(sql`
-        select
-          key as "key",
-          name as "name",
-          sort as "sort"
-        from stations
-        where organization_id = ${organizationId}
-          and active = true
-        order by sort asc, name asc
-      `);
-
-      const data = (result.rows ?? []).map((row: any) => ({
-        key: String(row.key ?? "").trim(),
-        name: String(row.name ?? row.key ?? "").trim(),
-        sort: Number(row.sort ?? 0),
-      })).filter((row: any) => row.key.length > 0);
+      const data = await getActiveProductionStationsForOrganization(organizationId);
 
       res.json({ success: true, data });
     } catch (error) {
@@ -9422,7 +9451,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
-      const stationSteps = await getProductionStationStepsForOrganization(organizationId);
+      const stationSteps = await getProductionStationStepsWithComputedDefaultsForOrganization(organizationId);
       res.json({ success: true, data: stationSteps });
     } catch (error) {
       console.error("Error fetching production steps:", error);
