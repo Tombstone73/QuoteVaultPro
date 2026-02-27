@@ -782,6 +782,8 @@ export class OrdersRepository {
         // Convert quote line items to order line items
         const orderLineItemsData: Omit<InsertOrderLineItem, 'orderId'>[] = quoteLines.map((ql, index) => {
             const requiresPrepress = productPrepressMap.get(ql.productId) ?? orgPrepressDefault;
+            // TODO(production-routing): keep status lifecycle-only; scheduler routing must come from
+            // production_jobs.stationKey/stepKey via resolver, not from pending_prepress/queued literals.
             // NOTE: runtime allows "pending_prepress"; shared InsertOrderLineItem status union is narrower.
             const initialStatus = (requiresPrepress ? 'pending_prepress' : 'queued') as unknown as InsertOrderLineItem['status'];
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -7,8 +7,7 @@ import { getAttachmentDisplayName, isPdfAttachment } from "@/lib/attachments";
 import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { buildPdfViewUrl, buildPdfDownloadUrl, isPdfFile, checkPdfUrlReachable } from "@/lib/pdfUrls";
-import { getThumbSrc } from "@/lib/getThumbSrc";
-import { cn } from "@/lib/utils";
+import { apiFetchBlob } from "@/lib/queryClient";
 
 type AttachmentPage = {
   id: string;
@@ -75,6 +74,10 @@ export function AttachmentViewerDialog({
   const isDev = import.meta.env.DEV;
   const [showFallback, setShowFallback] = useState(false);
   const [urlReachable, setUrlReachable] = useState<boolean | null>(null);
+  const [imageBlobUrl, setImageBlobUrl] = useState<string | null>(null);
+  const [imagePreviewLoading, setImagePreviewLoading] = useState(false);
+  const [imagePreviewError, setImagePreviewError] = useState<string | null>(null);
+  const imageBlobUrlRef = useRef<string | null>(null);
   
   // Gallery mode state
   const isGalleryMode = !!attachments && attachments.length > 0;
@@ -182,8 +185,9 @@ export function AttachmentViewerDialog({
   const attachment = isGalleryMode 
     ? attachments[selectedIndex] ?? null
     : singleAttachment ?? null;
-  
-  if (!attachment) return null;
+  const attachmentId = attachment?.id ?? null;
+  const fileName = attachment ? getAttachmentDisplayName(attachment) : "Attachment";
+  const objectPath = (attachment?.objectPath as string | null | undefined) ?? null;
   
   // Navigation handlers
   const canGoPrev = isGalleryMode && selectedIndex > 0;
@@ -201,11 +205,8 @@ export function AttachmentViewerDialog({
     }
   };
 
-  const fileName = getAttachmentDisplayName(attachment);
-  const objectPath = attachment.objectPath as string | null | undefined;
-  
   // PACK P2: Use URL builder helpers
-  const isPdf = isPdfFile(attachment.mimeType, fileName);
+  const isPdf = isPdfFile(attachment?.mimeType, fileName);
   const pdfViewUrl = isPdf ? buildPdfViewUrl(objectPath) : null;
   const pdfDownloadUrl = isPdf ? buildPdfDownloadUrl(objectPath, fileName) : null;
 
@@ -221,15 +222,17 @@ export function AttachmentViewerDialog({
     return null;
   };
 
-  const effectiveMimeType = attachment.mimeType ?? inferMimeType(fileName);
+  const effectiveMimeType = attachment?.mimeType ?? inferMimeType(fileName);
   const isImage = typeof effectiveMimeType === "string" && effectiveMimeType.startsWith("image/");
   
-  const imageViewUrl = isImage ? (attachment.previewUrl ?? attachment.originalUrl ?? null) : null;
+  const imageViewUrl = isImage ? (attachment?.previewUrl ?? attachment?.originalUrl ?? null) : null;
   
   // Fallback download URL for non-PDFs
-  const genericDownloadUrl = !isPdf ? (attachment.originalUrl ?? null) : null;
+  const genericDownloadUrl = !isPdf ? (attachment?.originalUrl ?? null) : null;
 
   const handleDownloadClick = () => {
+    if (!attachment) return;
+
     if (onDownload) {
       onDownload(attachment);
       return;
@@ -239,6 +242,64 @@ export function AttachmentViewerDialog({
     if (!downloadUrl) return;
     void downloadFileFromUrl(downloadUrl, fileName);
   };
+
+  useEffect(() => {
+    const revokeBlobUrl = () => {
+      if (!imageBlobUrlRef.current) return;
+      URL.revokeObjectURL(imageBlobUrlRef.current);
+      imageBlobUrlRef.current = null;
+    };
+
+    revokeBlobUrl();
+    setImageBlobUrl(null);
+    setImagePreviewLoading(false);
+    setImagePreviewError(null);
+
+    if (!open || !attachmentId || !isImage) {
+      return () => {
+        revokeBlobUrl();
+      };
+    }
+
+    if (!imageViewUrl) {
+      setImagePreviewError("Preview URL unavailable.");
+      return () => {
+        revokeBlobUrl();
+      };
+    }
+
+    let cancelled = false;
+    setImagePreviewLoading(true);
+
+    void (async () => {
+      try {
+        const blob = await apiFetchBlob(imageViewUrl, { method: "GET", credentials: "include" });
+        if (cancelled) return;
+        const objectUrl = URL.createObjectURL(blob);
+        imageBlobUrlRef.current = objectUrl;
+        setImageBlobUrl(objectUrl);
+        setImagePreviewError(null);
+      } catch (error) {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : "Failed to load preview";
+        setImagePreviewError("Unable to load image preview. Use Download original.");
+        if (isDev) {
+          console.log(`[AttachmentViewerDialog] image preview fetch failed url=${imageViewUrl} error=${message}`);
+        }
+      } finally {
+        if (!cancelled) {
+          setImagePreviewLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      revokeBlobUrl();
+    };
+  }, [open, attachmentId, isImage, imageViewUrl]);
+
+  if (!attachment) return null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -271,8 +332,8 @@ export function AttachmentViewerDialog({
           {/* Gallery Navigation layout using 3-column grid to avoid padding stealing stage width */}
           {isGalleryMode && (canGoPrev || canGoNext) ? (
             <div className="">
-              {/* Images: standard img tag */}
-              {imageViewUrl && isImage ? (
+              {/* Images: credentialed blob preview */}
+              {isImage ? (
                 <div className="grid grid-cols-[3.5rem,1fr,3.5rem] items-center">
                   {/* Left arrow column (fixed width) */}
                   <div className="h-full flex items-center justify-center">
@@ -292,11 +353,19 @@ export function AttachmentViewerDialog({
                   <div className="min-w-0 min-h-0">
                     {/** min-w-0/min-h-0 ensure the grid cell can shrink without causing horizontal overflow */}
                     <div className="bg-muted/30 rounded-lg p-2 min-h-0 max-h-[calc(90vh-220px)] overflow-x-hidden overflow-y-hidden">
-                      <img
-                        src={imageViewUrl}
-                        alt={fileName}
-                        className="block mx-auto max-h-full max-w-full w-auto h-auto object-contain"
-                      />
+                      {imagePreviewLoading ? (
+                        <div className="flex items-center justify-center h-[60vh] text-sm text-muted-foreground">Loading preview...</div>
+                      ) : imageBlobUrl ? (
+                        <img
+                          src={imageBlobUrl}
+                          alt={fileName}
+                          className="block mx-auto max-h-full max-w-full w-auto h-auto object-contain"
+                        />
+                      ) : imagePreviewError ? (
+                        <div className="flex items-center justify-center h-[60vh] text-sm text-muted-foreground">{imagePreviewError}</div>
+                      ) : (
+                        <div className="flex items-center justify-center h-[60vh] text-sm text-muted-foreground">Preview not available</div>
+                      )}
                     </div>
                   </div>
                   {/* Right arrow column (fixed width) */}
@@ -511,9 +580,17 @@ export function AttachmentViewerDialog({
           ) : (
             <>
               {/* Images without gallery mode */}
-              {imageViewUrl && isImage ? (
+              {isImage ? (
                 <div className="flex justify-center items-center bg-muted/30 rounded-lg p-2 min-h-0 max-h-[calc(90vh-220px)] overflow-x-hidden overflow-y-hidden">
-                  <img src={imageViewUrl} alt={fileName} className="max-h-full max-w-full w-auto h-auto object-contain" />
+                  {imagePreviewLoading ? (
+                    <div className="flex items-center justify-center h-[60vh] text-sm text-muted-foreground">Loading preview...</div>
+                  ) : imageBlobUrl ? (
+                    <img src={imageBlobUrl} alt={fileName} className="max-h-full max-w-full w-auto h-auto object-contain" />
+                  ) : imagePreviewError ? (
+                    <div className="flex items-center justify-center h-[60vh] text-sm text-muted-foreground">{imagePreviewError}</div>
+                  ) : (
+                    <div className="flex items-center justify-center h-[60vh] text-sm text-muted-foreground">Preview not available</div>
+                  )}
                 </div>
               ) : null}
               

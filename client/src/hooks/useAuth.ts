@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { User } from "@shared/schema";
 import { getApiUrl } from "@/lib/apiConfig";
+import { apiFetch } from "@/lib/queryClient";
 
 type SessionResponse = {
   authenticated: boolean;
@@ -24,7 +25,7 @@ export function useAuth() {
 
       let response: Response;
       try {
-        response = await fetch(getApiUrl("/api/auth/session"), {
+        response = await apiFetch(getApiUrl("/api/auth/session"), {
           credentials: "include",
         });
       } catch {
@@ -91,7 +92,7 @@ export function useLogout() {
 
   const logout = async () => {
     try {
-      await fetch(getApiUrl("/api/auth/logout"), {
+      await apiFetch(getApiUrl("/api/auth/logout"), {
         method: "POST",
         credentials: "include",
       });

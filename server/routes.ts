@@ -1414,7 +1414,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const [org] = await db
-        .select({ settings: organizations.settings })
+        .select({
+          settings: organizations.settings,
+          prepressDefaultEnabled: organizations.prepressDefaultEnabled,
+        })
         .from(organizations)
         .where(eq(organizations.id, organizationId))
         .limit(1);
@@ -1440,6 +1443,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json({
         ...(preferences as any),
+        prepressDefaultEnabled: org.prepressDefaultEnabled,
         production: {
           ...(((preferences as any)?.production && typeof (preferences as any).production === "object") ? (preferences as any).production : {}),
           materialsOverrideMode,
@@ -1471,11 +1475,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const newPreferences = req.body;
 
       // Extract emailTemplates if present (will be stored at settings.emailTemplates)
-      const { emailTemplates, ...otherPreferences } = newPreferences;
+      const { emailTemplates, prepressDefaultEnabled, ...otherPreferences } = newPreferences;
 
       // Get current settings
       const [org] = await db
-        .select({ settings: organizations.settings })
+        .select({
+          settings: organizations.settings,
+          prepressDefaultEnabled: organizations.prepressDefaultEnabled,
+        })
         .from(organizations)
         .where(eq(organizations.id, organizationId))
         .limit(1);
@@ -1497,11 +1504,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .update(organizations)
         .set({
           settings: updatedSettings as any,
+          ...(typeof prepressDefaultEnabled === "boolean" ? { prepressDefaultEnabled } : {}),
           updatedAt: new Date(),
         })
         .where(eq(organizations.id, organizationId));
 
-      res.json({ success: true, preferences: otherPreferences, emailTemplates });
+      res.json({
+        success: true,
+        preferences: otherPreferences,
+        emailTemplates,
+        prepressDefaultEnabled:
+          typeof prepressDefaultEnabled === "boolean"
+            ? prepressDefaultEnabled
+            : org.prepressDefaultEnabled,
+      });
     } catch (error) {
       console.error("Error updating organization preferences:", error);
       res.status(500).json({ message: "Failed to update preferences" });
@@ -9062,6 +9078,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .strict();
 
   const productionLineItemStatusRulesSchema = z.array(productionLineItemStatusRuleSchema);
+  const productionManagedStepSchema = z
+    .object({
+      key: z.string().min(1),
+      label: z.string().min(1),
+      active: z.boolean().optional().default(true),
+    })
+    .strict();
+  const productionManagedStepListSchema = z.array(productionManagedStepSchema);
+  const productionManagedStepsByStationSchema = z.record(z.string(), productionManagedStepListSchema);
+
+  const normalizeProductionStepKey = (value: unknown) =>
+    String(value ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9_-]/g, "")
+      .replace(/-+/g, "-");
+
+  const normalizeProductionStepLabel = (value: unknown) => String(value ?? "").trim();
 
   const getProductionConfigForOrganization = async (organizationId: string) => {
     const rows = await db
@@ -9187,6 +9222,74 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return loaded.rules;
   };
 
+  const getProductionStationStepsForOrganization = async (organizationId: string) => {
+    const rows = await db
+      .select({ settings: organizations.settings })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .limit(1);
+
+    const settings = (rows[0]?.settings as any) ?? {};
+    const raw = settings?.preferences?.production?.stationSteps;
+    const parsed = productionManagedStepsByStationSchema.safeParse(raw);
+    const source = parsed.success ? parsed.data : {};
+
+    const normalized = Object.fromEntries(
+      Object.entries(source)
+        .map(([stationKey, items]) => {
+          const normalizedStationKey = String(stationKey ?? "").trim();
+          if (!normalizedStationKey) return null;
+
+          const dedupe = new Set<string>();
+          const normalizedItems = items
+            .map((step) => {
+              const normalizedKey = normalizeProductionStepKey(step.key);
+              const normalizedLabel = normalizeProductionStepLabel(step.label);
+              if (!normalizedKey || !normalizedLabel || dedupe.has(normalizedKey)) return null;
+              dedupe.add(normalizedKey);
+              return {
+                key: normalizedKey,
+                label: normalizedLabel,
+                active: step.active !== false,
+              };
+            })
+            .filter((step): step is { key: string; label: string; active: boolean } => !!step)
+            .sort((a, b) => a.label.localeCompare(b.label));
+
+          return [normalizedStationKey, normalizedItems] as const;
+        })
+        .filter((entry): entry is readonly [string, Array<{ key: string; label: string; active: boolean }>] => !!entry),
+    );
+
+    return normalized;
+  };
+
+  const setProductionStationStepsForOrganization = async (
+    organizationId: string,
+    stationSteps: Record<string, Array<{ key: string; label: string; active: boolean }>>,
+  ) => {
+    const rows = await db
+      .select({ settings: organizations.settings })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .limit(1);
+
+    const settings = (rows[0]?.settings as any) ?? {};
+    const next = {
+      ...settings,
+      preferences: {
+        ...(settings.preferences ?? {}),
+        production: {
+          ...(settings.preferences?.production ?? {}),
+          stationSteps,
+        },
+      },
+    };
+
+    await db.update(organizations).set({ settings: next }).where(eq(organizations.id, organizationId));
+    return next;
+  };
+
   const setProductionLineItemStatusRulesForOrganization = async (
     organizationId: string,
     rules: z.infer<typeof productionLineItemStatusRulesSchema>,
@@ -9282,6 +9385,137 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ error: "Failed to fetch production config" });
     }
   });
+
+  app.get("/api/production/stations", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const result = await db.execute(sql`
+        select
+          key as "key",
+          name as "name",
+          sort as "sort"
+        from stations
+        where organization_id = ${organizationId}
+          and active = true
+        order by sort asc, name asc
+      `);
+
+      const data = (result.rows ?? []).map((row: any) => ({
+        key: String(row.key ?? "").trim(),
+        name: String(row.name ?? row.key ?? "").trim(),
+        sort: Number(row.sort ?? 0),
+      })).filter((row: any) => row.key.length > 0);
+
+      res.json({ success: true, data });
+    } catch (error) {
+      console.error("Error fetching production stations:", error);
+      res.status(500).json({ error: "Failed to fetch production stations" });
+    }
+  });
+
+  app.get("/api/production/steps", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const stationSteps = await getProductionStationStepsForOrganization(organizationId);
+      res.json({ success: true, data: stationSteps });
+    } catch (error) {
+      console.error("Error fetching production steps:", error);
+      res.status(500).json({ error: "Failed to fetch production steps" });
+    }
+  });
+
+  app.post("/api/production/steps", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const parsed = z
+        .object({
+          stationKey: z.string().min(1),
+          key: z.string().optional().nullable(),
+          label: z.string().min(1),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: "Invalid step payload" });
+
+      const stationKey = String(parsed.data.stationKey).trim();
+      const label = normalizeProductionStepLabel(parsed.data.label);
+      const key = normalizeProductionStepKey(parsed.data.key ?? label);
+      if (!stationKey || !label || !key) return res.status(400).json({ error: "Invalid step payload" });
+
+      const stationSteps = await getProductionStationStepsForOrganization(organizationId);
+      const existing = stationSteps[stationKey] ?? [];
+      if (existing.some((step) => step.key === key)) {
+        return res.status(409).json({ error: `Step '${key}' already exists for station '${stationKey}'` });
+      }
+
+      stationSteps[stationKey] = [...existing, { key, label, active: true }].sort((a, b) => a.label.localeCompare(b.label));
+      await setProductionStationStepsForOrganization(organizationId, stationSteps);
+
+      res.json({ success: true, data: stationSteps });
+    } catch (error) {
+      console.error("Error creating production step:", error);
+      res.status(500).json({ error: "Failed to create production step" });
+    }
+  });
+
+  app.patch(
+    "/api/production/steps/:stationKey/:key",
+    isAuthenticated,
+    tenantContext,
+    isAdminOrOwner,
+    async (req: any, res) => {
+      try {
+        if (!assertInternalUser(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+        const stationKey = String(req.params.stationKey ?? "").trim();
+        const key = normalizeProductionStepKey(req.params.key);
+        if (!stationKey || !key) return res.status(400).json({ error: "Invalid step path" });
+
+        const parsed = z
+          .object({
+            label: z.string().min(1).optional(),
+            active: z.boolean().optional(),
+          })
+          .refine((v) => typeof v.label !== "undefined" || typeof v.active !== "undefined", {
+            message: "No step fields to update",
+          })
+          .safeParse(req.body ?? {});
+
+        if (!parsed.success) {
+          return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid step payload" });
+        }
+
+        const stationSteps = await getProductionStationStepsForOrganization(organizationId);
+        const stationList = stationSteps[stationKey] ?? [];
+        const index = stationList.findIndex((step) => step.key === key);
+        if (index < 0) return res.status(404).json({ error: "Step not found" });
+
+        const current = stationList[index];
+        stationList[index] = {
+          ...current,
+          label: parsed.data.label ? normalizeProductionStepLabel(parsed.data.label) : current.label,
+          active: typeof parsed.data.active === "boolean" ? parsed.data.active : current.active,
+        };
+        stationSteps[stationKey] = [...stationList].sort((a, b) => a.label.localeCompare(b.label));
+
+        await setProductionStationStepsForOrganization(organizationId, stationSteps);
+        res.json({ success: true, data: stationSteps });
+      } catch (error) {
+        console.error("Error updating production step:", error);
+        res.status(500).json({ error: "Failed to update production step" });
+      }
+    },
+  );
 
   // 10) Settings: Line item status routing rules
   app.get(
@@ -9485,7 +9719,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         res.json(result);
       } catch (error: any) {
-        console.error("Error scheduling line items for production:", error);
+        const formatError = (input: any) => {
+          if (!input || typeof input !== "object") return null;
+          return {
+            code: input.code,
+            constraint: input.constraint,
+            table: input.table,
+            detail: input.detail,
+            message: input.message,
+          };
+        };
+
+        console.error("Error scheduling line items for production:", {
+          error: formatError(error),
+          cause: formatError(error?.cause),
+        });
         res.status(500).json({
           success: false,
           error: error?.message || "Failed to schedule line items for production",
