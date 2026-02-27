@@ -9078,6 +9078,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .strict();
 
   const productionLineItemStatusRulesSchema = z.array(productionLineItemStatusRuleSchema);
+  const productionManagedStepSchema = z
+    .object({
+      key: z.string().min(1),
+      label: z.string().min(1),
+      active: z.boolean().optional().default(true),
+    })
+    .strict();
+  const productionManagedStepListSchema = z.array(productionManagedStepSchema);
+  const productionManagedStepsByStationSchema = z.record(z.string(), productionManagedStepListSchema);
+
+  const normalizeProductionStepKey = (value: unknown) =>
+    String(value ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9_-]/g, "")
+      .replace(/-+/g, "-");
+
+  const normalizeProductionStepLabel = (value: unknown) => String(value ?? "").trim();
 
   const getProductionConfigForOrganization = async (organizationId: string) => {
     const rows = await db
@@ -9201,6 +9220,74 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const getProductionLineItemStatusRulesForOrganization = async (organizationId: string) => {
     const loaded = await loadProductionLineItemStatusRulesForOrganization(organizationId);
     return loaded.rules;
+  };
+
+  const getProductionStationStepsForOrganization = async (organizationId: string) => {
+    const rows = await db
+      .select({ settings: organizations.settings })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .limit(1);
+
+    const settings = (rows[0]?.settings as any) ?? {};
+    const raw = settings?.preferences?.production?.stationSteps;
+    const parsed = productionManagedStepsByStationSchema.safeParse(raw);
+    const source = parsed.success ? parsed.data : {};
+
+    const normalized = Object.fromEntries(
+      Object.entries(source)
+        .map(([stationKey, items]) => {
+          const normalizedStationKey = String(stationKey ?? "").trim();
+          if (!normalizedStationKey) return null;
+
+          const dedupe = new Set<string>();
+          const normalizedItems = items
+            .map((step) => {
+              const normalizedKey = normalizeProductionStepKey(step.key);
+              const normalizedLabel = normalizeProductionStepLabel(step.label);
+              if (!normalizedKey || !normalizedLabel || dedupe.has(normalizedKey)) return null;
+              dedupe.add(normalizedKey);
+              return {
+                key: normalizedKey,
+                label: normalizedLabel,
+                active: step.active !== false,
+              };
+            })
+            .filter((step): step is { key: string; label: string; active: boolean } => !!step)
+            .sort((a, b) => a.label.localeCompare(b.label));
+
+          return [normalizedStationKey, normalizedItems] as const;
+        })
+        .filter((entry): entry is readonly [string, Array<{ key: string; label: string; active: boolean }>] => !!entry),
+    );
+
+    return normalized;
+  };
+
+  const setProductionStationStepsForOrganization = async (
+    organizationId: string,
+    stationSteps: Record<string, Array<{ key: string; label: string; active: boolean }>>,
+  ) => {
+    const rows = await db
+      .select({ settings: organizations.settings })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .limit(1);
+
+    const settings = (rows[0]?.settings as any) ?? {};
+    const next = {
+      ...settings,
+      preferences: {
+        ...(settings.preferences ?? {}),
+        production: {
+          ...(settings.preferences?.production ?? {}),
+          stationSteps,
+        },
+      },
+    };
+
+    await db.update(organizations).set({ settings: next }).where(eq(organizations.id, organizationId));
+    return next;
   };
 
   const setProductionLineItemStatusRulesForOrganization = async (
@@ -9328,6 +9415,107 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ error: "Failed to fetch production stations" });
     }
   });
+
+  app.get("/api/production/steps", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const stationSteps = await getProductionStationStepsForOrganization(organizationId);
+      res.json({ success: true, data: stationSteps });
+    } catch (error) {
+      console.error("Error fetching production steps:", error);
+      res.status(500).json({ error: "Failed to fetch production steps" });
+    }
+  });
+
+  app.post("/api/production/steps", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const parsed = z
+        .object({
+          stationKey: z.string().min(1),
+          key: z.string().optional().nullable(),
+          label: z.string().min(1),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: "Invalid step payload" });
+
+      const stationKey = String(parsed.data.stationKey).trim();
+      const label = normalizeProductionStepLabel(parsed.data.label);
+      const key = normalizeProductionStepKey(parsed.data.key ?? label);
+      if (!stationKey || !label || !key) return res.status(400).json({ error: "Invalid step payload" });
+
+      const stationSteps = await getProductionStationStepsForOrganization(organizationId);
+      const existing = stationSteps[stationKey] ?? [];
+      if (existing.some((step) => step.key === key)) {
+        return res.status(409).json({ error: `Step '${key}' already exists for station '${stationKey}'` });
+      }
+
+      stationSteps[stationKey] = [...existing, { key, label, active: true }].sort((a, b) => a.label.localeCompare(b.label));
+      await setProductionStationStepsForOrganization(organizationId, stationSteps);
+
+      res.json({ success: true, data: stationSteps });
+    } catch (error) {
+      console.error("Error creating production step:", error);
+      res.status(500).json({ error: "Failed to create production step" });
+    }
+  });
+
+  app.patch(
+    "/api/production/steps/:stationKey/:key",
+    isAuthenticated,
+    tenantContext,
+    isAdminOrOwner,
+    async (req: any, res) => {
+      try {
+        if (!assertInternalUser(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+        const stationKey = String(req.params.stationKey ?? "").trim();
+        const key = normalizeProductionStepKey(req.params.key);
+        if (!stationKey || !key) return res.status(400).json({ error: "Invalid step path" });
+
+        const parsed = z
+          .object({
+            label: z.string().min(1).optional(),
+            active: z.boolean().optional(),
+          })
+          .refine((v) => typeof v.label !== "undefined" || typeof v.active !== "undefined", {
+            message: "No step fields to update",
+          })
+          .safeParse(req.body ?? {});
+
+        if (!parsed.success) {
+          return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid step payload" });
+        }
+
+        const stationSteps = await getProductionStationStepsForOrganization(organizationId);
+        const stationList = stationSteps[stationKey] ?? [];
+        const index = stationList.findIndex((step) => step.key === key);
+        if (index < 0) return res.status(404).json({ error: "Step not found" });
+
+        const current = stationList[index];
+        stationList[index] = {
+          ...current,
+          label: parsed.data.label ? normalizeProductionStepLabel(parsed.data.label) : current.label,
+          active: typeof parsed.data.active === "boolean" ? parsed.data.active : current.active,
+        };
+        stationSteps[stationKey] = [...stationList].sort((a, b) => a.label.localeCompare(b.label));
+
+        await setProductionStationStepsForOrganization(organizationId, stationSteps);
+        res.json({ success: true, data: stationSteps });
+      } catch (error) {
+        console.error("Error updating production step:", error);
+        res.status(500).json({ error: "Failed to update production step" });
+      }
+    },
+  );
 
   // 10) Settings: Line item status routing rules
   app.get(
