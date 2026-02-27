@@ -10,6 +10,7 @@ export interface ProductType {
   defaultStationKey: string | null;
   defaultStepKey: string | null;
   sendToProductionDefault: boolean;
+  requiresPrepressOverride: boolean | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -32,7 +33,7 @@ export function useCreateProductType() {
   const { toast } = useToast();
 
   return useMutation({
-    mutationFn: async (data: { name: string; description?: string; sortOrder?: number; defaultStationKey?: string | null; defaultStepKey?: string | null; sendToProductionDefault?: boolean }) => {
+    mutationFn: async (data: { name: string; description?: string; sortOrder?: number; defaultStationKey?: string | null; defaultStepKey?: string | null; sendToProductionDefault?: boolean; requiresPrepressOverride?: boolean | null }) => {
       const response = await fetch("/api/product-types", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
