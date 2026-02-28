@@ -75,6 +75,11 @@ A full dependency graph explaining correct build sequencing, upstream requiremen
 
 ---
 
+### 🧭 **production-routing-contract.md**
+Compact API contract for production routing diagnostics (`lineItemDiagnostics`) across schedule and production jobs DTOs.
+
+---
+
 ### 🛠️ **DEVELOPMENT_FLOW.md**
 Official workflow for Batman → ChatGPT → Copilot development loop.
 
