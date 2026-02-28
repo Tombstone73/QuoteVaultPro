@@ -40,6 +40,7 @@ import {
   Eye,
   EyeOff,
   Maximize2,
+  Info,
 } from "lucide-react";
 import { 
   useProductionJobs, 
@@ -1756,6 +1757,57 @@ function StatusBullet({
   );
 }
 
+function RoutingReasonAffordance({
+  routingReason,
+  idempotencyNote,
+}: {
+  routingReason?: string | null;
+  idempotencyNote?: string | null;
+}) {
+  const reason = typeof routingReason === "string" ? routingReason.trim() : "";
+  const note = typeof idempotencyNote === "string" ? idempotencyNote.trim() : "";
+  if (!reason) return null;
+
+  const trigger = (
+    <button
+      type="button"
+      className="inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
+      onClick={(e) => e.stopPropagation()}
+      onPointerDownCapture={(e) => e.stopPropagation()}
+      onMouseDownCapture={(e) => e.stopPropagation()}
+      aria-label="Why was this route chosen?"
+      data-no-dnd="true"
+    >
+      <Info className="h-3.5 w-3.5" />
+    </button>
+  );
+
+  return (
+    <>
+      <span className="hidden md:inline-flex">
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+            <TooltipContent className="max-w-[360px] text-xs">
+              <div>Routed by: {reason}</div>
+              {note ? <div className="mt-1 text-muted-foreground">{note}</div> : null}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      </span>
+      <span className="inline-flex md:hidden">
+        <Popover>
+          <PopoverTrigger asChild>{trigger}</PopoverTrigger>
+          <PopoverContent align="end" className="w-[280px] text-xs">
+            <div>Routed by: {reason}</div>
+            {note ? <div className="mt-1 text-muted-foreground">{note}</div> : null}
+          </PopoverContent>
+        </Popover>
+      </span>
+    </>
+  );
+}
+
 // Job card component for Kanban board
 function JobCard({ 
   job, 
@@ -1959,6 +2011,10 @@ function JobCard({
               <div className="text-sm font-medium flex items-center gap-1.5">
                 <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
                 <span className="capitalize">{job.stationKey}</span>
+                <RoutingReasonAffordance
+                  routingReason={job.routingReason}
+                  idempotencyNote={job.idempotencyNote}
+                />
               </div>
             </div>
           )}
@@ -2143,7 +2199,15 @@ function JobRow({ job, visibleColumns, onArtworkClick }: { job: ProductionJobLis
         );
       
       case "station":
-        return <span className="text-sm text-muted-foreground capitalize">{job.stationKey || "—"}</span>;
+        return (
+          <span className="text-sm text-muted-foreground capitalize inline-flex items-center gap-1.5">
+            {job.stationKey || "—"}
+            <RoutingReasonAffordance
+              routingReason={job.routingReason}
+              idempotencyNote={job.idempotencyNote}
+            />
+          </span>
+        );
       
       default:
         return null;

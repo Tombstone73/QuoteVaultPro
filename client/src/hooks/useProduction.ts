@@ -53,6 +53,9 @@ export type ProductionJobListItem = {
   view: string;
   stationKey?: string | null;
   stepKey?: string | null;
+  routingReason?: string | null;
+  routingSource?: string | null;
+  idempotencyNote?: string | null;
   lineItemId?: string | null;
   status: "queued" | "in_progress" | "done";
   startedAt: string | null;
@@ -211,6 +214,13 @@ export type ScheduleProductionResult = {
     existingJobCount: number;
     skippedNonProductionCount: number;
     affectedLineItemIds: string[];
+    lineItemDiagnostics?: Record<string, {
+      stationKey: string;
+      stepKey: string;
+      routingReason: string;
+      routingSource?: string;
+      idempotencyNote?: string;
+    }>;
   };
   message: string;
 };
@@ -233,9 +243,15 @@ export function useScheduleOrderLineItemsForProduction(orderId: string) {
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
       qc.invalidateQueries({ queryKey: ["/api/orders", orderId] as any });
+      const firstDiagnostic = data?.data?.lineItemDiagnostics
+        ? Object.values(data.data.lineItemDiagnostics)[0]
+        : null;
+      const details = firstDiagnostic
+        ? `Routed by: ${firstDiagnostic.routingReason}${firstDiagnostic.idempotencyNote ? ` • ${firstDiagnostic.idempotencyNote}` : ""}`
+        : data.message;
       toast({ 
         title: "Production scheduling complete", 
-        description: data.message 
+        description: details
       });
     },
     onError: (e: Error) => {

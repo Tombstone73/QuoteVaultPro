@@ -10155,6 +10155,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
         notesByJobId.set(row.productionJobId, list);
       }
 
+      const routingEventRows = await db
+        .select({
+          productionJobId: productionEvents.productionJobId,
+          type: productionEvents.type,
+          payload: productionEvents.payload,
+          createdAt: productionEvents.createdAt,
+        })
+        .from(productionEvents)
+        .where(
+          and(
+            eq(productionEvents.organizationId, organizationId),
+            inArray(productionEvents.productionJobId, jobIds),
+            inArray(productionEvents.type, ["intake", "routing_override"]),
+          ),
+        )
+        .orderBy(desc(productionEvents.createdAt));
+
+      const latestRoutingEventByJobId = new Map<string, { payload: any; type: string }>();
+      for (const row of routingEventRows) {
+        if (!latestRoutingEventByJobId.has(row.productionJobId)) {
+          latestRoutingEventByJobId.set(row.productionJobId, {
+            payload: row.payload ?? {},
+            type: row.type,
+          });
+        }
+      }
+
       // Batched order enrichment for cockpit UI (no schema changes, no N+1)
       const orderIds = Array.from(new Set(filteredRows.map((r) => r.orderId)));
 
@@ -10623,6 +10650,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const backPreviewUrl = backArt ? computePreviewUrl(backArt) : undefined;
 
         const notes = notesByJobId.get(row.id) ?? [];
+        const routingMeta = latestRoutingEventByJobId.get(row.id);
+        const routingPayload = routingMeta?.payload ?? {};
+        const routingReasonRaw = routingPayload?.routingReason;
+        const routingSourceRaw = routingPayload?.source ?? routingPayload?.trigger ?? routingMeta?.type;
+        const idempotencyNoteRaw = routingPayload?.idempotencyNote;
 
         return {
           id: row.id,
@@ -10636,6 +10668,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           dueDate: row.dueDate ?? null,
           stationKey: String(row.stationKey ?? ""),
           stepKey: String(row.stepKey ?? ""),
+          routingReason: typeof routingReasonRaw === "string" && routingReasonRaw.trim() ? String(routingReasonRaw) : null,
+          routingSource: typeof routingSourceRaw === "string" && String(routingSourceRaw).trim() ? String(routingSourceRaw) : null,
+          idempotencyNote:
+            typeof idempotencyNoteRaw === "string" && String(idempotencyNoteRaw).trim()
+              ? String(idempotencyNoteRaw)
+              : null,
           // LIVE LINE ITEM FIELDS (top-level for easy frontend access)
           qty,                // LIVE: from line item, updates when qty changed
           jobDescription,     // LIVE: from line item description
@@ -10784,6 +10822,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .where(and(eq(productionEvents.organizationId, organizationId), eq(productionEvents.productionJobId, jobId)))
         .orderBy(desc(productionEvents.createdAt))
         .limit(250);
+
+      const latestRoutingEvent = events.find((event) => event.type === "routing_override" || event.type === "intake") ?? null;
+      const latestRoutingPayload = (latestRoutingEvent?.payload as any) ?? {};
+      const routingReason =
+        typeof latestRoutingPayload?.routingReason === "string" && latestRoutingPayload.routingReason.trim()
+          ? String(latestRoutingPayload.routingReason)
+          : null;
+      const routingSource =
+        typeof latestRoutingPayload?.source === "string" && latestRoutingPayload.source.trim()
+          ? String(latestRoutingPayload.source)
+          : typeof latestRoutingPayload?.trigger === "string" && latestRoutingPayload.trigger.trim()
+            ? String(latestRoutingPayload.trigger)
+            : latestRoutingEvent?.type ?? null;
+      const idempotencyNote =
+        typeof latestRoutingPayload?.idempotencyNote === "string" && latestRoutingPayload.idempotencyNote.trim()
+          ? String(latestRoutingPayload.idempotencyNote)
+          : null;
 
       const timerState = await getTimerStateForJob(organizationId, jobId);
       const now = Date.now();
@@ -11132,6 +11187,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           id: job.id,
           stationKey: job.stationKey,
           stepKey: job.stepKey,
+          routingReason,
+          routingSource,
+          idempotencyNote,
           lineItemId: job.lineItemId,
           orderId,
           status: job.status,
