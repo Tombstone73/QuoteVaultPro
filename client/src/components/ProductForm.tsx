@@ -12,6 +12,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog";
 import { useToast } from "@/hooks/use-toast";
 import { BasePricingEditor } from "@/components/pbv2/builder-v2/BasePricingEditor";
+import { PricingVariableHelper } from "@/components/pbv2/builder-v2/PricingVariableHelper";
 
 // Required field indicator component
 function RequiredIndicator() {
@@ -483,7 +484,7 @@ function PricingEngineRadioSection({
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 min-w-0">
       <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Pricing Engine</h3>
 
       <RadioGroup
@@ -594,19 +595,19 @@ function PricingEngineRadioSection({
 
         {/* — Field 3: Pricing Formula — */}
         {getProfile(pricingProfileKey).usesFormula && (
-          <div className={`rounded-md px-3 py-2.5 transition-colors ${effectiveMode === "pricingFormula" ? "bg-slate-800/60" : "bg-transparent"}`}>
+          <div className={`rounded-md px-3 py-2.5 transition-colors min-w-0 ${effectiveMode === "pricingFormula" ? "bg-slate-800/60" : "bg-transparent"}`}>
             <div className="flex items-center gap-2 mb-1.5">
               <RadioGroupItem value="pricingFormula" id="pe-formula" className="h-3.5 w-3.5" />
               <label htmlFor="pe-formula" className="text-xs font-medium text-slate-300 cursor-pointer select-none">
                 Pricing Formula
               </label>
             </div>
-            <div className={effectiveMode !== "pricingFormula" ? "opacity-40 pointer-events-none" : ""}>
+            <div className={`min-w-0 ${effectiveMode !== "pricingFormula" ? "opacity-40 pointer-events-none" : ""}`}>
               <FormField
                 control={form.control}
                 name="pricingFormula"
                 render={({ field }) => (
-                  <FormItem className="space-y-0">
+                  <FormItem className="space-y-2 min-w-0">
                     <FormControl>
                       <Input
                         placeholder={getDefaultFormula(pricingProfileKey)}
@@ -615,6 +616,7 @@ function PricingEngineRadioSection({
                         className="bg-slate-950/60 border-slate-700/50 h-8 text-sm font-mono"
                       />
                     </FormControl>
+                    <PricingVariableHelper />
                     <FormMessage />
                   </FormItem>
                 )}
