@@ -32,6 +32,13 @@ export async function scheduleOrderLineItemsForProduction(args: {
     existingJobCount: number;
     skippedNonProductionCount: number;
     affectedLineItemIds: string[];
+    lineItemDiagnostics: Record<string, {
+      stationKey: string;
+      stepKey: string;
+      routingReason: string;
+      routingSource?: string;
+      idempotencyNote?: string;
+    }>;
   };
   message: string;
 }> {
@@ -84,6 +91,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
           existingJobCount: 0,
           skippedNonProductionCount: 0,
           affectedLineItemIds: [],
+          lineItemDiagnostics: {},
         },
         message: "No line items found",
       };
@@ -101,6 +109,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
           existingJobCount: 0,
           skippedNonProductionCount: skippedCount,
           affectedLineItemIds: [],
+          lineItemDiagnostics: {},
         },
         message: "No line items require production",
       };
@@ -114,6 +123,8 @@ export async function scheduleOrderLineItemsForProduction(args: {
           .select({
             lineItemId: productionJobs.lineItemId,
             jobId: productionJobs.id,
+            stationKey: productionJobs.stationKey,
+            stepKey: productionJobs.stepKey,
           })
           .from(productionJobs)
           .where(
@@ -124,20 +135,33 @@ export async function scheduleOrderLineItemsForProduction(args: {
           )
       : [];
 
-    const existingJobsByLineItem = new Map(
-      existingJobs.map((job) => [job.lineItemId, job.jobId])
-    );
+    const existingJobsByLineItem = new Map(existingJobs.map((job) => [job.lineItemId, job]));
 
     let createdCount = 0;
     let existingCount = 0;
     const affectedIds: string[] = [];
+    const lineItemDiagnostics: Record<string, {
+      stationKey: string;
+      stepKey: string;
+      routingReason: string;
+      routingSource?: string;
+      idempotencyNote?: string;
+    }> = {};
 
     // Process each line item
     for (const item of productionRequiredItems) {
       // Check if job already exists
-      if (existingJobsByLineItem.has(item.lineItemId)) {
+      const existingJobForLineItem = existingJobsByLineItem.get(item.lineItemId);
+      if (existingJobForLineItem) {
         existingCount++;
         affectedIds.push(item.lineItemId);
+        lineItemDiagnostics[item.lineItemId] = {
+          stationKey: String(existingJobForLineItem.stationKey ?? ""),
+          stepKey: String(existingJobForLineItem.stepKey ?? ""),
+          routingReason: "existing_job_already_linked_to_line_item",
+          routingSource: "existing",
+          idempotencyNote: "Production job already existed before scheduling request",
+        };
         continue;
       }
 
@@ -182,6 +206,22 @@ export async function scheduleOrderLineItemsForProduction(args: {
       } else {
         existingCount++;
       }
+
+      lineItemDiagnostics[item.lineItemId] = {
+        stationKey: routingResult.stationKey,
+        stepKey: routingResult.stepKey,
+        routingReason: route.reason,
+        routingSource: route.reason.includes("product")
+          ? "product"
+          : route.reason.includes("snapshot")
+            ? "snapshot"
+            : route.reason.includes("org")
+              ? "org"
+              : "default",
+        idempotencyNote: routingResult.outcome === "existing"
+          ? routingResult.reason || "Existing non-void production job reused"
+          : undefined,
+      };
       affectedIds.push(item.lineItemId);
     }
 
@@ -212,6 +252,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
         existingJobCount: existingCount,
         skippedNonProductionCount: skippedCount,
         affectedLineItemIds: affectedIds,
+        lineItemDiagnostics,
       },
       message,
     };
