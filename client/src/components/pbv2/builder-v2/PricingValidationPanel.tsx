@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
+import { compareCanonicalGeometryPricing, detectsManualGeometryRebuild } from "@/lib/pbv2/pricing/geometryWarning";
 import type { Finding } from "@shared/pbv2/findings";
 import { pbv2TreeToEditorModel, type EditorModel } from "@/lib/pbv2/pbv2ViewModel";
 
@@ -106,6 +107,7 @@ interface PricingValidationPanelProps {
   treeJson: unknown | null;
   pricingV2Override?: unknown;
   pricingFormulaOverride?: string | null;
+  pricingMode?: "basic" | "advanced";
   findings: Finding[];
 }
 
@@ -168,7 +170,7 @@ function buildPreviewGroups(treeJson: unknown | null): PreviewGroup[] {
     .filter((group) => group.options.length > 0);
 }
 
-export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, findings }: PricingValidationPanelProps) {
+export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, pricingMode = "basic", findings }: PricingValidationPanelProps) {
   const currencyFormatter = useMemo(
     () =>
       new Intl.NumberFormat("en-US", {
@@ -316,17 +318,47 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
     : null;
   const hasBilledSqftDebug = billedSqftPre != null && billedSqftPost != null;
   const activeFormulaText = String(result?.formulaUsed || formulaDebug?.formulaRaw || pricingFormulaOverride || "");
-  const formulaUsesOrderedDimsPattern = /\bw\s*\*\s*h\b|\bh\s*\*\s*w\b|\/\s*144\b|\bwidth\s*\*\s*height\b|\bordered_/i.test(activeFormulaText);
-  const formulaUsesFinishedDimsPattern = /\btotal_sqft\b|\bfinished_width\b|\bfinished_height\b|\bfw\b|\bfh\b/i.test(activeFormulaText);
   const hasActiveTrimAllowance = trimAllowanceX > 0 || trimAllowanceY > 0;
-  const formulaPreceilVsFinishedDelta = billedSqftPre != null && typeof finishedTotalSqft === "number"
-    ? Math.abs(billedSqftPre - finishedTotalSqft)
-    : null;
-  const hasFormulaPreceilMismatch = formulaPreceilVsFinishedDelta != null && formulaPreceilVsFinishedDelta > 0.01;
-  const shouldShowOrderedFormulaWarning = hasActiveTrimAllowance && formulaUsesOrderedDimsPattern;
-  const formulaDimensionUsageLabel = formulaUsesOrderedDimsPattern
-    ? "Formula uses ordered dims"
-    : (formulaUsesFinishedDimsPattern ? "Formula uses finished dims" : "Formula uses finished dims");
+  const hasManualGeometryRebuild = detectsManualGeometryRebuild(activeFormulaText, hasActiveTrimAllowance);
+  const geometryComparisonScope = useMemo(() => {
+    const fromDebug = formulaDebug?.variables && typeof formulaDebug.variables === "object" ? formulaDebug.variables : {};
+    const scope: Record<string, unknown> = { ...fromDebug };
+    scope.q = previewState.quantity;
+    scope.quantity = previewState.quantity;
+    scope.ordered_width = orderedWidth;
+    scope.ordered_height = orderedHeight;
+    scope.width = orderedWidth;
+    scope.height = orderedHeight;
+    scope.w = orderedWidth;
+    scope.h = orderedHeight;
+    scope.finished_width = finishedWidth;
+    scope.finished_height = finishedHeight;
+    scope.fw = finishedWidth;
+    scope.fh = finishedHeight;
+    if (typeof finishedSqftPerItem === "number") {
+      scope.sqft = finishedSqftPerItem;
+    }
+    if (typeof finishedTotalSqft === "number") {
+      scope.total_sqft = finishedTotalSqft;
+    }
+    if (typeof baseRateUsed === "number") {
+      scope.p = baseRateUsed;
+      scope.base_price = baseRateUsed;
+    }
+    return scope;
+  }, [formulaDebug?.variables, previewState.quantity, orderedWidth, orderedHeight, finishedWidth, finishedHeight, finishedSqftPerItem, finishedTotalSqft, baseRateUsed]);
+  const geometryComparison = useMemo(() => {
+    if (!hasManualGeometryRebuild) return null;
+    if (!activeFormulaText.trim()) return null;
+    return compareCanonicalGeometryPricing(activeFormulaText, geometryComparisonScope, formulaDebug?.appliedAs, previewState.quantity);
+  }, [hasManualGeometryRebuild, activeFormulaText, geometryComparisonScope, formulaDebug?.appliedAs, previewState.quantity]);
+  const hasCanonicalGeometryWarning =
+    pricingMode === "advanced" &&
+    hasActiveTrimAllowance &&
+    hasManualGeometryRebuild &&
+    typeof geometryComparison?.relativeDifference === "number" &&
+    geometryComparison.relativeDifference > 0.01;
+  const formulaDimensionUsageLabel = hasManualGeometryRebuild ? "Manual geometry rebuild detected" : "Canonical geometry vars";
   const formulaDebugErrors = useMemo(() => {
     const errorsFromDebug = Array.isArray(formulaDebug?.errors) ? formulaDebug.errors : [];
     const normalized = errorsFromDebug
@@ -527,6 +559,15 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                 </div>
               ) : result ? (
                 <div className="space-y-1 text-sm text-slate-200">
+                  {hasCanonicalGeometryWarning ? (
+                    <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 mb-2 text-[11px] text-amber-200">
+                      <div className="font-semibold">Formula does not use canonical finished geometry. Billing may ignore trim allowances.</div>
+                      {typeof geometryComparison?.relativeDifference === "number" ? (
+                        <div className="mt-1">Relative difference: {(geometryComparison.relativeDifference * 100).toFixed(2)}%</div>
+                      ) : null}
+                    </div>
+                  ) : null}
+
                   <div className="rounded border border-slate-700/70 bg-slate-900/40 px-2 py-1.5 mb-2">
                     <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">Finished Size Rule</div>
                     <div className="flex items-center justify-between text-sm">
@@ -554,14 +595,6 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                   {hasBilledSqftDebug ? (
                     <div className="rounded border border-slate-700/70 bg-slate-900/40 px-2 py-1.5 mb-2">
                       <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">BILLED (Pricing)</div>
-                      {shouldShowOrderedFormulaWarning ? (
-                        <div className="mb-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-200">
-                          <div>This formula recomputes sqft from ordered width/height and ignores Finished Size Rules. Use total_sqft (finished) or finished_width/finished_height to include trim.</div>
-                          {hasFormulaPreceilMismatch && formulaPreceilVsFinishedDelta != null ? (
-                            <div className="mt-1">Mismatch: |pre-ceil - total_sqft| = {formulaPreceilVsFinishedDelta.toFixed(4)}</div>
-                          ) : null}
-                        </div>
-                      ) : null}
                       <div className="flex items-center justify-between text-sm">
                         <span className="text-slate-300">total_sqft (finished)</span>
                         <span className="font-mono text-base text-slate-100">{typeof finishedTotalSqft === "number" ? finishedTotalSqft.toFixed(4) : "—"}</span>
