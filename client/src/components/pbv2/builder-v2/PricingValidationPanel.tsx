@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircleIcon, AlertTriangle, CheckCircle, DollarSign } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -111,6 +111,16 @@ function buildPreviewGroups(treeJson: unknown | null): PreviewGroup[] {
 }
 
 export function PricingValidationPanel({ treeJson, findings }: PricingValidationPanelProps) {
+  const currencyFormatter = useMemo(
+    () =>
+      new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }),
+    [],
+  );
   const [previewState, setPreviewState] = useState<PricingPreviewState>({
     width: 24,
     height: 36,
@@ -121,6 +131,7 @@ export function PricingValidationPanel({ treeJson, findings }: PricingValidation
   const [result, setResult] = useState<PricingPreviewResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const requestIdRef = useRef(0);
 
   const errors = findings.filter((f) => f.severity === "ERROR");
   const warnings = findings.filter((f) => f.severity === "WARNING");
@@ -149,30 +160,43 @@ export function PricingValidationPanel({ treeJson, findings }: PricingValidation
     [treeJson, previewState.width, previewState.height, previewState.quantity, selectionPayload],
   );
 
+  const inputErrors = useMemo(() => {
+    const next: Partial<Record<"width" | "height" | "quantity", string>> = {};
+    if (!Number.isFinite(previewState.width) || previewState.width <= 0) {
+      next.width = "Width must be greater than 0.";
+    }
+    if (!Number.isFinite(previewState.height) || previewState.height <= 0) {
+      next.height = "Height must be greater than 0.";
+    }
+    if (!Number.isFinite(previewState.quantity) || previewState.quantity < 1 || !Number.isInteger(previewState.quantity)) {
+      next.quantity = "Quantity must be an integer of 1 or more.";
+    }
+    return next;
+  }, [previewState.width, previewState.height, previewState.quantity]);
+
+  const hasInputErrors = Boolean(inputErrors.width || inputErrors.height || inputErrors.quantity);
+  const apiErrors = useMemo(() => {
+    return Array.isArray(result?.errors) ? result.errors.filter((entry) => typeof entry === "string" && entry.trim().length > 0) : [];
+  }, [result]);
+  const hasApiErrors = apiErrors.length > 0;
+
   useEffect(() => {
     if (!treeJson) {
+      setLoading(false);
       setResult(null);
       setError("No PBV2 tree loaded.");
       return;
     }
 
-    if (!Number.isFinite(previewState.width) || previewState.width <= 0) {
+    if (hasInputErrors) {
+      setLoading(false);
       setResult(null);
-      setError("Width must be a positive number.");
-      return;
-    }
-    if (!Number.isFinite(previewState.height) || previewState.height <= 0) {
-      setResult(null);
-      setError("Height must be a positive number.");
-      return;
-    }
-    if (!Number.isFinite(previewState.quantity) || previewState.quantity <= 0) {
-      setResult(null);
-      setError("Quantity must be a positive number.");
+      setError(null);
       return;
     }
 
     const controller = new AbortController();
+    const requestId = ++requestIdRef.current;
     const timeout = window.setTimeout(async () => {
       setLoading(true);
       setError(null);
@@ -192,6 +216,7 @@ export function PricingValidationPanel({ treeJson, findings }: PricingValidation
         });
 
         const json = await res.json().catch(() => ({}));
+        if (requestId !== requestIdRef.current) return;
         if (!res.ok) {
           setResult(null);
           setError(typeof json?.message === "string" ? json.message : "Pricing evaluation failed.");
@@ -202,10 +227,11 @@ export function PricingValidationPanel({ treeJson, findings }: PricingValidation
         setResult(data);
       } catch (e: any) {
         if (controller.signal.aborted) return;
+        if (requestId !== requestIdRef.current) return;
         setResult(null);
         setError(typeof e?.message === "string" ? e.message : "Pricing evaluation failed.");
       } finally {
-        if (!controller.signal.aborted) setLoading(false);
+        if (!controller.signal.aborted && requestId === requestIdRef.current) setLoading(false);
       }
     }, 250);
 
@@ -213,10 +239,10 @@ export function PricingValidationPanel({ treeJson, findings }: PricingValidation
       controller.abort();
       window.clearTimeout(timeout);
     };
-  }, [requestSignature, previewState.width, previewState.height, previewState.quantity, treeJson, selectionPayload]);
+  }, [hasInputErrors, requestSignature, treeJson, previewState.width, previewState.height, previewState.quantity, selectionPayload]);
 
   return (
-    <aside className="h-full w-full min-w-0 bg-[#0f172a] flex flex-col overflow-hidden">
+    <aside className="h-full w-full min-w-0 bg-card flex flex-col overflow-hidden">
       <ScrollArea className="flex-1 min-w-0">
         <div className="p-4 space-y-4 min-w-0">
           <div className="space-y-3 min-w-0">
@@ -225,39 +251,49 @@ export function PricingValidationPanel({ treeJson, findings }: PricingValidation
               <h2 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">Pricing Preview Sandbox</h2>
             </div>
 
-            <div className="grid grid-cols-3 gap-2 min-w-0">
-              <div className="min-w-0">
-                <Label className="text-xs text-slate-400">Width ({previewState.unit})</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  step="any"
-                  value={previewState.width}
-                  onChange={(e) => setPreviewState((prev) => ({ ...prev, width: Number(e.target.value) }))}
-                  className="bg-slate-950/60 border-slate-700/60 h-8"
-                />
+            <div className="rounded-md border border-slate-700 bg-slate-800/50 p-3 space-y-3 min-w-0">
+              <div className="flex items-center justify-between">
+                <div className="text-xs text-slate-400 uppercase tracking-wide">Inputs</div>
+                <div className="text-[11px] text-slate-500">Units: {previewState.unit === "in" ? "inches" : previewState.unit}</div>
               </div>
-              <div className="min-w-0">
-                <Label className="text-xs text-slate-400">Height ({previewState.unit})</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  step="any"
-                  value={previewState.height}
-                  onChange={(e) => setPreviewState((prev) => ({ ...prev, height: Number(e.target.value) }))}
-                  className="bg-slate-950/60 border-slate-700/60 h-8"
-                />
-              </div>
-              <div className="min-w-0">
-                <Label className="text-xs text-slate-400">Quantity</Label>
-                <Input
-                  type="number"
-                  min={1}
-                  step={1}
-                  value={previewState.quantity}
-                  onChange={(e) => setPreviewState((prev) => ({ ...prev, quantity: Number(e.target.value) }))}
-                  className="bg-slate-950/60 border-slate-700/60 h-8"
-                />
+
+              <div className="grid grid-cols-3 gap-2 min-w-0">
+                <div className="min-w-0">
+                  <Label className="text-xs text-slate-400">Width ({previewState.unit})</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    step="any"
+                    value={previewState.width}
+                    onChange={(e) => setPreviewState((prev) => ({ ...prev, width: Number(e.target.value) }))}
+                    className="bg-slate-950/60 border-slate-700/60 h-8"
+                  />
+                  {inputErrors.width ? <div className="mt-1 text-[11px] text-red-300">{inputErrors.width}</div> : null}
+                </div>
+                <div className="min-w-0">
+                  <Label className="text-xs text-slate-400">Height ({previewState.unit})</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    step="any"
+                    value={previewState.height}
+                    onChange={(e) => setPreviewState((prev) => ({ ...prev, height: Number(e.target.value) }))}
+                    className="bg-slate-950/60 border-slate-700/60 h-8"
+                  />
+                  {inputErrors.height ? <div className="mt-1 text-[11px] text-red-300">{inputErrors.height}</div> : null}
+                </div>
+                <div className="min-w-0">
+                  <Label className="text-xs text-slate-400">Quantity</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={previewState.quantity}
+                    onChange={(e) => setPreviewState((prev) => ({ ...prev, quantity: Number(e.target.value) }))}
+                    className="bg-slate-950/60 border-slate-700/60 h-8"
+                  />
+                  {inputErrors.quantity ? <div className="mt-1 text-[11px] text-red-300">{inputErrors.quantity}</div> : null}
+                </div>
               </div>
             </div>
 
@@ -265,18 +301,32 @@ export function PricingValidationPanel({ treeJson, findings }: PricingValidation
               <div className="text-xs text-slate-400 uppercase tracking-wide">Output</div>
               {loading ? (
                 <div className="text-sm text-slate-300">Calculating…</div>
+              ) : hasInputErrors ? (
+                <div className="text-sm text-red-300">Fix input errors to run preview.</div>
               ) : error ? (
                 <div className="text-sm text-red-300">{error}</div>
+              ) : hasApiErrors ? (
+                <div className="space-y-1 rounded border border-red-500/40 bg-red-500/10 p-2 text-sm text-red-200">
+                  <div className="font-semibold">Pricing evaluation errors</div>
+                  {apiErrors.map((entry, idx) => (
+                    <div key={`${entry}-${idx}`}>{entry}</div>
+                  ))}
+                </div>
               ) : result ? (
                 <div className="space-y-1 text-sm text-slate-200">
-                  <div className="flex items-center justify-between"><span>Unit price</span><span className="font-mono">${result.unitPrice.toFixed(2)}</span></div>
-                  <div className="flex items-center justify-between"><span>Total price</span><span className="font-mono">${result.totalPrice.toFixed(2)}</span></div>
-                  <div className="flex items-center justify-between"><span>sqft</span><span className="font-mono">{typeof result.derived?.sqft === "number" ? result.derived.sqft.toFixed(2) : "—"}</span></div>
-                  <div className="flex items-center justify-between"><span>linear_feet</span><span className="font-mono">{typeof result.derived?.linearFeet === "number" ? result.derived.linearFeet.toFixed(2) : "—"}</span></div>
+                  <div className="flex items-center justify-between"><span>Unit price</span><span className="font-mono">{currencyFormatter.format(result.unitPrice)}</span></div>
+                  <div className="flex items-center justify-between"><span>Total price</span><span className="font-mono">{currencyFormatter.format(result.totalPrice)}</span></div>
+                  {typeof result.derived?.sqft === "number" || typeof result.derived?.linearFeet === "number" ? (
+                    <div className="pt-2 mt-2 border-t border-slate-700 text-xs text-slate-400 space-y-1">
+                      <div className="uppercase tracking-wide">Derived</div>
+                      <div className="flex items-center justify-between"><span>sqft</span><span className="font-mono">{typeof result.derived?.sqft === "number" ? result.derived.sqft.toFixed(2) : "—"}</span></div>
+                      <div className="flex items-center justify-between"><span>linear_feet</span><span className="font-mono">{typeof result.derived?.linearFeet === "number" ? result.derived.linearFeet.toFixed(2) : "—"}</span></div>
+                    </div>
+                  ) : null}
                   {result.breakdown ? (
                     <div className="pt-2 mt-2 border-t border-slate-700 text-xs text-slate-400 space-y-1">
-                      <div className="flex items-center justify-between"><span>Base</span><span className="font-mono">${result.breakdown.basePrice.toFixed(2)}</span></div>
-                      <div className="flex items-center justify-between"><span>Options</span><span className="font-mono">${result.breakdown.optionsPrice.toFixed(2)}</span></div>
+                      <div className="flex items-center justify-between"><span>Base</span><span className="font-mono">{currencyFormatter.format(result.breakdown.basePrice)}</span></div>
+                      <div className="flex items-center justify-between"><span>Options</span><span className="font-mono">{currencyFormatter.format(result.breakdown.optionsPrice)}</span></div>
                     </div>
                   ) : null}
                 </div>
