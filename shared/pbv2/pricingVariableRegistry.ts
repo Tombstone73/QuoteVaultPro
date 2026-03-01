@@ -1,5 +1,23 @@
 export type PricingVariableCategory = "Dimensions" | "Quantity" | "Pricing" | "Derived" | "Options";
 
+/**
+ * Canonical PBV2 pricing variables.
+ *
+ * Contract lock-in (must never change semantics):
+ * - `total_sqft` is canonical billing geometry.
+ * - `finished_width`/`finished_height` are post-trim dimensions.
+ * - Meanings of these keys are stable and backward-compatible across PBV2.
+ */
+export type CanonicalPricingVariableKey =
+  | "ordered_width"
+  | "ordered_height"
+  | "finished_width"
+  | "finished_height"
+  | "sqft"
+  | "total_sqft"
+  | "q"
+  | "linear_feet";
+
 export interface PricingVariableDefinition {
   key: string;
   label: string;
@@ -45,7 +63,7 @@ export const PBV2_PRICING_VARIABLES: PricingVariableDefinition[] = [
   {
     key: "finished_width",
     label: "Finished Width",
-    description: "Finished width after trim allowance: ordered width + trim allowance.",
+    description: "Post-trim finished width used for canonical geometry.",
     example: 24.25,
     category: "Dimensions",
     aliases: ["fw"],
@@ -53,7 +71,7 @@ export const PBV2_PRICING_VARIABLES: PricingVariableDefinition[] = [
   {
     key: "finished_height",
     label: "Finished Height",
-    description: "Finished height after trim allowance: ordered height + trim allowance.",
+    description: "Post-trim finished height used for canonical geometry.",
     example: 36.25,
     category: "Dimensions",
     aliases: ["fh"],
@@ -85,7 +103,7 @@ export const PBV2_PRICING_VARIABLES: PricingVariableDefinition[] = [
   {
     key: "total_sqft",
     label: "Total SqFt",
-    description: "Total square footage: sqft × quantity.",
+    description: "Canonical billing geometry total square footage: sqft × quantity.",
     example: 24,
     category: "Derived",
     aliases: [],

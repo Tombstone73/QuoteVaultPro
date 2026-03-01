@@ -49,6 +49,8 @@ export const ProductForm = ({
   onDeletePricingV2Tier,
   pricingEngine,
   onPricingEngineChange,
+  pbv2PricingMode,
+  onPbv2PricingModeChange,
 }: {
   form: any;
   materials: any;
@@ -67,6 +69,8 @@ export const ProductForm = ({
   onDeletePricingV2Tier?: (kind: 'qty' | 'sqft', index: number) => void;
   pricingEngine?: "formulaLibrary" | "pricingProfile" | "pricingFormula";
   onPricingEngineChange?: (engine: "formulaLibrary" | "pricingProfile" | "pricingFormula") => void;
+  pbv2PricingMode?: "basic" | "advanced";
+  onPbv2PricingModeChange?: (mode: "basic" | "advanced") => void;
 }) => {
   const { toast } = useToast();
   const addPricingProfileKey = form.watch("pricingProfileKey");
@@ -229,6 +233,8 @@ export const ProductForm = ({
           pricingProfileKey={addPricingProfileKey}
           pricingEngine={pricingEngine}
           onPricingEngineChange={onPricingEngineChange}
+          pricingMode={pbv2PricingMode ?? "basic"}
+          onPricingModeChange={onPbv2PricingModeChange}
           trimAllowanceX={safeTrimAllowanceX}
           trimAllowanceY={safeTrimAllowanceY}
         />
@@ -492,6 +498,8 @@ function PricingEngineRadioSection({
   pricingProfileKey,
   pricingEngine,
   onPricingEngineChange,
+  pricingMode,
+  onPricingModeChange,
   trimAllowanceX,
   trimAllowanceY,
 }: {
@@ -500,24 +508,28 @@ function PricingEngineRadioSection({
   pricingProfileKey: string;
   pricingEngine?: "formulaLibrary" | "pricingProfile" | "pricingFormula";
   onPricingEngineChange?: (engine: "formulaLibrary" | "pricingProfile" | "pricingFormula") => void;
+  pricingMode: "basic" | "advanced";
+  onPricingModeChange?: (mode: "basic" | "advanced") => void;
   trimAllowanceX?: number;
   trimAllowanceY?: number;
 }) {
-  type PricingMode = "formulaLibrary" | "pricingProfile" | "pricingFormula";
+  type PricingEngineMode = "formulaLibrary" | "pricingProfile" | "pricingFormula";
+  const BASIC_CANONICAL_FORMULA = "ceil(total_sqft) * p";
 
   // Use controlled pricingEngine prop, with fallback to derive from form state
   const formulaId = form.watch("pricingFormulaId");
   const currentFormula = form.watch("pricingFormula");
   const currentProfile = form.watch("pricingProfileKey");
+  const isAdvancedMode = pricingMode === "advanced";
   const hasTrimAllowance = (Number(trimAllowanceX) || 0) > 0 || (Number(trimAllowanceY) || 0) > 0;
   const formulaUsesOrderedDimsPattern = /\bw\s*\*\s*h\b|\bh\s*\*\s*w\b|\/\s*144\b|\bwidth\s*\*\s*height\b|\bordered_/i.test(String(currentFormula || ""));
-  const shouldShowFinishedSizeWarning = hasTrimAllowance && formulaUsesOrderedDimsPattern;
+  const shouldShowFinishedSizeWarning = isAdvancedMode && hasTrimAllowance && formulaUsesOrderedDimsPattern;
   const [referenceOpen, setReferenceOpen] = useState(false);
   const [referenceInsertEnabled, setReferenceInsertEnabled] = useState(false);
   const formulaInputRef = useRef<HTMLInputElement | null>(null);
   
   // Determine effective mode (controlled or derived)
-  const effectiveMode: PricingMode = pricingEngine || (() => {
+  const derivedMode: PricingEngineMode = (() => {
     if (formulaId) return "formulaLibrary";
     
     const profile = getProfile(currentProfile || "default");
@@ -529,8 +541,18 @@ function PricingEngineRadioSection({
     
     return "pricingProfile";
   })();
+  const effectiveMode: PricingEngineMode = isAdvancedMode ? (pricingEngine || derivedMode) : "pricingProfile";
 
-  const handleModeChange = (mode: PricingMode) => {
+  useEffect(() => {
+    if (pricingMode !== "basic") return;
+    const existing = String(form.getValues("pricingFormula") || "").trim();
+    if (!existing) {
+      form.setValue("pricingFormula", BASIC_CANONICAL_FORMULA, { shouldDirty: false });
+    }
+  }, [pricingMode, form]);
+
+  const handleModeChange = (mode: PricingEngineMode) => {
+    if (!isAdvancedMode) return;
     // Call parent handler if provided (for controlled mode)
     onPricingEngineChange?.(mode);
     // Clear other fields when switching modes
@@ -544,7 +566,7 @@ function PricingEngineRadioSection({
   };
 
   const openReference = (allowInsert: boolean) => {
-    setReferenceInsertEnabled(allowInsert);
+    setReferenceInsertEnabled(isAdvancedMode && allowInsert);
     setReferenceOpen(true);
   };
 
@@ -572,9 +594,42 @@ function PricingEngineRadioSection({
     <div className="space-y-3 min-w-0">
       <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Pricing Engine</h3>
 
+      <div className="rounded-md border border-slate-700 bg-slate-900/30 p-2">
+        <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-2">PBV2 Pricing Mode</div>
+        <div className="grid grid-cols-2 gap-2">
+          <Button
+            type="button"
+            variant={pricingMode === "basic" ? "default" : "outline"}
+            size="sm"
+            onClick={() => onPricingModeChange?.("basic")}
+            className="h-8"
+          >
+            Basic
+          </Button>
+          <Button
+            type="button"
+            variant={pricingMode === "advanced" ? "default" : "outline"}
+            size="sm"
+            onClick={() => onPricingModeChange?.("advanced")}
+            className="h-8"
+          >
+            Advanced
+          </Button>
+        </div>
+        {pricingMode === "basic" ? (
+          <div className="mt-2 text-[11px] text-slate-400">
+            Structured builder only. Formula editor is locked; canonical formula is generated internally from finished geometry variables.
+          </div>
+        ) : (
+          <div className="mt-2 text-[11px] text-slate-400">
+            Full formula editor enabled. No automatic formula rewriting.
+          </div>
+        )}
+      </div>
+
       <RadioGroup
         value={effectiveMode}
-        onValueChange={(v) => handleModeChange(v as PricingMode)}
+        onValueChange={(v) => handleModeChange(v as PricingEngineMode)}
         className="space-y-0 gap-0"
       >
         {/* — Field 1: Formula Library — */}
@@ -592,7 +647,7 @@ function PricingEngineRadioSection({
               Reference
             </button>
           </div>
-          <div className={effectiveMode !== "formulaLibrary" ? "opacity-40 pointer-events-none" : ""}>
+          <div className={!isAdvancedMode || effectiveMode !== "formulaLibrary" ? "opacity-40 pointer-events-none" : ""}>
             <FormField
               control={form.control}
               name="pricingFormulaId"
@@ -686,7 +741,7 @@ function PricingEngineRadioSection({
         </div>
 
         {/* — Field 3: Pricing Formula — */}
-        {getProfile(pricingProfileKey).usesFormula && (
+        {getProfile(pricingProfileKey).usesFormula && isAdvancedMode && (
           <div className={`rounded-md px-3 py-2.5 transition-colors min-w-0 ${effectiveMode === "pricingFormula" ? "bg-slate-800/60" : "bg-transparent"}`}>
             <div className="flex items-center gap-2 mb-1.5">
               <RadioGroupItem value="pricingFormula" id="pe-formula" className="h-3.5 w-3.5" />
@@ -757,6 +812,17 @@ function PricingEngineRadioSection({
             </div>
           </div>
         )}
+
+        {getProfile(pricingProfileKey).usesFormula && !isAdvancedMode ? (
+          <div className="rounded-md px-3 py-2.5 bg-slate-900/30 border border-slate-700">
+            <div className="text-xs font-medium text-slate-300 mb-1">Generated Canonical Formula</div>
+            <Input
+              value={BASIC_CANONICAL_FORMULA}
+              readOnly
+              className="bg-slate-950/60 border-slate-700/50 h-8 text-sm font-mono"
+            />
+          </div>
+        ) : null}
       </RadioGroup>
 
       <FormulaReferenceModal
