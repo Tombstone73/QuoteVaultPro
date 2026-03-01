@@ -4146,6 +4146,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/pbv2/pricing-preview", isAuthenticated, tenantContext, async (_req: any, res) => {
+    return res.status(405).json({
+      message: "Method Not Allowed",
+      allowedMethods: ["POST"],
+    });
+  });
+
   app.post("/api/pbv2/pricing-preview", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
