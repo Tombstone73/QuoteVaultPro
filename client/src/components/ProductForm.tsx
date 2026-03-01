@@ -1,4 +1,5 @@
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -470,13 +471,6 @@ function PricingEngineRadioSection({
     if (mode !== "formulaLibrary") {
       form.setValue("pricingFormulaId", null, { shouldDirty: true });
     }
-    if (mode === "pricingFormula") {
-      // Ensure formula field has a value
-      const currentFormula = form.getValues("pricingFormula");
-      if (!currentFormula) {
-        form.setValue("pricingFormula", getDefaultFormula(pricingProfileKey), { shouldDirty: true });
-      }
-    }
     // Log mode change for verification
     if (import.meta.env.DEV) {
       console.log('[PRICING_ENGINE] Mode changed to:', mode);
@@ -616,6 +610,20 @@ function PricingEngineRadioSection({
                         className="bg-slate-950/60 border-slate-700/50 h-8 text-sm font-mono"
                       />
                     </FormControl>
+                    {!String(field.value || "").trim() ? (
+                      <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400">
+                        <span>No formula set. Preview will use default formula: sqft * p * q</span>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-6 px-2 text-[10px]"
+                          onClick={() => form.setValue("pricingFormula", "sqft * p * q", { shouldDirty: true })}
+                        >
+                          Insert default formula
+                        </Button>
+                      </div>
+                    ) : null}
                     <PricingVariableHelper />
                     <FormMessage />
                   </FormItem>
