@@ -60,6 +60,20 @@ export type PBV2PricingSnapshot = {
   };
 };
 
+export type PricingPreviewEvaluationResult = {
+  unitPrice: number;
+  totalPrice: number;
+  breakdown: {
+    basePrice: number;
+    optionsPrice: number;
+    total: number;
+  };
+  derived: {
+    sqft?: number;
+    linearFeet?: number;
+  };
+};
+
 // ============================================================================
 // Main Pricing Function
 // ============================================================================
@@ -259,6 +273,76 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
       baseCents: basePriceCents,
       optionsCents,
       totalCents: lineTotalCents, // Changed from totalCents to lineTotalCents for clarity
+    },
+  };
+}
+
+/**
+ * Read-only pricing preview for PBV2 draft trees.
+ * Uses the same base-price + evaluateOptionTreeV2 path as production quote pricing.
+ */
+export function evaluatePricingPreviewFromTree(input: {
+  treeJson: any;
+  widthIn: number;
+  heightIn: number;
+  quantity: number;
+  pbv2ExplicitSelections?: Record<string, any>;
+}): PricingPreviewEvaluationResult {
+  const widthIn = Number(input.widthIn);
+  const heightIn = Number(input.heightIn);
+  const quantity = Number(input.quantity);
+
+  if (!Number.isFinite(widthIn) || widthIn <= 0) {
+    throw new Error("width must be a positive number");
+  }
+  if (!Number.isFinite(heightIn) || heightIn <= 0) {
+    throw new Error("height must be a positive number");
+  }
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    throw new Error("quantity must be a positive number");
+  }
+
+  const pbv2ExplicitSelections = input.pbv2ExplicitSelections ?? {};
+  if (!pbv2ExplicitSelections || typeof pbv2ExplicitSelections !== "object" || Array.isArray(pbv2ExplicitSelections)) {
+    throw new Error("optionSelectionsJson must be an object mapping optionId -> selection");
+  }
+
+  const basePriceCents = calculateBasePrice(input.treeJson, {
+    widthIn,
+    heightIn,
+    quantity,
+  });
+
+  const selectionsV2: LineItemOptionSelectionsV2 = {
+    schemaVersion: 2,
+    selected: pbv2ExplicitSelections,
+  };
+
+  const evalResult = evaluateOptionTreeV2({
+    tree: input.treeJson,
+    selections: selectionsV2,
+    width: widthIn,
+    height: heightIn,
+    quantity,
+    basePrice: basePriceCents / 100,
+  });
+
+  const optionsCents = Math.round(evalResult.optionsPrice * 100);
+  const totalCents = basePriceCents + optionsCents;
+  const sqft = (widthIn * heightIn) / 144;
+  const linearFeet = widthIn / 12;
+
+  return {
+    unitPrice: quantity > 0 ? totalCents / 100 / quantity : 0,
+    totalPrice: totalCents / 100,
+    breakdown: {
+      basePrice: basePriceCents / 100,
+      optionsPrice: optionsCents / 100,
+      total: totalCents / 100,
+    },
+    derived: {
+      sqft: Number.isFinite(sqft) ? sqft : undefined,
+      linearFeet: Number.isFinite(linearFeet) ? linearFeet : undefined,
     },
   };
 }

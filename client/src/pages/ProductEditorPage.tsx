@@ -899,8 +899,7 @@ const ProductEditorPage = () => {
         }
         right={
           <PricingValidationPanel
-            pricingPreview={pbv2PricingData.pricingPreview}
-            weightPreview={pbv2PricingData.weightPreview}
+            treeJson={pbv2State?.treeJson ?? form.getValues('optionTreeJson') ?? null}
             findings={pbv2PricingData.findings}
           />
         }
