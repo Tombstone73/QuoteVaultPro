@@ -510,7 +510,7 @@ function PricingEngineRadioSection({
   const currentFormula = form.watch("pricingFormula");
   const currentProfile = form.watch("pricingProfileKey");
   const hasTrimAllowance = (Number(trimAllowanceX) || 0) > 0 || (Number(trimAllowanceY) || 0) > 0;
-  const formulaUsesOrderedDimsPattern = /\bw\b\s*\*\s*\bh\b|\bh\b\s*\*\s*\bw\b|\/\s*144/i.test(String(currentFormula || ""));
+  const formulaUsesOrderedDimsPattern = /\bw\s*\*\s*h\b|\bh\s*\*\s*w\b|\/\s*144\b|\bwidth\s*\*\s*height\b|\bordered_/i.test(String(currentFormula || ""));
   const shouldShowFinishedSizeWarning = hasTrimAllowance && formulaUsesOrderedDimsPattern;
   const [referenceOpen, setReferenceOpen] = useState(false);
   const [referenceInsertEnabled, setReferenceInsertEnabled] = useState(false);
@@ -734,8 +734,19 @@ function PricingEngineRadioSection({
                       </div>
                     ) : null}
                     {shouldShowFinishedSizeWarning ? (
-                      <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200">
-                        This formula uses ordered width/height and may ignore Finished Size Rules. Consider using total_sqft or finished_width/finished_height.
+                      <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-200 space-y-1">
+                        <div>This formula recomputes sqft from ordered width/height and ignores Finished Size Rules. Use total_sqft (finished) or finished_width/finished_height to include trim.</div>
+                        <div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-6 px-2 text-[10px]"
+                            onClick={() => form.setValue("pricingFormula", "ceil(total_sqft) * p", { shouldDirty: true })}
+                          >
+                            Fix formula
+                          </Button>
+                        </div>
                       </div>
                     ) : null}
                     <PricingVariableHelper />
