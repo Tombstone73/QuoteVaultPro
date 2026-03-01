@@ -88,6 +88,9 @@ export type PricingPreviewEvaluationResult = {
     errors?: Array<{ code: string; message: string; detail?: any }>;
     usedFallbackFormula?: boolean;
     fallbackFormula?: string;
+    preCeilSqftTotal?: number | null;
+    postCeilSqftTotal?: number | null;
+    baseRateUsed?: number | null;
     inputs?: {
       widthIn: number;
       heightIn: number;
@@ -403,6 +406,9 @@ export function evaluatePricingPreviewFromTree(input: {
   formulaDebug.resultValue = formulaEvaluation.resultValue;
   formulaDebug.appliedAs = formulaEvaluation.appliedAs;
   formulaDebug.steps = formulaEvaluation.steps;
+  formulaDebug.preCeilSqftTotal = formulaEvaluation.preCeilSqftTotal;
+  formulaDebug.postCeilSqftTotal = formulaEvaluation.postCeilSqftTotal;
+  formulaDebug.baseRateUsed = formulaEvaluation.baseRateUsed;
 
   const formulaValueCents = Math.round(formulaEvaluation.resultValue * 100);
   basePriceCents = formulaEvaluation.appliedAs === 'unitPrice'
@@ -453,6 +459,9 @@ export function evaluatePricingPreviewFromTree(input: {
       errors: formulaDebug.errors,
       usedFallbackFormula,
       fallbackFormula: usedFallbackFormula ? PBV2_PREVIEW_FALLBACK_FORMULA : undefined,
+      preCeilSqftTotal: formulaDebug.preCeilSqftTotal,
+      postCeilSqftTotal: formulaDebug.postCeilSqftTotal,
+      baseRateUsed: formulaDebug.baseRateUsed,
       inputs: { widthIn, heightIn, quantity },
       derived: {
         sqft,
@@ -728,8 +737,23 @@ function evaluatePreviewFormulaToCents(input: {
   formulaResolved?: string;
   appliedAs: 'unitPrice' | 'totalPrice' | 'unknown';
   steps: Array<{ label: string; value: number | string }>;
+  preCeilSqftTotal: number | null;
+  postCeilSqftTotal: number | null;
+  baseRateUsed: number;
 } {
   const scope = buildFormulaScope(input);
+  let preCeilSqftTotal: number | null = null;
+  let postCeilSqftTotal: number | null = null;
+  const evalScope: Record<string, any> = {
+    ...scope,
+    ceil: (value: unknown) => {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return Math.ceil(numeric);
+      preCeilSqftTotal = numeric;
+      postCeilSqftTotal = Math.ceil(numeric);
+      return postCeilSqftTotal;
+    },
+  };
   const formulaResolved = resolveFormulaAliases(input.formula);
   const appliedAs = inferFormulaApplication(input.formula);
   const steps: Array<{ label: string; value: number | string }> = [
@@ -740,7 +764,7 @@ function evaluatePreviewFormulaToCents(input: {
   ];
 
   try {
-    const evaluated = evaluate(input.formula, scope);
+    const evaluated = evaluate(input.formula, evalScope);
     const value = Number(evaluated);
     if (!Number.isFinite(value)) {
       throw new Error('Formula returned a non-numeric result');
@@ -750,6 +774,9 @@ function evaluatePreviewFormulaToCents(input: {
       formulaResolved,
       appliedAs,
       steps,
+      preCeilSqftTotal,
+      postCeilSqftTotal,
+      baseRateUsed: input.baseRatePerSqft,
     };
   } catch (error: any) {
     const message = typeof error?.message === 'string' ? error.message : 'Invalid formula';
@@ -771,6 +798,9 @@ function evaluatePreviewFormulaToCents(input: {
       errors: [{ code: errorCode, message }],
       usedFallbackFormula: input.usedFallbackFormula,
       fallbackFormula: input.usedFallbackFormula ? input.fallbackFormula : undefined,
+      preCeilSqftTotal,
+      postCeilSqftTotal,
+      baseRateUsed: input.baseRatePerSqft,
     };
     throw formulaError;
   }
@@ -810,6 +840,9 @@ function buildBaseFormulaDebugContext(input: {
     errors: [],
     usedFallbackFormula: input.usedFallbackFormula,
     fallbackFormula: input.usedFallbackFormula ? PBV2_PREVIEW_FALLBACK_FORMULA : undefined,
+    preCeilSqftTotal: null,
+    postCeilSqftTotal: null,
+    baseRateUsed: input.baseRatePerSqft,
   };
 }
 
