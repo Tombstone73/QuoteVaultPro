@@ -41,6 +41,8 @@ type PricingPreviewResponse = {
     appliedAs?: "unitPrice" | "totalPrice" | "unknown";
     steps?: Array<{ label: string; value: number | string }>;
     errors?: Array<{ code: string; message: string; detail?: any }>;
+    usedFallbackFormula?: boolean;
+    fallbackFormula?: string;
     inputs?: { widthIn: number; heightIn: number; quantity: number };
     derived?: { sqft: number; totalSqft: number; linearFeet: number };
     pricing?: { basePrice: number; optionsPrice: number; unitPrice: number; totalPrice: number };
@@ -111,7 +113,7 @@ function buildPreviewGroups(treeJson: unknown | null): PreviewGroup[] {
               value: String(choice?.value ?? ""),
               label: String(choice?.label ?? choice?.value ?? ""),
             }));
-          const choices = mappedChoices.filter((choice) => choice.value.length > 0);
+          const choices = mappedChoices.filter((choice: { value: string; label: string }) => choice.value.length > 0);
 
           const inputType = String(node?.input?.type ?? "select");
           if (choices.length === 0) return null;
@@ -469,7 +471,14 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     </>
                   )}
                   {result.formulaUsed ? (
-                    <div className="text-[11px] text-slate-400">Formula: <span className="font-mono">{result.formulaUsed}</span></div>
+                    <div className="flex items-center gap-2 text-[11px] text-slate-400">
+                      <span>Formula: <span className="font-mono">{result.formulaUsed}</span></span>
+                      {formulaDebug?.usedFallbackFormula ? (
+                        <Badge variant="outline" className="text-[10px] border-amber-500/40 text-amber-300">
+                          Using fallback formula
+                        </Badge>
+                      ) : null}
+                    </div>
                   ) : null}
                   {typeof result.derived?.sqft === "number" || typeof result.derived?.linearFeet === "number" ? (
                     <div className="pt-2 mt-2 border-t border-slate-700 text-xs text-slate-400 space-y-1">
@@ -502,6 +511,12 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       ) : null}
                       <div><span className="text-slate-400">Result value:</span> <span className="font-mono">{typeof formulaDebug.resultValue === "number" ? String(formulaDebug.resultValue) : "—"}</span></div>
                       <div><span className="text-slate-400">Applied as:</span> <span className="font-mono">{formulaDebug.appliedAs ?? "unknown"}</span></div>
+                      {formulaDebug.usedFallbackFormula ? (
+                        <div>
+                          <span className="text-slate-400">Fallback:</span>{" "}
+                          <span className="font-mono">{formulaDebug.fallbackFormula || "sqft * p * q"}</span>
+                        </div>
+                      ) : null}
 
                       <div className="space-y-1">
                         <div className="text-slate-400">Variables</div>

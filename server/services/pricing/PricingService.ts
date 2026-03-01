@@ -16,6 +16,8 @@ import type {
 } from '../../../shared/optionTreeV2';
 import { PBV2_PRICING_VARIABLES, type PricingVariableDefinition } from '../../../shared/pbv2/pricingVariableRegistry';
 
+export const PBV2_PREVIEW_FALLBACK_FORMULA = 'sqft * p * q';
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -84,6 +86,8 @@ export type PricingPreviewEvaluationResult = {
     appliedAs?: 'unitPrice' | 'totalPrice' | 'unknown';
     steps?: Array<{ label: string; value: number | string }>;
     errors?: Array<{ code: string; message: string; detail?: any }>;
+    usedFallbackFormula?: boolean;
+    fallbackFormula?: string;
     inputs?: {
       widthIn: number;
       heightIn: number;
@@ -364,9 +368,12 @@ export function evaluatePricingPreviewFromTree(input: {
   const formulaFromTree = typeof input?.treeJson?.meta?.pricingFormula === 'string'
     ? input.treeJson.meta.pricingFormula.trim()
     : '';
-  const formulaToUse = typeof input.pricingFormulaOverride === 'string'
+  const overrideFormula = typeof input.pricingFormulaOverride === 'string'
     ? input.pricingFormulaOverride.trim()
-    : formulaFromTree;
+    : '';
+  const formulaCandidate = overrideFormula || formulaFromTree;
+  const usedFallbackFormula = !formulaCandidate;
+  const formulaToUse = formulaCandidate || PBV2_PREVIEW_FALLBACK_FORMULA;
 
   const formulaDebug = buildBaseFormulaDebugContext({
     formulaRaw: formulaToUse,
@@ -377,29 +384,30 @@ export function evaluatePricingPreviewFromTree(input: {
     sqftPerItem: baseDetails.sqftPerItem,
     totalSqft: baseDetails.totalSqft,
     linearFeet: baseDetails.linearFeet,
+    usedFallbackFormula,
   });
 
-  if (formulaToUse) {
-    const formulaEvaluation = evaluatePreviewFormulaToCents({
-      formula: formulaToUse,
-      widthIn,
-      heightIn,
-      quantity,
-      baseRatePerSqft: baseDetails.perSqftCents / 100,
-      sqftPerItem: baseDetails.sqftPerItem,
-      totalSqft: baseDetails.totalSqft,
-      linearFeet: baseDetails.linearFeet,
-    });
-    formulaDebug.formulaResolved = formulaEvaluation.formulaResolved;
-    formulaDebug.resultValue = formulaEvaluation.resultValue;
-    formulaDebug.appliedAs = formulaEvaluation.appliedAs;
-    formulaDebug.steps = formulaEvaluation.steps;
+  const formulaEvaluation = evaluatePreviewFormulaToCents({
+    formula: formulaToUse,
+    widthIn,
+    heightIn,
+    quantity,
+    baseRatePerSqft: baseDetails.perSqftCents / 100,
+    sqftPerItem: baseDetails.sqftPerItem,
+    totalSqft: baseDetails.totalSqft,
+    linearFeet: baseDetails.linearFeet,
+    usedFallbackFormula,
+    fallbackFormula: PBV2_PREVIEW_FALLBACK_FORMULA,
+  });
+  formulaDebug.formulaResolved = formulaEvaluation.formulaResolved;
+  formulaDebug.resultValue = formulaEvaluation.resultValue;
+  formulaDebug.appliedAs = formulaEvaluation.appliedAs;
+  formulaDebug.steps = formulaEvaluation.steps;
 
-    const formulaValueCents = Math.round(formulaEvaluation.resultValue * 100);
-    basePriceCents = formulaEvaluation.appliedAs === 'unitPrice'
-      ? formulaValueCents * quantity
-      : formulaValueCents;
-  }
+  const formulaValueCents = Math.round(formulaEvaluation.resultValue * 100);
+  basePriceCents = formulaEvaluation.appliedAs === 'unitPrice'
+    ? formulaValueCents * quantity
+    : formulaValueCents;
 
   const selectionsV2: LineItemOptionSelectionsV2 = {
     schemaVersion: 2,
@@ -443,6 +451,8 @@ export function evaluatePricingPreviewFromTree(input: {
       appliedAs: formulaDebug.appliedAs,
       steps: formulaDebug.steps,
       errors: formulaDebug.errors,
+      usedFallbackFormula,
+      fallbackFormula: usedFallbackFormula ? PBV2_PREVIEW_FALLBACK_FORMULA : undefined,
       inputs: { widthIn, heightIn, quantity },
       derived: {
         sqft,
@@ -711,6 +721,8 @@ function evaluatePreviewFormulaToCents(input: {
   sqftPerItem: number;
   totalSqft: number;
   linearFeet: number;
+  usedFallbackFormula: boolean;
+  fallbackFormula: string;
 }): {
   resultValue: number;
   formulaResolved?: string;
@@ -757,6 +769,8 @@ function evaluatePreviewFormulaToCents(input: {
       appliedAs,
       steps,
       errors: [{ code: errorCode, message }],
+      usedFallbackFormula: input.usedFallbackFormula,
+      fallbackFormula: input.usedFallbackFormula ? input.fallbackFormula : undefined,
     };
     throw formulaError;
   }
@@ -771,6 +785,7 @@ function buildBaseFormulaDebugContext(input: {
   sqftPerItem: number;
   totalSqft: number;
   linearFeet: number;
+  usedFallbackFormula: boolean;
 }): NonNullable<PricingPreviewEvaluationResult['debug']> {
   return {
     formulaRaw: input.formulaRaw,
@@ -793,6 +808,8 @@ function buildBaseFormulaDebugContext(input: {
       { label: 'p(base_rate_per_sqft)', value: input.baseRatePerSqft },
     ],
     errors: [],
+    usedFallbackFormula: input.usedFallbackFormula,
+    fallbackFormula: input.usedFallbackFormula ? PBV2_PREVIEW_FALLBACK_FORMULA : undefined,
   };
 }
 
@@ -845,10 +862,10 @@ function resolveFormulaAliases(formula: string): string {
   }
 
   let resolved = formula;
-  for (const [alias, canonical] of aliasToCanonical.entries()) {
+  aliasToCanonical.forEach((canonical, alias) => {
     const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     resolved = resolved.replace(new RegExp(`\\b${escaped}\\b`, 'g'), canonical);
-  }
+  });
   return resolved;
 }
 
