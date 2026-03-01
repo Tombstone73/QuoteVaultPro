@@ -4134,6 +4134,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/pbv2/pricing-preview/variables", isAuthenticated, tenantContext, async (_req: any, res) => {
+    try {
+      const { getPbv2PricingVariableDefinitions } = await import("./services/pricing/PricingService");
+      return res.json({
+        success: true,
+        data: getPbv2PricingVariableDefinitions(),
+      });
+    } catch {
+      return res.status(500).json({ message: "Failed to load pricing variables" });
+    }
+  });
+
   app.post("/api/pbv2/pricing-preview", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
@@ -4145,6 +4157,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         height,
         quantity,
         optionSelectionsJson,
+        pricingFormulaOverride,
+        debug,
       } = req.body ?? {};
 
       if (!treeJson || typeof treeJson !== "object") {
@@ -4179,6 +4193,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         heightIn: heightNum,
         quantity: quantityNum,
         pbv2ExplicitSelections,
+        pricingFormulaOverride: typeof pricingFormulaOverride === "string" ? pricingFormulaOverride : undefined,
+        debug: Boolean(debug),
       });
 
       return res.json({
@@ -4188,6 +4204,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       if (error?.name === "ZodError") {
         return res.status(400).json({ message: "Invalid preview payload" });
+      }
+      if (error?.code === "PBV2_FORMULA_ERROR" && Array.isArray(error?.details)) {
+        return res.status(400).json({
+          message: "Formula evaluation failed",
+          errors: error.details,
+        });
       }
       const message = typeof error?.message === "string" ? error.message : "Failed to evaluate pricing preview";
       return res.status(400).json({ message });

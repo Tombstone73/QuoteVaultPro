@@ -20,6 +20,7 @@ export type PricingPreviewState = {
 type PricingPreviewResponse = {
   unitPrice: number;
   totalPrice: number;
+  formulaUsed?: string;
   breakdown?: {
     basePrice: number;
     optionsPrice: number;
@@ -27,9 +28,15 @@ type PricingPreviewResponse = {
   };
   derived?: {
     sqft?: number;
+    totalSqft?: number;
     linearFeet?: number;
   };
   errors?: string[];
+  debug?: {
+    inputs?: { widthIn: number; heightIn: number; quantity: number };
+    derived?: { sqft: number; totalSqft: number; linearFeet: number };
+    pricing?: { basePrice: number; optionsPrice: number; unitPrice: number; totalPrice: number };
+  };
 };
 
 type PreviewOption = {
@@ -48,6 +55,7 @@ type PreviewGroup = {
 
 interface PricingValidationPanelProps {
   treeJson: unknown | null;
+  pricingFormulaOverride?: string | null;
   findings: Finding[];
 }
 
@@ -110,7 +118,7 @@ function buildPreviewGroups(treeJson: unknown | null): PreviewGroup[] {
     .filter((group) => group.options.length > 0);
 }
 
-export function PricingValidationPanel({ treeJson, findings }: PricingValidationPanelProps) {
+export function PricingValidationPanel({ treeJson, pricingFormulaOverride, findings }: PricingValidationPanelProps) {
   const currencyFormatter = useMemo(
     () =>
       new Intl.NumberFormat("en-US", {
@@ -131,6 +139,7 @@ export function PricingValidationPanel({ treeJson, findings }: PricingValidation
   const [result, setResult] = useState<PricingPreviewResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [responseErrors, setResponseErrors] = useState<string[]>([]);
   const requestIdRef = useRef(0);
 
   const errors = findings.filter((f) => f.severity === "ERROR");
@@ -155,9 +164,10 @@ export function PricingValidationPanel({ treeJson, findings }: PricingValidation
         width: previewState.width,
         height: previewState.height,
         quantity: previewState.quantity,
+        pricingFormulaOverride,
         optionSelectionsJson: selectionPayload,
       }),
-    [treeJson, previewState.width, previewState.height, previewState.quantity, selectionPayload],
+    [treeJson, previewState.width, previewState.height, previewState.quantity, pricingFormulaOverride, selectionPayload],
   );
 
   const inputErrors = useMemo(() => {
@@ -176,14 +186,26 @@ export function PricingValidationPanel({ treeJson, findings }: PricingValidation
 
   const hasInputErrors = Boolean(inputErrors.width || inputErrors.height || inputErrors.quantity);
   const apiErrors = useMemo(() => {
-    return Array.isArray(result?.errors) ? result.errors.filter((entry) => typeof entry === "string" && entry.trim().length > 0) : [];
-  }, [result]);
+    const resultErrors = Array.isArray(result?.errors) ? result.errors.filter((entry) => typeof entry === "string" && entry.trim().length > 0) : [];
+    return [...responseErrors, ...resultErrors];
+  }, [responseErrors, result]);
   const hasApiErrors = apiErrors.length > 0;
+  const calculatedSqftPerItem = useMemo(() => {
+    if (!Number.isFinite(previewState.width) || !Number.isFinite(previewState.height) || previewState.width <= 0 || previewState.height <= 0) {
+      return undefined;
+    }
+    return (previewState.width * previewState.height) / 144;
+  }, [previewState.width, previewState.height]);
+  const displaySqftPerItem = typeof result?.derived?.sqft === "number" ? result.derived.sqft : calculatedSqftPerItem;
+  const displayTotalSqft = typeof result?.derived?.totalSqft === "number"
+    ? result.derived.totalSqft
+    : (typeof displaySqftPerItem === "number" ? displaySqftPerItem * previewState.quantity : undefined);
 
   useEffect(() => {
     if (!treeJson) {
       setLoading(false);
       setResult(null);
+      setResponseErrors([]);
       setError("No PBV2 tree loaded.");
       return;
     }
@@ -191,6 +213,7 @@ export function PricingValidationPanel({ treeJson, findings }: PricingValidation
     if (hasInputErrors) {
       setLoading(false);
       setResult(null);
+      setResponseErrors([]);
       setError(null);
       return;
     }
@@ -200,6 +223,7 @@ export function PricingValidationPanel({ treeJson, findings }: PricingValidation
     const timeout = window.setTimeout(async () => {
       setLoading(true);
       setError(null);
+      setResponseErrors([]);
       try {
         const res = await fetch("/api/pbv2/pricing-preview", {
           method: "POST",
@@ -211,6 +235,8 @@ export function PricingValidationPanel({ treeJson, findings }: PricingValidation
             width: previewState.width,
             height: previewState.height,
             quantity: previewState.quantity,
+            pricingFormulaOverride,
+            debug: true,
             optionSelectionsJson: selectionPayload,
           }),
         });
@@ -219,16 +245,24 @@ export function PricingValidationPanel({ treeJson, findings }: PricingValidation
         if (requestId !== requestIdRef.current) return;
         if (!res.ok) {
           setResult(null);
+          const structuredErrors = Array.isArray(json?.errors)
+            ? json.errors
+                .map((entry: any) => (typeof entry?.message === "string" ? entry.message : null))
+                .filter((entry: string | null): entry is string => Boolean(entry))
+            : [];
+          setResponseErrors(structuredErrors);
           setError(typeof json?.message === "string" ? json.message : "Pricing evaluation failed.");
           return;
         }
 
         const data = (json?.data ?? null) as PricingPreviewResponse | null;
+        setResponseErrors([]);
         setResult(data);
       } catch (e: any) {
         if (controller.signal.aborted) return;
         if (requestId !== requestIdRef.current) return;
         setResult(null);
+        setResponseErrors([]);
         setError(typeof e?.message === "string" ? e.message : "Pricing evaluation failed.");
       } finally {
         if (!controller.signal.aborted && requestId === requestIdRef.current) setLoading(false);
@@ -239,7 +273,7 @@ export function PricingValidationPanel({ treeJson, findings }: PricingValidation
       controller.abort();
       window.clearTimeout(timeout);
     };
-  }, [hasInputErrors, requestSignature, treeJson, previewState.width, previewState.height, previewState.quantity, selectionPayload]);
+  }, [hasInputErrors, requestSignature, treeJson, previewState.width, previewState.height, previewState.quantity, pricingFormulaOverride, selectionPayload]);
 
   return (
     <aside className="h-full w-full min-w-0 bg-card flex flex-col overflow-hidden">
@@ -304,7 +338,12 @@ export function PricingValidationPanel({ treeJson, findings }: PricingValidation
               ) : hasInputErrors ? (
                 <div className="text-sm text-red-300">Fix input errors to run preview.</div>
               ) : error ? (
-                <div className="text-sm text-red-300">{error}</div>
+                <div className="space-y-1 rounded border border-red-500/40 bg-red-500/10 p-2 text-sm text-red-200">
+                  <div className="font-semibold">{error}</div>
+                  {apiErrors.map((entry, idx) => (
+                    <div key={`api-${idx}`}>{entry}</div>
+                  ))}
+                </div>
               ) : hasApiErrors ? (
                 <div className="space-y-1 rounded border border-red-500/40 bg-red-500/10 p-2 text-sm text-red-200">
                   <div className="font-semibold">Pricing evaluation errors</div>
@@ -314,12 +353,26 @@ export function PricingValidationPanel({ treeJson, findings }: PricingValidation
                 </div>
               ) : result ? (
                 <div className="space-y-1 text-sm text-slate-200">
+                  <div className="rounded border border-slate-700/70 bg-slate-900/40 px-2 py-1.5 mb-2">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-slate-300">Total sqft</span>
+                      <span className="font-mono text-base text-slate-100">{typeof displayTotalSqft === "number" ? displayTotalSqft.toFixed(2) : "—"}</span>
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-0.5">
+                      ({previewState.width} × {previewState.height}) ÷ 144 = {typeof displaySqftPerItem === "number" ? displaySqftPerItem.toFixed(2) : "—"} sqft
+                    </div>
+                  </div>
+
                   <div className="flex items-center justify-between"><span>Unit price</span><span className="font-mono">{currencyFormatter.format(result.unitPrice)}</span></div>
                   <div className="flex items-center justify-between"><span>Total price</span><span className="font-mono">{currencyFormatter.format(result.totalPrice)}</span></div>
+                  {result.formulaUsed ? (
+                    <div className="text-[11px] text-slate-400">Formula: <span className="font-mono">{result.formulaUsed}</span></div>
+                  ) : null}
                   {typeof result.derived?.sqft === "number" || typeof result.derived?.linearFeet === "number" ? (
                     <div className="pt-2 mt-2 border-t border-slate-700 text-xs text-slate-400 space-y-1">
                       <div className="uppercase tracking-wide">Derived</div>
                       <div className="flex items-center justify-between"><span>sqft</span><span className="font-mono">{typeof result.derived?.sqft === "number" ? result.derived.sqft.toFixed(2) : "—"}</span></div>
+                      <div className="flex items-center justify-between"><span>total_sqft</span><span className="font-mono">{typeof result.derived?.totalSqft === "number" ? result.derived.totalSqft.toFixed(2) : "—"}</span></div>
                       <div className="flex items-center justify-between"><span>linear_feet</span><span className="font-mono">{typeof result.derived?.linearFeet === "number" ? result.derived.linearFeet.toFixed(2) : "—"}</span></div>
                     </div>
                   ) : null}
