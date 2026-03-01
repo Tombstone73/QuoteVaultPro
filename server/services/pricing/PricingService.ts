@@ -90,6 +90,8 @@ export type PricingPreviewEvaluationResult = {
     fallbackFormula?: string;
     preCeilSqftTotal?: number | null;
     postCeilSqftTotal?: number | null;
+    rawSqftPerItem?: number;
+    rawTotalSqft?: number;
     baseRateUsed?: number | null;
     inputs?: {
       widthIn: number;
@@ -461,6 +463,8 @@ export function evaluatePricingPreviewFromTree(input: {
       fallbackFormula: usedFallbackFormula ? PBV2_PREVIEW_FALLBACK_FORMULA : undefined,
       preCeilSqftTotal: formulaDebug.preCeilSqftTotal,
       postCeilSqftTotal: formulaDebug.postCeilSqftTotal,
+      rawSqftPerItem: sqft,
+      rawTotalSqft: totalSqft,
       baseRateUsed: formulaDebug.baseRateUsed,
       inputs: { widthIn, heightIn, quantity },
       derived: {

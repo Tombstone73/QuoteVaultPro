@@ -45,6 +45,8 @@ type PricingPreviewResponse = {
     fallbackFormula?: string;
     preCeilSqftTotal?: number | null;
     postCeilSqftTotal?: number | null;
+    rawSqftPerItem?: number;
+    rawTotalSqft?: number;
     baseRateUsed?: number | null;
     inputs?: { widthIn: number; heightIn: number; quantity: number };
     derived?: { sqft: number; totalSqft: number; linearFeet: number };
@@ -246,16 +248,21 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
     }
     return (previewState.width * previewState.height) / 144;
   }, [previewState.width, previewState.height]);
-  const displaySqftPerItem = typeof result?.derived?.sqft === "number" ? result.derived.sqft : calculatedSqftPerItem;
-  const displayTotalSqft = typeof result?.derived?.totalSqft === "number"
-    ? result.derived.totalSqft
-    : (typeof displaySqftPerItem === "number" ? displaySqftPerItem * previewState.quantity : undefined);
+  const rawSqftPerItem = typeof formulaDebug?.rawSqftPerItem === "number"
+    ? formulaDebug.rawSqftPerItem
+    : (typeof result?.derived?.sqft === "number" ? result.derived.sqft : calculatedSqftPerItem);
+  const rawTotalSqft = typeof formulaDebug?.rawTotalSqft === "number"
+    ? formulaDebug.rawTotalSqft
+    : (typeof result?.derived?.totalSqft === "number"
+      ? result.derived.totalSqft
+      : (typeof rawSqftPerItem === "number" ? rawSqftPerItem * previewState.quantity : undefined));
   const billedSqftPre = typeof formulaDebug?.preCeilSqftTotal === "number" ? formulaDebug.preCeilSqftTotal : null;
   const billedSqftPost = typeof formulaDebug?.postCeilSqftTotal === "number" ? formulaDebug.postCeilSqftTotal : null;
   const baseRateUsed = typeof formulaDebug?.baseRateUsed === "number" ? formulaDebug.baseRateUsed : null;
   const billedLineTotal = billedSqftPost != null && baseRateUsed != null
     ? billedSqftPost * baseRateUsed
     : null;
+  const hasBilledSqftDebug = billedSqftPre != null && billedSqftPost != null;
   const formulaDebugErrors = useMemo(() => {
     const errorsFromDebug = Array.isArray(formulaDebug?.errors) ? formulaDebug.errors : [];
     const normalized = errorsFromDebug
@@ -457,25 +464,42 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
               ) : result ? (
                 <div className="space-y-1 text-sm text-slate-200">
                   <div className="rounded border border-slate-700/70 bg-slate-900/40 px-2 py-1.5 mb-2">
+                    <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">RAW (Inventory)</div>
                     <div className="flex items-center justify-between text-sm">
-                      <span className="text-slate-300">Raw total sqft</span>
-                      <span className="font-mono text-base text-slate-100">{typeof displayTotalSqft === "number" ? displayTotalSqft.toFixed(2) : "—"}</span>
+                      <span className="text-slate-300">Raw sqft per item</span>
+                      <span className="font-mono text-base text-slate-100">{typeof rawSqftPerItem === "number" ? rawSqftPerItem.toFixed(4) : "—"}</span>
                     </div>
-                    <div className="text-[11px] text-slate-400 mt-0.5">
-                      width × height only · ({previewState.width} × {previewState.height}) ÷ 144 = {typeof displaySqftPerItem === "number" ? displaySqftPerItem.toFixed(2) : "—"} sqft
+                    <div className="flex items-center justify-between text-sm mt-1">
+                      <span className="text-slate-300">Raw total sqft</span>
+                      <span className="font-mono text-base text-slate-100">{typeof rawTotalSqft === "number" ? rawTotalSqft.toFixed(4) : "—"}</span>
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-1">
+                      Raw geometry (does not include formula adjustments)
                     </div>
                   </div>
 
-                  {billedSqftPre != null && billedSqftPost != null ? (
+                  {hasBilledSqftDebug ? (
                     <div className="rounded border border-slate-700/70 bg-slate-900/40 px-2 py-1.5 mb-2">
+                      <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">BILLED (Pricing)</div>
                       <div className="flex items-center justify-between text-sm">
-                        <span className="text-slate-300">Billed sqft</span>
+                        <span className="text-slate-300">Pre-ceil sqft total</span>
+                        <span className="font-mono text-base text-slate-100">{billedSqftPre.toFixed(4)}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm mt-1">
+                        <span className="text-slate-300">Post-ceil billed sqft</span>
                         <span className="font-mono text-base text-slate-100">{billedSqftPost.toFixed(0)}</span>
                       </div>
-                      <div className="text-[11px] text-slate-400 mt-0.5">Pre-ceil: {billedSqftPre.toFixed(4)}</div>
-                      <div className="text-[11px] text-slate-400">Post-ceil: {billedSqftPost.toFixed(0)}</div>
+                      <div className="flex items-center justify-between text-sm mt-1">
+                        <span className="text-slate-300">Rate used (base_price / basePricePerSqft)</span>
+                        <span className="font-mono text-slate-100">{baseRateUsed != null ? currencyFormatter.format(baseRateUsed) : "—"}</span>
+                      </div>
+                      <div className="text-[11px] text-slate-400 mt-1">
+                        {billedSqftPost.toFixed(0)} × {baseRateUsed != null ? currencyFormatter.format(baseRateUsed) : "—"} = {billedLineTotal != null ? currencyFormatter.format(billedLineTotal) : "—"}
+                      </div>
                     </div>
-                  ) : null}
+                  ) : (
+                    <div className="text-[11px] text-slate-400 mb-2">Enable ceil debug to see billed sqft breakdown.</div>
+                  )}
 
                   {hasFormulaDebugErrors ? (
                     <div className="space-y-1 rounded border border-red-500/40 bg-red-500/10 p-2 text-sm text-red-200">
@@ -498,11 +522,6 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                           Using fallback formula
                         </Badge>
                       ) : null}
-                    </div>
-                  ) : null}
-                  {billedSqftPost != null && baseRateUsed != null && billedLineTotal != null ? (
-                    <div className="text-[11px] text-slate-400">
-                      {billedSqftPost.toFixed(0)} × {currencyFormatter.format(baseRateUsed)} = {currencyFormatter.format(billedLineTotal)}
                     </div>
                   ) : null}
                   {typeof result.derived?.sqft === "number" || typeof result.derived?.linearFeet === "number" ? (

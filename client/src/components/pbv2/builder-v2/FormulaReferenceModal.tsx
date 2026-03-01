@@ -27,6 +27,7 @@ interface FormulaReferenceModalProps {
 }
 
 export function FormulaReferenceModal({ open, onOpenChange, onInsertText }: FormulaReferenceModalProps) {
+  const [activeTab, setActiveTab] = useState<"variables" | "functions">("variables");
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [variableSearch, setVariableSearch] = useState("");
   const [functionSearch, setFunctionSearch] = useState("");
@@ -123,29 +124,39 @@ export function FormulaReferenceModal({ open, onOpenChange, onInsertText }: Form
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl h-[85vh] max-h-[85vh] flex flex-col overflow-hidden">
+      <DialogContent className="max-h-[85vh] w-[min(900px,95vw)] flex flex-col overflow-hidden">
         <DialogHeader className="shrink-0">
           <DialogTitle>Formula Reference</DialogTitle>
         </DialogHeader>
 
-        <Tabs defaultValue="variables" className="w-full flex-1 min-h-0 flex flex-col">
-          <div className="shrink-0 sticky top-0 z-10 bg-background">
+        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "variables" | "functions")} className="w-full flex-1 min-h-0 flex flex-col">
+          <div className="shrink-0">
             <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="variables">Variables</TabsTrigger>
-            <TabsTrigger value="functions">Functions</TabsTrigger>
+              <TabsTrigger value="variables">Variables</TabsTrigger>
+              <TabsTrigger value="functions">Functions</TabsTrigger>
             </TabsList>
           </div>
 
-          <TabsContent value="variables" className="mt-3 flex-1 min-h-0 flex flex-col overflow-hidden">
-            <div className="sticky top-0 z-10 bg-background pb-2">
+          <div className="shrink-0 mt-3 pb-2">
+            {activeTab === "variables" ? (
               <Input
                 value={variableSearch}
                 onChange={(e) => setVariableSearch(e.target.value)}
                 placeholder="Search variables"
                 className="h-8"
               />
-            </div>
-            <div className="flex-1 min-h-0 overflow-y-auto pr-1 overscroll-contain">
+            ) : (
+              <Input
+                value={functionSearch}
+                onChange={(e) => setFunctionSearch(e.target.value)}
+                placeholder="Search functions"
+                className="h-8"
+              />
+            )}
+          </div>
+
+          <div className="flex-1 overflow-y-auto overscroll-contain pr-2 min-h-0">
+            {activeTab === "variables" ? (
               <div className="space-y-3 pb-1">
                 {groupedVariables.length === 0 ? (
                   <div className="text-sm text-muted-foreground">No matching variables.</div>
@@ -191,19 +202,7 @@ export function FormulaReferenceModal({ open, onOpenChange, onInsertText }: Form
                   ))
                 )}
               </div>
-            </div>
-          </TabsContent>
-
-          <TabsContent value="functions" className="mt-3 flex-1 min-h-0 flex flex-col overflow-hidden">
-            <div className="sticky top-0 z-10 bg-background pb-2">
-              <Input
-                value={functionSearch}
-                onChange={(e) => setFunctionSearch(e.target.value)}
-                placeholder="Search functions"
-                className="h-8"
-              />
-            </div>
-            <div className="flex-1 min-h-0 overflow-y-auto pr-1 overscroll-contain">
+            ) : (
               <div className="space-y-2 pb-1">
                 {filteredFunctions.length === 0 ? (
                   <div className="text-sm text-muted-foreground">No matching functions.</div>
@@ -226,8 +225,8 @@ export function FormulaReferenceModal({ open, onOpenChange, onInsertText }: Form
                   ))
                 )}
               </div>
-            </div>
-          </TabsContent>
+            )}
+          </div>
         </Tabs>
       </DialogContent>
     </Dialog>
