@@ -543,6 +543,10 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     <div className="rounded border border-slate-700/70 bg-slate-900/40 px-2 py-1.5 mb-2">
                       <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">BILLED (Pricing)</div>
                       <div className="flex items-center justify-between text-sm">
+                        <span className="text-slate-300">total_sqft (finished)</span>
+                        <span className="font-mono text-base text-slate-100">{typeof finishedTotalSqft === "number" ? finishedTotalSqft.toFixed(4) : "—"}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm">
                         <span className="text-slate-300">Pre-ceil sqft total</span>
                         <span className="font-mono text-base text-slate-100">{billedSqftPre.toFixed(4)}</span>
                       </div>
