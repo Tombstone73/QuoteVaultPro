@@ -43,6 +43,9 @@ type PricingPreviewResponse = {
     errors?: Array<{ code: string; message: string; detail?: any }>;
     usedFallbackFormula?: boolean;
     fallbackFormula?: string;
+    preCeilSqftTotal?: number | null;
+    postCeilSqftTotal?: number | null;
+    baseRateUsed?: number | null;
     inputs?: { widthIn: number; heightIn: number; quantity: number };
     derived?: { sqft: number; totalSqft: number; linearFeet: number };
     pricing?: { basePrice: number; optionsPrice: number; unitPrice: number; totalPrice: number };
@@ -247,6 +250,12 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   const displayTotalSqft = typeof result?.derived?.totalSqft === "number"
     ? result.derived.totalSqft
     : (typeof displaySqftPerItem === "number" ? displaySqftPerItem * previewState.quantity : undefined);
+  const billedSqftPre = typeof formulaDebug?.preCeilSqftTotal === "number" ? formulaDebug.preCeilSqftTotal : null;
+  const billedSqftPost = typeof formulaDebug?.postCeilSqftTotal === "number" ? formulaDebug.postCeilSqftTotal : null;
+  const baseRateUsed = typeof formulaDebug?.baseRateUsed === "number" ? formulaDebug.baseRateUsed : null;
+  const billedLineTotal = billedSqftPost != null && baseRateUsed != null
+    ? billedSqftPost * baseRateUsed
+    : null;
   const formulaDebugErrors = useMemo(() => {
     const errorsFromDebug = Array.isArray(formulaDebug?.errors) ? formulaDebug.errors : [];
     const normalized = errorsFromDebug
@@ -449,13 +458,24 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                 <div className="space-y-1 text-sm text-slate-200">
                   <div className="rounded border border-slate-700/70 bg-slate-900/40 px-2 py-1.5 mb-2">
                     <div className="flex items-center justify-between text-sm">
-                      <span className="text-slate-300">Total sqft</span>
+                      <span className="text-slate-300">Raw total sqft</span>
                       <span className="font-mono text-base text-slate-100">{typeof displayTotalSqft === "number" ? displayTotalSqft.toFixed(2) : "—"}</span>
                     </div>
                     <div className="text-[11px] text-slate-400 mt-0.5">
-                      ({previewState.width} × {previewState.height}) ÷ 144 = {typeof displaySqftPerItem === "number" ? displaySqftPerItem.toFixed(2) : "—"} sqft
+                      width × height only · ({previewState.width} × {previewState.height}) ÷ 144 = {typeof displaySqftPerItem === "number" ? displaySqftPerItem.toFixed(2) : "—"} sqft
                     </div>
                   </div>
+
+                  {billedSqftPre != null && billedSqftPost != null ? (
+                    <div className="rounded border border-slate-700/70 bg-slate-900/40 px-2 py-1.5 mb-2">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-slate-300">Billed sqft</span>
+                        <span className="font-mono text-base text-slate-100">{billedSqftPost.toFixed(0)}</span>
+                      </div>
+                      <div className="text-[11px] text-slate-400 mt-0.5">Pre-ceil: {billedSqftPre.toFixed(4)}</div>
+                      <div className="text-[11px] text-slate-400">Post-ceil: {billedSqftPost.toFixed(0)}</div>
+                    </div>
+                  ) : null}
 
                   {hasFormulaDebugErrors ? (
                     <div className="space-y-1 rounded border border-red-500/40 bg-red-500/10 p-2 text-sm text-red-200">
@@ -478,6 +498,11 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                           Using fallback formula
                         </Badge>
                       ) : null}
+                    </div>
+                  ) : null}
+                  {billedSqftPost != null && baseRateUsed != null && billedLineTotal != null ? (
+                    <div className="text-[11px] text-slate-400">
+                      {billedSqftPost.toFixed(0)} × {currencyFormatter.format(baseRateUsed)} = {currencyFormatter.format(billedLineTotal)}
                     </div>
                   ) : null}
                   {typeof result.derived?.sqft === "number" || typeof result.derived?.linearFeet === "number" ? (
@@ -511,6 +536,9 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       ) : null}
                       <div><span className="text-slate-400">Result value:</span> <span className="font-mono">{typeof formulaDebug.resultValue === "number" ? String(formulaDebug.resultValue) : "—"}</span></div>
                       <div><span className="text-slate-400">Applied as:</span> <span className="font-mono">{formulaDebug.appliedAs ?? "unknown"}</span></div>
+                      <div><span className="text-slate-400">Pre-ceil sqft:</span> <span className="font-mono">{typeof formulaDebug.preCeilSqftTotal === "number" ? formulaDebug.preCeilSqftTotal.toFixed(4) : "—"}</span></div>
+                      <div><span className="text-slate-400">Post-ceil sqft:</span> <span className="font-mono">{typeof formulaDebug.postCeilSqftTotal === "number" ? formulaDebug.postCeilSqftTotal.toFixed(0) : "—"}</span></div>
+                      <div><span className="text-slate-400">Base rate used (p):</span> <span className="font-mono">{typeof formulaDebug.baseRateUsed === "number" ? String(formulaDebug.baseRateUsed) : "—"}</span></div>
                       {formulaDebug.usedFallbackFormula ? (
                         <div>
                           <span className="text-slate-400">Fallback:</span>{" "}
