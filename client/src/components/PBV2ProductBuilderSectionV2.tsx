@@ -250,7 +250,7 @@ export default function PBV2ProductBuilderSectionV2({
   }) => void;
   onTreeProviderReady?: (provider: { getCurrentTree: () => unknown | null; updateTreeMeta: (metaUpdates: Record<string, unknown>) => void }) => void;
   onClearDirtyReady?: (clearDirty: () => void) => void;
-  onTreeMetaChange?: (meta: { shippingConfig?: any; productImages?: any[]; pricingV2?: any; geometry?: { trimAllowance?: number } }) => void;
+  onTreeMetaChange?: (meta: { shippingConfig?: any; productImages?: any[]; pricingV2?: any; geometry?: { trimAllowance?: number; trimAllowanceX?: number; trimAllowanceY?: number } }) => void;
 }) {
   const { toast } = useToast();
   const { isAdmin: isAdminUser } = useAuth();

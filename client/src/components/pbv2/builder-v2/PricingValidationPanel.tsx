@@ -33,7 +33,8 @@ type PricingPreviewResponse = {
     linearFeet?: number;
     orderedWidth?: number;
     orderedHeight?: number;
-    trimAllowance?: number;
+    trimAllowanceX?: number;
+    trimAllowanceY?: number;
     finishedWidth?: number;
     finishedHeight?: number;
   };
@@ -59,7 +60,8 @@ type PricingPreviewResponse = {
       quantity: number;
       ordered_width?: number;
       ordered_height?: number;
-      trim_allowance?: number;
+      trim_allowance_x?: number;
+      trim_allowance_y?: number;
       finished_width?: number;
       finished_height?: number;
     };
@@ -69,7 +71,8 @@ type PricingPreviewResponse = {
       linearFeet: number;
       ordered_width?: number;
       ordered_height?: number;
-      trim_allowance?: number;
+      trim_allowance_x?: number;
+      trim_allowance_y?: number;
       finished_width?: number;
       finished_height?: number;
     };
@@ -271,9 +274,15 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
     }
     return (previewState.width * previewState.height) / 144;
   }, [previewState.width, previewState.height]);
-  const configuredTrimAllowance = useMemo(() => {
-    const value = Number((treeForPreview as any)?.meta?.geometry?.trimAllowance ?? 0);
-    return Number.isFinite(value) && value >= 0 ? value : 0;
+  const configuredTrimAllowances = useMemo(() => {
+    const geometry = (treeForPreview as any)?.meta?.geometry;
+    const legacy = Number(geometry?.trimAllowance ?? 0);
+    const normalizedLegacy = Number.isFinite(legacy) && legacy >= 0 ? legacy : 0;
+    const xRaw = Number(geometry?.trimAllowanceX);
+    const yRaw = Number(geometry?.trimAllowanceY);
+    const trimAllowanceX = Number.isFinite(xRaw) && xRaw >= 0 ? xRaw : normalizedLegacy;
+    const trimAllowanceY = Number.isFinite(yRaw) && yRaw >= 0 ? yRaw : normalizedLegacy;
+    return { trimAllowanceX, trimAllowanceY };
   }, [treeForPreview]);
   const orderedWidth = typeof result?.derived?.orderedWidth === "number"
     ? result.derived.orderedWidth
@@ -281,15 +290,18 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   const orderedHeight = typeof result?.derived?.orderedHeight === "number"
     ? result.derived.orderedHeight
     : previewState.height;
-  const trimAllowance = typeof result?.derived?.trimAllowance === "number"
-    ? result.derived.trimAllowance
-    : (typeof formulaDebug?.derived?.trim_allowance === "number" ? formulaDebug.derived.trim_allowance : configuredTrimAllowance);
+  const trimAllowanceX = typeof result?.derived?.trimAllowanceX === "number"
+    ? result.derived.trimAllowanceX
+    : (typeof formulaDebug?.derived?.trim_allowance_x === "number" ? formulaDebug.derived.trim_allowance_x : configuredTrimAllowances.trimAllowanceX);
+  const trimAllowanceY = typeof result?.derived?.trimAllowanceY === "number"
+    ? result.derived.trimAllowanceY
+    : (typeof formulaDebug?.derived?.trim_allowance_y === "number" ? formulaDebug.derived.trim_allowance_y : configuredTrimAllowances.trimAllowanceY);
   const finishedWidth = typeof result?.derived?.finishedWidth === "number"
     ? result.derived.finishedWidth
-    : (typeof formulaDebug?.derived?.finished_width === "number" ? formulaDebug.derived.finished_width : orderedWidth + trimAllowance);
+    : (typeof formulaDebug?.derived?.finished_width === "number" ? formulaDebug.derived.finished_width : orderedWidth + trimAllowanceX);
   const finishedHeight = typeof result?.derived?.finishedHeight === "number"
     ? result.derived.finishedHeight
-    : (typeof formulaDebug?.derived?.finished_height === "number" ? formulaDebug.derived.finished_height : orderedHeight + trimAllowance);
+    : (typeof formulaDebug?.derived?.finished_height === "number" ? formulaDebug.derived.finished_height : orderedHeight + trimAllowanceY);
   const finishedSqftPerItem = typeof result?.derived?.sqft === "number"
     ? result.derived.sqft
     : ((finishedWidth > 0 && finishedHeight > 0) ? (finishedWidth * finishedHeight) / 144 : calculatedSqftPerItem);
@@ -511,7 +523,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     </div>
                     <div className="flex items-center justify-between text-sm mt-1">
                       <span className="text-slate-300">Trim allowance</span>
-                      <span className="font-mono text-base text-slate-100">{trimAllowance.toFixed(2)} in</span>
+                      <span className="font-mono text-base text-slate-100">+{trimAllowanceX.toFixed(2)} (W), +{trimAllowanceY.toFixed(2)} (H)</span>
                     </div>
                     <div className="flex items-center justify-between text-sm mt-1">
                       <span className="text-slate-300">Finished size</span>
