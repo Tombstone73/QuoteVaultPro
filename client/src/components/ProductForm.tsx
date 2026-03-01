@@ -57,7 +57,7 @@ export const ProductForm = ({
   onSave: any;
   formId?: string;
   onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null }) => void;
-  treeMeta?: { shippingConfig?: ShippingConfig; productImages?: any[] };
+  treeMeta?: { shippingConfig?: ShippingConfig; productImages?: any[]; geometry?: { trimAllowance?: number } };
   onUpdateTreeMeta?: (updates: Record<string, unknown>) => void;
   pricingV2?: any;
   onUpdatePricingV2Base?: (base: { perSqftCents?: number; perPieceCents?: number; minimumChargeCents?: number }) => void;
@@ -111,6 +111,8 @@ export const ProductForm = ({
   }, [shippingPolicy, baseWeight, weightUnit, weightBasis, onUpdateTreeMeta, form]);
 
   const isWeightDisabled = shippingPolicy === "pickup_only";
+  const trimAllowance = Number(treeMeta?.geometry?.trimAllowance ?? 0);
+  const safeTrimAllowance = Number.isFinite(trimAllowance) && trimAllowance >= 0 ? trimAllowance : 0;
 
   // Options are now managed by PBV2ProductBuilderSectionV2, not ProductForm
 
@@ -367,6 +369,25 @@ export const ProductForm = ({
             onUpdateTier={onUpdatePricingV2Tier!}
             onDeleteTier={onDeletePricingV2Tier!}
           />
+
+          <div className="mt-4 rounded-md border border-slate-700 bg-slate-900/30 p-3 space-y-2">
+            <h4 className="text-xs font-medium text-slate-300 uppercase tracking-wider">Finished Size Rules</h4>
+            <div className="space-y-1">
+              <Label className="text-xs text-slate-400">Trim Allowance (in)</Label>
+              <Input
+                type="number"
+                min={0}
+                step="0.01"
+                value={safeTrimAllowance}
+                onChange={(e) => {
+                  const parsed = Number(e.target.value);
+                  const nextTrimAllowance = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+                  onUpdateTreeMeta?.({ geometry: { ...(treeMeta?.geometry || {}), trimAllowance: nextTrimAllowance } });
+                }}
+              />
+              <p className="text-[11px] text-slate-400">Adds to both width and height to represent finished trimmed size.</p>
+            </div>
+          </div>
         </div>
 
         {/* RIGHT: Advanced Settings — toggles stacked vertically */}

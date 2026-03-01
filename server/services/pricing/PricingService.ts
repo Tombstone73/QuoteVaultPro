@@ -77,6 +77,11 @@ export type PricingPreviewEvaluationResult = {
     sqft?: number;
     totalSqft?: number;
     linearFeet?: number;
+    orderedWidth?: number;
+    orderedHeight?: number;
+    trimAllowance?: number;
+    finishedWidth?: number;
+    finishedHeight?: number;
   };
   debug?: {
     formulaRaw: string;
@@ -97,11 +102,21 @@ export type PricingPreviewEvaluationResult = {
       widthIn: number;
       heightIn: number;
       quantity: number;
+      ordered_width?: number;
+      ordered_height?: number;
+      trim_allowance?: number;
+      finished_width?: number;
+      finished_height?: number;
     };
     derived?: {
       sqft: number;
       totalSqft: number;
       linearFeet: number;
+      ordered_width?: number;
+      ordered_height?: number;
+      trim_allowance?: number;
+      finished_width?: number;
+      finished_height?: number;
     };
     pricing?: {
       basePrice: number;
@@ -382,8 +397,11 @@ export function evaluatePricingPreviewFromTree(input: {
 
   const formulaDebug = buildBaseFormulaDebugContext({
     formulaRaw: formulaToUse,
-    widthIn,
-    heightIn,
+    orderedWidthIn: baseDetails.orderedWidthIn,
+    orderedHeightIn: baseDetails.orderedHeightIn,
+    trimAllowance: baseDetails.trimAllowance,
+    finishedWidthIn: baseDetails.finishedWidthIn,
+    finishedHeightIn: baseDetails.finishedHeightIn,
     quantity,
     baseRatePerSqft: baseDetails.perSqftCents / 100,
     sqftPerItem: baseDetails.sqftPerItem,
@@ -394,8 +412,11 @@ export function evaluatePricingPreviewFromTree(input: {
 
   const formulaEvaluation = evaluatePreviewFormulaToCents({
     formula: formulaToUse,
-    widthIn,
-    heightIn,
+    orderedWidthIn: baseDetails.orderedWidthIn,
+    orderedHeightIn: baseDetails.orderedHeightIn,
+    trimAllowance: baseDetails.trimAllowance,
+    finishedWidthIn: baseDetails.finishedWidthIn,
+    finishedHeightIn: baseDetails.finishedHeightIn,
     quantity,
     baseRatePerSqft: baseDetails.perSqftCents / 100,
     sqftPerItem: baseDetails.sqftPerItem,
@@ -450,6 +471,11 @@ export function evaluatePricingPreviewFromTree(input: {
       sqft: Number.isFinite(sqft) ? sqft : undefined,
       totalSqft: Number.isFinite(totalSqft) ? totalSqft : undefined,
       linearFeet: Number.isFinite(linearFeet) ? linearFeet : undefined,
+      orderedWidth: Number.isFinite(baseDetails.orderedWidthIn) ? baseDetails.orderedWidthIn : undefined,
+      orderedHeight: Number.isFinite(baseDetails.orderedHeightIn) ? baseDetails.orderedHeightIn : undefined,
+      trimAllowance: Number.isFinite(baseDetails.trimAllowance) ? baseDetails.trimAllowance : undefined,
+      finishedWidth: Number.isFinite(baseDetails.finishedWidthIn) ? baseDetails.finishedWidthIn : undefined,
+      finishedHeight: Number.isFinite(baseDetails.finishedHeightIn) ? baseDetails.finishedHeightIn : undefined,
     },
     debug: input.debug ? {
       formulaRaw: formulaDebug.formulaRaw,
@@ -463,14 +489,28 @@ export function evaluatePricingPreviewFromTree(input: {
       fallbackFormula: usedFallbackFormula ? PBV2_PREVIEW_FALLBACK_FORMULA : undefined,
       preCeilSqftTotal: formulaDebug.preCeilSqftTotal,
       postCeilSqftTotal: formulaDebug.postCeilSqftTotal,
-      rawSqftPerItem: sqft,
-      rawTotalSqft: totalSqft,
+      rawSqftPerItem: widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0,
+      rawTotalSqft: (widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0) * quantity,
       baseRateUsed: formulaDebug.baseRateUsed,
-      inputs: { widthIn, heightIn, quantity },
+      inputs: {
+        widthIn,
+        heightIn,
+        quantity,
+        ordered_width: baseDetails.orderedWidthIn,
+        ordered_height: baseDetails.orderedHeightIn,
+        trim_allowance: baseDetails.trimAllowance,
+        finished_width: baseDetails.finishedWidthIn,
+        finished_height: baseDetails.finishedHeightIn,
+      },
       derived: {
         sqft,
         totalSqft,
         linearFeet,
+        ordered_width: baseDetails.orderedWidthIn,
+        ordered_height: baseDetails.orderedHeightIn,
+        trim_allowance: baseDetails.trimAllowance,
+        finished_width: baseDetails.finishedWidthIn,
+        finished_height: baseDetails.finishedHeightIn,
       },
       pricing: {
         basePrice: basePriceCents / 100,
@@ -625,6 +665,11 @@ function calculateBasePriceDetails(
   perSqftCents: number;
   perPieceCents: number;
   minimumChargeCents: number;
+  orderedWidthIn: number;
+  orderedHeightIn: number;
+  trimAllowance: number;
+  finishedWidthIn: number;
+  finishedHeightIn: number;
   sqftPerItem: number;
   totalSqft: number;
   linearFeet: number;
@@ -666,7 +711,12 @@ function calculateBasePriceDetails(
   }
 
   const { widthIn, heightIn, quantity } = context;
-  const sqftPerItem = widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0;
+  const trimAllowance = getTrimAllowanceInches(tree);
+  const orderedWidthIn = widthIn > 0 ? widthIn : 0;
+  const orderedHeightIn = heightIn > 0 ? heightIn : 0;
+  const finishedWidthIn = orderedWidthIn + trimAllowance;
+  const finishedHeightIn = orderedHeightIn + trimAllowance;
+  const sqftPerItem = finishedWidthIn > 0 && finishedHeightIn > 0 ? (finishedWidthIn * finishedHeightIn) / 144 : 0;
 
   // Apply best-match qtyTier (highest minQty <= quantity)
   let bestQtyTier: any = null;
@@ -709,7 +759,7 @@ function calculateBasePriceDetails(
   const sqftComponent = perSqftCents * totalSqft;
   const pieceComponent = perPieceCents * quantity;
   const lineBaseCents = sqftComponent + pieceComponent;
-  const linearFeet = widthIn > 0 ? widthIn / 12 : 0;
+  const linearFeet = orderedWidthIn > 0 ? orderedWidthIn / 12 : 0;
 
   // Apply minimum charge once per line item (not per unit)
   const total = minimumChargeCents > 0 ? Math.max(lineBaseCents, minimumChargeCents) : lineBaseCents;
@@ -719,16 +769,30 @@ function calculateBasePriceDetails(
     perSqftCents,
     perPieceCents,
     minimumChargeCents,
+    orderedWidthIn,
+    orderedHeightIn,
+    trimAllowance,
+    finishedWidthIn,
+    finishedHeightIn,
     sqftPerItem,
     totalSqft,
     linearFeet,
   };
 }
 
+function getTrimAllowanceInches(tree: any): number {
+  const value = Number(tree?.meta?.geometry?.trimAllowance ?? 0);
+  if (!Number.isFinite(value) || value < 0) return 0;
+  return value;
+}
+
 function evaluatePreviewFormulaToCents(input: {
   formula: string;
-  widthIn: number;
-  heightIn: number;
+  orderedWidthIn: number;
+  orderedHeightIn: number;
+  trimAllowance: number;
+  finishedWidthIn: number;
+  finishedHeightIn: number;
   quantity: number;
   baseRatePerSqft: number;
   sqftPerItem: number;
@@ -761,7 +825,8 @@ function evaluatePreviewFormulaToCents(input: {
   const formulaResolved = resolveFormulaAliases(input.formula);
   const appliedAs = inferFormulaApplication(input.formula);
   const steps: Array<{ label: string; value: number | string }> = [
-    { label: 'w*h', value: input.widthIn * input.heightIn },
+    { label: 'ordered_w*ordered_h', value: input.orderedWidthIn * input.orderedHeightIn },
+    { label: 'finished_w*finished_h', value: input.finishedWidthIn * input.finishedHeightIn },
     { label: '(w*h)/144', value: input.sqftPerItem },
     { label: 'sqft*q', value: input.totalSqft },
     { label: 'p(base_rate_per_sqft)', value: input.baseRatePerSqft },
@@ -812,8 +877,11 @@ function evaluatePreviewFormulaToCents(input: {
 
 function buildBaseFormulaDebugContext(input: {
   formulaRaw: string;
-  widthIn: number;
-  heightIn: number;
+  orderedWidthIn: number;
+  orderedHeightIn: number;
+  trimAllowance: number;
+  finishedWidthIn: number;
+  finishedHeightIn: number;
   quantity: number;
   baseRatePerSqft: number;
   sqftPerItem: number;
@@ -826,8 +894,11 @@ function buildBaseFormulaDebugContext(input: {
     formulaResolved: input.formulaRaw ? resolveFormulaAliases(input.formulaRaw) : undefined,
     variables: buildFormulaScope({
       formula: input.formulaRaw,
-      widthIn: input.widthIn,
-      heightIn: input.heightIn,
+      orderedWidthIn: input.orderedWidthIn,
+      orderedHeightIn: input.orderedHeightIn,
+      trimAllowance: input.trimAllowance,
+      finishedWidthIn: input.finishedWidthIn,
+      finishedHeightIn: input.finishedHeightIn,
       quantity: input.quantity,
       baseRatePerSqft: input.baseRatePerSqft,
       sqftPerItem: input.sqftPerItem,
@@ -836,7 +907,8 @@ function buildBaseFormulaDebugContext(input: {
     }),
     appliedAs: input.formulaRaw ? inferFormulaApplication(input.formulaRaw) : 'unknown',
     steps: [
-      { label: 'w*h', value: input.widthIn * input.heightIn },
+      { label: 'ordered_w*ordered_h', value: input.orderedWidthIn * input.orderedHeightIn },
+      { label: 'finished_w*finished_h', value: input.finishedWidthIn * input.finishedHeightIn },
       { label: '(w*h)/144', value: input.sqftPerItem },
       { label: 'sqft*q', value: input.totalSqft },
       { label: 'p(base_rate_per_sqft)', value: input.baseRatePerSqft },
@@ -852,8 +924,11 @@ function buildBaseFormulaDebugContext(input: {
 
 function buildFormulaScope(input: {
   formula: string;
-  widthIn: number;
-  heightIn: number;
+  orderedWidthIn: number;
+  orderedHeightIn: number;
+  trimAllowance: number;
+  finishedWidthIn: number;
+  finishedHeightIn: number;
   quantity: number;
   baseRatePerSqft: number;
   sqftPerItem: number;
@@ -861,10 +936,17 @@ function buildFormulaScope(input: {
   linearFeet: number;
 }): Record<string, number | string | boolean | null> {
   return {
-    width: input.widthIn,
-    w: input.widthIn,
-    height: input.heightIn,
-    h: input.heightIn,
+    width: input.orderedWidthIn,
+    w: input.orderedWidthIn,
+    ordered_width: input.orderedWidthIn,
+    height: input.orderedHeightIn,
+    h: input.orderedHeightIn,
+    ordered_height: input.orderedHeightIn,
+    trim_allowance: input.trimAllowance,
+    finished_width: input.finishedWidthIn,
+    fw: input.finishedWidthIn,
+    finished_height: input.finishedHeightIn,
+    fh: input.finishedHeightIn,
     quantity: input.quantity,
     q: input.quantity,
     base_price: input.baseRatePerSqft,
