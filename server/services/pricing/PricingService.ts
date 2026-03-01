@@ -79,7 +79,8 @@ export type PricingPreviewEvaluationResult = {
     linearFeet?: number;
     orderedWidth?: number;
     orderedHeight?: number;
-    trimAllowance?: number;
+    trimAllowanceX?: number;
+    trimAllowanceY?: number;
     finishedWidth?: number;
     finishedHeight?: number;
   };
@@ -104,7 +105,8 @@ export type PricingPreviewEvaluationResult = {
       quantity: number;
       ordered_width?: number;
       ordered_height?: number;
-      trim_allowance?: number;
+      trim_allowance_x?: number;
+      trim_allowance_y?: number;
       finished_width?: number;
       finished_height?: number;
     };
@@ -114,7 +116,8 @@ export type PricingPreviewEvaluationResult = {
       linearFeet: number;
       ordered_width?: number;
       ordered_height?: number;
-      trim_allowance?: number;
+      trim_allowance_x?: number;
+      trim_allowance_y?: number;
       finished_width?: number;
       finished_height?: number;
     };
@@ -399,7 +402,8 @@ export function evaluatePricingPreviewFromTree(input: {
     formulaRaw: formulaToUse,
     orderedWidthIn: baseDetails.orderedWidthIn,
     orderedHeightIn: baseDetails.orderedHeightIn,
-    trimAllowance: baseDetails.trimAllowance,
+    trimAllowanceX: baseDetails.trimAllowanceX,
+    trimAllowanceY: baseDetails.trimAllowanceY,
     finishedWidthIn: baseDetails.finishedWidthIn,
     finishedHeightIn: baseDetails.finishedHeightIn,
     quantity,
@@ -414,7 +418,8 @@ export function evaluatePricingPreviewFromTree(input: {
     formula: formulaToUse,
     orderedWidthIn: baseDetails.orderedWidthIn,
     orderedHeightIn: baseDetails.orderedHeightIn,
-    trimAllowance: baseDetails.trimAllowance,
+    trimAllowanceX: baseDetails.trimAllowanceX,
+    trimAllowanceY: baseDetails.trimAllowanceY,
     finishedWidthIn: baseDetails.finishedWidthIn,
     finishedHeightIn: baseDetails.finishedHeightIn,
     quantity,
@@ -473,7 +478,8 @@ export function evaluatePricingPreviewFromTree(input: {
       linearFeet: Number.isFinite(linearFeet) ? linearFeet : undefined,
       orderedWidth: Number.isFinite(baseDetails.orderedWidthIn) ? baseDetails.orderedWidthIn : undefined,
       orderedHeight: Number.isFinite(baseDetails.orderedHeightIn) ? baseDetails.orderedHeightIn : undefined,
-      trimAllowance: Number.isFinite(baseDetails.trimAllowance) ? baseDetails.trimAllowance : undefined,
+      trimAllowanceX: Number.isFinite(baseDetails.trimAllowanceX) ? baseDetails.trimAllowanceX : undefined,
+      trimAllowanceY: Number.isFinite(baseDetails.trimAllowanceY) ? baseDetails.trimAllowanceY : undefined,
       finishedWidth: Number.isFinite(baseDetails.finishedWidthIn) ? baseDetails.finishedWidthIn : undefined,
       finishedHeight: Number.isFinite(baseDetails.finishedHeightIn) ? baseDetails.finishedHeightIn : undefined,
     },
@@ -498,7 +504,8 @@ export function evaluatePricingPreviewFromTree(input: {
         quantity,
         ordered_width: baseDetails.orderedWidthIn,
         ordered_height: baseDetails.orderedHeightIn,
-        trim_allowance: baseDetails.trimAllowance,
+        trim_allowance_x: baseDetails.trimAllowanceX,
+        trim_allowance_y: baseDetails.trimAllowanceY,
         finished_width: baseDetails.finishedWidthIn,
         finished_height: baseDetails.finishedHeightIn,
       },
@@ -508,7 +515,8 @@ export function evaluatePricingPreviewFromTree(input: {
         linearFeet,
         ordered_width: baseDetails.orderedWidthIn,
         ordered_height: baseDetails.orderedHeightIn,
-        trim_allowance: baseDetails.trimAllowance,
+        trim_allowance_x: baseDetails.trimAllowanceX,
+        trim_allowance_y: baseDetails.trimAllowanceY,
         finished_width: baseDetails.finishedWidthIn,
         finished_height: baseDetails.finishedHeightIn,
       },
@@ -667,7 +675,8 @@ function calculateBasePriceDetails(
   minimumChargeCents: number;
   orderedWidthIn: number;
   orderedHeightIn: number;
-  trimAllowance: number;
+  trimAllowanceX: number;
+  trimAllowanceY: number;
   finishedWidthIn: number;
   finishedHeightIn: number;
   sqftPerItem: number;
@@ -711,11 +720,11 @@ function calculateBasePriceDetails(
   }
 
   const { widthIn, heightIn, quantity } = context;
-  const trimAllowance = getTrimAllowanceInches(tree);
+  const { trimAllowanceX, trimAllowanceY } = getTrimAllowancesInches(tree);
   const orderedWidthIn = widthIn > 0 ? widthIn : 0;
   const orderedHeightIn = heightIn > 0 ? heightIn : 0;
-  const finishedWidthIn = orderedWidthIn + trimAllowance;
-  const finishedHeightIn = orderedHeightIn + trimAllowance;
+  const finishedWidthIn = orderedWidthIn + trimAllowanceX;
+  const finishedHeightIn = orderedHeightIn + trimAllowanceY;
   const sqftPerItem = finishedWidthIn > 0 && finishedHeightIn > 0 ? (finishedWidthIn * finishedHeightIn) / 144 : 0;
 
   // Apply best-match qtyTier (highest minQty <= quantity)
@@ -771,7 +780,8 @@ function calculateBasePriceDetails(
     minimumChargeCents,
     orderedWidthIn,
     orderedHeightIn,
-    trimAllowance,
+    trimAllowanceX,
+    trimAllowanceY,
     finishedWidthIn,
     finishedHeightIn,
     sqftPerItem,
@@ -780,17 +790,26 @@ function calculateBasePriceDetails(
   };
 }
 
-function getTrimAllowanceInches(tree: any): number {
-  const value = Number(tree?.meta?.geometry?.trimAllowance ?? 0);
-  if (!Number.isFinite(value) || value < 0) return 0;
-  return value;
+function getTrimAllowancesInches(tree: any): { trimAllowanceX: number; trimAllowanceY: number } {
+  const geometry = tree?.meta?.geometry;
+  const legacy = Number(geometry?.trimAllowance ?? 0);
+  const normalizedLegacy = Number.isFinite(legacy) && legacy >= 0 ? legacy : 0;
+
+  const xRaw = Number(geometry?.trimAllowanceX);
+  const yRaw = Number(geometry?.trimAllowanceY);
+
+  const trimAllowanceX = Number.isFinite(xRaw) && xRaw >= 0 ? xRaw : normalizedLegacy;
+  const trimAllowanceY = Number.isFinite(yRaw) && yRaw >= 0 ? yRaw : normalizedLegacy;
+
+  return { trimAllowanceX, trimAllowanceY };
 }
 
 function evaluatePreviewFormulaToCents(input: {
   formula: string;
   orderedWidthIn: number;
   orderedHeightIn: number;
-  trimAllowance: number;
+  trimAllowanceX: number;
+  trimAllowanceY: number;
   finishedWidthIn: number;
   finishedHeightIn: number;
   quantity: number;
@@ -879,7 +898,8 @@ function buildBaseFormulaDebugContext(input: {
   formulaRaw: string;
   orderedWidthIn: number;
   orderedHeightIn: number;
-  trimAllowance: number;
+  trimAllowanceX: number;
+  trimAllowanceY: number;
   finishedWidthIn: number;
   finishedHeightIn: number;
   quantity: number;
@@ -896,7 +916,8 @@ function buildBaseFormulaDebugContext(input: {
       formula: input.formulaRaw,
       orderedWidthIn: input.orderedWidthIn,
       orderedHeightIn: input.orderedHeightIn,
-      trimAllowance: input.trimAllowance,
+      trimAllowanceX: input.trimAllowanceX,
+      trimAllowanceY: input.trimAllowanceY,
       finishedWidthIn: input.finishedWidthIn,
       finishedHeightIn: input.finishedHeightIn,
       quantity: input.quantity,
@@ -926,7 +947,8 @@ function buildFormulaScope(input: {
   formula: string;
   orderedWidthIn: number;
   orderedHeightIn: number;
-  trimAllowance: number;
+  trimAllowanceX: number;
+  trimAllowanceY: number;
   finishedWidthIn: number;
   finishedHeightIn: number;
   quantity: number;
@@ -942,7 +964,9 @@ function buildFormulaScope(input: {
     height: input.orderedHeightIn,
     h: input.orderedHeightIn,
     ordered_height: input.orderedHeightIn,
-    trim_allowance: input.trimAllowance,
+    trim_allowance: input.trimAllowanceX,
+    trim_allowance_x: input.trimAllowanceX,
+    trim_allowance_y: input.trimAllowanceY,
     finished_width: input.finishedWidthIn,
     fw: input.finishedWidthIn,
     finished_height: input.finishedHeightIn,
