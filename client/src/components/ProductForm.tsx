@@ -229,6 +229,8 @@ export const ProductForm = ({
           pricingProfileKey={addPricingProfileKey}
           pricingEngine={pricingEngine}
           onPricingEngineChange={onPricingEngineChange}
+          trimAllowanceX={safeTrimAllowanceX}
+          trimAllowanceY={safeTrimAllowanceY}
         />
 
         {/* RIGHT: Material & Weight Configuration */}
@@ -490,12 +492,16 @@ function PricingEngineRadioSection({
   pricingProfileKey,
   pricingEngine,
   onPricingEngineChange,
+  trimAllowanceX,
+  trimAllowanceY,
 }: {
   form: any;
   pricingFormulas: any;
   pricingProfileKey: string;
   pricingEngine?: "formulaLibrary" | "pricingProfile" | "pricingFormula";
   onPricingEngineChange?: (engine: "formulaLibrary" | "pricingProfile" | "pricingFormula") => void;
+  trimAllowanceX?: number;
+  trimAllowanceY?: number;
 }) {
   type PricingMode = "formulaLibrary" | "pricingProfile" | "pricingFormula";
 
@@ -503,6 +509,9 @@ function PricingEngineRadioSection({
   const formulaId = form.watch("pricingFormulaId");
   const currentFormula = form.watch("pricingFormula");
   const currentProfile = form.watch("pricingProfileKey");
+  const hasTrimAllowance = (Number(trimAllowanceX) || 0) > 0 || (Number(trimAllowanceY) || 0) > 0;
+  const formulaUsesOrderedDimsPattern = /\bw\b\s*\*\s*\bh\b|\bh\b\s*\*\s*\bw\b|\/\s*144/i.test(String(currentFormula || ""));
+  const shouldShowFinishedSizeWarning = hasTrimAllowance && formulaUsesOrderedDimsPattern;
   const [referenceOpen, setReferenceOpen] = useState(false);
   const [referenceInsertEnabled, setReferenceInsertEnabled] = useState(false);
   const formulaInputRef = useRef<HTMLInputElement | null>(null);
@@ -712,16 +721,21 @@ function PricingEngineRadioSection({
                     </FormControl>
                     {!String(field.value || "").trim() ? (
                       <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400">
-                        <span>No formula set. Preview will use default formula: sqft * p * q</span>
+                        <span>No formula set. Preview will use recommended formula: total_sqft * p</span>
                         <Button
                           type="button"
                           variant="outline"
                           size="sm"
                           className="h-6 px-2 text-[10px]"
-                          onClick={() => form.setValue("pricingFormula", "sqft * p * q", { shouldDirty: true })}
+                          onClick={() => form.setValue("pricingFormula", "ceil(total_sqft) * p", { shouldDirty: true })}
                         >
                           Insert default formula
                         </Button>
+                      </div>
+                    ) : null}
+                    {shouldShowFinishedSizeWarning ? (
+                      <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200">
+                        This formula uses ordered width/height and may ignore Finished Size Rules. Consider using total_sqft or finished_width/finished_height.
                       </div>
                     ) : null}
                     <PricingVariableHelper />

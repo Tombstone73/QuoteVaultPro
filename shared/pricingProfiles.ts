@@ -37,19 +37,19 @@ export interface PricingProfile {
  * Master list of pricing profiles
  * 
  * - flat_goods: Uses NestingCalculator for sheet-based products (foam board, ACM, banners)
- * - sqft_formula: Uses mathjs formula evaluation with sqft, width, height, quantity
+ * - sqft_formula: Uses mathjs formula evaluation with total_sqft, width, height, quantity
  * - qty_only: Simple quantity * unit price calculation, no dimensions needed
  */
 export const PRICING_PROFILES: Record<string, PricingProfile> = {
   default: {
     key: "default",
     label: "Default (Formula)",
-    description: "Uses pricing formula with sqft, width, height, quantity variables",
+    description: "Uses pricing formula with total_sqft, width, height, quantity variables",
     kind: "sqft_formula",
     requiresDimensions: true,
     usesNestingCalculator: false,
     usesFormula: true,
-    defaultFormula: "sqft * p * q",
+    defaultFormula: "total_sqft * p",
   },
   flat_goods: {
     key: "flat_goods",
@@ -110,7 +110,7 @@ export function profileRequiresDimensions(key: string | null | undefined): boole
  */
 export function getDefaultFormula(key: string | null | undefined): string {
   const profile = getProfile(key);
-  return profile.defaultFormula || "sqft * p * q";
+  return profile.defaultFormula || "total_sqft * p";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
