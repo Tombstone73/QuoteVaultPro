@@ -8,11 +8,13 @@
 import { db } from '../../db';
 import { products, pbv2TreeVersions } from '../../../shared/schema';
 import { eq, and } from 'drizzle-orm';
+import { evaluate } from 'mathjs';
 import { evaluateOptionTreeV2 } from '../optionTreeV2Evaluator';
 import type { 
   OptionTreeV2, 
   LineItemOptionSelectionsV2
 } from '../../../shared/optionTreeV2';
+import { PBV2_PRICING_VARIABLES, type PricingVariableDefinition } from '../../../shared/pbv2/pricingVariableRegistry';
 
 // ============================================================================
 // Types
@@ -63,6 +65,7 @@ export type PBV2PricingSnapshot = {
 export type PricingPreviewEvaluationResult = {
   unitPrice: number;
   totalPrice: number;
+  formulaUsed?: string;
   breakdown: {
     basePrice: number;
     optionsPrice: number;
@@ -70,9 +73,43 @@ export type PricingPreviewEvaluationResult = {
   };
   derived: {
     sqft?: number;
+    totalSqft?: number;
     linearFeet?: number;
   };
+  debug?: {
+    inputs: {
+      widthIn: number;
+      heightIn: number;
+      quantity: number;
+    };
+    derived: {
+      sqft: number;
+      totalSqft: number;
+      linearFeet: number;
+    };
+    pricing: {
+      basePrice: number;
+      optionsPrice: number;
+      unitPrice: number;
+      totalPrice: number;
+    };
+  };
 };
+
+export type PricingPreviewErrorDetail = {
+  code: string;
+  message: string;
+  location?: number;
+};
+
+type PricingPreviewFormulaError = Error & {
+  code: 'PBV2_FORMULA_ERROR';
+  details: PricingPreviewErrorDetail[];
+};
+
+export function getPbv2PricingVariableDefinitions(): PricingVariableDefinition[] {
+  return PBV2_PRICING_VARIABLES;
+}
 
 // ============================================================================
 // Main Pricing Function
@@ -287,6 +324,8 @@ export function evaluatePricingPreviewFromTree(input: {
   heightIn: number;
   quantity: number;
   pbv2ExplicitSelections?: Record<string, any>;
+  pricingFormulaOverride?: string | null;
+  debug?: boolean;
 }): PricingPreviewEvaluationResult {
   const widthIn = Number(input.widthIn);
   const heightIn = Number(input.heightIn);
@@ -307,11 +346,32 @@ export function evaluatePricingPreviewFromTree(input: {
     throw new Error("optionSelectionsJson must be an object mapping optionId -> selection");
   }
 
-  const basePriceCents = calculateBasePrice(input.treeJson, {
+  const baseDetails = calculateBasePriceDetails(input.treeJson, {
     widthIn,
     heightIn,
     quantity,
   });
+  let basePriceCents = baseDetails.totalCents;
+
+  const formulaFromTree = typeof input?.treeJson?.meta?.pricingFormula === 'string'
+    ? input.treeJson.meta.pricingFormula.trim()
+    : '';
+  const formulaToUse = typeof input.pricingFormulaOverride === 'string'
+    ? input.pricingFormulaOverride.trim()
+    : formulaFromTree;
+
+  if (formulaToUse) {
+    basePriceCents = evaluatePreviewFormulaToCents({
+      formula: formulaToUse,
+      widthIn,
+      heightIn,
+      quantity,
+      baseRatePerSqft: baseDetails.perSqftCents / 100,
+      sqftPerItem: baseDetails.sqftPerItem,
+      totalSqft: baseDetails.totalSqft,
+      linearFeet: baseDetails.linearFeet,
+    });
+  }
 
   const selectionsV2: LineItemOptionSelectionsV2 = {
     schemaVersion: 2,
@@ -329,12 +389,14 @@ export function evaluatePricingPreviewFromTree(input: {
 
   const optionsCents = Math.round(evalResult.optionsPrice * 100);
   const totalCents = basePriceCents + optionsCents;
-  const sqft = (widthIn * heightIn) / 144;
-  const linearFeet = widthIn / 12;
+  const sqft = baseDetails.sqftPerItem;
+  const totalSqft = baseDetails.totalSqft;
+  const linearFeet = baseDetails.linearFeet;
 
   return {
     unitPrice: quantity > 0 ? totalCents / 100 / quantity : 0,
     totalPrice: totalCents / 100,
+    formulaUsed: formulaToUse || undefined,
     breakdown: {
       basePrice: basePriceCents / 100,
       optionsPrice: optionsCents / 100,
@@ -342,8 +404,23 @@ export function evaluatePricingPreviewFromTree(input: {
     },
     derived: {
       sqft: Number.isFinite(sqft) ? sqft : undefined,
+      totalSqft: Number.isFinite(totalSqft) ? totalSqft : undefined,
       linearFeet: Number.isFinite(linearFeet) ? linearFeet : undefined,
     },
+    debug: input.debug ? {
+      inputs: { widthIn, heightIn, quantity },
+      derived: {
+        sqft,
+        totalSqft,
+        linearFeet,
+      },
+      pricing: {
+        basePrice: basePriceCents / 100,
+        optionsPrice: optionsCents / 100,
+        unitPrice: quantity > 0 ? totalCents / 100 / quantity : 0,
+        totalPrice: totalCents / 100,
+      },
+    } : undefined,
   };
 }
 
@@ -479,6 +556,21 @@ function calculateBasePrice(
   tree: any,
   context: { widthIn: number; heightIn: number; quantity: number }
 ): number {
+  return calculateBasePriceDetails(tree, context).totalCents;
+}
+
+function calculateBasePriceDetails(
+  tree: any,
+  context: { widthIn: number; heightIn: number; quantity: number }
+): {
+  totalCents: number;
+  perSqftCents: number;
+  perPieceCents: number;
+  minimumChargeCents: number;
+  sqftPerItem: number;
+  totalSqft: number;
+  linearFeet: number;
+} {
   const meta = tree?.meta;
   if (!meta || typeof meta !== 'object') {
     throw new Error(
@@ -559,11 +651,76 @@ function calculateBasePrice(
   const sqftComponent = perSqftCents * totalSqft;
   const pieceComponent = perPieceCents * quantity;
   const lineBaseCents = sqftComponent + pieceComponent;
+  const linearFeet = widthIn > 0 ? widthIn / 12 : 0;
 
   // Apply minimum charge once per line item (not per unit)
   const total = minimumChargeCents > 0 ? Math.max(lineBaseCents, minimumChargeCents) : lineBaseCents;
 
-  return Math.round(total);
+  return {
+    totalCents: Math.round(total),
+    perSqftCents,
+    perPieceCents,
+    minimumChargeCents,
+    sqftPerItem,
+    totalSqft,
+    linearFeet,
+  };
+}
+
+function evaluatePreviewFormulaToCents(input: {
+  formula: string;
+  widthIn: number;
+  heightIn: number;
+  quantity: number;
+  baseRatePerSqft: number;
+  sqftPerItem: number;
+  totalSqft: number;
+  linearFeet: number;
+}): number {
+  const scope = {
+    width: input.widthIn,
+    w: input.widthIn,
+    height: input.heightIn,
+    h: input.heightIn,
+    quantity: input.quantity,
+    q: input.quantity,
+    base_price: input.baseRatePerSqft,
+    basePricePerSqft: input.baseRatePerSqft,
+    pricePerSqft: input.baseRatePerSqft,
+    unitPrice: input.baseRatePerSqft,
+    price: input.baseRatePerSqft,
+    p: input.baseRatePerSqft,
+    sqft: input.sqftPerItem,
+    total_sqft: input.totalSqft,
+    linear_feet: input.linearFeet,
+  };
+
+  try {
+    const evaluated = evaluate(input.formula, scope);
+    const value = Number(evaluated);
+    if (!Number.isFinite(value)) {
+      throw new Error('Formula returned a non-numeric result');
+    }
+    return Math.round(value * 100);
+  } catch (error: any) {
+    const message = typeof error?.message === 'string' ? error.message : 'Invalid formula';
+    const location = extractMathErrorLocation(message);
+    const formulaError = new Error(`Formula error: ${message}`) as PricingPreviewFormulaError;
+    formulaError.code = 'PBV2_FORMULA_ERROR';
+    formulaError.details = [{
+      code: 'PBV2_FORMULA_ERROR',
+      message,
+      location,
+    }];
+    throw formulaError;
+  }
+}
+
+function extractMathErrorLocation(message: string): number | undefined {
+  const charMatch = /char\s+(\d+)/i.exec(message);
+  if (!charMatch) return undefined;
+  const parsed = Number(charMatch[1]);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 // ============================================================================
