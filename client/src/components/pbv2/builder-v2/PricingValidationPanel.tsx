@@ -55,6 +55,7 @@ type PreviewGroup = {
 
 interface PricingValidationPanelProps {
   treeJson: unknown | null;
+  pricingV2Override?: unknown;
   pricingFormulaOverride?: string | null;
   findings: Finding[];
 }
@@ -118,7 +119,7 @@ function buildPreviewGroups(treeJson: unknown | null): PreviewGroup[] {
     .filter((group) => group.options.length > 0);
 }
 
-export function PricingValidationPanel({ treeJson, pricingFormulaOverride, findings }: PricingValidationPanelProps) {
+export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, findings }: PricingValidationPanelProps) {
   const currencyFormatter = useMemo(
     () =>
       new Intl.NumberFormat("en-US", {
@@ -145,7 +146,23 @@ export function PricingValidationPanel({ treeJson, pricingFormulaOverride, findi
   const errors = findings.filter((f) => f.severity === "ERROR");
   const warnings = findings.filter((f) => f.severity === "WARNING");
 
-  const previewGroups = useMemo(() => buildPreviewGroups(treeJson), [treeJson]);
+  const treeForPreview = useMemo(() => {
+    if (!treeJson || typeof treeJson !== "object") return treeJson;
+    if (!pricingV2Override || typeof pricingV2Override !== "object") return treeJson;
+
+    const tree = treeJson as Record<string, any>;
+    const meta = tree.meta && typeof tree.meta === "object" ? tree.meta : {};
+
+    return {
+      ...tree,
+      meta: {
+        ...meta,
+        pricingV2: pricingV2Override,
+      },
+    };
+  }, [treeJson, pricingV2Override]);
+
+  const previewGroups = useMemo(() => buildPreviewGroups(treeForPreview), [treeForPreview]);
 
   const selectionPayload = useMemo(() => {
     const selected: Record<string, { value: string | string[] | boolean }> = {};
@@ -160,14 +177,14 @@ export function PricingValidationPanel({ treeJson, pricingFormulaOverride, findi
   const requestSignature = useMemo(
     () =>
       JSON.stringify({
-        treeJson,
+        treeJson: treeForPreview,
         width: previewState.width,
         height: previewState.height,
         quantity: previewState.quantity,
         pricingFormulaOverride,
         optionSelectionsJson: selectionPayload,
       }),
-    [treeJson, previewState.width, previewState.height, previewState.quantity, pricingFormulaOverride, selectionPayload],
+    [treeForPreview, previewState.width, previewState.height, previewState.quantity, pricingFormulaOverride, selectionPayload],
   );
 
   const inputErrors = useMemo(() => {
@@ -190,6 +207,17 @@ export function PricingValidationPanel({ treeJson, pricingFormulaOverride, findi
     return [...responseErrors, ...resultErrors];
   }, [responseErrors, result]);
   const hasApiErrors = apiErrors.length > 0;
+  const pricingConfigHint = useMemo(() => {
+    const haystack = `${error ?? ""} ${apiErrors.join(" ")}`.toLowerCase();
+    if (
+      haystack.includes("base pricing configuration required") ||
+      haystack.includes("meta.pricingv2") ||
+      haystack.includes("base pricing")
+    ) {
+      return "Set Base Pricing Model (rate per sq ft or per piece) to enable preview.";
+    }
+    return null;
+  }, [error, apiErrors]);
   const calculatedSqftPerItem = useMemo(() => {
     if (!Number.isFinite(previewState.width) || !Number.isFinite(previewState.height) || previewState.width <= 0 || previewState.height <= 0) {
       return undefined;
@@ -202,7 +230,7 @@ export function PricingValidationPanel({ treeJson, pricingFormulaOverride, findi
     : (typeof displaySqftPerItem === "number" ? displaySqftPerItem * previewState.quantity : undefined);
 
   useEffect(() => {
-    if (!treeJson) {
+    if (!treeForPreview || typeof treeForPreview !== "object") {
       setLoading(false);
       setResult(null);
       setResponseErrors([]);
@@ -231,7 +259,7 @@ export function PricingValidationPanel({ treeJson, pricingFormulaOverride, findi
           credentials: "include",
           signal: controller.signal,
           body: JSON.stringify({
-            treeJson,
+            treeJson: treeForPreview,
             width: previewState.width,
             height: previewState.height,
             quantity: previewState.quantity,
@@ -273,7 +301,7 @@ export function PricingValidationPanel({ treeJson, pricingFormulaOverride, findi
       controller.abort();
       window.clearTimeout(timeout);
     };
-  }, [hasInputErrors, requestSignature, treeJson, previewState.width, previewState.height, previewState.quantity, pricingFormulaOverride, selectionPayload]);
+  }, [hasInputErrors, requestSignature, treeForPreview, previewState.width, previewState.height, previewState.quantity, pricingFormulaOverride, selectionPayload]);
 
   return (
     <aside className="h-full w-full min-w-0 bg-card flex flex-col overflow-hidden">
@@ -340,6 +368,7 @@ export function PricingValidationPanel({ treeJson, pricingFormulaOverride, findi
               ) : error ? (
                 <div className="space-y-1 rounded border border-red-500/40 bg-red-500/10 p-2 text-sm text-red-200">
                   <div className="font-semibold">{error}</div>
+                  {pricingConfigHint ? <div>{pricingConfigHint}</div> : null}
                   {apiErrors.map((entry, idx) => (
                     <div key={`api-${idx}`}>{entry}</div>
                   ))}
