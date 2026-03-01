@@ -9,11 +9,12 @@ import { Separator } from "@/components/ui/separator";
 import { Label } from "@/components/ui/label";
 import { PRICING_PROFILES, type FlatGoodsConfig, getProfile, getDefaultFormula } from "@shared/pricingProfiles";
 import type { ShippingPolicy, WeightUnit, WeightBasis, ShippingConfig } from "@shared/optionTreeV2";
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog";
 import { useToast } from "@/hooks/use-toast";
 import { BasePricingEditor } from "@/components/pbv2/builder-v2/BasePricingEditor";
 import { PricingVariableHelper } from "@/components/pbv2/builder-v2/PricingVariableHelper";
+import { FormulaReferenceModal } from "@/components/pbv2/builder-v2/FormulaReferenceModal";
 
 // Required field indicator component
 function RequiredIndicator() {
@@ -449,6 +450,9 @@ function PricingEngineRadioSection({
   const formulaId = form.watch("pricingFormulaId");
   const currentFormula = form.watch("pricingFormula");
   const currentProfile = form.watch("pricingProfileKey");
+  const [referenceOpen, setReferenceOpen] = useState(false);
+  const [referenceInsertEnabled, setReferenceInsertEnabled] = useState(false);
+  const formulaInputRef = useRef<HTMLInputElement | null>(null);
   
   // Determine effective mode (controlled or derived)
   const effectiveMode: PricingMode = pricingEngine || (() => {
@@ -477,6 +481,31 @@ function PricingEngineRadioSection({
     }
   };
 
+  const openReference = (allowInsert: boolean) => {
+    setReferenceInsertEnabled(allowInsert);
+    setReferenceOpen(true);
+  };
+
+  const insertFormulaTextAtCursor = (text: string) => {
+    const input = formulaInputRef.current;
+    const current = String(form.getValues("pricingFormula") || "");
+    if (!input) {
+      form.setValue("pricingFormula", `${current}${text}`, { shouldDirty: true });
+      return;
+    }
+
+    const start = input.selectionStart ?? current.length;
+    const end = input.selectionEnd ?? current.length;
+    const next = `${current.slice(0, start)}${text}${current.slice(end)}`;
+    form.setValue("pricingFormula", next, { shouldDirty: true });
+
+    window.setTimeout(() => {
+      const cursor = start + text.length;
+      input.focus();
+      input.setSelectionRange(cursor, cursor);
+    }, 0);
+  };
+
   return (
     <div className="space-y-3 min-w-0">
       <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Pricing Engine</h3>
@@ -493,6 +522,13 @@ function PricingEngineRadioSection({
             <label htmlFor="pe-formula-lib" className="text-xs font-medium text-slate-300 cursor-pointer select-none">
               Formula Library
             </label>
+            <button
+              type="button"
+              className="text-[10px] text-blue-300 hover:text-blue-200 underline-offset-2 hover:underline"
+              onClick={() => openReference(false)}
+            >
+              Reference
+            </button>
           </div>
           <div className={effectiveMode !== "formulaLibrary" ? "opacity-40 pointer-events-none" : ""}>
             <FormField
@@ -595,6 +631,13 @@ function PricingEngineRadioSection({
               <label htmlFor="pe-formula" className="text-xs font-medium text-slate-300 cursor-pointer select-none">
                 Pricing Formula
               </label>
+              <button
+                type="button"
+                className="text-[10px] text-blue-300 hover:text-blue-200 underline-offset-2 hover:underline"
+                onClick={() => openReference(true)}
+              >
+                Reference
+              </button>
             </div>
             <div className={`min-w-0 ${effectiveMode !== "pricingFormula" ? "opacity-40 pointer-events-none" : ""}`}>
               <FormField
@@ -607,6 +650,10 @@ function PricingEngineRadioSection({
                         placeholder={getDefaultFormula(pricingProfileKey)}
                         {...field}
                         value={field.value || ""}
+                        ref={(node) => {
+                          field.ref(node);
+                          formulaInputRef.current = node;
+                        }}
                         className="bg-slate-950/60 border-slate-700/50 h-8 text-sm font-mono"
                       />
                     </FormControl>
@@ -633,6 +680,12 @@ function PricingEngineRadioSection({
           </div>
         )}
       </RadioGroup>
+
+      <FormulaReferenceModal
+        open={referenceOpen}
+        onOpenChange={setReferenceOpen}
+        onInsertText={referenceInsertEnabled ? insertFormulaTextAtCursor : undefined}
+      />
     </div>
   );
 }
