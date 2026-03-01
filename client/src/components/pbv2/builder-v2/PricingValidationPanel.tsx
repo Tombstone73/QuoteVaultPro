@@ -31,6 +31,11 @@ type PricingPreviewResponse = {
     sqft?: number;
     totalSqft?: number;
     linearFeet?: number;
+    orderedWidth?: number;
+    orderedHeight?: number;
+    trimAllowance?: number;
+    finishedWidth?: number;
+    finishedHeight?: number;
   };
   errors?: string[];
   debug?: {
@@ -48,8 +53,26 @@ type PricingPreviewResponse = {
     rawSqftPerItem?: number;
     rawTotalSqft?: number;
     baseRateUsed?: number | null;
-    inputs?: { widthIn: number; heightIn: number; quantity: number };
-    derived?: { sqft: number; totalSqft: number; linearFeet: number };
+    inputs?: {
+      widthIn: number;
+      heightIn: number;
+      quantity: number;
+      ordered_width?: number;
+      ordered_height?: number;
+      trim_allowance?: number;
+      finished_width?: number;
+      finished_height?: number;
+    };
+    derived?: {
+      sqft: number;
+      totalSqft: number;
+      linearFeet: number;
+      ordered_width?: number;
+      ordered_height?: number;
+      trim_allowance?: number;
+      finished_width?: number;
+      finished_height?: number;
+    };
     pricing?: { basePrice: number; optionsPrice: number; unitPrice: number; totalPrice: number };
   };
 };
@@ -248,14 +271,31 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
     }
     return (previewState.width * previewState.height) / 144;
   }, [previewState.width, previewState.height]);
-  const rawSqftPerItem = typeof formulaDebug?.rawSqftPerItem === "number"
-    ? formulaDebug.rawSqftPerItem
-    : (typeof result?.derived?.sqft === "number" ? result.derived.sqft : calculatedSqftPerItem);
-  const rawTotalSqft = typeof formulaDebug?.rawTotalSqft === "number"
-    ? formulaDebug.rawTotalSqft
-    : (typeof result?.derived?.totalSqft === "number"
-      ? result.derived.totalSqft
-      : (typeof rawSqftPerItem === "number" ? rawSqftPerItem * previewState.quantity : undefined));
+  const configuredTrimAllowance = useMemo(() => {
+    const value = Number((treeForPreview as any)?.meta?.geometry?.trimAllowance ?? 0);
+    return Number.isFinite(value) && value >= 0 ? value : 0;
+  }, [treeForPreview]);
+  const orderedWidth = typeof result?.derived?.orderedWidth === "number"
+    ? result.derived.orderedWidth
+    : previewState.width;
+  const orderedHeight = typeof result?.derived?.orderedHeight === "number"
+    ? result.derived.orderedHeight
+    : previewState.height;
+  const trimAllowance = typeof result?.derived?.trimAllowance === "number"
+    ? result.derived.trimAllowance
+    : (typeof formulaDebug?.derived?.trim_allowance === "number" ? formulaDebug.derived.trim_allowance : configuredTrimAllowance);
+  const finishedWidth = typeof result?.derived?.finishedWidth === "number"
+    ? result.derived.finishedWidth
+    : (typeof formulaDebug?.derived?.finished_width === "number" ? formulaDebug.derived.finished_width : orderedWidth + trimAllowance);
+  const finishedHeight = typeof result?.derived?.finishedHeight === "number"
+    ? result.derived.finishedHeight
+    : (typeof formulaDebug?.derived?.finished_height === "number" ? formulaDebug.derived.finished_height : orderedHeight + trimAllowance);
+  const finishedSqftPerItem = typeof result?.derived?.sqft === "number"
+    ? result.derived.sqft
+    : ((finishedWidth > 0 && finishedHeight > 0) ? (finishedWidth * finishedHeight) / 144 : calculatedSqftPerItem);
+  const finishedTotalSqft = typeof result?.derived?.totalSqft === "number"
+    ? result.derived.totalSqft
+    : (typeof finishedSqftPerItem === "number" ? finishedSqftPerItem * previewState.quantity : undefined);
   const billedSqftPre = typeof formulaDebug?.preCeilSqftTotal === "number" ? formulaDebug.preCeilSqftTotal : null;
   const billedSqftPost = typeof formulaDebug?.postCeilSqftTotal === "number" ? formulaDebug.postCeilSqftTotal : null;
   const baseRateUsed = typeof formulaDebug?.baseRateUsed === "number" ? formulaDebug.baseRateUsed : null;
@@ -464,17 +504,26 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
               ) : result ? (
                 <div className="space-y-1 text-sm text-slate-200">
                   <div className="rounded border border-slate-700/70 bg-slate-900/40 px-2 py-1.5 mb-2">
-                    <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">RAW (Inventory)</div>
+                    <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">Finished Size Rule</div>
                     <div className="flex items-center justify-between text-sm">
-                      <span className="text-slate-300">Raw sqft per item</span>
-                      <span className="font-mono text-base text-slate-100">{typeof rawSqftPerItem === "number" ? rawSqftPerItem.toFixed(4) : "—"}</span>
+                      <span className="text-slate-300">Ordered size</span>
+                      <span className="font-mono text-base text-slate-100">{orderedWidth.toFixed(2)} × {orderedHeight.toFixed(2)} in</span>
                     </div>
                     <div className="flex items-center justify-between text-sm mt-1">
-                      <span className="text-slate-300">Raw total sqft</span>
-                      <span className="font-mono text-base text-slate-100">{typeof rawTotalSqft === "number" ? rawTotalSqft.toFixed(4) : "—"}</span>
+                      <span className="text-slate-300">Trim allowance</span>
+                      <span className="font-mono text-base text-slate-100">{trimAllowance.toFixed(2)} in</span>
                     </div>
-                    <div className="text-[11px] text-slate-400 mt-1">
-                      Raw geometry (does not include formula adjustments)
+                    <div className="flex items-center justify-between text-sm mt-1">
+                      <span className="text-slate-300">Finished size</span>
+                      <span className="font-mono text-base text-slate-100">{finishedWidth.toFixed(2)} × {finishedHeight.toFixed(2)} in</span>
+                    </div>
+                    <div className="flex items-center justify-between text-sm mt-1">
+                      <span className="text-slate-300">Sqft per item (finished)</span>
+                      <span className="font-mono text-base text-slate-100">{typeof finishedSqftPerItem === "number" ? finishedSqftPerItem.toFixed(4) : "—"}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-sm mt-1">
+                      <span className="text-slate-300">Total sqft (finished)</span>
+                      <span className="font-mono text-base text-slate-100">{typeof finishedTotalSqft === "number" ? finishedTotalSqft.toFixed(4) : "—"}</span>
                     </div>
                   </div>
 
