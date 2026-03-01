@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { Finding } from "@shared/pbv2/findings";
@@ -33,10 +34,25 @@ type PricingPreviewResponse = {
   };
   errors?: string[];
   debug?: {
+    formulaRaw: string;
+    formulaResolved?: string;
+    variables: Record<string, number | string | boolean | null>;
+    resultValue?: number;
+    appliedAs?: "unitPrice" | "totalPrice" | "unknown";
+    steps?: Array<{ label: string; value: number | string }>;
+    errors?: Array<{ code: string; message: string; detail?: any }>;
     inputs?: { widthIn: number; heightIn: number; quantity: number };
     derived?: { sqft: number; totalSqft: number; linearFeet: number };
     pricing?: { basePrice: number; optionsPrice: number; unitPrice: number; totalPrice: number };
   };
+};
+
+type PricingPreviewApiResponse = {
+  success?: boolean;
+  data?: PricingPreviewResponse;
+  debug?: PricingPreviewResponse["debug"];
+  message?: string;
+  errors?: Array<{ code?: string; message?: string; detail?: any }>;
 };
 
 type PreviewOption = {
@@ -138,6 +154,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
     unit: "in",
   });
   const [result, setResult] = useState<PricingPreviewResponse | null>(null);
+  const [formulaDebug, setFormulaDebug] = useState<PricingPreviewResponse["debug"] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [responseErrors, setResponseErrors] = useState<string[]>([]);
@@ -228,11 +245,45 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   const displayTotalSqft = typeof result?.derived?.totalSqft === "number"
     ? result.derived.totalSqft
     : (typeof displaySqftPerItem === "number" ? displaySqftPerItem * previewState.quantity : undefined);
+  const formulaDebugErrors = useMemo(() => {
+    const errorsFromDebug = Array.isArray(formulaDebug?.errors) ? formulaDebug.errors : [];
+    const normalized = errorsFromDebug
+      .map((entry) => ({
+        code: String(entry?.code ?? "PBV2_FORMULA_ERROR"),
+        message: String(entry?.message ?? "Formula evaluation error"),
+      }))
+      .filter((entry) => entry.message.trim().length > 0);
+
+    if (typeof formulaDebug?.resultValue === "number" && !Number.isFinite(formulaDebug.resultValue)) {
+      normalized.push({
+        code: "PBV2_FORMULA_NON_FINITE",
+        message: "Formula result is NaN or Infinity.",
+      });
+    }
+
+    return normalized;
+  }, [formulaDebug]);
+  const hasFormulaDebugErrors = formulaDebugErrors.length > 0;
+  const sortedDebugVariables = useMemo(() => {
+    const source = formulaDebug?.variables ?? {};
+    const entries = Object.entries(source);
+    const priority = ["w", "h", "q", "sqft", "p"];
+    const score = (key: string) => {
+      const idx = priority.indexOf(key);
+      return idx === -1 ? 100 : idx;
+    };
+    return entries.sort((a, b) => {
+      const diff = score(a[0]) - score(b[0]);
+      if (diff !== 0) return diff;
+      return a[0].localeCompare(b[0]);
+    });
+  }, [formulaDebug]);
 
   useEffect(() => {
     if (!treeForPreview || typeof treeForPreview !== "object") {
       setLoading(false);
       setResult(null);
+      setFormulaDebug(null);
       setResponseErrors([]);
       setError("No PBV2 tree loaded.");
       return;
@@ -241,6 +292,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
     if (hasInputErrors) {
       setLoading(false);
       setResult(null);
+      setFormulaDebug(null);
       setResponseErrors([]);
       setError(null);
       return;
@@ -251,6 +303,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
     const timeout = window.setTimeout(async () => {
       setLoading(true);
       setError(null);
+      setFormulaDebug(null);
       setResponseErrors([]);
       try {
         const res = await fetch("/api/pbv2/pricing-preview", {
@@ -269,10 +322,11 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
           }),
         });
 
-        const json = await res.json().catch(() => ({}));
+        const json = (await res.json().catch(() => ({}))) as PricingPreviewApiResponse;
         if (requestId !== requestIdRef.current) return;
-        if (!res.ok) {
+        if (!res.ok || json?.success === false) {
           setResult(null);
+          setFormulaDebug((json?.debug ?? null) as PricingPreviewResponse["debug"] | null);
           const structuredErrors = Array.isArray(json?.errors)
             ? json.errors
                 .map((entry: any) => (typeof entry?.message === "string" ? entry.message : null))
@@ -285,11 +339,13 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
 
         const data = (json?.data ?? null) as PricingPreviewResponse | null;
         setResponseErrors([]);
+        setFormulaDebug(data?.debug ?? null);
         setResult(data);
       } catch (e: any) {
         if (controller.signal.aborted) return;
         if (requestId !== requestIdRef.current) return;
         setResult(null);
+        setFormulaDebug(null);
         setResponseErrors([]);
         setError(typeof e?.message === "string" ? e.message : "Pricing evaluation failed.");
       } finally {
@@ -369,6 +425,13 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                 <div className="space-y-1 rounded border border-red-500/40 bg-red-500/10 p-2 text-sm text-red-200">
                   <div className="font-semibold">{error}</div>
                   {pricingConfigHint ? <div>{pricingConfigHint}</div> : null}
+                  {hasFormulaDebugErrors ? (
+                    <div className="space-y-1 pt-1">
+                      {formulaDebugErrors.map((entry, idx) => (
+                        <div key={`formula-debug-${idx}`}>{entry.code}: {entry.message}</div>
+                      ))}
+                    </div>
+                  ) : null}
                   {apiErrors.map((entry, idx) => (
                     <div key={`api-${idx}`}>{entry}</div>
                   ))}
@@ -392,8 +455,19 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between"><span>Unit price</span><span className="font-mono">{currencyFormatter.format(result.unitPrice)}</span></div>
-                  <div className="flex items-center justify-between"><span>Total price</span><span className="font-mono">{currencyFormatter.format(result.totalPrice)}</span></div>
+                  {hasFormulaDebugErrors ? (
+                    <div className="space-y-1 rounded border border-red-500/40 bg-red-500/10 p-2 text-sm text-red-200">
+                      <div className="font-semibold">Formula Debug Errors</div>
+                      {formulaDebugErrors.map((entry, idx) => (
+                        <div key={`formula-debug-inline-${idx}`}>{entry.code}: {entry.message}</div>
+                      ))}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between"><span>Unit price</span><span className="font-mono">{currencyFormatter.format(result.unitPrice)}</span></div>
+                      <div className="flex items-center justify-between"><span>Total price</span><span className="font-mono">{currencyFormatter.format(result.totalPrice)}</span></div>
+                    </>
+                  )}
                   {result.formulaUsed ? (
                     <div className="text-[11px] text-slate-400">Formula: <span className="font-mono">{result.formulaUsed}</span></div>
                   ) : null}
@@ -411,10 +485,65 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       <div className="flex items-center justify-between"><span>Options</span><span className="font-mono">{currencyFormatter.format(result.breakdown.optionsPrice)}</span></div>
                     </div>
                   ) : null}
+
                 </div>
               ) : (
                 <div className="text-sm text-slate-400">Enter dimensions and quantity to preview pricing.</div>
               )}
+
+              {formulaDebug ? (
+                <Accordion type="single" collapsible className="mt-2 border-t border-slate-700/80 pt-2">
+                  <AccordionItem value="formula-debug" className="border-b-0">
+                    <AccordionTrigger className="py-1 text-xs text-slate-300 hover:no-underline">Formula Debug</AccordionTrigger>
+                    <AccordionContent className="space-y-2 text-xs text-slate-300">
+                      <div><span className="text-slate-400">Formula used:</span> <span className="font-mono">{formulaDebug.formulaRaw || "—"}</span></div>
+                      {formulaDebug.formulaResolved ? (
+                        <div><span className="text-slate-400">Formula resolved:</span> <span className="font-mono">{formulaDebug.formulaResolved}</span></div>
+                      ) : null}
+                      <div><span className="text-slate-400">Result value:</span> <span className="font-mono">{typeof formulaDebug.resultValue === "number" ? String(formulaDebug.resultValue) : "—"}</span></div>
+                      <div><span className="text-slate-400">Applied as:</span> <span className="font-mono">{formulaDebug.appliedAs ?? "unknown"}</span></div>
+
+                      <div className="space-y-1">
+                        <div className="text-slate-400">Variables</div>
+                        <div className="rounded border border-slate-700/70 bg-slate-900/40 p-2 max-h-32 overflow-y-auto">
+                          {sortedDebugVariables.length === 0 ? (
+                            <div className="text-slate-500">No variables</div>
+                          ) : (
+                            sortedDebugVariables.map(([key, value]) => (
+                              <div key={key} className="flex items-center justify-between gap-2">
+                                <span className="font-mono text-slate-400">{key}</span>
+                                <span className="font-mono text-slate-200">{value == null ? "null" : String(value)}</span>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+
+                      {Array.isArray(formulaDebug.steps) && formulaDebug.steps.length > 0 ? (
+                        <div className="space-y-1">
+                          <div className="text-slate-400">Steps</div>
+                          <div className="rounded border border-slate-700/70 bg-slate-900/40 p-2">
+                            {formulaDebug.steps.map((step, idx) => (
+                              <div key={`${step.label}-${idx}`} className="flex items-center justify-between gap-2">
+                                <span>{step.label}</span>
+                                <span className="font-mono">{String(step.value)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {hasFormulaDebugErrors ? (
+                        <div className="space-y-1 rounded border border-red-500/40 bg-red-500/10 p-2 text-red-200">
+                          {formulaDebugErrors.map((entry, idx) => (
+                            <div key={`formula-debug-acc-${idx}`}>{entry.code}: {entry.message}</div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </AccordionContent>
+                  </AccordionItem>
+                </Accordion>
+              ) : null}
             </div>
           </div>
 

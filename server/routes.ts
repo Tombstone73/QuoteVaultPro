@@ -4213,9 +4213,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Invalid preview payload" });
       }
       if (error?.code === "PBV2_FORMULA_ERROR" && Array.isArray(error?.details)) {
-        return res.status(400).json({
+        return res.json({
+          success: false,
           message: "Formula evaluation failed",
           errors: error.details,
+          debug: error?.debug,
         });
       }
       const message = typeof error?.message === "string" ? error.message : "Failed to evaluate pricing preview";
