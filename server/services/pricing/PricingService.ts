@@ -77,17 +77,24 @@ export type PricingPreviewEvaluationResult = {
     linearFeet?: number;
   };
   debug?: {
-    inputs: {
+    formulaRaw: string;
+    formulaResolved?: string;
+    variables: Record<string, number | string | boolean | null>;
+    resultValue?: number;
+    appliedAs?: 'unitPrice' | 'totalPrice' | 'unknown';
+    steps?: Array<{ label: string; value: number | string }>;
+    errors?: Array<{ code: string; message: string; detail?: any }>;
+    inputs?: {
       widthIn: number;
       heightIn: number;
       quantity: number;
     };
-    derived: {
+    derived?: {
       sqft: number;
       totalSqft: number;
       linearFeet: number;
     };
-    pricing: {
+    pricing?: {
       basePrice: number;
       optionsPrice: number;
       unitPrice: number;
@@ -105,6 +112,7 @@ export type PricingPreviewErrorDetail = {
 type PricingPreviewFormulaError = Error & {
   code: 'PBV2_FORMULA_ERROR';
   details: PricingPreviewErrorDetail[];
+  debug?: PricingPreviewEvaluationResult['debug'];
 };
 
 export function getPbv2PricingVariableDefinitions(): PricingVariableDefinition[] {
@@ -360,8 +368,19 @@ export function evaluatePricingPreviewFromTree(input: {
     ? input.pricingFormulaOverride.trim()
     : formulaFromTree;
 
+  const formulaDebug = buildBaseFormulaDebugContext({
+    formulaRaw: formulaToUse,
+    widthIn,
+    heightIn,
+    quantity,
+    baseRatePerSqft: baseDetails.perSqftCents / 100,
+    sqftPerItem: baseDetails.sqftPerItem,
+    totalSqft: baseDetails.totalSqft,
+    linearFeet: baseDetails.linearFeet,
+  });
+
   if (formulaToUse) {
-    basePriceCents = evaluatePreviewFormulaToCents({
+    const formulaEvaluation = evaluatePreviewFormulaToCents({
       formula: formulaToUse,
       widthIn,
       heightIn,
@@ -371,6 +390,15 @@ export function evaluatePricingPreviewFromTree(input: {
       totalSqft: baseDetails.totalSqft,
       linearFeet: baseDetails.linearFeet,
     });
+    formulaDebug.formulaResolved = formulaEvaluation.formulaResolved;
+    formulaDebug.resultValue = formulaEvaluation.resultValue;
+    formulaDebug.appliedAs = formulaEvaluation.appliedAs;
+    formulaDebug.steps = formulaEvaluation.steps;
+
+    const formulaValueCents = Math.round(formulaEvaluation.resultValue * 100);
+    basePriceCents = formulaEvaluation.appliedAs === 'unitPrice'
+      ? formulaValueCents * quantity
+      : formulaValueCents;
   }
 
   const selectionsV2: LineItemOptionSelectionsV2 = {
@@ -408,6 +436,13 @@ export function evaluatePricingPreviewFromTree(input: {
       linearFeet: Number.isFinite(linearFeet) ? linearFeet : undefined,
     },
     debug: input.debug ? {
+      formulaRaw: formulaDebug.formulaRaw,
+      formulaResolved: formulaDebug.formulaResolved,
+      variables: formulaDebug.variables,
+      resultValue: formulaDebug.resultValue,
+      appliedAs: formulaDebug.appliedAs,
+      steps: formulaDebug.steps,
+      errors: formulaDebug.errors,
       inputs: { widthIn, heightIn, quantity },
       derived: {
         sqft,
@@ -676,8 +711,102 @@ function evaluatePreviewFormulaToCents(input: {
   sqftPerItem: number;
   totalSqft: number;
   linearFeet: number;
-}): number {
-  const scope = {
+}): {
+  resultValue: number;
+  formulaResolved?: string;
+  appliedAs: 'unitPrice' | 'totalPrice' | 'unknown';
+  steps: Array<{ label: string; value: number | string }>;
+} {
+  const scope = buildFormulaScope(input);
+  const formulaResolved = resolveFormulaAliases(input.formula);
+  const appliedAs = inferFormulaApplication(input.formula);
+  const steps: Array<{ label: string; value: number | string }> = [
+    { label: 'w*h', value: input.widthIn * input.heightIn },
+    { label: '(w*h)/144', value: input.sqftPerItem },
+    { label: 'sqft*q', value: input.totalSqft },
+    { label: 'p(base_rate_per_sqft)', value: input.baseRatePerSqft },
+  ];
+
+  try {
+    const evaluated = evaluate(input.formula, scope);
+    const value = Number(evaluated);
+    if (!Number.isFinite(value)) {
+      throw new Error('Formula returned a non-numeric result');
+    }
+    return {
+      resultValue: value,
+      formulaResolved,
+      appliedAs,
+      steps,
+    };
+  } catch (error: any) {
+    const message = typeof error?.message === 'string' ? error.message : 'Invalid formula';
+    const location = extractMathErrorLocation(message);
+    const errorCode = inferFormulaErrorCode(message);
+    const formulaError = new Error(`Formula error: ${message}`) as PricingPreviewFormulaError;
+    formulaError.code = 'PBV2_FORMULA_ERROR';
+    formulaError.details = [{
+      code: errorCode,
+      message,
+      location,
+    }];
+    formulaError.debug = {
+      formulaRaw: input.formula,
+      formulaResolved,
+      variables: scope,
+      appliedAs,
+      steps,
+      errors: [{ code: errorCode, message }],
+    };
+    throw formulaError;
+  }
+}
+
+function buildBaseFormulaDebugContext(input: {
+  formulaRaw: string;
+  widthIn: number;
+  heightIn: number;
+  quantity: number;
+  baseRatePerSqft: number;
+  sqftPerItem: number;
+  totalSqft: number;
+  linearFeet: number;
+}): NonNullable<PricingPreviewEvaluationResult['debug']> {
+  return {
+    formulaRaw: input.formulaRaw,
+    formulaResolved: input.formulaRaw ? resolveFormulaAliases(input.formulaRaw) : undefined,
+    variables: buildFormulaScope({
+      formula: input.formulaRaw,
+      widthIn: input.widthIn,
+      heightIn: input.heightIn,
+      quantity: input.quantity,
+      baseRatePerSqft: input.baseRatePerSqft,
+      sqftPerItem: input.sqftPerItem,
+      totalSqft: input.totalSqft,
+      linearFeet: input.linearFeet,
+    }),
+    appliedAs: input.formulaRaw ? inferFormulaApplication(input.formulaRaw) : 'unknown',
+    steps: [
+      { label: 'w*h', value: input.widthIn * input.heightIn },
+      { label: '(w*h)/144', value: input.sqftPerItem },
+      { label: 'sqft*q', value: input.totalSqft },
+      { label: 'p(base_rate_per_sqft)', value: input.baseRatePerSqft },
+    ],
+    errors: [],
+  };
+}
+
+function buildFormulaScope(input: {
+  formula: string;
+  widthIn: number;
+  heightIn: number;
+  quantity: number;
+  baseRatePerSqft: number;
+  sqftPerItem: number;
+  totalSqft: number;
+  linearFeet: number;
+}): Record<string, number | string | boolean | null> {
+  return {
     width: input.widthIn,
     w: input.widthIn,
     height: input.heightIn,
@@ -694,26 +823,40 @@ function evaluatePreviewFormulaToCents(input: {
     total_sqft: input.totalSqft,
     linear_feet: input.linearFeet,
   };
+}
 
-  try {
-    const evaluated = evaluate(input.formula, scope);
-    const value = Number(evaluated);
-    if (!Number.isFinite(value)) {
-      throw new Error('Formula returned a non-numeric result');
-    }
-    return Math.round(value * 100);
-  } catch (error: any) {
-    const message = typeof error?.message === 'string' ? error.message : 'Invalid formula';
-    const location = extractMathErrorLocation(message);
-    const formulaError = new Error(`Formula error: ${message}`) as PricingPreviewFormulaError;
-    formulaError.code = 'PBV2_FORMULA_ERROR';
-    formulaError.details = [{
-      code: 'PBV2_FORMULA_ERROR',
-      message,
-      location,
-    }];
-    throw formulaError;
+function inferFormulaApplication(formula: string): 'unitPrice' | 'totalPrice' | 'unknown' {
+  const normalized = String(formula || '').toLowerCase();
+  if (!normalized.trim()) return 'unknown';
+  if (/\b(quantity|q|total_sqft)\b/.test(normalized)) {
+    return 'totalPrice';
   }
+  return 'unitPrice';
+}
+
+function resolveFormulaAliases(formula: string): string {
+  const aliasToCanonical = new Map<string, string>();
+  for (const variable of PBV2_PRICING_VARIABLES) {
+    for (const alias of variable.aliases) {
+      if (!aliasToCanonical.has(alias)) {
+        aliasToCanonical.set(alias, variable.key);
+      }
+    }
+  }
+
+  let resolved = formula;
+  for (const [alias, canonical] of aliasToCanonical.entries()) {
+    const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    resolved = resolved.replace(new RegExp(`\\b${escaped}\\b`, 'g'), canonical);
+  }
+  return resolved;
+}
+
+function inferFormulaErrorCode(message: string): string {
+  const lower = message.toLowerCase();
+  if (lower.includes('undefined symbol') || lower.includes('undefined variable')) return 'PBV2_FORMULA_MISSING_VARIABLE';
+  if (lower.includes('non-numeric') || lower.includes('nan') || lower.includes('infinity')) return 'PBV2_FORMULA_NON_FINITE';
+  return 'PBV2_FORMULA_PARSE_ERROR';
 }
 
 function extractMathErrorLocation(message: string): number | undefined {
