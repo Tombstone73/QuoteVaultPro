@@ -900,6 +900,7 @@ const ProductEditorPage = () => {
         right={
           <PricingValidationPanel
             treeJson={pbv2State?.treeJson ?? form.getValues('optionTreeJson') ?? null}
+            pricingV2Override={treeMeta.pricingV2}
             pricingFormulaOverride={form.watch("pricingFormula") || null}
             findings={pbv2PricingData.findings}
           />
