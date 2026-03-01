@@ -4146,6 +4146,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/pbv2/pricing-preview/reference", isAuthenticated, tenantContext, async (_req: any, res) => {
+    try {
+      const { getPbv2PricingVariableDefinitions } = await import("./services/pricing/PricingService");
+      const { PBV2_PRICING_FUNCTIONS } = await import("../shared/pbv2/pricingFunctionCatalog");
+      return res.json({
+        success: true,
+        data: {
+          supportedVariables: getPbv2PricingVariableDefinitions(),
+          supportedFunctions: PBV2_PRICING_FUNCTIONS,
+        },
+      });
+    } catch {
+      return res.status(500).json({ message: "Failed to load formula reference" });
+    }
+  });
+
   app.get("/api/pbv2/pricing-preview", isAuthenticated, tenantContext, async (_req: any, res) => {
     return res.status(405).json({
       message: "Method Not Allowed",
