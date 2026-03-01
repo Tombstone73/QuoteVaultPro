@@ -4134,6 +4134,66 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.post("/api/pbv2/pricing-preview", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const {
+        treeJson,
+        width,
+        height,
+        quantity,
+        optionSelectionsJson,
+      } = req.body ?? {};
+
+      if (!treeJson || typeof treeJson !== "object") {
+        return res.status(400).json({ message: "treeJson is required" });
+      }
+
+      const widthNum = Number(width);
+      const heightNum = Number(height);
+      const quantityNum = Number(quantity);
+
+      if (!Number.isFinite(widthNum) || widthNum <= 0) {
+        return res.status(400).json({ message: "width must be a positive number" });
+      }
+      if (!Number.isFinite(heightNum) || heightNum <= 0) {
+        return res.status(400).json({ message: "height must be a positive number" });
+      }
+      if (!Number.isFinite(quantityNum) || quantityNum <= 0) {
+        return res.status(400).json({ message: "quantity must be a positive number" });
+      }
+
+      let pbv2ExplicitSelections: Record<string, any> = {};
+      if (optionSelectionsJson != null) {
+        pbv2ExplicitSelections = typeof optionSelectionsJson === "string"
+          ? JSON.parse(optionSelectionsJson)
+          : optionSelectionsJson;
+      }
+
+      const { evaluatePricingPreviewFromTree } = await import("./services/pricing/PricingService");
+      const result = evaluatePricingPreviewFromTree({
+        treeJson,
+        widthIn: widthNum,
+        heightIn: heightNum,
+        quantity: quantityNum,
+        pbv2ExplicitSelections,
+      });
+
+      return res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error: any) {
+      if (error?.name === "ZodError") {
+        return res.status(400).json({ message: "Invalid preview payload" });
+      }
+      const message = typeof error?.message === "string" ? error.message : "Failed to evaluate pricing preview";
+      return res.status(400).json({ message });
+    }
+  });
+
   app.post("/api/quotes", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
