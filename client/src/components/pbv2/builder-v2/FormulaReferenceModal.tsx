@@ -3,7 +3,6 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   PBV2_PRICING_VARIABLES,
@@ -124,26 +123,30 @@ export function FormulaReferenceModal({ open, onOpenChange, onInsertText }: Form
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl">
-        <DialogHeader>
+      <DialogContent className="max-w-3xl h-[85vh] max-h-[85vh] flex flex-col overflow-hidden">
+        <DialogHeader className="shrink-0">
           <DialogTitle>Formula Reference</DialogTitle>
         </DialogHeader>
 
-        <Tabs defaultValue="variables" className="w-full">
-          <TabsList className="grid w-full grid-cols-2">
+        <Tabs defaultValue="variables" className="w-full flex-1 min-h-0 flex flex-col">
+          <div className="shrink-0 sticky top-0 z-10 bg-background">
+            <TabsList className="grid w-full grid-cols-2">
             <TabsTrigger value="variables">Variables</TabsTrigger>
             <TabsTrigger value="functions">Functions</TabsTrigger>
-          </TabsList>
+            </TabsList>
+          </div>
 
-          <TabsContent value="variables" className="mt-3 space-y-2">
-            <Input
-              value={variableSearch}
-              onChange={(e) => setVariableSearch(e.target.value)}
-              placeholder="Search variables"
-              className="h-8"
-            />
-            <ScrollArea className="max-h-[360px] pr-1">
-              <div className="space-y-3">
+          <TabsContent value="variables" className="mt-3 flex-1 min-h-0 flex flex-col overflow-hidden">
+            <div className="sticky top-0 z-10 bg-background pb-2">
+              <Input
+                value={variableSearch}
+                onChange={(e) => setVariableSearch(e.target.value)}
+                placeholder="Search variables"
+                className="h-8"
+              />
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1 overscroll-contain">
+              <div className="space-y-3 pb-1">
                 {groupedVariables.length === 0 ? (
                   <div className="text-sm text-muted-foreground">No matching variables.</div>
                 ) : (
@@ -188,18 +191,20 @@ export function FormulaReferenceModal({ open, onOpenChange, onInsertText }: Form
                   ))
                 )}
               </div>
-            </ScrollArea>
+            </div>
           </TabsContent>
 
-          <TabsContent value="functions" className="mt-3 space-y-2">
-            <Input
-              value={functionSearch}
-              onChange={(e) => setFunctionSearch(e.target.value)}
-              placeholder="Search functions"
-              className="h-8"
-            />
-            <ScrollArea className="max-h-[360px] pr-1">
-              <div className="space-y-2">
+          <TabsContent value="functions" className="mt-3 flex-1 min-h-0 flex flex-col overflow-hidden">
+            <div className="sticky top-0 z-10 bg-background pb-2">
+              <Input
+                value={functionSearch}
+                onChange={(e) => setFunctionSearch(e.target.value)}
+                placeholder="Search functions"
+                className="h-8"
+              />
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1 overscroll-contain">
+              <div className="space-y-2 pb-1">
                 {filteredFunctions.length === 0 ? (
                   <div className="text-sm text-muted-foreground">No matching functions.</div>
                 ) : (
@@ -221,7 +226,7 @@ export function FormulaReferenceModal({ open, onOpenChange, onInsertText }: Form
                   ))
                 )}
               </div>
-            </ScrollArea>
+            </div>
           </TabsContent>
         </Tabs>
       </DialogContent>
