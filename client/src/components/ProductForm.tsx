@@ -515,11 +515,19 @@ function PricingEngineRadioSection({
 }) {
   type PricingEngineMode = "formulaLibrary" | "pricingProfile" | "pricingFormula";
   const BASIC_CANONICAL_FORMULA = "ceil(total_sqft) * p";
+  const DEFAULT_FLAT_GOODS_CONFIG: FlatGoodsConfig = {
+    sheetWidth: 48,
+    sheetHeight: 96,
+    allowRotation: true,
+    materialType: "sheet",
+    minPricePerItem: null,
+  };
 
   // Use controlled pricingEngine prop, with fallback to derive from form state
   const formulaId = form.watch("pricingFormulaId");
   const currentFormula = form.watch("pricingFormula");
   const currentProfile = form.watch("pricingProfileKey");
+  const currentProfileConfig = form.watch("pricingProfileConfig") as FlatGoodsConfig | null;
   const isAdvancedMode = pricingMode === "advanced";
   const hasTrimAllowance = (Number(trimAllowanceX) || 0) > 0 || (Number(trimAllowanceY) || 0) > 0;
   const formulaUsesOrderedDimsPattern = /\bw\s*\*\s*h\b|\bh\s*\*\s*w\b|\/\s*144\b|\bwidth\s*\*\s*height\b|\bordered_/i.test(String(currentFormula || ""));
@@ -527,6 +535,44 @@ function PricingEngineRadioSection({
   const [referenceOpen, setReferenceOpen] = useState(false);
   const [referenceInsertEnabled, setReferenceInsertEnabled] = useState(false);
   const formulaInputRef = useRef<HTMLInputElement | null>(null);
+  const [sheetWidthInput, setSheetWidthInput] = useState(String(DEFAULT_FLAT_GOODS_CONFIG.sheetWidth));
+  const [sheetHeightInput, setSheetHeightInput] = useState(String(DEFAULT_FLAT_GOODS_CONFIG.sheetHeight));
+  const [sheetWidthError, setSheetWidthError] = useState<string | null>(null);
+  const [sheetHeightError, setSheetHeightError] = useState<string | null>(null);
+
+  const parsePositiveFinite = (value: unknown): number | null => {
+    const parsed = typeof value === "number" ? value : Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return null;
+    }
+    return parsed;
+  };
+
+  const getSafeFlatGoodsConfig = useCallback((config: FlatGoodsConfig | null | undefined): FlatGoodsConfig => {
+    const safeSheetWidth = parsePositiveFinite(config?.sheetWidth) ?? DEFAULT_FLAT_GOODS_CONFIG.sheetWidth;
+    const safeSheetHeight = parsePositiveFinite(config?.sheetHeight) ?? DEFAULT_FLAT_GOODS_CONFIG.sheetHeight;
+    return {
+      ...DEFAULT_FLAT_GOODS_CONFIG,
+      ...(config || {}),
+      sheetWidth: safeSheetWidth,
+      sheetHeight: safeSheetHeight,
+      allowRotation: typeof config?.allowRotation === "boolean" ? config.allowRotation : DEFAULT_FLAT_GOODS_CONFIG.allowRotation,
+      materialType: config?.materialType === "roll" ? "roll" : "sheet",
+      minPricePerItem: config?.minPricePerItem ?? null,
+    };
+  }, []);
+
+  const updateFlatGoodsConfig = useCallback((updates: Partial<FlatGoodsConfig>, shouldDirty = true) => {
+    const current = getSafeFlatGoodsConfig(form.getValues("pricingProfileConfig") as FlatGoodsConfig | null);
+    form.setValue(
+      "pricingProfileConfig",
+      {
+        ...current,
+        ...updates,
+      },
+      { shouldDirty }
+    );
+  }, [form, getSafeFlatGoodsConfig]);
   
   // Determine effective mode (controlled or derived)
   const derivedMode: PricingEngineMode = (() => {
@@ -550,6 +596,31 @@ function PricingEngineRadioSection({
       form.setValue("pricingFormula", BASIC_CANONICAL_FORMULA, { shouldDirty: false });
     }
   }, [pricingMode, form]);
+
+  useEffect(() => {
+    if (currentProfile !== "flat_goods") return;
+    const current = form.getValues("pricingProfileConfig") as FlatGoodsConfig | null;
+    const safe = getSafeFlatGoodsConfig(current);
+
+    const shouldSeed =
+      !current ||
+      parsePositiveFinite(current.sheetWidth) === null ||
+      parsePositiveFinite(current.sheetHeight) === null ||
+      typeof current.allowRotation !== "boolean";
+
+    if (shouldSeed) {
+      form.setValue("pricingProfileConfig", safe, { shouldDirty: false });
+    }
+  }, [currentProfile, form, getSafeFlatGoodsConfig]);
+
+  useEffect(() => {
+    if (currentProfile !== "flat_goods") return;
+    const safe = getSafeFlatGoodsConfig(currentProfileConfig);
+    setSheetWidthInput(String(safe.sheetWidth));
+    setSheetHeightInput(String(safe.sheetHeight));
+    setSheetWidthError(null);
+    setSheetHeightError(null);
+  }, [currentProfile, currentProfileConfig, getSafeFlatGoodsConfig]);
 
   const handleModeChange = (mode: PricingEngineMode) => {
     if (!isAdvancedMode) return;
@@ -710,14 +781,9 @@ function PricingEngineRadioSection({
                       if (profile.usesFormula && profile.defaultFormula) {
                         form.setValue("pricingFormula", profile.defaultFormula);
                       }
-                      if (val === "flat_goods" && !form.getValues("pricingProfileConfig")) {
-                        form.setValue("pricingProfileConfig", {
-                          sheetWidth: 48,
-                          sheetHeight: 96,
-                          allowRotation: true,
-                          materialType: "sheet",
-                          minPricePerItem: null,
-                        });
+                      if (val === "flat_goods") {
+                        const current = form.getValues("pricingProfileConfig") as FlatGoodsConfig | null;
+                        form.setValue("pricingProfileConfig", getSafeFlatGoodsConfig(current), { shouldDirty: true });
                       }
                     }}
                     value={field.value || "default"}
@@ -737,6 +803,89 @@ function PricingEngineRadioSection({
                 </FormItem>
               )}
             />
+
+            {field.value === "flat_goods" ? (
+              <div className="mt-2 rounded-md border border-slate-700 bg-slate-900/30 p-3 space-y-2">
+                <div className="text-xs font-medium text-slate-300">Sheet Settings</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <Label className="text-xs text-slate-400">Sheet Width (in)</Label>
+                    <Input
+                      type="number"
+                      min={0.01}
+                      step="0.01"
+                      value={sheetWidthInput}
+                      onChange={(e) => {
+                        const nextValue = e.target.value;
+                        setSheetWidthInput(nextValue);
+                        const parsed = parsePositiveFinite(nextValue);
+                        if (parsed === null) {
+                          setSheetWidthError("Must be a number greater than 0");
+                          return;
+                        }
+                        setSheetWidthError(null);
+                        updateFlatGoodsConfig({ sheetWidth: parsed }, true);
+                      }}
+                      onBlur={() => {
+                        const parsed = parsePositiveFinite(sheetWidthInput);
+                        const fallback = getSafeFlatGoodsConfig(form.getValues("pricingProfileConfig") as FlatGoodsConfig | null).sheetWidth;
+                        if (parsed === null) {
+                          setSheetWidthInput(String(fallback));
+                          setSheetWidthError(null);
+                          return;
+                        }
+                        setSheetWidthInput(String(parsed));
+                      }}
+                      className="h-8"
+                    />
+                    {sheetWidthError ? <p className="text-[11px] text-destructive">{sheetWidthError}</p> : null}
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label className="text-xs text-slate-400">Sheet Height (in)</Label>
+                    <Input
+                      type="number"
+                      min={0.01}
+                      step="0.01"
+                      value={sheetHeightInput}
+                      onChange={(e) => {
+                        const nextValue = e.target.value;
+                        setSheetHeightInput(nextValue);
+                        const parsed = parsePositiveFinite(nextValue);
+                        if (parsed === null) {
+                          setSheetHeightError("Must be a number greater than 0");
+                          return;
+                        }
+                        setSheetHeightError(null);
+                        updateFlatGoodsConfig({ sheetHeight: parsed }, true);
+                      }}
+                      onBlur={() => {
+                        const parsed = parsePositiveFinite(sheetHeightInput);
+                        const fallback = getSafeFlatGoodsConfig(form.getValues("pricingProfileConfig") as FlatGoodsConfig | null).sheetHeight;
+                        if (parsed === null) {
+                          setSheetHeightInput(String(fallback));
+                          setSheetHeightError(null);
+                          return;
+                        }
+                        setSheetHeightInput(String(parsed));
+                      }}
+                      className="h-8"
+                    />
+                    {sheetHeightError ? <p className="text-[11px] text-destructive">{sheetHeightError}</p> : null}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <Switch
+                    checked={getSafeFlatGoodsConfig(currentProfileConfig).allowRotation}
+                    onCheckedChange={(checked) => {
+                      updateFlatGoodsConfig({ allowRotation: Boolean(checked) }, true);
+                    }}
+                  />
+                  <Label className="text-xs text-slate-300">Allow Rotation</Label>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
 
