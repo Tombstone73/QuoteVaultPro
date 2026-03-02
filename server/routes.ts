@@ -4112,6 +4112,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           basePrice: pricingResult.breakdown.baseCents / 100,
           optionsPrice: pricingResult.breakdown.optionsCents / 100,
           total: pricingResult.lineTotalCents / 100,
+          pricingMethod: pricingResult.breakdown.pricingMethod,
         },
         // PBV2 snapshot fields (for storage in quote/order line items)
         pbv2TreeVersionId: pricingResult.pbv2TreeVersionId,
@@ -5876,6 +5877,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           total: pricingResult.lineTotalCents / 100,
           formula: "",
           nestingDetails: pricingResult.breakdown.nestingDetails ?? null,
+          pricingMethod: pricingResult.breakdown.pricingMethod,
         },
         displayOrder: lineItem.displayOrder || 0,
         isTemporary: false,
@@ -5969,6 +5971,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           total: pricingResult.lineTotalCents / 100,
           formula: "",
           nestingDetails: pricingResult.breakdown.nestingDetails ?? null,
+          pricingMethod: pricingResult.breakdown.pricingMethod,
         },
         displayOrder: typeof displayOrder === "number" ? displayOrder : 0,
       };
@@ -6049,6 +6052,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           total: pricingResult.lineTotalCents / 100,
           formula: "",
           nestingDetails: pricingResult.breakdown.nestingDetails ?? null,
+          pricingMethod: pricingResult.breakdown.pricingMethod,
         };
         updateData.formulaLinePrice = null;
         updateData.priceOverride = null;

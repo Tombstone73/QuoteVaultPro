@@ -45,6 +45,7 @@ export type PricingOutput = {
     optionsCents: number;
     totalCents: number;
     nestingDetails?: unknown;
+    pricingMethod?: string;
   };
   pricingOverrideApplied?: boolean; // True if overridePriceCents was used
 };
@@ -66,6 +67,7 @@ export type PBV2PricingSnapshot = {
     optionsCents: number;
     totalCents: number;
     nestingDetails?: unknown;
+    pricingMethod?: string;
   };
 };
 
@@ -78,6 +80,7 @@ export type PricingPreviewEvaluationResult = {
     optionsPrice: number;
     total: number;
     nestingDetails?: unknown;
+    pricingMethod?: string;
   };
   derived: {
     sqft?: number;
@@ -190,6 +193,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     }
 
     const treeVersion = await loadTreeVersion(organizationId, treeVersionId);
+    const pricingMethod = String(product.pricingProfileKey || "default");
     const selectionsV2: LineItemOptionSelectionsV2 = {
       schemaVersion: 2,
       selected: pbv2ExplicitSelections || {},
@@ -212,6 +216,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
         baseCents: 0,
         optionsCents: 0,
         totalCents: overridePriceCents,
+        pricingMethod,
       },
     };
 
@@ -223,6 +228,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
         baseCents: 0,
         optionsCents: 0,
         totalCents: overridePriceCents,
+        pricingMethod,
       },
       pricingOverrideApplied: true,
     };
@@ -263,6 +269,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     },
   });
   const basePriceCents = baseDetails.totalCents;
+  const pricingMethod = String(baseDetails.pricingProfileKey || "default");
 
   // Step 5: Map selections to LineItemOptionSelectionsV2 format
   // Frontend sends Record<string, any> as pbv2ExplicitSelections
@@ -352,6 +359,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
       optionsCents,
       totalCents: lineTotalCents, // Changed from totalCents to lineTotalCents for clarity
       nestingDetails: baseDetails.nestingDetails,
+      pricingMethod,
     },
   };
 
@@ -364,6 +372,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
       optionsCents,
       totalCents: lineTotalCents, // Changed from totalCents to lineTotalCents for clarity
       nestingDetails: baseDetails.nestingDetails,
+      pricingMethod,
     },
   };
 }
@@ -411,6 +420,7 @@ export function evaluatePricingPreviewFromTree(input: {
     pricingProfileConfig: input.pricingProfileConfig,
   });
   let basePriceCents = baseDetails.totalCents;
+  const pricingMethod = String(baseDetails.pricingProfileKey || "default");
 
   const activeProfile = getProfile(baseDetails.pricingProfileKey);
   const profileUsesFormula = Boolean(activeProfile.usesFormula);
@@ -501,6 +511,7 @@ export function evaluatePricingPreviewFromTree(input: {
       optionsPrice: optionsCents / 100,
       total: totalCents / 100,
       nestingDetails: baseDetails.nestingDetails,
+      pricingMethod,
     },
     derived: {
       sqft: Number.isFinite(sqft) ? sqft : undefined,
