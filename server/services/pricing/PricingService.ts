@@ -10,11 +10,14 @@ import { products, pbv2TreeVersions } from '../../../shared/schema';
 import { eq, and } from 'drizzle-orm';
 import { evaluate } from 'mathjs';
 import { evaluateOptionTreeV2 } from '../optionTreeV2Evaluator';
+import { buildFlatGoodsInput, flatGoodsCalculator, getProfile, type FlatGoodsConfig } from '../../../shared/pricingProfiles';
 import type { 
   OptionTreeV2, 
   LineItemOptionSelectionsV2
 } from '../../../shared/optionTreeV2';
 import { PBV2_PRICING_VARIABLES, type PricingVariableDefinition } from '../../../shared/pbv2/pricingVariableRegistry';
+// @ts-ignore - NestingCalculator.js is plain JS without exported TS types
+import NestingCalculator from '../../NestingCalculator.js';
 
 export const PBV2_PREVIEW_FALLBACK_FORMULA = 'sqft * p * q';
 
@@ -41,6 +44,7 @@ export type PricingOutput = {
     baseCents: number;
     optionsCents: number;
     totalCents: number;
+    nestingDetails?: unknown;
   };
   pricingOverrideApplied?: boolean; // True if overridePriceCents was used
 };
@@ -61,6 +65,7 @@ export type PBV2PricingSnapshot = {
     baseCents: number;
     optionsCents: number;
     totalCents: number;
+    nestingDetails?: unknown;
   };
 };
 
@@ -72,6 +77,7 @@ export type PricingPreviewEvaluationResult = {
     basePrice: number;
     optionsPrice: number;
     total: number;
+    nestingDetails?: unknown;
   };
   derived: {
     sqft?: number;
@@ -241,11 +247,22 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
   const treeVersion = await loadTreeVersion(organizationId, treeVersionId);
 
   // Step 4: Calculate base price from tree metadata with dimensions/quantity
-  const basePriceCents = calculateBasePrice(treeVersion.treeJson, {
+  const baseDetails = calculateBasePriceDetails(treeVersion.treeJson, {
     widthIn: widthIn ?? 0,
     heightIn: heightIn ?? 0,
     quantity,
+  }, {
+    pricingProfileKey: product.pricingProfileKey,
+    pricingProfileConfig: product.pricingProfileConfig,
+    productLegacy: {
+      sheetWidth: product.sheetWidth,
+      sheetHeight: product.sheetHeight,
+      materialType: product.materialType,
+      minPricePerItem: product.minPricePerItem,
+      nestingVolumePricing: product.nestingVolumePricing,
+    },
   });
+  const basePriceCents = baseDetails.totalCents;
 
   // Step 5: Map selections to LineItemOptionSelectionsV2 format
   // Frontend sends Record<string, any> as pbv2ExplicitSelections
@@ -334,6 +351,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
       baseCents: basePriceCents,
       optionsCents,
       totalCents: lineTotalCents, // Changed from totalCents to lineTotalCents for clarity
+      nestingDetails: baseDetails.nestingDetails,
     },
   };
 
@@ -345,6 +363,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
       baseCents: basePriceCents,
       optionsCents,
       totalCents: lineTotalCents, // Changed from totalCents to lineTotalCents for clarity
+      nestingDetails: baseDetails.nestingDetails,
     },
   };
 }
@@ -360,6 +379,8 @@ export function evaluatePricingPreviewFromTree(input: {
   quantity: number;
   pbv2ExplicitSelections?: Record<string, any>;
   pricingFormulaOverride?: string | null;
+  pricingProfileKey?: string | null;
+  pricingProfileConfig?: unknown;
   debug?: boolean;
 }): PricingPreviewEvaluationResult {
   const widthIn = Number(input.widthIn);
@@ -385,8 +406,14 @@ export function evaluatePricingPreviewFromTree(input: {
     widthIn,
     heightIn,
     quantity,
+  }, {
+    pricingProfileKey: input.pricingProfileKey,
+    pricingProfileConfig: input.pricingProfileConfig,
   });
   let basePriceCents = baseDetails.totalCents;
+
+  const activeProfile = getProfile(baseDetails.pricingProfileKey);
+  const profileUsesFormula = Boolean(activeProfile.usesFormula);
 
   const formulaFromTree = typeof input?.treeJson?.meta?.pricingFormula === 'string'
     ? input.treeJson.meta.pricingFormula.trim()
@@ -395,8 +422,8 @@ export function evaluatePricingPreviewFromTree(input: {
     ? input.pricingFormulaOverride.trim()
     : '';
   const formulaCandidate = overrideFormula || formulaFromTree;
-  const usedFallbackFormula = !formulaCandidate;
-  const formulaToUse = formulaCandidate || PBV2_PREVIEW_FALLBACK_FORMULA;
+  const usedFallbackFormula = profileUsesFormula && !formulaCandidate;
+  const formulaToUse = profileUsesFormula ? (formulaCandidate || PBV2_PREVIEW_FALLBACK_FORMULA) : '';
 
   const formulaDebug = buildBaseFormulaDebugContext({
     formulaRaw: formulaToUse,
@@ -414,34 +441,36 @@ export function evaluatePricingPreviewFromTree(input: {
     usedFallbackFormula,
   });
 
-  const formulaEvaluation = evaluatePreviewFormulaToCents({
-    formula: formulaToUse,
-    orderedWidthIn: baseDetails.orderedWidthIn,
-    orderedHeightIn: baseDetails.orderedHeightIn,
-    trimAllowanceX: baseDetails.trimAllowanceX,
-    trimAllowanceY: baseDetails.trimAllowanceY,
-    finishedWidthIn: baseDetails.finishedWidthIn,
-    finishedHeightIn: baseDetails.finishedHeightIn,
-    quantity,
-    baseRatePerSqft: baseDetails.perSqftCents / 100,
-    sqftPerItem: baseDetails.sqftPerItem,
-    totalSqft: baseDetails.totalSqft,
-    linearFeet: baseDetails.linearFeet,
-    usedFallbackFormula,
-    fallbackFormula: PBV2_PREVIEW_FALLBACK_FORMULA,
-  });
-  formulaDebug.formulaResolved = formulaEvaluation.formulaResolved;
-  formulaDebug.resultValue = formulaEvaluation.resultValue;
-  formulaDebug.appliedAs = formulaEvaluation.appliedAs;
-  formulaDebug.steps = formulaEvaluation.steps;
-  formulaDebug.preCeilSqftTotal = formulaEvaluation.preCeilSqftTotal;
-  formulaDebug.postCeilSqftTotal = formulaEvaluation.postCeilSqftTotal;
-  formulaDebug.baseRateUsed = formulaEvaluation.baseRateUsed;
+  if (profileUsesFormula) {
+    const formulaEvaluation = evaluatePreviewFormulaToCents({
+      formula: formulaToUse,
+      orderedWidthIn: baseDetails.orderedWidthIn,
+      orderedHeightIn: baseDetails.orderedHeightIn,
+      trimAllowanceX: baseDetails.trimAllowanceX,
+      trimAllowanceY: baseDetails.trimAllowanceY,
+      finishedWidthIn: baseDetails.finishedWidthIn,
+      finishedHeightIn: baseDetails.finishedHeightIn,
+      quantity,
+      baseRatePerSqft: baseDetails.perSqftCents / 100,
+      sqftPerItem: baseDetails.sqftPerItem,
+      totalSqft: baseDetails.totalSqft,
+      linearFeet: baseDetails.linearFeet,
+      usedFallbackFormula,
+      fallbackFormula: PBV2_PREVIEW_FALLBACK_FORMULA,
+    });
+    formulaDebug.formulaResolved = formulaEvaluation.formulaResolved;
+    formulaDebug.resultValue = formulaEvaluation.resultValue;
+    formulaDebug.appliedAs = formulaEvaluation.appliedAs;
+    formulaDebug.steps = formulaEvaluation.steps;
+    formulaDebug.preCeilSqftTotal = formulaEvaluation.preCeilSqftTotal;
+    formulaDebug.postCeilSqftTotal = formulaEvaluation.postCeilSqftTotal;
+    formulaDebug.baseRateUsed = formulaEvaluation.baseRateUsed;
 
-  const formulaValueCents = Math.round(formulaEvaluation.resultValue * 100);
-  basePriceCents = formulaEvaluation.appliedAs === 'unitPrice'
-    ? formulaValueCents * quantity
-    : formulaValueCents;
+    const formulaValueCents = Math.round(formulaEvaluation.resultValue * 100);
+    basePriceCents = formulaEvaluation.appliedAs === 'unitPrice'
+      ? formulaValueCents * quantity
+      : formulaValueCents;
+  }
 
   const selectionsV2: LineItemOptionSelectionsV2 = {
     schemaVersion: 2,
@@ -471,6 +500,7 @@ export function evaluatePricingPreviewFromTree(input: {
       basePrice: basePriceCents / 100,
       optionsPrice: optionsCents / 100,
       total: totalCents / 100,
+      nestingDetails: baseDetails.nestingDetails,
     },
     derived: {
       sqft: Number.isFinite(sqft) ? sqft : undefined,
@@ -660,19 +690,42 @@ async function loadTreeVersion(organizationId: string, treeVersionId: string) {
  */
 function calculateBasePrice(
   tree: any,
-  context: { widthIn: number; heightIn: number; quantity: number }
+  context: { widthIn: number; heightIn: number; quantity: number },
+  pricingContext?: {
+    pricingProfileKey?: string | null;
+    pricingProfileConfig?: unknown;
+    productLegacy?: {
+      sheetWidth?: string | null;
+      sheetHeight?: string | null;
+      materialType?: "sheet" | "roll" | null;
+      minPricePerItem?: string | null;
+      nestingVolumePricing?: any;
+    };
+  },
 ): number {
-  return calculateBasePriceDetails(tree, context).totalCents;
+  return calculateBasePriceDetails(tree, context, pricingContext).totalCents;
 }
 
 function calculateBasePriceDetails(
   tree: any,
-  context: { widthIn: number; heightIn: number; quantity: number }
+  context: { widthIn: number; heightIn: number; quantity: number },
+  pricingContext?: {
+    pricingProfileKey?: string | null;
+    pricingProfileConfig?: unknown;
+    productLegacy?: {
+      sheetWidth?: string | null;
+      sheetHeight?: string | null;
+      materialType?: "sheet" | "roll" | null;
+      minPricePerItem?: string | null;
+      nestingVolumePricing?: any;
+    };
+  },
 ): {
   totalCents: number;
   perSqftCents: number;
   perPieceCents: number;
   minimumChargeCents: number;
+  pricingProfileKey: string;
   orderedWidthIn: number;
   orderedHeightIn: number;
   trimAllowanceX: number;
@@ -682,6 +735,7 @@ function calculateBasePriceDetails(
   sqftPerItem: number;
   totalSqft: number;
   linearFeet: number;
+  nestingDetails?: unknown;
 } {
   const meta = tree?.meta;
   if (!meta || typeof meta !== 'object') {
@@ -720,6 +774,15 @@ function calculateBasePriceDetails(
   }
 
   const { widthIn, heightIn, quantity } = context;
+  const profileFromTree = typeof (meta as any)?.pricingProfileKey === 'string'
+    ? String((meta as any).pricingProfileKey)
+    : null;
+  const activePricingProfileKey =
+    pricingContext?.pricingProfileKey
+    ?? profileFromTree
+    ?? 'default';
+  const activeProfileConfig = (pricingContext?.pricingProfileConfig ?? (meta as any)?.pricingProfileConfig ?? null) as FlatGoodsConfig | null;
+
   const { trimAllowanceX, trimAllowanceY } = getTrimAllowancesInches(tree);
   const orderedWidthIn = widthIn > 0 ? widthIn : 0;
   const orderedHeightIn = heightIn > 0 ? heightIn : 0;
@@ -770,6 +833,67 @@ function calculateBasePriceDetails(
   const lineBaseCents = sqftComponent + pieceComponent;
   const linearFeet = orderedWidthIn > 0 ? orderedWidthIn / 12 : 0;
 
+  if (activePricingProfileKey === 'flat_goods') {
+    const productLegacy = pricingContext?.productLegacy ?? {};
+    const flatGoodsInput = buildFlatGoodsInput(
+      activeProfileConfig,
+      {
+        sheetWidth: productLegacy.sheetWidth,
+        sheetHeight: productLegacy.sheetHeight,
+        materialType: productLegacy.materialType,
+        minPricePerItem: productLegacy.minPricePerItem,
+        nestingVolumePricing: productLegacy.nestingVolumePricing,
+      },
+      {
+        basePricePerSqft: (perSqftCents / 100).toString(),
+      },
+      finishedWidthIn,
+      finishedHeightIn,
+      quantity,
+      null,
+    );
+
+    const flatGoodsResult = flatGoodsCalculator(
+      flatGoodsInput,
+      (sheetWidth, sheetHeight, sheetCost, minPricePerItem, volumePricing, allowRotation) =>
+        new NestingCalculator(
+          sheetWidth,
+          sheetHeight,
+          sheetCost,
+          minPricePerItem,
+          volumePricing,
+          null,
+          allowRotation ?? true,
+        ),
+    );
+
+    if (flatGoodsResult.error) {
+      throw new Error(flatGoodsResult.error);
+    }
+
+    return {
+      totalCents: Math.round(flatGoodsResult.totalPrice * 100),
+      perSqftCents,
+      perPieceCents,
+      minimumChargeCents,
+      pricingProfileKey: activePricingProfileKey,
+      orderedWidthIn,
+      orderedHeightIn,
+      trimAllowanceX,
+      trimAllowanceY,
+      finishedWidthIn,
+      finishedHeightIn,
+      sqftPerItem,
+      totalSqft,
+      linearFeet,
+      nestingDetails: {
+        ...flatGoodsResult.nestingDetails,
+        sheetCount: flatGoodsResult.sheetCount,
+        usedSqft: flatGoodsResult.usedSqft,
+      },
+    };
+  }
+
   // Apply minimum charge once per line item (not per unit)
   const total = minimumChargeCents > 0 ? Math.max(lineBaseCents, minimumChargeCents) : lineBaseCents;
 
@@ -778,6 +902,7 @@ function calculateBasePriceDetails(
     perSqftCents,
     perPieceCents,
     minimumChargeCents,
+    pricingProfileKey: activePricingProfileKey,
     orderedWidthIn,
     orderedHeightIn,
     trimAllowanceX,

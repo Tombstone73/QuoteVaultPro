@@ -4181,6 +4181,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         quantity,
         optionSelectionsJson,
         pricingFormulaOverride,
+        pricingProfileKey,
+        pricingProfileConfig,
         debug,
       } = req.body ?? {};
 
@@ -4217,6 +4219,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         quantity: quantityNum,
         pbv2ExplicitSelections,
         pricingFormulaOverride: typeof pricingFormulaOverride === "string" ? pricingFormulaOverride : undefined,
+        pricingProfileKey: typeof pricingProfileKey === "string" ? pricingProfileKey : undefined,
+        pricingProfileConfig: pricingProfileConfig ?? undefined,
         debug: Boolean(debug),
       });
 
@@ -5871,6 +5875,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           optionsPrice: pricingResult.breakdown.optionsCents / 100,
           total: pricingResult.lineTotalCents / 100,
           formula: "",
+          nestingDetails: pricingResult.breakdown.nestingDetails ?? null,
         },
         displayOrder: lineItem.displayOrder || 0,
         isTemporary: false,
@@ -5963,6 +5968,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           optionsPrice: pricingResult.breakdown.optionsCents / 100,
           total: pricingResult.lineTotalCents / 100,
           formula: "",
+          nestingDetails: pricingResult.breakdown.nestingDetails ?? null,
         },
         displayOrder: typeof displayOrder === "number" ? displayOrder : 0,
       };
@@ -6042,6 +6048,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           optionsPrice: pricingResult.breakdown.optionsCents / 100,
           total: pricingResult.lineTotalCents / 100,
           formula: "",
+          nestingDetails: pricingResult.breakdown.nestingDetails ?? null,
         };
         updateData.formulaLinePrice = null;
         updateData.priceOverride = null;

@@ -107,6 +107,8 @@ interface PricingValidationPanelProps {
   treeJson: unknown | null;
   pricingV2Override?: unknown;
   pricingFormulaOverride?: string | null;
+  pricingProfileKey?: string | null;
+  pricingProfileConfig?: unknown;
   pricingMode?: "basic" | "advanced";
   findings: Finding[];
 }
@@ -170,7 +172,7 @@ function buildPreviewGroups(treeJson: unknown | null): PreviewGroup[] {
     .filter((group) => group.options.length > 0);
 }
 
-export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, pricingMode = "basic", findings }: PricingValidationPanelProps) {
+export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, pricingProfileKey, pricingProfileConfig, pricingMode = "basic", findings }: PricingValidationPanelProps) {
   const currencyFormatter = useMemo(
     () =>
       new Intl.NumberFormat("en-US", {
@@ -234,9 +236,11 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
         height: previewState.height,
         quantity: previewState.quantity,
         pricingFormulaOverride,
+        pricingProfileKey,
+        pricingProfileConfig,
         optionSelectionsJson: selectionPayload,
       }),
-    [treeForPreview, previewState.width, previewState.height, previewState.quantity, pricingFormulaOverride, selectionPayload],
+    [treeForPreview, previewState.width, previewState.height, previewState.quantity, pricingFormulaOverride, pricingProfileKey, pricingProfileConfig, selectionPayload],
   );
 
   const inputErrors = useMemo(() => {
@@ -431,6 +435,8 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
             height: previewState.height,
             quantity: previewState.quantity,
             pricingFormulaOverride,
+            pricingProfileKey,
+            pricingProfileConfig,
             debug: true,
             optionSelectionsJson: selectionPayload,
           }),
@@ -471,7 +477,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
       controller.abort();
       window.clearTimeout(timeout);
     };
-  }, [hasInputErrors, requestSignature, treeForPreview, previewState.width, previewState.height, previewState.quantity, pricingFormulaOverride, selectionPayload]);
+  }, [hasInputErrors, requestSignature, treeForPreview, previewState.width, previewState.height, previewState.quantity, pricingFormulaOverride, pricingProfileKey, pricingProfileConfig, selectionPayload]);
 
   return (
     <aside className="h-full w-full min-w-0 bg-card flex flex-col overflow-hidden">

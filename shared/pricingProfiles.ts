@@ -155,6 +155,8 @@ export interface FlatGoodsInput {
   sheetHeight: number;
   /** Material type: "sheet" or "roll" */
   materialType: "sheet" | "roll";
+  /** Allow rotated orientation in nesting logic (defaults true when omitted) */
+  allowRotation?: boolean;
   /** Minimum price per item (optional) */
   minPricePerItem?: number | null;
   /** Volume pricing tiers (optional, from variant or product) */
@@ -242,7 +244,8 @@ export type NestingCalculatorFactory = (
   sheetHeight: number,
   sheetCost: number,
   minPricePerItem: number | null,
-  volumePricing: any
+  volumePricing: any,
+  allowRotation?: boolean,
 ) => NestingCalculatorInterface;
 
 /**
@@ -268,6 +271,7 @@ export function flatGoodsCalculator(
     sheetWidth,
     sheetHeight,
     materialType,
+    allowRotation,
     minPricePerItem,
     volumePricing,
     rollMaterial,
@@ -360,7 +364,8 @@ export function flatGoodsCalculator(
     sheetHeight,
     sheetCost,
     minPricePerItem ?? null,
-    volumePricing ?? null
+    volumePricing ?? null,
+    allowRotation ?? true,
   );
 
   const pricingResult = calc.calculatePricingWithWaste(pieceWidth, pieceHeight, quantity);
@@ -442,6 +447,7 @@ export function buildFlatGoodsInput(
   const materialType = profileConfig?.materialType 
     ?? product.materialType 
     ?? "sheet";
+  const allowRotation = profileConfig?.allowRotation ?? true;
   const minPricePerItem = profileConfig?.minPricePerItem 
     ?? (product.minPricePerItem ? parseFloat(product.minPricePerItem) : null);
 
@@ -460,6 +466,7 @@ export function buildFlatGoodsInput(
     sheetWidth,
     sheetHeight,
     materialType,
+    allowRotation,
     minPricePerItem,
     volumePricing,
     rollMaterial: rollMaterial ?? null,
