@@ -1218,7 +1218,7 @@ export default function CalculatorComponent() {
                     </div>
                   )}
 
-                  {priceBreakdown.nestingDetails && (
+                  {priceBreakdown?.pricingMethod === "flat_goods" && priceBreakdown?.nestingDetails && (
                     <div className="space-y-2 border-t pt-2 mt-2">
                       <div className="text-sm font-medium text-muted-foreground">Nesting Details:</div>
                       <div className="pl-4 space-y-1 text-sm">
@@ -1312,6 +1312,12 @@ export default function CalculatorComponent() {
                           </div>
                         )}
                       </div>
+                    </div>
+                  )}
+
+                  {priceBreakdown?.pricingMethod === "flat_goods" && !priceBreakdown?.nestingDetails && (
+                    <div className="text-xs text-muted-foreground border-t pt-2 mt-2">
+                      Nesting details unavailable for this calculation.
                     </div>
                   )}
 
