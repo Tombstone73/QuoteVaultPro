@@ -913,6 +913,8 @@ const ProductEditorPage = () => {
             treeJson={pbv2State?.treeJson ?? form.getValues('optionTreeJson') ?? null}
             pricingV2Override={treeMeta.pricingV2}
             pricingFormulaOverride={form.watch("pricingFormula") || null}
+            pricingProfileKey={form.watch("pricingProfileKey") || null}
+            pricingProfileConfig={form.watch("pricingProfileConfig") || null}
             pricingMode={pbv2PricingMode}
             findings={pbv2PricingData.findings}
           />

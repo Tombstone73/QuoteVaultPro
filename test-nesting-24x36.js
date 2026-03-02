@@ -108,3 +108,12 @@ console.log('5 pieces of 24×36: $70.00 ($14/piece)');
 console.log('10 pieces of 24×36: $140.00 ($14/piece)');
 console.log('1 piece of 48×48: $35.00');
 
+console.log('\n=== Baseline Sanity Checks ===');
+const calcNonStandard = new NestingCalculator(60, 120, 100);
+console.log('60×120 sheetSqft:', calcNonStandard.sheetSqft.toFixed(4));
+console.log('60×120 fullSheetSqft:', calcNonStandard.fullSheetSqft.toFixed(4));
+
+const calcNoRotation = new NestingCalculator(48, 96, 70, null, null, null, false);
+const noRotationResult = calcNoRotation.calculatePricingWithWaste(30, 20, 1);
+console.log('allowRotation=false orientation:', noRotationResult.orientation);
+
