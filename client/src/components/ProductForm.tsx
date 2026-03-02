@@ -804,9 +804,10 @@ function PricingEngineRadioSection({
               )}
             />
 
-            {field.value === "flat_goods" ? (
+            {currentProfile === "flat_goods" ? (
               <div className="mt-2 rounded-md border border-slate-700 bg-slate-900/30 p-3 space-y-2">
                 <div className="text-xs font-medium text-slate-300">Sheet Settings</div>
+                <p className="text-[11px] text-slate-400">Used only for Flat Goods nesting (sheet yield and waste). Does not change Finished Size or total_sqft geometry.</p>
                 <div className="grid grid-cols-2 gap-2">
                   <div className="space-y-1">
                     <Label className="text-xs text-slate-400">Sheet Width (in)</Label>
