@@ -9834,6 +9834,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     isAuthenticated,
     tenantContext,
     async (req: any, res) => {
+      const traceId = crypto.randomUUID();
       try {
         if (!assertInternalUser(req, res)) return;
         const organizationId = getRequestOrganizationId(req);
@@ -9844,12 +9845,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
           ? req.body.lineItemIds.filter((id: any) => typeof id === "string" && id.length > 0)
           : undefined;
 
+        if (Array.isArray(req.body.lineItemIds) && lineItemIds && lineItemIds.length === 0) {
+          return res.status(400).json({
+            success: false,
+            message: "No line items to schedule",
+            traceId,
+          });
+        }
+
         const result = await scheduleOrderLineItemsForProduction({
           organizationId,
           orderId,
           lineItemIds,
           loadRoutingRules: loadProductionLineItemStatusRulesForOrganization,
           appendEvent,
+          traceId,
         });
 
         res.json(result);
@@ -9866,12 +9876,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         };
 
         console.error("Error scheduling line items for production:", {
+          traceId,
           error: formatError(error),
           cause: formatError(error?.cause),
         });
         res.status(500).json({
           success: false,
-          error: error?.message || "Failed to schedule line items for production",
+          error: "Scheduling failed",
+          traceId,
         });
       }
     },
