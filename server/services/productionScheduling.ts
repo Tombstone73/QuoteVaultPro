@@ -206,6 +206,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
           stationKey,
           stepKey,
           trigger: "scheduler",
+          traceId,
           extraEventPayload: {
             fromStatus: null,
             toStatus: item.status,
