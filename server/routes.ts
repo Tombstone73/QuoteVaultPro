@@ -55,6 +55,7 @@ import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2Overr
 import { createLineItemFileRecord } from "./services/lineItemFileRecordService";
 import { stationResolver } from "./services/stations/stationResolver";
 import { routeLineItemToProduction } from "./services/productionRoutingService";
+import { resolveInitialProductionRoute } from "./services/productionRoutingResolver";
 import { getDashboardSummary } from "./services/dashboardSummaryService";
 import { resolveVisibleNodes } from "@shared/optionTreeV2Runtime";
 import { computePlannedMaterialsForLineItem } from "./services/prepressPlannedMaterials";
@@ -9735,47 +9736,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .select({
             id: orderLineItems.id,
             orderId: orderLineItems.orderId,
+            productTypeId: products.productTypeId,
             status: orderLineItems.status,
             requiresPrepress: orderLineItems.requiresPrepress,
           })
           .from(orderLineItems)
+          .leftJoin(products, eq(orderLineItems.productId, products.id))
           .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
           .where(and(eq(orders.organizationId, organizationId), eq(orderLineItems.id, lineItemId)))
           .limit(1);
 
         if (!li) return res.status(404).json({ error: "Order line item not found" });
 
-        const routing = await loadProductionLineItemStatusRulesForOrganization(organizationId);
-        if (routing.source !== "org") {
-          console.warn(
-            `[ProductionIntake] No org routing config (source=${routing.source}); skipping production job creation for lineItemId=${li.id}`,
-          );
-          return res.json({
-            success: true,
-            data: null,
-            warnings: ["Production routing config missing/invalid; no job created."],
-          });
-        }
+        const resolvedRoute = await resolveInitialProductionRoute({
+          organizationId,
+          productTypeId: li.productTypeId,
+          lineItemRequiresPrepressSnapshot:
+            typeof li.requiresPrepress === "boolean" ? li.requiresPrepress : undefined,
+        });
 
-        const rule = routing.rules.find((r) => r.id === li.status);
-        if (!rule || rule.sendToProduction !== true) {
-          return res.json({
-            success: true,
-            data: null,
-            warnings: ["Line item status is not routed to production; no job created."],
-          });
-        }
-
-        const stationKey = String(rule.stationKey ?? "").trim();
-        const stepKey = String((rule as any).stepKey ?? "").trim();
+        const stationKey = String(resolvedRoute.stationKey ?? "").trim();
+        const stepKey = String(resolvedRoute.stepKey ?? "").trim();
         if (!stationKey || !stepKey) {
           console.warn(
-            `[ProductionIntake] Routing rule missing station/step; skipping job creation for lineItemId=${li.id} status=${li.status}`,
+            `[ProductionIntake] Resolver returned missing station/step; skipping job creation for lineItemId=${li.id} status=${li.status}`,
           );
           return res.json({
             success: true,
             data: null,
-            warnings: ["Routing rule missing station/step; no job created."],
+            warnings: ["Routing resolver missing station/step; no job created."],
           });
         }
 
@@ -9788,17 +9777,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
             stationKey,
             stepKey,
             trigger: "intake",
-            extraEventPayload: { fromStatus: null, toStatus: li.status },
+            extraEventPayload: { fromStatus: null, toStatus: li.status, routingReason: resolvedRoute.reason },
           });
 
-          // Set line item status based on requiresPrepress only for newly created jobs.
-          //   requiresPrepress=true  → pending_prepress
-          //   requiresPrepress=false → print_ready
-          // Only applies when item is in a neutral/initial state.
+          // Keep line item status lifecycle-only for new routing flows.
+          // Legacy records may still contain pending_prepress and are handled for compatibility.
+          // New intake flow must not write station-like statuses.
           if (routingResult.outcome === "created") {
             const neutralStatuses = ['queued', 'new', ''];
             if (neutralStatuses.includes(li.status || '')) {
-              const targetStatus = li.requiresPrepress ? 'pending_prepress' : 'print_ready';
+              const targetStatus = li.requiresPrepress ? 'new' : 'print_ready';
               await tx
                 .update(orderLineItems)
                 .set({ status: targetStatus, updatedAt: new Date() })
@@ -10118,16 +10106,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       );
 
       // PROMPT A (revised): Prepress Gate Enforcement — DENY-LIST approach
-      // Block items that are ACTIVELY in prepress workflow states.
-      // Items with status "queued" (legacy/unprocessed) are ALLOWED so existing roll/flatbed jobs
-      // are not accidentally hidden. New items will be set to "pending_prepress" at intake time.
-      //
-      // EXCLUDED from boards: requiresPrepress=true AND status IN (pending_prepress, in_prepress, prepress_complete)
-      // ALLOWED: requiresPrepress=false, OR status is anything else (queued, print_ready, printing, done, complete, etc.)
-      //
-      // NULL handling:
-      //   - requiresPrepress NULL → treat as true (hide until corrected)
-      //   - status NULL → hide and log so we can spot bad data
+      // Prefer production_jobs-based gating:
+      // - If a line item has an active prepress production job, hide it from flatbed/roll boards.
+      // - Legacy fallback (line_item.status deny-list) applies ONLY when prepress production_jobs are missing.
       const prepressGateApplies = station && (station === 'flatbed' || station === 'roll');
 
       const baseRows = await db
@@ -10161,12 +10142,54 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .where(whereClause)
         .orderBy(desc(productionJobs.updatedAt));
 
-      // Deny-list gate: only exclude jobs that are explicitly mid-prepress
       const PREPRESS_BLOCKED_STATUSES = ['pending_prepress', 'in_prepress', 'prepress_complete'] as const;
+      const TERMINAL_JOB_STATUSES = new Set(['produced', 'done', 'complete', 'canceled', 'cancelled', 'void']);
+      const lineItemIdsForGate = prepressGateApplies
+        ? Array.from(new Set(baseRows.map((row) => row.lineItemId).filter((id): id is string => typeof id === 'string' && id.length > 0)))
+        : [];
+
+      const prepressJobsForGate = lineItemIdsForGate.length > 0
+        ? await db
+            .select({
+              lineItemId: productionJobs.lineItemId,
+              status: productionJobs.status,
+            })
+            .from(productionJobs)
+            .where(
+              and(
+                eq(productionJobs.organizationId, organizationId),
+                inArray(productionJobs.lineItemId, lineItemIdsForGate),
+                eq(productionJobs.stationKey, 'prepress'),
+              ),
+            )
+        : [];
+
+      const hasAnyPrepressJob = new Set<string>();
+      const hasActivePrepressJob = new Set<string>();
+      for (const job of prepressJobsForGate) {
+        if (!job.lineItemId) continue;
+        hasAnyPrepressJob.add(job.lineItemId);
+        if (!TERMINAL_JOB_STATUSES.has(String(job.status || '').toLowerCase())) {
+          hasActivePrepressJob.add(job.lineItemId);
+        }
+      }
+
       const filteredRows = prepressGateApplies
         ? baseRows.filter(row => {
             // No line item linked → allow (intake/unlinked jobs)
             if (!row.lineItemId) return true;
+
+            // Canonical gate: active prepress job present
+            if (hasActivePrepressJob.has(row.lineItemId)) {
+              return false;
+            }
+
+            // If prepress jobs exist but all are terminal, allow.
+            if (hasAnyPrepressJob.has(row.lineItemId)) {
+              return true;
+            }
+
+            // Legacy fallback only when prepress production_jobs are missing.
 
             // requiresPrepress NULL → treat as true (hide until data corrected)
             const reqPrepress = row.lineItemRequiresPrepress ?? true;
@@ -10182,8 +10205,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               return false;
             }
 
-            // Requires prepress: BLOCK only if in a prepress workflow state
-            // "queued", "print_ready", "printing", "done", "complete" → ALLOW
+            // Requires prepress: BLOCK only if in a legacy prepress workflow state
             return !PREPRESS_BLOCKED_STATUSES.includes(row.lineItemStatus as any);
           })
         : baseRows;
@@ -12949,16 +12971,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const printTypeFilter = req.query.printType as string | undefined;
       const searchQuery = req.query.search as string | undefined;
 
-      // Build WHERE conditions.
+      // Build base WHERE conditions.
       // Prepress queue shows ONLY items that require prepress (requiresPrepress=true).
-      // Default (no status filter) shows all active prepress states; caller can override.
+      // Primary gate uses production_jobs station/status; status filter is legacy fallback only.
       const defaultStatuses = ['pending_prepress', 'in_prepress', 'prepress_complete'];
       const activeStatusFilter = statusFilter.length > 0 ? statusFilter : defaultStatuses;
 
       const conditions: any[] = [
         eq(orders.organizationId, organizationId),           // Always filter by org
         eq(orderLineItems.requiresPrepress, true),           // Prepress queue = prepress items only
-        inArray(orderLineItems.status, activeStatusFilter),  // Status filter (default: prepress states)
       ];
 
       if (printTypeFilter && printTypeFilter !== 'all') {
@@ -12994,9 +13015,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .where(and(...conditions))
         .orderBy(asc(orders.dueDate), desc(orders.priority));
 
-      // Get file counts for each line item
       const lineItemIds = items.map((i) => i.lineItemId);
-      const fileCounts = lineItemIds.length > 0
+      const prepressLineItemIds = lineItemIds.length > 0
+        ? await db
+            .select({
+              lineItemId: productionJobs.lineItemId,
+              status: productionJobs.status,
+            })
+            .from(productionJobs)
+            .where(
+              and(
+                eq(productionJobs.organizationId, organizationId),
+                inArray(productionJobs.lineItemId, lineItemIds),
+                eq(productionJobs.stationKey, 'prepress'),
+              ),
+            )
+        : [];
+
+      const prepressActiveLineItems = new Set<string>();
+      const prepressAnyLineItems = new Set<string>();
+      const prepressTerminalStatuses = new Set(['produced', 'done', 'complete', 'canceled', 'cancelled', 'void']);
+      for (const job of prepressLineItemIds) {
+        if (!job.lineItemId) continue;
+        prepressAnyLineItems.add(job.lineItemId);
+        if (!prepressTerminalStatuses.has(String(job.status || '').toLowerCase())) {
+          prepressActiveLineItems.add(job.lineItemId);
+        }
+      }
+
+      const queueItems = items.filter((item) => {
+        if (prepressActiveLineItems.has(item.lineItemId)) {
+          return true;
+        }
+
+        if (prepressAnyLineItems.has(item.lineItemId)) {
+          return false;
+        }
+
+        const legacyStatus = String(item.status || "");
+        return activeStatusFilter.includes(legacyStatus);
+      });
+
+      // Get file counts for each line item
+      const lineItemIdsForQueue = queueItems.map((i) => i.lineItemId);
+      const fileCounts = lineItemIdsForQueue.length > 0
         ? await db
             .select({
               lineItemId: lineItemFiles.lineItemId,
@@ -13006,14 +13068,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .from(lineItemFiles)
             .where(
               and(
-                inArray(lineItemFiles.lineItemId, lineItemIds),
+                inArray(lineItemFiles.lineItemId, lineItemIdsForQueue),
                 eq(lineItemFiles.status, "active")
               )
             )
             .groupBy(lineItemFiles.lineItemId, lineItemFiles.role)
         : [];
 
-      const previewFiles = lineItemIds.length > 0
+      const previewFiles = lineItemIdsForQueue.length > 0
         ? await db
             .select({
               id: lineItemFiles.id,
@@ -13025,7 +13087,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .from(lineItemFiles)
             .where(
               and(
-                inArray(lineItemFiles.lineItemId, lineItemIds),
+                inArray(lineItemFiles.lineItemId, lineItemIdsForQueue),
                 eq(lineItemFiles.status, "active")
               )
             )
@@ -13106,7 +13168,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Resolve latest active session per line item (non-exclusive sessions supported)
-      const activeSessions = lineItemIds.length > 0
+      const activeSessions = lineItemIdsForQueue.length > 0
         ? await db
             .select({
               id: prepressSessions.id,
@@ -13120,7 +13182,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .from(prepressSessions)
             .where(
               and(
-                inArray(prepressSessions.lineItemId, lineItemIds),
+                inArray(prepressSessions.lineItemId, lineItemIdsForQueue),
                 eq(prepressSessions.organizationId, organizationId),
                 eq(prepressSessions.status, "active")
               )
@@ -13136,7 +13198,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Map to flat QueueItem shape the frontend expects
-      const queue = items.map((item, index) => {
+      const queue = queueItems.map((item, index) => {
         const counts = fileCounts.filter((fc) => fc.lineItemId === item.lineItemId);
         const originals = counts.find((c) => c.role === "original")?.count || 0;
         const finals = counts.find((c) => c.role === "final")?.count || 0;
@@ -13198,7 +13260,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       if (process.env.NODE_ENV !== "production") {
-        console.log(`[Prepress Queue] org=${organizationId} statuses=${activeStatusFilter.join(",")} → ${queue.length} items`);
+        console.log(`[Prepress Queue] org=${organizationId} prepressJobsActive=${prepressActiveLineItems.size} legacyFallbackStatuses=${activeStatusFilter.join(",")} → ${queue.length} items`);
       }
 
       res.json({ success: true, data: queue });
