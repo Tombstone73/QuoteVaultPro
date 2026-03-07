@@ -22,6 +22,20 @@
       "when": 1771953200001,
       "tag": "0002_production_jobs_station_uniqueness",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 0,
+      "tag": "0003_active_job_uniqueness",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 0,
+      "tag": "0004_line_item_status_cleanup",
+      "breakpoints": true
     }
   ]
 }
