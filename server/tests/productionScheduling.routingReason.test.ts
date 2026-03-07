@@ -28,9 +28,9 @@ jest.mock("../services/productionRoutingService", () => ({
 
     return {
       outcome: "created",
+      jobId: created.id,
       stationKey,
       stepKey,
-      productionJobId: created.id,
     };
   }),
 }));
@@ -178,5 +178,76 @@ describe("production schedule routing diagnostics", () => {
         },
       }),
     ).rejects.toThrow("Order not found");
+  });
+
+  test("returns partial success when one of two line items fails", async () => {
+    const okLineItemId = `line_sched_ok_${suffix}`;
+    const failLineItemId = `line_sched_fail_${suffix}`;
+
+    const result = await scheduleOrderLineItemsForProduction({
+      organizationId: orgA,
+      orderId: orderA,
+      lineItemIds: [okLineItemId, failLineItemId],
+      loadRoutingRules: async () => ({ source: "test", rules: [] }),
+      appendEvent: async () => {
+        return;
+      },
+      loadLineItemsForSchedulingFn: async () => ({
+        orderExists: true,
+        lineItemRecords: [
+          {
+            lineItemId: okLineItemId,
+            productId: productA,
+            productTypeId: null,
+            materialId: null,
+            status: "queued",
+            lineItemRequiresPrepressSnapshot: true,
+            requiresProductionJob: true,
+          },
+          {
+            lineItemId: failLineItemId,
+            productId: productA,
+            productTypeId: null,
+            materialId: null,
+            status: "queued",
+            lineItemRequiresPrepressSnapshot: true,
+            requiresProductionJob: true,
+          },
+        ],
+      }),
+      transactionRunner: {
+        transaction: async <T>(cb: (tx: any) => Promise<T>) => cb({}),
+      },
+      resolveInitialProductionRouteFn: async () => ({
+        stationKey: "prepress",
+        stepKey: "prepress",
+        reason: "org_default_prepress_required",
+      }),
+      routeLineItemToProductionFn: async ({ lineItemId }: any) => {
+        if (lineItemId === failLineItemId) {
+          const err: any = new Error("duplicate key value violates unique constraint");
+          err.code = "23505";
+          err.constraint = "production_jobs_org_line_item_station_unique";
+          err.table = "production_jobs";
+          throw err;
+        }
+        return {
+          jobId: `job_${lineItemId}`,
+          outcome: "created",
+          stationKey: "prepress",
+          stepKey: "prepress",
+          status: "queued",
+          stationId: null,
+          ignoredDueToDone: false,
+          ignoredDueToExistingRouting: false,
+        };
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.data.scheduled).toHaveLength(1);
+    expect(result.data.scheduled[0].lineItemId).toBe(okLineItemId);
+    expect(result.data.failed).toHaveLength(1);
+    expect(result.data.failed[0].lineItemId).toBe(failLineItemId);
   });
 });
