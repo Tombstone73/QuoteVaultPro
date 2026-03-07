@@ -8,6 +8,12 @@ export type InitialProductionRoute = {
   reason: string;
 };
 
+type ProductTypeRoutingSnapshot = {
+  defaultStationKey?: string | null;
+  defaultStepKey?: string | null;
+  name?: string | null;
+};
+
 function inferStationKeyFromProductTypeName(productTypeName?: string | null): string | null {
   const value = String(productTypeName ?? "").trim().toLowerCase();
   if (!value) return null;
@@ -22,6 +28,59 @@ function inferStationKeyFromProductTypeName(productTypeName?: string | null): st
   if (value.includes("finish")) return "finishing";
 
   return null;
+}
+
+function buildNonPrepressRoute(productType?: ProductTypeRoutingSnapshot): InitialProductionRoute {
+  const productTypeStationKey = String(productType?.defaultStationKey ?? "").trim();
+  const productTypeStepKey = String(productType?.defaultStepKey ?? "").trim();
+  const inferredStationKey = inferStationKeyFromProductTypeName(productType?.name);
+
+  const stationKey =
+    productTypeStationKey && productTypeStationKey.toLowerCase() !== "prepress"
+      ? productTypeStationKey
+      : inferredStationKey && inferredStationKey.toLowerCase() !== "prepress"
+        ? inferredStationKey
+        : "flatbed";
+
+  const stepKey = productTypeStepKey || "queued";
+
+  const reason = productTypeStationKey && productTypeStationKey.toLowerCase() !== "prepress"
+    ? "product_type_default_station"
+    : inferredStationKey && inferredStationKey.toLowerCase() !== "prepress"
+      ? "product_type_name_inferred_station"
+      : "post_prepress_fallback_flatbed";
+
+  return {
+    stationKey,
+    stepKey,
+    reason,
+  };
+}
+
+export async function resolvePostPrepressProductionRoute(args: {
+  organizationId: string;
+  productTypeId?: string | null;
+  productTypeNameSnapshot?: string | null;
+}): Promise<InitialProductionRoute> {
+  const { organizationId, productTypeId, productTypeNameSnapshot } = args;
+
+  const [productType] = productTypeId
+    ? await db
+        .select({
+          defaultStationKey: productTypes.defaultStationKey,
+          defaultStepKey: productTypes.defaultStepKey,
+          name: productTypes.name,
+        })
+        .from(productTypes)
+        .where(and(eq(productTypes.organizationId, organizationId), eq(productTypes.id, productTypeId)))
+        .limit(1)
+    : [];
+
+  return buildNonPrepressRoute({
+    defaultStationKey: productType?.defaultStationKey,
+    defaultStepKey: productType?.defaultStepKey,
+    name: productType?.name || productTypeNameSnapshot,
+  });
 }
 
 export async function resolveInitialProductionRoute(args: {
@@ -78,26 +137,19 @@ export async function resolveInitialProductionRoute(args: {
     };
   }
 
-  const productTypeStationKey = String(productType?.defaultStationKey ?? "").trim();
-  const productTypeStepKey = String(productType?.defaultStepKey ?? "").trim();
-  const inferredStationKey = inferStationKeyFromProductTypeName(productType?.name);
+  const nonPrepressRoute = buildNonPrepressRoute(productType);
 
-  const stationKey = productTypeStationKey || inferredStationKey || "flatbed";
-  const stepKey = productTypeStepKey || "queued";
-
-  const reason = productTypeStationKey
-    ? "product_type_default_station"
-    : inferredStationKey
-      ? "product_type_name_inferred_station"
-      : override === false
-        ? "product_type_requires_prepress_override_false"
-        : typeof lineItemRequiresPrepressSnapshot === "boolean"
-          ? "line_item_requires_prepress_snapshot_false"
-          : "organization_prepress_default_disabled_or_missing_station_default";
+  const reason = nonPrepressRoute.reason === "post_prepress_fallback_flatbed"
+    ? override === false
+      ? "product_type_requires_prepress_override_false"
+      : typeof lineItemRequiresPrepressSnapshot === "boolean"
+        ? "line_item_requires_prepress_snapshot_false"
+        : "organization_prepress_default_disabled_or_missing_station_default"
+    : nonPrepressRoute.reason;
 
   return {
-    stationKey,
-    stepKey,
+    stationKey: nonPrepressRoute.stationKey,
+    stepKey: nonPrepressRoute.stepKey,
     reason,
   };
 }
