@@ -9783,7 +9783,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // Keep line item status lifecycle-only.
           // Board ownership is determined by the production job, not line_item.status.
           if (routingResult.outcome === "created") {
-            const neutralStatuses = ['queued', 'new', ''];
+            const neutralStatuses = ['new', ''];
             if (neutralStatuses.includes(li.status || '')) {
               const targetStatus = 'in_production';
               await tx
@@ -12507,11 +12507,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   };
 
   const PREPRESS_OVERRIDE_ALLOWED_STATUSES = new Set([
-    "queued",
     "new",
-    "pending_prepress",
-    "in_prepress",
-    "prepress_complete",
+    "in_production",
   ]);
 
   const PRODUCTION_TERMINAL_STATUSES = new Set(["produced", "done", "complete", "canceled"]);

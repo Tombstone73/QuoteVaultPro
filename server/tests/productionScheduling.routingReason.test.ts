@@ -127,8 +127,8 @@ describe("production schedule routing diagnostics", () => {
         status
       )
       values
-        (${lineItemA}, ${orderA}, ${productA}, ${"Line A"}, ${2}, ${10}, ${20}, ${0}, ${true}, ${"queued"}),
-        (${lineItemB}, ${orderB}, ${productB}, ${"Line B"}, ${1}, ${15}, ${15}, ${0}, ${true}, ${"queued"})
+        (${lineItemA}, ${orderA}, ${productA}, ${"Line A"}, ${2}, ${10}, ${20}, ${0}, ${true}, ${"new"}),
+        (${lineItemB}, ${orderB}, ${productB}, ${"Line B"}, ${1}, ${15}, ${15}, ${0}, ${true}, ${"new"})
       on conflict (id) do nothing
     `);
   });
@@ -200,7 +200,7 @@ describe("production schedule routing diagnostics", () => {
             productId: productA,
             productTypeId: null,
             materialId: null,
-            status: "queued",
+            status: "new",
             lineItemRequiresPrepressSnapshot: true,
             requiresProductionJob: true,
           },
@@ -209,7 +209,7 @@ describe("production schedule routing diagnostics", () => {
             productId: productA,
             productTypeId: null,
             materialId: null,
-            status: "queued",
+            status: "new",
             lineItemRequiresPrepressSnapshot: true,
             requiresProductionJob: true,
           },

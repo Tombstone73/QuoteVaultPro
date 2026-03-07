@@ -38,7 +38,7 @@ export type LineItemCardProps = {
   // Optional badges for collapsed view
   badges?: {
     draft?: boolean;
-    queued?: boolean;
+    isNew?: boolean;
     override?: boolean;
     internal?: boolean; // Shows "Internal" badge if productionNotes exists
   };
@@ -312,9 +312,9 @@ export function LineItemCard({
                     Draft
                   </Badge>
                 )}
-                {badges?.queued && (
+                {badges?.isNew && (
                   <Badge variant="outline" className="text-[10px] py-0 px-1.5 shrink-0">
-                    Queued
+                    New
                   </Badge>
                 )}
               </div>
