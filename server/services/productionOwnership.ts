@@ -24,18 +24,20 @@ import { appendEvent } from "../productionHelpers";
 export const TERMINAL_JOB_STATUSES = ["done", "void", "canceled", "cancelled"] as const;
 
 /** The lifecycle-only statuses allowed on order_line_items.status. */
-export const LINE_ITEM_LIFECYCLE_STATUSES = ["new", "queued", "in_production", "complete", "canceled"] as const;
+export const LINE_ITEM_LIFECYCLE_STATUSES = ["new", "in_production", "complete", "canceled"] as const;
 
 /**
- * Legacy station-like statuses that were historically written to order_line_items.status.
- * These should NOT drive board ownership or routing decisions.
- * Kept here for reference and backward-compat read paths.
+ * Station-like statuses that must NEVER be written to order_line_items.status.
+ * Kept for reference and defensive read-path guards.
  */
 export const LEGACY_STATION_STATUSES = [
   "pending_prepress",
   "in_prepress",
   "prepress_complete",
   "print_ready",
+  "queued",
+  "printing",
+  "finishing",
 ] as const;
 
 // ────────────────────────────────────────────────────────────

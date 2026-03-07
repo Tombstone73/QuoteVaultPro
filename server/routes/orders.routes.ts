@@ -1537,7 +1537,7 @@ export async function registerOrderRoutes(
                 return res.status(400).json({ message: "status is required" });
             }
 
-            const validStatuses = ['queued', 'printing', 'finishing', 'done', 'canceled'];
+            const validStatuses = ['new', 'in_production', 'complete', 'canceled'];
             if (!validStatuses.includes(status)) {
                 return res.status(400).json({ message: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
             }
@@ -5230,7 +5230,7 @@ export async function registerOrderRoutes(
 
             const routing = await loadProductionLineItemStatusRulesForOrganization(organizationId);
             const routingRules = routing.rules;
-            const fallbackValidStatuses = ['queued', 'printing', 'finishing', 'done', 'canceled'];
+            const fallbackValidStatuses = ['new', 'in_production', 'complete', 'canceled'];
             const rule = routingRules.find((r) => r.id === status);
 
             if (!status) return res.status(400).json({ message: "Invalid status" });

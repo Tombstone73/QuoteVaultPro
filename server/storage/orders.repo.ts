@@ -626,7 +626,7 @@ export class OrdersRepository {
                     sqft: (li as any).sqft ? (li as any).sqft.toString() : null,
                     unitPrice: unitSafe.toString(),
                     totalPrice: totalSafe.toString(),
-                    status: 'queued',
+                    status: 'new',
                     specsJson: (li as any).specsJson || null,
                     selectedOptions: selectedOptionsSafe,
                     nestingConfigSnapshot: (li as any).nestingConfigSnapshot || null,
@@ -782,10 +782,8 @@ export class OrdersRepository {
         // Convert quote line items to order line items
         const orderLineItemsData: Omit<InsertOrderLineItem, 'orderId'>[] = quoteLines.map((ql, index) => {
             const requiresPrepress = productPrepressMap.get(ql.productId) ?? orgPrepressDefault;
-            // Keep status lifecycle-only for new flows.
-            // Legacy records may still contain station-like statuses (e.g. pending_prepress),
-            // but quote→order conversion no longer writes station into line_item.status.
-            const initialStatus = 'queued' as unknown as InsertOrderLineItem['status'];
+            // Line item lifecycle: new → in_production → complete | canceled
+            const initialStatus = 'new' as unknown as InsertOrderLineItem['status'];
 
             return {
                 quoteLineItemId: ql.id,
