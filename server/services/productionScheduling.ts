@@ -334,39 +334,18 @@ export async function scheduleOrderLineItemsForProduction(args: {
     );
   }
 
-      return {
-        success: true,
-        data: {
-          createdJobCount: createdCount,
-          existingJobCount: existingCount,
-          skippedNonProductionCount: skippedCount,
-          affectedLineItemIds: affectedIds,
-          lineItemDiagnostics,
-        },
-        message,
-      };
-    } catch (err: any) {
-      console.error("[SchedulingFail]", {
-        traceId,
-        step,
-        code: err?.code,
-        constraint: err?.constraint,
-        table: err?.table,
-        detail: err?.detail,
-        message: err?.message,
-      });
-      if (err?.cause) {
-        console.error("[SchedulingFail.cause]", {
-          traceId,
-          step,
-          code: err.cause?.code,
-          constraint: err.cause?.constraint,
-          table: err.cause?.table,
-          detail: err.cause?.detail,
-          message: err.cause?.message,
-        });
-      }
-      throw err;
-    }
-  });
+  return {
+    success: true,
+    data: {
+      createdJobCount: createdCount,
+      existingJobCount: existingCount,
+      skippedNonProductionCount: skippedCount,
+      affectedLineItemIds: affectedIds,
+      scheduled,
+      failed,
+      lineItemDiagnostics,
+    },
+    message,
+    traceId: requestTraceId,
+  };
 }
