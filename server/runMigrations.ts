@@ -25,8 +25,8 @@ const MIGRATIONS_SCHEMA = "public";
  *   3. DRIZZLE_AUTO_MIGRATE=0  → logs "[Migrations] skipped"
  *
  * Migrations folder resolution:
- *   dev  (tsx server/index.ts):  import.meta.url → server/runMigrations.ts → db/migrations
- *   prod (dist/index.js bundle): import.meta.url → dist/index.js           → dist/db/migrations
+ *   dev  (tsx server/index.ts):  import.meta.url → server/runMigrations.ts → db/migrations_v2
+ *   prod (dist/index.js bundle): import.meta.url → dist/index.js           → dist/db/migrations_v2
  *                                (copied by scripts/copy-migrations.mjs during `npm run build`)
  */
 export async function runMigrations(): Promise<void> {
@@ -41,7 +41,7 @@ export async function runMigrations(): Promise<void> {
   const migrationsFolder = path.join(
     path.dirname(fileURLToPath(import.meta.url)),
     "db",
-    "migrations"
+    "migrations_v2"
   );
 
   console.log(`[Migrations] Starting — folder: ${migrationsFolder}`);
