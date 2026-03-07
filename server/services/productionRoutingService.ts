@@ -78,7 +78,7 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
           select id
           from stations
           where organization_id = ${organizationId}
-            and station_key = ${stationKey}
+            and key = ${stationKey}
           limit 1
         `);
         const stationRow = stationResult.rows[0] as { id?: string } | undefined;
