@@ -55,7 +55,7 @@ import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2Overr
 import { createLineItemFileRecord } from "./services/lineItemFileRecordService";
 import { stationResolver } from "./services/stations/stationResolver";
 import { routeLineItemToProduction } from "./services/productionRoutingService";
-import { resolveInitialProductionRoute } from "./services/productionRoutingResolver";
+import { resolveInitialProductionRoute, resolvePostPrepressProductionRoute } from "./services/productionRoutingResolver";
 import { getDashboardSummary } from "./services/dashboardSummaryService";
 import { resolveVisibleNodes } from "@shared/optionTreeV2Runtime";
 import { computePlannedMaterialsForLineItem } from "./services/prepressPlannedMaterials";
@@ -12709,16 +12709,104 @@ export async function registerRoutes(app: Express): Promise<Server> {
     );
   };
 
-  const ensureProductionJobForLineItem = async (tx: any, args: { organizationId: string; orderId: string; lineItemId: string }) => {
+  const ensureProductionJobForLineItem = async (
+    tx: any,
+    args: {
+      organizationId: string;
+      orderId: string;
+      lineItemId: string;
+      mode?: "prepress" | "downstream";
+      productTypeId?: string | null;
+      productTypeName?: string | null;
+    }
+  ) => {
+    if ((args.mode || "prepress") === "prepress") {
+      const result = await routeLineItemToProduction({
+        tx,
+        organizationId: args.organizationId,
+        orderId: args.orderId,
+        lineItemId: args.lineItemId,
+        stationKey: "flatbed",
+        stepKey: "prepress",
+        trigger: "prepress",
+      });
+      return result.jobId;
+    }
+
+    const downstreamRoute = await resolvePostPrepressProductionRoute({
+      organizationId: args.organizationId,
+      productTypeId: args.productTypeId ?? null,
+      productTypeNameSnapshot: args.productTypeName ?? null,
+    });
+
+    const existingRows = await tx
+      .select({
+        id: productionJobs.id,
+        stationKey: productionJobs.stationKey,
+        stepKey: productionJobs.stepKey,
+        status: productionJobs.status,
+      })
+      .from(productionJobs)
+      .where(
+        and(
+          eq(productionJobs.organizationId, args.organizationId),
+          eq(productionJobs.orderId, args.orderId),
+          eq(productionJobs.lineItemId, args.lineItemId),
+          sql`${productionJobs.status} NOT IN ('void', 'canceled', 'cancelled')`,
+        )
+      )
+      .orderBy(desc(productionJobs.updatedAt), desc(productionJobs.createdAt))
+      .limit(1);
+
+    const existing = existingRows[0];
+
+    if (existing && String(existing.stationKey || "").toLowerCase() !== "prepress") {
+      return existing.id;
+    }
+
+    if (existing && String(existing.stationKey || "").toLowerCase() === "prepress") {
+      await tx
+        .update(productionJobs)
+        .set({
+          stationKey: downstreamRoute.stationKey,
+          stepKey: downstreamRoute.stepKey,
+          status: "queued",
+          startedAt: null,
+          completedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(productionJobs.organizationId, args.organizationId),
+            eq(productionJobs.id, existing.id),
+          )
+        );
+
+      await appendEvent({
+        tx,
+        organizationId: args.organizationId,
+        productionJobId: existing.id,
+        type: "routing_override",
+        payload: {
+          from: { stationKey: existing.stationKey, stepKey: existing.stepKey, status: existing.status },
+          to: { stationKey: downstreamRoute.stationKey, stepKey: downstreamRoute.stepKey, status: "queued" },
+          reason: "post_prepress_handoff",
+        },
+      });
+
+      return existing.id;
+    }
+
     const result = await routeLineItemToProduction({
       tx,
       organizationId: args.organizationId,
       orderId: args.orderId,
       lineItemId: args.lineItemId,
-      stationKey: "flatbed",
-      stepKey: "prepress",
-      trigger: "prepress",
+      stationKey: downstreamRoute.stationKey,
+      stepKey: downstreamRoute.stepKey,
+      trigger: "prepress_handoff",
     });
+
     return result.jobId;
   };
 
@@ -13028,10 +13116,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .orderBy(asc(orders.dueDate), desc(orders.priority));
 
       const lineItemIds = items.map((i) => i.lineItemId);
-      const prepressLineItemIds = lineItemIds.length > 0
+      const lineItemProductionJobs = lineItemIds.length > 0
         ? await db
             .select({
               lineItemId: productionJobs.lineItemId,
+              stationKey: productionJobs.stationKey,
               status: productionJobs.status,
             })
             .from(productionJobs)
@@ -13039,25 +13128,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
               and(
                 eq(productionJobs.organizationId, organizationId),
                 inArray(productionJobs.lineItemId, lineItemIds),
-                eq(productionJobs.stationKey, 'prepress'),
               ),
             )
         : [];
 
       const prepressActiveLineItems = new Set<string>();
       const prepressAnyLineItems = new Set<string>();
+      const downstreamActiveLineItems = new Set<string>();
+      const anyProductionLineItems = new Set<string>();
       const prepressTerminalStatuses = new Set(['produced', 'done', 'complete', 'canceled', 'cancelled', 'void']);
-      for (const job of prepressLineItemIds) {
+      for (const job of lineItemProductionJobs) {
         if (!job.lineItemId) continue;
-        prepressAnyLineItems.add(job.lineItemId);
-        if (!prepressTerminalStatuses.has(String(job.status || '').toLowerCase())) {
-          prepressActiveLineItems.add(job.lineItemId);
+        anyProductionLineItems.add(job.lineItemId);
+        const stationKey = String(job.stationKey || '').toLowerCase();
+        const isTerminal = prepressTerminalStatuses.has(String(job.status || '').toLowerCase());
+
+        if (stationKey === 'prepress') {
+          prepressAnyLineItems.add(job.lineItemId);
+          if (!isTerminal) {
+            prepressActiveLineItems.add(job.lineItemId);
+          }
+          continue;
+        }
+
+        if (!isTerminal) {
+          downstreamActiveLineItems.add(job.lineItemId);
         }
       }
 
       const queueItems = items.filter((item) => {
         if (prepressActiveLineItems.has(item.lineItemId)) {
           return true;
+        }
+
+        if (downstreamActiveLineItems.has(item.lineItemId)) {
+          return false;
         }
 
         if (prepressAnyLineItems.has(item.lineItemId)) {
@@ -13255,6 +13360,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           prepressNotes: latestSession?.notesText ?? null,
           issueFlag: latestSession?.issueFlag ?? false,
           issueType: latestSession?.issueType ?? null,
+          hasDownstreamActiveJob: downstreamActiveLineItems.has(item.lineItemId),
+          hasAnyProductionJob: anyProductionLineItems.has(item.lineItemId),
           thumbFileId: firstPreviewByLineItem.get(item.lineItemId)?.thumbFileId ?? null,
           thumbnailUrl: firstPreviewByLineItem.get(item.lineItemId)?.thumbnailUrl ?? null,
           thumbSelectionReason: firstPreviewByLineItem.get(item.lineItemId)?.thumbSelectionReason ?? 'none',
@@ -14092,7 +14199,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // 1. Verify line item exists and belongs to org
       const [lineItem] = await db.select({
           id: orderLineItems.id,
+          orderId: orderLineItems.orderId,
           status: orderLineItems.status,
+          productTypeId: orderLineItems.productTypeId,
+          productType: orderLineItems.productType,
           requiresPrepress: orderLineItems.requiresPrepress,
         })
         .from(orderLineItems)
@@ -14164,8 +14274,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         const productionJobId = await ensureProductionJobForLineItem(tx, {
           organizationId,
-          orderId: materialContext?.lineItem.orderId || (item as any).orderId,
+          orderId: item.orderId,
           lineItemId,
+          mode: "downstream",
+          productTypeId: item.productTypeId,
+          productTypeName: item.productType,
         });
 
         if (materialContext?.lineItem?.orderId) {

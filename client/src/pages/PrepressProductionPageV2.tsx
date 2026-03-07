@@ -32,6 +32,8 @@ type QueueItem = {
   prepressNotes?: string | null;
   issueFlag?: boolean;
   issueType?: string | null;
+  hasDownstreamActiveJob?: boolean;
+  hasAnyProductionJob?: boolean;
   thumbFileId?: string | null;
   thumbSelectionReason?: "thumbFileId" | "original_fallback" | "final_fallback" | "none" | null;
   thumbCandidateMimeType?: string | null;
@@ -396,7 +398,7 @@ export default function PrepressProductionPageV2() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
       setSelectedLineItemId(null);
-      toast({ title: "Prepress complete", description: "Job marked complete and moved to production" });
+      toast({ title: "Prepress complete", description: "Prepress is complete. Use Send to Production for handoff." });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -541,9 +543,10 @@ export default function PrepressProductionPageV2() {
   const materialsAvailability = materialsAvailabilityData?.items || [];
   const materialsAllAvailable = materialsAvailabilityData?.allAvailable ?? true;
   const canComplete = hasFinalFiles && !!selectedItem?.sessionId;
-  // PROMPT B: Enable "Send to Print Queue" when prepress is complete and has final files
+  // Send to production only after prepress complete and only when no downstream job is already active.
   const canSendToPrint =
     selectedItem?.status === 'prepress_complete' &&
+    !selectedItem?.hasDownstreamActiveJob &&
     hasFinalFiles;
 
   // Clear selection if selected item is not in queue
@@ -815,6 +818,7 @@ export default function PrepressProductionPageV2() {
                   <SelectItem value="all">Status: All</SelectItem>
                   <SelectItem value="pending_prepress">Pending</SelectItem>
                   <SelectItem value="in_prepress">In Prepress</SelectItem>
+                  <SelectItem value="prepress_complete">Prepress Complete</SelectItem>
                 </SelectContent>
               </Select>
 
