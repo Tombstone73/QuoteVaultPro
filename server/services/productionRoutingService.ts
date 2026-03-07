@@ -242,6 +242,15 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
       ignoredDueToExistingRouting: false,
     };
   } catch (err: any) {
+    console.error("[RouteLineItemFail] ENTER", { traceId: args.traceId, step });
+    console.error("[RouteLineItemFail] SHAPE", {
+      traceId: args.traceId,
+      step,
+      type: typeof err,
+      name: (err as any)?.name,
+      keys: Object.keys((err as any) || {}),
+      message: (err as any)?.message,
+    });
     console.error("[RouteLineItemFail]", {
       traceId: args.traceId,
       step,

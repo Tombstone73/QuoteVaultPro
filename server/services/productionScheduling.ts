@@ -277,6 +277,14 @@ export async function scheduleOrderLineItemsForProduction(args: {
         message,
       };
     } catch (err: any) {
+      console.error("[SchedulingFail] SHAPE", {
+        traceId,
+        step,
+        type: typeof err,
+        name: err?.name,
+        keys: Object.keys(err || {}),
+        message: err?.message,
+      });
       console.error("[SchedulingFail]", {
         traceId,
         step,
