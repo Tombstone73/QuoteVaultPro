@@ -105,7 +105,9 @@ server/
 ├── objectAcl.ts      # File permission management
 ├── tenantStorage.ts  # Tenant-scoped file storage
 ├── db/
-│   ├── migrations/   # SQL migration files (numbered: 0008_*.sql)
+│   ├── migrations/       # OLD migration system (DO NOT USE)
+│   ├── migrations_v2/    # ACTIVE migration system (0000–0004+)
+│   │   └── meta/         # _journal.json tracks applied migrations
 │   └── syncUsersToCustomers.ts  # User-customer linkage sync
 └── workers/
     └── syncProcessor.ts  # Background job processing
@@ -145,7 +147,7 @@ client/src/
 
 ### Database Patterns
 - **Schema**: `shared/schema.ts` using Drizzle ORM
-- **Migrations**: Manual SQL files in `server/db/migrations/` (numbered sequentially)
+- **Migrations**: Manual SQL files in `server/db/migrations_v2/` (numbered sequentially, see DRIZZLE MIGRATIONS rules below)
 - **Types**: Export insert/select types: `export const insertCustomerSchema = createInsertSchema(customers)`
 - **Relations**: Use Drizzle relations syntax for foreign keys
 - **Audit fields**: Include `createdByUserId` (user ID) where appropriate
@@ -177,13 +179,29 @@ const response = await fetch('/api/resource', {
 - **Type check**: `npm run check`
 
 ### Database
-- **Push schema changes**: `npm run db:push` (applies Drizzle schema to DB)
-- **Manual migrations**: Create numbered SQL file in `server/db/migrations/`
+- **Push schema changes**: `npm run db:push` (applies Drizzle schema to DB — local dev only)
+- **Manual migrations**: Create numbered SQL file in `server/db/migrations_v2/`
 - **Pattern**: Migration files use `CREATE TABLE IF NOT EXISTS` and `DO $$ BEGIN ... END $$;` for safe column additions
 
-## Migration Workflow
-Use `npm run db:push` only during local development to quickly sync the database schema with Drizzle.
-For production or any schema changes that must be tracked in version control, create a manual SQL migration file in `server/db/migrations/` and apply it through your deployment workflow. Drizzle `db:push` should NOT be used in production environments.
+## DRIZZLE MIGRATIONS — TITANOS RULES (CRITICAL)
+
+| Item | Value |
+|---|---|
+| **Canonical path** | `server/db/migrations_v2/` |
+| **Journal file** | `server/db/migrations_v2/meta/_journal.json` |
+| **DB tracking table** | `public.__drizzle_migrations_v2` |
+
+### Current migration chain
+`0000_baseline` → `0001_stations` → `0002_production_jobs_station_uniqueness` → `0003_active_job_uniqueness` → `0004_line_item_status_cleanup`
+
+### Rules
+1. **NEVER use the old system** — `server/db/migrations/` and its journal are legacy. Do NOT create, modify, or reference files there.
+2. **Always create migrations in `server/db/migrations_v2/`** — file names follow the pattern `NNNN_descriptive_name.sql` (e.g., `0005_add_foo_column.sql`).
+3. **Sequential numbering** — the next migration number is always `max(existing) + 1`. Check the journal or file listing before creating.
+4. **Update the journal** — every new SQL file MUST have a corresponding entry appended to `_journal.json` with the correct `idx`, `version`, `when`, `tag`, and `breakpoints: true`.
+5. **No `drizzle-kit generate`** — do NOT run `drizzle-kit generate` or `drizzle-kit push` for migrations unless the user explicitly instructs it. All migrations are hand-written SQL.
+6. **Idempotent, safe, minimal SQL** — use `IF NOT EXISTS`, `DO $$ BEGIN ... END $$;`, and guard clauses so migrations can be re-run safely. Keep each migration focused on one logical change.
+7. **The v2 system is the only authoritative source** — `db:push` is acceptable for fast local iteration but production schema changes MUST go through `migrations_v2`.
 
 ### Key Environment Variables
 See `.env` file (not in repo):
@@ -228,7 +246,7 @@ import { Router } from 'express';
 - **Multi-tenancy**: Always filter by `organizationId` - forgetting this will leak data across tenants
 - **User ID extraction**: Use `getUserId(req.user)` helper - handles both local (`user.id`) and Replit (`user.claims.sub`) auth
 - **Auth environment**: Development uses local auth, production uses Replit auth (automatic via `NODE_ENV`)
-- **Migration numbering**: SQL files in `server/db/migrations/` use sequential numbers (0008, 0009, etc.)
+- **Migration numbering**: SQL files in `server/db/migrations_v2/` use sequential numbers (0000, 0001, etc.) — see DRIZZLE MIGRATIONS rules above
 
 ## Domain-Specific Patterns
 
