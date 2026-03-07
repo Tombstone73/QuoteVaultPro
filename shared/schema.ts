@@ -2244,7 +2244,7 @@ export const orderLineItems = pgTable("order_line_items", {
   sqft: decimal("sqft", { precision: 10, scale: 2 }),
   unitPrice: decimal("unit_price", { precision: 10, scale: 2 }).notNull(),
   totalPrice: decimal("total_price", { precision: 10, scale: 2 }).notNull(),
-  status: varchar("status", { length: 50 }).notNull().default("queued"), // queued, printing, finishing, done, canceled
+  status: varchar("status", { length: 50 }).notNull().default("new"), // new, in_production, complete, canceled
   specsJson: jsonb("specs_json").$type<Record<string, any>>(),
   // NEW: v2 canonical option selections (additive)
   optionSelectionsJson: jsonb("option_selections_json").$type<any>(),
@@ -2343,7 +2343,7 @@ export const insertOrderLineItemSchema = createInsertSchema(orderLineItems).omit
   width: z.coerce.number().positive().optional().nullable(),
   height: z.coerce.number().positive().optional().nullable(),
   sqft: z.coerce.number().positive().optional().nullable(),
-  status: z.enum(["queued", "printing", "finishing", "done", "canceled"]).default("queued"),
+  status: z.enum(["new", "in_production", "complete", "canceled"]).default("new"),
   specsJson: z.record(z.any()).optional().nullable(),
   // PBV2 request-only fields (not persisted directly; snapshots are persisted).
   // Keep validation permissive enough for future option expansions, but still JSON-safe.

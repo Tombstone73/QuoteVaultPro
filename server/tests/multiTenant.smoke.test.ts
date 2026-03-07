@@ -491,7 +491,7 @@ beforeAll(async () => {
     createdByUserId: userOrg1.id,
     lineItems: [
       {
-        status: "queued",
+        status: "new",
         productType: "print",
         productId: orderProductOrg1.productId,
         productVariantId: orderProductOrg1.variantId,
@@ -511,7 +511,7 @@ beforeAll(async () => {
     createdByUserId: userOrg2.id,
     lineItems: [
       {
-        status: "queued",
+        status: "new",
         productType: "print",
         productId: orderProductOrg2.productId,
         productVariantId: orderProductOrg2.variantId,

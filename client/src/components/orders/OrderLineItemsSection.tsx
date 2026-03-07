@@ -1129,7 +1129,7 @@ export function OrderLineItemsSection({
         quantity: item.quantity,
         unitPrice: item.unitPrice,
         totalPrice: item.totalPrice,
-        status: item.status || "queued",
+        status: item.status || "new",
         specsJson: item.specsJson || null,
       };
 
@@ -1304,7 +1304,7 @@ export function OrderLineItemsSection({
                   const priceEditText = priceEditTextById[String(item.id)] ?? displayPrice.toFixed(2);
                   const isEditingPrice = editingPriceItemId === String(item.id);
 
-                  const statusValue = item.status || "queued";
+                  const statusValue = item.status || "new";
 
                   const attachmentsForThumb = (allOrderFiles as any[]).filter((f) => f?.orderLineItemId === item.id) as OrderFileWithUser[];
                   const lineItemAttachmentsAssociationKnown =
@@ -1415,7 +1415,7 @@ export function OrderLineItemsSection({
                                 unitPriceLabel={`${formatMoney(perEa)}/ea`}
                                 totalLabel={formatMoney(total)}
                                 badges={{
-                                  queued: statusValue === "queued",
+                                  isNew: statusValue === "new",
                                   override: isOverride,
                                   internal: hasProductionNotes,
                                 }}
@@ -1870,7 +1870,7 @@ export function OrderLineItemsSection({
                                 quantity: 1,
                                 unitPrice: "0.00",
                                 totalPrice: "0.00",
-                                status: "queued",
+                                status: "new",
                                 specsJson: { notes: "", selectedOptions: [] },
                               });
                               const nextId = created?.data?.id ?? created?.id ?? null;
