@@ -17,7 +17,7 @@ import { and, eq, ne, sql } from "drizzle-orm";
 import { productionJobs } from "@shared/schema";
 import { appendEvent } from "../productionHelpers";
 
-export type RouteLineItemTrigger = "scheduler" | "intake" | "line_item_status" | "prepress";
+export type RouteLineItemTrigger = "scheduler" | "intake" | "line_item_status" | "prepress" | "prepress_handoff";
 
 export interface RouteLineItemArgs {
   /**

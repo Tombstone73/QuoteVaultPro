@@ -26,6 +26,8 @@ type QueueItem = {
   media: string | null;
   dueDate: string | null;
   status: string;
+  /** Computed prepress stage derived from production_jobs + sessions (backend-computed). */
+  prepressStage?: "pending_prepress" | "in_prepress" | "prepress_complete";
   rush: boolean;
   assignedTo: string | null;
   sessionId: string | null;
@@ -545,7 +547,7 @@ export default function PrepressProductionPageV2() {
   const canComplete = hasFinalFiles && !!selectedItem?.sessionId;
   // Send to production only after prepress complete and only when no downstream job is already active.
   const canSendToPrint =
-    selectedItem?.status === 'prepress_complete' &&
+    selectedItem?.prepressStage === 'prepress_complete' &&
     !selectedItem?.hasDownstreamActiveJob &&
     hasFinalFiles;
 
@@ -901,13 +903,13 @@ export default function PrepressProductionPageV2() {
                 <div className="flex items-center gap-2 mt-1">
                   <span className={cn(
                     "text-[10px] font-bold px-2 py-0.5 rounded border uppercase tracking-widest",
-                    selectedItem.status === "in_prepress" && "bg-[#1773cf]/20 text-[#1773cf] border-[#1773cf]/30",
-                    selectedItem.status === "pending_prepress" && "bg-slate-700 text-slate-300 border-[#2d3748]",
-                    selectedItem.status === "prepress_complete" && "bg-green-700/20 text-green-400 border-green-700/30"
+                    selectedItem.prepressStage === "in_prepress" && "bg-[#1773cf]/20 text-[#1773cf] border-[#1773cf]/30",
+                    selectedItem.prepressStage === "pending_prepress" && "bg-slate-700 text-slate-300 border-[#2d3748]",
+                    selectedItem.prepressStage === "prepress_complete" && "bg-green-700/20 text-green-400 border-green-700/30"
                   )}>
-                    {selectedItem.status === "in_prepress" && "In Prepress"}
-                    {selectedItem.status === "pending_prepress" && "Pending"}
-                    {selectedItem.status === "prepress_complete" && "Complete"}
+                    {selectedItem.prepressStage === "in_prepress" && "In Prepress"}
+                    {selectedItem.prepressStage === "pending_prepress" && "Pending"}
+                    {selectedItem.prepressStage === "prepress_complete" && "Complete"}
                   </span>
                   {selectedItem.assignedTo && (
                     <span className="text-slate-400 text-xs">Assigned to: {selectedItem.assignedTo}</span>
@@ -1769,7 +1771,7 @@ function JobCard({ item, isSelected, onClick }: { item: QueueItem; isSelected: b
     },
   };
 
-  const config = statusConfig[item.status] || statusConfig.pending_prepress;
+  const config = statusConfig[item.prepressStage || "pending_prepress"] || statusConfig.pending_prepress;
 
   React.useEffect(() => {
     if (!import.meta.env.DEV) return;
