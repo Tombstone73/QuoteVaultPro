@@ -1,5 +1,6 @@
 import { fileURLToPath } from "url";
 import path from "path";
+import fs from "fs";
 import { migrate } from "drizzle-orm/neon-serverless/migrator";
 import { db, pool } from "./db";
 
@@ -30,7 +31,21 @@ const MIGRATIONS_SCHEMA = "public";
  *                                (copied by scripts/copy-migrations.mjs during `npm run build`)
  */
 export async function runMigrations(): Promise<void> {
+  console.log("[Migrations] runMigrations() entered");
+
+  // --- TEMP DIAGNOSTIC: redacted DATABASE_URL ---
+  try {
+    const dbUrl = process.env.DATABASE_URL || "";
+    if (dbUrl) {
+      const u = new URL(dbUrl);
+      console.log(`[Migrations] DATABASE_URL → host=${u.hostname} db=${u.pathname.slice(1)} (redacted)`);
+    } else {
+      console.log("[Migrations] DATABASE_URL is EMPTY or UNSET");
+    }
+  } catch { console.log("[Migrations] DATABASE_URL could not be parsed"); }
+
   const flagVal = (process.env.DRIZZLE_AUTO_MIGRATE ?? "").trim().toLowerCase();
+  console.log(`[Migrations] DRIZZLE_AUTO_MIGRATE raw=${JSON.stringify(process.env.DRIZZLE_AUTO_MIGRATE)} parsed=${JSON.stringify(flagVal)}`);
   if (flagVal === "0" || flagVal === "false") {
     console.log("[Migrations] DRIZZLE_AUTO_MIGRATE=disabled — skipping auto-migration");
     return;
@@ -44,7 +59,16 @@ export async function runMigrations(): Promise<void> {
     "migrations_v2"
   );
 
+  console.log(`[Migrations] import.meta.url = ${import.meta.url}`);
   console.log(`[Migrations] Starting — folder: ${migrationsFolder}`);
+
+  // --- TEMP DIAGNOSTIC: check folder existence and contents ---
+  const folderExists = fs.existsSync(migrationsFolder);
+  console.log(`[Migrations] Folder exists: ${folderExists}`);
+  if (folderExists) {
+    const files = fs.readdirSync(migrationsFolder).sort();
+    console.log(`[Migrations] Folder contents (${files.length}): ${files.join(", ")}`);
+  }
 
   // Acquire a session-level advisory lock on a dedicated connection so that
   // concurrent server instances do not run migrations simultaneously.
@@ -54,15 +78,17 @@ export async function runMigrations(): Promise<void> {
     await client.query(`SELECT pg_advisory_lock(${ADVISORY_LOCK_KEY})`);
     console.log("[Migrations] Advisory lock acquired");
 
+    console.log("[Migrations] Calling drizzle migrate() now...");
     await migrate(db, {
       migrationsFolder,
       migrationsTable: MIGRATIONS_TABLE,
       migrationsSchema: MIGRATIONS_SCHEMA,
     });
 
-    console.log("[Migrations] Complete");
-  } catch (err) {
-    console.error("[Migrations] Failed:", err);
+    console.log("[Migrations] Complete — migrate() returned without error");
+  } catch (err: any) {
+    console.error("[Migrations] FAILED — error message:", err?.message);
+    console.error("[Migrations] FAILED — stack:", err?.stack);
     // Fail fast — do not start the server with a potentially partial schema.
     throw err;
   } finally {
