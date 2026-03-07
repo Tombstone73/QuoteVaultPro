@@ -1,5 +1,5 @@
 /**
- * Copy server/db/migrations_v2 → dist/db/migrations after esbuild bundle.
+ * Copy server/db/migrations_v2 → dist/db/migrations_v2 after esbuild bundle.
  * Run as: node scripts/copy-migrations.mjs
  * Called automatically by `npm run build`.
  */
@@ -10,9 +10,9 @@ import { rmSync } from "fs";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const src = path.join(root, "server", "db", "migrations_v2");
-const dest = path.join(root, "dist", "db", "migrations");
+const dest = path.join(root, "dist", "db", "migrations_v2");
 
 mkdirSync(path.dirname(dest), { recursive: true });
 rmSync(dest, { recursive: true, force: true });
 cpSync(src, dest, { recursive: true });
-console.log("[Build] Copied server/db/migrations_v2 → dist/db/migrations");
+console.log("[Build] Copied server/db/migrations_v2 → dist/db/migrations_v2");
