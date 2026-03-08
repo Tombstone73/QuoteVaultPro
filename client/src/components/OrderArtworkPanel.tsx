@@ -25,7 +25,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { FileIcon, Edit2, Trash2, Upload, Image as ImageIcon, Star, FileText, Loader2 } from "lucide-react";
-import { useOrderFiles, useAttachFileToOrder, useUpdateOrderFile, useDetachOrderFile } from "@/hooks/useOrderFiles";
+import { useOrderFiles, useUpdateOrderFile, useDetachOrderFile } from "@/hooks/useOrderFiles";
 import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
@@ -65,7 +65,6 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { data: files = [], isLoading } = useOrderFiles(orderId);
-  const attachFile = useAttachFileToOrder(orderId);
   const updateFile = useUpdateOrderFile(orderId);
   const detachFile = useDetachOrderFile(orderId);
 
@@ -118,87 +117,44 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
 
     try {
       for (const file of filesToUpload) {
-        const requestedStorageTarget: StorageTarget = file.size > SUPABASE_MAX_UPLOAD_BYTES ? "local_dev" : "supabase";
+        // Backend-mediated upload: browser never talks to Supabase directly.
+        // The backend receives the file bytes, decides storage target, and
+        // uploads to Supabase server-side — eliminating the CORS issue on
+        // the Supabase signed-upload endpoint.
+        const requestedStorageTarget: StorageTarget =
+          file.size > SUPABASE_MAX_UPLOAD_BYTES ? "local_dev" : "supabase";
 
         try {
-          const urlResponse = await fetch("/api/objects/upload", {
+          console.log(`[OrderArtworkPanel] Uploading ${file.name} (${file.size} bytes) via backend`);
+          const fileBufferBase64 = await fileToBase64(file);
+
+          const res = await fetch(`/api/orders/${orderId}/files`, {
             method: "POST",
-            credentials: "include",
             headers: { "Content-Type": "application/json" },
+            credentials: "include",
             body: JSON.stringify({
+              originalFilename: file.name,
               fileName: file.name,
-              fileSizeBytes: file.size,
+              fileSize: file.size,
+              mimeType: file.type,
+              fileBuffer: fileBufferBase64,
+              role: "other",
+              side: "na",
               requestedStorageTarget,
             }),
           });
 
-          if (!urlResponse.ok) {
-            const errorData = await urlResponse.json().catch(() => ({}));
-            throw new Error(errorData.message || "Failed to get upload URL");
+          if (!res.ok) {
+            const json = await res.json().catch(() => ({}));
+            const msg = json?.error || json?.message || `Upload failed (HTTP ${res.status})`;
+            console.error(`[OrderArtworkPanel] Upload failed for ${file.name}:`, msg);
+            throw new Error(msg);
           }
 
-          const preflight = await urlResponse.json().catch(() => ({}));
-          const decidedTarget: StorageTarget =
-            (preflight?.storageTarget === "local_dev" || preflight?.storageTarget === "supabase")
-              ? preflight.storageTarget
-              : requestedStorageTarget;
-
-          if (preflight?.method === "ATOMIC" || decidedTarget === "local_dev" || !preflight?.url) {
-            const fileBufferBase64 = await fileToBase64(file);
-            const res = await fetch(`/api/orders/${orderId}/files`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              credentials: "include",
-              body: JSON.stringify({
-                originalFilename: file.name,
-                fileName: file.name,
-                fileSize: file.size,
-                mimeType: file.type,
-                fileBuffer: fileBufferBase64,
-                role: "other",
-                side: "na",
-                requestedStorageTarget,
-              }),
-            });
-
-            if (!res.ok) {
-              const json = await res.json().catch(() => ({}));
-              throw new Error(json?.error || `Failed to attach ${file.name}`);
-            }
-
-            successCount++;
-            continue;
-          }
-
-          const { url, method, path } = preflight;
-
-          const uploadResponse = await fetch(url, {
-            method: method || "PUT",
-            body: file,
-            headers: {
-              "Content-Type": file.type || "application/octet-stream",
-            },
-          });
-
-          if (!uploadResponse.ok) {
-            throw new Error(`Failed to upload ${file.name}`);
-          }
-
-          const fileUrl = typeof path === "string" && path ? path : url.split("?")[0];
-
-          await attachFile.mutateAsync({
-            fileName: file.name,
-            fileUrl,
-            fileSize: file.size,
-            mimeType: file.type,
-            role: "other",
-            side: "na",
-            requestedStorageTarget,
-          } as any);
-
+          console.log(`[OrderArtworkPanel] Upload succeeded for ${file.name}`);
           successCount++;
         } catch (fileError: any) {
-          console.error(`Error uploading ${file.name}:`, fileError);
+          console.error(`[OrderArtworkPanel] Error uploading ${file.name}:`, fileError);
           errorCount++;
         }
       }
