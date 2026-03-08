@@ -11,7 +11,7 @@ import { storage } from "./storage";
 import * as prepressFileService from "./prepressFileService";
 import { db } from "./db";
 import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, inventoryReservations, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, authIdentities, bugReports, prepressSessions, lineItemFiles, reprintRequests } from "@shared/schema";
-import { eq, desc, and, isNull, isNotNull, asc, inArray, or, sql } from "drizzle-orm";
+import { eq, desc, and, isNull, isNotNull, asc, inArray, notInArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
 // @ts-ignore - NestingCalculator.js is a plain JS file without types
@@ -10160,6 +10160,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ? Array.from(new Set(baseRows.map((row) => row.lineItemId).filter((id): id is string => typeof id === 'string' && id.length > 0)))
         : [];
 
+      // Prepress gate: find jobs where stepKey='prepress' (the canonical prepress step identifier).
+      // Prepress is modeled as stationKey='flatbed', stepKey='prepress' in the system default rules,
+      // so we match on stepKey rather than stationKey to correctly identify prepress-step jobs.
       const prepressJobsForGate = lineItemIdsForGate.length > 0
         ? await db
             .select({
@@ -10171,7 +10174,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
               and(
                 eq(productionJobs.organizationId, organizationId),
                 inArray(productionJobs.lineItemId, lineItemIdsForGate),
-                eq(productionJobs.stationKey, 'prepress'),
+                // Match both the standalone prepress station and the flatbed/prepress step pattern
+                sql`(production_jobs.station_key = 'prepress' OR production_jobs.step_key = 'prepress')`,
               ),
             )
         : [];
@@ -12740,12 +12744,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         lineItemId: args.lineItemId,
       });
 
-      if (activeJob && activeJob.stationKey.toLowerCase() === "prepress") {
+      // Prepress is modeled as stationKey='prepress' OR stepKey='prepress' on a production station.
+      const activeJobIsPrepress = activeJob && (
+        activeJob.stationKey.toLowerCase() === "prepress" ||
+        activeJob.stepKey.toLowerCase() === "prepress"
+      );
+
+      if (activeJob && activeJobIsPrepress) {
         // Already at prepress — idempotent
         return activeJob.id;
       }
 
-      if (activeJob && activeJob.stationKey.toLowerCase() !== "prepress") {
+      if (activeJob && !activeJobIsPrepress) {
         // Active downstream job exists — transition to prepress (close downstream, create prepress)
         const transition = await transitionToStation(tx, {
           organizationId: args.organizationId,
@@ -12784,13 +12794,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       lineItemId: args.lineItemId,
     });
 
+    // Detect whether the current active job is at the prepress step (either standalone prepress
+    // station or the flatbed/prepress step pattern used by system default rules).
+    const activeJobAtPrepress = activeJob && (
+      activeJob.stationKey.toLowerCase() === "prepress" ||
+      activeJob.stepKey.toLowerCase() === "prepress"
+    );
+
     // Already at a non-prepress station — idempotent success
-    if (activeJob && activeJob.stationKey.toLowerCase() !== "prepress") {
+    if (activeJob && !activeJobAtPrepress) {
       return activeJob.id;
     }
 
     // Active prepress job — do canonical close/create transition
-    if (activeJob && activeJob.stationKey.toLowerCase() === "prepress") {
+    if (activeJob && activeJobAtPrepress) {
       const transition = await transitionToStation(tx, {
         organizationId: args.organizationId,
         orderId: args.orderId,
@@ -13085,6 +13102,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const conditions: any[] = [
         eq(orders.organizationId, organizationId),           // Always filter by org
         eq(orderLineItems.requiresPrepress, true),           // Prepress queue = prepress items only
+        notInArray(orders.status, ['completed', 'canceled']), // Exclude closed/canceled orders from active queue
       ];
 
       if (printTypeFilter && printTypeFilter !== 'all') {
@@ -13126,6 +13144,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .select({
               lineItemId: productionJobs.lineItemId,
               stationKey: productionJobs.stationKey,
+              stepKey: productionJobs.stepKey, // REQUIRED: prepress is modeled as stepKey='prepress' on flatbed station
               status: productionJobs.status,
             })
             .from(productionJobs)
@@ -13146,9 +13165,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (!job.lineItemId) continue;
         anyProductionLineItems.add(job.lineItemId);
         const stationKey = String(job.stationKey || '').toLowerCase();
+        const stepKey = String((job as any).stepKey || '').toLowerCase();
         const isTerminal = prepressTerminalStatuses.has(String(job.status || '').toLowerCase());
 
-        if (stationKey === 'prepress') {
+        // Prepress may be modeled as a standalone 'prepress' station OR as stepKey='prepress' on another
+        // station (e.g., stationKey='flatbed', stepKey='prepress'). Both count as prepress ownership.
+        const isPrepress = stationKey === 'prepress' || stepKey === 'prepress';
+        if (isPrepress) {
           prepressAnyLineItems.add(job.lineItemId);
           if (!isTerminal) {
             prepressActiveLineItems.add(job.lineItemId);
@@ -13298,6 +13321,88 @@ export async function registerRoutes(app: Express): Promise<Server> {
           thumbSelectionReason,
           thumbCandidateMimeType,
         });
+      }
+
+      // Thumbnail fallback: if lineItemFiles had no image for a line item, try orderAttachments
+      // (some artwork is uploaded via orderAttachments, not lineItemFiles).
+      const lineItemIdsNeedingThumbFallback = lineItemIdsForQueue.filter(
+        (id) => !firstPreviewByLineItem.has(id) || firstPreviewByLineItem.get(id)?.thumbFileId === null
+      );
+      if (lineItemIdsNeedingThumbFallback.length > 0) {
+        const orderIdsForThumbFallback = Array.from(new Set(
+          queueItems
+            .filter((i) => lineItemIdsNeedingThumbFallback.includes(i.lineItemId))
+            .map((i) => i.orderId)
+        ));
+        if (orderIdsForThumbFallback.length > 0) {
+          const fallbackAttachments = await db
+            .select({
+              orderLineItemId: orderAttachments.orderLineItemId,
+              orderId: orderAttachments.orderId,
+              thumbKey: orderAttachments.thumbKey,
+              thumbnailUrl: orderAttachments.thumbnailUrl,
+              fileUrl: orderAttachments.fileUrl,
+              thumbStatus: orderAttachments.thumbStatus,
+              isPrimary: orderAttachments.isPrimary,
+              mimeType: sql<string | null>`null`, // orderAttachments has no mimeType column
+            })
+            .from(orderAttachments)
+            .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
+            .where(
+              and(
+                eq(orders.organizationId, organizationId),
+                inArray(orderAttachments.orderId, orderIdsForThumbFallback),
+                eq(orderAttachments.role, "artwork"),
+              ),
+            )
+            .orderBy(desc(orderAttachments.isPrimary), asc(orderAttachments.createdAt));
+
+          // Map by line item (prefer) or by order id (fallback)
+          const fallbackByLineItem = new Map<string, string>();
+          const fallbackByOrder = new Map<string, string>();
+          for (const att of fallbackAttachments) {
+            const resolveThumbUrl = (): string | null => {
+              if (att.thumbnailUrl) return att.thumbnailUrl;
+              if (att.thumbKey && String(att.thumbStatus || '').toLowerCase() === 'thumb_ready') {
+                return `/objects/${String(att.thumbKey).replace(/^\/+/, '')}`;
+              }
+              const fUrl = String(att.fileUrl || '');
+              if (fUrl) {
+                const ext = fUrl.split('.').pop()?.toLowerCase() ?? '';
+                if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext)) {
+                  return fUrl.startsWith('/objects/') ? fUrl : `/objects/${fUrl.replace(/^\/+/, '')}`;
+                }
+              }
+              return null;
+            };
+            const thumbUrl = resolveThumbUrl();
+            if (!thumbUrl) continue;
+
+            if (att.orderLineItemId && lineItemIdsNeedingThumbFallback.includes(att.orderLineItemId)) {
+              if (!fallbackByLineItem.has(att.orderLineItemId)) {
+                fallbackByLineItem.set(att.orderLineItemId, thumbUrl);
+              }
+            } else if (!fallbackByOrder.has(att.orderId)) {
+              fallbackByOrder.set(att.orderId, thumbUrl);
+            }
+          }
+
+          for (const item of queueItems) {
+            if (firstPreviewByLineItem.has(item.lineItemId) && firstPreviewByLineItem.get(item.lineItemId)?.thumbFileId !== null) continue;
+            const thumbUrl =
+              fallbackByLineItem.get(item.lineItemId) ??
+              fallbackByOrder.get(item.orderId) ??
+              null;
+            if (thumbUrl) {
+              firstPreviewByLineItem.set(item.lineItemId, {
+                thumbFileId: null,
+                thumbnailUrl: thumbUrl,
+                thumbSelectionReason: 'original_fallback',
+                thumbCandidateMimeType: null,
+              });
+            }
+          }
+        }
       }
 
       // Resolve latest active session per line item (non-exclusive sessions supported)
