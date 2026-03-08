@@ -368,85 +368,21 @@ export function LineItemAttachmentsPanel({
 
     try {
       for (const file of filesToUpload) {
+        // Backend-mediated upload: browser never talks to Supabase directly.
+        // The backend receives the file bytes, decides storage target, and
+        // uploads to Supabase server-side — eliminating CORS on the signed-upload endpoint.
         const requestedStorageTarget: StorageTarget = file.size > SUPABASE_MAX_UPLOAD_BYTES ? "local_dev" : "supabase";
 
         try {
-          const urlResponse = await fetch("/api/objects/upload", {
-            method: "POST",
-            credentials: "include",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              fileName: file.name,
-              fileSizeBytes: file.size,
-              requestedStorageTarget,
-            }),
-          });
-
-          if (!urlResponse.ok) {
-            throw new Error("Failed to get upload URL");
-          }
-
-          const preflight = await urlResponse.json().catch(() => ({}));
-          const decidedTarget: StorageTarget =
-            (preflight?.storageTarget === "local_dev" || preflight?.storageTarget === "supabase")
-              ? preflight.storageTarget
-              : requestedStorageTarget;
-
-          if (preflight?.method === "ATOMIC" || decidedTarget === "local_dev" || !preflight?.url) {
-            const fileBufferBase64 = await fileToBase64(file);
-
-            const payload: Record<string, any> = {
-              originalFilename: file.name,
-              fileName: file.name,
-              fileSize: file.size,
-              mimeType: file.type,
-              fileBuffer: fileBufferBase64,
-              requestedStorageTarget,
-            };
-
-            if (parentType === "order") {
-              payload.orderLineItemId = targetLineItemId;
-              payload.role = "other";
-              payload.side = "na";
-            }
-
-            const attachResponse = await fetch(uploadApiPath, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              credentials: "include",
-              body: JSON.stringify(payload),
-            });
-
-            if (!attachResponse.ok) {
-              const json = await attachResponse.json().catch(() => ({}));
-              throw new Error(json?.error || `Failed to attach ${file.name}`);
-            }
-
-            successCount++;
-            continue;
-          }
-
-          const { url, method, path } = preflight;
-
-          const uploadResponse = await fetch(url, {
-            method: method || "PUT",
-            body: file,
-            headers: {
-              "Content-Type": file.type || "application/octet-stream",
-            },
-          });
-
-          if (!uploadResponse.ok) {
-            throw new Error(`Failed to upload ${file.name}`);
-          }
-
-          const fileUrl = typeof path === "string" && path ? path : url.split("?")[0];
+          console.log(`[LineItemAttachmentsPanel] Uploading ${file.name} (${file.size} bytes) via backend`);
+          const fileBufferBase64 = await fileToBase64(file);
 
           const payload: Record<string, any> = {
+            originalFilename: file.name,
             fileName: file.name,
-            fileUrl,
             fileSize: file.size,
             mimeType: file.type,
+            fileBuffer: fileBufferBase64,
             requestedStorageTarget,
           };
 
@@ -464,12 +400,16 @@ export function LineItemAttachmentsPanel({
           });
 
           if (!attachResponse.ok) {
-            throw new Error(`Failed to attach ${file.name}`);
+            const json = await attachResponse.json().catch(() => ({}));
+            const msg = json?.error || json?.message || `Upload failed (HTTP ${attachResponse.status})`;
+            console.error(`[LineItemAttachmentsPanel] Upload failed for ${file.name}:`, msg);
+            throw new Error(msg);
           }
 
+          console.log(`[LineItemAttachmentsPanel] Upload succeeded for ${file.name}`);
           successCount++;
         } catch (fileError: any) {
-          console.error(`Error uploading ${file.name}:`, fileError);
+          console.error(`[LineItemAttachmentsPanel] Error uploading ${file.name}:`, fileError);
           errorCount++;
         }
       }
