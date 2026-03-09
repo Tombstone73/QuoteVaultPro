@@ -9,7 +9,7 @@
  */
 
 import { db } from "./db";
-import { lineItemFiles, orders, orderLineItems } from "../shared/schema";
+import { lineItemFiles, orders, orderLineItems, orderAttachments } from "../shared/schema";
 import { eq, and } from "drizzle-orm";
 import { getStorageClient } from "./objectStorage";
 import type { Response } from "express";
@@ -25,6 +25,25 @@ import { decideStorageTarget } from "./services/storageTarget";
 import { normalizeObjectKeyForDb } from "./lib/supabaseObjectHelpers";
 
 const BUCKET_NAME = process.env.PREPRESS_FILES_BUCKET || process.env.GCS_BUCKET_NAME || "quotevaultpro-uploads";
+
+/**
+ * Normalized shape for order-level attachments surfaced in the prepress file panel.
+ * These originate from the `order_attachments` table (uploaded on the order/quote page)
+ * and are bridged read-only into the prepress workspace so operators can see customer
+ * artwork that was submitted before the order entered the prepress queue.
+ */
+export type BridgedOriginal = {
+  id: string;
+  originalFilename: string;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  role: string;
+  createdAt: Date;
+  source: 'order_attachment';
+  downloadUrl: string;
+  thumbnailUrl: string | null;
+  uploadedBy: string | null;
+};
 const MAX_FILE_SIZE_MB = 250;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
@@ -425,6 +444,7 @@ export async function getLineItemFiles(
   originals: LineItemFile[];
   finals: LineItemFile[];
   references: LineItemFile[];
+  bridgedOriginals: BridgedOriginal[];
 }> {
   const allFiles = await db
     .select()
@@ -438,10 +458,51 @@ export async function getLineItemFiles(
     )
     .orderBy(lineItemFiles.createdAt);
 
+  // Bridge in any order-level attachments that were uploaded before the order
+  // entered the prepress queue (e.g. uploaded by customer on the checkout or
+  // order detail page). These live in order_attachments keyed by orderLineItemId.
+  const legacyRows = await db
+    .select({
+      id: orderAttachments.id,
+      originalFilename: orderAttachments.originalFilename,
+      fileName: orderAttachments.fileName,
+      mimeType: orderAttachments.mimeType,
+      sizeBytes: orderAttachments.sizeBytes,
+      fileSize: orderAttachments.fileSize,
+      role: orderAttachments.role,
+      fileUrl: orderAttachments.fileUrl,
+      thumbKey: orderAttachments.thumbKey,
+      createdAt: orderAttachments.createdAt,
+      uploadedByName: orderAttachments.uploadedByName,
+    })
+    .from(orderAttachments)
+    .where(eq(orderAttachments.orderLineItemId, lineItemId))
+    .orderBy(orderAttachments.createdAt);
+
+  const bridgedOriginals: BridgedOriginal[] = legacyRows.map((row) => {
+    const key = (row.fileUrl || "").replace(/^\/+/, "");
+    const downloadUrl = key.startsWith("http") ? key : `/objects/${key}`;
+    const thumbKey = (row.thumbKey || "").replace(/^\/+/, "");
+    const thumbnailUrl = thumbKey ? `/objects/${thumbKey}` : null;
+    return {
+      id: row.id,
+      originalFilename: row.originalFilename || row.fileName,
+      mimeType: row.mimeType ?? null,
+      sizeBytes: row.sizeBytes ?? row.fileSize ?? null,
+      role: row.role ?? "other",
+      createdAt: row.createdAt,
+      source: "order_attachment" as const,
+      downloadUrl,
+      thumbnailUrl,
+      uploadedBy: row.uploadedByName ?? null,
+    };
+  });
+
   return {
     originals: allFiles.filter((f) => f.role === "original"),
     finals: allFiles.filter((f) => f.role === "final"),
     references: allFiles.filter((f) => f.role === "reference"),
+    bridgedOriginals,
   };
 }
 

@@ -531,6 +531,17 @@ export default function PrepressProductionPageV2() {
   const selectedItem = queue.find(q => q.lineItemId === selectedLineItemId);
   const originalFiles = filesData?.originals || [];
   const finalFiles = filesData?.finals || [];
+  const bridgedOriginalFiles: Array<{
+    id: string;
+    originalFilename: string;
+    mimeType: string | null;
+    sizeBytes: number | null;
+    createdAt: string;
+    source: 'order_attachment';
+    downloadUrl: string;
+    thumbnailUrl: string | null;
+    uploadedBy: string | null;
+  }> = (filesData as any)?.bridgedOriginals || [];
   const hasFinalFiles = finalFiles.length > 0;
   const materialsPayload = materialsEffectiveData?.data;
   const plannedMaterials = materialsPayload?.plannedMaterials || [];
@@ -1242,40 +1253,80 @@ export default function PrepressProductionPageV2() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#2d3748]">
-                  {originalFiles.length === 0 ? (
+                  {originalFiles.length === 0 && bridgedOriginalFiles.length === 0 ? (
                     <tr>
                       <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
                         {selectedLineItemId ? "No original files uploaded" : "Select a line item to view files"}
                       </td>
                     </tr>
                   ) : (
-                    originalFiles.map((file) => (
-                      <tr key={file.id} className="hover:bg-white/5 transition-colors group cursor-pointer">
-                        <td className="px-4 py-3">
-                          <FileThumbnail
-                            fileId={file.id}
-                            filename={file.originalFilename}
-                            mimeType={file.mimeType}
-                            thumbnailUrl={file.thumbnailUrl || undefined}
-                          />
-                        </td>
-                        <td className="px-4 py-3 font-medium text-slate-200">{file.computedDisplayFilename || file.originalFilename}</td>
-                        <td className="px-4 py-3 font-mono">{formatBytes(file.sizeBytes)}</td>
-                        <td className="px-4 py-3">{formatDistanceToNow(new Date(file.createdAt), { addSuffix: true })}</td>
-                        <td className="px-4 py-3">{file.uploadedBy}</td>
-                        <td className="px-4 py-3">
-                          <span className="bg-slate-700 px-2 py-0.5 rounded">{file.tag || "original"}</span>
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          <button 
-                            onClick={() => handleDownloadFile(file.id)}
-                            className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-[#1773cf]/20 hover:border-[#1773cf] transition-all"
-                          >
-                            Download
-                          </button>
-                        </td>
-                      </tr>
-                    ))
+                    <>
+                      {originalFiles.map((file) => (
+                        <tr key={file.id} className="hover:bg-white/5 transition-colors group cursor-pointer">
+                          <td className="px-4 py-3">
+                            <FileThumbnail
+                              fileId={file.id}
+                              filename={file.originalFilename}
+                              mimeType={file.mimeType}
+                              thumbnailUrl={file.thumbnailUrl || undefined}
+                            />
+                          </td>
+                          <td className="px-4 py-3 font-medium text-slate-200">{file.computedDisplayFilename || file.originalFilename}</td>
+                          <td className="px-4 py-3 font-mono">{formatBytes(file.sizeBytes)}</td>
+                          <td className="px-4 py-3">{formatDistanceToNow(new Date(file.createdAt), { addSuffix: true })}</td>
+                          <td className="px-4 py-3">{file.uploadedBy}</td>
+                          <td className="px-4 py-3">
+                            <span className="bg-slate-700 px-2 py-0.5 rounded">{file.tag || "original"}</span>
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <button 
+                              onClick={() => handleDownloadFile(file.id)}
+                              className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-[#1773cf]/20 hover:border-[#1773cf] transition-all"
+                            >
+                              Download
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {/* Bridged files: customer artwork uploaded on the Order page before prepress */}
+                      {bridgedOriginalFiles.length > 0 && (
+                        <>
+                          <tr className="bg-amber-950/20">
+                            <td colSpan={7} className="px-4 py-1.5">
+                              <span className="text-[10px] font-bold uppercase tracking-widest text-amber-400/80">
+                                Pre-submitted by customer (from order)
+                              </span>
+                            </td>
+                          </tr>
+                          {bridgedOriginalFiles.map((file) => (
+                            <tr key={`bridged-${file.id}`} className="hover:bg-white/5 transition-colors cursor-pointer bg-amber-950/10">
+                              <td className="px-4 py-3">
+                                <FileThumbnail
+                                  filename={file.originalFilename}
+                                  mimeType={file.mimeType}
+                                  thumbnailUrl={file.thumbnailUrl || undefined}
+                                />
+                              </td>
+                              <td className="px-4 py-3 font-medium text-slate-200">{file.originalFilename}</td>
+                              <td className="px-4 py-3 font-mono">{file.sizeBytes != null ? formatBytes(file.sizeBytes) : "—"}</td>
+                              <td className="px-4 py-3">{formatDistanceToNow(new Date(file.createdAt), { addSuffix: true })}</td>
+                              <td className="px-4 py-3">{file.uploadedBy || "—"}</td>
+                              <td className="px-4 py-3">
+                                <span className="bg-amber-900/50 text-amber-300 border border-amber-700/40 px-2 py-0.5 rounded text-[9px] font-bold uppercase">{file.role}</span>
+                              </td>
+                              <td className="px-4 py-3 text-right">
+                                <button
+                                  onClick={() => window.open(file.downloadUrl, "_blank")}
+                                  className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-amber-900/30 hover:border-amber-600 transition-all"
+                                >
+                                  Download
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </>
+                      )}
+                    </>
                   )}
                 </tbody>
               </table>
