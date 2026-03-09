@@ -13102,7 +13102,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const conditions: any[] = [
         eq(orders.organizationId, organizationId),           // Always filter by org
         eq(orderLineItems.requiresPrepress, true),           // Prepress queue = prepress items only
-        notInArray(orders.status, ['completed', 'canceled']), // Exclude closed/canceled orders from active queue
+        notInArray(orders.status, ['completed', 'canceled']), // Exclude orders by legacy status field
+        // Also filter on the canonical TitanOS state column (deprecated `status` field alone misses
+        // orders that were closed via the newer state system).
+        notInArray(orders.state, ['closed', 'canceled', 'production_complete']),
       ];
 
       if (printTypeFilter && printTypeFilter !== 'all') {
@@ -13159,6 +13162,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const prepressActiveLineItems = new Set<string>();
       const prepressAnyLineItems = new Set<string>();
       const downstreamActiveLineItems = new Set<string>();
+      // Tracks items with ANY non-prepress job (active OR terminal).
+      // Used to guard the "ready-to-route" condition so that historical items
+      // that already completed a full prepress+production cycle don't re-appear.
+      const downstreamAnyLineItems = new Set<string>();
       const anyProductionLineItems = new Set<string>();
       const prepressTerminalStatuses = new Set(['done', 'void', 'canceled', 'cancelled']);
       for (const job of lineItemProductionJobs) {
@@ -13179,6 +13186,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           continue;
         }
 
+        // Non-prepress job — track in both sets.
+        // downstreamAnyLineItems: non-prepress job exists at all (used to suppress re-appearance)
+        // downstreamActiveLineItems: non-prepress job is still active (used for button gating)
+        downstreamAnyLineItems.add(job.lineItemId);
         if (!isTerminal) {
           downstreamActiveLineItems.add(job.lineItemId);
         }
@@ -13197,9 +13208,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return false;
         }
 
-        // Has only terminal prepress jobs (completed prepress, no downstream yet) → 
-        // Show on prepress board as "ready to route" so it doesn't disappear
-        if (prepressAnyLineItems.has(item.lineItemId) && !downstreamActiveLineItems.has(item.lineItemId)) {
+        // Has only terminal prepress jobs (completed prepress, no downstream ever created) →
+        // Show on prepress board as "ready to route" so the operator can click Send to Production.
+        // Guard: if ANY non-prepress job exists (active or terminal), the item has already been
+        // downstream. Do NOT show it here — it would be a historical item re-appearing incorrectly.
+        if (prepressAnyLineItems.has(item.lineItemId) && !downstreamAnyLineItems.has(item.lineItemId)) {
           return true;
         }
 
