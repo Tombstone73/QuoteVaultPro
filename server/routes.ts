@@ -56,6 +56,12 @@ import { createLineItemFileRecord } from "./services/lineItemFileRecordService";
 import { stationResolver } from "./services/stations/stationResolver";
 import { routeLineItemToProduction } from "./services/productionRoutingService";
 import { resolveInitialProductionRoute, resolvePostPrepressProductionRoute } from "./services/productionRoutingResolver";
+import {
+  findActiveJobForLineItem,
+  isPrepressOwnershipJob,
+  resolveActiveProductionOwners,
+  transitionToStation,
+} from "./services/productionOwnership";
 import { getDashboardSummary } from "./services/dashboardSummaryService";
 import { resolveVisibleNodes } from "@shared/optionTreeV2Runtime";
 import { computePlannedMaterialsForLineItem } from "./services/prepressPlannedMaterials";
@@ -10116,11 +10122,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         orderIdRaw ? eq(productionJobs.orderId, orderIdRaw) : undefined,
       );
 
-      // PROMPT A (revised): Prepress Gate Enforcement — DENY-LIST approach
-      // Prefer production_jobs-based gating:
-      // - If a line item has an active prepress production job, hide it from flatbed/roll boards.
-      // - Legacy fallback (line_item.status deny-list) applies ONLY when prepress production_jobs are missing.
       const prepressGateApplies = station && (station === 'flatbed' || station === 'roll');
+      const activeBoardQuery = !status || !["done", "void", "canceled", "cancelled"].includes(String(status).toLowerCase());
 
       const baseRows = await db
         .select({
@@ -10153,61 +10156,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .where(whereClause)
         .orderBy(desc(productionJobs.updatedAt));
 
-      // Canonical prepress gate: uses ONLY production_jobs for ownership.
-      // No legacy line_item.status fallback — board visibility derives from active non-terminal jobs only.
-      const TERMINAL_JOB_STATUSES_SET = new Set(['done', 'void', 'canceled', 'cancelled']);
-      const lineItemIdsForGate = prepressGateApplies
-        ? Array.from(new Set(baseRows.map((row) => row.lineItemId).filter((id): id is string => typeof id === 'string' && id.length > 0)))
-        : [];
+      const lineItemIdsForOwnership = Array.from(
+        new Set(
+          baseRows
+            .map((row) => row.lineItemId)
+            .filter((id): id is string => typeof id === 'string' && id.length > 0),
+        ),
+      );
 
-      // Prepress gate: find jobs where stepKey='prepress' (the canonical prepress step identifier).
-      // Prepress is modeled as stationKey='flatbed', stepKey='prepress' in the system default rules,
-      // so we match on stepKey rather than stationKey to correctly identify prepress-step jobs.
-      const prepressJobsForGate = lineItemIdsForGate.length > 0
-        ? await db
-            .select({
-              lineItemId: productionJobs.lineItemId,
-              status: productionJobs.status,
-            })
-            .from(productionJobs)
-            .where(
-              and(
-                eq(productionJobs.organizationId, organizationId),
-                inArray(productionJobs.lineItemId, lineItemIdsForGate),
-                // Match both the standalone prepress station and the flatbed/prepress step pattern
-                sql`(production_jobs.station_key = 'prepress' OR production_jobs.step_key = 'prepress')`,
-              ),
-            )
-        : [];
-
-      const hasActivePrepressJob = new Set<string>();
-      for (const job of prepressJobsForGate) {
-        if (!job.lineItemId) continue;
-        if (!TERMINAL_JOB_STATUSES_SET.has(String(job.status || '').toLowerCase())) {
-          hasActivePrepressJob.add(job.lineItemId);
-        }
-      }
-
-      const filteredRows = prepressGateApplies
-        ? baseRows.filter(row => {
-            // No line item linked → allow (intake/unlinked jobs)
-            if (!row.lineItemId) return true;
-
-            // Canonical gate: if line item has an active prepress job, hide from downstream boards
-            if (hasActivePrepressJob.has(row.lineItemId)) {
-              return false;
-            }
-
-            // No active prepress job → allow on downstream board
-            return true;
+      const activeOwnerByLineItem = lineItemIdsForOwnership.length > 0
+        ? await resolveActiveProductionOwners(db, {
+            organizationId,
+            lineItemIds: lineItemIdsForOwnership,
+            debugLabel: "GET /api/production/jobs",
           })
-        : baseRows;
+        : new Map<string, any>();
+
+      const filteredRows = baseRows.filter((row) => {
+        if (!row.lineItemId) {
+          return activeBoardQuery ? !["done", "void", "canceled", "cancelled"].includes(String(row.status || "").toLowerCase()) : true;
+        }
+
+        if (!activeBoardQuery) {
+          return true;
+        }
+
+        const activeOwner = activeOwnerByLineItem.get(row.lineItemId);
+        if (!activeOwner) {
+          return false;
+        }
+
+        if (activeOwner.id !== row.id) {
+          return false;
+        }
+
+        if (prepressGateApplies && isPrepressOwnershipJob(activeOwner)) {
+          return false;
+        }
+
+        return true;
+      });
 
       // DEV-only logging: show how many items were gated
-      if (process.env.NODE_ENV !== "production" && prepressGateApplies) {
+      if (process.env.NODE_ENV !== "production") {
         const gatedCount = baseRows.length - filteredRows.length;
         if (gatedCount > 0) {
-          console.log(`[Prepress Gate] ${station} board: Excluded ${gatedCount} of ${baseRows.length} jobs requiring prepress`);
+          console.log(`[DEV][GET /api/production/jobs] owner filter excluded ${gatedCount} of ${baseRows.length} rows`, {
+            station: station ?? null,
+            prepressGateApplies,
+            activeBoardQuery,
+          });
         }
       }
 
@@ -12734,9 +12732,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       productTypeName?: string | null;
     }
   ) => {
-    // Import canonical ownership helpers
-    const { findActiveJobForLineItem, transitionToStation, TERMINAL_JOB_STATUSES } = await import("./services/productionOwnership");
-
     if ((args.mode || "prepress") === "prepress") {
       // Check if there's already an active prepress job
       const activeJob = await findActiveJobForLineItem(tx, {
@@ -12744,11 +12739,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         lineItemId: args.lineItemId,
       });
 
-      // Prepress is modeled as stationKey='prepress' OR stepKey='prepress' on a production station.
-      const activeJobIsPrepress = activeJob && (
-        activeJob.stationKey.toLowerCase() === "prepress" ||
-        activeJob.stepKey.toLowerCase() === "prepress"
-      );
+      const activeJobIsPrepress = isPrepressOwnershipJob(activeJob);
+
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[DEV][ensureProductionJobForLineItem]", {
+          mode: "prepress",
+          organizationId: args.organizationId,
+          lineItemId: args.lineItemId,
+          activeJobId: activeJob?.id ?? null,
+          activeStationKey: activeJob?.stationKey ?? null,
+          activeStepKey: activeJob?.stepKey ?? null,
+        });
+      }
 
       if (activeJob && activeJobIsPrepress) {
         // Already at prepress — idempotent
@@ -12794,12 +12796,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       lineItemId: args.lineItemId,
     });
 
-    // Detect whether the current active job is at the prepress step (either standalone prepress
-    // station or the flatbed/prepress step pattern used by system default rules).
-    const activeJobAtPrepress = activeJob && (
-      activeJob.stationKey.toLowerCase() === "prepress" ||
-      activeJob.stepKey.toLowerCase() === "prepress"
-    );
+    const activeJobAtPrepress = isPrepressOwnershipJob(activeJob);
+
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[DEV][ensureProductionJobForLineItem]", {
+        mode: "downstream",
+        organizationId: args.organizationId,
+        lineItemId: args.lineItemId,
+        targetStationKey: downstreamRoute.stationKey,
+        targetStepKey: downstreamRoute.stepKey,
+        activeJobId: activeJob?.id ?? null,
+        activeStationKey: activeJob?.stationKey ?? null,
+        activeStepKey: activeJob?.stepKey ?? null,
+      });
+    }
 
     // Already at a non-prepress station — idempotent success
     if (activeJob && !activeJobAtPrepress) {
@@ -13142,88 +13152,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .orderBy(asc(orders.dueDate), desc(orders.priority));
 
       const lineItemIds = items.map((i) => i.lineItemId);
-      const lineItemProductionJobs = lineItemIds.length > 0
-        ? await db
-            .select({
-              lineItemId: productionJobs.lineItemId,
-              stationKey: productionJobs.stationKey,
-              stepKey: productionJobs.stepKey, // REQUIRED: prepress is modeled as stepKey='prepress' on flatbed station
-              status: productionJobs.status,
-            })
-            .from(productionJobs)
-            .where(
-              and(
-                eq(productionJobs.organizationId, organizationId),
-                inArray(productionJobs.lineItemId, lineItemIds),
-              ),
-            )
-        : [];
+      const activeOwnerByLineItem = lineItemIds.length > 0
+        ? await resolveActiveProductionOwners(db, {
+            organizationId,
+            lineItemIds,
+            debugLabel: "GET /api/prepress/queue",
+          })
+        : new Map<string, any>();
 
-      const prepressActiveLineItems = new Set<string>();
-      const prepressAnyLineItems = new Set<string>();
-      const downstreamActiveLineItems = new Set<string>();
-      // Tracks items with ANY non-prepress job (active OR terminal).
-      // Used to guard the "ready-to-route" condition so that historical items
-      // that already completed a full prepress+production cycle don't re-appear.
-      const downstreamAnyLineItems = new Set<string>();
-      const anyProductionLineItems = new Set<string>();
-      const prepressTerminalStatuses = new Set(['done', 'void', 'canceled', 'cancelled']);
-      for (const job of lineItemProductionJobs) {
-        if (!job.lineItemId) continue;
-        anyProductionLineItems.add(job.lineItemId);
-        const stationKey = String(job.stationKey || '').toLowerCase();
-        const stepKey = String((job as any).stepKey || '').toLowerCase();
-        const isTerminal = prepressTerminalStatuses.has(String(job.status || '').toLowerCase());
-
-        // Prepress may be modeled as a standalone 'prepress' station OR as stepKey='prepress' on another
-        // station (e.g., stationKey='flatbed', stepKey='prepress'). Both count as prepress ownership.
-        const isPrepress = stationKey === 'prepress' || stepKey === 'prepress';
-        if (isPrepress) {
-          prepressAnyLineItems.add(job.lineItemId);
-          if (!isTerminal) {
-            prepressActiveLineItems.add(job.lineItemId);
-          }
-          continue;
-        }
-
-        // Non-prepress job — track in both sets.
-        // downstreamAnyLineItems: non-prepress job exists at all (used to suppress re-appearance)
-        // downstreamActiveLineItems: non-prepress job is still active (used for button gating)
-        downstreamAnyLineItems.add(job.lineItemId);
-        if (!isTerminal) {
-          downstreamActiveLineItems.add(job.lineItemId);
-        }
-      }
-
-      // Canonical ownership filter: prepress board shows items whose active job is at prepress station.
-      // No legacy line_item.status fallback — visibility derives from production_jobs only.
-      const queueItems = items.filter((item) => {
-        // Has active prepress production job → show on prepress board
-        if (prepressActiveLineItems.has(item.lineItemId)) {
-          return true;
-        }
-
-        // Has active downstream job → not on prepress board
-        if (downstreamActiveLineItems.has(item.lineItemId)) {
-          return false;
-        }
-
-        // Has only terminal prepress jobs (completed prepress, no downstream ever created) →
-        // Show on prepress board as "ready to route" so the operator can click Send to Production.
-        // Guard: if ANY non-prepress job exists (active or terminal), the item has already been
-        // downstream. Do NOT show it here — it would be a historical item re-appearing incorrectly.
-        if (prepressAnyLineItems.has(item.lineItemId) && !downstreamAnyLineItems.has(item.lineItemId)) {
-          return true;
-        }
-
-        // No production jobs at all → check if it should be visible based on requiresPrepress
-        // This covers newly created line items that haven't been routed yet
-        if (!anyProductionLineItems.has(item.lineItemId)) {
-          return true;
-        }
-
-        return false;
-      });
+      const queueItems = items.filter((item) => isPrepressOwnershipJob(activeOwnerByLineItem.get(item.lineItemId)));
 
       // Get file counts for each line item
       const lineItemIdsForQueue = queueItems.map((i) => i.lineItemId);
@@ -13494,6 +13431,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
         const finishingBullets = extractFinishingBullets(item);
         const optionsRows = buildPrepressOptionRows(item, item.pbv2TreeVersionId ? treeByVersionId.get(item.pbv2TreeVersionId) : undefined);
+        const activeOwner = activeOwnerByLineItem.get(item.lineItemId) ?? null;
+        const activeOwnerIsPrepress = isPrepressOwnershipJob(activeOwner);
+        const computedStatus = String(item.status || '').toLowerCase();
 
         if (process.env.NODE_ENV !== "production" && index === 0) {
           const selectedCount = (() => {
@@ -13520,19 +13460,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           media: item.materialName ?? null,
           dueDate: item.dueDate ?? null,
           status: item.status,
-          // Computed display stage for the prepress board (derived from production_jobs + sessions)
+          // Computed display stage for the prepress board (membership is owner-driven, display still uses session/status truth)
           prepressStage: (() => {
-            const hasActivePrepress = prepressActiveLineItems.has(item.lineItemId);
             const hasSession = !!latestSession?.id;
-            const hasCompletedSession = completedSessionLineItems.has(item.lineItemId);
-            const hasDownstream = downstreamActiveLineItems.has(item.lineItemId);
-            // Active prepress job + active session → in_prepress
-            if (hasActivePrepress && hasSession) return "in_prepress";
-            // Active prepress job, no active session → pending_prepress
-            if (hasActivePrepress) return "pending_prepress";
-            // Terminal prepress, completed sessions, no active downstream → prepress_complete
-            if (prepressAnyLineItems.has(item.lineItemId) && hasCompletedSession && !hasDownstream) return "prepress_complete";
-            // No production jobs yet → pending_prepress (awaiting routing)
+            if (activeOwnerIsPrepress && hasSession) return "in_prepress";
+            if (computedStatus === 'prepress_complete') return "prepress_complete";
+            if (completedSessionLineItems.has(item.lineItemId) && computedStatus !== 'pending_prepress') {
+              return "prepress_complete";
+            }
             return "pending_prepress";
           })(),
           rush: item.priority === "rush",
@@ -13541,8 +13476,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           prepressNotes: latestSession?.notesText ?? null,
           issueFlag: latestSession?.issueFlag ?? false,
           issueType: latestSession?.issueType ?? null,
-          hasDownstreamActiveJob: downstreamActiveLineItems.has(item.lineItemId),
-          hasAnyProductionJob: anyProductionLineItems.has(item.lineItemId),
+          hasDownstreamActiveJob: !!activeOwner && !activeOwnerIsPrepress,
+          hasAnyProductionJob: !!activeOwner,
+          activeOwnerJobId: activeOwner?.id ?? null,
+          activeOwnerStationKey: activeOwner?.stationKey ?? null,
+          activeOwnerStepKey: activeOwner?.stepKey ?? null,
+          isActivelyOwnedByPrepress: activeOwnerIsPrepress,
           thumbFileId: firstPreviewByLineItem.get(item.lineItemId)?.thumbFileId ?? null,
           thumbnailUrl: firstPreviewByLineItem.get(item.lineItemId)?.thumbnailUrl ?? null,
           thumbSelectionReason: firstPreviewByLineItem.get(item.lineItemId)?.thumbSelectionReason ?? 'none',
@@ -13565,7 +13504,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         : queue;
 
       if (process.env.NODE_ENV !== "production") {
-        console.log(`[Prepress Queue] org=${organizationId} prepressJobsActive=${prepressActiveLineItems.size} totalQueueItems=${filteredQueue.length}`);
+        console.log(`[Prepress Queue] org=${organizationId} ownerDrivenQueue=${filteredQueue.length}`);
       }
 
       res.json({ success: true, data: filteredQueue });
@@ -14155,6 +14094,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const lineItem = lineItems[0].lineItem;
         const order = lineItems[0].order;
 
+        const activeOwner = await findActiveJobForLineItem(tx, {
+          organizationId,
+          lineItemId,
+        });
+
+        if (!activeOwner || !isPrepressOwnershipJob(activeOwner)) {
+          throw Object.assign(new Error("Line item is not actively owned by prepress"), { statusCode: 409 });
+        }
+
+        if (String(lineItem.status || '').toLowerCase() !== 'pending_prepress') {
+          throw Object.assign(new Error("Line item must be pending_prepress before starting prepress"), { statusCode: 400 });
+        }
+
         // Create new session
         const [session] = await tx
           .insert(prepressSessions)
@@ -14169,16 +14121,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           })
           .returning();
 
-        // No longer writing station-like statuses to order_line_items.status.
-        // Board ownership is determined by the active production job, not line_item.status.
-        // Ensure line item is at lifecycle status in_production if not already.
-        const lifecycleStatuses = ['in_production', 'complete', 'canceled'];
-        if (!lifecycleStatuses.includes(lineItem.status || '')) {
-          await tx
-            .update(orderLineItems)
-            .set({ status: "in_production" as any, updatedAt: new Date() })
-            .where(eq(orderLineItems.id, lineItemId));
-        }
+        await tx
+          .update(orderLineItems)
+          .set({ status: "in_prepress" as any, updatedAt: new Date() })
+          .where(eq(orderLineItems.id, lineItemId));
 
         // Audit log
         await tx.insert(auditLogs).values({
@@ -14305,6 +14251,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         const session = sessions[0];
 
+        const activeOwner = await findActiveJobForLineItem(tx, {
+          organizationId,
+          lineItemId: session.lineItemId,
+        });
+
+        if (!activeOwner || !isPrepressOwnershipJob(activeOwner)) {
+          throw Object.assign(new Error("Line item is not actively owned by prepress"), { statusCode: 409 });
+        }
+
         if (session.status === "complete") {
           // Already complete — idempotent success, no error
           return { id: session.id, lineItemId: session.lineItemId, status: "complete" };
@@ -14340,9 +14295,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           })
           .where(eq(prepressSessions.id, sessionId));
 
-        // Prepress session complete does NOT move board ownership.
-        // The active prepress production job remains as-is until explicit "Send to Print".
-        // No longer writing station-like statuses to order_line_items.status.
+        await tx
+          .update(orderLineItems)
+          .set({
+            status: "prepress_complete" as any,
+            updatedAt: new Date(),
+          })
+          .where(eq(orderLineItems.id, session.lineItemId));
 
         // Audit log
         await tx.insert(auditLogs).values({
@@ -14388,10 +14347,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           id: orderLineItems.id,
           orderId: orderLineItems.orderId,
           status: orderLineItems.status,
+          productId: orderLineItems.productId,
           productType: orderLineItems.productType,
           requiresPrepress: orderLineItems.requiresPrepress,
+          productTypeId: products.productTypeId,
         })
         .from(orderLineItems)
+        .leftJoin(products, eq(orderLineItems.productId, products.id))
         .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
         .where(and(
           eq(orderLineItems.id, lineItemId),
@@ -14405,44 +14367,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const item = lineItem;
 
-      // 2. Canonical prepress gate: check active production job instead of line_item.status
-      const { findActiveJobForLineItem } = await import("./services/productionOwnership");
+      // 2. Canonical prepress gate: active owner must currently be prepress.
       const activeJob = await findActiveJobForLineItem(db, {
         organizationId,
         lineItemId,
       });
 
-      // If there's an active downstream (non-prepress) job already → idempotent success
-      if (activeJob && activeJob.stationKey.toLowerCase() !== "prepress") {
-        return res.json({
-          success: true,
-          message: "Line item already has active downstream production job",
+      if (!activeJob) {
+        return res.status(409).json({ error: "No active production owner found for this line item" });
+      }
+
+      if (!isPrepressOwnershipJob(activeJob)) {
+        return res.status(409).json({
+          error: "Active owner is not prepress",
           activeJobId: activeJob.id,
           stationKey: activeJob.stationKey,
+          stepKey: activeJob.stepKey,
         });
       }
 
-      // If requiresPrepress is true and active job is still at prepress station,
-      // verify prepress sessions are complete (at least one completed session must exist)
-      if (item.requiresPrepress && activeJob && activeJob.stationKey.toLowerCase() === "prepress") {
-        const completedSessions = await db
-          .select({ id: prepressSessions.id })
-          .from(prepressSessions)
-          .where(
-            and(
-              eq(prepressSessions.organizationId, organizationId),
-              eq(prepressSessions.lineItemId, lineItemId),
-              eq(prepressSessions.status, "complete"),
-            ),
-          )
-          .limit(1);
-
-        if (completedSessions.length === 0) {
-          return res.status(400).json({
-            error: "Line item must complete prepress first",
-            activeJobStation: activeJob.stationKey,
-          });
-        }
+      if (String(item.status || '').toLowerCase() !== 'prepress_complete') {
+        return res.status(400).json({ error: "Line item must be prepress_complete before send to production" });
       }
 
       // 3. Verify at least one FINAL file exists
@@ -14459,8 +14404,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "At least one final file is required before sending to print" });
       }
 
-      // 4. No active downstream job yet — proceed with transition
-      // (The idempotent case with existing downstream job was handled above)
+      const downstreamRoute = await resolvePostPrepressProductionRoute({
+        organizationId,
+        productTypeId: item.productTypeId ?? null,
+        productTypeNameSnapshot: item.productType,
+      });
+
+      const completedSessions = await db
+        .select({ id: prepressSessions.id })
+        .from(prepressSessions)
+        .where(
+          and(
+            eq(prepressSessions.organizationId, organizationId),
+            eq(prepressSessions.lineItemId, lineItemId),
+            eq(prepressSessions.status, "complete"),
+          ),
+        )
+        .limit(1);
+
+      if (item.requiresPrepress && completedSessions.length === 0) {
+        return res.status(400).json({ error: "Line item must complete prepress first" });
+      }
 
       const materialContext = await getPrepressMaterialContext(organizationId, lineItemId);
       const effectivePayload = materialContext
@@ -14474,23 +14438,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const effectiveMaterials = effectivePayload?.effectiveMaterials || [];
       const effectiveFingerprint = effectivePayload?.effectiveFingerprint || buildEffectiveMaterialsFingerprint([]);
 
-      // 5. Transition to downstream production (lifecycle status only)
-      await db.transaction(async (tx) => {
+      // 5. Close prepress owner and create the downstream owner in one transaction.
+      const handoffResult = await db.transaction(async (tx) => {
+        const transitionResult = await transitionToStation(tx, {
+          organizationId,
+          orderId: item.orderId,
+          lineItemId,
+          targetStationKey: downstreamRoute.stationKey,
+          targetStepKey: downstreamRoute.stepKey,
+          reason: "post_prepress_handoff",
+          actorUserId: userId,
+        });
+
         await tx.update(orderLineItems)
           .set({
-            status: 'in_production' as any,
+            status: 'print_ready' as any,
             updatedAt: new Date()
           })
           .where(eq(orderLineItems.id, lineItemId));
 
-        const productionJobId = await ensureProductionJobForLineItem(tx, {
-          organizationId,
-          orderId: item.orderId,
-          lineItemId,
-          mode: "downstream",
-          productTypeId: null,
-          productTypeName: item.productType,
-        });
+        const productionJobId = transitionResult!.createdJobId;
 
         if (materialContext?.lineItem?.orderId) {
           const alreadyReserved = await wasMaterialsLifecycleEventProcessed(tx, {
@@ -14537,20 +14504,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
           entityName: `Line item ${lineItemId}`,
           description: "Sent to print queue from prepress",
           oldValues: { status: item.status },
-          newValues: { status: 'in_production', materialFingerprint: effectiveFingerprint },
+          newValues: {
+            status: 'print_ready',
+            materialFingerprint: effectiveFingerprint,
+            closedJobId: transitionResult!.closedJobId,
+            productionJobId: transitionResult!.createdJobId,
+            stationKey: transitionResult!.newStationKey,
+            stepKey: transitionResult!.newStepKey,
+          },
           ipAddress: req.ip || null,
           userAgent: req.headers["user-agent"] || null,
         } as any);
+
+        return transitionResult;
       });
 
       if (process.env.NODE_ENV !== "production") {
-        console.log(`[Send to Print] Line item ${lineItemId} sent to print queue by user ${userId}`);
+        console.log(`[DEV][Send to Print] lineItemId=${lineItemId} closedJobId=${handoffResult.closedJobId} newJobId=${handoffResult.createdJobId} station=${handoffResult.newStationKey} step=${handoffResult.newStepKey}`);
       }
 
       res.json({ 
         success: true, 
         message: "Sent to print queue successfully",
-        newStatus: 'in_production',
+        newStatus: 'print_ready',
+        productionJobId: handoffResult.createdJobId,
         materialFingerprint: effectiveFingerprint,
       });
 
@@ -14597,8 +14574,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Line item not found" });
       }
 
-      const { findActiveJobForLineItem, transitionToStation } = await import("./services/productionOwnership");
-
       const result = await db.transaction(async (tx) => {
         // 1. Check for active downstream job and complete it, creating prepress job
         const activeJob = await findActiveJobForLineItem(tx, {
@@ -14608,7 +14583,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         let prepressJobId: string;
 
-        if (activeJob && activeJob.stationKey.toLowerCase() === "prepress") {
+        if (activeJob && isPrepressOwnershipJob(activeJob)) {
           // Already at prepress — idempotent (reuse existing prepress job)
           prepressJobId = activeJob.id;
         } else if (activeJob) {
@@ -14652,10 +14627,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }).returning({ id: prepressSessions.id });
 
         // 3. Update line item lifecycle status to in_production (keep lifecycle-only)
-        // Do NOT write station-like statuses. The item is in_production, owned by prepress job.
-        if (lineItem.status !== 'in_production' && lineItem.status !== 'new') {
+        if (lineItem.status !== 'pending_prepress') {
           await tx.update(orderLineItems)
-            .set({ status: 'in_production' as any, updatedAt: new Date() })
+            .set({ status: 'pending_prepress' as any, updatedAt: new Date() })
             .where(eq(orderLineItems.id, lineItemId));
         }
 
@@ -14679,7 +14653,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       if (process.env.NODE_ENV !== "production") {
-        console.log(`[Send to Prepress] Line item ${lineItemId} sent back to prepress by user ${userId}, prepressJobId=${result.prepressJobId}`);
+        console.log(`[DEV][Send to Prepress] lineItemId=${lineItemId} prepressJobId=${result.prepressJobId} userId=${userId}`);
       }
 
       res.json({ success: true, message: "Sent to prepress for editing", sessionId: result.sessionId, prepressJobId: result.prepressJobId });
