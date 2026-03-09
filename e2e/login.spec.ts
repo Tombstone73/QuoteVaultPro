@@ -19,9 +19,8 @@ test("login page: renders, accepts credentials, loads app shell", async ({
   const password = process.env.PLAYWRIGHT_PASSWORD;
 
   if (!email || !password) {
-    test.skip(
-      "PLAYWRIGHT_EMAIL and PLAYWRIGHT_PASSWORD not set — skipping login test"
-    );
+    test.skip(true, "PLAYWRIGHT_EMAIL and PLAYWRIGHT_PASSWORD not set — skipping login test");
+    return;
   }
 
   // ------------------------------------------------------------------

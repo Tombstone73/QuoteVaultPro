@@ -27,9 +27,11 @@ test("prepress queue: known test order is visible", async ({ page }) => {
 
   if (!orderNumber) {
     test.skip(
+      true,
       "PLAYWRIGHT_TEST_ORDER_NUMBER not set — " +
         "set this to a known order number that should appear in the prepress queue"
     );
+    return; // TypeScript narrowing
   }
 
   // ------------------------------------------------------------------
