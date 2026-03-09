@@ -9791,7 +9791,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           if (routingResult.outcome === "created") {
             const neutralStatuses = ['new', ''];
             if (neutralStatuses.includes(li.status || '')) {
-              const targetStatus = 'in_production';
+              const targetStatus =
+                stepKey.toLowerCase() === 'prepress' || stationKey.toLowerCase() === 'prepress'
+                  ? 'pending_prepress'
+                  : 'in_production';
               await tx
                 .update(orderLineItems)
                 .set({ status: targetStatus as any, updatedAt: new Date() })
