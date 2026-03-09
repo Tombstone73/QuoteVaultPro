@@ -13244,6 +13244,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .groupBy(lineItemFiles.lineItemId, lineItemFiles.role)
         : [];
 
+      // Bridge counts from order_attachments so the badge reflects artwork uploaded
+      // before the order entered prepress (e.g. customer checkout uploads).
+      const bridgedCounts: { lineItemId: string | null; count: number }[] =
+        lineItemIdsForQueue.length > 0
+          ? await db
+              .select({
+                lineItemId: orderAttachments.orderLineItemId,
+                count: sql<number>`count(*)::int`,
+              })
+              .from(orderAttachments)
+              .where(inArray(orderAttachments.orderLineItemId as any, lineItemIdsForQueue))
+              .groupBy(orderAttachments.orderLineItemId)
+          : [];
+
       const previewFiles = lineItemIdsForQueue.length > 0
         ? await db
             .select({
@@ -13468,7 +13482,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Map to flat QueueItem shape the frontend expects
       const queue = queueItems.map((item, index) => {
         const counts = fileCounts.filter((fc) => fc.lineItemId === item.lineItemId);
-        const originals = counts.find((c) => c.role === "original")?.count || 0;
+        const originals = (counts.find((c) => c.role === "original")?.count || 0)
+          + (bridgedCounts.find((bc) => bc.lineItemId === item.lineItemId)?.count || 0);
         const finals = counts.find((c) => c.role === "final")?.count || 0;
         const latestSession = latestSessionByLineItem.get(item.lineItemId);
         const computedSqFt = computeTotalSqFt({
