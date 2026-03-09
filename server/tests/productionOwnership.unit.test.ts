@@ -12,6 +12,7 @@ import { describe, expect, test } from "@jest/globals";
 import {
   isTerminalStatus,
   isActiveJobStatus,
+  isPrepressOwnershipJob,
   TERMINAL_JOB_STATUSES,
   LINE_ITEM_LIFECYCLE_STATUSES,
   LEGACY_STATION_STATUSES,
@@ -237,6 +238,20 @@ describe("downstream mode activeJobAtPrepress detection", () => {
 
   test("null job returns false", () => {
     expect(activeJobAtPrepress(null)).toBe(false);
+  });
+});
+
+describe("isPrepressOwnershipJob", () => {
+  test("returns true for standalone prepress station", () => {
+    expect(isPrepressOwnershipJob({ stationKey: "prepress", stepKey: "queued" })).toBe(true);
+  });
+
+  test("returns true for prepress step on another station", () => {
+    expect(isPrepressOwnershipJob({ stationKey: "flatbed", stepKey: "prepress" })).toBe(true);
+  });
+
+  test("returns false for downstream jobs", () => {
+    expect(isPrepressOwnershipJob({ stationKey: "roll", stepKey: "queued" })).toBe(false);
   });
 });
 
