@@ -362,16 +362,41 @@ export async function transitionToStation(
     stationId = null;
   }
 
-  // 7. Create new job at target station
+  // 7. Create new job at target station.
+  //    Some DEV databases still enforce one row per (org, line item, station_id),
+  //    so a historical terminal row for the same station cannot be inserted again.
+  //    Use ON CONFLICT to safely recycle a terminal row without aborting the transaction.
+  let newJob: {
+    id: string;
+    stationKey: string;
+    stepKey: string;
+    status: string;
+  };
+
   const insertResult = stationId
     ? await tx.execute(sql`
         INSERT INTO production_jobs (
           organization_id, order_id, line_item_id, station_id,
-          station_key, step_key, status, total_seconds
+          station_key, step_key, status, total_seconds, started_at, completed_at, updated_at
         ) VALUES (
           ${args.organizationId}, ${args.orderId}, ${args.lineItemId}, ${stationId},
-          ${args.targetStationKey}, ${args.targetStepKey}, ${"queued"}, ${0}
+          ${args.targetStationKey}, ${args.targetStepKey}, ${"queued"}, ${0}, ${null}, ${null}, ${now}
         )
+        ON CONFLICT (organization_id, line_item_id, station_id)
+        WHERE station_id IS NOT NULL
+        DO UPDATE SET
+          order_id = EXCLUDED.order_id,
+          station_key = EXCLUDED.station_key,
+          step_key = EXCLUDED.step_key,
+          status = EXCLUDED.status,
+          total_seconds = EXCLUDED.total_seconds,
+          started_at = EXCLUDED.started_at,
+          completed_at = EXCLUDED.completed_at,
+          updated_at = EXCLUDED.updated_at
+        WHERE lower(coalesce(production_jobs.status, '')) IN (${sql.join(
+          TERMINAL_JOB_STATUSES.map((status) => sql`${status}`),
+          sql`, `,
+        )})
         RETURNING id, station_key AS "stationKey", step_key AS "stepKey", status
       `)
     : await tx.execute(sql`
@@ -385,12 +410,20 @@ export async function transitionToStation(
         RETURNING id, station_key AS "stationKey", step_key AS "stepKey", status
       `);
 
-  const newJob = insertResult.rows[0] as {
-    id: string;
-    stationKey: string;
-    stepKey: string;
-    status: string;
-  };
+  const insertedRow = insertResult.rows[0] as
+    | { id: string; stationKey: string; stepKey: string; status: string }
+    | undefined;
+
+  if (!insertedRow) {
+    throw Object.assign(
+      new Error(
+        `Cannot create new job for station ${args.targetStationKey}: existing station row is not terminal`,
+      ),
+      { statusCode: 409 },
+    );
+  }
+
+  newJob = insertedRow;
 
   // 8. Emit intake event on the new job
   await appendEvent({
