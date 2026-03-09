@@ -36,6 +36,10 @@ type QueueItem = {
   issueType?: string | null;
   hasDownstreamActiveJob?: boolean;
   hasAnyProductionJob?: boolean;
+  activeOwnerJobId?: string | null;
+  activeOwnerStationKey?: string | null;
+  activeOwnerStepKey?: string | null;
+  isActivelyOwnedByPrepress?: boolean;
   thumbFileId?: string | null;
   thumbSelectionReason?: "thumbFileId" | "original_fallback" | "final_fallback" | "none" | null;
   thumbCandidateMimeType?: string | null;
@@ -555,10 +559,20 @@ export default function PrepressProductionPageV2() {
   const plannedMaterialsMessage = materialsEffectiveData?.message;
   const materialsAvailability = materialsAvailabilityData?.items || [];
   const materialsAllAvailable = materialsAvailabilityData?.allAvailable ?? true;
-  const canComplete = hasFinalFiles && !!selectedItem?.sessionId;
-  // Send to production only after prepress complete and only when no downstream job is already active.
+  const isOwnedByPrepress = !!selectedItem?.isActivelyOwnedByPrepress;
+  const canStartPrepress =
+    !!selectedItem &&
+    isOwnedByPrepress &&
+    selectedItem.status === "pending_prepress" &&
+    !selectedItem.sessionId;
+  const canComplete =
+    isOwnedByPrepress &&
+    selectedItem?.status === "in_prepress" &&
+    hasFinalFiles &&
+    !!selectedItem?.sessionId;
   const canSendToPrint =
-    selectedItem?.prepressStage === 'prepress_complete' &&
+    isOwnedByPrepress &&
+    selectedItem?.status === 'prepress_complete' &&
     !selectedItem?.hasDownstreamActiveJob &&
     hasFinalFiles;
 
@@ -1303,7 +1317,7 @@ export default function PrepressProductionPageV2() {
                               <td className="px-4 py-3">
                                 <FileThumbnail
                                   filename={file.originalFilename}
-                                  mimeType={file.mimeType}
+                                  mimeType={file.mimeType || undefined}
                                   thumbnailUrl={file.thumbnailUrl || undefined}
                                 />
                               </td>
@@ -1312,7 +1326,7 @@ export default function PrepressProductionPageV2() {
                               <td className="px-4 py-3">{formatDistanceToNow(new Date(file.createdAt), { addSuffix: true })}</td>
                               <td className="px-4 py-3">{file.uploadedBy || "—"}</td>
                               <td className="px-4 py-3">
-                                <span className="bg-amber-900/50 text-amber-300 border border-amber-700/40 px-2 py-0.5 rounded text-[9px] font-bold uppercase">{file.role}</span>
+                                <span className="bg-amber-900/50 text-amber-300 border border-amber-700/40 px-2 py-0.5 rounded text-[9px] font-bold uppercase">order</span>
                               </td>
                               <td className="px-4 py-3 text-right">
                                 <button
@@ -1561,7 +1575,7 @@ export default function PrepressProductionPageV2() {
           <div className="flex items-center gap-3">
             <Button
               onClick={handleStartPrepress}
-              disabled={!selectedItem || startSessionMutation.isPending}
+              disabled={!canStartPrepress || startSessionMutation.isPending}
               variant="outline"
               className="bg-transparent border-[#2d3748] text-slate-300 hover:bg-[#2d3748] hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
             >

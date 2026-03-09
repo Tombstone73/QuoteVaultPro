@@ -16,6 +16,7 @@ import { db } from "../db";
 import { and, eq, ne, sql } from "drizzle-orm";
 import { productionJobs } from "@shared/schema";
 import { appendEvent } from "../productionHelpers";
+import { TERMINAL_JOB_STATUSES } from "./productionOwnership";
 
 export type RouteLineItemTrigger = "scheduler" | "intake" | "line_item_status" | "prepress" | "prepress_handoff";
 
@@ -91,9 +92,9 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
       }
     }
 
-    // B) Non-void idempotency guard: if any active job exists for this line item, never create a second one silently.
+    // B) Active-owner idempotency guard: historical done jobs must not block a new owner.
     step = "dedupe_check";
-    const existingNonVoidJobs = await runner
+    const existingActiveJobs = await runner
       .select({
         id: productionJobs.id,
         orderId: productionJobs.orderId,
@@ -110,11 +111,15 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
         ),
       );
 
-    const existingExact = existingNonVoidJobs.find((job: any) => {
+    const filteredActiveJobs = existingActiveJobs.filter(
+      (job: any) => !TERMINAL_JOB_STATUSES.includes(String(job.status ?? "").toLowerCase() as any),
+    );
+
+    const existingExact = filteredActiveJobs.find((job: any) => {
       return job.stationKey === stationKey && job.stepKey === stepKey;
     });
 
-    const existing = existingExact ?? existingNonVoidJobs[0];
+    const existing = existingExact ?? filteredActiveJobs[0];
 
     if (existing) {
       const isDone = existing.status === "done";

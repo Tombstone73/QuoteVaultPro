@@ -12,7 +12,7 @@
  * - Station changes are modeled as close-current/create-next (historical chain), not in-place rewrites
  */
 
-import { and, eq, notInArray, desc, sql } from "drizzle-orm";
+import { and, eq, notInArray, desc, sql, inArray } from "drizzle-orm";
 import { productionJobs } from "@shared/schema";
 import { appendEvent } from "../productionHelpers";
 
@@ -69,6 +69,13 @@ export interface StationTransitionResult {
   newStatus: string;
 }
 
+export interface ResolveActiveProductionOwnersArgs {
+  organizationId: string;
+  stationFilter?: string | null;
+  lineItemIds?: string[] | null;
+  debugLabel?: string;
+}
+
 // ────────────────────────────────────────────────────────────
 // Helpers
 // ────────────────────────────────────────────────────────────
@@ -90,23 +97,37 @@ export function isActiveJobStatus(status: string | null | undefined): boolean {
   return !!status && !isTerminalStatus(status);
 }
 
-// ────────────────────────────────────────────────────────────
-// Core Ownership Queries
-// ────────────────────────────────────────────────────────────
+export function isPrepressOwnershipJob(
+  job:
+    | Pick<ActiveProductionJob, "stationKey" | "stepKey">
+    | { stationKey?: string | null; stepKey?: string | null }
+    | null
+    | undefined,
+): boolean {
+  if (!job) return false;
+  const stationKey = String(job.stationKey ?? "").trim().toLowerCase();
+  const stepKey = String(job.stepKey ?? "").trim().toLowerCase();
+  return stepKey === "prepress" || stationKey === "prepress";
+}
 
-/**
- * Find the single active (non-terminal) production job for a line item.
- * Returns null if no active job exists.
- *
- * This is the CANONICAL way to check board ownership.
- * If multiple active jobs exist (should not happen), returns the most recently updated.
- *
- * @param runner - Drizzle db or transaction handle
- */
-export async function findActiveJobForLineItem(
+export async function resolveActiveProductionOwners(
   runner: any,
-  args: { organizationId: string; lineItemId: string },
-): Promise<ActiveProductionJob | null> {
+  args: ResolveActiveProductionOwnersArgs,
+): Promise<Map<string, ActiveProductionJob>> {
+  const normalizedLineItemIds = Array.from(
+    new Set(
+      (args.lineItemIds ?? [])
+        .map((lineItemId) => String(lineItemId ?? "").trim())
+        .filter((lineItemId) => lineItemId.length > 0),
+    ),
+  );
+
+  if (Array.isArray(args.lineItemIds) && args.lineItemIds.length > 0 && normalizedLineItemIds.length === 0) {
+    return new Map<string, ActiveProductionJob>();
+  }
+
+  const stationFilter = String(args.stationFilter ?? "").trim().toLowerCase();
+
   const rows = await runner
     .select({
       id: productionJobs.id,
@@ -126,14 +147,64 @@ export async function findActiveJobForLineItem(
     .where(
       and(
         eq(productionJobs.organizationId, args.organizationId),
-        eq(productionJobs.lineItemId, args.lineItemId),
         notInArray(productionJobs.status, [...TERMINAL_JOB_STATUSES]),
+        normalizedLineItemIds.length > 0
+          ? inArray(productionJobs.lineItemId, normalizedLineItemIds)
+          : undefined,
+        stationFilter
+          ? sql`(
+              lower(coalesce(${productionJobs.stationKey}, '')) = ${stationFilter}
+              or lower(coalesce(${productionJobs.stepKey}, '')) = ${stationFilter}
+            )`
+          : undefined,
       ),
     )
-    .orderBy(desc(productionJobs.updatedAt))
-    .limit(1);
+    .orderBy(desc(productionJobs.updatedAt), desc(productionJobs.createdAt));
 
-  return rows[0] ?? null;
+  const owners = new Map<string, ActiveProductionJob>();
+  for (const row of rows) {
+    const lineItemId = String(row.lineItemId ?? "").trim();
+    if (!lineItemId || owners.has(lineItemId)) continue;
+    owners.set(lineItemId, row);
+  }
+
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[DEV][productionOwnership.resolveActiveProductionOwners]", {
+      organizationId: args.organizationId,
+      debugLabel: args.debugLabel ?? null,
+      requestedLineItemCount: normalizedLineItemIds.length || null,
+      stationFilter: stationFilter || null,
+      resolvedOwnerCount: owners.size,
+    });
+  }
+
+  return owners;
+}
+
+// ────────────────────────────────────────────────────────────
+// Core Ownership Queries
+// ────────────────────────────────────────────────────────────
+
+/**
+ * Find the single active (non-terminal) production job for a line item.
+ * Returns null if no active job exists.
+ *
+ * This is the CANONICAL way to check board ownership.
+ * If multiple active jobs exist (should not happen), returns the most recently updated.
+ *
+ * @param runner - Drizzle db or transaction handle
+ */
+export async function findActiveJobForLineItem(
+  runner: any,
+  args: { organizationId: string; lineItemId: string },
+): Promise<ActiveProductionJob | null> {
+  const owners = await resolveActiveProductionOwners(runner, {
+    organizationId: args.organizationId,
+    lineItemIds: [args.lineItemId],
+    debugLabel: "findActiveJobForLineItem",
+  });
+
+  return owners.get(args.lineItemId) ?? null;
 }
 
 /**
