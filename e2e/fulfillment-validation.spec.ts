@@ -400,36 +400,40 @@ async function findFulfillmentCandidate(
   kind: "ship" | "pickup",
   preferredOrderNumber?: string,
 ): Promise<OrderDetails> {
-  const listResponse = await fetchJson<OrderListResponse>(page, "/api/orders?page=1&pageSize=80&sortDir=desc");
-  if (listResponse.status !== 200) {
-    throw new Error(`GET /api/orders failed with HTTP ${listResponse.status}`);
-  }
-
-  const items = listResponse.body?.items ?? [];
-  const prioritized = preferredOrderNumber
-    ? [
-        ...items.filter((item) => String(item.orderNumber) === preferredOrderNumber),
-        ...items.filter((item) => String(item.orderNumber) !== preferredOrderNumber),
-      ]
-    : items;
-
-  for (const item of prioritized) {
-    const order = await getOrder(page, item.id);
-    if (kind === "ship") {
-      if (order.state !== "open") continue;
-      if (order.shippingMethod === "pickup") continue;
-      if (buildShipmentItems(order).length === 0) continue;
-
-      const shipments = await getOrderShipments(page, order.id);
-      if (shipments.length > 0) continue;
-
-      return order;
+  for (let pageNumber = 1; pageNumber <= 5; pageNumber += 1) {
+    const listResponse = await fetchJson<OrderListResponse>(page, `/api/orders?page=${pageNumber}&pageSize=200&sortDir=desc`);
+    if (listResponse.status !== 200) {
+      throw new Error(`GET /api/orders failed with HTTP ${listResponse.status}`);
     }
 
-    if (order.state !== "open") continue;
-    if (order.shippingMethod !== "pickup") continue;
-    if ((order.lineItems ?? []).length === 0) continue;
-    return order;
+    const items = listResponse.body?.items ?? [];
+    if (items.length === 0) break;
+
+    const prioritized = preferredOrderNumber
+      ? [
+          ...items.filter((item) => String(item.orderNumber) === preferredOrderNumber),
+          ...items.filter((item) => String(item.orderNumber) !== preferredOrderNumber),
+        ]
+      : items;
+
+    for (const item of prioritized) {
+      const order = await getOrder(page, item.id);
+      if (kind === "ship") {
+        if (order.state !== "open") continue;
+        if (order.shippingMethod === "pickup") continue;
+        if (buildShipmentItems(order).length === 0) continue;
+
+        const shipments = await getOrderShipments(page, order.id);
+        if (shipments.length > 0) continue;
+
+        return order;
+      }
+
+      if (order.state !== "open") continue;
+      if (order.shippingMethod !== "pickup") continue;
+      if ((order.lineItems ?? []).length === 0) continue;
+      return order;
+    }
   }
 
   throw new Error(
