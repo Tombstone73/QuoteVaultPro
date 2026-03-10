@@ -77,10 +77,23 @@ type LineItemFile = {
   mimeType?: string;
 };
 
+type BridgedOriginalFile = {
+  id: string;
+  originalFilename: string;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  createdAt: string;
+  source: "order_attachment";
+  downloadUrl: string;
+  thumbnailUrl: string | null;
+  uploadedBy: string | null;
+};
+
 type LineItemFilesPayload = {
   originals: LineItemFile[];
   finals: LineItemFile[];
   references: LineItemFile[];
+  bridgedOriginals: BridgedOriginalFile[];
 };
 
 type HistoryEntry = {
@@ -535,17 +548,7 @@ export default function PrepressProductionPageV2() {
   const selectedItem = queue.find(q => q.lineItemId === selectedLineItemId);
   const originalFiles = filesData?.originals || [];
   const finalFiles = filesData?.finals || [];
-  const bridgedOriginalFiles: Array<{
-    id: string;
-    originalFilename: string;
-    mimeType: string | null;
-    sizeBytes: number | null;
-    createdAt: string;
-    source: 'order_attachment';
-    downloadUrl: string;
-    thumbnailUrl: string | null;
-    uploadedBy: string | null;
-  }> = (filesData as any)?.bridgedOriginals || [];
+  const bridgedOriginalFiles = filesData?.bridgedOriginals || [];
   const hasFinalFiles = finalFiles.length > 0;
   const materialsPayload = materialsEffectiveData?.data;
   const plannedMaterials = materialsPayload?.plannedMaterials || [];
