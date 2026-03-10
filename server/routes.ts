@@ -15169,6 +15169,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const data = await fulfillmentServiceV2.listQueue(organizationId, {
         type: parsed.type,
         status: parsed.status,
+        showArchived: parsed.showArchived,
         overdueOnly: parsed.overdueOnly,
         search: parsed.search,
         page: parsed.page,
@@ -15314,9 +15315,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const organizationId = getRequestOrganizationId(req);
       const actorUserId = getUserId(req.user) || null;
+      const actorUserRole = String(req.user?.role || '').trim().toLowerCase() || null;
       const parsed = pickupReadySchema.parse(req.body || {});
 
-      const result = await fulfillmentServiceV2.markPickupReady(organizationId, req.params.ticketId, parsed, actorUserId);
+      const result = await fulfillmentServiceV2.markPickupReady(organizationId, req.params.ticketId, parsed, actorUserId, actorUserRole);
       return res.json({
         success: true,
         data: {
@@ -15353,9 +15355,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get all shipments for an order
-  app.get('/api/orders/:id/shipments', isAuthenticated, async (req: any, res) => {
+  app.get('/api/orders/:id/shipments', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const shipmentList = await storage.getShipmentsByOrder(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      const shipmentList = await storage.getShipmentsByOrder(organizationId, req.params.id);
       res.json({ success: true, data: shipmentList });
     } catch (error) {
       console.error('Error fetching shipments:', error);
@@ -15363,73 +15366,72 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Create a new shipment (auto-updates order status to "shipped")
-  app.post('/api/orders/:id/shipments', isAuthenticated, async (req: any, res) => {
-    try {
-      const shipmentData = insertShipmentSchema.parse({
-        ...req.body,
-        orderId: req.params.id,
-        createdByUserId: req.user.id,
-      });
-
-      const newShipment = await storage.createShipment(shipmentData);
-
-      // Optionally send shipment notification email
-      if (req.body.sendEmail) {
-        await sendShipmentEmail(req.params.id, newShipment.id.toString(), req.body.emailSubject, req.body.emailMessage);
-      }
-
-      res.json({ success: true, data: newShipment });
-    } catch (error: any) {
-      if (error.name === 'ZodError') {
-        return res.status(400).json({ error: 'Invalid shipment data', details: error.errors });
-      }
-      console.error('Error creating shipment:', error);
-      res.status(500).json({ error: 'Failed to create shipment' });
-    }
+  // Legacy shipment mutation path is intentionally blocked during fulfillment contract tightening.
+  app.post('/api/orders/:id/shipments', isAuthenticated, tenantContext, async (_req: any, res) => {
+    return res.status(409).json({
+      success: false,
+      code: 'FULFILLMENT_V2_REQUIRED',
+      message: 'Legacy shipment creation is disabled. Use the Fulfillment workspace shipment flow.',
+    });
   });
 
-  // Update a shipment (auto-updates order status to "delivered" if deliveredAt is set)
-  app.patch('/api/shipments/:id', isAuthenticated, async (req: any, res) => {
-    try {
-      const shipmentId = req.params.id;
-      const updates = updateShipmentSchema.parse(req.body);
-
-      const updated = await storage.updateShipment(shipmentId, updates);
-      if (!updated) return res.status(404).json({ error: 'Shipment not found' });
-
-      res.json({ success: true, data: updated });
-    } catch (error: any) {
-      if (error.name === 'ZodError') {
-        return res.status(400).json({ error: 'Invalid shipment data', details: error.errors });
-      }
-      console.error('Error updating shipment:', error);
-      res.status(500).json({ error: 'Failed to update shipment' });
-    }
+  app.patch('/api/shipments/:id', isAuthenticated, tenantContext, async (_req: any, res) => {
+    return res.status(409).json({
+      success: false,
+      code: 'FULFILLMENT_V2_REQUIRED',
+      message: 'Legacy shipment editing is disabled. Use the Fulfillment workspace shipment flow.',
+    });
   });
 
-  // Delete a shipment (admin/owner only)
-  app.delete('/api/shipments/:id', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
-    try {
-      const shipmentId = req.params.id;
-      await storage.deleteShipment(shipmentId);
+  app.delete('/api/shipments/:id', isAuthenticated, tenantContext, async (_req: any, res) => {
+    return res.status(409).json({
+      success: false,
+      code: 'FULFILLMENT_V2_REQUIRED',
+      message: 'Legacy shipment deletion is disabled. Use the Fulfillment workspace shipment flow.',
+    });
+  });
 
-      res.json({ success: true, message: 'Shipment deleted successfully' });
+  // Manually update order fulfillment status (override auto-status - manager+ only)
+  app.patch('/api/orders/:id/fulfillment-status', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+
+      if (!['owner', 'admin', 'manager'].includes(req.user?.role)) {
+        return res.status(403).json({ error: 'Manager, Admin, or Owner role required' });
+      }
+
+      const [order] = await db
+        .select({
+          id: orders.id,
+          state: orders.state,
+        })
+        .from(orders)
+        .where(and(eq(orders.id, req.params.id), eq(orders.organizationId, organizationId)))
+        .limit(1);
+
+      if (!order) {
+        return res.status(404).json({ error: 'Order not found' });
+      }
+
+      if (order.state === 'production_complete') {
+        return res.status(409).json({
+          error: 'Manual fulfillment status overrides are disabled for fulfillment-managed orders. Use shipment or pickup actions.',
+          code: 'FULFILLMENT_ARTIFACT_SYNC_REQUIRED',
+        });
+      }
+
+      const { status } = req.body;
+
+      if (!['pending', 'packed', 'shipped', 'delivered'].includes(status)) {
+        return res.status(400).json({ error: 'Invalid fulfillment status' });
+      }
+
+      await updateOrderFulfillmentStatus(req.params.id, status);
+
+      res.json({ success: true, message: 'Fulfillment status updated successfully' });
     } catch (error) {
-      console.error('Error deleting shipment:', error);
-      res.status(500).json({ error: 'Failed to delete shipment' });
-    }
-  });
-
-  // Generate packing slip HTML for an order
-  app.post('/api/orders/:id/packing-slip', isAuthenticated, async (req: any, res) => {
-    try {
-      const orderId = req.params.id;
-      const html = await generatePackingSlipHTML(orderId);
-      res.json({ success: true, data: { html } });
-    } catch (error) {
-      console.error('Error generating packing slip:', error);
-      res.status(500).json({ error: 'Failed to generate packing slip' });
+      console.error('Error updating fulfillment status:', error);
+      res.status(500).json({ error: 'Failed to update fulfillment status' });
     }
   });
 
@@ -15448,30 +15450,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('Error sending shipment email:', error);
       res.status(500).json({ error: 'Failed to send shipment email' });
-    }
-  });
-
-  // Manually update order fulfillment status (override auto-status - manager+ only)
-  app.patch('/api/orders/:id/fulfillment-status', isAuthenticated, async (req: any, res) => {
-    try {
-      // Check role
-      if (!['owner', 'admin', 'manager'].includes(req.user?.role)) {
-        return res.status(403).json({ error: 'Manager, Admin, or Owner role required' });
-      }
-
-      const orderId = req.params.id;
-      const { status } = req.body;
-
-      if (!['pending', 'packed', 'shipped', 'delivered'].includes(status)) {
-        return res.status(400).json({ error: 'Invalid fulfillment status' });
-      }
-
-      await updateOrderFulfillmentStatus(orderId, status);
-
-      res.json({ success: true, message: 'Fulfillment status updated successfully' });
-    } catch (error) {
-      console.error('Error updating fulfillment status:', error);
-      res.status(500).json({ error: 'Failed to update fulfillment status' });
     }
   });
 

@@ -3458,11 +3458,35 @@ export async function registerOrderRoutes(
         }
     });
 
-    app.patch('/api/orders/:id/fulfillment-status', isAuthenticated, async (req: any, res) => {
+    app.patch('/api/orders/:id/fulfillment-status', isAuthenticated, tenantContext, async (req: any, res) => {
         try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
             if (!['owner', 'admin', 'manager'].includes(req.user?.role)) {
                 return res.status(403).json({ error: 'Manager, Admin, or Owner role required' });
             }
+
+            const [order] = await db
+                .select({
+                    id: orders.id,
+                    state: orders.state,
+                })
+                .from(orders)
+                .where(and(eq(orders.id, req.params.id), eq(orders.organizationId, organizationId)))
+                .limit(1);
+
+            if (!order) {
+                return res.status(404).json({ error: 'Order not found' });
+            }
+
+            if (order.state === 'production_complete') {
+                return res.status(409).json({
+                    error: 'Manual fulfillment status overrides are disabled for fulfillment-managed orders. Use shipment or pickup actions.',
+                    code: 'FULFILLMENT_ARTIFACT_SYNC_REQUIRED',
+                });
+            }
+
             const { status } = req.body;
             if (!['pending', 'packed', 'shipped', 'delivered'].includes(status)) {
                 return res.status(400).json({ error: 'Invalid fulfillment status' });

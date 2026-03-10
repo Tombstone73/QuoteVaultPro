@@ -43,6 +43,45 @@ function toShipAddressKey(order: {
 export class ShipmentRepo {
   constructor(private readonly dbInstance: DbExecutor = db) {}
 
+  private async syncShipOrderFulfillmentStatus(runner: any, orgId: string, orderId: string) {
+    const [orderedRow] = await runner
+      .select({
+        orderedQty: sql<number>`COALESCE(SUM(${orderLineItems.quantity}), 0)::int`,
+      })
+      .from(orderLineItems)
+      .where(eq(orderLineItems.orderId, orderId));
+
+    const [shippedRow] = await runner
+      .select({
+        shippedQty: sql<number>`COALESCE(SUM(${shipmentItems.quantity}), 0)::int`,
+      })
+      .from(shipmentItems)
+      .innerJoin(shipments, eq(shipments.id, shipmentItems.shipmentId))
+      .where(and(
+        eq(shipmentItems.orderId, orderId),
+        eq(shipmentItems.organizationId, orgId),
+        eq(shipments.organizationId, orgId),
+        eq(shipments.status, 'SHIPPED'),
+      ));
+
+    const orderedQty = Number(orderedRow?.orderedQty || 0);
+    const shippedQty = Number(shippedRow?.shippedQty || 0);
+
+    const nextStatus = shippedQty <= 0
+      ? 'pending'
+      : (orderedQty > 0 && shippedQty >= orderedQty ? 'shipped' : 'packed');
+
+    await runner
+      .update(orders)
+      .set({
+        fulfillmentStatus: nextStatus,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(orders.id, orderId), eq(orders.organizationId, orgId)));
+
+    return nextStatus;
+  }
+
   async createDraftShipment(orgId: string, payload: {
     scope: 'SINGLE_ORDER' | 'MULTI_ORDER';
     orderIds: string[];
@@ -265,6 +304,11 @@ export class ShipmentRepo {
         },
       });
 
+      const affectedOrderIds = Array.from(new Set(draftItems.map((item) => item.orderId)));
+      for (const orderId of affectedOrderIds) {
+        await this.syncShipOrderFulfillmentStatus(tx, orgId, orderId);
+      }
+
       return { ok: true as const, shipment: updated };
     });
   }
@@ -447,6 +491,8 @@ export class PickupRepo {
       contactName?: string | null;
       contactEmail?: string | null;
       contactPhone?: string | null;
+      overrideProductionCompleteUsed?: boolean;
+      overrideActorRole?: string | null;
     },
     actorUserId?: string | null,
   ) {
@@ -492,8 +538,18 @@ export class PickupRepo {
         eventType: 'PICKUP_READY',
         payloadJson: {
           contactEmail: updated.contactEmail,
+          overrideProductionCompleteUsed: payload.overrideProductionCompleteUsed === true,
+          overrideActorRole: payload.overrideActorRole || null,
         },
       });
+
+      await tx
+        .update(orders)
+        .set({
+          fulfillmentStatus: 'packed',
+          updatedAt: new Date(),
+        })
+        .where(and(eq(orders.id, ticket.orderId), eq(orders.organizationId, orgId)));
 
       const toAddress = updated.contactEmail || '';
       const [notification] = await tx
@@ -581,6 +637,14 @@ export class PickupRepo {
         payloadJson: {},
       });
 
+      await tx
+        .update(orders)
+        .set({
+          fulfillmentStatus: 'delivered',
+          updatedAt: new Date(),
+        })
+        .where(and(eq(orders.id, ticket.orderId), eq(orders.organizationId, orgId)));
+
       return { ok: true as const, ticket: updated };
     });
   }
@@ -646,6 +710,7 @@ export class FulfillmentDashboardRepo {
   async listFulfillmentQueue(orgId: string, filters: {
     type: 'all' | 'ship' | 'pickup';
     status: string;
+    showArchived: boolean;
     overdueOnly: boolean;
     search?: string;
     page: number;
@@ -667,6 +732,7 @@ export class FulfillmentDashboardRepo {
         orderNumber: orders.orderNumber,
         shippingMethod: orders.shippingMethod,
         state: orders.state,
+        routingTarget: orders.routingTarget,
         productionCompletedAt: orders.productionCompletedAt,
         updatedAt: orders.updatedAt,
         shipToCity: orders.shipToCity,
@@ -729,12 +795,20 @@ export class FulfillmentDashboardRepo {
       const remaining = Math.max(orderedQty - shippedQty, 0);
 
       const isPickup = order.shippingMethod === 'pickup';
+      const productionComplete = order.state === 'production_complete';
+      const shipEligible = !isPickup && productionComplete && order.routingTarget === 'fulfillment';
+      const pickupEligible = isPickup && productionComplete;
+
+      if (!shipEligible && !pickupEligible) continue;
+
       if (filters.type === 'ship' && isPickup) continue;
       if (filters.type === 'pickup' && !isPickup) continue;
 
       if (isPickup) {
         const ticket = ticketMap.get(order.id);
         const status = ticket?.status || 'DRAFT';
+        const isArchivedPickup = status === 'PICKED_UP';
+        if (!filters.showArchived && isArchivedPickup) continue;
         const readySince = (ticket?.readyAt as Date | null)?.toISOString?.() || null;
         const row: QueueRowDto = {
           orderId: order.id,
@@ -754,6 +828,8 @@ export class FulfillmentDashboardRepo {
       }
 
       const shipStatus = this.deriveShipStatus(orderedQty, shippedQty);
+      const isArchivedShip = shipStatus === 'SHIPPED';
+      if (!filters.showArchived && isArchivedShip) continue;
       const readySinceIso = order.productionCompletedAt
         ? new Date(order.productionCompletedAt).toISOString()
         : new Date(order.updatedAt).toISOString();
@@ -763,11 +839,7 @@ export class FulfillmentDashboardRepo {
         ? (nowMs - readySinceMs) > (SHIP_READY_OVERDUE_HOURS * 60 * 60 * 1000)
         : false;
 
-      const shipStatusForFilter = shipStatus === 'SHIPPED'
-        ? 'shipped'
-        : shipStatus === 'PARTIAL'
-          ? 'ready'
-          : 'draft';
+      const shipStatusForFilter = shipStatus === 'SHIPPED' ? 'shipped' : 'ready';
 
       if (filters.status !== 'all' && filters.status.toLowerCase() !== shipStatusForFilter) continue;
       if (filters.overdueOnly && !overdue) continue;
@@ -799,6 +871,7 @@ export class FulfillmentDashboardRepo {
         id: orders.id,
         shippingMethod: orders.shippingMethod,
         state: orders.state,
+        routingTarget: orders.routingTarget,
         shipToName: orders.shipToName,
         shipToCompany: orders.shipToCompany,
         shipToAddress1: orders.shipToAddress1,
