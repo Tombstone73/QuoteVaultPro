@@ -1,10 +1,21 @@
 import { z } from 'zod';
 
+const queryBooleanSchema = z.preprocess((value) => {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on') return true;
+    if (normalized === 'false' || normalized === '0' || normalized === 'no' || normalized === 'off' || normalized === '') return false;
+  }
+  return value;
+}, z.boolean().optional().default(false));
+
 export const listQueueQuerySchema = z.object({
   type: z.enum(['all', 'ship', 'pickup']).optional().default('all'),
   status: z.string().optional().default('all'),
-  showArchived: z.coerce.boolean().optional().default(false),
-  overdueOnly: z.coerce.boolean().optional().default(false),
+  showArchived: queryBooleanSchema,
+  overdueOnly: queryBooleanSchema,
   search: z.string().optional().default(''),
   page: z.coerce.number().int().positive().optional().default(1),
   pageSize: z.coerce.number().int().positive().max(200).optional().default(50),
