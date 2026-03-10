@@ -61,6 +61,8 @@ export function DocumentCreateForm({
   onSubmit,
   isSubmitting,
 }: DocumentCreateFormProps) {
+  const selectableProducts = (products ?? []).filter((product) => product.isActive);
+
   const { toast } = useToast();
 
   // ============ Customer State ============
@@ -611,8 +613,8 @@ export function DocumentCreateForm({
                     <SelectContent>
                       {productsLoading ? (
                         <SelectItem value="loading" disabled>Loading products...</SelectItem>
-                      ) : products && products.length > 0 ? (
-                        products.map((product) => (
+                      ) : selectableProducts.length > 0 ? (
+                        selectableProducts.map((product) => (
                           <SelectItem key={product.id} value={product.id}>
                             {product.name}
                           </SelectItem>

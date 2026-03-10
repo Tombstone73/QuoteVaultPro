@@ -1745,8 +1745,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const activeOnly = String(req.query.activeOnly ?? "").trim().toLowerCase();
       const products = await storage.getAllProducts(organizationId);
-      res.json(products);
+      res.json(
+        activeOnly === "true" || activeOnly === "1"
+          ? products.filter((product) => product.isActive)
+          : products,
+      );
     } catch (error) {
       console.error("Error fetching products:", error);
       res.status(500).json({ message: "Failed to fetch products" });
@@ -3414,6 +3419,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const product = await storage.updateProduct(organizationId, productId, productData as UpdateProduct);
+      if (!product) {
+        return res.status(404).json({ success: false, message: "Product not found" });
+      }
       
       // DEV-ONLY: Verify what was actually written to DB
       if (process.env.NODE_ENV !== 'production' && 'optionTreeJson' in productData) {

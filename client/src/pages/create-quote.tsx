@@ -11,9 +11,9 @@ export default function CreateQuote() {
 
   // Fetch products
   const { data: products, isLoading: productsLoading } = useQuery<Product[]>({
-    queryKey: ["/api/products"],
+    queryKey: ["/api/products?activeOnly=true"],
     queryFn: async () => {
-      const response = await fetch("/api/products", { credentials: "include" });
+      const response = await fetch("/api/products?activeOnly=true", { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch products");
       return response.json();
     },
