@@ -175,22 +175,7 @@ test.describe.serial("routing workflow validation", () => {
       expect(sendResponse.ok(), `Send to Prepress returned HTTP ${sendResponse.status()}`).toBe(true);
     });
 
-    await pollForRoutingState(page, candidate.lineItemId, (snapshot) => {
-      const queueMatches = snapshot.queueItems.filter((item) => item.lineItemId === candidate.lineItemId);
-      const activeProductionMatches = snapshot.productionJobs.filter((job) => job.lineItemId === candidate.lineItemId);
-      const downstreamMatches = activeProductionMatches.filter((job) => job.stationKey && job.stationKey !== "prepress");
-      const prepressMatches = activeProductionMatches.filter((job) => job.stationKey === "prepress");
-
-      if (queueMatches.length !== 1) return null;
-      if (downstreamMatches.length !== 0) return null;
-      if (prepressMatches.length !== 1) return null;
-      if (queueMatches[0].isActivelyOwnedByPrepress !== true) return null;
-
-      return {
-        queueItem: queueMatches[0],
-        prepressJob: prepressMatches[0],
-      };
-    });
+    await pollForProductionToPrepressReturn(page, candidate);
 
     await test.step("Confirm the item left the old production board and reappeared in prepress", async () => {
       await page.goto(`/production/${candidate.stationKey}`, { waitUntil: "networkidle" });
@@ -268,6 +253,28 @@ async function getRoutingSnapshot(page: Page): Promise<RoutingSnapshot> {
     queueItems: queueResponse.body?.data ?? [],
     productionJobs: jobsResponse.body?.data ?? [],
   };
+}
+
+async function getBoardVisibleProductionJobs(page: Page, stationKey: "flatbed" | "roll") {
+  const response = await fetchJson<ProductionJob[]>(
+    page,
+    `/api/production/jobs?station=${encodeURIComponent(stationKey)}`
+  );
+
+  if (response.status !== 200) {
+    throw new Error(`GET /api/production/jobs?station=${stationKey} failed with HTTP ${response.status}`);
+  }
+
+  return response.body?.data ?? [];
+}
+
+async function getAllBoardVisibleProductionJobs(page: Page) {
+  const [flatbedJobs, rollJobs] = await Promise.all([
+    getBoardVisibleProductionJobs(page, "flatbed"),
+    getBoardVisibleProductionJobs(page, "roll"),
+  ]);
+
+  return [...flatbedJobs, ...rollJobs];
 }
 
 async function findPrepressToProductionCandidate(
@@ -348,13 +355,13 @@ async function findPrepressToProductionCandidate(
 }
 
 async function findProductionToPrepressCandidate(page: Page, preferredOrderNumber?: string) {
-  const snapshot = await getRoutingSnapshot(page);
-  const orderNumbers = snapshot.productionJobs
+  const productionJobs = await getAllBoardVisibleProductionJobs(page);
+  const orderNumbers = productionJobs
     .map((job) => String(job.orderNumber ?? job.order?.orderNumber ?? ""))
     .filter(Boolean);
   const orderCounts = countBy(orderNumbers);
 
-  const candidates = snapshot.productionJobs.filter((job) => {
+  const candidates = productionJobs.filter((job) => {
     const orderNumber = String(job.orderNumber ?? job.order?.orderNumber ?? "");
     if (!orderNumber) return false;
     if (preferredOrderNumber && orderNumber !== preferredOrderNumber) return false;
@@ -520,6 +527,45 @@ async function showAllProductionJobs(page: Page) {
   if ((await allTab.getAttribute("data-state")) !== "active") {
     await allTab.click();
   }
+}
+
+async function pollForProductionToPrepressReturn(
+  page: Page,
+  candidate: { lineItemId: string; stationKey: string },
+  timeoutMs = 30_000
+) {
+  const startedAt = Date.now();
+  let lastQueueItems: PrepressQueueItem[] = [];
+  let lastStationJobs: ProductionJob[] = [];
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const [queueResponse, stationJobs] = await Promise.all([
+      fetchJson<PrepressQueueItem[]>(page, "/api/prepress/queue"),
+      getBoardVisibleProductionJobs(page, candidate.stationKey as "flatbed" | "roll"),
+    ]);
+
+    if (queueResponse.status !== 200) {
+      throw new Error(`GET /api/prepress/queue failed with HTTP ${queueResponse.status}`);
+    }
+
+    lastQueueItems = queueResponse.body?.data ?? [];
+    lastStationJobs = stationJobs;
+
+    const queueItem = lastQueueItems.find((item) => item.lineItemId === candidate.lineItemId);
+    const stillVisibleOnSourceBoard = lastStationJobs.some((job) => job.lineItemId === candidate.lineItemId);
+
+    if (queueItem && queueItem.isActivelyOwnedByPrepress === true && !stillVisibleOnSourceBoard) {
+      return queueItem;
+    }
+
+    await page.waitForTimeout(750);
+  }
+
+  throw new Error(
+    `Timed out waiting for Production → Prepress return for line item ${candidate.lineItemId}. ` +
+      `Last queue snapshot: ${JSON.stringify(lastQueueItems, null, 2)}. ` +
+      `Last ${candidate.stationKey} board snapshot: ${JSON.stringify(lastStationJobs, null, 2)}`
+  );
 }
 
 async function pollForLineItemFiles<T>(
