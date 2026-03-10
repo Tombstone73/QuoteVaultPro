@@ -14935,6 +14935,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         originals: files.originals.map(enhance),
         finals: files.finals.map(enhance),
         references: files.references.map(enhance),
+        bridgedOriginals: files.bridgedOriginals,
       };
 
       res.json({ success: true, data, files: [...data.originals, ...data.finals, ...data.references] });
