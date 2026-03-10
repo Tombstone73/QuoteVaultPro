@@ -1091,8 +1091,12 @@ export class OrdersRepository {
     }
 
     // Shipment operations
-    async getShipmentsByOrder(orderId: string): Promise<Shipment[]> {
-        return await this.dbInstance.select().from(shipments).where(eq(shipments.orderId, orderId)).orderBy(desc(shipments.createdAt));
+    async getShipmentsByOrder(organizationId: string, orderId: string): Promise<Shipment[]> {
+        return await this.dbInstance
+            .select()
+            .from(shipments)
+            .where(and(eq(shipments.organizationId, organizationId), eq(shipments.orderId, orderId)))
+            .orderBy(desc(shipments.createdAt));
     }
 
     async getShipmentById(id: string): Promise<Shipment | undefined> {
