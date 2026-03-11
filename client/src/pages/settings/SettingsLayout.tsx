@@ -287,6 +287,65 @@ export function AccountingSettings() {
   );
 }
 
+type WorkflowDraftRow = {
+  key: string;
+  label: string;
+  category: "new" | "active" | "ready" | "completed" | "canceled" | "on_hold";
+  color?: string | null;
+  sortOrder: number;
+  isDefaultForNew: boolean;
+  isActive: boolean;
+};
+
+const normalizeWorkflowKey = (value: string) => value.trim().toLowerCase();
+
+const dedupeWorkflowStatuses = (statuses: Array<{
+  key: string;
+  label: string;
+  category: WorkflowDraftRow["category"];
+  color?: string | null;
+  sortOrder: number;
+  isDefaultForNew: boolean;
+  isActive: boolean;
+}>) => {
+  const byKey = new Map<string, WorkflowDraftRow>();
+  const removedKeys = new Set<string>();
+
+  for (const status of [...statuses].sort((a, b) => a.sortOrder - b.sortOrder)) {
+    const key = normalizeWorkflowKey(status.key);
+    if (!key) continue;
+
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, {
+        key,
+        label: status.label,
+        category: status.category,
+        color: status.color ?? null,
+        sortOrder: status.sortOrder,
+        isDefaultForNew: status.isDefaultForNew,
+        isActive: status.isActive,
+      });
+      continue;
+    }
+
+    removedKeys.add(key);
+    byKey.set(key, {
+      ...existing,
+      label: existing.label || status.label,
+      color: existing.color ?? status.color ?? null,
+      sortOrder: Math.min(existing.sortOrder, status.sortOrder),
+      isDefaultForNew: existing.isDefaultForNew || status.isDefaultForNew,
+      isActive: existing.isActive || status.isActive,
+    });
+  }
+
+  return {
+    statuses: Array.from(byKey.values()).sort((a, b) => a.sortOrder - b.sortOrder || a.label.localeCompare(b.label)),
+    removedKeys: Array.from(removedKeys.values()),
+  };
+};
+
 export function ProductionSettings() {
   const { data, isLoading, isError, error } = useProductionLineItemStatusRules();
   const {
@@ -312,15 +371,7 @@ export function ProductionSettings() {
   const workflow = useOrderWorkflow();
   const saveWorkflowDraft = useSaveOrderWorkflowDraft();
   const publishWorkflow = usePublishOrderWorkflow();
-  const [workflowDraft, setWorkflowDraft] = React.useState<Array<{
-    key: string;
-    label: string;
-    category: "new" | "active" | "ready" | "completed" | "canceled" | "on_hold";
-    color?: string | null;
-    sortOrder: number;
-    isDefaultForNew: boolean;
-    isActive: boolean;
-  }>>([]);
+  const [workflowDraft, setWorkflowDraft] = React.useState<WorkflowDraftRow[]>([]);
 
   React.useEffect(() => {
     if (Array.isArray(data)) setDraft(data);
@@ -329,17 +380,34 @@ export function ProductionSettings() {
   React.useEffect(() => {
     if (workflow.data?.statuses) {
       setWorkflowDraft(
-        workflow.data.statuses.map((s) => ({
-          key: s.key,
-          label: s.label,
-          category: s.category,
-          color: s.color ?? null,
-          sortOrder: s.sortOrder,
-          isDefaultForNew: s.isDefaultForNew,
-          isActive: s.isActive,
-        })),
+        dedupeWorkflowStatuses(
+          workflow.data.statuses.map((s) => ({
+            key: s.key,
+            label: s.label,
+            category: s.category,
+            color: s.color ?? null,
+            sortOrder: s.sortOrder,
+            isDefaultForNew: s.isDefaultForNew,
+            isActive: s.isActive,
+          })),
+        ).statuses,
       );
     }
+  }, [workflow.data]);
+
+  const collapsedWorkflowKeys = React.useMemo(() => {
+    if (!workflow.data?.statuses) return [] as string[];
+    return dedupeWorkflowStatuses(
+      workflow.data.statuses.map((s) => ({
+        key: s.key,
+        label: s.label,
+        category: s.category,
+        color: s.color ?? null,
+        sortOrder: s.sortOrder,
+        isDefaultForNew: s.isDefaultForNew,
+        isActive: s.isActive,
+      })),
+    ).removedKeys;
   }, [workflow.data]);
 
   const validation = React.useMemo(() => {
@@ -387,8 +455,52 @@ export function ProductionSettings() {
     ? ((stepsError as any)?.message || "Unable to load managed steps")
     : null;
 
+  const stationCards = React.useMemo(() => {
+    return stationOptions.map((station) => {
+      const steps = stationSteps?.[station.key] ?? [];
+      const activeSteps = steps.filter((step) => step.active !== false);
+      return {
+        ...station,
+        steps,
+        activeSteps,
+        defaultStepLabel: activeSteps[0]?.label ?? "Queued",
+      };
+    });
+  }, [stationOptions, stationSteps]);
+
   const setRule = (idx: number, patch: Partial<ProductionLineItemStatusRule>) => {
     setDraft((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  };
+
+  const setRuleStation = (idx: number, stationKey: string) => {
+    const activeSteps = (stationSteps?.[stationKey] ?? []).filter((step) => step.active !== false);
+    setDraft((prev) =>
+      prev.map((r, i) =>
+        i === idx
+          ? {
+              ...r,
+              stationKey,
+              stepKey: activeSteps.some((step) => step.key === r.stepKey) ? r.stepKey : activeSteps[0]?.key ?? null,
+            }
+          : r,
+      ),
+    );
+  };
+
+  const toggleRuleRouting = (idx: number, enabled: boolean) => {
+    setDraft((prev) =>
+      prev.map((r, i) => {
+        if (i !== idx) return r;
+        const nextStationKey = (r.stationKey ?? "").trim() || stationOptions[0]?.key || "flatbed";
+        const activeSteps = (stationSteps?.[nextStationKey] ?? []).filter((step) => step.active !== false);
+        return {
+          ...r,
+          sendToProduction: enabled,
+          stationKey: enabled ? nextStationKey : null,
+          stepKey: enabled ? (activeSteps.some((step) => step.key === r.stepKey) ? r.stepKey : activeSteps[0]?.key ?? null) : null,
+        };
+      }),
+    );
   };
 
   const addRule = () => {
@@ -399,9 +511,9 @@ export function ProductionSettings() {
         label: "",
         color: null,
         sendToProduction: false,
-        stationKey: "flatbed",
-        stepKey: "prepress",
-        sortOrder: prev.length,
+        stationKey: stationOptions[0]?.key ?? "flatbed",
+        stepKey: (stationSteps?.[stationOptions[0]?.key ?? "flatbed"] ?? []).find((step) => step.active !== false)?.key ?? null,
+        sortOrder: prev.length * 10 + 10,
       },
     ]);
   };
@@ -460,6 +572,18 @@ export function ProductionSettings() {
     return { isValid: errors.length === 0, errors };
   }, [workflowDraft]);
 
+  const routingRules = React.useMemo(
+    () => [...draft].sort((a, b) => Number(a.sortOrder ?? 0) - Number(b.sortOrder ?? 0) || String(a.label ?? "").localeCompare(String(b.label ?? ""))),
+    [draft],
+  );
+
+  const workflowStatuses = React.useMemo(
+    () => [...workflowDraft].sort((a, b) => a.sortOrder - b.sortOrder || a.label.localeCompare(b.label)),
+    [workflowDraft],
+  );
+
+  const orderCategoryOptions: WorkflowDraftRow["category"][] = ["new", "active", "ready", "on_hold", "completed", "canceled"];
+
   return (
     <TitanCard className="p-6">
       <div className="space-y-6">
@@ -497,24 +621,110 @@ export function ProductionSettings() {
             />
           </div>
         </div>
-        
+
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-titan-md font-semibold text-titan-text-primary">Stations</h3>
+            <p className="text-titan-sm text-titan-text-muted mt-1">
+              Stations are your physical production areas. Routing rules can only target active stations listed here.
+            </p>
+          </div>
+
+          {stationLoadError ? (
+            <div className="text-xs text-red-600">Unable to load stations: {stationLoadError}</div>
+          ) : null}
+
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {stationCards.length === 0 ? (
+              <div className="rounded-md border border-titan-border-subtle p-4 text-sm text-titan-text-muted md:col-span-2 xl:col-span-3">
+                No active stations were found.
+              </div>
+            ) : (
+              stationCards.map((station) => (
+                <div key={station.key} className="rounded-titan-lg border border-titan-border-subtle p-4 space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-titan-text-primary">{station.name}</div>
+                      <div className="text-xs text-titan-text-muted">Key: {station.key}</div>
+                    </div>
+                    <Badge variant="secondary">{station.activeSteps.length} active step{station.activeSteps.length === 1 ? "" : "s"}</Badge>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div className="rounded-md bg-titan-bg-subtle p-3">
+                      <div className="text-xs text-titan-text-muted">Default intake step</div>
+                      <div className="font-medium text-titan-text-primary">{station.defaultStepLabel}</div>
+                    </div>
+                    <div className="rounded-md bg-titan-bg-subtle p-3">
+                      <div className="text-xs text-titan-text-muted">Total configured steps</div>
+                      <div className="font-medium text-titan-text-primary">{station.steps.length}</div>
+                    </div>
+                  </div>
+                  <ManageProductionStepsDialog stationKey={station.key} stationLabel={station.name} />
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        <div className="h-px bg-titan-border-subtle" />
+
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-titan-md font-semibold text-titan-text-primary">Station Steps</h3>
+            <p className="text-titan-sm text-titan-text-muted mt-1">
+              Steps define the internal handoff sequence within each station. Manage them here before assigning them to routing rules.
+            </p>
+          </div>
+
+          {stepLoadError ? (
+            <div className="text-xs text-red-600">Unable to load steps: {stepLoadError}</div>
+          ) : null}
+
+          <div className="space-y-3">
+            {stationCards.map((station) => (
+              <div key={`steps-${station.key}`} className="rounded-titan-lg border border-titan-border-subtle p-4 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-titan-text-primary">{station.name}</div>
+                    <div className="text-xs text-titan-text-muted">Used by routing rules for {station.key}</div>
+                  </div>
+                  <ManageProductionStepsDialog stationKey={station.key} stationLabel={station.name} />
+                </div>
+
+                {isStepsLoading ? (
+                  <div className="flex items-center gap-2 text-titan-sm text-titan-text-muted">
+                    <Loader2 className="h-4 w-4 animate-spin" /> Loading steps…
+                  </div>
+                ) : station.steps.length === 0 ? (
+                  <div className="text-sm text-titan-text-muted">No steps configured yet. Add at least one active step for clean routing.</div>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {station.steps.map((step) => (
+                      <Badge key={`${station.key}-${step.key}`} variant={step.active ? "secondary" : "outline"}>
+                        {step.label}{step.active ? "" : " (inactive)"}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="h-px bg-titan-border-subtle" />
+
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h3 className="text-titan-md font-semibold text-titan-text-primary">Line Item Status Routing</h3>
+              <h3 className="text-titan-md font-semibold text-titan-text-primary">Routing Rules</h3>
               <p className="text-titan-sm text-titan-text-muted mt-1">
-                Define the allowed line-item statuses and choose which statuses automatically create/update a production job.
+                Internal line-item statuses trigger production intake. Choose whether a status routes into production, then pick the station and starting step.
               </p>
             </div>
 
             <div className="flex items-center gap-2">
-              <Button variant="outline" onClick={addRule}>
-                Add status
-              </Button>
-              <Button
-                onClick={() => save.mutate(draft)}
-                disabled={save.isPending || !validation.isValid}
-              >
+              <Button variant="outline" onClick={addRule}>Add routing rule</Button>
+              <Button onClick={() => save.mutate(draft)} disabled={save.isPending || !validation.isValid}>
                 {save.isPending ? "Saving…" : "Save"}
               </Button>
             </div>
@@ -538,138 +748,47 @@ export function ProductionSettings() {
               </ul>
             </div>
           ) : null}
+          <div className="space-y-3">
+            {routingRules.length === 0 ? (
+              <div className="rounded-md border border-titan-border-subtle p-4 text-sm text-titan-text-muted">
+                No routing rules configured yet. Add a rule to define when a line item should enter production.
+              </div>
+            ) : (
+              routingRules.map((r) => {
+                const idx = draft.findIndex((row) => row === r);
+                const selectedStationKey = (r.stationKey ?? "").trim() || stationOptions[0]?.key || "";
+                const allStationSteps = stationSteps?.[selectedStationKey] ?? [];
+                const activeStationSteps = allStationSteps.filter((step) => step.active !== false);
+                const selectedStepKey = String((r.stepKey ?? r.defaultStepKey ?? "")).trim();
+                const selectedStepMeta = allStationSteps.find((step) => step.key === selectedStepKey) ?? null;
+                const hasMissingStep = !!selectedStepKey && !selectedStepMeta;
+                const hasInactiveStep = !!selectedStepMeta && selectedStepMeta.active === false;
 
-          {stationLoadError ? (
-            <div className="text-xs text-red-600">Unable to load stations: {stationLoadError}</div>
-          ) : null}
+                return (
+                  <div key={`${idx}-${(r.id ?? r.key ?? "") as any}`.trim()} className="rounded-titan-lg border border-titan-border-subtle p-4 space-y-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-titan-text-primary">{r.label?.trim() || "New routing rule"}</div>
+                        <div className="text-xs text-titan-text-muted">Internal line-item status trigger</div>
+                      </div>
+                      <Button variant="outline" onClick={() => removeRule(idx)}>Remove</Button>
+                    </div>
 
-          {stepLoadError ? (
-            <div className="text-xs text-red-600">Unable to load steps: {stepLoadError}</div>
-          ) : null}
-
-          <div className="rounded-md border border-titan-border-subtle overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-[180px]">ID</TableHead>
-                  <TableHead>Label</TableHead>
-                  <TableHead className="w-[140px]">Color</TableHead>
-                  <TableHead className="w-[160px]">Send to Production</TableHead>
-                  <TableHead className="w-[180px]">Station</TableHead>
-                  <TableHead className="w-[180px]">Step</TableHead>
-                  <TableHead className="w-[120px]">Sort</TableHead>
-                  <TableHead className="w-[100px]"></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {draft.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={8} className="text-titan-sm text-titan-text-muted">
-                      No statuses configured yet. Add one to start.
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  draft.map((r, idx) => (
-                    <TableRow key={`${idx}-${(r.id ?? r.key ?? "") as any}`.trim()}>
-                      <TableCell>
-                        <Input
-                          value={(r.id ?? r.key ?? "") as any}
-                          onChange={(e) => setRule(idx, { id: e.target.value })}
-                          placeholder="prepress"
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Input
-                          value={r.label ?? ""}
-                          onChange={(e) => setRule(idx, { label: e.target.value })}
-                          placeholder="Queued"
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Input
-                          value={r.color ?? ""}
-                          onChange={(e) => setRule(idx, { color: e.target.value || null })}
-                          placeholder="blue"
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Switch
-                            checked={r.sendToProduction === true}
-                            onCheckedChange={(v) => setRule(idx, { sendToProduction: v })}
-                          />
-                          <span className="text-titan-sm text-titan-text-muted">
-                            {r.sendToProduction ? "Yes" : "No"}
-                          </span>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <Select
-                          value={(r.stationKey ?? "").trim() || "flatbed"}
-                          onValueChange={(v) => setRule(idx, { stationKey: v })}
-                          disabled={!r.sendToProduction || isStationsLoading || !!stationLoadError}
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Station" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {stationOptions.map((station) => (
-                              <SelectItem key={station.key} value={station.key}>
-                                {station.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </TableCell>
-                      <TableCell>
-                        {(() => {
-                          const selectedStationKey = (r.stationKey ?? "").trim() || "flatbed";
-                          const allStationSteps = stationSteps?.[selectedStationKey] ?? [];
-                          const activeStationSteps = allStationSteps.filter((step) => step.active !== false);
-                          const selectedStepKey = String((r.stepKey ?? r.defaultStepKey ?? "")).trim();
-                          const selectedStepMeta = allStationSteps.find((step) => step.key === selectedStepKey) ?? null;
-                          const hasMissingStep = !!selectedStepKey && !selectedStepMeta;
-                          const hasInactiveStep = !!selectedStepMeta && selectedStepMeta.active === false;
-
-                          return (
-                            <div className="space-y-1">
-                              <Select
-                                value={selectedStepKey || "__none__"}
-                                onValueChange={(v) => setRule(idx, { stepKey: v === "__none__" ? null : v })}
-                                disabled={!r.sendToProduction || isStepsLoading || !selectedStationKey}
-                              >
-                                <SelectTrigger>
-                                  <SelectValue placeholder="queued (fallback)" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="__none__">queued (fallback)</SelectItem>
-                                  {activeStationSteps.map((step) => (
-                                    <SelectItem key={step.key} value={step.key}>
-                                      {step.label}
-                                    </SelectItem>
-                                  ))}
-                                  {(hasMissingStep || hasInactiveStep) && selectedStepKey ? (
-                                    <SelectItem value={selectedStepKey}>
-                                      {hasInactiveStep ? `${selectedStepMeta?.label ?? selectedStepKey} (inactive)` : `${selectedStepKey} (missing)`}
-                                    </SelectItem>
-                                  ) : null}
-                                </SelectContent>
-                              </Select>
-                              {(hasMissingStep || hasInactiveStep) && r.sendToProduction ? (
-                                <Badge variant="destructive" className="text-[11px]">
-                                  {hasInactiveStep ? "Selected step is inactive" : "Selected step is missing"}
-                                </Badge>
-                              ) : null}
-                              <ManageProductionStepsDialog
-                                stationKey={selectedStationKey}
-                                stationLabel={stationOptions.find((station) => station.key === selectedStationKey)?.name || selectedStationKey}
-                                disabled={!r.sendToProduction}
-                              />
-                            </div>
-                          );
-                        })()}
-                      </TableCell>
-                      <TableCell>
+                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                      <div className="space-y-2">
+                        <Label>Status ID</Label>
+                        <Input value={(r.id ?? r.key ?? "") as any} onChange={(e) => setRule(idx, { id: e.target.value })} placeholder="prepress" />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Label</Label>
+                        <Input value={r.label ?? ""} onChange={(e) => setRule(idx, { label: e.target.value })} placeholder="Sent to Prepress" />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Color</Label>
+                        <Input value={r.color ?? ""} onChange={(e) => setRule(idx, { color: e.target.value || null })} placeholder="blue" />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Sort Order</Label>
                         <Input
                           inputMode="numeric"
                           value={r.sortOrder ?? ""}
@@ -679,19 +798,77 @@ export function ProductionSettings() {
                             const n = Number(raw);
                             setRule(idx, { sortOrder: Number.isFinite(n) ? n : r.sortOrder ?? null });
                           }}
-                          placeholder="0"
+                          placeholder="10"
                         />
-                      </TableCell>
-                      <TableCell>
-                        <Button variant="outline" onClick={() => removeRule(idx)}>
-                          Remove
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
+                      </div>
+                    </div>
+
+                    <div className="rounded-md bg-titan-bg-subtle p-4 space-y-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-medium text-titan-text-primary">Production intake</div>
+                          <div className="text-xs text-titan-text-muted">Turn this on only when this status should create or move a production job.</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Switch checked={r.sendToProduction === true} onCheckedChange={(v) => toggleRuleRouting(idx, v)} />
+                          <span className="text-sm text-titan-text-muted">{r.sendToProduction ? "Enabled" : "Disabled"}</span>
+                        </div>
+                      </div>
+
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label>Destination Station</Label>
+                          <Select
+                            value={selectedStationKey || undefined}
+                            onValueChange={(value) => setRuleStation(idx, value)}
+                            disabled={!r.sendToProduction || isStationsLoading || !!stationLoadError || stationOptions.length === 0}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select station" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {stationOptions.map((station) => (
+                                <SelectItem key={station.key} value={station.key}>{station.name}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label>Starting Step</Label>
+                          <Select
+                            value={selectedStepKey || "__none__"}
+                            onValueChange={(value) => setRule(idx, { stepKey: value === "__none__" ? null : value })}
+                            disabled={!r.sendToProduction || isStepsLoading || !selectedStationKey}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="queued (fallback)" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__none__">queued (fallback)</SelectItem>
+                              {activeStationSteps.map((step) => (
+                                <SelectItem key={step.key} value={step.key}>{step.label}</SelectItem>
+                              ))}
+                              {(hasMissingStep || hasInactiveStep) && selectedStepKey ? (
+                                <SelectItem value={selectedStepKey}>
+                                  {hasInactiveStep ? `${selectedStepMeta?.label ?? selectedStepKey} (inactive)` : `${selectedStepKey} (missing)`}
+                                </SelectItem>
+                              ) : null}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      {(hasMissingStep || hasInactiveStep) && r.sendToProduction ? (
+                        <Badge variant="destructive" className="text-[11px]">
+                          {hasInactiveStep ? "Selected step is inactive" : "Selected step is missing"}
+                        </Badge>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })
+            )}
           </div>
 
           <div className="h-px bg-titan-border-subtle" />
@@ -699,9 +876,9 @@ export function ProductionSettings() {
           <div className="space-y-4">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <h3 className="text-titan-md font-semibold text-titan-text-primary">Order Workflow Statuses</h3>
+                <h3 className="text-titan-md font-semibold text-titan-text-primary">Customer Order Statuses</h3>
                 <p className="text-titan-sm text-titan-text-muted mt-1">
-                  Configure organization-specific order statuses and publish changes.
+                  These are the statuses customers and staff see on orders. They are separate from internal production routing.
                 </p>
               </div>
 
@@ -729,6 +906,12 @@ export function ProductionSettings() {
               </div>
             ) : workflow.isError ? (
               <div className="text-titan-sm text-red-600">{(workflow.error as any)?.message || "Failed to load order workflow"}</div>
+            ) : null}
+
+            {collapsedWorkflowKeys.length > 0 ? (
+              <div className="rounded-md border border-titan-border-subtle bg-titan-bg-subtle p-3 text-titan-sm text-titan-text-secondary">
+                Collapsed duplicate status keys from the current workflow: {collapsedWorkflowKeys.join(", ")}
+              </div>
             ) : null}
 
             {workflowValidation.errors.length > 0 ? (
@@ -763,12 +946,14 @@ export function ProductionSettings() {
                       </TableCell>
                     </TableRow>
                   ) : (
-                    workflowDraft.map((r, idx) => (
+                    workflowStatuses.map((r) => {
+                      const idx = workflowDraft.findIndex((row) => row === r);
+                      return (
                       <TableRow key={`${r.key}-${idx}`}>
                         <TableCell>
                           <Input
                             value={r.key}
-                            onChange={(e) => setWorkflowRule(idx, { key: e.target.value })}
+                            onChange={(e) => setWorkflowRule(idx, { key: normalizeWorkflowKey(e.target.value) })}
                             placeholder="in_production"
                           />
                         </TableCell>
@@ -788,12 +973,9 @@ export function ProductionSettings() {
                               <SelectValue placeholder="Category" />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="new">new</SelectItem>
-                              <SelectItem value="active">active</SelectItem>
-                              <SelectItem value="ready">ready</SelectItem>
-                              <SelectItem value="on_hold">on_hold</SelectItem>
-                              <SelectItem value="completed">completed</SelectItem>
-                              <SelectItem value="canceled">canceled</SelectItem>
+                                {orderCategoryOptions.map((option) => (
+                                  <SelectItem key={option} value={option}>{option}</SelectItem>
+                                ))}
                             </SelectContent>
                           </Select>
                         </TableCell>
@@ -826,7 +1008,8 @@ export function ProductionSettings() {
                           <Button variant="outline" onClick={() => removeWorkflowRule(idx)}>Remove</Button>
                         </TableCell>
                       </TableRow>
-                    ))
+                    );
+                  })
                   )}
                 </TableBody>
               </Table>
