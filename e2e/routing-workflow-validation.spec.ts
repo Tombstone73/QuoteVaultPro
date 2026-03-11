@@ -135,6 +135,10 @@ test.describe.serial("routing workflow validation", () => {
       await row.click();
 
       await expect(page.getByText(new RegExp(`Order #${candidate.jobNumber}`))).toBeVisible();
+
+      await page.reload({ waitUntil: "networkidle" });
+      await showAllProductionJobs(page);
+      await expect(productionRowByOrderNumber(page, candidate.jobNumber)).toBeVisible();
     });
   });
 
@@ -187,6 +191,10 @@ test.describe.serial("routing workflow validation", () => {
       await expect(card).toBeVisible();
       await card.click();
       await expect(page.locator("main h2")).toContainText(candidate.orderNumber);
+
+      await page.reload({ waitUntil: "networkidle" });
+      const reloadedCard = page.locator("aside").getByText(candidate.orderNumber, { exact: true }).first();
+      await expect(reloadedCard).toBeVisible();
     });
   });
 });
@@ -250,6 +258,32 @@ test.describe("invariant: double send-to-print is rejected", () => {
 });
 
 test.describe("invariant: Send to Production button gating", () => {
+  test("Start Prepress button is disabled when prepressStage is not pending_prepress", async ({ page }) => {
+    test.setTimeout(60_000);
+    await ensureAuthenticated(page);
+
+    const snapshot = await getRoutingSnapshot(page);
+    const candidate = snapshot.queueItems.find(
+      (item) =>
+        item.isActivelyOwnedByPrepress === true &&
+        item.prepressStage !== "pending_prepress",
+    );
+
+    test.skip(!candidate, "No prepress item in non-pending stage available");
+
+    await page.goto("/production/prepress", { waitUntil: "networkidle" });
+    await expect(page).not.toHaveURL(/\/login/);
+
+    const card = page.locator("aside div.cursor-pointer").filter({
+      has: page.getByText(candidate!.jobNumber, { exact: true }),
+    }).first();
+    await expect(card).toBeVisible();
+    await card.click();
+
+    const startButton = page.getByRole("button", { name: /^Start Prepress$/ });
+    await expect(startButton).toBeDisabled();
+  });
+
   test("Send to Production button is disabled when prepressStage is not prepress_complete", async ({ page }) => {
     test.setTimeout(60_000);
     await ensureAuthenticated(page);
