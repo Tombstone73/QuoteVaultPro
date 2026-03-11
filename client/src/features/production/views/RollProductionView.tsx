@@ -1002,7 +1002,7 @@ function ActionRail({
                   const note = sendToPrepressNote.trim();
                   if (!note || !job.lineItemId) return;
                   sendToPrepress.mutate(
-                    { lineItemId: job.lineItemId, note, noPrintsCompletedYet: sendToPrepressNoPrints },
+                    { lineItemId: job.lineItemId, jobId: job.id, note, noPrintsCompletedYet: sendToPrepressNoPrints },
                     {
                       onSuccess: () => {
                         setSendToPrepressOpen(false);
@@ -1147,7 +1147,7 @@ function ActionRail({
                       onSuccess: () => {
                         if (reprintSendToPrepress && reprintEditNotes.trim()) {
                           sendToPrepress.mutate(
-                            { lineItemId: job.lineItemId!, note: reprintEditNotes.trim(), noPrintsCompletedYet: reprintNoPrints },
+                            { lineItemId: job.lineItemId!, jobId: job.id, note: reprintEditNotes.trim(), noPrintsCompletedYet: reprintNoPrints },
                             { onSuccess: resetReprintModal },
                           );
                         } else {

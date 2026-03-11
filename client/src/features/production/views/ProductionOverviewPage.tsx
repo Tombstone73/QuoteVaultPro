@@ -899,12 +899,6 @@ export default function ProductionOverviewPage() {
     if (job.status === "queued") return "queued";
     if (job.status === "done") return "production_complete";
     // Default to printing for in_progress jobs without stepKey
-    if (process.env.NODE_ENV !== "production") {
-      console.warn(
-        "[production-board] unknown stationKey/stepKey — job placed in 'printing' fallback column",
-        { jobId: job.id, stationKey: job.stationKey, stepKey: job.stepKey, status: job.status }
-      );
-    }
     return "printing";
   };
 
