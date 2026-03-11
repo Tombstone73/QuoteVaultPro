@@ -157,6 +157,77 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
       };
     }
 
+    step = "residual_active_guard";
+    const residualActiveJobs = await runner
+      .select({
+        id: productionJobs.id,
+        orderId: productionJobs.orderId,
+        stationKey: productionJobs.stationKey,
+        stepKey: productionJobs.stepKey,
+        status: productionJobs.status,
+      })
+      .from(productionJobs)
+      .where(
+        and(
+          eq(productionJobs.organizationId, organizationId),
+          eq(productionJobs.lineItemId, lineItemId),
+          ne(productionJobs.status, "void"),
+        ),
+      );
+
+    const residualFilteredActiveJobs = residualActiveJobs.filter(
+      (job: any) => !TERMINAL_JOB_STATUSES.includes(String(job.status ?? "").toLowerCase() as any),
+    );
+
+    const residualExistingExact = residualFilteredActiveJobs.find((job: any) => {
+      return job.stationKey === stationKey && job.stepKey === stepKey;
+    });
+
+    const residualExisting = residualExistingExact ?? residualFilteredActiveJobs[0];
+
+    if (residualExisting) {
+      const isDone = residualExisting.status === "done";
+      const routingDiffers = residualExisting.stationKey !== stationKey || residualExisting.stepKey !== stepKey;
+      const reason = routingDiffers
+        ? `existing_non_void_job_with_different_route:${residualExisting.stationKey}/${residualExisting.stepKey}`
+        : "existing_non_void_job_same_route";
+
+      if (!isDone && residualExisting.orderId !== orderId) {
+        step = "residual_guard_sync_order_id";
+        await runner
+          .update(productionJobs)
+          .set({ orderId, updatedAt: new Date() })
+          .where(
+            and(
+              eq(productionJobs.organizationId, organizationId),
+              eq(productionJobs.id, residualExisting.id),
+            ),
+          );
+      }
+
+      console.warn("[productionRoutingService] existing active job prevented duplicate insert", {
+        organizationId,
+        lineItemId,
+        stationKey,
+        stepKey,
+        existingJobId: residualExisting.id,
+        existingStationKey: residualExisting.stationKey,
+        existingStepKey: residualExisting.stepKey,
+      });
+
+      return {
+        jobId: residualExisting.id,
+        outcome: "existing",
+        stationKey: residualExisting.stationKey,
+        stepKey: residualExisting.stepKey,
+        status: residualExisting.status,
+        stationId,
+        ignoredDueToDone: isDone,
+        ignoredDueToExistingRouting: !isDone && routingDiffers,
+        reason,
+      };
+    }
+
     // C) Insert new production job
     step = "insert_production_job";
     if (!stationId) {

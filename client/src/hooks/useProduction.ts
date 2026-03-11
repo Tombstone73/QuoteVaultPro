@@ -513,7 +513,7 @@ export function useSendLineItemToPrepress() {
   const qc = useQueryClient();
   const { toast } = useToast();
   return useMutation({
-    mutationFn: async (args: { lineItemId: string; note: string; noPrintsCompletedYet?: boolean }) => {
+    mutationFn: async (args: { lineItemId: string; jobId?: string; note: string; noPrintsCompletedYet?: boolean }) => {
       const res = await fetch(`/api/production/line-item/${args.lineItemId}/send-to-prepress`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -527,6 +527,9 @@ export function useSendLineItemToPrepress() {
     onSuccess: (_data, args) => {
       // Invalidate production boards so the job disappears
       qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      if (args.jobId) {
+        qc.invalidateQueries({ queryKey: ["/api/production/jobs", args.jobId] });
+      }
       // Invalidate prepress queue so the item appears
       qc.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
       toast({ title: "Sent to prepress", description: "Job moved to prepress queue for editing" });
