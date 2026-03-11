@@ -2610,6 +2610,15 @@ export type ProductionEventType =
   | "reprint_incremented"
   | "media_used_set";
 
+export const productionStationStepTriggerSchema = z.object({
+  type: z.string().min(1),
+  config: z.record(z.unknown()).optional().default({}),
+});
+
+export const productionStationStepTriggersSchema = z.array(productionStationStepTriggerSchema).default([]);
+
+export type ProductionStationStepTrigger = z.infer<typeof productionStationStepTriggerSchema>;
+
 export const productionJobs = pgTable("production_jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()::text`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
@@ -2642,10 +2651,36 @@ export const productionEvents = pgTable("production_events", {
   index("production_events_org_type_created_idx").on(table.organizationId, table.type, table.createdAt),
 ]);
 
+export const productionStationSteps = pgTable("production_station_steps", {
+  id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()::text`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  stationKey: varchar("station_key", { length: 50 }).notNull(),
+  key: varchar("key", { length: 80 }).notNull(),
+  label: varchar("label", { length: 200 }).notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+  active: boolean("active").notNull().default(true),
+  triggers: jsonb("triggers").$type<ProductionStationStepTrigger[]>().notNull().default(sql`'[]'::jsonb`),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("production_station_steps_org_station_key_uidx").on(table.organizationId, table.stationKey, table.key),
+  index("production_station_steps_org_station_sort_idx").on(table.organizationId, table.stationKey, table.sortOrder),
+]);
+
+export const insertProductionStationStepSchema = createInsertSchema(productionStationSteps).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  triggers: productionStationStepTriggersSchema.optional().default([]),
+});
+
 export type ProductionJob = typeof productionJobs.$inferSelect;
 export type InsertProductionJob = typeof productionJobs.$inferInsert;
 export type ProductionEvent = typeof productionEvents.$inferSelect;
 export type InsertProductionEvent = typeof productionEvents.$inferInsert;
+export type ProductionStationStep = typeof productionStationSteps.$inferSelect;
+export type InsertProductionStationStep = z.infer<typeof insertProductionStationStepSchema>;
 
 // -------------------- Invoicing & Payments (Future QuickBooks Sync Ready) --------------------
 

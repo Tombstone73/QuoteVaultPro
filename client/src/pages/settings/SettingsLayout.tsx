@@ -34,7 +34,7 @@ import {
   useSaveProductionLineItemStatusRules,
   type ProductionLineItemStatusRule,
 } from "@/hooks/useProductionSettings";
-import { ManageProductionStepsDialog } from "@/components/production/ManageProductionStepsDialog";
+import { StationStepEditor } from "@/components/production/StationStepEditor";
 import {
   useOrderWorkflow,
   usePublishOrderWorkflow,
@@ -624,9 +624,9 @@ export function ProductionSettings() {
 
         <div className="space-y-4">
           <div>
-            <h3 className="text-titan-md font-semibold text-titan-text-primary">Stations</h3>
+            <h3 className="text-titan-md font-semibold text-titan-text-primary">Workflow Editor</h3>
             <p className="text-titan-sm text-titan-text-muted mt-1">
-              Stations are your physical production areas. Routing rules can only target active stations listed here.
+              Configure each station as a visual step lane. Reorder steps to match the real production flow.
             </p>
           </div>
 
@@ -634,80 +634,26 @@ export function ProductionSettings() {
             <div className="text-xs text-red-600">Unable to load stations: {stationLoadError}</div>
           ) : null}
 
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {stationCards.length === 0 ? (
-              <div className="rounded-md border border-titan-border-subtle p-4 text-sm text-titan-text-muted md:col-span-2 xl:col-span-3">
-                No active stations were found.
-              </div>
-            ) : (
-              stationCards.map((station) => (
-                <div key={station.key} className="rounded-titan-lg border border-titan-border-subtle p-4 space-y-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-semibold text-titan-text-primary">{station.name}</div>
-                      <div className="text-xs text-titan-text-muted">Key: {station.key}</div>
-                    </div>
-                    <Badge variant="secondary">{station.activeSteps.length} active step{station.activeSteps.length === 1 ? "" : "s"}</Badge>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3 text-sm">
-                    <div className="rounded-md bg-titan-bg-subtle p-3">
-                      <div className="text-xs text-titan-text-muted">Default intake step</div>
-                      <div className="font-medium text-titan-text-primary">{station.defaultStepLabel}</div>
-                    </div>
-                    <div className="rounded-md bg-titan-bg-subtle p-3">
-                      <div className="text-xs text-titan-text-muted">Total configured steps</div>
-                      <div className="font-medium text-titan-text-primary">{station.steps.length}</div>
-                    </div>
-                  </div>
-                  <ManageProductionStepsDialog stationKey={station.key} stationLabel={station.name} />
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        <div className="h-px bg-titan-border-subtle" />
-
-        <div className="space-y-4">
-          <div>
-            <h3 className="text-titan-md font-semibold text-titan-text-primary">Station Steps</h3>
-            <p className="text-titan-sm text-titan-text-muted mt-1">
-              Steps define the internal handoff sequence within each station. Manage them here before assigning them to routing rules.
-            </p>
-          </div>
-
           {stepLoadError ? (
             <div className="text-xs text-red-600">Unable to load steps: {stepLoadError}</div>
           ) : null}
 
-          <div className="space-y-3">
-            {stationCards.map((station) => (
-              <div key={`steps-${station.key}`} className="rounded-titan-lg border border-titan-border-subtle p-4 space-y-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-semibold text-titan-text-primary">{station.name}</div>
-                    <div className="text-xs text-titan-text-muted">Used by routing rules for {station.key}</div>
-                  </div>
-                  <ManageProductionStepsDialog stationKey={station.key} stationLabel={station.name} />
-                </div>
-
-                {isStepsLoading ? (
-                  <div className="flex items-center gap-2 text-titan-sm text-titan-text-muted">
-                    <Loader2 className="h-4 w-4 animate-spin" /> Loading steps…
-                  </div>
-                ) : station.steps.length === 0 ? (
-                  <div className="text-sm text-titan-text-muted">No steps configured yet. Add at least one active step for clean routing.</div>
-                ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {station.steps.map((step) => (
-                      <Badge key={`${station.key}-${step.key}`} variant={step.active ? "secondary" : "outline"}>
-                        {step.label}{step.active ? "" : " (inactive)"}
-                      </Badge>
-                    ))}
-                  </div>
-                )}
+          <div className="space-y-4">
+            {stationCards.length === 0 ? (
+              <div className="rounded-md border border-titan-border-subtle p-4 text-sm text-titan-text-muted">
+                No active stations were found.
               </div>
-            ))}
+            ) : (
+              stationCards.map((station) => (
+                <StationStepEditor
+                  key={station.key}
+                  stationKey={station.key}
+                  stationLabel={station.name}
+                  steps={station.steps}
+                  isLoading={isStepsLoading}
+                />
+              ))
+            )}
           </div>
         </div>
 
