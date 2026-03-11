@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { organizations, productTypes } from "@shared/schema";
 import { db } from "../db";
 
@@ -13,6 +13,56 @@ type ProductTypeRoutingSnapshot = {
   defaultStepKey?: string | null;
   name?: string | null;
 };
+
+const DEFAULT_ROUTE_STEP_KEY = "queued";
+
+function normalizeManagedStepKey(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9_-]/g, "")
+    .replace(/-+/g, "-");
+}
+
+async function resolveManagedStepKeyOrFallback(args: {
+  organizationId: string;
+  stationKey: string;
+  stepKey?: string | null;
+  context: string;
+}): Promise<string> {
+  const stationKey = String(args.stationKey ?? "").trim();
+  const requestedStepKey = normalizeManagedStepKey(args.stepKey);
+
+  if (!stationKey) return DEFAULT_ROUTE_STEP_KEY;
+  if (!requestedStepKey || requestedStepKey === DEFAULT_ROUTE_STEP_KEY) {
+    return DEFAULT_ROUTE_STEP_KEY;
+  }
+
+  const result = await db.execute(sql`
+    select active
+    from production_station_steps
+    where organization_id = ${args.organizationId}
+      and station_key = ${stationKey}
+      and key = ${requestedStepKey}
+    limit 1
+  `);
+
+  const row = result.rows?.[0] as { active?: boolean } | undefined;
+  if (row?.active !== false && row) {
+    return requestedStepKey;
+  }
+
+  console.warn("[ProductionRoutingResolver] invalid managed step; falling back to queued", {
+    organizationId: args.organizationId,
+    stationKey,
+    stepKey: requestedStepKey,
+    reason: row ? "inactive_step" : "missing_step",
+    context: args.context,
+  });
+
+  return DEFAULT_ROUTE_STEP_KEY;
+}
 
 function inferStationKeyFromProductTypeName(productTypeName?: string | null): string | null {
   const value = String(productTypeName ?? "").trim().toLowerCase();
@@ -76,11 +126,21 @@ export async function resolvePostPrepressProductionRoute(args: {
         .limit(1)
     : [];
 
-  return buildNonPrepressRoute({
+  const route = buildNonPrepressRoute({
     defaultStationKey: productType?.defaultStationKey,
     defaultStepKey: productType?.defaultStepKey,
     name: productType?.name || productTypeNameSnapshot,
   });
+
+  return {
+    ...route,
+    stepKey: await resolveManagedStepKeyOrFallback({
+      organizationId,
+      stationKey: route.stationKey,
+      stepKey: route.stepKey,
+      context: "resolvePostPrepressProductionRoute",
+    }),
+  };
 }
 
 export async function resolveInitialProductionRoute(args: {
@@ -149,7 +209,12 @@ export async function resolveInitialProductionRoute(args: {
 
   return {
     stationKey: nonPrepressRoute.stationKey,
-    stepKey: nonPrepressRoute.stepKey,
+    stepKey: await resolveManagedStepKeyOrFallback({
+      organizationId,
+      stationKey: nonPrepressRoute.stationKey,
+      stepKey: nonPrepressRoute.stepKey,
+      context: "resolveInitialProductionRoute",
+    }),
     reason,
   };
 }

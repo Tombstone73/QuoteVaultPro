@@ -9433,6 +9433,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     }
 
+    const activeStations = await getActiveProductionStationsForOrganization(organizationId);
+    const stationsMissingUsableSteps = activeStations
+      .map((station) => station.key)
+      .filter((stationKey) => !Array.isArray(grouped[stationKey]) || grouped[stationKey].length === 0);
+
+    for (const stationKey of stationsMissingUsableSteps) {
+      await db.execute(sql`
+        insert into production_station_steps (
+          organization_id,
+          station_key,
+          key,
+          label,
+          sort_order,
+          active,
+          triggers
+        )
+        values (
+          ${organizationId},
+          ${stationKey},
+          ${DEFAULT_PRODUCTION_MANAGED_STEP.key},
+          ${DEFAULT_PRODUCTION_MANAGED_STEP.label},
+          ${DEFAULT_PRODUCTION_MANAGED_STEP.sortOrder},
+          ${DEFAULT_PRODUCTION_MANAGED_STEP.active},
+          '[]'::jsonb
+        )
+        on conflict (organization_id, station_key, key) do nothing
+      `);
+
+      grouped[stationKey] = [
+        {
+          key: DEFAULT_PRODUCTION_MANAGED_STEP.key,
+          label: DEFAULT_PRODUCTION_MANAGED_STEP.label,
+          sortOrder: DEFAULT_PRODUCTION_MANAGED_STEP.sortOrder,
+          active: DEFAULT_PRODUCTION_MANAGED_STEP.active,
+          triggers: [],
+        },
+      ];
+    }
+
     return grouped;
   };
 
@@ -9480,6 +9519,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
     `);
 
     return (result.rows ?? []).map((row: any) => normalizeProductionStepKey(row.key)).filter(Boolean);
+  };
+
+  const getProductionStationStepState = async (organizationId: string, stationKey: string, stepKey: string) => {
+    const normalizedStationKey = String(stationKey ?? "").trim();
+    const normalizedStepKey = normalizeProductionStepKey(stepKey);
+    if (!normalizedStationKey || !normalizedStepKey) return "missing" as const;
+
+    const result = await db.execute(sql`
+      select active
+      from production_station_steps
+      where organization_id = ${organizationId}
+        and station_key = ${normalizedStationKey}
+        and key = ${normalizedStepKey}
+      limit 1
+    `);
+
+    const row = result.rows?.[0] as { active?: boolean } | undefined;
+    if (!row) {
+      return normalizedStepKey === DEFAULT_PRODUCTION_MANAGED_STEP.key ? "fallback" as const : "missing" as const;
+    }
+
+    return row.active === false ? "inactive" as const : "active" as const;
   };
 
   const createProductionStationStep = async (args: {
@@ -9891,6 +9952,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
           if (!id) return res.status(400).json({ error: "Invalid id" });
           if (keys.has(id)) return res.status(400).json({ error: `Duplicate id: ${id}` });
           keys.add(id);
+
+          if ((r as any).sendToProduction === true) {
+            const stationKey = String((r as any).stationKey ?? "").trim();
+            if (!stationKey) {
+              return res.status(400).json({ error: `Status '${id}' routes to production but has no station.` });
+            }
+
+            if (!(await ensureActiveStationExists(organizationId, stationKey))) {
+              return res.status(400).json({ error: `Status '${id}' references inactive or missing station '${stationKey}'.` });
+            }
+
+            const stepKey = String((r as any).stepKey ?? (r as any).defaultStepKey ?? "").trim();
+            if (stepKey) {
+              const stepState = await getProductionStationStepState(organizationId, stationKey, stepKey);
+              if (stepState === "missing") {
+                return res.status(400).json({ error: `Status '${id}' references missing step '${stepKey}' for station '${stationKey}'.` });
+              }
+              if (stepState === "inactive") {
+                return res.status(400).json({ error: `Status '${id}' references inactive step '${stepKey}' for station '${stationKey}'.` });
+              }
+            }
+          }
         }
 
         await setProductionLineItemStatusRulesForOrganization(organizationId, rules);
