@@ -159,6 +159,14 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
 
     // C) Insert new production job
     step = "insert_production_job";
+    if (!stationId) {
+      // WARNING: stationId could not be resolved for stationKey. The insert below
+      // has no DB-level ON CONFLICT guard in this path. Log for visibility.
+      console.warn(
+        "[productionRoutingService] inserting job without stationId — station_key not found in stations table",
+        { organizationId, lineItemId, stationKey, stepKey }
+      );
+    }
     const insertedResult = stationId
       ? await runner.execute(sql`
           insert into production_jobs (
