@@ -61,6 +61,7 @@ import {
   isPrepressOwnershipJob,
   resolveActiveProductionOwners,
   transitionToStation,
+  type StationTransitionResult,
 } from "./services/productionOwnership";
 import { getDashboardSummary } from "./services/dashboardSummaryService";
 import { resolveVisibleNodes } from "@shared/optionTreeV2Runtime";
@@ -14606,8 +14607,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const effectiveFingerprint = effectivePayload?.effectiveFingerprint || buildEffectiveMaterialsFingerprint([]);
 
       // 5. Close prepress owner and create the downstream owner in one transaction.
-      const handoffResult = await db.transaction(async (tx) => {
-        const transitionResult = await transitionToStation(tx, {
+      const handoffResult: StationTransitionResult = await db.transaction(async (tx) => {
+        const transitionResult: StationTransitionResult = await transitionToStation(tx, {
           organizationId,
           orderId: item.orderId,
           lineItemId,
@@ -14624,7 +14625,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           })
           .where(eq(orderLineItems.id, lineItemId));
 
-        const productionJobId = transitionResult!.createdJobId;
+        const productionJobId = transitionResult.createdJobId;
 
         if (materialContext?.lineItem?.orderId) {
           const alreadyReserved = await wasMaterialsLifecycleEventProcessed(tx, {
@@ -14674,10 +14675,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           newValues: {
             status: 'print_ready',
             materialFingerprint: effectiveFingerprint,
-            closedJobId: transitionResult!.closedJobId,
-            productionJobId: transitionResult!.createdJobId,
-            stationKey: transitionResult!.newStationKey,
-            stepKey: transitionResult!.newStepKey,
+            closedJobId: transitionResult.closedJobId,
+            productionJobId: transitionResult.createdJobId,
+            stationKey: transitionResult.newStationKey,
+            stepKey: transitionResult.newStepKey,
           },
           ipAddress: req.ip || null,
           userAgent: req.headers["user-agent"] || null,
