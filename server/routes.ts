@@ -9211,15 +9211,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .strict();
 
   const productionLineItemStatusRulesSchema = z.array(productionLineItemStatusRuleSchema);
+  const productionManagedStepTriggerSchema = z
+    .object({
+      type: z.string().min(1),
+      config: z.record(z.unknown()).optional().default({}),
+    })
+    .strict();
   const productionManagedStepSchema = z
     .object({
       key: z.string().min(1),
       label: z.string().min(1),
+      sortOrder: z.number().int().optional().default(0),
       active: z.boolean().optional().default(true),
+      triggers: z.array(productionManagedStepTriggerSchema).optional().default([]),
     })
     .strict();
-  const productionManagedStepListSchema = z.array(productionManagedStepSchema);
-  const productionManagedStepsByStationSchema = z.record(z.string(), productionManagedStepListSchema);
 
   const normalizeProductionStepKey = (value: unknown) =>
     String(value ?? "")
@@ -9230,6 +9236,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       .replace(/-+/g, "-");
 
   const normalizeProductionStepLabel = (value: unknown) => String(value ?? "").trim();
+
+  const normalizeProductionStepTriggers = (value: unknown) => {
+    const parsed = z.array(productionManagedStepTriggerSchema).safeParse(value);
+    return parsed.success ? parsed.data : [];
+  };
 
   const getProductionConfigForOrganization = async (organizationId: string) => {
     const rows = await db
@@ -9355,53 +9366,74 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return loaded.rules;
   };
 
-  const getProductionStationStepsForOrganization = async (organizationId: string) => {
-    const rows = await db
-      .select({ settings: organizations.settings })
-      .from(organizations)
-      .where(eq(organizations.id, organizationId))
-      .limit(1);
-
-    const settings = (rows[0]?.settings as any) ?? {};
-    const raw = settings?.preferences?.production?.stationSteps;
-    const parsed = productionManagedStepsByStationSchema.safeParse(raw);
-    const source = parsed.success ? parsed.data : {};
-
-    const normalized = Object.fromEntries(
-      Object.entries(source)
-        .map(([stationKey, items]) => {
-          const normalizedStationKey = String(stationKey ?? "").trim();
-          if (!normalizedStationKey) return null;
-
-          const dedupe = new Set<string>();
-          const normalizedItems = items
-            .map((step) => {
-              const normalizedKey = normalizeProductionStepKey(step.key);
-              const normalizedLabel = normalizeProductionStepLabel(step.label);
-              if (!normalizedKey || !normalizedLabel || dedupe.has(normalizedKey)) return null;
-              dedupe.add(normalizedKey);
-              return {
-                key: normalizedKey,
-                label: normalizedLabel,
-                active: step.active !== false,
-              };
-            })
-            .filter((step): step is { key: string; label: string; active: boolean } => !!step)
-            .sort((a, b) => a.label.localeCompare(b.label));
-
-          return [normalizedStationKey, normalizedItems] as const;
-        })
-        .filter((entry): entry is readonly [string, Array<{ key: string; label: string; active: boolean }>] => !!entry),
-    );
-
-    return normalized;
-  };
-
   const DEFAULT_PRODUCTION_MANAGED_STEP = {
     key: "queued",
     label: "Queued",
+    sortOrder: 10,
     active: true,
+    triggers: [],
   } as const;
+
+  const getProductionStationStepsForOrganization = async (organizationId: string) => {
+    await db.execute(sql`
+      insert into production_station_steps (
+        organization_id,
+        station_key,
+        key,
+        label,
+        sort_order,
+        active,
+        triggers
+      )
+      select
+        s.organization_id,
+        s.key,
+        ${DEFAULT_PRODUCTION_MANAGED_STEP.key},
+        ${DEFAULT_PRODUCTION_MANAGED_STEP.label},
+        ${DEFAULT_PRODUCTION_MANAGED_STEP.sortOrder},
+        ${DEFAULT_PRODUCTION_MANAGED_STEP.active},
+        '[]'::jsonb
+      from stations s
+      left join production_station_steps p
+        on p.organization_id = s.organization_id
+       and p.station_key = s.key
+      where s.organization_id = ${organizationId}
+        and s.active = true
+        and p.id is null
+      on conflict (organization_id, station_key, key) do nothing
+    `);
+
+    const result = await db.execute(sql`
+      select
+        station_key as "stationKey",
+        key as "key",
+        label as "label",
+        sort_order as "sortOrder",
+        active as "active",
+        triggers as "triggers"
+      from production_station_steps
+      where organization_id = ${organizationId}
+      order by station_key asc, sort_order asc, created_at asc, label asc
+    `);
+
+    const grouped: Record<string, Array<{ key: string; label: string; sortOrder: number; active: boolean; triggers: Array<{ type: string; config: Record<string, unknown> }> }>> = {};
+    for (const row of result.rows ?? []) {
+      const stationKey = String((row as any).stationKey ?? "").trim();
+      const key = normalizeProductionStepKey((row as any).key);
+      const label = normalizeProductionStepLabel((row as any).label);
+      if (!stationKey || !key || !label) continue;
+      if (!grouped[stationKey]) grouped[stationKey] = [];
+      grouped[stationKey].push({
+        key,
+        label,
+        sortOrder: Number((row as any).sortOrder ?? 0),
+        active: (row as any).active !== false,
+        triggers: normalizeProductionStepTriggers((row as any).triggers),
+      });
+    }
+
+    return grouped;
+  };
 
   const getActiveProductionStationsForOrganization = async (organizationId: string) => {
     const result = await db.execute(sql`
@@ -9424,47 +9456,126 @@ export async function registerRoutes(app: Express): Promise<Server> {
       .filter((row: any) => row.key.length > 0);
   };
 
-  const getProductionStationStepsWithComputedDefaultsForOrganization = async (organizationId: string) => {
-    const stationSteps = await getProductionStationStepsForOrganization(organizationId);
-    const activeStations = await getActiveProductionStationsForOrganization(organizationId);
+  const ensureActiveStationExists = async (organizationId: string, stationKey: string) => {
+    const result = await db.execute(sql`
+      select 1
+      from stations
+      where organization_id = ${organizationId}
+        and key = ${stationKey}
+        and active = true
+      limit 1
+    `);
 
-    const withComputedDefaults: Record<string, Array<{ key: string; label: string; active: boolean }>> = {
-      ...stationSteps,
-    };
-
-    for (const station of activeStations) {
-      const existing = withComputedDefaults[station.key];
-      if (Array.isArray(existing) && existing.length > 0) continue;
-      withComputedDefaults[station.key] = [{ ...DEFAULT_PRODUCTION_MANAGED_STEP }];
-    }
-
-    return withComputedDefaults;
+    return (result.rows ?? []).length > 0;
   };
 
-  const setProductionStationStepsForOrganization = async (
-    organizationId: string,
-    stationSteps: Record<string, Array<{ key: string; label: string; active: boolean }>>,
-  ) => {
-    const rows = await db
-      .select({ settings: organizations.settings })
-      .from(organizations)
-      .where(eq(organizations.id, organizationId))
-      .limit(1);
+  const getProductionStationStepKeysForStation = async (organizationId: string, stationKey: string) => {
+    const result = await db.execute(sql`
+      select key
+      from production_station_steps
+      where organization_id = ${organizationId}
+        and station_key = ${stationKey}
+      order by sort_order asc, created_at asc, label asc
+    `);
 
-    const settings = (rows[0]?.settings as any) ?? {};
-    const next = {
-      ...settings,
-      preferences: {
-        ...(settings.preferences ?? {}),
-        production: {
-          ...(settings.preferences?.production ?? {}),
-          stationSteps,
-        },
-      },
-    };
+    return (result.rows ?? []).map((row: any) => normalizeProductionStepKey(row.key)).filter(Boolean);
+  };
 
-    await db.update(organizations).set({ settings: next }).where(eq(organizations.id, organizationId));
-    return next;
+  const createProductionStationStep = async (args: {
+    organizationId: string;
+    stationKey: string;
+    key: string;
+    label: string;
+  }) => {
+    const maxSortResult = await db.execute(sql`
+      select coalesce(max(sort_order), 0) as "maxSortOrder"
+      from production_station_steps
+      where organization_id = ${args.organizationId}
+        and station_key = ${args.stationKey}
+    `);
+    const nextSortOrder = Number((maxSortResult.rows?.[0] as any)?.maxSortOrder ?? 0) + 10;
+
+    await db.execute(sql`
+      insert into production_station_steps (
+        organization_id,
+        station_key,
+        key,
+        label,
+        sort_order,
+        active,
+        triggers
+      )
+      values (
+        ${args.organizationId},
+        ${args.stationKey},
+        ${args.key},
+        ${args.label},
+        ${nextSortOrder},
+        true,
+        '[]'::jsonb
+      )
+    `);
+  };
+
+  const updateProductionStationStep = async (args: {
+    organizationId: string;
+    stationKey: string;
+    key: string;
+    label?: string;
+    active?: boolean;
+    triggers?: Array<{ type: string; config: Record<string, unknown> }>;
+  }) => {
+    const updates = [] as Array<ReturnType<typeof sql>>;
+    if (typeof args.label !== "undefined") updates.push(sql`label = ${args.label}`);
+    if (typeof args.active === "boolean") updates.push(sql`active = ${args.active}`);
+    if (typeof args.triggers !== "undefined") updates.push(sql`triggers = ${JSON.stringify(args.triggers)}::jsonb`);
+    updates.push(sql`updated_at = now()`);
+
+    await db.execute(sql`
+      update production_station_steps
+      set ${sql.join(updates, sql`, `)}
+      where organization_id = ${args.organizationId}
+        and station_key = ${args.stationKey}
+        and key = ${args.key}
+    `);
+  };
+
+  const reorderProductionStationSteps = async (args: {
+    organizationId: string;
+    stationKey: string;
+    keys: string[];
+  }) => {
+    await db.transaction(async (tx) => {
+      const existingResult = await tx.execute(sql`
+        select key
+        from production_station_steps
+        where organization_id = ${args.organizationId}
+          and station_key = ${args.stationKey}
+        order by sort_order asc, created_at asc, label asc
+      `);
+      const existingKeys = (existingResult.rows ?? []).map((row: any) => normalizeProductionStepKey(row.key)).filter(Boolean);
+      const requestedKeys = args.keys.map((key) => normalizeProductionStepKey(key)).filter(Boolean);
+
+      if (requestedKeys.length === 0 || requestedKeys.length !== existingKeys.length) {
+        throw new Error("Reorder payload must include every step key for the station");
+      }
+
+      const requestedSet = new Set(requestedKeys);
+      if (existingKeys.some((key) => !requestedSet.has(key)) || requestedSet.size !== existingKeys.length) {
+        throw new Error("Reorder payload does not match current station steps");
+      }
+
+      for (const [index, key] of requestedKeys.entries()) {
+        await tx.execute(sql`
+          update production_station_steps
+          set sort_order = ${(index + 1) * 10},
+              updated_at = now()
+          where organization_id = ${args.organizationId}
+            and station_key = ${args.stationKey}
+            and key = ${key}
+        `);
+      }
+    });
   };
 
   const setProductionLineItemStatusRulesForOrganization = async (
@@ -9584,7 +9695,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
-      const stationSteps = await getProductionStationStepsWithComputedDefaultsForOrganization(organizationId);
+      const stationSteps = await getProductionStationStepsForOrganization(organizationId);
       res.json({ success: true, data: stationSteps });
     } catch (error) {
       console.error("Error fetching production steps:", error);
@@ -9612,15 +9723,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const key = normalizeProductionStepKey(parsed.data.key ?? label);
       if (!stationKey || !label || !key) return res.status(400).json({ error: "Invalid step payload" });
 
-      const stationSteps = await getProductionStationStepsForOrganization(organizationId);
-      const existing = stationSteps[stationKey] ?? [];
-      if (existing.some((step) => step.key === key)) {
+      if (!(await ensureActiveStationExists(organizationId, stationKey))) {
+        return res.status(400).json({ error: `Station '${stationKey}' is not active` });
+      }
+
+      const existingKeys = await getProductionStationStepKeysForStation(organizationId, stationKey);
+      if (existingKeys.includes(key)) {
         return res.status(409).json({ error: `Step '${key}' already exists for station '${stationKey}'` });
       }
 
-      stationSteps[stationKey] = [...existing, { key, label, active: true }].sort((a, b) => a.label.localeCompare(b.label));
-      await setProductionStationStepsForOrganization(organizationId, stationSteps);
-
+      await createProductionStationStep({ organizationId, stationKey, key, label });
+      const stationSteps = await getProductionStationStepsForOrganization(organizationId);
       res.json({ success: true, data: stationSteps });
     } catch (error) {
       console.error("Error creating production step:", error);
@@ -9647,8 +9760,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .object({
             label: z.string().min(1).optional(),
             active: z.boolean().optional(),
+            triggers: z.array(productionManagedStepTriggerSchema).optional(),
           })
-          .refine((v) => typeof v.label !== "undefined" || typeof v.active !== "undefined", {
+          .refine((v) => typeof v.label !== "undefined" || typeof v.active !== "undefined" || typeof v.triggers !== "undefined", {
             message: "No step fields to update",
           })
           .safeParse(req.body ?? {});
@@ -9657,24 +9771,66 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid step payload" });
         }
 
+        const existingKeys = await getProductionStationStepKeysForStation(organizationId, stationKey);
+        if (!existingKeys.includes(key)) return res.status(404).json({ error: "Step not found" });
+
+        await updateProductionStationStep({
+          organizationId,
+          stationKey,
+          key,
+          label: parsed.data.label ? normalizeProductionStepLabel(parsed.data.label) : undefined,
+          active: typeof parsed.data.active === "boolean" ? parsed.data.active : undefined,
+          triggers: typeof parsed.data.triggers !== "undefined" ? parsed.data.triggers : undefined,
+        });
+
         const stationSteps = await getProductionStationStepsForOrganization(organizationId);
-        const stationList = stationSteps[stationKey] ?? [];
-        const index = stationList.findIndex((step) => step.key === key);
-        if (index < 0) return res.status(404).json({ error: "Step not found" });
-
-        const current = stationList[index];
-        stationList[index] = {
-          ...current,
-          label: parsed.data.label ? normalizeProductionStepLabel(parsed.data.label) : current.label,
-          active: typeof parsed.data.active === "boolean" ? parsed.data.active : current.active,
-        };
-        stationSteps[stationKey] = [...stationList].sort((a, b) => a.label.localeCompare(b.label));
-
-        await setProductionStationStepsForOrganization(organizationId, stationSteps);
         res.json({ success: true, data: stationSteps });
       } catch (error) {
         console.error("Error updating production step:", error);
         res.status(500).json({ error: "Failed to update production step" });
+      }
+    },
+  );
+
+  app.put(
+    "/api/production/steps/:stationKey/reorder",
+    isAuthenticated,
+    tenantContext,
+    isAdminOrOwner,
+    async (req: any, res) => {
+      try {
+        if (!assertInternalUser(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+        const stationKey = String(req.params.stationKey ?? "").trim();
+        if (!stationKey) return res.status(400).json({ error: "Invalid station path" });
+
+        const parsed = z
+          .object({
+            keys: z.array(z.string().min(1)).min(1),
+          })
+          .safeParse(req.body ?? {});
+
+        if (!parsed.success) {
+          return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid reorder payload" });
+        }
+
+        await reorderProductionStationSteps({
+          organizationId,
+          stationKey,
+          keys: parsed.data.keys,
+        });
+
+        const stationSteps = await getProductionStationStepsForOrganization(organizationId);
+        res.json({ success: true, data: stationSteps });
+      } catch (error) {
+        const message = String((error as any)?.message || "Failed to reorder production steps");
+        if (message.includes("Reorder payload")) {
+          return res.status(400).json({ error: message });
+        }
+        console.error("Error reordering production steps:", error);
+        res.status(500).json({ error: "Failed to reorder production steps" });
       }
     },
   );

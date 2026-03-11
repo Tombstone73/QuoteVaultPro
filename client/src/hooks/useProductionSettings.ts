@@ -23,7 +23,12 @@ export type ProductionStation = {
 export type ProductionManagedStep = {
   key: string;
   label: string;
+  sortOrder: number;
   active: boolean;
+  triggers: Array<{
+    type: string;
+    config?: Record<string, unknown>;
+  }>;
 };
 
 export type ProductionManagedStepsByStation = Record<string, ProductionManagedStep[]>;
@@ -126,6 +131,10 @@ export function useUpdateProductionStep() {
       key: string;
       label?: string;
       active?: boolean;
+      triggers?: Array<{
+        type: string;
+        config?: Record<string, unknown>;
+      }>;
     }) => {
       const { stationKey, key, ...body } = payload;
       const res = await fetch(`/api/production/steps/${encodeURIComponent(stationKey)}/${encodeURIComponent(key)}`, {
@@ -144,6 +153,32 @@ export function useUpdateProductionStep() {
     },
     onError: (e: Error) => {
       toast({ title: "Update failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useReorderProductionSteps() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async (payload: { stationKey: string; keys: string[] }) => {
+      const res = await fetch(`/api/production/steps/${encodeURIComponent(payload.stationKey)}/reorder`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keys: payload.keys }),
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || json.message || "Failed to reorder production steps");
+      return (json.data ?? {}) as ProductionManagedStepsByStation;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/production/steps"] });
+      toast({ title: "Step order updated" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Reorder failed", description: e.message, variant: "destructive" });
     },
   });
 }

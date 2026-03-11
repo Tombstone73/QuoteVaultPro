@@ -13,7 +13,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Loader2, Plus, Pencil, Trash2, GripVertical } from "lucide-react";
 import { TitanCard } from "@/components/ui/TitanCard";
-import { ManageProductionStepsDialog } from "@/components/production/ManageProductionStepsDialog";
 
 export default function ProductTypesSettings() {
   const { data: productTypes, isLoading } = useProductTypes();
@@ -271,11 +270,9 @@ export default function ProductTypesSettings() {
                           {hasInactiveSelectedStep ? "Selected step is inactive" : "Selected step is missing"}
                         </Badge>
                       ) : null}
-                      <ManageProductionStepsDialog
-                        stationKey={selectedStationKey}
-                        stationLabel={stationOptions.find((station) => station.value === selectedStationKey)?.label || selectedStationKey}
-                        disabled={!selectedStationKey}
-                      />
+                      <p className="text-[11px] text-muted-foreground">
+                        Manage station steps from Settings → Production & Operations.
+                      </p>
                     </div>
                   </div>
                   <div className="flex items-center justify-between py-1">
@@ -466,11 +463,9 @@ export default function ProductTypesSettings() {
                         {hasInactiveSelectedStep ? "Selected step is inactive" : "Selected step is missing"}
                       </Badge>
                     ) : null}
-                    <ManageProductionStepsDialog
-                      stationKey={selectedStationKey}
-                      stationLabel={stationOptions.find((station) => station.value === selectedStationKey)?.label || selectedStationKey}
-                      disabled={!selectedStationKey}
-                    />
+                    <p className="text-[11px] text-muted-foreground">
+                      Manage station steps from Settings → Production & Operations.
+                    </p>
                   </div>
                 </div>
                 <div className="flex items-center justify-between py-1">
