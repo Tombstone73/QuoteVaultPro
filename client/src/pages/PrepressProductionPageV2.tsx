@@ -802,9 +802,9 @@ export default function PrepressProductionPageV2() {
   };
 
   return (
-    <div className="h-screen flex bg-[#111921] text-slate-100 font-sans overflow-hidden">
+    <div className="flex h-full min-h-0 bg-[#111921] text-slate-100 font-sans overflow-hidden">
       {/* LEFT COLUMN: Prepress Queue */}
-      <aside className="w-[400px] flex-shrink-0 border-r border-[#2d3748] flex flex-col h-full bg-[#1a232e]/50">
+      <aside className="w-[400px] min-h-0 flex-shrink-0 border-r border-[#2d3748] flex flex-col h-full bg-[#1a232e]/50">
         {/* Header & Search */}
         <div className="p-4 border-b border-[#2d3748] space-y-4">
           <div className="flex items-center justify-between">
@@ -894,7 +894,7 @@ export default function PrepressProductionPageV2() {
         </div>
 
         {/* Job List */}
-        <div className="flex-1 overflow-y-auto p-2 space-y-2">
+        <div className="min-h-0 flex-1 overflow-y-auto p-2 space-y-2">
           {queueLoading && (
             <div className="flex items-center justify-center py-8">
               <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
@@ -919,7 +919,7 @@ export default function PrepressProductionPageV2() {
       </aside>
 
       {/* RIGHT COLUMN: Main Workspace */}
-      <main className="flex-1 flex flex-col h-full overflow-hidden bg-[#111921]">
+      <main className="flex-1 min-h-0 flex flex-col h-full overflow-hidden bg-[#111921]">
         {/* Workspace Header */}
         <header className="p-6 border-b border-[#2d3748] bg-[#1a232e]/30 flex justify-between items-center">
           <div className="flex items-center gap-6">
@@ -978,7 +978,7 @@ export default function PrepressProductionPageV2() {
         </header>
 
         {/* Scrollable Content */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-8 pb-32">
+        <div className="min-h-0 flex-1 overflow-y-auto p-6 space-y-8 pb-6">
           {/* Section 1: Job Specifications */}
           <section>
             <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4 flex items-center gap-2">
@@ -1284,7 +1284,7 @@ export default function PrepressProductionPageV2() {
                             <FileThumbnail
                               fileId={file.id}
                               filename={file.originalFilename}
-                              mimeType={file.mimeType}
+                                  mimeType={file.mimeType || undefined}
                               thumbnailUrl={file.thumbnailUrl || undefined}
                             />
                           </td>
@@ -1380,7 +1380,7 @@ export default function PrepressProductionPageV2() {
                           <FileThumbnail
                             fileId={file.id}
                             filename={file.originalFilename}
-                            mimeType={file.mimeType}
+                            mimeType={file.mimeType || undefined}
                             thumbnailUrl={file.thumbnailUrl || undefined}
                           />
                         </td>
@@ -1560,7 +1560,7 @@ export default function PrepressProductionPageV2() {
         </div>
 
         {/* Sticky Footer */}
-        <div className="border-t border-[#2d3748] bg-[#1a232e]/95 backdrop-blur-sm p-4 flex items-center justify-between sticky bottom-0">
+        <div className="sticky bottom-0 z-20 shrink-0 border-t border-[#2d3748] bg-[#1a232e] p-4 flex items-center justify-between">
           <div className="flex items-center gap-4">
             {hasFinalFiles ? (
               <div className="flex items-center gap-2 text-green-500">
