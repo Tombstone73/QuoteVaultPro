@@ -566,7 +566,7 @@ export default function PrepressProductionPageV2() {
   const canStartPrepress =
     !!selectedItem &&
     isOwnedByPrepress &&
-    selectedItem.status === "pending_prepress" &&
+    selectedItem.prepressStage === "pending_prepress" &&
     !selectedItem.sessionId;
   const canComplete =
     isOwnedByPrepress &&

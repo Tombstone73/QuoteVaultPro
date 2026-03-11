@@ -9661,6 +9661,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   };
 
+  const derivePrepressStage = (args: {
+    rawStatus?: string | null;
+    isActivelyOwnedByPrepress: boolean;
+    hasActiveSession: boolean;
+    hasCompletedSession: boolean;
+  }) => {
+    const computedStatus = String(args.rawStatus || "").toLowerCase();
+    if (args.isActivelyOwnedByPrepress && args.hasActiveSession) return "in_prepress" as const;
+    if (computedStatus === "prepress_complete") return "prepress_complete" as const;
+    if (args.hasCompletedSession && computedStatus !== "pending_prepress") return "prepress_complete" as const;
+    return "pending_prepress" as const;
+  };
+
   // 9) GET /api/production/config
   app.get("/api/production/config", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -13629,15 +13642,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           dueDate: item.dueDate ?? null,
           status: item.status,
           // Computed display stage for the prepress board (membership is owner-driven, display still uses session/status truth)
-          prepressStage: (() => {
-            const hasSession = !!latestSession?.id;
-            if (activeOwnerIsPrepress && hasSession) return "in_prepress";
-            if (computedStatus === 'prepress_complete') return "prepress_complete";
-            if (completedSessionLineItems.has(item.lineItemId) && computedStatus !== 'pending_prepress') {
-              return "prepress_complete";
-            }
-            return "pending_prepress";
-          })(),
+          prepressStage: derivePrepressStage({
+            rawStatus: item.status,
+            isActivelyOwnedByPrepress: activeOwnerIsPrepress,
+            hasActiveSession: !!latestSession?.id,
+            hasCompletedSession: completedSessionLineItems.has(item.lineItemId),
+          }),
           rush: item.priority === "rush",
           assignedTo: null,
           sessionId: latestSession?.id ?? null,
@@ -14271,7 +14281,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
           throw Object.assign(new Error("Line item is not actively owned by prepress"), { statusCode: 409 });
         }
 
-        if (String(lineItem.status || '').toLowerCase() !== 'pending_prepress') {
+        const activeSessions = await tx
+          .select({ id: prepressSessions.id })
+          .from(prepressSessions)
+          .where(
+            and(
+              eq(prepressSessions.organizationId, organizationId),
+              eq(prepressSessions.lineItemId, lineItemId),
+              eq(prepressSessions.status, "active"),
+            ),
+          )
+          .limit(1);
+
+        const completedSessions = await tx
+          .select({ id: prepressSessions.id })
+          .from(prepressSessions)
+          .where(
+            and(
+              eq(prepressSessions.organizationId, organizationId),
+              eq(prepressSessions.lineItemId, lineItemId),
+              eq(prepressSessions.status, "complete"),
+            ),
+          )
+          .limit(1);
+
+        const effectivePrepressStage = derivePrepressStage({
+          rawStatus: lineItem.status,
+          isActivelyOwnedByPrepress: true,
+          hasActiveSession: activeSessions.length > 0,
+          hasCompletedSession: completedSessions.length > 0,
+        });
+
+        if (effectivePrepressStage !== "pending_prepress") {
           throw Object.assign(new Error("Line item must be pending_prepress before starting prepress"), { statusCode: 400 });
         }
 
