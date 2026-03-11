@@ -2,14 +2,15 @@ import { useEffect, useRef, useState } from "react";
 
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Download, FileText, ExternalLink, ChevronLeft, ChevronRight } from "lucide-react";
+import { Download, FileText, ExternalLink, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, X } from "lucide-react";
 import { getAttachmentDisplayName, isPdfAttachment } from "@/lib/attachments";
 import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { buildPdfViewUrl, buildPdfDownloadUrl, isPdfFile, checkPdfUrlReachable } from "@/lib/pdfUrls";
 import { apiFetchBlob } from "@/lib/queryClient";
+import { cn } from "@/lib/utils";
 
-type AttachmentPage = {
+export type AttachmentPage = {
   id: string;
   pageIndex: number;
   thumbStatus?: 'uploaded' | 'thumb_pending' | 'thumb_ready' | 'thumb_failed';
@@ -20,7 +21,7 @@ type AttachmentPage = {
   previewUrl?: string | null;
 };
 
-type AttachmentData = {
+export type AttachmentData = {
   id: string;
   fileName: string;
   fileUrl?: string;
@@ -52,6 +53,8 @@ interface AttachmentViewerDialogProps {
   onDownload?: (attachment: AttachmentData) => void;
   /** Hide bottom thumbnail filmstrip (default: true for list modal integration) */
   hideFilmstrip?: boolean;
+  /** Show metadata/details panel on the right side */
+  showMetaPanel?: boolean;
 }
 
 /**
@@ -69,7 +72,8 @@ export function AttachmentViewerDialog({
   open, 
   onOpenChange,
   onDownload,
-  hideFilmstrip = true
+  hideFilmstrip = true,
+  showMetaPanel = false,
 }: AttachmentViewerDialogProps) {
   const isDev = import.meta.env.DEV;
   const [showFallback, setShowFallback] = useState(false);
@@ -77,6 +81,7 @@ export function AttachmentViewerDialog({
   const [imageBlobUrl, setImageBlobUrl] = useState<string | null>(null);
   const [imagePreviewLoading, setImagePreviewLoading] = useState(false);
   const [imagePreviewError, setImagePreviewError] = useState<string | null>(null);
+  const [zoomLevel, setZoomLevel] = useState(1);
   const imageBlobUrlRef = useRef<string | null>(null);
   
   // Gallery mode state
@@ -179,6 +184,7 @@ export function AttachmentViewerDialog({
   useEffect(() => {
     setShowFallback(false);
     setUrlReachable(null);
+    setZoomLevel(1);
   }, [isGalleryMode ? attachments?.[selectedIndex]?.id : singleAttachment?.id, open]);
   
   // Derive current attachment from gallery or single mode
@@ -229,6 +235,19 @@ export function AttachmentViewerDialog({
   
   // Fallback download URL for non-PDFs
   const genericDownloadUrl = !isPdf ? (attachment?.originalUrl ?? null) : null;
+  const stageDownloadUrl = isPdf ? pdfDownloadUrl : genericDownloadUrl;
+
+  const formatFileSize = (bytes?: number | null) => {
+    if (!bytes || bytes <= 0) return "—";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  };
+
+  const handleZoomIn = () => setZoomLevel((prev) => Math.min(prev + 0.25, 3));
+  const handleZoomOut = () => setZoomLevel((prev) => Math.max(prev - 0.25, 0.5));
+  const handleZoomReset = () => setZoomLevel(1);
 
   const handleDownloadClick = () => {
     if (!attachment) return;
@@ -243,429 +262,326 @@ export function AttachmentViewerDialog({
     void downloadFileFromUrl(downloadUrl, fileName);
   };
 
+  const renderArrowButton = (direction: "prev" | "next") => {
+    const isPrev = direction === "prev";
+    const canNavigate = isPrev ? canGoPrev : canGoNext;
+    if (!isGalleryMode || !canNavigate) return null;
+
+    return (
+      <Button
+        type="button"
+        variant="secondary"
+        size="icon"
+        onClick={isPrev ? handlePrev : handleNext}
+        title={isPrev ? "Previous attachment (←)" : "Next attachment (→)"}
+        className={cn(
+          "absolute top-1/2 z-20 h-10 w-10 -translate-y-1/2 rounded-full border border-border/70 bg-background/90 shadow-lg hover:bg-background",
+          isPrev ? "left-3" : "right-3"
+        )}
+      >
+        {isPrev ? <ChevronLeft className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
+      </Button>
+    );
+  };
+
+  const renderPdfFallback = () => (
+    <div className="flex h-full min-h-[360px] flex-col items-center justify-center rounded-lg bg-muted/30 px-6 py-12 text-center">
+      <FileText className="mb-4 h-16 w-16 text-muted-foreground/70" />
+      <div className="space-y-2">
+        <p className="text-sm font-medium">
+          {!pdfViewUrl ? "PDF preview unavailable" : "Preview may be disabled by your browser"}
+        </p>
+        <p className="max-w-md text-xs text-muted-foreground">
+          {!pdfViewUrl
+            ? "Missing file reference. Download the file to view it."
+            : "Some browsers block embedded PDFs. Download the file or open it in a new tab instead."}
+        </p>
+      </div>
+      <div className="mt-4 flex flex-col gap-2">
+        {pdfDownloadUrl ? (
+          <Button onClick={handleDownloadClick} variant="default" size="lg">
+            <Download className="mr-2 h-4 w-4" />
+            Download PDF
+          </Button>
+        ) : null}
+        {pdfViewUrl ? (
+          <a
+            href={pdfViewUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center justify-center gap-2 text-sm text-muted-foreground underline hover:text-foreground"
+          >
+            <ExternalLink className="h-3 w-3" />
+            Open in new tab
+          </a>
+        ) : null}
+      </div>
+    </div>
+  );
+
+  const renderMainStage = () => {
+    if (isImage) {
+      return (
+        <div className="flex h-full min-h-[360px] items-center justify-center overflow-auto rounded-lg bg-muted/30 p-3">
+          {imagePreviewLoading ? (
+            <div className="flex h-[60vh] items-center justify-center text-sm text-muted-foreground">Loading preview...</div>
+          ) : imageBlobUrl ? (
+            <img
+              src={imageBlobUrl}
+              alt={fileName}
+              className="block max-h-full max-w-full object-contain transition-transform duration-150 ease-out"
+              style={{ transform: `scale(${zoomLevel})`, transformOrigin: "center center" }}
+            />
+          ) : imagePreviewError ? (
+            <div className="flex h-[60vh] items-center justify-center text-sm text-muted-foreground">{imagePreviewError}</div>
+          ) : (
+            <div className="flex h-[60vh] items-center justify-center text-sm text-muted-foreground">Preview not available</div>
+          )}
+        </div>
+      );
+    }
+
+    if (isPdf && pdfViewUrl && !showFallback) {
+      return (
+        <div className="flex h-full min-h-[360px] flex-col rounded-lg bg-muted/30 p-2">
+          <iframe
+            title="PDF Preview"
+            src={`${pdfViewUrl}#toolbar=1&navpanes=0`}
+            className="h-full min-h-[360px] w-full rounded-md border border-border bg-background"
+            allow="fullscreen"
+            onLoad={() => {
+              if (isDev) {
+                console.log('[AttachmentViewerDialog] PDF iframe loaded:', pdfViewUrl);
+              }
+            }}
+          />
+          <div className="mt-2 flex items-center justify-between gap-2 rounded bg-muted/50 px-2 py-1 text-xs text-muted-foreground">
+            <span>
+              {urlReachable === false
+                ? "⚠️ Preview unavailable. Download to view."
+                : "Preview may not display in some browsers. Use Download or Open in new tab."}
+            </span>
+            <button
+              onClick={() => setShowFallback(true)}
+              className="underline hover:text-foreground"
+              type="button"
+            >
+              Show options
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (isPdf) {
+      return renderPdfFallback();
+    }
+
+    return (
+      <div className="flex h-full min-h-[360px] flex-col items-center justify-center rounded-lg bg-muted/30 px-6 py-12 text-center text-muted-foreground">
+        <FileText className="mb-4 h-16 w-16 opacity-50" />
+        <p className="text-sm">Preview not available</p>
+        {stageDownloadUrl ? (
+          <Button onClick={handleDownloadClick} variant="outline" className="mt-4">
+            <Download className="mr-2 h-4 w-4" />
+            Download
+          </Button>
+        ) : null}
+      </div>
+    );
+  };
+
+  const renderFilmstripThumbnail = (item: AttachmentData, index: number) => {
+    const itemName = getAttachmentDisplayName(item);
+    const itemIsPdf = isPdfFile(item.mimeType, itemName);
+    const itemIsImage = typeof item.mimeType === "string" && item.mimeType.startsWith("image/");
+    const thumbUrl = item.thumbUrl ?? item.pages?.[0]?.thumbUrl ?? null;
+
+    return (
+      <button
+        key={`${item.id}-${index}`}
+        type="button"
+        onClick={() => setSelectedIndex(index)}
+        className={cn(
+          "group relative h-16 w-16 shrink-0 overflow-hidden rounded-md border bg-muted/30 transition-all",
+          index === selectedIndex
+            ? "border-primary ring-2 ring-primary/40"
+            : "border-border hover:border-primary/60"
+        )}
+        title={itemName}
+      >
+        {thumbUrl ? (
+          <img src={thumbUrl} alt={itemName} className="h-full w-full object-cover" loading="lazy" />
+        ) : itemIsPdf ? (
+          <div className="flex h-full w-full items-center justify-center bg-slate-700/60 text-[10px] font-bold text-white">PDF</div>
+        ) : itemIsImage ? (
+          <div className="flex h-full w-full items-center justify-center bg-slate-800 text-[10px] font-bold text-white">IMG</div>
+        ) : (
+          <div className="flex h-full w-full items-center justify-center bg-slate-800 text-[10px] font-bold text-white">FILE</div>
+        )}
+      </button>
+    );
+  };
+
   useEffect(() => {
     const revokeBlobUrl = () => {
       if (!imageBlobUrlRef.current) return;
       URL.revokeObjectURL(imageBlobUrlRef.current);
       imageBlobUrlRef.current = null;
-    };
+        <DialogContent className="max-h-[92vh] w-[min(1280px,96vw)] max-w-[min(1280px,96vw)] overflow-hidden p-0">
 
-    revokeBlobUrl();
-    setImageBlobUrl(null);
-    setImagePreviewLoading(false);
-    setImagePreviewError(null);
-
-    if (!open || !attachmentId || !isImage) {
-      return () => {
-        revokeBlobUrl();
-      };
-    }
-
-    if (!imageViewUrl) {
-      setImagePreviewError("Preview URL unavailable.");
-      return () => {
-        revokeBlobUrl();
-      };
-    }
-
-    let cancelled = false;
-    setImagePreviewLoading(true);
-
+            <div className="border-b border-border px-6 py-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <DialogTitle className="min-w-0 truncate pr-10">
+                    {fileName}
+                    {isGalleryMode && (
+                      <span className="ml-2 text-sm font-normal text-muted-foreground">
+                        ({selectedIndex + 1} of {attachments.length})
+                      </span>
+                    )}
+                  </DialogTitle>
+                  <DialogDescription className="mt-1">
+                    <div className="space-y-1">
+                      {attachment.mimeType ? (
+                        <div>
+                          <span>File type: </span>
+                          <span>{attachment.mimeType}</span>
+                        </div>
+                      ) : (
+                        <div>Preview attachment</div>
+                      )}
+                      {!showMetaPanel ? <AttachmentPreviewMeta attachment={attachment} /> : null}
+                    </div>
+                  </DialogDescription>
+                </div>
+                <div className="flex shrink-0 items-center gap-2 pr-8">
+                  {isImage ? (
+                    <>
+                      <Button type="button" variant="outline" size="icon" onClick={handleZoomOut} title="Zoom out">
+                        <ZoomOut className="h-4 w-4" />
+                      </Button>
+                      <Button type="button" variant="outline" size="sm" onClick={handleZoomReset} title="Reset zoom">
+                        {Math.round(zoomLevel * 100)}%
+                      </Button>
+                      <Button type="button" variant="outline" size="icon" onClick={handleZoomIn} title="Zoom in">
+                        <ZoomIn className="h-4 w-4" />
+                      </Button>
+                    </>
+                  ) : null}
+                  {stageDownloadUrl ? (
+                    <Button onClick={handleDownloadClick} variant="outline">
+                      <Download className="mr-2 h-4 w-4" />
+                      Download
+                    </Button>
+                  ) : null}
+                  <Button type="button" variant="ghost" size="icon" onClick={() => onOpenChange(false)} title="Close viewer">
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            </div>
     void (async () => {
       try {
-        const blob = await apiFetchBlob(imageViewUrl, { method: "GET", credentials: "include" });
-        if (cancelled) return;
-        const objectUrl = URL.createObjectURL(blob);
-        imageBlobUrlRef.current = objectUrl;
-        setImageBlobUrl(objectUrl);
-        setImagePreviewError(null);
-      } catch (error) {
-        if (cancelled) return;
-        const message = error instanceof Error ? error.message : "Failed to load preview";
-        setImagePreviewError("Unable to load image preview. Use Download original.");
-        if (isDev) {
-          console.log(`[AttachmentViewerDialog] image preview fetch failed url=${imageViewUrl} error=${message}`);
-        }
-      } finally {
-        if (!cancelled) {
-          setImagePreviewLoading(false);
-        }
-      }
-    })();
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 py-4">
+            <div className={cn("flex min-h-0 flex-1 gap-4", showMetaPanel ? "lg:flex-row" : "flex-col")}>
+              <div className="relative min-h-0 flex-1 overflow-hidden">
+                {renderArrowButton("prev")}
+                {renderMainStage()}
+                {renderArrowButton("next")}
+              </div>
 
-    return () => {
-      cancelled = true;
-      revokeBlobUrl();
-    };
-  }, [open, attachmentId, isImage, imageViewUrl]);
-
-  if (!attachment) return null;
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[min(1100px,95vw)] max-h-[90vh] flex flex-col overflow-hidden">
-        <DialogHeader>
-          <DialogTitle>
-            {fileName}
-            {isGalleryMode && (
-              <span className="text-sm font-normal text-muted-foreground ml-2">
-                ({selectedIndex + 1} of {attachments.length})
-              </span>
-            )}
-          </DialogTitle>
-          <DialogDescription>
-            <div className="space-y-1">
-              {attachment.mimeType ? (
-                <div>
-                  <span>File type: </span>
-                  <span>{attachment.mimeType}</span>
-                </div>
-              ) : (
-                <div>Preview attachment</div>
-              )}
-              <AttachmentPreviewMeta attachment={attachment} />
-            </div>
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="flex-1 overflow-hidden space-y-4">
-          {/* Gallery Navigation layout using 3-column grid to avoid padding stealing stage width */}
-          {isGalleryMode && (canGoPrev || canGoNext) ? (
-            <div className="">
-              {/* Images: credentialed blob preview */}
-              {isImage ? (
-                <div className="grid grid-cols-[3.5rem,1fr,3.5rem] items-center">
-                  {/* Left arrow column (fixed width) */}
-                  <div className="h-full flex items-center justify-center">
-                    {canGoPrev && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={handlePrev}
-                        title="Previous attachment (←)"
-                        className="w-16 h-16"
-                      >
-                        <ChevronLeft className="w-8 h-8" />
-                      </Button>
-                    )}
-                  </div>
-                  {/* Stage column: min-w-0/min-h-0 prevent overflow; clamp height and hide scrollbars */}
-                  <div className="min-w-0 min-h-0">
-                    {/** min-w-0/min-h-0 ensure the grid cell can shrink without causing horizontal overflow */}
-                    <div className="bg-muted/30 rounded-lg p-2 min-h-0 max-h-[calc(90vh-220px)] overflow-x-hidden overflow-y-hidden">
-                      {imagePreviewLoading ? (
-                        <div className="flex items-center justify-center h-[60vh] text-sm text-muted-foreground">Loading preview...</div>
-                      ) : imageBlobUrl ? (
-                        <img
-                          src={imageBlobUrl}
-                          alt={fileName}
-                          className="block mx-auto max-h-full max-w-full w-auto h-auto object-contain"
-                        />
-                      ) : imagePreviewError ? (
-                        <div className="flex items-center justify-center h-[60vh] text-sm text-muted-foreground">{imagePreviewError}</div>
-                      ) : (
-                        <div className="flex items-center justify-center h-[60vh] text-sm text-muted-foreground">Preview not available</div>
-                      )}
-                    </div>
-                  </div>
-                  {/* Right arrow column (fixed width) */}
-                  <div className="h-full flex items-center justify-center">
-                    {canGoNext && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={handleNext}
-                        title="Next attachment (→)"
-                        className="w-16 h-16"
-                      >
-                        <ChevronRight className="w-8 h-8" />
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              ) : null}
-              
-              {/* PDFs: Chrome-proof rendering with fallback */}
-              {isPdf && pdfViewUrl && !showFallback ? (
-                <div className="grid grid-cols-[3.5rem,1fr,3.5rem] items-center">
-                  {/* Left arrow column */}
-                  <div className="h-full flex items-center justify-center">
-                    {canGoPrev && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={handlePrev}
-                        title="Previous attachment (←)"
-                        className="w-16 h-16"
-                      >
-                        <ChevronLeft className="w-8 h-8" />
-                      </Button>
-                    )}
-                  </div>
-                  {/* Stage column */}
-                  <div className="min-w-0 min-h-0">
-                    {/** min-w-0/min-h-0 ensure shrinking without horizontal overflow; clamp height and hide scrollbars */}
-                    <div className="bg-muted/30 rounded-lg p-2 space-y-2 min-h-0 max-h-[calc(90vh-220px)] overflow-x-hidden overflow-y-hidden">
-                      <iframe
-                        title="PDF Preview"
-                        src={`${pdfViewUrl}#toolbar=1&navpanes=0`}
-                        className="w-full h-full rounded-md border border-border bg-background"
-                        allow="fullscreen"
-                        onLoad={() => {
-                          if (isDev) {
-                            console.log('[AttachmentViewerDialog] PDF iframe loaded:', pdfViewUrl);
-                          }
-                        }}
-                      />
-                      <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground px-2 py-1 bg-muted/50 rounded">
-                        <span>
-                          {urlReachable === false 
-                            ? "⚠️ Preview unavailable. Download to view." 
-                            : "Preview may not display in some browsers. Use Download or Open in new tab."}
-                        </span>
-                        <button
-                          onClick={() => setShowFallback(true)}
-                          className="underline hover:text-foreground"
-                          type="button"
-                        >
-                          Show options
-                        </button>
+              {showMetaPanel ? (
+                <aside className="flex w-full shrink-0 flex-col gap-4 rounded-lg border border-border bg-muted/20 p-4 lg:w-72">
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Details</h3>
+                    <div className="mt-3 space-y-2 text-sm">
+                      <div>
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">File name</div>
+                        <div className="break-words text-foreground">{fileName}</div>
                       </div>
-                    </div>
-                  </div>
-                  {/* Right arrow column */}
-                  <div className="h-full flex items-center justify-center">
-                    {canGoNext && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={handleNext}
-                        title="Next attachment (→)"
-                        className="w-16 h-16"
-                      >
-                        <ChevronRight className="w-8 h-8" />
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              ) : null}
-              
-              {/* Fallback UI for PDFs when iframe disabled */}
-              {isPdf && (showFallback || !pdfViewUrl) ? (
-                <div className="grid grid-cols-[3.5rem,1fr,3.5rem] items-center">
-                  {/* Left arrow column */}
-                  <div className="h-full flex items-center justify-center">
-                    {canGoPrev && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={handlePrev}
-                        title="Previous attachment (←)"
-                        className="w-16 h-16"
-                      >
-                        <ChevronLeft className="w-8 h-8" />
-                      </Button>
-                    )}
-                  </div>
-                  {/* Stage column */}
-                  <div className="min-w-0 min-h-0">
-                    {/** min-w-0/min-h-0 ensure shrinking without horizontal overflow; clamp height and hide scrollbars */}
-                    <div className="flex flex-col items-center justify-center py-12 text-center space-y-4 bg-muted/30 rounded-lg min-h-0 max-h-[calc(90vh-220px)] overflow-x-hidden overflow-y-hidden">
-                      <FileText className="w-16 h-16 opacity-50 text-muted-foreground" />
-                      <div className="space-y-2">
-                        <p className="text-sm font-medium">
-                          {!pdfViewUrl ? "PDF preview unavailable" : "Preview may be disabled by your browser"}
-                        </p>
-                        <p className="text-xs text-muted-foreground max-w-md">
-                          {!pdfViewUrl 
-                            ? "Missing file reference. Contact support if this persists."
-                            : "Some browsers (like Chrome with 'Download PDFs' enabled) block embedded PDFs. Download the file to view it."}
-                        </p>
+                      <div>
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Type</div>
+                        <div>{attachment.mimeType || "Unknown"}</div>
                       </div>
-                      <div className="flex flex-col gap-2">
-                        {pdfDownloadUrl && (
-                          <Button onClick={handleDownloadClick} variant="default" size="lg">
-                            <Download className="w-4 h-4 mr-2" />
-                            Download PDF
-                          </Button>
-                        )}
-                        {pdfViewUrl && (
-                          <a
-                            href={pdfViewUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center justify-center gap-2 text-sm text-muted-foreground hover:text-foreground underline"
-                          >
-                            <ExternalLink className="w-3 h-3" />
-                            Open in new tab
-                          </a>
-                        )}
+                      <div>
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Size</div>
+                        <div>{formatFileSize(attachment.fileSize)}</div>
                       </div>
-                      {!showFallback && pdfViewUrl && (
-                        <button
-                          onClick={() => setShowFallback(false)}
-                          className="text-xs text-muted-foreground underline hover:text-foreground"
-                          type="button"
-                        >
-                          Try preview again
-                        </button>
-                      )}
+                      <div>
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Created</div>
+                        <div>{attachment.createdAt ? new Date(attachment.createdAt).toLocaleString() : "—"}</div>
+                      </div>
+                      {isGalleryMode ? (
+                        <div>
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Collection position</div>
+                          <div>{selectedIndex + 1} of {attachments.length}</div>
+                        </div>
+                      ) : null}
+                      {attachment.pageCount ? (
+                        <div>
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Pages</div>
+                          <div>{attachment.pageCount}</div>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
-                  {/* Right arrow column */}
-                  <div className="h-full flex items-center justify-center">
-                    {canGoNext && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={handleNext}
-                        title="Next attachment (→)"
-                        className="w-16 h-16"
-                      >
-                        <ChevronRight className="w-8 h-8" />
-                      </Button>
-                    )}
+
+                  <div className="rounded-md border border-border bg-background/40 p-3">
+                    <AttachmentPreviewMeta attachment={attachment} />
                   </div>
-                </div>
-              ) : null}
-              
-              {/* Generic fallback for other file types */}
-              {!isImage && !isPdf ? (
-                <div className="grid grid-cols-[3.5rem,1fr,3.5rem] items-center text-muted-foreground">
-                  {/* Left arrow column */}
-                  <div className="h-full flex items-center justify-center">
-                    {canGoPrev && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={handlePrev}
-                        title="Previous attachment (←)"
-                        className="w-16 h-16"
-                      >
-                        <ChevronLeft className="w-8 h-8" />
-                      </Button>
-                    )}
-                  </div>
-                  {/* Stage column */}
-                  <div className="min-w-0 min-h-0">
-                    {/** min-w-0/min-h-0 ensure shrinking without horizontal overflow */}
-                    <div className="flex flex-col items-center justify-center py-12 text-center min-h-0 max-h-[calc(90vh-220px)] overflow-x-hidden overflow-y-hidden">
-                      <FileText className="w-16 h-16 mb-4 opacity-50" />
-                      <p className="text-sm mb-4">Preview not available</p>
-                      {(pdfDownloadUrl || genericDownloadUrl) && (
-                        <Button onClick={handleDownloadClick} variant="outline">
-                          <Download className="w-4 h-4 mr-2" />
-                          Download
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                  {/* Right arrow column */}
-                  <div className="h-full flex items-center justify-center">
-                    {canGoNext && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={handleNext}
-                        title="Next attachment (→)"
-                        className="w-16 h-16"
-                      >
-                        <ChevronRight className="w-8 h-8" />
-                      </Button>
-                    )}
-                  </div>
-                </div>
+
+                  {stageDownloadUrl ? (
+                    <Button onClick={handleDownloadClick} className="mt-auto" variant="outline">
+                      <Download className="mr-2 h-4 w-4" />
+                      Download original
+                    </Button>
+                  ) : null}
+                </aside>
               ) : null}
             </div>
-          ) : (
-            <>
-              {/* Images without gallery mode */}
-              {isImage ? (
-                <div className="flex justify-center items-center bg-muted/30 rounded-lg p-2 min-h-0 max-h-[calc(90vh-220px)] overflow-x-hidden overflow-y-hidden">
-                  {imagePreviewLoading ? (
-                    <div className="flex items-center justify-center h-[60vh] text-sm text-muted-foreground">Loading preview...</div>
-                  ) : imageBlobUrl ? (
-                    <img src={imageBlobUrl} alt={fileName} className="max-h-full max-w-full w-auto h-auto object-contain" />
-                  ) : imagePreviewError ? (
-                    <div className="flex items-center justify-center h-[60vh] text-sm text-muted-foreground">{imagePreviewError}</div>
-                  ) : (
-                    <div className="flex items-center justify-center h-[60vh] text-sm text-muted-foreground">Preview not available</div>
-                  )}
+
+            {!hideFilmstrip && isGalleryMode && attachments.length > 1 ? (
+              <div className="mt-4 border-t border-border pt-4">
+                <div className="mb-2 text-xs font-bold uppercase tracking-widest text-muted-foreground">Thumbnails</div>
+                <div className="flex gap-2 overflow-x-auto pb-2">
+                  {attachments.map((item, index) => renderFilmstripThumbnail(item, index))}
                 </div>
-              ) : null}
-              
-              {/* PDFs without gallery mode */}
-              {isPdf && pdfViewUrl && !showFallback ? (
-                <div className="bg-muted/30 rounded-lg p-2 space-y-2 min-h-0 max-h-[calc(90vh-220px)] overflow-x-hidden overflow-y-hidden">
-                  <iframe
-                    title="PDF Preview"
-                    src={`${pdfViewUrl}#toolbar=1&navpanes=0`}
-                    className="w-full h-full rounded-md border border-border bg-background"
-                    allow="fullscreen"
-                    onLoad={() => {
-                      if (isDev) {
-                        console.log('[AttachmentViewerDialog] PDF iframe loaded:', pdfViewUrl);
-                      }
-                    }}
-                  />
-                  
-                  <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground px-2 py-1 bg-muted/50 rounded">
-                    <span>
-                      {urlReachable === false 
-                        ? "⚠️ Preview unavailable. Download to view." 
-                        : "Preview may not display in some browsers. Use Download or Open in new tab."}
-                    </span>
-                    <button
-                      onClick={() => setShowFallback(true)}
-                      className="underline hover:text-foreground"
-                      type="button"
-                    >
-                      Show options
-                    </button>
+              </div>
+            ) : null}
+
+            {!showMetaPanel ? (
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-sm">
+                <div className="min-w-0 space-y-1">
+                  <div>
+                    <span className="font-medium">Filename: </span>
+                    <span className="max-w-[60ch] truncate text-muted-foreground">{fileName}</span>
                   </div>
+                  {attachment.mimeType ? (
+                    <div>
+                      <span className="font-medium">Type: </span>
+                      <span className="text-muted-foreground">{attachment.mimeType}</span>
+                    </div>
+                  ) : null}
+                  {attachment.fileSize ? (
+                    <div>
+                      <span className="font-medium">Size: </span>
+                      <span className="text-muted-foreground">{formatFileSize(attachment.fileSize)}</span>
+                    </div>
+                  ) : null}
                 </div>
-              ) : null}
-              
-              {/* Fallback UI for other modes */}
-              {isPdf && (showFallback || !pdfViewUrl) ? (
-                <div className="flex flex-col items-center justify-center py-12 text-center space-y-4 bg-muted/30 rounded-lg">
-                  <FileText className="w-16 h-16 opacity-50 text-muted-foreground" />
-                  <div className="space-y-2">
-                    <p className="text-sm font-medium">
-                      {!pdfViewUrl ? "PDF preview unavailable" : "Preview may be disabled by your browser"}
-                    </p>
-                    <p className="text-xs text-muted-foreground max-w-md">
-                      {!pdfViewUrl 
-                        ? "Missing file reference. Contact support if this persists."
-                        : "Some browsers (like Chrome with 'Download PDFs' enabled) block embedded PDFs. Download the file to view it."}
-                    </p>
+
+                {stageDownloadUrl ? (
+                  <div className="flex shrink-0 flex-col items-end gap-1">
+                    <Button onClick={handleDownloadClick} variant="outline">
+                      <Download className="mr-2 h-4 w-4" />
+                      Download original
+                    </Button>
+                    <span className="text-xs text-muted-foreground">Downloads original file</span>
                   </div>
-                  
-                  <div className="flex flex-col gap-2">
-                    {pdfDownloadUrl && (
-                      <Button onClick={handleDownloadClick} variant="default" size="lg">
-                        <Download className="w-4 h-4 mr-2" />
-                        Download PDF
-                      </Button>
-                    )}
-                    
-                    {pdfViewUrl && (
-                      <a
-                        href={pdfViewUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center justify-center gap-2 text-sm text-muted-foreground hover:text-foreground underline"
-                      >
-                        <ExternalLink className="w-3 h-3" />
-                        Open in new tab
-                      </a>
-                    )}
-                  </div>
-                  
-                  {!showFallback && pdfViewUrl && (
-                    <button
-                      onClick={() => setShowFallback(false)}
-                      className="text-xs text-muted-foreground underline hover:text-foreground"
+                ) : null}
+              </div>
+            ) : null}
                       type="button"
                     >
                       Try preview again

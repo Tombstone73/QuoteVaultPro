@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Search, RefreshCw, History, FileText, Download, ZoomIn, Upload, Image as ImageIcon, Info, Paperclip, CheckCircle, AlertCircle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { formatDistanceToNow } from "date-fns";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
+import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
 
 // API Types
 type QueueItem = {
@@ -94,6 +95,17 @@ type LineItemFilesPayload = {
   finals: LineItemFile[];
   references: LineItemFile[];
   bridgedOriginals: BridgedOriginalFile[];
+};
+
+type VisibleFileCategory = "original_customer" | "bridged_original" | "final_production";
+
+type VisibleFileRecord = AttachmentData & {
+  category: VisibleFileCategory;
+  displayName: string;
+  uploadedByLabel: string;
+  tagLabel: string;
+  downloadUrl: string;
+  sizeBytesValue: number | null;
 };
 
 type HistoryEntry = {
@@ -228,6 +240,8 @@ export default function PrepressProductionPageV2() {
   const [uploadingFiles, setUploadingFiles] = useState<UploadProgress[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [specSheetOpen, setSpecSheetOpen] = useState(false);
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerIndex, setViewerIndex] = useState(0);
   const [materialOverrideOpen, setMaterialOverrideOpen] = useState(false);
   const [materialOverrideMode, setMaterialOverrideMode] = useState<"replace" | "add" | "remove" | "adjust_qty">("replace");
   const [overrideFromMaterialId, setOverrideFromMaterialId] = useState("");
@@ -551,6 +565,59 @@ export default function PrepressProductionPageV2() {
   const originalFiles = filesData?.originals || [];
   const finalFiles = filesData?.finals || [];
   const bridgedOriginalFiles = filesData?.bridgedOriginals || [];
+  const toVisiblePrepressFile = (file: LineItemFile, category: VisibleFileCategory, defaultTag: string): VisibleFileRecord => ({
+    id: file.id,
+    category,
+    fileName: file.computedDisplayFilename || file.originalFilename,
+    originalFilename: file.originalFilename,
+    fileSize: file.sizeBytes,
+    mimeType: file.mimeType || null,
+    createdAt: file.createdAt,
+    originalUrl: `/api/prepress/files/${file.id}/download`,
+    previewUrl: `/api/prepress/files/${file.id}/download`,
+    thumbUrl: file.thumbnailUrl || null,
+    displayName: file.computedDisplayFilename || file.originalFilename,
+    uploadedByLabel: file.uploadedBy,
+    tagLabel: file.tag || defaultTag,
+    downloadUrl: `/api/prepress/files/${file.id}/download`,
+    sizeBytesValue: file.sizeBytes,
+  });
+  const toVisibleBridgedFile = (file: BridgedOriginalFile): VisibleFileRecord => ({
+    id: file.id,
+    category: "bridged_original",
+    fileName: file.originalFilename,
+    originalFilename: file.originalFilename,
+    fileSize: file.sizeBytes,
+    mimeType: file.mimeType,
+    createdAt: file.createdAt,
+    originalUrl: file.downloadUrl,
+    previewUrl: file.downloadUrl,
+    thumbUrl: file.thumbnailUrl,
+    displayName: file.originalFilename,
+    uploadedByLabel: file.uploadedBy || "—",
+    tagLabel: "order",
+    downloadUrl: file.downloadUrl,
+    sizeBytesValue: file.sizeBytes,
+  });
+  const normalizedVisibleFiles = useMemo<VisibleFileRecord[]>(() => {
+    return [
+      ...originalFiles.map((file) => toVisiblePrepressFile(file, "original_customer", "original")),
+      ...bridgedOriginalFiles.map((file) => toVisibleBridgedFile(file)),
+      ...finalFiles.map((file) => toVisiblePrepressFile(file, "final_production", "final")),
+    ];
+  }, [originalFiles, bridgedOriginalFiles, finalFiles]);
+  const visibleOriginalFiles = useMemo(
+    () => normalizedVisibleFiles.filter((file) => file.category === "original_customer"),
+    [normalizedVisibleFiles]
+  );
+  const visibleBridgedOriginalFiles = useMemo(
+    () => normalizedVisibleFiles.filter((file) => file.category === "bridged_original"),
+    [normalizedVisibleFiles]
+  );
+  const visibleFinalFiles = useMemo(
+    () => normalizedVisibleFiles.filter((file) => file.category === "final_production"),
+    [normalizedVisibleFiles]
+  );
   const hasFinalFiles = finalFiles.length > 0;
   const materialsPayload = materialsEffectiveData?.data;
   const plannedMaterials = materialsPayload?.plannedMaterials || [];
@@ -589,6 +656,11 @@ export default function PrepressProductionPageV2() {
       setSelectedLineItemId(null);
     }
   }, [selectedLineItemId, selectedItem]);
+
+  React.useEffect(() => {
+    setViewerOpen(false);
+    setViewerIndex(0);
+  }, [selectedLineItemId]);
 
   React.useEffect(() => {
     setPrepressNotes(selectedItem?.prepressNotes || "");
@@ -696,6 +768,13 @@ export default function PrepressProductionPageV2() {
 
   const handleDownloadFile = (fileId: string) => {
     window.open(`/api/prepress/files/${fileId}/download`, "_blank");
+  };
+
+  const handleOpenViewer = (fileId: string) => {
+    const nextIndex = normalizedVisibleFiles.findIndex((file) => file.id === fileId);
+    if (nextIndex < 0) return;
+    setViewerIndex(nextIndex);
+    setViewerOpen(true);
   };
 
   const handleDownloadAllOriginals = () => {
@@ -1250,7 +1329,7 @@ export default function PrepressProductionPageV2() {
                     <Upload className="w-4 h-4" /> Upload Originals
                   </button>
                 )}
-                {selectedLineItemId && originalFiles.length > 0 && (
+                {selectedLineItemId && visibleOriginalFiles.length > 0 && (
                   <button
                     onClick={handleDownloadAllOriginals}
                     className="text-xs font-bold text-[#1773cf] hover:underline flex items-center gap-1"
@@ -1274,7 +1353,7 @@ export default function PrepressProductionPageV2() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#2d3748]">
-                  {originalFiles.length === 0 && bridgedOriginalFiles.length === 0 ? (
+                  {visibleOriginalFiles.length === 0 && visibleBridgedOriginalFiles.length === 0 ? (
                     <tr>
                       <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
                         {selectedLineItemId ? "No original files uploaded" : "Select a line item to view files"}
@@ -1282,26 +1361,29 @@ export default function PrepressProductionPageV2() {
                     </tr>
                   ) : (
                     <>
-                      {originalFiles.map((file) => (
-                        <tr key={file.id} className="hover:bg-white/5 transition-colors group cursor-pointer">
+                      {visibleOriginalFiles.map((file) => (
+                        <tr key={file.id} className="hover:bg-white/5 transition-colors group cursor-pointer" onClick={() => handleOpenViewer(file.id)}>
                           <td className="px-4 py-3">
                             <FileThumbnail
                               fileId={file.id}
-                              filename={file.originalFilename}
-                                  mimeType={file.mimeType || undefined}
-                              thumbnailUrl={file.thumbnailUrl || undefined}
+                              filename={file.originalFilename || file.fileName}
+                              mimeType={file.mimeType || undefined}
+                              thumbnailUrl={file.thumbUrl || undefined}
                             />
                           </td>
-                          <td className="px-4 py-3 font-medium text-slate-200">{file.computedDisplayFilename || file.originalFilename}</td>
-                          <td className="px-4 py-3 font-mono">{formatBytes(file.sizeBytes)}</td>
+                          <td className="px-4 py-3 font-medium text-slate-200">{file.displayName}</td>
+                          <td className="px-4 py-3 font-mono">{file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "—"}</td>
                           <td className="px-4 py-3">{formatDistanceToNow(new Date(file.createdAt), { addSuffix: true })}</td>
-                          <td className="px-4 py-3">{file.uploadedBy}</td>
+                          <td className="px-4 py-3">{file.uploadedByLabel}</td>
                           <td className="px-4 py-3">
-                            <span className="bg-slate-700 px-2 py-0.5 rounded">{file.tag || "original"}</span>
+                            <span className="bg-slate-700 px-2 py-0.5 rounded">{file.tagLabel}</span>
                           </td>
                           <td className="px-4 py-3 text-right">
                             <button 
-                              onClick={() => handleDownloadFile(file.id)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                window.open(file.downloadUrl, "_blank");
+                              }}
                               className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-[#1773cf]/20 hover:border-[#1773cf] transition-all"
                             >
                               Download
@@ -1310,7 +1392,7 @@ export default function PrepressProductionPageV2() {
                         </tr>
                       ))}
                       {/* Bridged files: customer artwork uploaded on the Order page before prepress */}
-                      {bridgedOriginalFiles.length > 0 && (
+                      {visibleBridgedOriginalFiles.length > 0 && (
                         <>
                           <tr className="bg-amber-950/20">
                             <td colSpan={7} className="px-4 py-1.5">
@@ -1319,25 +1401,28 @@ export default function PrepressProductionPageV2() {
                               </span>
                             </td>
                           </tr>
-                          {bridgedOriginalFiles.map((file) => (
-                            <tr key={`bridged-${file.id}`} className="hover:bg-white/5 transition-colors cursor-pointer bg-amber-950/10">
+                          {visibleBridgedOriginalFiles.map((file) => (
+                            <tr key={`bridged-${file.id}`} className="hover:bg-white/5 transition-colors cursor-pointer bg-amber-950/10" onClick={() => handleOpenViewer(file.id)}>
                               <td className="px-4 py-3">
                                 <FileThumbnail
-                                  filename={file.originalFilename}
+                                  filename={file.originalFilename || file.fileName}
                                   mimeType={file.mimeType || undefined}
-                                  thumbnailUrl={file.thumbnailUrl || undefined}
+                                  thumbnailUrl={file.thumbUrl || undefined}
                                 />
                               </td>
-                              <td className="px-4 py-3 font-medium text-slate-200">{file.originalFilename}</td>
-                              <td className="px-4 py-3 font-mono">{file.sizeBytes != null ? formatBytes(file.sizeBytes) : "—"}</td>
+                              <td className="px-4 py-3 font-medium text-slate-200">{file.displayName}</td>
+                              <td className="px-4 py-3 font-mono">{file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "—"}</td>
                               <td className="px-4 py-3">{formatDistanceToNow(new Date(file.createdAt), { addSuffix: true })}</td>
-                              <td className="px-4 py-3">{file.uploadedBy || "—"}</td>
+                              <td className="px-4 py-3">{file.uploadedByLabel}</td>
                               <td className="px-4 py-3">
-                                <span className="bg-amber-900/50 text-amber-300 border border-amber-700/40 px-2 py-0.5 rounded text-[9px] font-bold uppercase">order</span>
+                                <span className="bg-amber-900/50 text-amber-300 border border-amber-700/40 px-2 py-0.5 rounded text-[9px] font-bold uppercase">{file.tagLabel}</span>
                               </td>
                               <td className="px-4 py-3 text-right">
                                 <button
-                                  onClick={() => window.open(file.downloadUrl, "_blank")}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    window.open(file.downloadUrl, "_blank");
+                                  }}
                                   className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-amber-900/30 hover:border-amber-600 transition-all"
                                 >
                                   Download
@@ -1371,40 +1456,43 @@ export default function PrepressProductionPageV2() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#2d3748]">
-                  {finalFiles.length === 0 ? (
+                  {visibleFinalFiles.length === 0 ? (
                     <tr>
                       <td colSpan={3} className="px-4 py-8 text-center text-slate-500">
                         {selectedLineItemId ? "No final files uploaded yet" : "Select a line item to upload files"}
                       </td>
                     </tr>
                   ) : (
-                    finalFiles.map((file) => (
-                      <tr key={file.id} className="hover:bg-white/5 transition-colors cursor-pointer">
+                    visibleFinalFiles.map((file) => (
+                      <tr key={file.id} className="hover:bg-white/5 transition-colors cursor-pointer" onClick={() => handleOpenViewer(file.id)}>
                         <td className="px-4 py-3">
                           <FileThumbnail
                             fileId={file.id}
-                            filename={file.originalFilename}
+                            filename={file.originalFilename || file.fileName}
                             mimeType={file.mimeType || undefined}
-                            thumbnailUrl={file.thumbnailUrl || undefined}
+                            thumbnailUrl={file.thumbUrl || undefined}
                           />
                         </td>
                         <td className="px-4 py-3">
                           <div className="space-y-1">
-                            <p className="font-bold text-slate-200">{file.computedDisplayFilename || file.originalFilename}</p>
+                            <p className="font-bold text-slate-200">{file.displayName}</p>
                             <div className="flex items-center gap-3">
                               <span className="bg-[#1773cf]/30 text-[#1773cf] border border-[#1773cf]/40 px-2 py-0.5 rounded font-bold uppercase text-[9px]">
-                                {file.tag || "final"}
+                                {file.tagLabel}
                               </span>
-                              <span className="text-slate-500 font-mono">{formatBytes(file.sizeBytes)}</span>
+                              <span className="text-slate-500 font-mono">{file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "—"}</span>
                               <span className="text-slate-400 italic">
-                                Uploaded by {file.uploadedBy} ({formatDistanceToNow(new Date(file.createdAt), { addSuffix: true })})
+                                Uploaded by {file.uploadedByLabel} ({formatDistanceToNow(new Date(file.createdAt), { addSuffix: true })})
                               </span>
                             </div>
                           </div>
                         </td>
                         <td className="px-4 py-3 text-right space-x-2">
                           <button 
-                            onClick={() => handleDownloadFile(file.id)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              window.open(file.downloadUrl, "_blank");
+                            }}
                             className="text-slate-400 hover:text-white p-1"
                           >
                             <Download className="w-5 h-5" />
@@ -1817,6 +1905,15 @@ export default function PrepressProductionPageV2() {
           )}
         </DialogContent>
       </Dialog>
+
+      <AttachmentViewerDialog
+        open={viewerOpen}
+        onOpenChange={setViewerOpen}
+        attachments={normalizedVisibleFiles}
+        initialIndex={viewerIndex}
+        showMetaPanel
+        hideFilmstrip={false}
+      />
     </div>
   );
 }
