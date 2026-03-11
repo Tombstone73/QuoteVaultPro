@@ -1,9 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "@jest/globals";
 import express, { NextFunction, Response } from "express";
 import request from "supertest";
-import { eq, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { db } from "../db";
-import { organizations } from "../../shared/schema";
 import { tenantContext, getRequestOrganizationId } from "../tenantContext";
 
 function createTestApp() {
@@ -50,18 +49,55 @@ function createTestApp() {
   };
 
   const getProductionStationStepsForOrganization = async (organizationId: string) => {
-    const rows = await db
-      .select({ settings: organizations.settings })
-      .from(organizations)
-      .where(eq(organizations.id, organizationId))
-      .limit(1);
+    await db.execute(sql`
+      insert into production_station_steps (
+        organization_id,
+        station_key,
+        key,
+        label,
+        sort_order,
+        active,
+        triggers
+      )
+      select
+        s.organization_id,
+        s.key,
+        ${"queued"},
+        ${"Queued"},
+        ${10},
+        ${true},
+        '[]'::jsonb
+      from stations s
+      left join production_station_steps p
+        on p.organization_id = s.organization_id
+       and p.station_key = s.key
+      where s.organization_id = ${organizationId}
+        and s.active = true
+        and p.id is null
+      on conflict (organization_id, station_key, key) do nothing
+    `);
 
-    const settings = (rows[0]?.settings as any) ?? {};
-    const raw = settings?.preferences?.production?.stationSteps;
-    return (raw && typeof raw === "object" ? raw : {}) as Record<
-      string,
-      Array<{ key: string; label: string; active: boolean }>
-    >;
+    const result = await db.execute(sql`
+      select station_key as "stationKey", key, label, sort_order as "sortOrder", active, triggers
+      from production_station_steps
+      where organization_id = ${organizationId}
+      order by station_key asc, sort_order asc, created_at asc
+    `);
+
+    const grouped: Record<string, Array<{ key: string; label: string; sortOrder: number; active: boolean; triggers: any[] }>> = {};
+    for (const row of result.rows ?? []) {
+      const stationKey = String((row as any).stationKey ?? "").trim();
+      if (!grouped[stationKey]) grouped[stationKey] = [];
+      grouped[stationKey].push({
+        key: String((row as any).key ?? ""),
+        label: String((row as any).label ?? ""),
+        sortOrder: Number((row as any).sortOrder ?? 0),
+        active: (row as any).active !== false,
+        triggers: Array.isArray((row as any).triggers) ? (row as any).triggers : [],
+      });
+    }
+
+    return grouped;
   };
 
   const getActiveProductionStationsForOrganization = async (organizationId: string) => {
@@ -157,38 +193,21 @@ describe("/api/production/steps computed defaults", () => {
           active = excluded.active
     `);
 
-    const orgASettings = {
-      preferences: {
-        production: {
-          stationSteps: {
-            offline: [{ key: "ready", label: "Ready", active: true }],
-          },
-        },
-      },
-    };
-
-    const orgBSettings = {
-      preferences: {
-        production: {
-          stationSteps: {
-            roll: [{ key: "print", label: "Print", active: true }],
-          },
-        },
-      },
-    };
-
-    await db
-      .update(organizations)
-      .set({ settings: orgASettings as any })
-      .where(eq(organizations.id, orgA));
-
-    await db
-      .update(organizations)
-      .set({ settings: orgBSettings as any })
-      .where(eq(organizations.id, orgB));
+    await db.execute(sql`
+      insert into production_station_steps (organization_id, station_key, key, label, sort_order, active, triggers)
+      values
+        (${orgA}, ${"offline"}, ${"ready"}, ${"Ready"}, ${10}, ${true}, '[]'::jsonb),
+        (${orgB}, ${"roll"}, ${"print"}, ${"Print"}, ${10}, ${true}, '[]'::jsonb)
+      on conflict (organization_id, station_key, key) do update
+      set label = excluded.label,
+          sort_order = excluded.sort_order,
+          active = excluded.active,
+          triggers = excluded.triggers
+    `);
   });
 
   afterAll(async () => {
+    await db.execute(sql`delete from production_station_steps where organization_id in (${orgA}, ${orgB})`);
     await db.execute(sql`delete from stations where organization_id in (${orgA}, ${orgB})`);
     await db.execute(sql`delete from user_organizations where user_id = ${userId}`);
     await db.execute(sql`delete from users where id = ${userId}`);
@@ -196,13 +215,6 @@ describe("/api/production/steps computed defaults", () => {
   });
 
   test("returns queued defaults for active stations with missing managed steps and keeps extras", async () => {
-    const beforeRows = await db
-      .select({ settings: organizations.settings })
-      .from(organizations)
-      .where(eq(organizations.id, orgA))
-      .limit(1);
-    const beforeSettings = beforeRows[0]?.settings as any;
-
     const res = await request(app)
       .get("/api/production/steps")
       .set("x-test-user-id", userId)
@@ -211,19 +223,10 @@ describe("/api/production/steps computed defaults", () => {
       .expect(200);
 
     expect(res.body?.success).toBe(true);
-    expect(res.body?.data?.prepress).toEqual([{ key: "queued", label: "Queued", active: true }]);
-    expect(res.body?.data?.flatbed).toEqual([{ key: "queued", label: "Queued", active: true }]);
-    expect(res.body?.data?.offline).toEqual([{ key: "ready", label: "Ready", active: true }]);
+    expect(res.body?.data?.prepress).toEqual([{ key: "queued", label: "Queued", sortOrder: 10, active: true, triggers: [] }]);
+    expect(res.body?.data?.flatbed).toEqual([{ key: "queued", label: "Queued", sortOrder: 10, active: true, triggers: [] }]);
+    expect(res.body?.data?.offline).toEqual([{ key: "ready", label: "Ready", sortOrder: 10, active: true, triggers: [] }]);
     expect(res.body?.data?.hidden).toBeUndefined();
-
-    const afterRows = await db
-      .select({ settings: organizations.settings })
-      .from(organizations)
-      .where(eq(organizations.id, orgA))
-      .limit(1);
-    const afterSettings = afterRows[0]?.settings as any;
-
-    expect(afterSettings).toEqual(beforeSettings);
   });
 
   test("keeps tenant context and ignores query param org override", async () => {
@@ -235,8 +238,8 @@ describe("/api/production/steps computed defaults", () => {
       .expect(200);
 
     expect(res.body?.success).toBe(true);
-    expect(res.body?.data?.prepress).toEqual([{ key: "queued", label: "Queued", active: true }]);
-    expect(res.body?.data?.flatbed).toEqual([{ key: "queued", label: "Queued", active: true }]);
+    expect(res.body?.data?.prepress).toEqual([{ key: "queued", label: "Queued", sortOrder: 10, active: true, triggers: [] }]);
+    expect(res.body?.data?.flatbed).toEqual([{ key: "queued", label: "Queued", sortOrder: 10, active: true, triggers: [] }]);
     expect(res.body?.data?.roll).toBeUndefined();
   });
 
@@ -249,6 +252,6 @@ describe("/api/production/steps computed defaults", () => {
       .expect(200);
 
     expect(res.body?.success).toBe(true);
-    expect(res.body?.data?.roll).toEqual([{ key: "print", label: "Print", active: true }]);
+    expect(res.body?.data?.roll).toEqual([{ key: "print", label: "Print", sortOrder: 10, active: true, triggers: [] }]);
   });
 });
