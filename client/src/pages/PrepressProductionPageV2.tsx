@@ -416,6 +416,8 @@ export default function PrepressProductionPageV2() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      // Invalidate production board so downstream boards reflect the prepress_complete status change.
+      queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] });
       setSelectedLineItemId(null);
       toast({ title: "Prepress complete", description: "Prepress is complete. Use Send to Production for handoff." });
     },
@@ -568,14 +570,16 @@ export default function PrepressProductionPageV2() {
     isOwnedByPrepress &&
     selectedItem.prepressStage === "pending_prepress" &&
     !selectedItem.sessionId;
+  // NOTE: Both gates key off prepressStage (server-derived from production_jobs),
+  // NOT raw orderLineItems.status, so display and gating use the same authoritative value.
   const canComplete =
     isOwnedByPrepress &&
-    selectedItem?.status === "in_prepress" &&
+    selectedItem?.prepressStage === "in_prepress" &&
     hasFinalFiles &&
     !!selectedItem?.sessionId;
   const canSendToPrint =
     isOwnedByPrepress &&
-    selectedItem?.status === 'prepress_complete' &&
+    selectedItem?.prepressStage === "prepress_complete" &&
     !selectedItem?.hasDownstreamActiveJob &&
     hasFinalFiles;
 
