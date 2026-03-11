@@ -191,6 +191,123 @@ test.describe.serial("routing workflow validation", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Invariant regressions
+// Run independently of the happy-path serial block so they can be executed
+// in isolation without requiring a full end-to-end session.
+// ---------------------------------------------------------------------------
+
+test.describe("invariant: one active production_job per line item", () => {
+  test("at most one non-terminal production_job exists per line item after send-to-print", async ({ page }) => {
+    test.setTimeout(60_000);
+    await ensureAuthenticated(page);
+
+    // Find any line item that is currently owned by a downstream production station.
+    const snapshot = await getRoutingSnapshot(page);
+    const candidates = snapshot.productionJobs.filter(
+      (job) =>
+        !!job.lineItemId &&
+        job.status !== "done" &&
+        job.status !== "void" &&
+        job.stationKey !== "prepress",
+    );
+
+    test.skip(candidates.length === 0, "No active downstream production jobs found to validate invariant");
+
+    const grouped = groupProductionJobsByLineItem(candidates);
+    for (const [lineItemId, jobs] of grouped.entries()) {
+      const nonTerminal = jobs.filter((j) => j.status !== "done" && j.status !== "void");
+      expect(
+        nonTerminal.length,
+        `Line item ${lineItemId} has ${nonTerminal.length} non-terminal production jobs — expected exactly 1. Jobs: ${JSON.stringify(nonTerminal)}`,
+      ).toBeLessThanOrEqual(1);
+    }
+  });
+});
+
+test.describe("invariant: double send-to-print is rejected", () => {
+  test("sending to print a line item already in downstream production returns an error", async ({ page }) => {
+    test.setTimeout(60_000);
+    await ensureAuthenticated(page);
+
+    const snapshot = await getRoutingSnapshot(page);
+    // Find a prepress queue item that already has a downstream active job.
+    const candidate = snapshot.queueItems.find((item) => item.hasDownstreamActiveJob === true);
+
+    test.skip(!candidate, "No prepress item with existing downstream job found");
+
+    // Attempt to send to print — should be rejected by the server.
+    const response = await fetchJson(page, `/api/prepress/line-item/${candidate!.lineItemId}/send-to-print`, {
+      method: "POST",
+    });
+
+    expect(
+      response.status,
+      `Expected 4xx when sending an already-in-production item to print but got HTTP ${response.status}`,
+    ).toBeGreaterThanOrEqual(400);
+    expect(response.status).toBeLessThan(500);
+  });
+});
+
+test.describe("invariant: Send to Production button gating", () => {
+  test("Send to Production button is disabled when prepressStage is not prepress_complete", async ({ page }) => {
+    test.setTimeout(60_000);
+    await ensureAuthenticated(page);
+
+    const snapshot = await getRoutingSnapshot(page);
+    // Find a prepress-owned item that is NOT yet prepress_complete.
+    const candidate = snapshot.queueItems.find(
+      (item) =>
+        item.isActivelyOwnedByPrepress === true &&
+        item.prepressStage !== "prepress_complete",
+    );
+
+    test.skip(!candidate, "No in-progress prepress item available to verify button gating");
+
+    await page.goto("/production/prepress", { waitUntil: "networkidle" });
+    await expect(page).not.toHaveURL(/\/login/);
+
+    // Select the card.
+    const card = page.locator("aside div.cursor-pointer").filter({
+      has: page.getByText(candidate!.jobNumber, { exact: true }),
+    }).first();
+    await expect(card).toBeVisible();
+    await card.click();
+
+    // "Send to Production" must be disabled since the item has not reached prepress_complete.
+    const sendButton = page.getByRole("button", { name: /^Send to Production$/ });
+    await expect(sendButton).toBeDisabled();
+  });
+
+  test("Complete button is disabled when prepressStage is not in_prepress", async ({ page }) => {
+    test.setTimeout(60_000);
+    await ensureAuthenticated(page);
+
+    const snapshot = await getRoutingSnapshot(page);
+    // Find a prepress-owned item that is NOT yet in_prepress (i.e. pending or complete).
+    const candidate = snapshot.queueItems.find(
+      (item) =>
+        item.isActivelyOwnedByPrepress === true &&
+        item.prepressStage !== "in_prepress",
+    );
+
+    test.skip(!candidate, "No prepress item in non-in_prepress stage available");
+
+    await page.goto("/production/prepress", { waitUntil: "networkidle" });
+    await expect(page).not.toHaveURL(/\/login/);
+
+    const card = page.locator("aside div.cursor-pointer").filter({
+      has: page.getByText(candidate!.jobNumber, { exact: true }),
+    }).first();
+    await expect(card).toBeVisible();
+    await card.click();
+
+    // "Mark Prepress Complete" must be disabled when not actively in-session.
+    const completeButton = page.getByRole("button", { name: /Mark Prepress Complete/i });
+    await expect(completeButton).toBeDisabled();
+  });
+});
+
 async function ensureAuthenticated(page: Page) {
   await page.goto("/dashboard", { waitUntil: "networkidle" });
   await expect(page).not.toHaveURL(/\/login/);
