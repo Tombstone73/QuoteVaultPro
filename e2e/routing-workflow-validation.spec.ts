@@ -342,6 +342,100 @@ test.describe("invariant: Send to Production button gating", () => {
   });
 });
 
+test.describe.serial("step metadata runtime fallback visibility", () => {
+  test("missing configured step falls back to queued and remains visible after refresh", async ({ page }) => {
+    test.setTimeout(120_000);
+    await ensureAuthenticated(page);
+
+    const candidate = await findPrepressToProductionCandidate(page, PREPRESS_TO_PRODUCTION_ORDER_NUMBER);
+    test.skip(!candidate.printType, "No prepress candidate with printType available for fallback validation");
+
+    const productTypes = await getProductTypes(page);
+    const productType = findFallbackTestProductType(productTypes, candidate.printType!);
+    test.skip(!productType, `No unique product type mapping found for printType '${candidate.printType}'`);
+    if (!productType) return;
+
+    const originalStationKey = productType.defaultStationKey ?? null;
+    const originalStepKey = productType.defaultStepKey ?? null;
+    const fallbackTestStepKey = "__missing_step_runtime_fallback_test__";
+
+    let patched = false;
+
+    try {
+      const patchResult = await tryPatchProductType(page, productType.id, {
+        defaultStationKey: originalStationKey,
+        defaultStepKey: fallbackTestStepKey,
+      });
+      test.skip(
+        patchResult.status === 403,
+        "Authenticated Playwright session is not Admin/Owner, so runtime fallback config patch cannot be applied",
+      );
+      if (patchResult.status !== 200) {
+        throw new Error(
+          `PATCH /api/product-types/${productType.id} failed with HTTP ${patchResult.status}: ${patchResult.body?.error || patchResult.body?.message || "Unknown error"}`,
+        );
+      }
+      patched = true;
+
+      if (candidate.bootstrapFromProduction) {
+        await sendLineItemToPrepressViaApi(page, candidate.bootstrapFromProduction.lineItemId);
+        await pollForRoutingState(page, candidate.lineItemId, (snapshot) => {
+          const item = snapshot.queueItems.find((queueItem) => queueItem.lineItemId === candidate.lineItemId);
+          if (!item || item.isActivelyOwnedByPrepress !== true) return null;
+          return item;
+        });
+      }
+
+      await page.goto("/production/prepress", { waitUntil: "networkidle" });
+      await expect(page).not.toHaveURL(/\/login/);
+      await selectPrepressCandidateCard(page, candidate);
+      await preparePrepressCandidate(page, candidate);
+
+      const sendButton = page.getByRole("button", { name: /^Send to Production$/ });
+      await expect(sendButton).toBeEnabled();
+      const sendResponsePromise = page.waitForResponse(
+        (response) =>
+          response.url().includes(`/api/prepress/line-item/${candidate.lineItemId}/send-to-print`) &&
+          response.request().method() === "POST",
+        { timeout: 20_000 },
+      );
+      await sendButton.click();
+      const sendResponse = await sendResponsePromise;
+      expect(sendResponse.ok(), `Send to Production returned HTTP ${sendResponse.status()}`).toBe(true);
+
+      const postSend = await pollForRoutingState(page, candidate.lineItemId, (snapshot) => {
+        const queueMatches = snapshot.queueItems.filter((item) => item.lineItemId === candidate.lineItemId);
+        const activeProductionMatches = snapshot.productionJobs.filter((job) => job.lineItemId === candidate.lineItemId);
+        const nonTerminal = activeProductionMatches.filter((job) => job.status !== "done" && job.status !== "void");
+
+        if (queueMatches.length !== 0) return null;
+        if (nonTerminal.length !== 1) return null;
+        const downstream = nonTerminal[0];
+        if (downstream.stationKey !== "flatbed" && downstream.stationKey !== "roll") return null;
+        return { downstream, nonTerminal };
+      });
+
+      expect(postSend.nonTerminal.length).toBe(1);
+      expect(postSend.downstream.stepKey).toBe("queued");
+
+      await page.goto(`/production/${postSend.downstream.stationKey}`, { waitUntil: "networkidle" });
+      await showAllProductionJobs(page);
+      await expect(productionRowByOrderNumber(page, candidate.jobNumber)).toBeVisible();
+
+      await page.reload({ waitUntil: "networkidle" });
+      await showAllProductionJobs(page);
+      await expect(productionRowByOrderNumber(page, candidate.jobNumber)).toBeVisible();
+    } finally {
+      if (patched) {
+        await patchProductType(page, productType.id, {
+          defaultStationKey: originalStationKey,
+          defaultStepKey: originalStepKey,
+        }).catch(() => undefined);
+      }
+    }
+  });
+});
+
 async function ensureAuthenticated(page: Page) {
   await page.goto("/dashboard", { waitUntil: "networkidle" });
   await expect(page).not.toHaveURL(/\/login/);
@@ -370,6 +464,69 @@ async function fetchJson<T>(
       body,
     };
   }, { requestPath: path, requestInit: init }) as Promise<{ status: number; body: ApiEnvelope<T> | null }>;
+}
+
+type ProductTypeApiItem = {
+  id: string;
+  name: string;
+  defaultStationKey: string | null;
+  defaultStepKey: string | null;
+};
+
+async function getProductTypes(page: Page): Promise<ProductTypeApiItem[]> {
+  const response = await fetchJson<ProductTypeApiItem[]>(page, "/api/product-types");
+  if (response.status !== 200 || !Array.isArray(response.body)) {
+    const directBody = response.body as unknown as ProductTypeApiItem[] | null;
+    if (response.status === 200 && Array.isArray(directBody)) return directBody;
+  }
+  if (response.status !== 200) {
+    throw new Error(`GET /api/product-types failed with HTTP ${response.status}`);
+  }
+  return (response.body as unknown as ProductTypeApiItem[]) ?? [];
+}
+
+async function patchProductType(
+  page: Page,
+  id: string,
+  data: Partial<Pick<ProductTypeApiItem, "defaultStationKey" | "defaultStepKey">>,
+) {
+  const response = await tryPatchProductType(page, id, data);
+
+  if (response.status !== 200) {
+    throw new Error(
+      `PATCH /api/product-types/${id} failed with HTTP ${response.status}: ${response.body?.error || response.body?.message || "Unknown error"}`,
+    );
+  }
+}
+
+async function tryPatchProductType(
+  page: Page,
+  id: string,
+  data: Partial<Pick<ProductTypeApiItem, "defaultStationKey" | "defaultStepKey">>,
+) {
+  return fetchJson<ProductTypeApiItem>(page, `/api/product-types/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+function findFallbackTestProductType(productTypes: ProductTypeApiItem[], printType: string): ProductTypeApiItem | null {
+  const key = String(printType || "").trim().toLowerCase();
+  if (!key) return null;
+
+  const predicates = key.includes("roll")
+    ? [(type: ProductTypeApiItem) => /roll/i.test(type.name)]
+    : key.includes("flat")
+      ? [(type: ProductTypeApiItem) => /flatbed/i.test(type.name)]
+      : [];
+
+  for (const predicate of predicates) {
+    const matches = productTypes.filter(predicate);
+    if (matches.length === 1) return matches[0];
+  }
+
+  return null;
 }
 
 async function getLineItemFiles(page: Page, lineItemId: string) {
