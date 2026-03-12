@@ -530,21 +530,6 @@ export function useQuoteEditorState() {
             const response = await apiRequest("PATCH", `/api/quotes/${quoteId}`, payload);
             return await response.json();
         },
-        onSuccess: () => {
-            toast({
-                title: "Success",
-                description: "Quote saved",
-            });
-            queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
-            queryClient.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
-        },
-        onError: (error: Error) => {
-            toast({
-                title: "Error",
-                description: error.message,
-                variant: "destructive",
-            });
-        },
     });
 
     const isSaving = saveQuoteMutation.isPending;
@@ -1779,11 +1764,7 @@ export function useQuoteEditorState() {
                 // Deletes
                 const deletedIds = Array.from(prevIds).filter((id) => !nextIds.has(id));
                 await Promise.all(
-                    deletedIds.map((id) =>
-                        apiRequest("DELETE", `/api/quotes/${quoteId}/line-items/${id}`).catch((err) => {
-                            console.error("[saveQuote] Failed deleting line item", { id, err });
-                        })
-                    )
+                    deletedIds.map((id) => apiRequest("DELETE", `/api/quotes/${quoteId}/line-items/${id}`))
                 );
 
                 // Creates + Updates
@@ -1814,9 +1795,7 @@ export function useQuoteEditorState() {
                     };
 
                     if (li.id) {
-                        await apiRequest("PATCH", `/api/quotes/${quoteId}/line-items/${li.id}`, payloadLi).catch((err) => {
-                            console.error("[saveQuote] Failed updating line item", { id: li.id, err });
-                        });
+                        await apiRequest("PATCH", `/api/quotes/${quoteId}/line-items/${li.id}`, payloadLi);
                     } else {
                         await apiRequest("POST", `/api/quotes/${quoteId}/line-items`, payloadLi)
                             .then(async (resp) => await resp.json())
@@ -1827,9 +1806,6 @@ export function useQuoteEditorState() {
                                         prev.map((x) => (x.tempId && x.tempId === li.tempId ? { ...x, id: createdId } : x))
                                     );
                                 }
-                            })
-                            .catch((err) => {
-                                console.error("[saveQuote] Failed creating line item", { tempId: li.tempId, err });
                             });
                     }
                 }
@@ -1865,6 +1841,10 @@ export function useQuoteEditorState() {
             }
         } catch (error: any) {
             console.error("Save quote failed", error);
+            queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes"] });
+            if (quoteId) {
+                queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
+            }
             toast({
                 title: "Failed to save quote",
                 description: error?.message || "Please try again.",
