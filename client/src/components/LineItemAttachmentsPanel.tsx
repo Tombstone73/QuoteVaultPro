@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -6,9 +6,9 @@ import { Paperclip, Upload, Download, X, Loader2, Image, FileText, File, Chevron
 import { cn, isValidHttpUrl } from "@/lib/utils";
 import { getAttachmentDisplayName, isPdfAttachment, getPdfPageCount } from "@/lib/attachments";
 import { hasAnyUnsettledAttachment } from "@/lib/attachments/attachmentStatus";
-import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
+import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { objectsUrl } from "@/lib/apiConfig";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -114,7 +114,7 @@ export function LineItemAttachmentsPanel({
   const [userClosed, setUserClosed] = useState(false); // Track if user explicitly closed the panel
   const [isCreatingQuote, setIsCreatingQuote] = useState(false);
   const [isPersistingLineItem, setIsPersistingLineItem] = useState(false);
-  const [previewFile, setPreviewFile] = useState<LineItemAttachment | null>(null);
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
   const [largeFileDialogOpen, setLargeFileDialogOpen] = useState(false);
   // Store ensured IDs to use during upload (props may not have updated yet)
@@ -261,6 +261,7 @@ export function LineItemAttachmentsPanel({
   });
 
   const fileCount = attachments.length;
+  const viewerAttachments = useMemo(() => toAttachmentViewerAttachments(attachments as any[]), [attachments]);
 
   // Format file size for display
   const formatFileSize = (bytes: number | null | undefined): string => {
@@ -792,7 +793,7 @@ export function LineItemAttachmentsPanel({
             <p className="text-xs text-muted-foreground text-center py-2">Loading...</p>
           ) : attachments.length > 0 ? (
             <div className="space-y-1">
-              {attachments.map((file) => {
+              {attachments.map((file, fileIndex) => {
                 const FileIcon = getFileIcon(file.mimeType);
                 const isPdf = isPdfAttachment(file);
                 const isImage = file.mimeType?.startsWith("image/") ?? false;
@@ -827,7 +828,7 @@ export function LineItemAttachmentsPanel({
                         }
                         e.stopPropagation();
                         console.log("[PreviewClick]", file.id);
-                        setPreviewFile(file);
+                        setPreviewIndex(fileIndex);
                       }}
                       onPointerDownCapture={(e) => {
                         const target = e.target as HTMLElement;
@@ -1026,10 +1027,13 @@ export function LineItemAttachmentsPanel({
       )}
 
       <AttachmentViewerDialog
-        attachment={previewFile as any}
-        open={!!previewFile}
+        attachments={viewerAttachments}
+        initialIndex={previewIndex ?? 0}
+        open={previewIndex !== null}
+        hideFilmstrip={false}
+        showMetaPanel={true}
         onOpenChange={(open) => {
-          if (!open) setPreviewFile(null);
+          if (!open) setPreviewIndex(null);
         }}
       />
 

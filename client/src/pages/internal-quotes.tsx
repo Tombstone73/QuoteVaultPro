@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { ViewAllAttachmentsDialog } from "@/components/ViewAllAttachmentsDialog";
+import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
@@ -532,7 +533,7 @@ export default function InternalQuotes() {
       }
       
       // Open attachments list modal with all attachments
-      setViewerAttachments(attachments);
+      setViewerAttachments(toAttachmentViewerAttachments(attachments));
       setViewerInitialIndex(0); // Reset to list view
       setAttachmentsListOpen(true);
     } catch (error: any) {
@@ -1608,6 +1609,8 @@ export default function InternalQuotes() {
         attachments={viewerAttachments}
         initialIndex={viewerInitialIndex}
         open={attachmentViewerOpen}
+        hideFilmstrip={false}
+        showMetaPanel={true}
         onOpenChange={(open) => {
           setAttachmentViewerOpen(open);
           if (!open) {

@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
-import { buildPdfDownloadUrl, buildPdfViewUrl, checkPdfUrlReachable, isPdfFile } from "@/lib/pdfUrls";
+import { buildPdfDownloadUrl, buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
 import { apiFetchBlob } from "@/lib/queryClient";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { cn } from "@/lib/utils";
-import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, House, X, ZoomIn, ZoomOut } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, House, Printer, RotateCcw, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
 
 export type AttachmentPage = {
   id: string;
@@ -34,6 +36,7 @@ export type AttachmentData = {
   previewKey?: string | null;
   thumbError?: string | null;
   originalUrl?: string | null;
+  downloadUrl?: string | null;
   thumbUrl?: string | null;
   previewUrl?: string | null;
   objectPath?: string | null;
@@ -142,8 +145,6 @@ export function AttachmentViewerDialog({
 }: AttachmentViewerDialogProps) {
   const isDev = import.meta.env.DEV;
   const [selectedIndex, setSelectedIndex] = useState(initialIndex);
-  const [showFallback, setShowFallback] = useState(false);
-  const [urlReachable, setUrlReachable] = useState<boolean | null>(null);
   const [imageBlobUrl, setImageBlobUrl] = useState<string | null>(null);
   const [imagePreviewLoading, setImagePreviewLoading] = useState(false);
   const [imagePreviewError, setImagePreviewError] = useState<string | null>(null);
@@ -151,9 +152,23 @@ export function AttachmentViewerDialog({
   const [panX, setPanX] = useState(0);
   const [panY, setPanY] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
+  const [pdfDocument, setPdfDocument] = useState<any | null>(null);
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+  const [pdfPageNumber, setPdfPageNumber] = useState(1);
+  const [pdfPageCount, setPdfPageCount] = useState(0);
+  const [pdfZoomLevel, setPdfZoomLevel] = useState(1);
+  const [pdfRenderedScale, setPdfRenderedScale] = useState(1);
+  const [pdfRotation, setPdfRotation] = useState(0);
+  const [pdfFitMode, setPdfFitMode] = useState<"page" | "width" | "custom">("page");
+  const [pdfStageSize, setPdfStageSize] = useState({ width: 0, height: 0 });
+  const [pdfMetadata, setPdfMetadata] = useState<Record<string, string | number | null>>({});
   const imageBlobUrlRef = useRef<string | null>(null);
   const dragPointerIdRef = useRef<number | null>(null);
   const dragOriginRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const pdfStageRef = useRef<HTMLDivElement | null>(null);
+  const pdfCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const pdfRenderTaskRef = useRef<any | null>(null);
 
   const galleryAttachments = attachments?.length ? attachments : undefined;
   const attachmentCount = galleryAttachments?.length ?? (singleAttachment ? 1 : 0);
@@ -179,8 +194,13 @@ export function AttachmentViewerDialog({
   const objectPath = currentAttachment?.objectPath ?? null;
   const pdfViewUrl = isPdf ? buildPdfViewUrl(objectPath) : null;
   const pdfDownloadUrl = isPdf ? buildPdfDownloadUrl(objectPath, fileName) : null;
-  const genericDownloadUrl = !isPdf ? currentAttachment?.originalUrl ?? null : null;
-  const downloadUrl = isPdf ? pdfDownloadUrl : genericDownloadUrl;
+  const pdfSourceUrl = isPdf
+    ? currentAttachment?.originalUrl ?? currentAttachment?.previewUrl ?? currentAttachment?.fileUrl ?? pdfViewUrl
+    : null;
+  const genericDownloadUrl = !isPdf ? currentAttachment?.downloadUrl ?? currentAttachment?.originalUrl ?? currentAttachment?.fileUrl ?? null : null;
+  const downloadUrl = isPdf
+    ? currentAttachment?.downloadUrl ?? pdfDownloadUrl ?? currentAttachment?.originalUrl ?? currentAttachment?.fileUrl ?? null
+    : genericDownloadUrl;
   const canGoPrev = !!galleryAttachments && selectedIndex > 0;
   const canGoNext = !!galleryAttachments && selectedIndex < galleryAttachments.length - 1;
 
@@ -203,12 +223,20 @@ export function AttachmentViewerDialog({
   }, [canGoNext, canGoPrev, galleryAttachments, open]);
 
   useEffect(() => {
-    setShowFallback(false);
-    setUrlReachable(null);
     setZoomLevel(1);
     setPanX(0);
     setPanY(0);
     setIsDragging(false);
+    setPdfDocument(null);
+    setPdfLoading(false);
+    setPdfError(null);
+    setPdfPageNumber(1);
+    setPdfPageCount(currentAttachment?.pageCount ?? 0);
+    setPdfZoomLevel(1);
+    setPdfRenderedScale(1);
+    setPdfRotation(0);
+    setPdfFitMode("page");
+    setPdfMetadata({});
     dragPointerIdRef.current = null;
   }, [currentAttachment?.id, open]);
 
@@ -220,32 +248,6 @@ export function AttachmentViewerDialog({
       dragPointerIdRef.current = null;
     }
   }, [zoomLevel]);
-
-  useEffect(() => {
-    if (!open || !currentAttachment || !isPdf || !objectPath) {
-      setUrlReachable(null);
-      return;
-    }
-
-    const nextPdfUrl = buildPdfViewUrl(objectPath);
-    if (!nextPdfUrl) {
-      setUrlReachable(null);
-      return;
-    }
-
-    let cancelled = false;
-    void checkPdfUrlReachable(nextPdfUrl).then((reachable) => {
-      if (cancelled) return;
-      setUrlReachable(reachable);
-      if (!reachable) {
-        setShowFallback(true);
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [currentAttachment, isPdf, objectPath, open]);
 
   useEffect(() => {
     const revokeBlobUrl = () => {
@@ -298,6 +300,205 @@ export function AttachmentViewerDialog({
     };
   }, [currentAttachment?.id, imageViewUrl, isDev, isImage, open]);
 
+  useEffect(() => {
+    if (!open || !isPdf || !currentAttachment?.id || !pdfSourceUrl) {
+      return;
+    }
+
+    let cancelled = false;
+    let loadedDocument: any | null = null;
+
+    setPdfLoading(true);
+    setPdfError(null);
+
+    void (async () => {
+      try {
+        const [pdfjs, pdfBlob] = await Promise.all([
+          import("pdfjs-dist"),
+          apiFetchBlob(pdfSourceUrl, { method: "GET", credentials: "include" }),
+        ]);
+
+        if (cancelled) return;
+
+        pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+        const loadingTask = pdfjs.getDocument({
+          data: new Uint8Array(await pdfBlob.arrayBuffer()),
+          useWorkerFetch: false,
+          isEvalSupported: false,
+        });
+
+        loadedDocument = await loadingTask.promise;
+        if (cancelled) {
+          await loadedDocument.destroy();
+          return;
+        }
+
+        setPdfDocument(loadedDocument);
+        setPdfPageCount(loadedDocument.numPages ?? currentAttachment.pageCount ?? 0);
+        setPdfPageNumber(1);
+
+        try {
+          const [metadataResult, firstPage] = await Promise.all([
+            loadedDocument.getMetadata().catch(() => null),
+            loadedDocument.getPage(1).catch(() => null),
+          ]);
+
+          if (!cancelled) {
+            const info = metadataResult?.info ?? {};
+            setPdfMetadata({
+              title: typeof info.Title === "string" ? info.Title : null,
+              author: typeof info.Author === "string" ? info.Author : null,
+              creator: typeof info.Creator === "string" ? info.Creator : null,
+              producer: typeof info.Producer === "string" ? info.Producer : null,
+              subject: typeof info.Subject === "string" ? info.Subject : null,
+              pageWidth: firstPage ? Math.round(firstPage.getViewport({ scale: 1 }).width) : null,
+              pageHeight: firstPage ? Math.round(firstPage.getViewport({ scale: 1 }).height) : null,
+            });
+          }
+        } catch {
+          // ignore metadata failures
+        }
+      } catch (error) {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : "Unable to load PDF preview.";
+        setPdfError(message);
+        if (isDev) {
+          console.warn("[AttachmentViewerDialog] PDF.js load failed", error);
+        }
+      } finally {
+        if (!cancelled) {
+          setPdfLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (pdfRenderTaskRef.current) {
+        try {
+          pdfRenderTaskRef.current.cancel();
+        } catch {
+          // ignore
+        }
+        pdfRenderTaskRef.current = null;
+      }
+      if (loadedDocument) {
+        void loadedDocument.destroy().catch(() => undefined);
+      }
+    };
+  }, [currentAttachment?.id, currentAttachment?.pageCount, isDev, isPdf, open, pdfSourceUrl]);
+
+  useEffect(() => {
+    if (!open || !isPdf || !pdfStageRef.current) {
+      return;
+    }
+
+    const element = pdfStageRef.current;
+    const updateSize = () => {
+      const rect = element.getBoundingClientRect();
+      setPdfStageSize({ width: rect.width, height: rect.height });
+    };
+
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(element);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [isPdf, open]);
+
+  useEffect(() => {
+    if (!open || !isPdf || !pdfDocument || !pdfCanvasRef.current || !pdfStageSize.width || !pdfStageSize.height) {
+      return;
+    }
+
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const page = await pdfDocument.getPage(pdfPageNumber);
+        if (cancelled) return;
+
+        const rotation = (page.rotate ?? 0) + pdfRotation;
+        const baseViewport = page.getViewport({ scale: 1, rotation });
+        const availableWidth = Math.max(pdfStageSize.width - 32, 120);
+        const availableHeight = Math.max(pdfStageSize.height - 32, 120);
+
+        const fitWidthScale = availableWidth / Math.max(baseViewport.width, 1);
+        const fitPageScale = Math.min(fitWidthScale, availableHeight / Math.max(baseViewport.height, 1));
+
+        const nextScale =
+          pdfFitMode === "width"
+            ? fitWidthScale
+            : pdfFitMode === "page"
+            ? fitPageScale
+            : pdfZoomLevel;
+
+        const clampedScale = Math.min(4, Math.max(0.4, nextScale));
+        const viewport = page.getViewport({ scale: clampedScale, rotation });
+        const canvas = pdfCanvasRef.current;
+        if (!canvas) return;
+
+        const context = canvas.getContext("2d");
+        if (!context) {
+          setPdfError("Canvas preview unavailable.");
+          return;
+        }
+
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        canvas.width = Math.floor(viewport.width * devicePixelRatio);
+        canvas.height = Math.floor(viewport.height * devicePixelRatio);
+        canvas.style.width = `${Math.floor(viewport.width)}px`;
+        canvas.style.height = `${Math.floor(viewport.height)}px`;
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        context.clearRect(0, 0, canvas.width, canvas.height);
+
+        if (pdfRenderTaskRef.current) {
+          try {
+            pdfRenderTaskRef.current.cancel();
+          } catch {
+            // ignore
+          }
+        }
+
+        const renderTask = page.render({
+          canvasContext: context,
+          viewport,
+          transform: devicePixelRatio === 1 ? undefined : [devicePixelRatio, 0, 0, devicePixelRatio, 0, 0],
+        });
+
+        pdfRenderTaskRef.current = renderTask;
+        await renderTask.promise;
+        if (cancelled) return;
+        setPdfRenderedScale(clampedScale);
+        setPdfError(null);
+      } catch (error: any) {
+        if (cancelled || error?.name === "RenderingCancelledException") {
+          return;
+        }
+        const message = error instanceof Error ? error.message : "Unable to render PDF page.";
+        setPdfError(message);
+        if (isDev) {
+          console.warn("[AttachmentViewerDialog] PDF.js render failed", error);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (pdfRenderTaskRef.current) {
+        try {
+          pdfRenderTaskRef.current.cancel();
+        } catch {
+          // ignore
+        }
+        pdfRenderTaskRef.current = null;
+      }
+    };
+  }, [isDev, isPdf, open, pdfDocument, pdfFitMode, pdfPageNumber, pdfRotation, pdfStageSize.height, pdfStageSize.width, pdfZoomLevel]);
+
   if (!currentAttachment) return null;
 
   const handleDownloadClick = () => {
@@ -311,6 +512,9 @@ export function AttachmentViewerDialog({
 
   const clampZoom = (value: number) => Math.min(3, Math.max(0.5, value));
   const canPanImage = isImage && zoomLevel > 1 && !!imageBlobUrl;
+  const clampPdfZoom = (value: number) => Math.min(4, Math.max(0.4, value));
+  const pdfCanGoPrev = isPdf && pdfPageNumber > 1;
+  const pdfCanGoNext = isPdf && pdfPageCount > 0 && pdfPageNumber < pdfPageCount;
 
   const resetImageView = () => {
     setZoomLevel(1);
@@ -384,17 +588,17 @@ export function AttachmentViewerDialog({
     <div className="flex h-full min-h-[360px] flex-col items-center justify-center rounded-lg bg-muted/30 px-6 py-12 text-center">
       <FileText className="mb-4 h-16 w-16 text-muted-foreground/70" />
       <div className="space-y-2">
-        <p className="text-sm font-medium">
-          {!pdfViewUrl ? "PDF preview unavailable" : "Preview may be disabled by your browser"}
-        </p>
+        <p className="text-sm font-medium">{pdfError ? "PDF preview unavailable" : !pdfViewUrl ? "PDF preview unavailable" : "Preview may be disabled by your browser"}</p>
         <p className="max-w-md text-xs text-muted-foreground">
-          {!pdfViewUrl
+          {pdfError
+            ? pdfError
+            : !pdfViewUrl
             ? "Missing file reference. Download the file to view it."
             : "Some browsers block embedded PDFs. Download the file or open it in a new tab instead."}
         </p>
       </div>
       <div className="mt-4 flex flex-col gap-2">
-        {pdfDownloadUrl ? (
+        {downloadUrl ? (
           <Button onClick={handleDownloadClick} variant="default" size="lg">
             <Download className="mr-2 h-4 w-4" />
             Download PDF
@@ -452,30 +656,28 @@ export function AttachmentViewerDialog({
       );
     }
 
-    if (isPdf && pdfViewUrl && !showFallback) {
+    if (isPdf && pdfDocument && !pdfError) {
       return (
-        <div className="flex h-full min-h-[360px] flex-col rounded-lg bg-muted/30 p-2">
-          <iframe
-            title="PDF Preview"
-            src={`${pdfViewUrl}#toolbar=1&navpanes=0`}
-            className="h-full min-h-[360px] w-full rounded-md border border-border bg-background"
-            allow="fullscreen"
-          />
-          <div className="mt-2 flex items-center justify-between gap-2 rounded bg-muted/50 px-2 py-1 text-xs text-muted-foreground">
-            <span>
-              {urlReachable === false
-                ? "⚠️ Preview unavailable. Download to view."
-                : "Preview may not display in some browsers. Use Download or Open in new tab."}
-            </span>
-            <button type="button" onClick={() => setShowFallback(true)} className="underline hover:text-foreground">
-              Show options
-            </button>
+        <div className="flex h-full min-h-[360px] flex-col rounded-lg bg-muted/30">
+          <div ref={pdfStageRef} className="flex min-h-[360px] flex-1 items-center justify-center overflow-auto rounded-lg border border-border bg-zinc-950/90 p-4">
+            {pdfLoading ? (
+              <div className="text-sm text-muted-foreground">Loading PDF…</div>
+            ) : (
+              <canvas ref={pdfCanvasRef} className="max-w-full rounded-md bg-white shadow-2xl" />
+            )}
           </div>
         </div>
       );
     }
 
     if (isPdf) {
+      if (pdfLoading) {
+        return (
+          <div className="flex h-full min-h-[360px] items-center justify-center rounded-lg bg-muted/30 px-6 py-12 text-center text-sm text-muted-foreground">
+            Loading PDF…
+          </div>
+        );
+      }
       return renderPdfFallback();
     }
 
@@ -531,11 +733,77 @@ export function AttachmentViewerDialog({
                     <ZoomIn className="h-4 w-4" />
                   </Button>
                 </>
+              ) : isPdf ? (
+                <>
+                  <Button type="button" variant="outline" size="icon" onClick={() => setPdfPageNumber((value) => Math.max(1, value - 1))} disabled={!pdfCanGoPrev} title="Previous page">
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                  <Button type="button" variant="outline" size="sm" className="min-w-[92px]" disabled={pdfPageCount <= 0} title="Current page">
+                    {pdfPageCount > 0 ? `Page ${pdfPageNumber}/${pdfPageCount}` : "PDF"}
+                  </Button>
+                  <Button type="button" variant="outline" size="icon" onClick={() => setPdfPageNumber((value) => Math.min(pdfPageCount || value, value + 1))} disabled={!pdfCanGoNext} title="Next page">
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                  <Button type="button" variant="outline" size="icon" onClick={() => setPdfFitMode("width")} title="Fit width">
+                    <House className="h-4 w-4" />
+                  </Button>
+                  <Button type="button" variant="outline" size="sm" onClick={() => setPdfFitMode("page")} title="Fit page">
+                    Fit
+                  </Button>
+                  <Button type="button" variant="outline" size="icon" onClick={() => {
+                    setPdfFitMode("custom");
+                    setPdfZoomLevel((value) => clampPdfZoom(value - 0.1));
+                  }} title="Zoom out">
+                    <ZoomOut className="h-4 w-4" />
+                  </Button>
+                  <Button type="button" variant="outline" size="sm" onClick={() => {
+                    setPdfFitMode("custom");
+                    setPdfZoomLevel(1);
+                  }} title="Reset PDF zoom">
+                    {Math.round(pdfRenderedScale * 100)}%
+                  </Button>
+                  <Button type="button" variant="outline" size="icon" onClick={() => {
+                    setPdfFitMode("custom");
+                    setPdfZoomLevel((value) => clampPdfZoom(value + 0.1));
+                  }} title="Zoom in">
+                    <ZoomIn className="h-4 w-4" />
+                  </Button>
+                  <Button type="button" variant="outline" size="icon" onClick={() => setPdfRotation((value) => value - 90)} title="Rotate left">
+                    <RotateCcw className="h-4 w-4" />
+                  </Button>
+                  <Button type="button" variant="outline" size="icon" onClick={() => setPdfRotation((value) => value + 90)} title="Rotate right">
+                    <RotateCw className="h-4 w-4" />
+                  </Button>
+                  {pdfViewUrl || pdfSourceUrl ? (
+                    <Button type="button" variant="outline" size="icon" onClick={() => {
+                      const url = pdfViewUrl ?? pdfSourceUrl;
+                      if (!url) return;
+                      window.open(url, "_blank", "noopener,noreferrer");
+                    }} title="Open / print PDF">
+                      <Printer className="h-4 w-4" />
+                    </Button>
+                  ) : null}
+                </>
               ) : null}
               {downloadUrl ? (
                 <Button onClick={handleDownloadClick} variant="outline">
                   <Download className="mr-2 h-4 w-4" />
                   Download
+                </Button>
+              ) : null}
+              {isPdf && (pdfViewUrl || pdfSourceUrl) ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => {
+                    const url = pdfViewUrl ?? pdfSourceUrl;
+                    if (!url) return;
+                    window.open(url, "_blank", "noopener,noreferrer");
+                  }}
+                  title="Open in new tab"
+                >
+                  <ExternalLink className="h-4 w-4" />
                 </Button>
               ) : null}
               <Button type="button" variant="ghost" size="icon" onClick={() => onOpenChange(false)} title="Close viewer">
@@ -583,7 +851,25 @@ export function AttachmentViewerDialog({
                     {currentAttachment.pageCount ? (
                       <div>
                         <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Pages</div>
-                        <div>{currentAttachment.pageCount}</div>
+                        <div>{pdfPageCount || currentAttachment.pageCount}</div>
+                      </div>
+                    ) : null}
+                    {isPdf && pdfMetadata.title ? (
+                      <div>
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Document title</div>
+                        <div>{pdfMetadata.title}</div>
+                      </div>
+                    ) : null}
+                    {isPdf && pdfMetadata.author ? (
+                      <div>
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Author</div>
+                        <div>{pdfMetadata.author}</div>
+                      </div>
+                    ) : null}
+                    {isPdf && pdfMetadata.producer ? (
+                      <div>
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Producer</div>
+                        <div>{pdfMetadata.producer}</div>
                       </div>
                     ) : null}
                   </div>
