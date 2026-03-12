@@ -43,6 +43,13 @@
       "when": 1773187200000,
       "tag": "0005_production_station_steps",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1773273600000,
+      "tag": "0006_prepress_active_session_uniqueness",
+      "breakpoints": true
     }
   ]
 }
