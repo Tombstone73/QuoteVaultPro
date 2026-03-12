@@ -13639,6 +13639,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .select({
               id: prepressSessions.id,
               lineItemId: prepressSessions.lineItemId,
+              startedByUserId: prepressSessions.startedByUserId,
               notesText: prepressSessions.notesText,
               issueFlag: prepressSessions.issueFlag,
               issueType: prepressSessions.issueType,
@@ -13734,6 +13735,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           rush: item.priority === "rush",
           assignedTo: null,
           sessionId: latestSession?.id ?? null,
+          sessionStartedAt: latestSession?.startedAt ? new Date(latestSession.startedAt as any).toISOString() : null,
+          sessionStartedByUserId: latestSession?.startedByUserId ?? null,
           prepressNotes: latestSession?.notesText ?? null,
           issueFlag: latestSession?.issueFlag ?? false,
           issueType: latestSession?.issueType ?? null,
@@ -14365,7 +14368,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
 
         const activeSessions = await tx
-          .select({ id: prepressSessions.id })
+          .select({
+            id: prepressSessions.id,
+            orderId: prepressSessions.orderId,
+            lineItemId: prepressSessions.lineItemId,
+            status: prepressSessions.status,
+            startedAt: prepressSessions.startedAt,
+            startedByUserId: prepressSessions.startedByUserId,
+            notesText: prepressSessions.notesText,
+            issueFlag: prepressSessions.issueFlag,
+            issueType: prepressSessions.issueType,
+          })
           .from(prepressSessions)
           .where(
             and(
@@ -14374,6 +14387,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               eq(prepressSessions.status, "active"),
             ),
           )
+          .orderBy(desc(prepressSessions.startedAt))
           .limit(1);
 
         const completedSessions = await tx
@@ -14394,6 +14408,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
           hasActiveSession: activeSessions.length > 0,
           hasCompletedSession: completedSessions.length > 0,
         });
+
+        const existingActiveSession = activeSessions[0] ?? null;
+
+        if (existingActiveSession) {
+          if (String(lineItem.status || "").toLowerCase() !== "in_prepress") {
+            await tx
+              .update(orderLineItems)
+              .set({ status: "in_prepress" as any, updatedAt: new Date() })
+              .where(eq(orderLineItems.id, lineItemId));
+          }
+
+          return existingActiveSession;
+        }
 
         if (effectivePrepressStage !== "pending_prepress") {
           throw Object.assign(new Error("Line item must be pending_prepress before starting prepress"), { statusCode: 400 });
