@@ -1,19 +1,18 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Download, FileText, ExternalLink, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, X } from "lucide-react";
-import { getAttachmentDisplayName, isPdfAttachment } from "@/lib/attachments";
 import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
-import { buildPdfViewUrl, buildPdfDownloadUrl, isPdfFile, checkPdfUrlReachable } from "@/lib/pdfUrls";
+import { buildPdfDownloadUrl, buildPdfViewUrl, checkPdfUrlReachable, isPdfFile } from "@/lib/pdfUrls";
 import { apiFetchBlob } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
+import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, X, ZoomIn, ZoomOut } from "lucide-react";
 
 export type AttachmentPage = {
   id: string;
   pageIndex: number;
-  thumbStatus?: 'uploaded' | 'thumb_pending' | 'thumb_ready' | 'thumb_failed';
+  thumbStatus?: "uploaded" | "thumb_pending" | "thumb_ready" | "thumb_failed";
   thumbKey?: string | null;
   previewKey?: string | null;
   thumbError?: string | null;
@@ -29,7 +28,7 @@ export type AttachmentData = {
   mimeType?: string | null;
   createdAt?: string;
   originalFilename?: string | null;
-  thumbStatus?: 'uploaded' | 'thumb_pending' | 'thumb_ready' | 'thumb_failed';
+  thumbStatus?: "uploaded" | "thumb_pending" | "thumb_ready" | "thumb_failed";
   thumbKey?: string | null;
   previewKey?: string | null;
   thumbError?: string | null;
@@ -42,40 +41,52 @@ export type AttachmentData = {
 };
 
 interface AttachmentViewerDialogProps {
-  /** Single attachment (legacy mode) - if provided without attachments array, shows single item */
   attachment?: AttachmentData | null;
-  /** Gallery mode: array of attachments to browse */
   attachments?: AttachmentData[];
-  /** Gallery mode: initial index to select (default: 0) */
   initialIndex?: number;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onDownload?: (attachment: AttachmentData) => void;
-  /** Hide bottom thumbnail filmstrip (default: true for list modal integration) */
   hideFilmstrip?: boolean;
-  /** Show metadata/details panel on the right side */
   showMetaPanel?: boolean;
 }
 
-/**
- * Reusable attachment viewer dialog for displaying file previews with download capability
- * Used across quotes list, order details, and other attachment contexts
- * 
- * Supports two modes:
- * 1. Single mode: Pass `attachment` prop for single attachment viewing
- * 2. Gallery mode: Pass `attachments` array for browsing with left/right arrows
- */
-export function AttachmentViewerDialog({ 
+function getAttachmentName(attachment: AttachmentData | null | undefined) {
+  if (!attachment) return "Attachment";
+  return attachment.originalFilename || attachment.fileName || "Attachment";
+}
+
+function inferMimeType(name: string): string | null {
+  const n = (name || "").toLowerCase();
+  if (n.endsWith(".pdf")) return "application/pdf";
+  if (n.endsWith(".png")) return "image/png";
+  if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return "image/jpeg";
+  if (n.endsWith(".webp")) return "image/webp";
+  if (n.endsWith(".gif")) return "image/gif";
+  if (n.endsWith(".svg")) return "image/svg+xml";
+  return null;
+}
+
+function formatFileSize(bytes?: number | null) {
+  if (!bytes || bytes <= 0) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+export function AttachmentViewerDialog({
   attachment: singleAttachment,
   attachments,
   initialIndex = 0,
-  open, 
+  open,
   onOpenChange,
   onDownload,
   hideFilmstrip = true,
   showMetaPanel = false,
 }: AttachmentViewerDialogProps) {
   const isDev = import.meta.env.DEV;
+  const [selectedIndex, setSelectedIndex] = useState(initialIndex);
   const [showFallback, setShowFallback] = useState(false);
   const [urlReachable, setUrlReachable] = useState<boolean | null>(null);
   const [imageBlobUrl, setImageBlobUrl] = useState<string | null>(null);
@@ -83,196 +94,159 @@ export function AttachmentViewerDialog({
   const [imagePreviewError, setImagePreviewError] = useState<string | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
   const imageBlobUrlRef = useRef<string | null>(null);
-  
-  // Gallery mode state
-  const isGalleryMode = !!attachments && attachments.length > 0;
-  const [selectedIndex, setSelectedIndex] = useState(initialIndex);
-  
-  // Reset selected index when dialog opens or initialIndex changes
+
+  const galleryAttachments = attachments?.length ? attachments : undefined;
+  const attachmentCount = galleryAttachments?.length ?? (singleAttachment ? 1 : 0);
+
   useEffect(() => {
     if (open) {
       setSelectedIndex(initialIndex);
     }
-  }, [open, initialIndex]);
-  
-  // Keyboard navigation (unconditional hook, guard inside effect)
+  }, [initialIndex, open]);
+
+  const currentAttachment = useMemo(() => {
+    if (galleryAttachments) {
+      return galleryAttachments[selectedIndex] ?? galleryAttachments[0] ?? null;
+    }
+    return singleAttachment ?? null;
+  }, [galleryAttachments, selectedIndex, singleAttachment]);
+
+  const fileName = getAttachmentName(currentAttachment);
+  const effectiveMimeType = currentAttachment?.mimeType ?? inferMimeType(fileName);
+  const isPdf = isPdfFile(effectiveMimeType, fileName);
+  const isImage = typeof effectiveMimeType === "string" && effectiveMimeType.startsWith("image/");
+  const imageViewUrl = isImage ? currentAttachment?.previewUrl ?? currentAttachment?.originalUrl ?? null : null;
+  const objectPath = currentAttachment?.objectPath ?? null;
+  const pdfViewUrl = isPdf ? buildPdfViewUrl(objectPath) : null;
+  const pdfDownloadUrl = isPdf ? buildPdfDownloadUrl(objectPath, fileName) : null;
+  const genericDownloadUrl = !isPdf ? currentAttachment?.originalUrl ?? null : null;
+  const downloadUrl = isPdf ? pdfDownloadUrl : genericDownloadUrl;
+  const canGoPrev = !!galleryAttachments && selectedIndex > 0;
+  const canGoNext = !!galleryAttachments && selectedIndex < galleryAttachments.length - 1;
+
   useEffect(() => {
-    if (!open || !isGalleryMode) return;
-    
-    const canGoPrev = isGalleryMode && selectedIndex > 0;
-    const canGoNext = isGalleryMode && selectedIndex < (attachments?.length || 0) - 1;
-    
-    const handlePrev = () => {
-      if (canGoPrev) {
-        setSelectedIndex(i => Math.max(0, i - 1));
+    if (!open || !galleryAttachments) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "ArrowLeft" && canGoPrev) {
+        event.preventDefault();
+        setSelectedIndex((value) => Math.max(0, value - 1));
+      }
+      if (event.key === "ArrowRight" && canGoNext) {
+        event.preventDefault();
+        setSelectedIndex((value) => Math.min(galleryAttachments.length - 1, value + 1));
       }
     };
-    
-    const handleNext = () => {
-      if (canGoNext && attachments) {
-        setSelectedIndex(i => Math.min(attachments.length - 1, i + 1));
-      }
-    };
-    
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowLeft' && canGoPrev) {
-        e.preventDefault();
-        handlePrev();
-      } else if (e.key === 'ArrowRight' && canGoNext) {
-        e.preventDefault();
-        handleNext();
-      }
-    };
-    
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [open, isGalleryMode, attachments, selectedIndex]);
 
-  // PDF warning effect (unconditional, with guard inside)
-  useEffect(() => {
-    if (import.meta.env.DEV) {
-      const att = isGalleryMode ? attachments?.[selectedIndex] : singleAttachment;
-      if (!att) return;
-      const displayName = getAttachmentDisplayName(att);
-      const isPdf = isPdfFile(att.mimeType, displayName);
-      const objPath = att.objectPath as string | null | undefined;
-      if (open && isPdf && !objPath) {
-        console.warn('[AttachmentViewerDialog] PDF attachment missing objectPath:', att);
-      }
-    }
-  }, [open, isGalleryMode, selectedIndex, singleAttachment, attachments]);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [canGoNext, canGoPrev, galleryAttachments, open]);
 
-  // Reachability check effect (unconditional, with guard inside)
-  useEffect(() => {
-    if (!open) {
-      setUrlReachable(null);
-      return;
-    }
-    
-    const att = isGalleryMode ? attachments?.[selectedIndex] : singleAttachment;
-    if (!att) return;
-    
-    const displayName = getAttachmentDisplayName(att);
-    const objPath = att.objectPath as string | null | undefined;
-    const isPdf = isPdfFile(att.mimeType, displayName);
-    if (!isPdf || !objPath) {
-      setUrlReachable(null);
-      return;
-    }
-    
-    const pdfUrl = buildPdfViewUrl(objPath);
-    if (!pdfUrl) {
-      setUrlReachable(null);
-      return;
-    }
-    
-    let cancelled = false;
-    
-    checkPdfUrlReachable(pdfUrl).then((reachable) => {
-      if (!cancelled) {
-        setUrlReachable(reachable);
-        if (!reachable) {
-          setShowFallback(true);
-        }
-      }
-    });
-    
-    return () => { cancelled = true; };
-  }, [open, isGalleryMode, selectedIndex, singleAttachment, attachments]);
-
-  // Reset state when switching attachments (unconditional, with guard inside)
   useEffect(() => {
     setShowFallback(false);
     setUrlReachable(null);
     setZoomLevel(1);
-  }, [isGalleryMode ? attachments?.[selectedIndex]?.id : singleAttachment?.id, open]);
-  
-  // Derive current attachment from gallery or single mode
-  const attachment = isGalleryMode 
-    ? attachments[selectedIndex] ?? null
-    : singleAttachment ?? null;
-  const attachmentId = attachment?.id ?? null;
-  const fileName = attachment ? getAttachmentDisplayName(attachment) : "Attachment";
-  const objectPath = (attachment?.objectPath as string | null | undefined) ?? null;
-  
-  // Navigation handlers
-  const canGoPrev = isGalleryMode && selectedIndex > 0;
-  const canGoNext = isGalleryMode && selectedIndex < attachments.length - 1;
-  
-  const handlePrev = () => {
-    if (canGoPrev) {
-      setSelectedIndex(i => Math.max(0, i - 1));
-    }
-  };
-  
-  const handleNext = () => {
-    if (canGoNext && attachments) {
-      setSelectedIndex(i => Math.min(attachments.length - 1, i + 1));
-    }
-  };
+  }, [currentAttachment?.id, open]);
 
-  // PACK P2: Use URL builder helpers
-  const isPdf = isPdfFile(attachment?.mimeType, fileName);
-  const pdfViewUrl = isPdf ? buildPdfViewUrl(objectPath) : null;
-  const pdfDownloadUrl = isPdf ? buildPdfDownloadUrl(objectPath, fileName) : null;
-
-  // For non-PDFs: derive preview URL from originalUrl/previewUrl
-  const inferMimeType = (name: string): string | null => {
-    const n = (name || "").toLowerCase();
-    if (n.endsWith(".pdf")) return "application/pdf";
-    if (n.endsWith(".png")) return "image/png";
-    if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return "image/jpeg";
-    if (n.endsWith(".webp")) return "image/webp";
-    if (n.endsWith(".gif")) return "image/gif";
-    if (n.endsWith(".svg")) return "image/svg+xml";
-    return null;
-  };
-
-  const effectiveMimeType = attachment?.mimeType ?? inferMimeType(fileName);
-  const isImage = typeof effectiveMimeType === "string" && effectiveMimeType.startsWith("image/");
-  
-  const imageViewUrl = isImage ? (attachment?.previewUrl ?? attachment?.originalUrl ?? null) : null;
-  
-  // Fallback download URL for non-PDFs
-  const genericDownloadUrl = !isPdf ? (attachment?.originalUrl ?? null) : null;
-  const stageDownloadUrl = isPdf ? pdfDownloadUrl : genericDownloadUrl;
-
-  const formatFileSize = (bytes?: number | null) => {
-    if (!bytes || bytes <= 0) return "—";
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-  };
-
-  const handleZoomIn = () => setZoomLevel((prev) => Math.min(prev + 0.25, 3));
-  const handleZoomOut = () => setZoomLevel((prev) => Math.max(prev - 0.25, 0.5));
-  const handleZoomReset = () => setZoomLevel(1);
-
-  const handleDownloadClick = () => {
-    if (!attachment) return;
-
-    if (onDownload) {
-      onDownload(attachment);
+  useEffect(() => {
+    if (!open || !currentAttachment || !isPdf || !objectPath) {
+      setUrlReachable(null);
       return;
     }
 
-    const downloadUrl = isPdf ? pdfDownloadUrl : genericDownloadUrl;
+    const nextPdfUrl = buildPdfViewUrl(objectPath);
+    if (!nextPdfUrl) {
+      setUrlReachable(null);
+      return;
+    }
+
+    let cancelled = false;
+    void checkPdfUrlReachable(nextPdfUrl).then((reachable) => {
+      if (cancelled) return;
+      setUrlReachable(reachable);
+      if (!reachable) {
+        setShowFallback(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentAttachment, isPdf, objectPath, open]);
+
+  useEffect(() => {
+    const revokeBlobUrl = () => {
+      if (!imageBlobUrlRef.current) return;
+      URL.revokeObjectURL(imageBlobUrlRef.current);
+      imageBlobUrlRef.current = null;
+    };
+
+    revokeBlobUrl();
+    setImageBlobUrl(null);
+    setImagePreviewLoading(false);
+    setImagePreviewError(null);
+
+    if (!open || !currentAttachment?.id || !isImage) {
+      return () => revokeBlobUrl();
+    }
+
+    if (!imageViewUrl) {
+      setImagePreviewError("Preview URL unavailable.");
+      return () => revokeBlobUrl();
+    }
+
+    let cancelled = false;
+    setImagePreviewLoading(true);
+
+    void (async () => {
+      try {
+        const blob = await apiFetchBlob(imageViewUrl, { method: "GET", credentials: "include" });
+        if (cancelled) return;
+        const objectUrl = URL.createObjectURL(blob);
+        imageBlobUrlRef.current = objectUrl;
+        setImageBlobUrl(objectUrl);
+      } catch (error) {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : "Failed to load preview";
+        setImagePreviewError("Unable to load image preview. Use Download original.");
+        if (isDev) {
+          console.log(`[AttachmentViewerDialog] image preview fetch failed url=${imageViewUrl} error=${message}`);
+        }
+      } finally {
+        if (!cancelled) {
+          setImagePreviewLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      revokeBlobUrl();
+    };
+  }, [currentAttachment?.id, imageViewUrl, isDev, isImage, open]);
+
+  if (!currentAttachment) return null;
+
+  const handleDownloadClick = () => {
+    if (onDownload) {
+      onDownload(currentAttachment);
+      return;
+    }
     if (!downloadUrl) return;
     void downloadFileFromUrl(downloadUrl, fileName);
   };
 
   const renderArrowButton = (direction: "prev" | "next") => {
     const isPrev = direction === "prev";
-    const canNavigate = isPrev ? canGoPrev : canGoNext;
-    if (!isGalleryMode || !canNavigate) return null;
+    const enabled = isPrev ? canGoPrev : canGoNext;
+    if (!galleryAttachments || !enabled) return null;
 
     return (
       <Button
         type="button"
         variant="secondary"
         size="icon"
-        onClick={isPrev ? handlePrev : handleNext}
+        onClick={() => setSelectedIndex((value) => value + (isPrev ? -1 : 1))}
         title={isPrev ? "Previous attachment (←)" : "Next attachment (→)"}
         className={cn(
           "absolute top-1/2 z-20 h-10 w-10 -translate-y-1/2 rounded-full border border-border/70 bg-background/90 shadow-lg hover:bg-background",
@@ -319,7 +293,7 @@ export function AttachmentViewerDialog({
     </div>
   );
 
-  const renderMainStage = () => {
+  const renderStage = () => {
     if (isImage) {
       return (
         <div className="flex h-full min-h-[360px] items-center justify-center overflow-auto rounded-lg bg-muted/30 p-3">
@@ -349,11 +323,6 @@ export function AttachmentViewerDialog({
             src={`${pdfViewUrl}#toolbar=1&navpanes=0`}
             className="h-full min-h-[360px] w-full rounded-md border border-border bg-background"
             allow="fullscreen"
-            onLoad={() => {
-              if (isDev) {
-                console.log('[AttachmentViewerDialog] PDF iframe loaded:', pdfViewUrl);
-              }
-            }}
           />
           <div className="mt-2 flex items-center justify-between gap-2 rounded bg-muted/50 px-2 py-1 text-xs text-muted-foreground">
             <span>
@@ -361,11 +330,7 @@ export function AttachmentViewerDialog({
                 ? "⚠️ Preview unavailable. Download to view."
                 : "Preview may not display in some browsers. Use Download or Open in new tab."}
             </span>
-            <button
-              onClick={() => setShowFallback(true)}
-              className="underline hover:text-foreground"
-              type="button"
-            >
+            <button type="button" onClick={() => setShowFallback(true)} className="underline hover:text-foreground">
               Show options
             </button>
           </div>
@@ -381,7 +346,7 @@ export function AttachmentViewerDialog({
       <div className="flex h-full min-h-[360px] flex-col items-center justify-center rounded-lg bg-muted/30 px-6 py-12 text-center text-muted-foreground">
         <FileText className="mb-4 h-16 w-16 opacity-50" />
         <p className="text-sm">Preview not available</p>
-        {stageDownloadUrl ? (
+        {downloadUrl ? (
           <Button onClick={handleDownloadClick} variant="outline" className="mt-4">
             <Download className="mr-2 h-4 w-4" />
             Download
@@ -392,9 +357,10 @@ export function AttachmentViewerDialog({
   };
 
   const renderFilmstripThumbnail = (item: AttachmentData, index: number) => {
-    const itemName = getAttachmentDisplayName(item);
-    const itemIsPdf = isPdfFile(item.mimeType, itemName);
-    const itemIsImage = typeof item.mimeType === "string" && item.mimeType.startsWith("image/");
+    const itemName = getAttachmentName(item);
+    const itemMimeType = item.mimeType ?? inferMimeType(itemName);
+    const itemIsPdf = isPdfFile(itemMimeType, itemName);
+    const itemIsImage = typeof itemMimeType === "string" && itemMimeType.startsWith("image/");
     const thumbUrl = item.thumbUrl ?? item.pages?.[0]?.thumbUrl ?? null;
 
     return (
@@ -403,10 +369,8 @@ export function AttachmentViewerDialog({
         type="button"
         onClick={() => setSelectedIndex(index)}
         className={cn(
-          "group relative h-16 w-16 shrink-0 overflow-hidden rounded-md border bg-muted/30 transition-all",
-          index === selectedIndex
-            ? "border-primary ring-2 ring-primary/40"
-            : "border-border hover:border-primary/60"
+          "relative h-16 w-16 shrink-0 overflow-hidden rounded-md border bg-muted/30 transition-all",
+          index === selectedIndex ? "border-primary ring-2 ring-primary/40" : "border-border hover:border-primary/60"
         )}
         title={itemName}
       >
@@ -423,221 +387,154 @@ export function AttachmentViewerDialog({
     );
   };
 
-  useEffect(() => {
-    const revokeBlobUrl = () => {
-      if (!imageBlobUrlRef.current) return;
-      URL.revokeObjectURL(imageBlobUrlRef.current);
-      imageBlobUrlRef.current = null;
-        <DialogContent className="max-h-[92vh] w-[min(1280px,96vw)] max-w-[min(1280px,96vw)] overflow-hidden p-0">
-
-            <div className="border-b border-border px-6 py-4">
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <DialogTitle className="min-w-0 truncate pr-10">
-                    {fileName}
-                    {isGalleryMode && (
-                      <span className="ml-2 text-sm font-normal text-muted-foreground">
-                        ({selectedIndex + 1} of {attachments.length})
-                      </span>
-                    )}
-                  </DialogTitle>
-                  <DialogDescription className="mt-1">
-                    <div className="space-y-1">
-                      {attachment.mimeType ? (
-                        <div>
-                          <span>File type: </span>
-                          <span>{attachment.mimeType}</span>
-                        </div>
-                      ) : (
-                        <div>Preview attachment</div>
-                      )}
-                      {!showMetaPanel ? <AttachmentPreviewMeta attachment={attachment} /> : null}
-                    </div>
-                  </DialogDescription>
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[92vh] w-[min(1280px,96vw)] max-w-[min(1280px,96vw)] overflow-hidden p-0">
+        <DialogHeader className="border-b border-border px-6 py-4 text-left">
+          <div className="flex items-start justify-between gap-4 pr-8">
+            <div className="min-w-0">
+              <DialogTitle className="truncate pr-4">
+                {fileName}
+                {galleryAttachments ? (
+                  <span className="ml-2 text-sm font-normal text-muted-foreground">
+                    ({selectedIndex + 1} of {attachmentCount})
+                  </span>
+                ) : null}
+              </DialogTitle>
+              <DialogDescription className="mt-1">
+                <div className="space-y-1">
+                  <div>{effectiveMimeType ? `File type: ${effectiveMimeType}` : "Preview attachment"}</div>
+                  {!showMetaPanel ? <AttachmentPreviewMeta attachment={currentAttachment} /> : null}
                 </div>
-                <div className="flex shrink-0 items-center gap-2 pr-8">
-                  {isImage ? (
-                    <>
-                      <Button type="button" variant="outline" size="icon" onClick={handleZoomOut} title="Zoom out">
-                        <ZoomOut className="h-4 w-4" />
-                      </Button>
-                      <Button type="button" variant="outline" size="sm" onClick={handleZoomReset} title="Reset zoom">
-                        {Math.round(zoomLevel * 100)}%
-                      </Button>
-                      <Button type="button" variant="outline" size="icon" onClick={handleZoomIn} title="Zoom in">
-                        <ZoomIn className="h-4 w-4" />
-                      </Button>
-                    </>
-                  ) : null}
-                  {stageDownloadUrl ? (
-                    <Button onClick={handleDownloadClick} variant="outline">
-                      <Download className="mr-2 h-4 w-4" />
-                      Download
-                    </Button>
-                  ) : null}
-                  <Button type="button" variant="ghost" size="icon" onClick={() => onOpenChange(false)} title="Close viewer">
-                    <X className="h-4 w-4" />
+              </DialogDescription>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-2">
+              {isImage ? (
+                <>
+                  <Button type="button" variant="outline" size="icon" onClick={() => setZoomLevel((value) => Math.max(value - 0.25, 0.5))} title="Zoom out">
+                    <ZoomOut className="h-4 w-4" />
                   </Button>
-                </div>
-              </div>
-            </div>
-    void (async () => {
-      try {
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 py-4">
-            <div className={cn("flex min-h-0 flex-1 gap-4", showMetaPanel ? "lg:flex-row" : "flex-col")}>
-              <div className="relative min-h-0 flex-1 overflow-hidden">
-                {renderArrowButton("prev")}
-                {renderMainStage()}
-                {renderArrowButton("next")}
-              </div>
-
-              {showMetaPanel ? (
-                <aside className="flex w-full shrink-0 flex-col gap-4 rounded-lg border border-border bg-muted/20 p-4 lg:w-72">
-                  <div>
-                    <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Details</h3>
-                    <div className="mt-3 space-y-2 text-sm">
-                      <div>
-                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">File name</div>
-                        <div className="break-words text-foreground">{fileName}</div>
-                      </div>
-                      <div>
-                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Type</div>
-                        <div>{attachment.mimeType || "Unknown"}</div>
-                      </div>
-                      <div>
-                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Size</div>
-                        <div>{formatFileSize(attachment.fileSize)}</div>
-                      </div>
-                      <div>
-                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Created</div>
-                        <div>{attachment.createdAt ? new Date(attachment.createdAt).toLocaleString() : "—"}</div>
-                      </div>
-                      {isGalleryMode ? (
-                        <div>
-                          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Collection position</div>
-                          <div>{selectedIndex + 1} of {attachments.length}</div>
-                        </div>
-                      ) : null}
-                      {attachment.pageCount ? (
-                        <div>
-                          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Pages</div>
-                          <div>{attachment.pageCount}</div>
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div className="rounded-md border border-border bg-background/40 p-3">
-                    <AttachmentPreviewMeta attachment={attachment} />
-                  </div>
-
-                  {stageDownloadUrl ? (
-                    <Button onClick={handleDownloadClick} className="mt-auto" variant="outline">
-                      <Download className="mr-2 h-4 w-4" />
-                      Download original
-                    </Button>
-                  ) : null}
-                </aside>
+                  <Button type="button" variant="outline" size="sm" onClick={() => setZoomLevel(1)} title="Reset zoom">
+                    {Math.round(zoomLevel * 100)}%
+                  </Button>
+                  <Button type="button" variant="outline" size="icon" onClick={() => setZoomLevel((value) => Math.min(value + 0.25, 3))} title="Zoom in">
+                    <ZoomIn className="h-4 w-4" />
+                  </Button>
+                </>
               ) : null}
+              {downloadUrl ? (
+                <Button onClick={handleDownloadClick} variant="outline">
+                  <Download className="mr-2 h-4 w-4" />
+                  Download
+                </Button>
+              ) : null}
+              <Button type="button" variant="ghost" size="icon" onClick={() => onOpenChange(false)} title="Close viewer">
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        </DialogHeader>
+
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 py-4">
+          <div className={cn("flex min-h-0 flex-1 gap-4", showMetaPanel ? "lg:flex-row" : "flex-col")}>
+            <div className="relative min-h-0 flex-1 overflow-hidden">
+              {renderArrowButton("prev")}
+              {renderStage()}
+              {renderArrowButton("next")}
             </div>
 
-            {!hideFilmstrip && isGalleryMode && attachments.length > 1 ? (
-              <div className="mt-4 border-t border-border pt-4">
-                <div className="mb-2 text-xs font-bold uppercase tracking-widest text-muted-foreground">Thumbnails</div>
-                <div className="flex gap-2 overflow-x-auto pb-2">
-                  {attachments.map((item, index) => renderFilmstripThumbnail(item, index))}
-                </div>
-              </div>
-            ) : null}
-
-            {!showMetaPanel ? (
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-sm">
-                <div className="min-w-0 space-y-1">
-                  <div>
-                    <span className="font-medium">Filename: </span>
-                    <span className="max-w-[60ch] truncate text-muted-foreground">{fileName}</span>
+            {showMetaPanel ? (
+              <aside className="flex w-full shrink-0 flex-col gap-4 rounded-lg border border-border bg-muted/20 p-4 lg:w-72">
+                <div>
+                  <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Details</h3>
+                  <div className="mt-3 space-y-2 text-sm">
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">File name</div>
+                      <div className="break-words text-foreground">{fileName}</div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Type</div>
+                      <div>{effectiveMimeType || "Unknown"}</div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Size</div>
+                      <div>{formatFileSize(currentAttachment.fileSize)}</div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Created</div>
+                      <div>{currentAttachment.createdAt ? new Date(currentAttachment.createdAt).toLocaleString() : "—"}</div>
+                    </div>
+                    {galleryAttachments ? (
+                      <div>
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Collection position</div>
+                        <div>{selectedIndex + 1} of {attachmentCount}</div>
+                      </div>
+                    ) : null}
+                    {currentAttachment.pageCount ? (
+                      <div>
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Pages</div>
+                        <div>{currentAttachment.pageCount}</div>
+                      </div>
+                    ) : null}
                   </div>
-                  {attachment.mimeType ? (
-                    <div>
-                      <span className="font-medium">Type: </span>
-                      <span className="text-muted-foreground">{attachment.mimeType}</span>
-                    </div>
-                  ) : null}
-                  {attachment.fileSize ? (
-                    <div>
-                      <span className="font-medium">Size: </span>
-                      <span className="text-muted-foreground">{formatFileSize(attachment.fileSize)}</span>
-                    </div>
-                  ) : null}
                 </div>
 
-                {stageDownloadUrl ? (
-                  <div className="flex shrink-0 flex-col items-end gap-1">
-                    <Button onClick={handleDownloadClick} variant="outline">
-                      <Download className="mr-2 h-4 w-4" />
-                      Download original
-                    </Button>
-                    <span className="text-xs text-muted-foreground">Downloads original file</span>
+                <div className="rounded-md border border-border bg-background/40 p-3">
+                  <AttachmentPreviewMeta attachment={currentAttachment} />
+                </div>
+
+                {downloadUrl ? (
+                  <Button onClick={handleDownloadClick} className="mt-auto" variant="outline">
+                    <Download className="mr-2 h-4 w-4" />
+                    Download original
+                  </Button>
+                ) : null}
+              </aside>
+            ) : null}
+          </div>
+
+          {!hideFilmstrip && galleryAttachments && galleryAttachments.length > 1 ? (
+            <div className="mt-4 border-t border-border pt-4">
+              <div className="mb-2 text-xs font-bold uppercase tracking-widest text-muted-foreground">Thumbnails</div>
+              <div className="flex gap-2 overflow-x-auto pb-2">
+                {galleryAttachments.map((item, index) => renderFilmstripThumbnail(item, index))}
+              </div>
+            </div>
+          ) : null}
+
+          {!showMetaPanel ? (
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-sm">
+              <div className="min-w-0 space-y-1">
+                <div>
+                  <span className="font-medium">Filename: </span>
+                  <span className="max-w-[60ch] truncate text-muted-foreground">{fileName}</span>
+                </div>
+                {effectiveMimeType ? (
+                  <div>
+                    <span className="font-medium">Type: </span>
+                    <span className="text-muted-foreground">{effectiveMimeType}</span>
+                  </div>
+                ) : null}
+                {currentAttachment.fileSize ? (
+                  <div>
+                    <span className="font-medium">Size: </span>
+                    <span className="text-muted-foreground">{formatFileSize(currentAttachment.fileSize)}</span>
                   </div>
                 ) : null}
               </div>
-            ) : null}
-                      type="button"
-                    >
-                      Try preview again
-                    </button>
-                  )}
+
+              {downloadUrl ? (
+                <div className="flex shrink-0 flex-col items-end gap-1">
+                  <Button onClick={handleDownloadClick} variant="outline">
+                    <Download className="mr-2 h-4 w-4" />
+                    Download original
+                  </Button>
+                  <span className="text-xs text-muted-foreground">Downloads original file</span>
                 </div>
               ) : null}
-              
-              {/* Generic fallback for non-image/non-PDF */}
-              {!isImage && !isPdf ? (
-                <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                  <FileText className="w-16 h-16 mb-4 opacity-50" />
-                  <p className="text-sm mb-4">Preview not available</p>
-                  {(pdfDownloadUrl || genericDownloadUrl) && (
-                    <Button onClick={handleDownloadClick} variant="outline">
-                      <Download className="w-4 h-4 mr-2" />
-                      Download
-                    </Button>
-                  )}
-                </div>
-              ) : null}
-            </>
-          )}
-          
-          <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-            <div className="space-y-1 min-w-0">
-              <div>
-                <span className="font-medium">Filename: </span>
-                <span className="text-muted-foreground truncate max-w-[60ch]">{fileName}</span>
-              </div>
-              {attachment.mimeType && (
-                <div>
-                  <span className="font-medium">Type: </span>
-                  <span className="text-muted-foreground">{attachment.mimeType}</span>
-                </div>
-              )}
-              {attachment.fileSize && (
-                <div>
-                  <span className="font-medium">Size: </span>
-                  <span className="text-muted-foreground">
-                    {(attachment.fileSize / 1024).toFixed(1)} KB
-                  </span>
-                </div>
-              )}
             </div>
-            
-            {(pdfDownloadUrl || genericDownloadUrl) && (
-              <div className="flex flex-col items-end gap-1 shrink-0">
-                <Button onClick={handleDownloadClick} variant="outline">
-                  <Download className="w-4 h-4 mr-2" />
-                  Download original
-                </Button>
-                <span className="text-xs text-muted-foreground">Downloads original file</span>
-              </div>
-            )}
-          </div>
+          ) : null}
         </div>
       </DialogContent>
     </Dialog>
