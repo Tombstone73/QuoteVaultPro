@@ -425,7 +425,7 @@ export function AttachmentViewerDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[92vh] w-[min(1280px,96vw)] max-w-[min(1280px,96vw)] overflow-hidden p-0">
+      <DialogContent hideClose className="max-h-[92vh] w-[min(1280px,96vw)] max-w-[min(1280px,96vw)] overflow-hidden p-0">
         <DialogHeader className="border-b border-border px-6 py-4 text-left">
           <div className="flex items-start justify-between gap-4 pr-8">
             <div className="min-w-0">
