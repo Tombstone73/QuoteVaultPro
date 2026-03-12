@@ -14319,9 +14319,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // POST /api/prepress/session/start - Start prepress session
   app.post("/api/prepress/session/start", isAuthenticated, tenantContext, async (req: any, res) => {
+    let organizationId: string | null = null;
+    let lineItemId = "";
+
     try {
       if (!assertInternalUser(req, res)) return;
-      const organizationId = getRequestOrganizationId(req);
+      organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ error: "User ID not found" });
@@ -14332,7 +14335,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: fromZodError(parsed.error).message });
       }
 
-      const { lineItemId } = parsed.data;
+      lineItemId = parsed.data.lineItemId;
 
       const result = await db.transaction(async (tx) => {
         // Get line item
@@ -14465,6 +14468,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json({ success: true, data: result });
     } catch (error: any) {
+      if (
+        error?.code === "23505" &&
+        error?.constraint === "uq_prepress_active_session_per_line_item"
+      ) {
+        try {
+          const existingActiveSession = await db
+            .select({
+              id: prepressSessions.id,
+              orderId: prepressSessions.orderId,
+              lineItemId: prepressSessions.lineItemId,
+              status: prepressSessions.status,
+              startedAt: prepressSessions.startedAt,
+              startedByUserId: prepressSessions.startedByUserId,
+              notesText: prepressSessions.notesText,
+              issueFlag: prepressSessions.issueFlag,
+              issueType: prepressSessions.issueType,
+            })
+            .from(prepressSessions)
+            .where(
+              and(
+                eq(prepressSessions.organizationId, organizationId),
+                eq(prepressSessions.lineItemId, lineItemId),
+                eq(prepressSessions.status, "active"),
+              ),
+            )
+            .orderBy(desc(prepressSessions.startedAt))
+            .limit(1);
+
+          if (existingActiveSession[0]) {
+            await db
+              .update(orderLineItems)
+              .set({ status: "in_prepress" as any, updatedAt: new Date() })
+              .where(eq(orderLineItems.id, lineItemId));
+
+            return res.json({ success: true, data: existingActiveSession[0] });
+          }
+        } catch (collisionRecoveryError) {
+          console.error("[Prepress] Error recovering from active-session uniqueness collision:", collisionRecoveryError);
+        }
+      }
+
       const status = error?.statusCode || 500;
       console.error("[Prepress] Error starting session:", error);
       res.status(status).json({ error: error?.message || "Failed to start session" });
