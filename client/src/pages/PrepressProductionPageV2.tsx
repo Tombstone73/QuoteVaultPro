@@ -108,6 +108,11 @@ type VisibleFileRecord = AttachmentData & {
   sizeBytesValue: number | null;
 };
 
+type PendingViewerRequest = {
+  lineItemId: string;
+  preferredFileId?: string | null;
+};
+
 type HistoryEntry = {
   at: string;
   source: string;
@@ -242,6 +247,7 @@ export default function PrepressProductionPageV2() {
   const [specSheetOpen, setSpecSheetOpen] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
+  const [pendingViewerRequest, setPendingViewerRequest] = useState<PendingViewerRequest | null>(null);
   const [materialOverrideOpen, setMaterialOverrideOpen] = useState(false);
   const [materialOverrideMode, setMaterialOverrideMode] = useState<"replace" | "add" | "remove" | "adjust_qty">("replace");
   const [overrideFromMaterialId, setOverrideFromMaterialId] = useState("");
@@ -618,6 +624,12 @@ export default function PrepressProductionPageV2() {
     () => normalizedVisibleFiles.filter((file) => file.category === "final_production"),
     [normalizedVisibleFiles]
   );
+  const resolveViewerIndex = React.useCallback((preferredFileId?: string | null) => {
+    if (normalizedVisibleFiles.length === 0) return -1;
+    if (!preferredFileId) return 0;
+    const nextIndex = normalizedVisibleFiles.findIndex((file) => file.id === preferredFileId);
+    return nextIndex >= 0 ? nextIndex : 0;
+  }, [normalizedVisibleFiles]);
   const hasFinalFiles = finalFiles.length > 0;
   const materialsPayload = materialsEffectiveData?.data;
   const plannedMaterials = materialsPayload?.plannedMaterials || [];
@@ -661,6 +673,22 @@ export default function PrepressProductionPageV2() {
     setViewerOpen(false);
     setViewerIndex(0);
   }, [selectedLineItemId]);
+
+  React.useEffect(() => {
+    if (!pendingViewerRequest) return;
+    if (pendingViewerRequest.lineItemId !== selectedLineItemId) return;
+    if (!filesData) return;
+
+    const nextIndex = resolveViewerIndex(pendingViewerRequest.preferredFileId);
+    if (nextIndex < 0) {
+      setPendingViewerRequest(null);
+      return;
+    }
+
+    setViewerIndex(nextIndex);
+    setViewerOpen(true);
+    setPendingViewerRequest(null);
+  }, [filesData, pendingViewerRequest, resolveViewerIndex, selectedLineItemId]);
 
   React.useEffect(() => {
     setPrepressNotes(selectedItem?.prepressNotes || "");
@@ -770,11 +798,29 @@ export default function PrepressProductionPageV2() {
     window.open(`/api/prepress/files/${fileId}/download`, "_blank");
   };
 
+  const openSharedViewer = React.useCallback((lineItemId: string, preferredFileId?: string | null) => {
+    if (!lineItemId) return;
+
+    if (lineItemId === selectedLineItemId) {
+      const nextIndex = resolveViewerIndex(preferredFileId);
+      if (nextIndex < 0) return;
+      setViewerIndex(nextIndex);
+      setViewerOpen(true);
+      setPendingViewerRequest(null);
+      return;
+    }
+
+    setPendingViewerRequest({ lineItemId, preferredFileId: preferredFileId ?? null });
+    setSelectedLineItemId(lineItemId);
+  }, [resolveViewerIndex, selectedLineItemId]);
+
   const handleOpenViewer = (fileId: string) => {
-    const nextIndex = normalizedVisibleFiles.findIndex((file) => file.id === fileId);
-    if (nextIndex < 0) return;
-    setViewerIndex(nextIndex);
-    setViewerOpen(true);
+    if (!selectedLineItemId) return;
+    openSharedViewer(selectedLineItemId, fileId);
+  };
+
+  const handleOpenQueuePreview = (item: QueueItem) => {
+    openSharedViewer(item.lineItemId, item.thumbFileId || null);
   };
 
   const handleDownloadAllOriginals = () => {
@@ -996,6 +1042,7 @@ export default function PrepressProductionPageV2() {
               item={item}
               isSelected={selectedLineItemId === item.lineItemId}
               onClick={() => setSelectedLineItemId(item.lineItemId)}
+              onPreviewClick={() => handleOpenQueuePreview(item)}
             />
           ))}
         </div>
@@ -1918,7 +1965,7 @@ export default function PrepressProductionPageV2() {
   );
 }
 
-function JobCard({ item, isSelected, onClick }: { item: QueueItem; isSelected: boolean; onClick: () => void }) {
+function JobCard({ item, isSelected, onClick, onPreviewClick }: { item: QueueItem; isSelected: boolean; onClick: () => void; onPreviewClick: () => void }) {
   const statusConfig: Record<string, { label: string; bgClass: string; textClass: string; borderClass: string }> = {
     in_prepress: {
       label: "IN PREPRESS",
@@ -1961,7 +2008,15 @@ function JobCard({ item, isSelected, onClick }: { item: QueueItem; isSelected: b
         !isSelected && "bg-[#1a232e] border border-[#2d3748] hover:border-[#1773cf]/50"
       )}
     >
-      <div className="relative w-16 h-16 flex-shrink-0 rounded-lg border border-[#2d3748] overflow-hidden bg-[#111921] flex items-center justify-center group">
+      <div
+        className="relative w-16 h-16 flex-shrink-0 rounded-lg border border-[#2d3748] overflow-hidden bg-[#111921] flex items-center justify-center group cursor-zoom-in"
+        onClick={(event) => {
+          event.stopPropagation();
+          onPreviewClick();
+        }}
+        role="button"
+        aria-label={`Open preview for ${item.jobNumber}`}
+      >
         <FileThumbnail
           fileId={item.thumbFileId || undefined}
           filename={item.productName || "preview"}
@@ -2045,6 +2100,7 @@ function FileThumbnail({
     normalizeThumbnailUrl(thumbnailUrl) ||
     normalizeThumbnailUrl(resolvedThumbnailUrl) ||
     undefined;
+  const displayThumbnailUrl = thumbFailed ? undefined : finalThumbnailUrl;
   const baseClass = compact ? "w-16 h-16" : "w-20 h-20";
 
   React.useEffect(() => {
@@ -2053,9 +2109,9 @@ function FileThumbnail({
 
   return (
     <div className={cn("relative rounded-lg border border-[#2d3748] overflow-hidden bg-[#111921] flex items-center justify-center group", baseClass)}>
-      {finalThumbnailUrl ? (
+      {displayThumbnailUrl ? (
         <img
-          src={finalThumbnailUrl}
+          src={displayThumbnailUrl}
           alt={filename}
           className="absolute inset-0 w-full h-full object-cover"
           loading="lazy"

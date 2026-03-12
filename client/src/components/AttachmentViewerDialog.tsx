@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type WheelEvent as ReactWheelEvent } from "react";
 
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -6,6 +6,7 @@ import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { buildPdfDownloadUrl, buildPdfViewUrl, checkPdfUrlReachable, isPdfFile } from "@/lib/pdfUrls";
 import { apiFetchBlob } from "@/lib/queryClient";
+import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { cn } from "@/lib/utils";
 import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, X, ZoomIn, ZoomOut } from "lucide-react";
 
@@ -73,6 +74,60 @@ function formatFileSize(bytes?: number | null) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function normalizeThumbnailUrl(value?: string | null) {
+  if (!value) return undefined;
+  return resolveObjectsPublicUrl(value) ?? value;
+}
+
+function FilmstripThumbnail({
+  item,
+  isActive,
+  onClick,
+}: {
+  item: AttachmentData;
+  isActive: boolean;
+  onClick: () => void;
+}) {
+  const itemName = getAttachmentName(item);
+  const itemMimeType = item.mimeType ?? inferMimeType(itemName);
+  const itemIsPdf = isPdfFile(itemMimeType, itemName);
+  const itemIsImage = typeof itemMimeType === "string" && itemMimeType.startsWith("image/");
+  const normalizedThumbUrl = normalizeThumbnailUrl(item.thumbUrl ?? item.pages?.[0]?.thumbUrl ?? null);
+  const [thumbFailed, setThumbFailed] = useState(false);
+
+  useEffect(() => {
+    setThumbFailed(false);
+  }, [normalizedThumbUrl]);
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "relative h-16 w-16 shrink-0 overflow-hidden rounded-md border bg-muted/30 transition-all",
+        isActive ? "border-primary ring-2 ring-primary/40" : "border-border hover:border-primary/60"
+      )}
+      title={itemName}
+    >
+      {normalizedThumbUrl && !thumbFailed ? (
+        <img
+          src={normalizedThumbUrl}
+          alt={itemName}
+          className="h-full w-full object-cover"
+          loading="lazy"
+          onError={() => setThumbFailed(true)}
+        />
+      ) : itemIsPdf ? (
+        <div className="flex h-full w-full items-center justify-center bg-slate-700/60 text-[10px] font-bold text-white">PDF</div>
+      ) : itemIsImage ? (
+        <div className="flex h-full w-full items-center justify-center bg-slate-800 text-[10px] font-bold text-white">IMG</div>
+      ) : (
+        <div className="flex h-full w-full items-center justify-center bg-slate-800 text-[10px] font-bold text-white">FILE</div>
+      )}
+    </button>
+  );
 }
 
 export function AttachmentViewerDialog({
@@ -236,6 +291,15 @@ export function AttachmentViewerDialog({
     void downloadFileFromUrl(downloadUrl, fileName);
   };
 
+  const clampZoom = (value: number) => Math.min(3, Math.max(0.5, value));
+
+  const handleImageWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    if (!isImage) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setZoomLevel((value) => clampZoom(value + (event.deltaY < 0 ? 0.1 : -0.1)));
+  };
+
   const renderArrowButton = (direction: "prev" | "next") => {
     const isPrev = direction === "prev";
     const enabled = isPrev ? canGoPrev : canGoNext;
@@ -296,7 +360,10 @@ export function AttachmentViewerDialog({
   const renderStage = () => {
     if (isImage) {
       return (
-        <div className="flex h-full min-h-[360px] items-center justify-center overflow-auto rounded-lg bg-muted/30 p-3">
+        <div
+          className="flex h-full min-h-[360px] items-center justify-center overflow-auto rounded-lg bg-muted/30 p-3"
+          onWheel={handleImageWheel}
+        >
           {imagePreviewLoading ? (
             <div className="flex h-[60vh] items-center justify-center text-sm text-muted-foreground">Loading preview...</div>
           ) : imageBlobUrl ? (
@@ -353,37 +420,6 @@ export function AttachmentViewerDialog({
           </Button>
         ) : null}
       </div>
-    );
-  };
-
-  const renderFilmstripThumbnail = (item: AttachmentData, index: number) => {
-    const itemName = getAttachmentName(item);
-    const itemMimeType = item.mimeType ?? inferMimeType(itemName);
-    const itemIsPdf = isPdfFile(itemMimeType, itemName);
-    const itemIsImage = typeof itemMimeType === "string" && itemMimeType.startsWith("image/");
-    const thumbUrl = item.thumbUrl ?? item.pages?.[0]?.thumbUrl ?? null;
-
-    return (
-      <button
-        key={`${item.id}-${index}`}
-        type="button"
-        onClick={() => setSelectedIndex(index)}
-        className={cn(
-          "relative h-16 w-16 shrink-0 overflow-hidden rounded-md border bg-muted/30 transition-all",
-          index === selectedIndex ? "border-primary ring-2 ring-primary/40" : "border-border hover:border-primary/60"
-        )}
-        title={itemName}
-      >
-        {thumbUrl ? (
-          <img src={thumbUrl} alt={itemName} className="h-full w-full object-cover" loading="lazy" />
-        ) : itemIsPdf ? (
-          <div className="flex h-full w-full items-center justify-center bg-slate-700/60 text-[10px] font-bold text-white">PDF</div>
-        ) : itemIsImage ? (
-          <div className="flex h-full w-full items-center justify-center bg-slate-800 text-[10px] font-bold text-white">IMG</div>
-        ) : (
-          <div className="flex h-full w-full items-center justify-center bg-slate-800 text-[10px] font-bold text-white">FILE</div>
-        )}
-      </button>
     );
   };
 
@@ -498,7 +534,14 @@ export function AttachmentViewerDialog({
             <div className="mt-4 border-t border-border pt-4">
               <div className="mb-2 text-xs font-bold uppercase tracking-widest text-muted-foreground">Thumbnails</div>
               <div className="flex gap-2 overflow-x-auto pb-2">
-                {galleryAttachments.map((item, index) => renderFilmstripThumbnail(item, index))}
+                {galleryAttachments.map((item, index) => (
+                  <FilmstripThumbnail
+                    key={`${item.id}-${index}`}
+                    item={item}
+                    isActive={index === selectedIndex}
+                    onClick={() => setSelectedIndex(index)}
+                  />
+                ))}
               </div>
             </div>
           ) : null}
