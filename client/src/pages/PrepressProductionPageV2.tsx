@@ -451,7 +451,6 @@ export default function PrepressProductionPageV2() {
       queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
       // Invalidate production board so downstream boards reflect the prepress_complete status change.
       queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] });
-      setSelectedLineItemId(null);
       toast({ title: "Prepress complete", description: "Prepress is complete. Use Send to Production for handoff." });
     },
     onError: (error: Error) => {
