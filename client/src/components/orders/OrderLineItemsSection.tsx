@@ -33,12 +33,9 @@ import { ProductOptionsPanel } from "@/features/quotes/editor/components/Product
 import { ProductOptionsPanelV2 } from "@/features/quotes/editor/components/ProductOptionsPanelV2";
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import { isPbv2Product, getPbv2Tree } from "@/lib/pbv2Utils";
-import { cn, isValidHttpUrl } from "@/lib/utils";
-import { apiFetch, apiRequest } from "@/lib/queryClient";
-import { objectsUrl } from "@/lib/apiConfig";
-import { getAttachmentDisplayName, getPdfPageCount, isPdfAttachment } from "@/lib/attachments";
+import { cn } from "@/lib/utils";
+import { apiRequest } from "@/lib/queryClient";
 import { getThumbSrc } from "@/lib/getThumbSrc";
-import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
 import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
@@ -258,26 +255,6 @@ function stableStringify(value: unknown): string {
   const obj = value as Record<string, unknown>;
   const keys = Object.keys(obj).sort();
   return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`).join(",")}}`;
-}
-
-type AttachmentForPreview = {
-  id: string;
-  fileName: string;
-  originalFilename?: string | null;
-  mimeType?: string | null;
-  originalUrl?: string | null;
-  previewUrl?: string | null;
-  thumbUrl?: string | null;
-  thumbnailUrl?: string | null;
-  previewThumbnailUrl?: string | null;
-  pages?: any[];
-  pageCount?: number | null;
-};
-
-function getPdfThumbUrl(attachment: AttachmentForPreview | null): string | null {
-  if (!attachment) return null;
-  const src = getThumbSrc(attachment as any);
-  return typeof src === 'string' && src.length ? src : null;
 }
 
 function buildOneLineOptionsSummary(selectedOptions: any[] | undefined | null): string {
@@ -633,7 +610,6 @@ export function OrderLineItemsSection({
 
   const [savingItemId, setSavingItemId] = useState<string | null>(null);
   const [savedItemId, setSavedItemId] = useState<string | null>(null);
-  const [pdfEmbedError, setPdfEmbedError] = useState(false);
 
   const savedSnapshotRef = useRef<
     Record<
@@ -654,11 +630,6 @@ export function OrderLineItemsSection({
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Preview modal state (shared with artwork panel)
-  const [previewFile, setPreviewFile] = useState<AttachmentForPreview | null>(null);
-  const [authenticatedPreviewImageUrl, setAuthenticatedPreviewImageUrl] = useState<string | null>(null);
-  const authenticatedPreviewImageUrlRef = useRef<string | null>(null);
-
   const [artworkModalLineItemId, setArtworkModalLineItemId] = useState<string | null>(null);
 
   const [missingArtworkSuppressReason, setMissingArtworkSuppressReason] = useState<string>("");
@@ -667,67 +638,6 @@ export function OrderLineItemsSection({
   useEffect(() => {
     setMissingArtworkSuppressReason("");
   }, [expandedId]);
-
-  // Reset PDF embed error when preview file changes
-  useEffect(() => {
-    setPdfEmbedError(false);
-  }, [previewFile?.id]);
-
-  useEffect(() => {
-    const revokePreviewUrl = () => {
-      if (!authenticatedPreviewImageUrlRef.current) return;
-      URL.revokeObjectURL(authenticatedPreviewImageUrlRef.current);
-      authenticatedPreviewImageUrlRef.current = null;
-    };
-
-    revokePreviewUrl();
-    setAuthenticatedPreviewImageUrl(null);
-
-    if (!previewFile) return () => {
-      revokePreviewUrl();
-    };
-
-    const fileName = previewFile.originalFilename || previewFile.fileName || "";
-    const previewUrl = previewFile.previewUrl ?? previewFile.originalUrl ?? null;
-    const mimeType = (previewFile.mimeType || "").toLowerCase();
-    const isImagePreview = mimeType.startsWith("image/") || /\.(png|jpe?g)$/i.test(fileName);
-
-    if (!previewUrl || !isImagePreview) {
-      return () => {
-        revokePreviewUrl();
-      };
-    }
-
-    let cancelled = false;
-
-    void (async () => {
-      try {
-        const response = await apiFetch(previewUrl, { credentials: "include" });
-        if (!response.ok) {
-          if (import.meta.env.DEV) {
-            console.log(`[OrderLineItemsSection] preview fetch failed status=${response.status} url=${previewUrl}`);
-          }
-          return;
-        }
-
-        const blob = await response.blob();
-        if (cancelled) return;
-
-        const objectUrl = URL.createObjectURL(blob);
-        authenticatedPreviewImageUrlRef.current = objectUrl;
-        setAuthenticatedPreviewImageUrl(objectUrl);
-      } catch {
-        if (import.meta.env.DEV) {
-          console.log(`[OrderLineItemsSection] preview fetch failed status=network url=${previewUrl}`);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      revokePreviewUrl();
-    };
-  }, [previewFile]);
 
   const artworkModalLineItem = useMemo(
     () => lineItems.find((li) => li.id === artworkModalLineItemId) ?? null,
@@ -1908,175 +1818,6 @@ export function OrderLineItemsSection({
           </div>
         )}
       </CardContent>
-
-      <Dialog open={!!previewFile} onOpenChange={(open) => { if (!open) setPreviewFile(null); }}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>{previewFile ? getAttachmentDisplayName(previewFile as any) : ""}</DialogTitle>
-            <DialogDescription>
-              <div className="space-y-1">
-                {previewFile?.mimeType ? (
-                  <div>
-                    <span>File type: </span>
-                    <span>{previewFile.mimeType}</span>
-                  </div>
-                ) : (
-                  <div>Preview attachment</div>
-                )}
-                <AttachmentPreviewMeta attachment={previewFile as any} />
-              </div>
-            </DialogDescription>
-          </DialogHeader>
-
-          {previewFile && (() => {
-            const isPdf = isPdfAttachment(previewFile as any);
-            const fileName = previewFile.originalFilename || previewFile.fileName;
-            
-            // Construct same-origin view URL for iframe (PDFs must use /objects proxy)
-            const objectPath = (previewFile as any).objectPath as string | null | undefined;
-            let iframeViewUrl: string | null = null;
-            
-            if (isPdf && typeof objectPath === "string" && objectPath.length) {
-              iframeViewUrl = objectsUrl(`/objects/${objectPath}?filename=${encodeURIComponent(fileName)}`);
-            } else if (isPdf && previewFile.originalUrl && previewFile.originalUrl.startsWith('/objects/')) {
-              iframeViewUrl = previewFile.originalUrl;
-            }
-            
-            // Non-PDF preview URL
-            const previewUrl = authenticatedPreviewImageUrl ?? previewFile.previewUrl ?? previewFile.originalUrl;
-            const hasValidPreview =
-              !isPdf &&
-              !!previewUrl &&
-              (previewUrl.startsWith("blob:") || previewUrl.startsWith("/") || isValidHttpUrl(previewUrl));
-            
-            // Construct download URL
-            let downloadUrl: string | null = null;
-            if (typeof objectPath === "string" && objectPath.length) {
-              downloadUrl = objectsUrl(`/objects/${objectPath}?download=1&filename=${encodeURIComponent(fileName)}`);
-            } else if (previewFile.originalUrl) {
-              downloadUrl = previewFile.originalUrl;
-            }
-
-            return (
-              <div className="space-y-4">
-                {isPdf && iframeViewUrl ? (
-                  <div className="bg-muted/30 rounded-lg p-2 space-y-2">
-                    {!pdfEmbedError ? (
-                      <iframe
-                        title={fileName}
-                        src={String(iframeViewUrl) + "#toolbar=1&navpanes=0"}
-                        className="w-full h-[60vh] rounded-md border border-border bg-background"
-                        style={{ width: '100%', height: '60vh', border: 0 }}
-                        allow="fullscreen"
-                        onLoad={() => {
-                          console.log('[OrderLineItemsSection] PDF iframe loaded:', iframeViewUrl);
-                        }}
-                        onError={(e) => {
-                          setPdfEmbedError(true);
-                          console.error("[OrderLineItemsSection] PDF iframe failed to load", {
-                            src: iframeViewUrl,
-                            fileName,
-                          });
-                        }}
-                      />
-                    ) : (
-                      <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                        <FileText className="w-16 h-16 mb-4 opacity-50" />
-                        <p className="text-sm mb-2">PDF failed to render inline</p>
-                        {downloadUrl && (
-                          <Button
-                            onClick={() => {
-                              const anchor = document.createElement("a");
-                              anchor.href = downloadUrl!;
-                              anchor.download = fileName;
-                              anchor.style.display = "none";
-                              document.body.appendChild(anchor);
-                              anchor.click();
-                              document.body.removeChild(anchor);
-                            }}
-                            variant="outline"
-                          >
-                            <Download className="w-4 h-4 mr-2" />
-                            Download
-                          </Button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ) : isPdf && !iframeViewUrl ? (
-                  <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                    <FileText className="w-16 h-16 mb-4 opacity-50" />
-                    <p className="text-sm mb-2">PDF preview unavailable</p>
-                    <p className="text-xs mb-4">No same-origin URL available</p>
-                    {downloadUrl && (
-                      <Button
-                        onClick={() => {
-                          const anchor = document.createElement("a");
-                          anchor.href = downloadUrl!;
-                          anchor.download = fileName;
-                          anchor.style.display = "none";
-                          document.body.appendChild(anchor);
-                          anchor.click();
-                          document.body.removeChild(anchor);
-                        }}
-                        variant="outline"
-                      >
-                        <Download className="w-4 h-4 mr-2" />
-                        Download
-                      </Button>
-                    )}
-                  </div>
-                ) : hasValidPreview ? (
-                  <div className="flex justify-center bg-muted/30 rounded-lg p-4">
-                    <img src={previewUrl} alt={fileName} className="max-w-full max-h-[60vh] object-contain" />
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                    <FileText className="w-16 h-16 mb-4 opacity-50" />
-                    <p className="text-sm">Preview not available for this file</p>
-                  </div>
-                )}
-
-                <div className="flex items-center justify-between text-sm">
-                  <div className="space-y-1">
-                    <div>
-                      <span className="font-medium">Filename: </span>
-                      <span className="text-muted-foreground">{fileName}</span>
-                    </div>
-                    {previewFile.mimeType && (
-                      <div>
-                        <span className="font-medium">Type: </span>
-                        <span className="text-muted-foreground">{previewFile.mimeType}</span>
-                      </div>
-                    )}
-                  </div>
-
-                  {downloadUrl && (
-                    <div className="flex flex-col items-end gap-1">
-                      <Button
-                        onClick={() => {
-                          const anchor = document.createElement("a");
-                          anchor.href = downloadUrl!;
-                          anchor.download = fileName;
-                          anchor.style.display = "none";
-                          document.body.appendChild(anchor);
-                          anchor.click();
-                          document.body.removeChild(anchor);
-                        }}
-                        variant="outline"
-                      >
-                        <Download className="w-4 h-4 mr-2" />
-                        Download original
-                      </Button>
-                      <span className="text-xs text-muted-foreground">Downloads original file</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })()}
-        </DialogContent>
-      </Dialog>
 
       <Dialog
         open={!!artworkModalLineItemId}

@@ -27,8 +27,9 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAssignOrderStatusPill, useOrderStatusPills } from "@/hooks/useOrderStatusPills";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
-import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
+import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
+import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
 import BackNavControls from "@/components/BackNavControls";
 
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "paymentStatus";
@@ -148,7 +149,12 @@ export default function Orders() {
   const [loadingAttachments, setLoadingAttachments] = useState<string | null>(null);
 
   const [attachmentViewerOpen, setAttachmentViewerOpen] = useState(false);
-  const [selectedAttachment, setSelectedAttachment] = useState<any | null>(null);
+  const [selectedAttachmentIndex, setSelectedAttachmentIndex] = useState(0);
+
+  const normalizedAttachmentViewerItems = useMemo(
+    () => toAttachmentViewerAttachments(attachmentsDialogItems),
+    [attachmentsDialogItems]
+  ) as AttachmentData[];
 
   // Inline editing state
   const [editingPriorityOrderId, setEditingPriorityOrderId] = useState<string | null>(null);
@@ -1062,7 +1068,7 @@ export default function Orders() {
             setAttachmentsDialogItems([]);
             setAttachmentsDialogLoading(false);
             setAttachmentViewerOpen(false);
-            setSelectedAttachment(null);
+            setSelectedAttachmentIndex(0);
           }
         }}
       >
@@ -1087,21 +1093,6 @@ export default function Orders() {
                 const originalUrl = att?.originalUrl || null;
                 const hasThumb = typeof thumbUrl === "string" && (thumbUrl.startsWith("http") || thumbUrl.startsWith("/"));
 
-                const viewerItem = {
-                  id: String(att?.id || filename),
-                  fileName: filename,
-                  originalFilename: att?.originalFilename || null,
-                  mimeType: att?.mimeType || null,
-                  fileSize: att?.fileSize ?? att?.sizeBytes ?? null,
-                  originalUrl: typeof originalUrl === "string" ? originalUrl : null,
-                  downloadUrl: typeof downloadUrl === "string" ? downloadUrl : null,
-                  previewThumbnailUrl: att?.previewThumbnailUrl ?? null,
-                  thumbnailUrl: att?.thumbnailUrl ?? null,
-                  thumbUrl: att?.thumbUrl ?? null,
-                  previewUrl: att?.previewUrl ?? null,
-                  pages: att?.pages ?? null,
-                };
-
                 return (
                   <button
                     key={att?.id || filename}
@@ -1109,7 +1100,8 @@ export default function Orders() {
                     className="w-full text-left flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 hover:bg-muted/20"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setSelectedAttachment(viewerItem);
+                      const clickedIndex = normalizedAttachmentViewerItems.findIndex((item) => item.id === String(att?.id || filename));
+                      setSelectedAttachmentIndex(clickedIndex >= 0 ? clickedIndex : 0);
                       setAttachmentViewerOpen(true);
                     }}
                   >
@@ -1163,9 +1155,17 @@ export default function Orders() {
       </Dialog>
 
       <AttachmentViewerDialog
-        attachment={selectedAttachment}
+        attachments={normalizedAttachmentViewerItems}
+        initialIndex={selectedAttachmentIndex}
         open={attachmentViewerOpen}
-        onOpenChange={setAttachmentViewerOpen}
+        hideFilmstrip={false}
+        showMetaPanel={true}
+        onOpenChange={(open) => {
+          setAttachmentViewerOpen(open);
+          if (!open) {
+            setSelectedAttachmentIndex(0);
+          }
+        }}
       />
     </Page>
   );
