@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type WheelEvent as ReactWheelEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -8,7 +8,7 @@ import { buildPdfDownloadUrl, buildPdfViewUrl, checkPdfUrlReachable, isPdfFile }
 import { apiFetchBlob } from "@/lib/queryClient";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { cn } from "@/lib/utils";
-import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, X, ZoomIn, ZoomOut } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, House, X, ZoomIn, ZoomOut } from "lucide-react";
 
 export type AttachmentPage = {
   id: string;
@@ -148,7 +148,12 @@ export function AttachmentViewerDialog({
   const [imagePreviewLoading, setImagePreviewLoading] = useState(false);
   const [imagePreviewError, setImagePreviewError] = useState<string | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
+  const [panX, setPanX] = useState(0);
+  const [panY, setPanY] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
   const imageBlobUrlRef = useRef<string | null>(null);
+  const dragPointerIdRef = useRef<number | null>(null);
+  const dragOriginRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
   const galleryAttachments = attachments?.length ? attachments : undefined;
   const attachmentCount = galleryAttachments?.length ?? (singleAttachment ? 1 : 0);
@@ -201,7 +206,20 @@ export function AttachmentViewerDialog({
     setShowFallback(false);
     setUrlReachable(null);
     setZoomLevel(1);
+    setPanX(0);
+    setPanY(0);
+    setIsDragging(false);
+    dragPointerIdRef.current = null;
   }, [currentAttachment?.id, open]);
+
+  useEffect(() => {
+    if (zoomLevel <= 1) {
+      setPanX(0);
+      setPanY(0);
+      setIsDragging(false);
+      dragPointerIdRef.current = null;
+    }
+  }, [zoomLevel]);
 
   useEffect(() => {
     if (!open || !currentAttachment || !isPdf || !objectPath) {
@@ -292,12 +310,52 @@ export function AttachmentViewerDialog({
   };
 
   const clampZoom = (value: number) => Math.min(3, Math.max(0.5, value));
+  const canPanImage = isImage && zoomLevel > 1 && !!imageBlobUrl;
+
+  const resetImageView = () => {
+    setZoomLevel(1);
+    setPanX(0);
+    setPanY(0);
+    setIsDragging(false);
+    dragPointerIdRef.current = null;
+  };
 
   const handleImageWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
     if (!isImage) return;
     event.preventDefault();
     event.stopPropagation();
     setZoomLevel((value) => clampZoom(value + (event.deltaY < 0 ? 0.1 : -0.1)));
+  };
+
+  const handleImagePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!canPanImage) return;
+    event.preventDefault();
+    dragPointerIdRef.current = event.pointerId;
+    dragOriginRef.current = {
+      x: event.clientX - panX,
+      y: event.clientY - panY,
+    };
+    setIsDragging(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handleImagePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!canPanImage || !isDragging || dragPointerIdRef.current !== event.pointerId) return;
+    event.preventDefault();
+    setPanX(event.clientX - dragOriginRef.current.x);
+    setPanY(event.clientY - dragOriginRef.current.y);
+  };
+
+  const stopImageDragging = (event?: ReactPointerEvent<HTMLDivElement>) => {
+    if (event && dragPointerIdRef.current === event.pointerId) {
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      } catch {
+        // no-op
+      }
+    }
+    dragPointerIdRef.current = null;
+    setIsDragging(false);
   };
 
   const renderArrowButton = (direction: "prev" | "next") => {
@@ -361,8 +419,16 @@ export function AttachmentViewerDialog({
     if (isImage) {
       return (
         <div
-          className="flex h-full min-h-[360px] items-center justify-center overflow-auto rounded-lg bg-muted/30 p-3"
+          className={cn(
+            "flex h-full min-h-[360px] items-center justify-center overflow-hidden rounded-lg bg-muted/30 p-3",
+            canPanImage ? (isDragging ? "cursor-grabbing" : "cursor-grab") : "cursor-default"
+          )}
           onWheel={handleImageWheel}
+          onPointerDown={handleImagePointerDown}
+          onPointerMove={handleImagePointerMove}
+          onPointerUp={stopImageDragging}
+          onPointerLeave={stopImageDragging}
+          onPointerCancel={stopImageDragging}
         >
           {imagePreviewLoading ? (
             <div className="flex h-[60vh] items-center justify-center text-sm text-muted-foreground">Loading preview...</div>
@@ -370,8 +436,12 @@ export function AttachmentViewerDialog({
             <img
               src={imageBlobUrl}
               alt={fileName}
-              className="block max-h-full max-w-full object-contain transition-transform duration-150 ease-out"
-              style={{ transform: `scale(${zoomLevel})`, transformOrigin: "center center" }}
+              className={cn(
+                "block max-h-full max-w-full object-contain transition-transform duration-150 ease-out select-none",
+                canPanImage ? (isDragging ? "cursor-grabbing" : "cursor-grab") : "cursor-default"
+              )}
+              draggable={false}
+              style={{ transform: `translate(${panX}px, ${panY}px) scale(${zoomLevel})`, transformOrigin: "center center" }}
             />
           ) : imagePreviewError ? (
             <div className="flex h-[60vh] items-center justify-center text-sm text-muted-foreground">{imagePreviewError}</div>
@@ -450,6 +520,9 @@ export function AttachmentViewerDialog({
                 <>
                   <Button type="button" variant="outline" size="icon" onClick={() => setZoomLevel((value) => Math.max(value - 0.25, 0.5))} title="Zoom out">
                     <ZoomOut className="h-4 w-4" />
+                  </Button>
+                  <Button type="button" variant="outline" size="icon" onClick={resetImageView} title="Reset view">
+                    <House className="h-4 w-4" />
                   </Button>
                   <Button type="button" variant="outline" size="sm" onClick={() => setZoomLevel(1)} title="Reset zoom">
                     {Math.round(zoomLevel * 100)}%
