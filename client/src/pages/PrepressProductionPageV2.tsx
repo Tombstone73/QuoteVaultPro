@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Search, RefreshCw, History, FileText, Download, ZoomIn, Upload, Image as ImageIcon, Info, Paperclip, CheckCircle, AlertCircle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,8 @@ type QueueItem = {
   rush: boolean;
   assignedTo: string | null;
   sessionId: string | null;
+  sessionStartedAt?: string | null;
+  sessionStartedByUserId?: string | null;
   prepressNotes?: string | null;
   issueFlag?: boolean;
   issueType?: string | null;
@@ -224,6 +226,14 @@ function formatBytes(bytes: number): string {
   return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 }
 
+function formatElapsedDuration(totalSeconds: number): string {
+  const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = safeSeconds % 60;
+  return [hours, minutes, seconds].map((value) => String(value).padStart(2, "0")).join(":");
+}
+
 export default function PrepressProductionPageV2() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -256,13 +266,13 @@ export default function PrepressProductionPageV2() {
   const [overrideQty, setOverrideQty] = useState("");
   const [overrideUom, setOverrideUom] = useState<"sqft" | "ft" | "each">("sqft");
   const [overrideReasonNote, setOverrideReasonNote] = useState("");
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   // Queue Query
   const { data: queueData, isLoading: queueLoading } = useQuery({
-    queryKey: ["/api/prepress/queue", { search: searchQuery, printType: printTypeFilter, status: statusFilter, rush: rushFilter, sortBy, sortAsc }],
+    queryKey: ["/api/prepress/queue", { printType: printTypeFilter, status: statusFilter, rush: rushFilter, sortBy, sortAsc }],
     queryFn: async () => {
       const params = new URLSearchParams();
-      if (searchQuery) params.set("search", searchQuery);
       if (printTypeFilter !== "all") params.set("printType", printTypeFilter);
       if (statusFilter !== "all") params.set("status", statusFilter);
       if (rushFilter) params.set("rush", "true");
@@ -277,7 +287,10 @@ export default function PrepressProductionPageV2() {
       }
       return data.data as QueueItem[];
     },
-    refetchInterval: 30000, // Refresh every 30s
+    placeholderData: (previousData) => previousData,
+    refetchInterval: 15000,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
   });
 
   // Line Item Files Query
@@ -447,12 +460,13 @@ export default function PrepressProductionPageV2() {
   });
 
   const uploadFileMutation = useMutation({
-    mutationFn: async ({ lineItemId, file, role, tag }: { lineItemId: string; file: File; role: string; tag: string }) => {
+    mutationFn: async ({ lineItemId, file, role, tag, sessionId }: { lineItemId: string; file: File; role: string; tag: string; sessionId?: string | null }) => {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("lineItemId", lineItemId);
       formData.append("role", role);
       if (tag) formData.append("tag", tag);
+      if (sessionId) formData.append("sessionId", sessionId);
 
       const uploadId = Math.random().toString();
       setUploadingFiles(prev => [...prev, { id: uploadId, filename: file.name, progress: 0 }]);
@@ -567,7 +581,25 @@ export default function PrepressProductionPageV2() {
 
   // Derived state
   const queue = queueData || [];
-  const selectedItem = queue.find(q => q.lineItemId === selectedLineItemId);
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const filteredQueue = useMemo(() => {
+    if (!normalizedSearchQuery) return queue;
+
+    return queue.filter((item) => {
+      const searchFields = [
+        item.jobNumber,
+        item.orderId,
+        item.customerName,
+        item.productName,
+        item.printType,
+        item.media,
+        item.lineItemId,
+      ];
+
+      return searchFields.some((value) => String(value || "").toLowerCase().includes(normalizedSearchQuery));
+    });
+  }, [normalizedSearchQuery, queue]);
+  const selectedItem = filteredQueue.find(q => q.lineItemId === selectedLineItemId) ?? null;
   const originalFiles = filesData?.originals || [];
   const finalFiles = filesData?.finals || [];
   const bridgedOriginalFiles = filesData?.bridgedOriginals || [];
@@ -661,6 +693,11 @@ export default function PrepressProductionPageV2() {
     selectedItem?.prepressStage === "prepress_complete" &&
     !selectedItem?.hasDownstreamActiveJob &&
     hasFinalFiles;
+  const activeSessionStartedAt = selectedItem?.sessionStartedAt ? new Date(selectedItem.sessionStartedAt) : null;
+  const activeSessionElapsedSeconds =
+    selectedItem?.prepressStage === "in_prepress" && activeSessionStartedAt && Number.isFinite(activeSessionStartedAt.getTime())
+      ? Math.max(0, Math.floor((nowMs - activeSessionStartedAt.getTime()) / 1000))
+      : 0;
 
   // Clear selection if selected item is not in queue
   React.useEffect(() => {
@@ -668,6 +705,22 @@ export default function PrepressProductionPageV2() {
       setSelectedLineItemId(null);
     }
   }, [selectedLineItemId, selectedItem]);
+
+  useEffect(() => {
+    if (selectedItem?.prepressStage !== "in_prepress" || !selectedItem?.sessionStartedAt) {
+      setNowMs(Date.now());
+      return;
+    }
+
+    setNowMs(Date.now());
+    const intervalId = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [selectedItem?.prepressStage, selectedItem?.sessionStartedAt]);
 
   React.useEffect(() => {
     setViewerOpen(false);
@@ -785,6 +838,7 @@ export default function PrepressProductionPageV2() {
         file,
         role: uploadRole,
         tag: uploadRole === "final" ? selectedTag : "",
+        sessionId: selectedItem?.sessionId ?? null,
       });
     });
 
@@ -1029,14 +1083,14 @@ export default function PrepressProductionPageV2() {
               <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
             </div>
           )}
-          {!queueLoading && queue.length === 0 && (
+          {!queueLoading && filteredQueue.length === 0 && (
             <div className="flex flex-col items-center justify-center py-12 text-center">
               <FileText className="w-12 h-12 text-slate-600 mb-3" />
               <p className="text-sm font-medium text-slate-400">No jobs in prepress queue</p>
-              <p className="text-xs text-slate-600 mt-1">Adjust filters to see more jobs</p>
+              <p className="text-xs text-slate-600 mt-1">Adjust filters or clear search to see more jobs</p>
             </div>
           )}
-          {!queueLoading && queue.map((item) => (
+          {!queueLoading && filteredQueue.map((item) => (
             <JobCard
               key={item.lineItemId}
               item={item}
@@ -1072,6 +1126,11 @@ export default function PrepressProductionPageV2() {
                   {selectedItem.assignedTo && (
                     <span className="text-slate-400 text-xs">Assigned to: {selectedItem.assignedTo}</span>
                   )}
+                  {selectedItem.prepressStage === "in_prepress" && selectedItem.sessionStartedAt && (
+                    <span className="text-[#1773cf] text-xs font-semibold">
+                      Timer: {formatElapsedDuration(activeSessionElapsedSeconds)}
+                    </span>
+                  )}
                 </div>
               )}
             </div>
@@ -1087,6 +1146,14 @@ export default function PrepressProductionPageV2() {
                   {selectedItem?.dueDate ? new Date(selectedItem.dueDate).toLocaleDateString() : "—"}
                 </p>
               </div>
+              {selectedItem?.prepressStage === "in_prepress" && selectedItem.sessionStartedAt ? (
+                <div>
+                  <p className="text-[10px] uppercase text-slate-500 font-bold tracking-tighter">Started</p>
+                  <p className="text-sm font-semibold text-[#1773cf]">
+                    {formatDistanceToNow(new Date(selectedItem.sessionStartedAt), { addSuffix: true })}
+                  </p>
+                </div>
+              ) : null}
             </div>
           </div>
           <div className="flex items-center gap-3">
