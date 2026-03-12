@@ -14975,19 +14975,64 @@ export async function registerRoutes(app: Express): Promise<Server> {
           prepressJobId = routeResult.jobId;
         }
 
-        // 2. Create new prepress session as edit request
+        // 2. Create or reuse the active prepress session for this edit request.
+        //    DB uniqueness now guarantees one active session per org + line item,
+        //    so returning to prepress must not blindly insert a second active row.
         const editNote = `[EDIT REQUEST FROM PRODUCTION]\n${note.trim()}`;
-        const [session] = await tx.insert(prepressSessions).values({
-          organizationId,
-          orderId: lineItem.orderId,
-          lineItemId,
-          status: "active",
-          startedByUserId: userId,
-          lockOwnerUserId: userId,
-          issueFlag: true,
-          issueType: "production_edit_request",
-          notesText: editNote,
-        }).returning({ id: prepressSessions.id });
+        const existingActiveSessions = await tx
+          .select({
+            id: prepressSessions.id,
+            notesText: prepressSessions.notesText,
+          })
+          .from(prepressSessions)
+          .where(
+            and(
+              eq(prepressSessions.organizationId, organizationId),
+              eq(prepressSessions.lineItemId, lineItemId),
+              eq(prepressSessions.status, "active"),
+            ),
+          )
+          .orderBy(desc(prepressSessions.updatedAt), desc(prepressSessions.startedAt))
+          .limit(1);
+
+        let sessionId: string;
+
+        if (existingActiveSessions[0]) {
+          const existingSession = existingActiveSessions[0];
+          const nextNotesText = (() => {
+            const current = String(existingSession.notesText || "").trim();
+            if (!current) return editNote;
+            if (current.includes(editNote)) return current;
+            return `${current}\n\n${editNote}`;
+          })();
+
+          await tx
+            .update(prepressSessions)
+            .set({
+              lockOwnerUserId: userId,
+              issueFlag: true,
+              issueType: "production_edit_request",
+              notesText: nextNotesText,
+              updatedAt: new Date(),
+            })
+            .where(eq(prepressSessions.id, existingSession.id));
+
+          sessionId = existingSession.id;
+        } else {
+          const [session] = await tx.insert(prepressSessions).values({
+            organizationId,
+            orderId: lineItem.orderId,
+            lineItemId,
+            status: "active",
+            startedByUserId: userId,
+            lockOwnerUserId: userId,
+            issueFlag: true,
+            issueType: "production_edit_request",
+            notesText: editNote,
+          }).returning({ id: prepressSessions.id });
+
+          sessionId = session.id;
+        }
 
         // 3. Update line item lifecycle status to in_production (keep lifecycle-only)
         if (lineItem.status !== 'pending_prepress') {
@@ -15012,7 +15057,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           userAgent: req.headers["user-agent"] || null,
         } as any);
 
-        return { sessionId: session?.id, prepressJobId };
+        return { sessionId, prepressJobId };
       });
 
       if (process.env.NODE_ENV !== "production") {
