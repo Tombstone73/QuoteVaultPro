@@ -4519,31 +4519,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      let finalizedLineItems: any[] = [];
-      try {
-        finalizedLineItems = await storage.finalizeTemporaryLineItemsForUser(
-          organizationId,
-          userId,
-          quote.id
-        );
-        console.log(
-          `[Quotes:POST] Finalized ${finalizedLineItems.length} temporary line items for quote ${quote.id}`
-        );
-      } catch (err) {
-        console.error(
-          "[Quotes:POST] Failed to finalize temporary line items for user",
-          err
-        );
-        // Do not block quote creation if finalization fails
-      }
-
-      const allLineItems = [...(quote.lineItems || []), ...finalizedLineItems];
-
       res.json({
         success: true,
         data: {
           ...quote,
-          lineItems: allLineItems,
         },
       });
     } catch (error) {
