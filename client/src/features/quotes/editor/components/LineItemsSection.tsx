@@ -7,9 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Separator } from "@/components/ui/separator";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { ChevronDown, ChevronRight, FileText, Minus, Plus, Save, Loader2, Check, ChevronsUpDown, Download, Image, GripVertical, Undo2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Minus, Plus, Save, Loader2, Check, ChevronsUpDown, GripVertical, Undo2 } from "lucide-react";
 import { DndContext, PointerSensor, KeyboardSensor, closestCenter, useSensor, useSensors, DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, useSortable, arrayMove, verticalListSortingStrategy, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -22,9 +21,6 @@ import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel"
 import { setPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
 import { setPendingScrollPosition } from "@/lib/ui/persistScrollPosition";
 import { cn, isValidHttpUrl } from "@/lib/utils";
-import { getAttachmentDisplayName, isPdfAttachment, getPdfPageCount } from "@/lib/attachments";
-import { getThumbSrc } from "@/lib/getThumbSrc";
-import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
@@ -251,120 +247,6 @@ function useDebouncedEffect(effect: () => void, deps: any[], delayMs: number) {
   }, deps);
 }
 
-type AttachmentForPreview = {
-  id: string;
-  fileName: string;
-  originalFilename?: string | null;
-  mimeType?: string | null;
-  originalUrl?: string | null;
-  previewUrl?: string | null;
-  thumbUrl?: string | null;
-  thumbnailUrl?: string | null;
-  pageCount?: number | null;
-  pages?: Array<{ thumbUrl?: string | null }>;
-  lineItemId?: string; // Added for download handler
-};
-
-const isViewableUrl = (value: unknown): boolean =>
-  typeof value === "string" &&
-  (value.startsWith("http://") || value.startsWith("https://") || value.startsWith("/objects/"));
-
-// Artwork strip component - shows all thumbnails in a wrapping layout
-function LineItemArtworkStrip({ 
-  quoteId, 
-  lineItemId, 
-  onPreview 
-}: { 
-  quoteId: string | null; 
-  lineItemId: string | undefined;
-  onPreview: (attachment: AttachmentForPreview & { lineItemId: string }) => void;
-}) {
-  const filesApiPath = quoteId
-    ? `/api/quotes/${quoteId}/line-items/${lineItemId}/files`
-    : `/api/line-items/${lineItemId}/files`;
-
-  const { data: attachments = [] } = useQuery<AttachmentForPreview[]>({
-    queryKey: [filesApiPath],
-    queryFn: async () => {
-      if (!lineItemId) return [];
-      const response = await fetch(filesApiPath, { credentials: "include" });
-      if (!response.ok) return [];
-      const json = await response.json();
-      return json.data || [];
-    },
-    enabled: !!lineItemId,
-  });
-
-  if (attachments.length === 0) return null;
-
-
-  const getFileIcon = (mimeType: string | null | undefined) => {
-    if (!mimeType) return FileText;
-    if (mimeType.startsWith("image/")) return Image;
-    if (mimeType === "application/pdf") return FileText;
-    return FileText;
-  };
-
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {attachments.map((attachment: AttachmentForPreview) => {
-        const thumbUrl = getThumbSrc(attachment);
-        const FileIcon = getFileIcon(attachment.mimeType);
-        const hasPreviewUrl = isViewableUrl(attachment.previewUrl);
-        const hasOriginalUrl = isViewableUrl(attachment.originalUrl);
-        const canPreview = hasPreviewUrl || hasOriginalUrl;
-        const fileName = getAttachmentDisplayName(attachment);
-        const isPdf = isPdfAttachment(attachment);
-        const pageCount = getPdfPageCount(attachment);
-        const showPageCount = isPdf && pageCount !== null && pageCount > 1;
-        
-        return (
-          <div key={attachment.id} className="relative shrink-0">
-            <button
-              type="button"
-              className="h-8 w-8 rounded border border-border/60 overflow-hidden shrink-0 cursor-pointer hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 bg-muted/30"
-              style={{ cursor: canPreview ? "pointer" : "default" }}
-              onClick={(e) => {
-                if (!canPreview) return;
-                e.stopPropagation();
-                onPreview({ ...attachment, lineItemId: lineItemId || '' });
-              }}
-              onPointerDownCapture={(e) => {
-                if (!canPreview) return;
-                e.stopPropagation();
-              }}
-              disabled={!canPreview}
-              title={fileName}
-              aria-label={canPreview ? `Preview ${fileName}` : `${fileName} (no preview available)`}
-            >
-              {thumbUrl ? (
-                <img 
-                  src={thumbUrl} 
-                  alt={fileName}
-                  title={fileName}
-                  className="w-full h-full object-cover pointer-events-none"
-                  onError={(e) => {
-                    e.currentTarget.style.display = 'none';
-                  }}
-                />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center">
-                  <FileIcon className="w-4 h-4 text-muted-foreground" />
-                </div>
-              )}
-            </button>
-            {showPageCount && (
-              <span className="absolute -top-1 -right-1 px-1.5 py-0.5 text-[10px] font-medium bg-muted border border-border/60 rounded text-muted-foreground leading-none whitespace-nowrap">
-                Pages: {pageCount}
-              </span>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 export function LineItemsSection({
   quoteId,
   customerId,
@@ -446,9 +328,6 @@ export function LineItemsSection({
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   
-  // Preview modal state (shared with artwork strip)
-  const [previewFile, setPreviewFile] = useState<AttachmentForPreview | null>(null);
-
   const filteredProducts = useMemo(() => {
     const active = products.filter((p) => (p as any).isActive !== false);
     if (!searchQuery.trim()) return active; // Show all products when no search query
@@ -1137,133 +1016,6 @@ export function LineItemsSection({
         )}
       </CardContent>
       
-      {/* Shared Preview Modal */}
-      <Dialog open={!!previewFile} onOpenChange={(open) => { if (!open) setPreviewFile(null); }}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>
-              {previewFile ? getAttachmentDisplayName(previewFile) : ""}
-            </DialogTitle>
-            <DialogDescription>
-              <div className="space-y-1">
-                {previewFile?.mimeType ? (
-                  <div>
-                    <span>File type: </span>
-                    <span>{previewFile.mimeType}</span>
-                  </div>
-                ) : (
-                  <div>Preview attachment</div>
-                )}
-                <AttachmentPreviewMeta attachment={previewFile} />
-              </div>
-            </DialogDescription>
-          </DialogHeader>
-          {previewFile && (() => {
-            const isPdf = isPdfAttachment(previewFile);
-            const thumbSrc = getThumbSrc(previewFile as any);
-            const previewUrl = previewFile.previewUrl ?? previewFile.originalUrl;
-
-            const isViewableUrl = (url: unknown) =>
-              typeof url === "string" &&
-              (url.startsWith("/objects/") || url.startsWith("http://") || url.startsWith("https://"));
-
-            const originalUrl =
-              previewFile.originalUrl ??
-              (previewFile as any).originalURL ??
-              (previewFile as any).url ??
-              null;
-            const canDownloadOriginal = isViewableUrl(originalUrl);
-            const fileName = previewFile.originalFilename || previewFile.fileName;
-            const lineItemId = previewFile.lineItemId;
-            const filesApiPath = lineItemId
-              ? (quoteId
-                  ? `/api/quotes/${quoteId}/line-items/${lineItemId}/files`
-                  : `/api/line-items/${lineItemId}/files`)
-              : null;
-            const canDownloadViaApi = typeof filesApiPath === "string" && filesApiPath.length > 0;
-
-            const handleDownload = async () => {
-              try {
-                if (!filesApiPath) return;
-                const proxyUrl = `${filesApiPath}/${previewFile.id}/download/proxy`;
-                const anchor = document.createElement("a");
-                anchor.href = proxyUrl;
-                anchor.download = fileName;
-                anchor.rel = "noreferrer";
-                anchor.style.display = "none";
-                document.body.appendChild(anchor);
-                anchor.click();
-                document.body.removeChild(anchor);
-              } catch (error: any) {
-                console.error("[PreviewDownload] Error:", error);
-              }
-            };
-            
-            return (
-              <div className="space-y-4">
-                {typeof thumbSrc === "string" && isViewableUrl(thumbSrc) ? (
-                  <div className="flex justify-center bg-muted/30 rounded-lg p-4">
-                    <img src={thumbSrc} alt={fileName} className="max-w-full max-h-[60vh] object-contain" />
-                  </div>
-                ) : !isPdf && isViewableUrl(previewUrl) ? (
-                  <div className="flex justify-center bg-muted/30 rounded-lg p-4">
-                    <img src={previewUrl!} alt={fileName} className="max-w-full max-h-[60vh] object-contain" />
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                    <FileText className="w-16 h-16 mb-4 opacity-50" />
-                    <p className="text-sm">Preview not available for this file</p>
-                  </div>
-                )}
-                
-                <div className="flex items-center justify-between text-sm">
-                  <div className="space-y-1">
-                    <div>
-                      <span className="font-medium">Filename: </span>
-                      <span className="text-muted-foreground">{fileName}</span>
-                    </div>
-                    {previewFile.mimeType && (
-                      <div>
-                        <span className="font-medium">Type: </span>
-                        <span className="text-muted-foreground">{previewFile.mimeType}</span>
-                      </div>
-                    )}
-                  </div>
-                  
-                  {(canDownloadViaApi || canDownloadOriginal) && (
-                    <div className="flex flex-col items-end gap-1">
-                      <Button
-                        onClick={() => {
-                          if (canDownloadViaApi) {
-                            handleDownload();
-                            return;
-                          }
-                          if (canDownloadOriginal) {
-                            const anchor = document.createElement("a");
-                            anchor.href = originalUrl!;
-                            anchor.download = fileName;
-                            anchor.target = "_blank";
-                            anchor.rel = "noreferrer";
-                            anchor.style.display = "none";
-                            document.body.appendChild(anchor);
-                            anchor.click();
-                            document.body.removeChild(anchor);
-                          }
-                        }}
-                        variant="outline"
-                      >
-                        <Download className="w-4 h-4 mr-2" />
-                        Download original
-                      </Button>
-                      <span className="text-xs text-muted-foreground">Downloads original file</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })()}
-        </DialogContent>
-      </Dialog>
     </Card>
   );
 }
