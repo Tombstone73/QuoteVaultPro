@@ -70,6 +70,7 @@ import {
     createRequestLogOnce,
     enrichAttachmentWithUrls,
     normalizeObjectKeyForDb,
+    resolveOriginalFileAccess,
     scheduleSupabaseObjectSelfCheck,
     tryExtractSupabaseObjectKeyFromUrl
 } from "../lib/supabaseObjectHelpers";
@@ -2153,191 +2154,117 @@ export async function registerOrderRoutes(
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
             const order = await storage.getOrderById(organizationId, orderId);
             if (!order) return res.status(404).json({ error: "Order not found" });
-            const whereConditions: any[] = [eq(orderAttachments.orderId, orderId)];
+            const whereConditions: any[] = [eq(orderAttachments.orderId, orderId), eq(orderAttachments.organizationId, organizationId)];
             if (includeLineItems !== 'true') whereConditions.push(isNull(orderAttachments.orderLineItemId));
             const files = await db.select().from(orderAttachments).where(and(...whereConditions)).orderBy(desc(orderAttachments.createdAt));
-            
-            // Debug logging - check what DB returned BEFORE enrichment
+
             if (files.length > 0 && process.env.DEBUG_THUMBNAILS) {
                 console.log('[OrderAttachments:GET] 📊 Raw DB record (before enrichment):');
                 console.log('  - attachmentId:', files[0].id);
-                let canonicalUpload: Awaited<ReturnType<typeof storageApplicationService.finalizeUpload<any>>> | null = null;
+                console.log('  - fileUrl:', files[0].fileUrl);
+                console.log('  - fileRecordId:', files[0].fileRecordId ?? null);
+                console.log('  - thumbnailUrl:', files[0].thumbnailUrl);
+                console.log('  - thumbKey:', files[0].thumbKey);
+                console.log('  - previewKey:', files[0].previewKey);
+            }
 
-                if (fileBuffer && originalFilename) {
-                    canonicalUpload = await storageApplicationService.finalizeUpload({
-                        organizationId,
-                        createdByUserId: userId,
-                        requestedTarget,
-                        resource: {
-                            organizationId,
-                            resourceType: 'order',
-                            resourceId: orderId,
-                            orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
-                            lineItemId: resolvedLineItemId || undefined,
-                        },
-                        source: {
-                            kind: 'buffer',
-                            buffer: Buffer.from(fileBuffer, 'base64'),
-                            originalFilename,
-                            mimeType: mimeType || 'application/octet-stream',
-                        },
-                        persistLink: async (tx, stored) => {
-                            const [created] = await tx.insert(orderAttachments).values({
-                                ...baseAttachmentData,
-                                fileRecordId: stored.fileRecord.id,
-                                fileName: stored.storedObject.originalFilename,
-                                fileUrl: stored.legacyFileUrl,
-                                fileSize: stored.storedObject.sizeBytes,
-                                mimeType: stored.storedObject.mimeType,
-                                thumbnailUrl: thumbnailUrl || null,
-                                originalFilename: stored.storedObject.originalFilename,
-                                storedFilename: stored.storedObject.storedFilename,
-                                relativePath: stored.legacyRelativePath,
-                                storageProvider: stored.legacyStorageProvider,
-                                extension: stored.storedObject.extension,
-                                sizeBytes: stored.storedObject.sizeBytes,
-                                checksum: stored.storedObject.checksum,
-                            }).returning();
-                            if (!created) throw new Error('Failed to create order file link');
-                            return created;
-                        },
-                    });
-                } else if (!fileUrl) {
-                    throw new Error('fileUrl is required for legacy uploads');
-                } else if (!(typeof fileUrl === 'string' && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://')))) {
-                    canonicalUpload = await storageApplicationService.finalizeUpload({
-                        organizationId,
-                        createdByUserId: userId,
-                        requestedTarget,
-                        resource: {
-                            organizationId,
-                            resourceType: 'order',
-                            resourceId: orderId,
-                            orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
-                            lineItemId: resolvedLineItemId || undefined,
-                        },
-                        source: {
-                            kind: 'existing-key',
-                            fileUrl: normalizeObjectKeyForDb(fileUrl),
-                            originalFilename: (fileName || originalFilename) as string,
-                            mimeType: mimeType || null,
-                            fileSize: fileSize || null,
-                        },
-                        persistLink: async (tx, stored) => {
-                            const [created] = await tx.insert(orderAttachments).values({
-                                ...baseAttachmentData,
-                                fileRecordId: stored.fileRecord.id,
-                                fileName: stored.storedObject.originalFilename,
-                                fileUrl: stored.legacyFileUrl,
-                                relativePath: stored.legacyRelativePath,
-                                fileSize: stored.storedObject.sizeBytes,
-                                mimeType: stored.storedObject.mimeType,
-                                thumbnailUrl: null,
-                                originalFilename: stored.storedObject.originalFilename,
-                                storedFilename: stored.storedObject.storedFilename,
-                                storageProvider: stored.legacyStorageProvider,
-                                extension: stored.storedObject.extension,
-                                sizeBytes: stored.storedObject.sizeBytes,
-                                checksum: stored.storedObject.checksum,
-                            }).returning();
-                            if (!created) throw new Error('Failed to create order file link');
-                            return created;
-                        },
-                    });
-                }
+            const logOnce = createRequestLogOnce();
+            const attachmentItems = await Promise.all(files.map((file) => enrichAttachmentWithUrls(file, { logOnce })));
+            let lineItemAssetItems: any[] = [];
 
-                const attachment = canonicalUpload
-                    ? canonicalUpload.linkedRecord
-                    : (await db.insert(orderAttachments).values({
-                        ...baseAttachmentData,
-                        fileName: (fileName || originalFilename) as string,
-                        fileUrl,
-                        relativePath: null,
-                        fileSize: fileSize || null,
-                        mimeType: mimeType || null,
-                        thumbnailUrl: thumbnailUrl || null,
-                        storageProvider: undefined,
-                        bucket: 'titan-private',
-                    }).returning())[0];
-                        role: assetLinks.role,
-                        createdAt: assetLinks.createdAt,
-                    })
-                    .from(assetLinks)
-                    .where(
-                        and(
-                            eq(assetLinks.organizationId, organizationId),
-                            eq(assetLinks.parentType, 'order_line_item'),
-                            inArray(assetLinks.parentId, lineItemIds)
-                        )
-                    )
-                    .orderBy(desc(assetLinks.createdAt));
+            if (includeLineItems === 'true') {
+                const lineItemRows = await db
+                    .select({ id: orderLineItems.id })
+                    .from(orderLineItems)
+                    .where(and(eq(orderLineItems.orderId, orderId), eq(orderLineItems.organizationId, organizationId)));
 
-                const assetIds = Array.from(new Set(linkRows.map((r) => r.assetId).filter(Boolean) as string[]));
+                const lineItemIds = lineItemRows.map((row) => row.id).filter(Boolean) as string[];
 
-                if (assetIds.length) {
-                    const [assetRows, variantRows] = await Promise.all([
-                        db
-                            .select()
-                            .from(assets)
-                            .where(and(eq(assets.organizationId, organizationId), inArray(assets.id, assetIds))),
-                        db
-                            .select()
-                            .from(assetVariants)
-                            .where(and(eq(assetVariants.organizationId, organizationId), inArray(assetVariants.assetId, assetIds))),
-                    ]);
-
-                    const variantsByAssetId = new Map<string, any[]>();
-                    for (const v of variantRows as any[]) {
-                        const key = String(v.assetId);
-                        const list = variantsByAssetId.get(key) ?? [];
-                        list.push(v);
-                        variantsByAssetId.set(key, list);
-                    }
-
-                    const assetsById = new Map<string, any>();
-                    for (const a of assetRows as any[]) {
-                        assetsById.set(String(a.id), {
-                            ...a,
-                            variants: variantsByAssetId.get(String(a.id)) ?? [],
-                        });
-                    }
-
-                    const { enrichAssetWithUrls } = await import('../services/assets/enrichAssetWithUrls');
-
-                    lineItemAssetItems = (linkRows as any[])
-                        .map((link) => {
-                            const asset = assetsById.get(String(link.assetId));
-                            if (!asset) return null;
-                            const enriched = enrichAssetWithUrls(asset);
-                            const filename = String((enriched as any).fileName ?? 'Artwork');
-                            const previewThumbnailUrl =
-                                (enriched as any).previewThumbnailUrl ??
-                                (enriched as any).thumbnailUrl ??
-                                (enriched as any).thumbUrl ??
-                                null;
-
-                            return {
-                                id: String(link.assetId),
-                                filename,
-                                mimeType: (enriched as any).mimeType ?? (asset as any)?.mimeType ?? null,
-                                fileSize: (enriched as any).fileSize ?? (asset as any)?.fileSize ?? null,
-                                objectPath: typeof (asset as any)?.fileKey === 'string' ? String((asset as any).fileKey) : null,
-                                originalUrl:
-                                    typeof (asset as any)?.fileKey === 'string'
-                                        ? `/objects/${String((asset as any).fileKey)}?filename=${encodeURIComponent(filename)}`
-                                        : ((enriched as any).originalUrl ?? (enriched as any).fileUrl ?? null),
-                                downloadUrl:
-                                    typeof (asset as any)?.fileKey === 'string'
-                                        ? `/objects/${String((asset as any).fileKey)}?download=1&filename=${encodeURIComponent(filename)}`
-                                        : null,
-                                previewThumbnailUrl,
-                                createdAt: link.createdAt ?? (enriched as any).createdAt ?? null,
-                                source: 'line_item' as const,
-                                parentLineItemId: String(link.lineItemId),
-                                role: String(link.role ?? 'other'),
-                            };
+                if (lineItemIds.length) {
+                    const linkRows = await db
+                        .select({
+                            lineItemId: assetLinks.parentId,
+                            assetId: assetLinks.assetId,
+                            role: assetLinks.role,
+                            createdAt: assetLinks.createdAt,
                         })
-                        .filter(Boolean);
+                        .from(assetLinks)
+                        .where(
+                            and(
+                                eq(assetLinks.organizationId, organizationId),
+                                eq(assetLinks.parentType, 'order_line_item'),
+                                inArray(assetLinks.parentId, lineItemIds)
+                            )
+                        )
+                        .orderBy(desc(assetLinks.createdAt));
+
+                    const assetIds = Array.from(new Set(linkRows.map((r) => r.assetId).filter(Boolean) as string[]));
+
+                    if (assetIds.length) {
+                        const [assetRows, variantRows] = await Promise.all([
+                            db
+                                .select()
+                                .from(assets)
+                                .where(and(eq(assets.organizationId, organizationId), inArray(assets.id, assetIds))),
+                            db
+                                .select()
+                                .from(assetVariants)
+                                .where(and(eq(assetVariants.organizationId, organizationId), inArray(assetVariants.assetId, assetIds))),
+                        ]);
+
+                        const variantsByAssetId = new Map<string, any[]>();
+                        for (const v of variantRows as any[]) {
+                            const key = String(v.assetId);
+                            const list = variantsByAssetId.get(key) ?? [];
+                            list.push(v);
+                            variantsByAssetId.set(key, list);
+                        }
+
+                        const assetsById = new Map<string, any>();
+                        for (const a of assetRows as any[]) {
+                            assetsById.set(String(a.id), {
+                                ...a,
+                                variants: variantsByAssetId.get(String(a.id)) ?? [],
+                            });
+                        }
+
+                        const { enrichAssetWithUrls } = await import('../services/assets/enrichAssetWithUrls');
+
+                        lineItemAssetItems = (linkRows as any[])
+                            .map((link) => {
+                                const asset = assetsById.get(String(link.assetId));
+                                if (!asset) return null;
+                                const enriched = enrichAssetWithUrls(asset);
+                                const filename = String((enriched as any).fileName ?? 'Artwork');
+                                const previewThumbnailUrl =
+                                    (enriched as any).previewThumbnailUrl ??
+                                    (enriched as any).thumbnailUrl ??
+                                    (enriched as any).thumbUrl ??
+                                    null;
+
+                                return {
+                                    id: String(link.assetId),
+                                    filename,
+                                    mimeType: (enriched as any).mimeType ?? (asset as any)?.mimeType ?? null,
+                                    fileSize: (enriched as any).fileSize ?? (asset as any)?.fileSize ?? null,
+                                    objectPath: typeof (asset as any)?.fileKey === 'string' ? String((asset as any).fileKey) : null,
+                                    originalUrl:
+                                        typeof (asset as any)?.fileKey === 'string'
+                                            ? `/objects/${String((asset as any).fileKey)}?filename=${encodeURIComponent(filename)}`
+                                            : ((enriched as any).originalUrl ?? (enriched as any).fileUrl ?? null),
+                                    downloadUrl:
+                                        typeof (asset as any)?.fileKey === 'string'
+                                            ? `/objects/${String((asset as any).fileKey)}?download=1&filename=${encodeURIComponent(filename)}`
+                                            : null,
+                                    previewThumbnailUrl,
+                                    createdAt: link.createdAt ?? (enriched as any).createdAt ?? null,
+                                    source: 'line_item' as const,
+                                    parentLineItemId: String(link.lineItemId),
+                                    role: String(link.role ?? 'other'),
+                                };
+                            })
+                            .filter(Boolean);
+                    }
                 }
             }
 
@@ -5919,10 +5846,9 @@ export async function registerOrderRoutes(
             const attachmentRows = await db
                 .select({
                     id: orderAttachments.id,
+                    fileRecordId: orderAttachments.fileRecordId,
                     fileName: orderAttachments.fileName,
                     originalFilename: orderAttachments.originalFilename,
-                    fileUrl: orderAttachments.fileUrl,
-                    relativePath: orderAttachments.relativePath,
                 })
                 .from(orderAttachments)
                 .where(eq(orderAttachments.orderId, orderId))
@@ -5967,15 +5893,8 @@ export async function registerOrderRoutes(
             const files: Array<{ filename: string; objectPath: string }> = [];
 
             for (const att of attachmentRows) {
-                const filename = String(att.originalFilename || att.fileName || `attachment-${att.id}`);
-                // Extract objectPath from fileUrl (if it starts with /objects/) or use relativePath
-                let objectPath: string | null = null;
-                if (att.fileUrl && att.fileUrl.startsWith('/objects/')) {
-                    objectPath = att.fileUrl.replace('/objects/', '').split('?')[0];
-                } else if (att.relativePath) {
-                    objectPath = att.relativePath;
-                }
-                if (objectPath) files.push({ filename, objectPath });
+                const resolved = await resolveOriginalFileAccess(att, { logOnce: createRequestLogOnce() });
+                if (resolved.objectPath) files.push({ filename: resolved.displayFilename, objectPath: resolved.objectPath });
             }
 
             for (const asset of lineItemAssetRows) {
