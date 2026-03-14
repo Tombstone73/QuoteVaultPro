@@ -49,6 +49,17 @@ export interface CustomerQuote {
   }>;
 }
 
+export interface CustomerProductionFolderReference {
+  id: string;
+  label: string;
+  folderType: "production_destination";
+  pathOrUri: string;
+  status: "missing" | "configured" | "validated" | "invalid" | "disabled";
+  validationError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface CustomerWithRelations {
   id: string;
   companyName: string;
@@ -81,6 +92,8 @@ export interface CustomerWithRelations {
   notes: CustomerNote[];
   creditTransactions: CustomerCreditTransaction[];
   quotes: CustomerQuote[];
+  localCompanyFolderPath?: string | null;
+  customerProductionFolderReference?: CustomerProductionFolderReference | null;
 }
 
 export function useCustomer(customerId: string | undefined) {

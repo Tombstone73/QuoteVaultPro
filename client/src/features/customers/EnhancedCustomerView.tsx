@@ -8,6 +8,7 @@ import {
   Mail,
   Phone,
   MapPin,
+  FolderOpen,
   TrendingUp,
   TrendingDown,
   Calendar,
@@ -34,6 +35,8 @@ import {
   UserCheck,
   UserMinus,
   Contact2,
+  Loader2,
+  Save,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -172,8 +175,12 @@ function CustomerHeader({
   onSectionHome?: () => void;
 }) {
   const [showEditForm, setShowEditForm] = useState(false);
+  const [showLocalStorageDialog, setShowLocalStorageDialog] = useState(false);
+  const [localCompanyFolderPath, setLocalCompanyFolderPath] = useState(customer.localCompanyFolderPath ?? "");
   const primaryContact = customer.contacts?.find((c) => c.isPrimary) || customer.contacts?.[0];
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
 
   const cityState = useMemo(() => {
     const parts = [customer.shippingCity, customer.shippingState]
@@ -183,9 +190,57 @@ function CustomerHeader({
   }, [customer]);
 
   const isEmbedded = layoutMode === "embedded";
+  const normalizedSavedPath = (customer.localCompanyFolderPath ?? "").trim();
+  const normalizedDraftPath = localCompanyFolderPath.trim();
+  const hasPathChanges = normalizedDraftPath !== normalizedSavedPath;
+  const hasLocalStoragePath = normalizedSavedPath.length > 0;
   
   // Generate account number display (show first 12 chars of ID, or hide if empty/null)
   const accountNumber = customer.id ? customer.id.slice(0, 12).toUpperCase() : null;
+
+  useEffect(() => {
+    setLocalCompanyFolderPath(customer.localCompanyFolderPath ?? "");
+  }, [customer.id, customer.localCompanyFolderPath]);
+
+  const updateLocalCompanyFolderPathMutation = useMutation({
+    mutationFn: async (path: string) => {
+      const response = await fetch(`/api/customers/${customer.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          localCompanyFolderPath: path.length > 0 ? path : null,
+        }),
+      });
+
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(payload?.message || "Failed to update local company folder path");
+      }
+
+      return payload;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/customers"] });
+      queryClient.invalidateQueries({ queryKey: [`/api/customers/${customer.id}`] });
+      setShowLocalStorageDialog(false);
+      toast({
+        title: "Saved",
+        description: "Customer production folder reference updated.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleSaveLocalCompanyFolderPath = async () => {
+    await updateLocalCompanyFolderPathMutation.mutateAsync(normalizedDraftPath);
+  };
 
   return (
     <div className={cn(
@@ -288,6 +343,28 @@ function CustomerHeader({
 
           {/* Quick Actions */}
           <div className="flex items-center gap-1.5">
+            {!isEmbedded && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setShowLocalStorageDialog(true)}
+                className="h-7 gap-1.5 border-titan-border-subtle px-2 text-[11px] text-titan-text-secondary hover:bg-titan-bg-card-elevated hover:text-titan-text-primary"
+              >
+                <FolderOpen className="h-3 w-3" />
+                <span>Local Storage</span>
+                <span
+                  className={cn(
+                    "rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+                    hasLocalStoragePath
+                      ? "bg-emerald-500/10 text-emerald-400"
+                      : "bg-titan-bg-card-elevated text-titan-text-muted"
+                  )}
+                >
+                  {hasLocalStoragePath ? "Linked" : "Not set"}
+                </span>
+              </Button>
+            )}
             <Button
               size="sm"
               variant="outline"
@@ -326,6 +403,82 @@ function CustomerHeader({
         onOpenChange={setShowEditForm}
         customer={customer as any}
       />
+
+      <Dialog open={showLocalStorageDialog} onOpenChange={setShowLocalStorageDialog}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Local storage path</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="local-company-folder-path">Local company folder path</Label>
+              <div className="relative">
+                <FolderOpen className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-titan-text-muted" />
+                <Input
+                  id="local-company-folder-path"
+                  value={localCompanyFolderPath}
+                  onChange={(event) => setLocalCompanyFolderPath(event.target.value)}
+                  placeholder="\\print-server\customers\Acme Printing"
+                  className="pl-10"
+                />
+              </div>
+              <p className="text-sm text-titan-text-muted">
+                This reference is the downstream production destination for the customer. It does not control canonical upload storage.
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card-elevated/60 px-3 py-2 text-xs text-titan-text-muted">
+              Status:{" "}
+              <span className="font-medium text-titan-text-primary">
+                {customer.customerProductionFolderReference?.status ?? (hasLocalStoragePath ? "configured" : "missing")}
+              </span>
+            </div>
+          </div>
+
+          <DialogFooter className="gap-2 sm:justify-between">
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setLocalCompanyFolderPath(customer.localCompanyFolderPath ?? "")}
+                disabled={!hasPathChanges || updateLocalCompanyFolderPathMutation.isPending}
+              >
+                Reset
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setLocalCompanyFolderPath("")}
+                disabled={normalizedDraftPath.length === 0 || updateLocalCompanyFolderPathMutation.isPending}
+              >
+                Clear
+              </Button>
+            </div>
+
+            <Button
+              type="button"
+              size="sm"
+              onClick={handleSaveLocalCompanyFolderPath}
+              disabled={!hasPathChanges || updateLocalCompanyFolderPathMutation.isPending}
+            >
+              {updateLocalCompanyFolderPathMutation.isPending ? (
+                <>
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                  Saving
+                </>
+              ) : (
+                <>
+                  <Save className="mr-1.5 h-3.5 w-3.5" />
+                  Save path
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

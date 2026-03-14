@@ -269,6 +269,7 @@ import {
   insertCustomerSchema,
   insertCustomerSchemaRefined,
   updateCustomerSchema,
+  updateCustomerProductionFolderReferenceSchema,
   insertCustomerContactSchema,
   updateCustomerContactSchema,
   insertCustomerNoteSchema,
@@ -304,6 +305,7 @@ import {
   getStorageAuthMode,
 } from "./objectStorage";
 import { ObjectPermission } from "./objectAcl";
+import { customerProductionFolderReferenceRepository } from "./storage/customerProductionFolderReference.repo";
 import { SupabaseStorageService, isSupabaseConfigured } from "./supabaseStorage";
 import {
   createRequestLogOnce,
@@ -7620,6 +7622,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  const resolveProductionFolderReferenceDraft = (rawPath: string | null | undefined) => {
+    const trimmed = typeof rawPath === "string" ? rawPath.trim() : "";
+
+    if (!trimmed) {
+      return {
+        pathOrUri: "",
+        status: "disabled" as const,
+        validationError: null,
+      };
+    }
+
+    if (/[\u0000-\u001f]/.test(trimmed)) {
+      return {
+        pathOrUri: trimmed,
+        status: "invalid" as const,
+        validationError: "Folder reference contains unsupported control characters.",
+      };
+    }
+
+    const looksValid =
+      /^\\\\[^\\]+\\[^\\]+/.test(trimmed) ||
+      /^[A-Za-z]:\\/.test(trimmed) ||
+      /^\//.test(trimmed) ||
+      /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed);
+
+    return {
+      pathOrUri: trimmed,
+      status: looksValid ? ("configured" as const) : ("invalid" as const),
+      validationError: looksValid
+        ? null
+        : "Enter a valid UNC path, drive path, absolute path, or URI.",
+    };
+  };
+
+  const saveCustomerProductionFolderReference = async (args: {
+    organizationId: string;
+    customerId: string;
+    companyName: string;
+    pathOrUri: string | null | undefined;
+  }) => {
+    const draft = resolveProductionFolderReferenceDraft(args.pathOrUri);
+    return customerProductionFolderReferenceRepository.upsertForCustomer(args.organizationId, args.customerId, {
+      label: `${args.companyName} Production Folder`,
+      folderType: "production_destination",
+      pathOrUri: draft.pathOrUri,
+      status: draft.status,
+      validationError: draft.validationError,
+    });
+  };
+
   app.post("/api/customers", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
@@ -7660,9 +7712,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const customerData = updateCustomerSchema.parse(req.body);
-      const customer = await storage.updateCustomer(organizationId, req.params.id, customerData);
-      res.json(customer);
+      const payload = { ...(req.body || {}) };
+      const localCompanyFolderPath =
+        payload.localCompanyFolderPath === null || typeof payload.localCompanyFolderPath === "string"
+          ? payload.localCompanyFolderPath
+          : undefined;
+
+      delete payload.localCompanyFolderPath;
+      delete payload.customerProductionFolderReference;
+
+      const customerData = updateCustomerSchema.parse(payload);
+      const currentCustomer = await storage.getCustomerById(organizationId, req.params.id);
+      if (!currentCustomer) {
+        return res.status(404).json({ message: "Customer not found" });
+      }
+
+      if (Object.keys(customerData).length > 0) {
+        await storage.updateCustomer(organizationId, req.params.id, customerData);
+      }
+
+      if (localCompanyFolderPath !== undefined) {
+        await saveCustomerProductionFolderReference({
+          organizationId,
+          customerId: req.params.id,
+          companyName: currentCustomer.companyName,
+          pathOrUri: localCompanyFolderPath,
+        });
+      }
+
+      const hydratedCustomer = await storage.getCustomerById(organizationId, req.params.id);
+      res.json(hydratedCustomer ?? currentCustomer);
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
@@ -7802,6 +7881,69 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching customer:", error);
       res.status(500).json({ message: "Failed to fetch customer" });
+    }
+  });
+
+  app.get("/api/customers/:id/production-folder-reference", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const customer = await storage.getCustomerById(organizationId, req.params.id);
+      if (!customer) {
+        return res.status(404).json({ error: "Customer not found" });
+      }
+
+      const reference = await customerProductionFolderReferenceRepository.getForCustomer(organizationId, req.params.id);
+      return res.json({
+        success: true,
+        data:
+          reference ?? {
+            customerId: req.params.id,
+            folderType: "production_destination",
+            pathOrUri: null,
+            status: "missing",
+            validationError: null,
+          },
+      });
+    } catch (error) {
+      console.error("Error fetching customer production folder reference:", error);
+      return res.status(500).json({ error: "Failed to fetch customer production folder reference" });
+    }
+  });
+
+  app.patch("/api/customers/:id/production-folder-reference", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const customer = await storage.getCustomerById(organizationId, req.params.id);
+      if (!customer) {
+        return res.status(404).json({ error: "Customer not found" });
+      }
+
+      const input = updateCustomerProductionFolderReferenceSchema
+        .extend({
+          pathOrUri: z.string().max(2048).nullable().optional(),
+          disable: z.boolean().optional(),
+        })
+        .parse(req.body || {});
+
+      const nextPath = input.disable ? "" : input.pathOrUri;
+      const saved = await saveCustomerProductionFolderReference({
+        organizationId,
+        customerId: req.params.id,
+        companyName: customer.companyName,
+        pathOrUri: nextPath,
+      });
+
+      return res.json({ success: true, data: saved });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: fromZodError(error).message });
+      }
+      console.error("Error updating customer production folder reference:", error);
+      return res.status(500).json({ error: "Failed to update customer production folder reference" });
     }
   });
 

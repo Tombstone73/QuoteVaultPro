@@ -51,6 +51,7 @@ import type { FileRole, FileSide } from "../lib/supabaseObjectHelpers";
 import { ObjectStorageService, ObjectNotFoundError } from "../objectStorage";
 import { ObjectPermission } from "../objectAcl";
 import { resolveLocalStoragePath } from "../services/localStoragePath";
+import { storageApplicationService } from "../services/storage/StorageApplicationService";
 import { extractNormalizedOrgIdFromKey, getTenantObjectKeyCandidates, normalizeTenantObjectKey } from "../utils/orgKeys";
 import type { DownloadIntent } from "@shared/schema";
 
@@ -255,7 +256,85 @@ export async function registerAttachmentRoutes(
     isAdmin: any;
   }
 ) {
-  const { isAuthenticated, isAdmin } = middleware;
+  const { isAuthenticated, isAdmin, tenantContext: tenantContextMiddleware } = middleware;
+
+  const persistQuoteAttachment = async (args: {
+    quoteId: string;
+    organizationId: string;
+    userId: string | null;
+    userName: string;
+    description?: string | null;
+    requestedTarget?: string | null;
+    thumbStatus?: string;
+    pageCountStatus?: string;
+    source:
+      | {
+          kind: "buffer";
+          buffer: Buffer;
+          originalFilename: string;
+          mimeType: string;
+        }
+      | {
+          kind: "upload-session";
+          uploadId: string;
+          expectedPurpose: "quote-attachment";
+          expectedParentId: string;
+        }
+      | {
+          kind: "existing-key";
+          fileUrl: string;
+          originalFilename: string;
+          mimeType?: string | null;
+          fileSize?: number | null;
+          checksum?: string | null;
+          storedFilename?: string | null;
+          extension?: string | null;
+        };
+  }) => {
+    const finalized = await storageApplicationService.finalizeUpload({
+      organizationId: args.organizationId,
+      createdByUserId: args.userId,
+      requestedTarget: args.requestedTarget,
+      resource: {
+        organizationId: args.organizationId,
+        resourceType: "quote",
+        resourceId: args.quoteId,
+      },
+      source: args.source,
+      persistLink: async (tx, stored) => {
+        const [created] = await tx.insert(quoteAttachments).values({
+          quoteId: args.quoteId,
+          quoteLineItemId: null,
+          organizationId: args.organizationId,
+          uploadedByUserId: args.userId,
+          uploadedByName: args.userName,
+          description: args.description || null,
+          bucket: stored.storedObject.bucket ?? "titan-private",
+          fileName: stored.storedObject.originalFilename,
+          fileUrl: stored.legacyFileUrl,
+          fileSize: stored.storedObject.sizeBytes,
+          mimeType: stored.storedObject.mimeType,
+          originalFilename: stored.storedObject.originalFilename,
+          storedFilename: stored.storedObject.storedFilename,
+          relativePath: stored.legacyRelativePath,
+          storageProvider: stored.legacyStorageProvider,
+          extension: stored.storedObject.extension,
+          sizeBytes: stored.storedObject.sizeBytes,
+          checksum: stored.storedObject.checksum,
+          thumbStatus: (args.thumbStatus as any) ?? "uploaded",
+          pageCountStatus: (args.pageCountStatus as any) ?? undefined,
+        }).returning();
+
+        if (!created) {
+          throw new Error("Failed to create quote attachment link");
+        }
+
+        return created;
+      },
+    });
+
+    return finalized.linkedRecord;
+  };
 
   app.get("/objects/health", (req: any, res) => {
     return res.json({
@@ -876,9 +955,10 @@ export async function registerAttachmentRoutes(
    * Get signed upload URL for direct file upload to storage
    * Admin-only endpoint
    */
-  app.post("/api/objects/upload", isAuthenticated, isAdmin, async (req, res) => {
+  app.post("/api/objects/upload", isAuthenticated, tenantContextMiddleware, isAdmin, async (req: any, res) => {
     try {
-      const { decideStorageTarget, getMaxCloudUploadBytes } = await import("../services/storageTarget");
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
 
       const body = (req.body ?? {}) as any;
       const fileName = typeof body.fileName === "string" ? body.fileName : null;
@@ -895,50 +975,14 @@ export async function registerAttachmentRoutes(
             ? body.storageTarget
             : null;
 
-      const maxCloudBytes = getMaxCloudUploadBytes();
-      const decidedTarget = decideStorageTarget({
+      const initiated = await storageApplicationService.initiateUpload({
+        organizationId,
         fileName,
-        fileSizeBytes,
+        fileSizeBytes: Number.isFinite(fileSizeBytes) ? fileSizeBytes : 0,
         requestedTarget: requestedStorageTarget,
-        context: "/api/objects/upload",
       });
 
-      // Use Supabase storage if configured and within limit
-      if (decidedTarget === "supabase" && isSupabaseConfigured()) {
-        const supabaseService = new SupabaseStorageService();
-        const result = await supabaseService.getSignedUploadUrl({
-          folder: "uploads",
-        });
-        return res.json({
-          storageTarget: "supabase",
-          maxCloudBytes,
-          method: "PUT",
-          url: result.url,
-          path: result.path,
-          token: result.token,
-        });
-      }
-
-      // Local-dev atomic upload path (client must send file bytes to the final attach endpoint)
-      if (decidedTarget === "local_dev") {
-        return res.json({
-          storageTarget: "local_dev",
-          maxCloudBytes,
-          method: "ATOMIC",
-          message: "File exceeds cloud upload limit; use atomic upload.",
-        });
-      }
-
-      // Fall back to Replit ObjectStorage (only works on Replit platform)
-      const objectStorageService = new ObjectStorageService();
-      const { url, path } = await objectStorageService.getObjectEntityUploadURL();
-      res.json({
-        storageTarget: "supabase",
-        maxCloudBytes,
-        method: "PUT",
-        url,
-        path,
-      });
+      res.json(initiated);
     } catch (error) {
       console.error("Error getting upload URL:", error);
       res.status(500).json({ message: "Failed to get upload URL" });
@@ -1038,16 +1082,6 @@ export async function registerAttachmentRoutes(
         (typeof storageTarget === 'string' ? storageTarget : null);
 
       const bufferForDecision = fileBuffer ? Buffer.from(fileBuffer, 'base64') : null;
-      const sizeForDecision = bufferForDecision ? bufferForDecision.length : (fileSize != null ? Number(fileSize) : 0);
-
-      const { decideStorageTarget } = await import('../services/storageTarget');
-      const decidedTarget = decideStorageTarget({
-        fileName: (originalFilename || fileName || null) as any,
-        fileSizeBytes: sizeForDecision,
-        requestedTarget,
-        organizationId,
-        context: 'POST /api/quotes/:id/files',
-      });
 
       // Detect if this is a PDF (by mimeType or filename)
       const resolvedUploadName = (originalFilename || fileName || "") as string;
@@ -1068,127 +1102,66 @@ export async function registerAttachmentRoutes(
       if (!fileName && !originalFilename) {
         return res.status(400).json({ error: "fileName or originalFilename is required" });
       }
-
-      let attachmentData: any = {
-        quoteId: req.params.id,
-        organizationId,
-        uploadedByUserId: userId,
-        uploadedByName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
-        description: description || null,
-      };
-
-      // Atomic upload path (server decides provider)
-      if (fileBuffer && originalFilename) {
-        const buffer = bufferForDecision || Buffer.from(fileBuffer, 'base64');
-        const contentType = (mimeType || 'application/octet-stream') as string;
-
-        if (decidedTarget === 'supabase' && isSupabaseConfigured()) {
-          const { SupabaseStorageService } = await import('../supabaseStorage');
-          const { generateStoredFilename, generateRelativePath, computeChecksum, getFileExtension } = await import('../utils/fileStorage.js');
-
-          const storedFilename = generateStoredFilename(originalFilename);
-          const relativePath = generateRelativePath({
-            organizationId,
-            resourceType: 'quote',
-            resourceId: req.params.id,
-            storedFilename,
-          });
-          const checksum = computeChecksum(buffer);
-          const extension = getFileExtension(originalFilename);
-
-          const supabase = new SupabaseStorageService();
-          const uploaded = await supabase.uploadFile(relativePath, buffer, contentType);
-
-          attachmentData = {
-            ...attachmentData,
-            fileName: originalFilename,
-            fileUrl: normalizeObjectKeyForDb(uploaded.path),
-            fileSize: buffer.length,
-            mimeType: contentType,
-            originalFilename,
-            storedFilename,
-            relativePath: normalizeObjectKeyForDb(uploaded.path),
-            storageProvider: 'supabase',
-            extension,
-            sizeBytes: buffer.length,
-            checksum,
-            thumbStatus: isPdfEarly && pdfColumnsExist ? ('thumb_pending' as const) : ('uploaded' as const),
-          };
-        } else {
-          const { processUploadedFile } = await import('../utils/fileStorage.js');
-          const fileMetadata = await processUploadedFile({
-            originalFilename,
-            buffer,
-            mimeType: contentType,
-            organizationId,
-            resourceType: 'quote',
-            resourceId: req.params.id,
-          });
-
-          attachmentData = {
-            ...attachmentData,
-            fileName: originalFilename,
-            fileUrl: fileMetadata.relativePath,
-            fileSize: fileMetadata.sizeBytes,
-            mimeType: contentType,
-            originalFilename: fileMetadata.originalFilename,
-            storedFilename: fileMetadata.storedFilename,
-            relativePath: fileMetadata.relativePath,
-            storageProvider: 'local',
-            extension: fileMetadata.extension,
-            sizeBytes: fileMetadata.sizeBytes,
-            checksum: fileMetadata.checksum,
-            thumbStatus: isPdfEarly && pdfColumnsExist ? ('thumb_pending' as const) : ('uploaded' as const),
-          };
-        }
-
-        if (pdfColumnsExist) {
-          attachmentData.pageCountStatus = isPdfEarly ? ("detecting" as const) : ("unknown" as const);
-        }
-      }
-      // Legacy method (GCS or direct URL)
-      else {
-        if (!fileUrl) {
-          return res.status(400).json({ error: "fileUrl is required for legacy uploads" });
-        }
-
-        // Determine storage provider for legacy uploads
-        // - http(s): external legacy URL
-        // - Supabase object key: typically starts with "uploads/" (or bucket-prefixed)
-        // - Otherwise: local storage key
-        let storageProvider: string | undefined;
-        if (fileUrl && (fileUrl.startsWith("http://") || fileUrl.startsWith("https://"))) {
-          storageProvider = undefined;
-        } else if (decidedTarget === 'supabase') {
-          storageProvider = 'supabase';
-        } else {
-          storageProvider = 'local';
-        }
-
-        attachmentData = {
-          ...attachmentData,
-          fileName,
-          fileUrl:
-            storageProvider === "supabase" &&
-              fileUrl &&
-              !fileUrl.startsWith("http://") &&
-              !fileUrl.startsWith("https://")
-              ? normalizeObjectKeyForDb(fileUrl)
-              : fileUrl,
-          fileSize: fileSize || null,
-          mimeType: mimeType || null,
-          originalFilename: originalFilename || fileName || null,
-          storageProvider,
-          bucket: "titan-private",
-          thumbStatus: isPdfEarly && pdfColumnsExist ? ("thumb_pending" as const) : ("uploaded" as const),
-        };
-
-        if (pdfColumnsExist) {
-          attachmentData.pageCountStatus = isPdfEarly ? ("detecting" as const) : ("unknown" as const);
-        }
+      if (!fileBuffer && !fileUrl) {
+        return res.status(400).json({ error: "fileUrl is required for legacy uploads" });
       }
 
-      const [attachment] = await db.insert(quoteAttachments).values(attachmentData).returning();
+      const thumbStatus = isPdfEarly && pdfColumnsExist ? ("thumb_pending" as const) : ("uploaded" as const);
+      const pageCountStatus = pdfColumnsExist ? (isPdfEarly ? ("detecting" as const) : ("unknown" as const)) : undefined;
+
+      const attachment = fileBuffer && originalFilename
+        ? await persistQuoteAttachment({
+            quoteId: req.params.id,
+            organizationId,
+            userId,
+            userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+            description,
+            requestedTarget,
+            thumbStatus,
+            pageCountStatus,
+            source: {
+              kind: "buffer",
+              buffer: bufferForDecision || Buffer.from(fileBuffer, 'base64'),
+              originalFilename,
+              mimeType: (mimeType || 'application/octet-stream') as string,
+            },
+          })
+        : fileUrl && (fileUrl.startsWith("http://") || fileUrl.startsWith("https://"))
+          ? (
+              await db.insert(quoteAttachments).values({
+                quoteId: req.params.id,
+                organizationId,
+                uploadedByUserId: userId,
+                uploadedByName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+                description: description || null,
+                fileName,
+                fileUrl,
+                fileSize: fileSize || null,
+                mimeType: mimeType || null,
+                originalFilename: originalFilename || fileName || null,
+                storageProvider: undefined,
+                bucket: "titan-private",
+                thumbStatus,
+                pageCountStatus: pageCountStatus as any,
+              }).returning()
+            )[0]
+          : await persistQuoteAttachment({
+              quoteId: req.params.id,
+              organizationId,
+              userId,
+              userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+              description,
+              requestedTarget,
+              thumbStatus,
+              pageCountStatus,
+              source: {
+                kind: "existing-key",
+                fileUrl: normalizeObjectKeyForDb(fileUrl),
+                originalFilename: (originalFilename || fileName) as string,
+                mimeType: mimeType || null,
+                fileSize: fileSize || null,
+              },
+            });
 
       // Best-effort self-check for Supabase-backed keys (non-blocking)
       if (attachment.storageProvider === "supabase" && attachment.fileUrl) {
@@ -1577,75 +1550,20 @@ export async function registerAttachmentRoutes(
       // Chunked upload link: finalize happens via /api/uploads/:uploadId/finalize.
       // This endpoint links a finalized upload into quote_attachments.
       if (uploadId && typeof uploadId === "string") {
-        const { loadUploadSessionMeta, saveUploadSessionMeta, deleteUploadSession } = await import(
-          "../services/chunkedUploads"
-        );
-        const meta = await loadUploadSessionMeta(uploadId);
-        if (meta.organizationId !== organizationId) return res.status(404).json({ error: "Upload not found" });
-        if (meta.purpose !== "quote-attachment") return res.status(400).json({ error: "Invalid upload purpose" });
-        if (meta.status !== "finalized" || !meta.relativePath)
-          return res.status(400).json({ error: "Upload not finalized" });
-        if (meta.quoteId && meta.quoteId !== quoteId) return res.status(400).json({ error: "Upload quoteId mismatch" });
-
-        const { decideStorageTarget } = await import('../services/storageTarget');
-        const decidedTarget = decideStorageTarget({
-          fileName: meta.originalFilename,
-          fileSizeBytes: meta.sizeBytes || 0,
-          requestedTarget,
-          organizationId,
-          context: 'POST /api/quotes/:quoteId/attachments (uploadId)',
-        });
-
-        let attachmentInsert: any = {
+        const created = await persistQuoteAttachment({
           quoteId,
-          quoteLineItemId: null,
           organizationId,
-          uploadedByUserId: userId,
-          uploadedByName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
-          description: description || null,
-          bucket: "titan-private",
-          fileName: meta.originalFilename,
-          fileUrl: meta.relativePath,
-          fileSize: meta.sizeBytes,
-          mimeType: meta.mimeType,
-          originalFilename: meta.originalFilename,
-          storedFilename: meta.storedFilename || null,
-          relativePath: meta.relativePath,
-          storageProvider: "local",
-          extension: meta.extension || null,
-          sizeBytes: meta.sizeBytes,
-          checksum: meta.checksum || null,
-        };
-
-        // Server enforcement: if the file is under the cloud limit, store in Supabase even if it was uploaded via chunked-local.
-        if (decidedTarget === 'supabase' && isSupabaseConfigured() && meta.relativePath) {
-          const { SupabaseStorageService } = await import('../supabaseStorage');
-          const { getAbsolutePath, deleteFile: deleteLocalFile } = await import('../utils/fileStorage.js');
-          const fsPromises = await import('fs/promises');
-
-          const abs = getAbsolutePath(meta.relativePath);
-          const buffer = await fsPromises.readFile(abs);
-
-          const supabase = new SupabaseStorageService();
-          const uploaded = await supabase.uploadFile(meta.relativePath, buffer, meta.mimeType || 'application/octet-stream');
-
-          attachmentInsert = {
-            ...attachmentInsert,
-            fileUrl: normalizeObjectKeyForDb(uploaded.path),
-            relativePath: normalizeObjectKeyForDb(uploaded.path),
-            storageProvider: 'supabase',
-          };
-
-          // Best-effort: delete the local staged file after successful cloud upload
-          await deleteLocalFile(meta.relativePath).catch(() => false);
-        }
-
-        const [created] = await db.insert(quoteAttachments).values(attachmentInsert).returning();
-
-        // Mark linked and remove temp session metadata (permanent file remains in uploads root).
-        meta.linkedAt = new Date().toISOString();
-        await saveUploadSessionMeta(uploadId, meta);
-        await deleteUploadSession(uploadId);
+          userId,
+          userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+          description,
+          requestedTarget,
+          source: {
+            kind: "upload-session",
+            uploadId,
+            expectedPurpose: "quote-attachment",
+            expectedParentId: quoteId,
+          },
+        });
 
         const enriched = await enrichAttachmentWithUrls(created);
         return res.json({ success: true, data: [enriched] });
@@ -1655,139 +1573,41 @@ export async function registerAttachmentRoutes(
       // Body format:
       // { files: [{ originalFilename, mimeType, sizeBytes, fileBufferBase64 }], description? }
       if (Array.isArray(files) && files.length > 0) {
-        const { SupabaseStorageService, isSupabaseConfigured: _isSupabaseConfigured } = await import(
-          "../supabaseStorage"
-        );
-        const {
-          processUploadedFile,
-          generateStoredFilename,
-          generateRelativePath,
-          computeChecksum,
-          getFileExtension,
-          deleteFile: deleteLocalFile,
-        } = await import("../utils/fileStorage.js");
-
-        const { decideStorageTarget } = await import('../services/storageTarget');
-
-        const uploadedKeys: Array<{ provider: "supabase" | "local"; key: string }> = [];
-
         try {
-          const inserted = await db.transaction(async (tx) => {
-            const results: any[] = [];
+          const inserted = [];
 
-            for (const f of files) {
-              const originalFilename = (f?.originalFilename ?? f?.fileName ?? "").toString();
-              const fileBufferBase64 = (f?.fileBufferBase64 ?? f?.fileBuffer ?? "").toString();
-              const fileMimeType = (f?.mimeType ?? "application/octet-stream").toString();
+          for (const f of files) {
+            const originalFilename = (f?.originalFilename ?? f?.fileName ?? "").toString();
+            const fileBufferBase64 = (f?.fileBufferBase64 ?? f?.fileBuffer ?? "").toString();
+            const fileMimeType = (f?.mimeType ?? "application/octet-stream").toString();
 
-              if (!originalFilename) {
-                throw new Error("originalFilename is required");
-              }
-              if (!fileBufferBase64) {
-                throw new Error(`fileBufferBase64 is required for ${originalFilename}`);
-              }
-
-              const buffer = Buffer.from(fileBufferBase64, "base64");
-
-              let attachmentInsert: any = {
-                quoteId,
-                quoteLineItemId: null,
-                organizationId,
-                uploadedByUserId: userId,
-                uploadedByName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
-                description: description || null,
-                bucket: "titan-private",
-              };
-
-              const decidedTarget = decideStorageTarget({
-                fileName: originalFilename,
-                fileSizeBytes: buffer.length,
-                requestedTarget,
-                organizationId,
-                context: 'POST /api/quotes/:quoteId/attachments (atomic)',
-              });
-
-              if (decidedTarget === 'supabase' && _isSupabaseConfigured()) {
-                const storedFilename = generateStoredFilename(originalFilename);
-                const relativePath = generateRelativePath({
-                  organizationId,
-                  resourceType: "quote",
-                  resourceId: quoteId,
-                  storedFilename,
-                });
-                const checksum = computeChecksum(buffer);
-                const extension = getFileExtension(originalFilename);
-                const sizeBytes = buffer.length;
-
-                const supabase = new SupabaseStorageService();
-                const uploaded = await supabase.uploadFile(relativePath, buffer, fileMimeType);
-                uploadedKeys.push({ provider: "supabase", key: uploaded.path });
-
-                attachmentInsert = {
-                  ...attachmentInsert,
-                  fileName: originalFilename,
-                  fileUrl: uploaded.path,
-                  fileSize: sizeBytes,
-                  mimeType: fileMimeType,
-                  originalFilename,
-                  storedFilename,
-                  relativePath,
-                  storageProvider: "supabase",
-                  extension,
-                  sizeBytes,
-                  checksum,
-                };
-              } else {
-                const fileMetadata = await processUploadedFile({
-                  originalFilename,
-                  buffer,
-                  mimeType: fileMimeType,
-                  organizationId,
-                  resourceType: "quote",
-                  resourceId: quoteId,
-                });
-                uploadedKeys.push({ provider: "local", key: fileMetadata.relativePath });
-
-                attachmentInsert = {
-                  ...attachmentInsert,
-                  fileName: originalFilename,
-                  fileUrl: fileMetadata.relativePath,
-                  fileSize: fileMetadata.sizeBytes,
-                  mimeType: fileMimeType,
-                  originalFilename: fileMetadata.originalFilename,
-                  storedFilename: fileMetadata.storedFilename,
-                  relativePath: fileMetadata.relativePath,
-                  storageProvider: "local",
-                  extension: fileMetadata.extension,
-                  sizeBytes: fileMetadata.sizeBytes,
-                  checksum: fileMetadata.checksum,
-                };
-              }
-
-              const [created] = await tx.insert(quoteAttachments).values(attachmentInsert).returning();
-              results.push(created);
+            if (!originalFilename) {
+              throw new Error("originalFilename is required");
+            }
+            if (!fileBufferBase64) {
+              throw new Error(`fileBufferBase64 is required for ${originalFilename}`);
             }
 
-            return results;
-          });
+            const created = await persistQuoteAttachment({
+              quoteId,
+              organizationId,
+              userId,
+              userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+              description,
+              requestedTarget,
+              source: {
+                kind: "buffer",
+                buffer: Buffer.from(fileBufferBase64, "base64"),
+                originalFilename,
+                mimeType: fileMimeType,
+              },
+            });
+
+            inserted.push(created);
+          }
 
           return res.json({ success: true, data: inserted });
         } catch (error: any) {
-          // Best-effort cleanup of uploaded blobs on failure
-          try {
-            if (_isSupabaseConfigured()) {
-              const supabase = new SupabaseStorageService();
-              await Promise.all(
-                uploadedKeys.filter((k) => k.provider === "supabase").map((k) => supabase.deleteFile(k.key))
-              );
-            }
-            await Promise.all(
-              uploadedKeys.filter((k) => k.provider === "local").map((k) => deleteLocalFile(k.key).catch(() => false))
-            );
-          } catch {
-            // fail-soft cleanup
-          }
-
           console.error("[QuoteAttachments:POST] Atomic upload failed:", error);
           return res.status(500).json({ error: error?.message || "Failed to upload attachments" });
         }
@@ -1797,50 +1617,42 @@ export async function registerAttachmentRoutes(
       if (!fileName) return res.status(400).json({ error: "fileName is required" });
       if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
-      const { decideStorageTarget, getMaxCloudUploadBytes } = await import('../services/storageTarget');
-      const sizeForDecision = fileSize != null ? Number(fileSize) : 0;
-      const decidedTarget = decideStorageTarget({
-        fileName,
-        fileSizeBytes: Number.isFinite(sizeForDecision) ? sizeForDecision : 0,
-        requestedTarget,
-        organizationId,
-        context: 'POST /api/quotes/:quoteId/attachments (legacy)',
-      });
-      const maxCloudBytes = getMaxCloudUploadBytes();
-
-      // If the file is over the cloud limit, the client must use atomic upload.
-      if (decidedTarget === 'local_dev' && isSupabaseConfigured()) {
-        return res.status(400).json({
-          error: 'File exceeds cloud upload limit; use atomic upload.',
-          decidedTarget,
-          maxCloudBytes,
-        });
-      }
-
       const isHttp = fileUrl.startsWith('http://') || fileUrl.startsWith('https://');
-      const storageProvider: 'local' | 'supabase' | undefined =
-        isHttp ? undefined : (decidedTarget === 'supabase' ? 'supabase' : 'local');
-      const normalizedKey =
-        storageProvider === 'supabase' && !isHttp ? normalizeObjectKeyForDb(fileUrl) : fileUrl;
+      const attachment = isHttp
+        ? (
+            await db.insert(quoteAttachments).values({
+              quoteId,
+              quoteLineItemId: null,
+              organizationId,
+              uploadedByUserId: userId,
+              uploadedByName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+              fileName,
+              originalFilename: fileName,
+              fileUrl,
+              relativePath: null,
+              fileSize: fileSize || null,
+              mimeType: mimeType || null,
+              description: description || null,
+              bucket: "titan-private",
+              storageProvider: undefined,
+            }).returning()
+          )[0]
+        : await persistQuoteAttachment({
+            quoteId,
+            organizationId,
+            userId,
+            userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+            description,
+            requestedTarget,
+            source: {
+              kind: "existing-key",
+              fileUrl: normalizeObjectKeyForDb(fileUrl),
+              originalFilename: fileName,
+              mimeType: mimeType || null,
+              fileSize: fileSize || null,
+            },
+          });
 
-      const attachmentData: any = {
-        quoteId,
-        quoteLineItemId: null,
-        organizationId,
-        uploadedByUserId: userId,
-        uploadedByName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
-        fileName,
-        originalFilename: fileName,
-        fileUrl: normalizedKey,
-        relativePath: storageProvider ? normalizedKey : null,
-        fileSize: fileSize || null,
-        mimeType: mimeType || null,
-        description: description || null,
-        bucket: "titan-private",
-        storageProvider,
-      };
-
-      const [attachment] = await db.insert(quoteAttachments).values(attachmentData).returning();
       return res.json({ success: true, data: attachment });
     } catch (error) {
       console.error("[QuoteAttachments:POST] Error:", error);
