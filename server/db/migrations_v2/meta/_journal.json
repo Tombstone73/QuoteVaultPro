@@ -57,6 +57,13 @@
       "when": 1773446400000,
       "tag": "0007_storage_foundation_phase1",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1773532800000,
+      "tag": "0008_storage_foundation_phase1_repair",
+      "breakpoints": true
     }
   ]
 }
