@@ -1347,6 +1347,7 @@ export const quoteAttachments = pgTable("quote_attachments", {
   quoteId: varchar("quote_id").notNull().references(() => quotes.id, { onDelete: 'cascade' }),
   quoteLineItemId: varchar("quote_line_item_id").references(() => quoteLineItems.id, { onDelete: 'cascade' }), // NEW: Per-line-item attachment
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  fileRecordId: varchar("file_record_id").references((): AnyPgColumn => fileRecords.id, { onDelete: 'set null' }),
   uploadedByUserId: varchar("uploaded_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   uploadedByName: varchar("uploaded_by_name", { length: 255 }),
   // Legacy fields (keep for backward compatibility)
@@ -1383,6 +1384,7 @@ export const quoteAttachments = pgTable("quote_attachments", {
   index("quote_attachments_quote_id_idx").on(table.quoteId),
   index("quote_attachments_quote_line_item_id_idx").on(table.quoteLineItemId),
   index("quote_attachments_organization_id_idx").on(table.organizationId),
+  index("quote_attachments_file_record_id_idx").on(table.fileRecordId),
   index("quote_attachments_thumb_status_idx").on(table.thumbStatus),
   index("quote_attachments_page_count_status_idx").on(table.pageCountStatus),
 ]);
@@ -3585,6 +3587,7 @@ export const orderAttachments = pgTable("order_attachments", {
   orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
   orderLineItemId: varchar("order_line_item_id").references(() => orderLineItems.id, { onDelete: 'cascade' }), // NEW: Per-line-item attachment
   quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: 'set null' }), // Track if uploaded during quote checkout
+  fileRecordId: varchar("file_record_id").references((): AnyPgColumn => fileRecords.id, { onDelete: 'set null' }),
   uploadedByUserId: varchar("uploaded_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   uploadedByName: varchar("uploaded_by_name", { length: 255 }), // Snapshot
   // Legacy fields (keep for backward compatibility)
@@ -3620,6 +3623,7 @@ export const orderAttachments = pgTable("order_attachments", {
   index("order_attachments_order_id_idx").on(table.orderId),
   index("order_attachments_order_line_item_id_idx").on(table.orderLineItemId),
   index("order_attachments_quote_id_idx").on(table.quoteId),
+  index("order_attachments_file_record_id_idx").on(table.fileRecordId),
   index("order_attachments_role_idx").on(table.role),
   index("order_attachments_thumb_status_idx").on(table.thumbStatus),
 ]);
@@ -4813,6 +4817,7 @@ export const lineItemFiles = pgTable("line_item_files", {
   orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
   lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
   prepressSessionId: varchar("prepress_session_id").references(() => prepressSessions.id, { onDelete: 'set null' }),
+  fileRecordId: varchar("file_record_id").references((): AnyPgColumn => fileRecords.id, { onDelete: 'set null' }),
   
   // File metadata
   role: lineItemFileRoleEnum("role").notNull(), // original | final | reference
@@ -4837,6 +4842,7 @@ export const lineItemFiles = pgTable("line_item_files", {
   index("line_item_files_org_idx").on(table.organizationId),
   index("line_item_files_order_idx").on(table.orderId),
   index("line_item_files_line_item_idx").on(table.lineItemId),
+  index("line_item_files_file_record_idx").on(table.fileRecordId),
   index("line_item_files_session_idx").on(table.prepressSessionId),
   index("line_item_files_role_status_idx").on(table.role, table.status),
   index("line_item_files_supersedes_idx").on(table.supersedesFileId),
