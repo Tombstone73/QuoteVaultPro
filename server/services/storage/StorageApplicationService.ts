@@ -86,10 +86,12 @@ export class StorageApplicationService {
       legacyRelativePath: string | null;
     }) => Promise<TLinked>;
   }): Promise<StorageWriteResult<TLinked>> {
+    let stage = "resolve_policy";
     const policy = await storagePolicyResolver.resolve(input.organizationId);
     const providerConfig = storagePolicyResolver.resolveCanonicalStorageBehavior(policy);
     const adapter = storageRegistry.getAdapter(providerConfig.providerType);
 
+    stage = "create_storage_job";
     const storageJob = await storageJobRepository.create({
       organizationId: input.organizationId,
       jobType: "finalize_upload",
@@ -120,6 +122,7 @@ export class StorageApplicationService {
 
     try {
       if (input.source.kind === "buffer") {
+        stage = "put_object";
         storedObject = await adapter.putObject({
           buffer: input.source.buffer,
           originalFilename: input.source.originalFilename,
@@ -129,6 +132,7 @@ export class StorageApplicationService {
           resource: input.resource,
         });
       } else if (input.source.kind === "upload-session") {
+        stage = "load_upload_session";
         sourceUploadMeta = await loadUploadSessionMeta(input.source.uploadId);
         if (sourceUploadMeta.organizationId !== input.organizationId) {
           throw new Error("Upload session does not belong to this organization");
@@ -147,6 +151,7 @@ export class StorageApplicationService {
           throw new Error("Upload session parent mismatch");
         }
 
+        stage = "finalize_upload_session";
         storedObject = await adapter.finalizeUpload({
           sourceRelativePath: sourceUploadMeta.relativePath,
           originalFilename: sourceUploadMeta.originalFilename,
@@ -166,6 +171,7 @@ export class StorageApplicationService {
           throw new Error("External URLs are not supported by canonical storage finalization");
         }
 
+        stage = "prepare_existing_key";
         const looksSupabaseKey = rawKey.startsWith("uploads/") || rawKey.startsWith("titan-private/");
         const storageTarget = input.requestedTarget === "supabase"
           ? "supabase"
@@ -195,6 +201,7 @@ export class StorageApplicationService {
         throw new Error("No stored object was produced during storage finalization");
       }
 
+      stage = "verify_object";
       const verification = await adapter.verifyObject({
         providerConfig,
         objectKey: storedObject.objectKey,
@@ -206,6 +213,7 @@ export class StorageApplicationService {
 
       const persistedObject = storedObject;
 
+  stage = "persist_canonical_records";
       const finalized = await db.transaction(async (tx) => {
         const fileRecord = await fileRecordRepository.create(
           {
@@ -251,11 +259,13 @@ export class StorageApplicationService {
       });
 
       if (sourceUploadMeta) {
+        stage = "mark_upload_session_linked";
         sourceUploadMeta.linkedAt = new Date().toISOString();
         await saveUploadSessionMeta(sourceUploadMeta.uploadId, sourceUploadMeta);
         await deleteUploadSession(sourceUploadMeta.uploadId);
       }
 
+      stage = "complete_storage_job";
       const completedJob = await storageJobRepository.updateState(storageJob.id, {
         state: "succeeded",
         fileRecordId: finalized.fileRecord.id,
@@ -271,6 +281,17 @@ export class StorageApplicationService {
         storageJob: completedJob,
       };
     } catch (error: any) {
+      console.error("[StorageApplicationService.finalizeUpload] Failed", {
+        organizationId: input.organizationId,
+        resourceType: input.resource.resourceType,
+        resourceId: input.resource.resourceId,
+        sourceKind: input.source.kind,
+        stage,
+        storageJobId: storageJob.id,
+        error: error?.message || String(error),
+        code: error?.code ?? null,
+      });
+
       if (storedObject) {
         await adapter.deleteObject({
           providerConfig,

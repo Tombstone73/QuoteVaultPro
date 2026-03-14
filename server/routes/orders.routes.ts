@@ -3702,9 +3702,12 @@ export async function registerOrderRoutes(
     });
 
     app.post('/api/orders/:id/files', isAuthenticated, tenantContext, async (req: any, res) => {
+        let uploadStep = 'load_request';
         try {
+            uploadStep = 'resolve_organization';
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            uploadStep = 'resolve_user';
             const userId = getUserId(req.user);
             if (!userId) return res.status(401).json({ error: 'Unauthorized' });
             const orderId = String(req.params.id);
@@ -3728,6 +3731,7 @@ export async function registerOrderRoutes(
                 storageTarget
             } = req.body;
 
+            uploadStep = 'load_order';
             const [order] = await db
                 .select({ id: orders.id, orderNumber: orders.orderNumber })
                 .from(orders)
@@ -3757,6 +3761,7 @@ export async function registerOrderRoutes(
                 return res.status(400).json({ error: `Invalid side. Must be one of: ${validSides.join(', ')}` });
             }
 
+            uploadStep = 'resolve_line_item';
             let resolvedLineItemId: string | null = orderLineItemId ? String(orderLineItemId) : null;
             if (resolvedLineItemId) {
                 const [lineItem] = await db
@@ -3787,6 +3792,7 @@ export async function registerOrderRoutes(
                 }
             }
 
+            uploadStep = 'prepare_attachment_payload';
             const baseAttachmentData: any = {
                 orderId,
                 orderLineItemId: resolvedLineItemId,
@@ -3798,6 +3804,14 @@ export async function registerOrderRoutes(
                 side: (side || 'na') as FileSide,
                 isPrimary: isPrimary || false,
             };
+            uploadStep = fileBuffer && originalFilename
+                ? 'canonical_finalize_buffer'
+                : !fileUrl
+                    ? 'validate_legacy_payload'
+                    : (typeof fileUrl === 'string' && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://')))
+                        ? 'insert_http_attachment'
+                        : 'canonical_finalize_existing_key';
+
             const attachment = fileBuffer && originalFilename
                 ? (await storageApplicationService.finalizeUpload({
                     organizationId,
@@ -3890,6 +3904,7 @@ export async function registerOrderRoutes(
                         })).linkedRecord;
 
             if (resolvedLineItemId) {
+                uploadStep = 'create_line_item_file_record';
                 const storagePath =
                     (attachment.relativePath as string | null) ||
                     (attachment.fileUrl as string | null) ||
@@ -3912,6 +3927,7 @@ export async function registerOrderRoutes(
                 }
             }
 
+            uploadStep = 'write_order_audit_log';
             await storage.createOrderAuditLog({
                 orderId: req.params.id,
                 userId,
@@ -3923,10 +3939,22 @@ export async function registerOrderRoutes(
                 metadata: { fileId: attachment.id, fileName: originalFilename || fileName, role, side } as any,
             });
 
+            uploadStep = 'respond_success';
             res.json({ success: true, data: attachment });
-        } catch (error) {
-            console.error('Error attaching file to order:', error);
-            res.status(500).json({ error: 'Failed to attach file to order' });
+        } catch (error: any) {
+            console.error('[POST /api/orders/:id/files] Failed', {
+                step: uploadStep,
+                orderId: req.params.id,
+                organizationId: getRequestOrganizationId(req) ?? null,
+                storageJobId: error?.storageJobId ?? null,
+                error: error?.message || String(error),
+                code: error?.code ?? null,
+            });
+            res.status(500).json({
+                error: error?.message || 'Failed to attach file to order',
+                step: uploadStep,
+                storageJobId: error?.storageJobId ?? null,
+            });
         }
     });
 
