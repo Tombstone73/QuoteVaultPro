@@ -3,9 +3,102 @@ import { quoteAttachmentPages } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage";
 import { applyThumbnailContract } from "./thumbnailContract";
+import { canonicalFileReadResolver, type CanonicalFileReadStatus } from "../services/storage/CanonicalFileReadResolver";
 
 export type FileRole = "artwork" | "proof" | "reference" | "customer_po" | "setup" | "output" | "other";
 export type FileSide = "front" | "back" | "na";
+
+export type OriginalFileAccessResult = {
+    displayFilename: string;
+    mimeType: string | null;
+    objectPath: string | null;
+    originalUrl: string | null;
+    downloadUrl: string | null;
+    availabilityStatus: CanonicalFileReadStatus;
+};
+
+function objectsProxyUrl(key: string, params?: { download?: boolean; filename?: string; bucket?: string | null }) {
+    const download = params?.download ? "download=1" : "";
+    const filename = params?.filename ? `filename=${encodeURIComponent(params.filename)}` : "";
+    const bucketParam = params?.bucket ? `bucket=${encodeURIComponent(params.bucket)}` : "";
+    const query = [download, filename, bucketParam].filter(Boolean).join("&");
+    return `/objects/${key}${query ? `?${query}` : ""}`;
+}
+
+export async function resolveOriginalFileAccess(
+    attachment: {
+        id?: string | null;
+        fileRecordId?: string | null;
+        fileName?: string | null;
+        originalFilename?: string | null;
+        mimeType?: string | null;
+    },
+    options?: {
+        logOnce?: (key: string, ...args: any[]) => void;
+    }
+): Promise<OriginalFileAccessResult> {
+    const displayFilename = String(attachment.originalFilename || attachment.fileName || `attachment-${attachment.id || "unknown"}`);
+    const fallbackMimeType = attachment.mimeType ?? null;
+    const logOnce = options?.logOnce;
+
+    if (!attachment.fileRecordId) {
+        logOnce?.(
+            `canonical-missing:${attachment.id ?? displayFilename}`,
+            "[CanonicalOriginalRead] Missing fileRecordId; original file read unavailable",
+            { attachmentId: attachment.id ?? null, displayFilename }
+        );
+
+        return {
+            displayFilename,
+            mimeType: fallbackMimeType,
+            objectPath: null,
+            originalUrl: null,
+            downloadUrl: null,
+            availabilityStatus: "missing",
+        };
+    }
+
+    const resolved = await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId));
+    const objectPath = resolved.objectKey ?? resolved.localPathRef ?? null;
+    const availabilityStatus = resolved.status;
+    const canonicalDisplayName = resolved.displayFilename ?? displayFilename;
+    const canonicalMimeType = resolved.mimeType ?? fallbackMimeType;
+
+    if (availabilityStatus !== "available" || !objectPath) {
+        logOnce?.(
+            `canonical-unavailable:${attachment.fileRecordId}`,
+            "[CanonicalOriginalRead] Canonical original unavailable",
+            {
+                attachmentId: attachment.id ?? null,
+                fileRecordId: attachment.fileRecordId,
+                availabilityStatus,
+                objectPath,
+            }
+        );
+
+        return {
+            displayFilename: canonicalDisplayName,
+            mimeType: canonicalMimeType,
+            objectPath: null,
+            originalUrl: null,
+            downloadUrl: null,
+            availabilityStatus,
+        };
+    }
+
+    return {
+        displayFilename: canonicalDisplayName,
+        mimeType: canonicalMimeType,
+        objectPath,
+        originalUrl: objectsProxyUrl(objectPath, { bucket: resolved.bucket ?? null }),
+        downloadUrl: objectsProxyUrl(objectPath, {
+            download: true,
+            filename: canonicalDisplayName,
+            bucket: resolved.bucket ?? null,
+        }),
+        availabilityStatus,
+    };
+}
 
 /**
  * Creates a function that logs a message only once for a given key.
@@ -88,59 +181,17 @@ export async function enrichAttachmentWithUrls(
         bucket?: string;
     }
 ): Promise<any> {
-    let originalUrl: string | null = null;
+    const originalAccess = await resolveOriginalFileAccess(attachment, { logOnce: options?.logOnce });
+    let originalUrl: string | null = originalAccess.originalUrl;
     let thumbUrl: string | null = null;
     let previewUrl: string | null = null;
 
-    let objectPath: string | null = null;
-    let downloadUrl: string | null = null;
+    let objectPath: string | null = originalAccess.objectPath;
+    let downloadUrl: string | null = originalAccess.downloadUrl;
 
     const logOnce = options?.logOnce;
 
-    const rawFileUrl = (attachment.fileUrl ?? "").toString();
-    const isHttpUrl = rawFileUrl.startsWith("http://") || rawFileUrl.startsWith("https://");
-    const storageProvider = (attachment.storageProvider ?? null) as string | null;
     const bucket = (options?.bucket || attachment.bucket || undefined) as string | undefined;
-
-    const objectsProxyUrl = (key: string, params?: { download?: boolean; filename?: string; bucket?: string }) => {
-        const download = params?.download ? "download=1" : "";
-        const filename = params?.filename ? `filename=${encodeURIComponent(params.filename)}` : "";
-        const bucketParam = params?.bucket ? `bucket=${encodeURIComponent(params.bucket)}` : "";
-        const query = [download, filename, bucketParam].filter(Boolean).join("&");
-        return `/objects/${key}${query ? `?${query}` : ""}`;
-    };
-
-    // External URL: use as-is, unless it's a Supabase URL that needs signing.
-    if (rawFileUrl && isHttpUrl) {
-        const maybeSupabaseKey = isSupabaseConfigured()
-            ? tryExtractSupabaseObjectKeyFromUrl(rawFileUrl, bucket || "titan-private")
-            : null;
-
-        if (maybeSupabaseKey) {
-            objectPath = maybeSupabaseKey;
-        }
-
-        if (maybeSupabaseKey) {
-            originalUrl = objectsProxyUrl(maybeSupabaseKey, { bucket });
-        } else {
-            originalUrl = rawFileUrl;
-        }
-    } else if (rawFileUrl && storageProvider === "local") {
-        originalUrl = objectsProxyUrl(rawFileUrl);
-        objectPath = normalizeObjectKeyForDb(rawFileUrl);
-    } else if (rawFileUrl && storageProvider === "supabase" && isSupabaseConfigured()) {
-        objectPath = normalizeObjectKeyForDb(rawFileUrl);
-        originalUrl = objectPath ? objectsProxyUrl(objectPath, { bucket }) : null;
-    } else if (rawFileUrl) {
-        originalUrl = objectsProxyUrl(rawFileUrl);
-        objectPath = normalizeObjectKeyForDb(rawFileUrl);
-    }
-
-    // Same-origin forced download URL (server enforces tenant scoping via key prefix)
-    if (objectPath && objectPath.length) {
-        const fileNameForDownload = String(attachment?.originalFilename ?? attachment?.fileName ?? "download");
-        downloadUrl = objectsProxyUrl(objectPath, { download: true, filename: fileNameForDownload, bucket });
-    }
 
     // Derivative URLs (Thumbnails/Previews)
     const thumbKey = (attachment.thumbKey ?? null) as string | null;
@@ -220,6 +271,7 @@ export async function enrichAttachmentWithUrls(
         previewUrl,
         objectPath,
         downloadUrl,
+        availabilityStatus: originalAccess.availabilityStatus,
         // `applyThumbnailContract` will set thumbnailUrl based on (pages[0]?.thumbUrl || previewThumbnailUrl || thumbUrl)
         pages,
     });

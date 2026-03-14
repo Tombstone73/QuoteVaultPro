@@ -311,6 +311,7 @@ import {
   createRequestLogOnce,
   enrichAttachmentWithUrls,
   normalizeObjectKeyForDb,
+  resolveOriginalFileAccess,
   scheduleSupabaseObjectSelfCheck,
   tryExtractSupabaseObjectKeyFromUrl
 } from "./lib/supabaseObjectHelpers";
@@ -6613,19 +6614,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Attachment not found" });
       }
 
-      // Generate signed download URL (valid for 1 hour)
-      let signedUrl: string;
-      if (isSupabaseConfigured()) {
-        const supabaseService = new SupabaseStorageService();
-        signedUrl = await supabaseService.getSignedDownloadUrl(attachment.fileUrl, 3600);
-      } else {
-        // For Replit Object Storage or other providers, return the stored URL directly
-        // Note: This assumes the stored URL is publicly accessible or pre-signed
-        signedUrl = attachment.fileUrl;
+      const resolved = await resolveOriginalFileAccess(attachment, { logOnce: createRequestLogOnce() });
+      if (!resolved.downloadUrl) {
+        return res.status(404).json({ success: false, error: "File unavailable", availabilityStatus: resolved.availabilityStatus });
       }
 
-      // Use originalFilename for download, fallback to fileName
-      const fileName = attachment.originalFilename || attachment.fileName;
+      const signedUrl = resolved.downloadUrl;
+      const fileName = resolved.displayFilename;
 
       console.log(`[LineItemFiles:DOWNLOAD] Generated signed URL for file ${fileId}, fileName: ${fileName}`);
 
@@ -6668,28 +6663,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Attachment not found" });
       }
 
-      // Download from Supabase and stream to client
-      if (isSupabaseConfigured()) {
-        const supabaseService = new SupabaseStorageService();
-        const signedUrl = await supabaseService.getSignedDownloadUrl(attachment.fileUrl, 3600);
-
-        // Fetch file from Supabase
-        const fileResponse = await fetch(signedUrl);
-        if (!fileResponse.ok) {
-          throw new Error("Failed to fetch file from storage");
-        }
-
-        // Set Content-Disposition header with original filename
-        const fileName = attachment.originalFilename || attachment.fileName;
-        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-        res.setHeader('Content-Type', attachment.mimeType || 'application/octet-stream');
-
-        // Stream file to client
-        const buffer = await fileResponse.arrayBuffer();
-        res.send(Buffer.from(buffer));
-      } else {
-        return res.status(501).json({ error: "Proxy download not supported for this storage provider" });
+      const resolved = await resolveOriginalFileAccess(attachment, { logOnce: createRequestLogOnce() });
+      if (!resolved.downloadUrl) {
+        return res.status(404).json({ error: "File unavailable", availabilityStatus: resolved.availabilityStatus });
       }
+
+      return res.redirect(resolved.downloadUrl);
     } catch (error: any) {
       console.error("[LineItemFiles:DOWNLOAD:PROXY] Error:", error);
       return res.status(500).json({ error: error.message || "Failed to download file" });
@@ -6964,20 +6943,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Attachment not found" });
       }
 
-      // Generate signed download URL (valid for 1 hour)
-      let signedUrl: string;
-      if (isSupabaseConfigured()) {
-        const supabaseService = new SupabaseStorageService();
-        signedUrl = await supabaseService.getSignedDownloadUrl(attachment.fileUrl, 3600);
-      } else {
-        // For Replit Object Storage or other providers, return the stored URL directly
-        // Note: This assumes the stored URL is publicly accessible or pre-signed
-        signedUrl = attachment.fileUrl;
+      const resolved = await resolveOriginalFileAccess(attachment, { logOnce: createRequestLogOnce() });
+      if (!resolved.downloadUrl) {
+        return res.status(404).json({ success: false, error: "File unavailable", availabilityStatus: resolved.availabilityStatus });
       }
+
+      const signedUrl = resolved.downloadUrl;
 
       console.log(`[LineItemFiles:DOWNLOAD:TEMP] Generated signed URL for file ${fileId}`);
 
-      return res.json({ success: true, data: { signedUrl } });
+      return res.json({ success: true, data: { signedUrl, fileName: resolved.displayFilename, availabilityStatus: resolved.availabilityStatus } });
     } catch (error: any) {
       console.error("[LineItemFiles:DOWNLOAD:TEMP] Error:", error);
       return res.status(500).json({ success: false, error: error.message || "Failed to generate download URL" });
