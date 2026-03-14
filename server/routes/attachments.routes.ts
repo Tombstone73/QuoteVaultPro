@@ -44,6 +44,7 @@ import {
   createRequestLogOnce,
   enrichAttachmentWithUrls,
   normalizeObjectKeyForDb,
+  resolveOriginalFileAccess,
   scheduleSupabaseObjectSelfCheck,
   tryExtractSupabaseObjectKeyFromUrl
 } from "../lib/supabaseObjectHelpers";
@@ -140,53 +141,22 @@ function getFrameAncestors(req: any): string[] {
   return inferred ? uniq(["'self'", inferred]) : ["'self'"];
 }
 
-/**
- * Resolves which file to download for an attachment based on download intent.
- * 
- * @param attachment - Attachment record with fileUrl, relativePath, etc.
- * @param intent - Download intent (original/print/proof/preferred)
- * @returns Object with displayFilename and objectPath (storage key)
- * 
- * TODO: When file variants are implemented in the database:
- * - For "print": Check attachment.printReadyKey, fall back to original
- * - For "proof": Check attachment.proofKey, fall back to original  
- * - For "preferred": Try print > proof > original in that order
- * - For "original": Always use original file
- * 
- * CURRENT BEHAVIOR: All intents resolve to original file (no variants yet).
- */
-function resolveAttachmentDownloadTarget(
+async function resolveAttachmentDownloadTarget(
   attachment: {
     id: string;
     fileName: string;
+    fileRecordId?: string | null;
     originalFilename?: string | null;
-    fileUrl?: string | null;
-    relativePath?: string | null;
   },
   intent: DownloadIntent
-): { displayFilename: string; objectPath: string | null } {
-  // TODO: Add variant resolution logic when database schema supports it
-  // For now, ignore intent and always return original file
-  
-  const displayFilename = String(attachment.originalFilename || attachment.fileName || `attachment-${attachment.id}`);
-  
-  // Extract objectPath from fileUrl or use relativePath
-  let objectPath: string | null = null;
-  
-  // Priority 1: /objects/ URLs (Supabase)
-  if (attachment.fileUrl && attachment.fileUrl.startsWith('/objects/')) {
-    objectPath = attachment.fileUrl.replace('/objects/', '').split('?')[0];
-  } 
-  // Priority 2: relativePath field (local storage)
-  else if (attachment.relativePath) {
-    objectPath = attachment.relativePath;
-  }
-  // Priority 3: fileUrl as direct path (for uploads/* paths stored directly)
-  else if (attachment.fileUrl && !attachment.fileUrl.startsWith('http')) {
-    objectPath = attachment.fileUrl;
-  }
-  
-  return { displayFilename, objectPath };
+): Promise<{ displayFilename: string; objectPath: string | null; availabilityStatus: string }> {
+  void intent;
+  const resolved = await resolveOriginalFileAccess(attachment);
+  return {
+    displayFilename: resolved.displayFilename,
+    objectPath: resolved.objectPath,
+    availabilityStatus: resolved.availabilityStatus,
+  };
 }
 
 // Type alias for authentication
@@ -1705,37 +1675,11 @@ export async function registerAttachmentRoutes(
         if (!attachment) return res.status(404).json({ error: "Attachment not found" });
 
         // Use resolver to get target file (currently returns original regardless of intent)
-        const resolved = resolveAttachmentDownloadTarget(attachment, downloadIntent);
+        const resolved = await resolveAttachmentDownloadTarget(attachment, downloadIntent);
         if (!resolved.objectPath) {
-          return res.status(404).json({ error: "File path not found" });
+          return res.status(404).json({ error: "File unavailable", availabilityStatus: resolved.availabilityStatus });
         }
-
-        res.setHeader("Content-Disposition", `attachment; filename="${resolved.displayFilename}"`);
-        res.setHeader("Content-Type", attachment.mimeType || "application/octet-stream");
-
-        if (
-          isSupabaseConfigured() &&
-          (attachment.storageProvider === "supabase" || (resolved.objectPath || "").startsWith("uploads/"))
-        ) {
-          const { SupabaseStorageService } = await import("../supabaseStorage");
-          const supabaseService = new SupabaseStorageService();
-          const signedUrl = await supabaseService.getSignedDownloadUrl(resolved.objectPath, 3600);
-          const fileResponse = await fetch(signedUrl);
-          if (!fileResponse.ok) throw new Error("Failed to fetch file from storage");
-          const buffer = await fileResponse.arrayBuffer();
-          return res.send(Buffer.from(buffer));
-        }
-
-        // Local storage fallback
-        const { resolveLocalStoragePath } = await import("../services/localStoragePath");
-        const fs = await import("fs");
-        const absPath = resolveLocalStoragePath(resolved.objectPath);
-        const stream = fs.createReadStream(absPath);
-        stream.on("error", (err) => {
-          console.error("[QuoteAttachments:DOWNLOAD:PROXY] Local stream error:", err);
-          if (!res.headersSent) res.status(404).json({ error: "File not found" });
-        });
-        return stream.pipe(res);
+        return res.redirect(`/objects/${resolved.objectPath}?download=1&filename=${encodeURIComponent(resolved.displayFilename)}`);
       } catch (error: any) {
         console.error("[QuoteAttachments:DOWNLOAD:PROXY] Error:", error);
         return res.status(500).json({ error: error.message || "Failed to download file" });
@@ -1804,10 +1748,9 @@ export async function registerAttachmentRoutes(
       const attachmentRows = await db
         .select({
           id: quoteAttachments.id,
+          fileRecordId: quoteAttachments.fileRecordId,
           fileName: quoteAttachments.fileName,
           originalFilename: quoteAttachments.originalFilename,
-          fileUrl: quoteAttachments.fileUrl,
-          relativePath: quoteAttachments.relativePath,
         })
         .from(quoteAttachments)
         .where(
@@ -1823,10 +1766,9 @@ export async function registerAttachmentRoutes(
       const lineItemAttachmentRows = await db
         .select({
           id: quoteAttachments.id,
+          fileRecordId: quoteAttachments.fileRecordId,
           fileName: quoteAttachments.fileName,
           originalFilename: quoteAttachments.originalFilename,
-          fileUrl: quoteAttachments.fileUrl,
-          relativePath: quoteAttachments.relativePath,
           quoteLineItemId: quoteAttachments.quoteLineItemId,
         })
         .from(quoteAttachments)
@@ -1843,29 +1785,14 @@ export async function registerAttachmentRoutes(
       const files: Array<{ filename: string; objectPath: string }> = [];
 
       for (const att of attachmentRows) {
-        const filename = String(att.originalFilename || att.fileName || `attachment-${att.id}`);
-        // Extract objectPath from fileUrl (if it starts with /objects/) or use relativePath
-        let objectPath: string | null = null;
-        if (att.fileUrl && att.fileUrl.startsWith('/objects/')) {
-          objectPath = att.fileUrl.replace('/objects/', '').split('?')[0];
-        } else if (att.relativePath) {
-          objectPath = att.relativePath;
-        }
-        if (objectPath) files.push({ filename, objectPath });
+        const resolved = await resolveAttachmentDownloadTarget(att, "original");
+        if (resolved.objectPath) files.push({ filename: resolved.displayFilename, objectPath: resolved.objectPath });
       }
 
       for (const att of lineItemAttachmentRows) {
-        const filename = String(att.originalFilename || att.fileName || `attachment-${att.id}`);
-        // Use a folder structure for line item attachments
-        const filenameWithLabel = `line-item-${att.quoteLineItemId}/${filename}`;
-        // Extract objectPath from fileUrl (if it starts with /objects/) or use relativePath
-        let objectPath: string | null = null;
-        if (att.fileUrl && att.fileUrl.startsWith('/objects/')) {
-          objectPath = att.fileUrl.replace('/objects/', '').split('?')[0];
-        } else if (att.relativePath) {
-          objectPath = att.relativePath;
-        }
-        if (objectPath) files.push({ filename: filenameWithLabel, objectPath });
+        const resolved = await resolveAttachmentDownloadTarget(att, "original");
+        const filenameWithLabel = `line-item-${att.quoteLineItemId}/${resolved.displayFilename}`;
+        if (resolved.objectPath) files.push({ filename: filenameWithLabel, objectPath: resolved.objectPath });
       }
 
       if (files.length === 0) {
@@ -1969,10 +1896,9 @@ export async function registerAttachmentRoutes(
 
       let attachmentsToInclude: Array<{
         id: string;
+        fileRecordId?: string | null;
         fileName: string;
         originalFilename?: string | null;
-        fileUrl?: string | null;
-        relativePath?: string | null;
         orderLineItemId?: string | null;
       }> = [];
 
@@ -1994,10 +1920,9 @@ export async function registerAttachmentRoutes(
         const orderAttachmentRows = await db
           .select({
             id: orderAttachments.id,
+            fileRecordId: orderAttachments.fileRecordId,
             fileName: orderAttachments.fileName,
             originalFilename: orderAttachments.originalFilename,
-            fileUrl: orderAttachments.fileUrl,
-            relativePath: orderAttachments.relativePath,
             orderLineItemId: orderAttachments.orderLineItemId,
           })
           .from(orderAttachments)
@@ -2019,10 +1944,9 @@ export async function registerAttachmentRoutes(
           const quoteAttachmentRows = await db
             .select({
               id: quoteAttachments.id,
+              fileRecordId: quoteAttachments.fileRecordId,
               fileName: quoteAttachments.fileName,
               originalFilename: quoteAttachments.originalFilename,
-              fileUrl: quoteAttachments.fileUrl,
-              relativePath: quoteAttachments.relativePath,
               orderLineItemId: sql<string | null>`NULL`.as('orderLineItemId'),
             })
             .from(quoteAttachments)
@@ -2062,10 +1986,9 @@ export async function registerAttachmentRoutes(
           const allOrderAttachments = await db
             .select({
               id: orderAttachments.id,
+              fileRecordId: orderAttachments.fileRecordId,
               fileName: orderAttachments.fileName,
               originalFilename: orderAttachments.originalFilename,
-              fileUrl: orderAttachments.fileUrl,
-              relativePath: orderAttachments.relativePath,
               orderLineItemId: orderAttachments.orderLineItemId,
             })
             .from(orderAttachments)
@@ -2090,10 +2013,9 @@ export async function registerAttachmentRoutes(
           const allQuoteAttachments = await db
             .select({
               id: quoteAttachments.id,
+              fileRecordId: quoteAttachments.fileRecordId,
               fileName: quoteAttachments.fileName,
               originalFilename: quoteAttachments.originalFilename,
-              fileUrl: quoteAttachments.fileUrl,
-              relativePath: quoteAttachments.relativePath,
               orderLineItemId: sql<string | null>`NULL`.as('orderLineItemId'),
             })
             .from(quoteAttachments)
@@ -2118,10 +2040,9 @@ export async function registerAttachmentRoutes(
           count: attachmentsToInclude.length,
           first: attachmentsToInclude[0] ? {
             id: attachmentsToInclude[0].id,
+            fileRecordId: attachmentsToInclude[0].fileRecordId,
             fileName: attachmentsToInclude[0].fileName,
             originalFilename: attachmentsToInclude[0].originalFilename,
-            fileUrl: attachmentsToInclude[0].fileUrl,
-            relativePath: attachmentsToInclude[0].relativePath,
           } : null
         });
       }
@@ -2131,7 +2052,7 @@ export async function registerAttachmentRoutes(
       const missingFiles: string[] = [];
 
       for (const att of attachmentsToInclude) {
-        const resolved = resolveAttachmentDownloadTarget(att, downloadIntent);
+        const resolved = await resolveAttachmentDownloadTarget(att, downloadIntent);
         
         // Prefix with line-item folder if this is a line item attachment
         const filename = att.orderLineItemId
