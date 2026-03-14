@@ -87,6 +87,7 @@ import {
     upsertOrderWorkflowDraft,
     updateOrderWorkflowStatus,
 } from "../services/orderWorkflowService";
+import { storageApplicationService } from "../services/storage/StorageApplicationService";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -549,6 +550,81 @@ export async function registerOrderRoutes(
     }
 ) {
     const { isAuthenticated, tenantContext, isAdmin, isAdminOrOwner } = deps;
+
+    const persistOrderAttachment = async (args: {
+        orderId: string;
+        quoteId?: string | null;
+        organizationId: string;
+        userId: string | null;
+        userName: string;
+        description?: string | null;
+        requestedTarget?: string | null;
+        orderNumber?: string | null;
+        source:
+            | {
+                kind: "buffer";
+                buffer: Buffer;
+                originalFilename: string;
+                mimeType: string;
+            }
+            | {
+                kind: "upload-session";
+                uploadId: string;
+                expectedPurpose: "order-attachment";
+                expectedParentId: string;
+            }
+            | {
+                kind: "existing-key";
+                fileUrl: string;
+                originalFilename: string;
+                mimeType?: string | null;
+                fileSize?: number | null;
+                checksum?: string | null;
+                storedFilename?: string | null;
+                extension?: string | null;
+            };
+    }) => {
+        const finalized = await storageApplicationService.finalizeUpload({
+            organizationId: args.organizationId,
+            createdByUserId: args.userId,
+            requestedTarget: args.requestedTarget,
+            resource: {
+                organizationId: args.organizationId,
+                resourceType: "order",
+                resourceId: args.orderId,
+                orderNumber: args.orderNumber ?? undefined,
+            },
+            source: args.source,
+            persistLink: async (tx, stored) => {
+                const [created] = await tx.insert(orderAttachments).values({
+                    orderId: args.orderId,
+                    quoteId: args.quoteId || null,
+                    uploadedByUserId: args.userId,
+                    uploadedByName: args.userName,
+                    description: args.description || null,
+                    fileName: stored.storedObject.originalFilename,
+                    fileUrl: stored.legacyFileUrl,
+                    fileSize: stored.storedObject.sizeBytes,
+                    mimeType: stored.storedObject.mimeType,
+                    originalFilename: stored.storedObject.originalFilename,
+                    storedFilename: stored.storedObject.storedFilename,
+                    relativePath: stored.legacyRelativePath,
+                    storageProvider: stored.legacyStorageProvider,
+                    extension: stored.storedObject.extension,
+                    checksum: stored.storedObject.checksum,
+                    sizeBytes: stored.storedObject.sizeBytes,
+                }).returning();
+
+                if (!created) {
+                    throw new Error("Failed to create order attachment link");
+                }
+
+                return created;
+            },
+        });
+
+        return finalized.linkedRecord;
+    };
 
     app.get("/api/workflow/order", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
@@ -2442,186 +2518,93 @@ export async function registerOrderRoutes(
             if (!order) return res.status(404).json({ error: "Order not found" });
 
             if (uploadId) {
-                const { loadUploadSessionMeta, saveUploadSessionMeta, deleteUploadSession } = await import('../services/chunkedUploads');
-                const meta = await loadUploadSessionMeta(uploadId);
-                if (meta.organizationId !== organizationId) return res.status(404).json({ error: 'Upload not found' });
-                if (!meta.relativePath) return res.status(400).json({ error: 'Upload not finalized' });
-
-                const { decideStorageTarget } = await import('../services/storageTarget');
-                const decidedTarget = decideStorageTarget({
-                    fileName: meta.originalFilename,
-                    fileSizeBytes: meta.sizeBytes || 0,
-                    requestedTarget,
-                    organizationId,
-                    context: 'POST /api/orders/:orderId/attachments (uploadId)',
-                });
-
-                let fileKey = meta.relativePath!;
-                let storageProvider: 'local' | 'supabase' | undefined = 'local';
-                if (decidedTarget === 'supabase' && isSupabaseConfigured() && meta.relativePath) {
-                    const { SupabaseStorageService } = await import('../supabaseStorage');
-                    const { getAbsolutePath, deleteFile: deleteLocalFile } = await import('../utils/fileStorage.js');
-                    const fsPromises = await import('fs/promises');
-
-                    const abs = getAbsolutePath(meta.relativePath);
-                    const buffer = await fsPromises.readFile(abs);
-
-                    const supabase = new SupabaseStorageService();
-                    const uploaded = await supabase.uploadFile(meta.relativePath, buffer, meta.mimeType || 'application/octet-stream');
-                    fileKey = normalizeObjectKeyForDb(uploaded.path);
-                    storageProvider = 'supabase';
-
-                    await deleteLocalFile(meta.relativePath).catch(() => false);
-                }
-
-                const [created] = await db.insert(orderAttachments).values({
+                const created = await persistOrderAttachment({
                     orderId,
                     quoteId: order.quoteId || null,
-                    uploadedByUserId: userId,
-                    uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
-                    description: description || null,
-                    fileName: meta.originalFilename,
-                    fileUrl: fileKey,
-                    fileSize: meta.sizeBytes,
-                    mimeType: meta.mimeType,
-                    originalFilename: meta.originalFilename,
-                    relativePath: fileKey,
-                    storageProvider,
-                    sizeBytes: meta.sizeBytes,
-                }).returning();
-                await deleteUploadSession(uploadId);
+                    organizationId,
+                    userId,
+                    userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                    description,
+                    requestedTarget,
+                    orderNumber: order.orderNumber,
+                    source: {
+                        kind: "upload-session",
+                        uploadId,
+                        expectedPurpose: "order-attachment",
+                        expectedParentId: orderId,
+                    },
+                });
                 const enriched = await enrichAttachmentWithUrls(created);
                 return res.json({ success: true, data: [enriched] });
             }
 
             if (Array.isArray(files) && files.length > 0) {
-                const { processUploadedFile, generateStoredFilename, generateRelativePath, computeChecksum, getFileExtension } = await import('../utils/fileStorage.js');
-                const { decideStorageTarget } = await import('../services/storageTarget');
-                const inserted = await db.transaction(async (tx) => {
-                    const results = [];
-                    for (const f of files) {
-                        const buffer = Buffer.from(f.fileBufferBase64, 'base64');
-                        const decidedTarget = decideStorageTarget({
-                            fileName: f.fileName,
-                            fileSizeBytes: buffer.length,
-                            requestedTarget,
-                            organizationId,
-                            context: 'POST /api/orders/:orderId/attachments (atomic)',
-                        });
-
-                        let storageProvider: 'local' | 'supabase' | undefined = 'local';
-                        let fileKey: string;
-                        let sizeBytes: number;
-                        let checksum: string | null = null;
-                        let extension: string | null = null;
-                        let storedFilename: string | null = null;
-                        let originalFilename: string;
-
-                        if (decidedTarget === 'supabase' && isSupabaseConfigured()) {
-                            const { SupabaseStorageService } = await import('../supabaseStorage');
-                            storedFilename = generateStoredFilename(f.fileName);
-                            const relativePath = generateRelativePath({
-                                organizationId,
-                                orderNumber: order?.orderNumber ? String(order.orderNumber) : undefined,
-                                storedFilename,
-                                resourceType: 'order',
-                                resourceId: orderId,
-                            });
-                            checksum = computeChecksum(buffer);
-                            extension = getFileExtension(f.fileName);
-                            sizeBytes = buffer.length;
-
-                            const supabase = new SupabaseStorageService();
-                            const uploaded = await supabase.uploadFile(relativePath, buffer, f.mimeType || 'application/octet-stream');
-                            fileKey = normalizeObjectKeyForDb(uploaded.path);
-                            storageProvider = 'supabase';
-                            originalFilename = f.fileName;
-                        } else {
-                            const fileMetadata = await processUploadedFile({
-                                originalFilename: f.fileName,
-                                buffer,
-                                mimeType: f.mimeType,
-                                organizationId,
-                                resourceType: 'order',
-                                resourceId: orderId,
-                                orderNumber: order?.orderNumber ? String(order.orderNumber) : undefined,
-                            });
-                            fileKey = fileMetadata.relativePath;
-                            sizeBytes = fileMetadata.sizeBytes;
-                            checksum = fileMetadata.checksum || null;
-                            extension = fileMetadata.extension || null;
-                            storedFilename = fileMetadata.storedFilename || null;
-                            originalFilename = fileMetadata.originalFilename;
-                        }
-
-                        const [created] = await tx.insert(orderAttachments).values({
-                            orderId,
-                            quoteId: order.quoteId || null,
-                            uploadedByUserId: userId,
-                            uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
-                            description: description || null,
-                            fileName: f.fileName,
-                            fileUrl: fileKey,
-                            fileSize: sizeBytes,
-                            mimeType: f.mimeType,
-                            originalFilename,
-                            storedFilename,
-                            relativePath: fileKey,
-                            storageProvider,
-                            extension,
-                            checksum,
-                            sizeBytes,
-                        }).returning();
-                        results.push(created);
-                    }
-                    return results;
-                });
+                const inserted = [];
+                for (const f of files) {
+                    const created = await persistOrderAttachment({
+                        orderId,
+                        quoteId: order.quoteId || null,
+                        organizationId,
+                        userId,
+                        userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                        description,
+                        requestedTarget,
+                        orderNumber: order.orderNumber,
+                        source: {
+                            kind: "buffer",
+                            buffer: Buffer.from(f.fileBufferBase64, 'base64'),
+                            originalFilename: f.fileName,
+                            mimeType: f.mimeType || 'application/octet-stream',
+                        },
+                    });
+                    inserted.push(created);
+                }
                 return res.json({ success: true, data: inserted });
             }
 
             if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
             if (!fileName) return res.status(400).json({ error: "fileName is required" });
 
-            const { decideStorageTarget } = await import('../services/storageTarget');
-            const sizeForDecision = fileSize != null ? Number(fileSize) : 0;
-            const decidedTarget = decideStorageTarget({
-                fileName,
-                fileSizeBytes: Number.isFinite(sizeForDecision) ? sizeForDecision : 0,
-                requestedTarget,
-                organizationId,
-                context: 'POST /api/orders/:orderId/attachments (legacy)',
-            });
-
             const isHttp = typeof fileUrl === 'string' && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'));
-            const storageProvider: 'local' | 'supabase' | undefined = isHttp
-                ? undefined
-                : (decidedTarget === 'supabase' ? 'supabase' : 'local');
-            const normalizedKey =
-                storageProvider === 'supabase' && typeof fileUrl === 'string' && !isHttp
-                    ? normalizeObjectKeyForDb(fileUrl)
-                    : fileUrl;
-
-            const [attachment] = await db.insert(orderAttachments).values({
-                orderId,
-                quoteId: order.quoteId || null,
-                uploadedByUserId: userId,
-                uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
-                fileName,
-                originalFilename: fileName,
-                fileUrl: normalizedKey,
-                relativePath: storageProvider ? normalizedKey : null,
-                fileSize: fileSize || null,
-                mimeType: mimeType || null,
-                description: description || null,
-                storageProvider,
-            }).returning();
+            const attachment = isHttp
+                ? (await db.insert(orderAttachments).values({
+                    orderId,
+                    quoteId: order.quoteId || null,
+                    uploadedByUserId: userId,
+                    uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                    fileName,
+                    originalFilename: fileName,
+                    fileUrl,
+                    relativePath: null,
+                    fileSize: fileSize || null,
+                    mimeType: mimeType || null,
+                    description: description || null,
+                    storageProvider: undefined,
+                }).returning())[0]
+                : await persistOrderAttachment({
+                    orderId,
+                    quoteId: order.quoteId || null,
+                    organizationId,
+                    userId,
+                    userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                    description,
+                    requestedTarget,
+                    orderNumber: order.orderNumber,
+                    source: {
+                        kind: "existing-key",
+                        fileUrl: normalizeObjectKeyForDb(fileUrl),
+                        originalFilename: fileName,
+                        mimeType: mimeType || null,
+                        fileSize: fileSize || null,
+                    },
+                });
 
             // PHASE 2: Create asset + link to order (fail-soft)
             try {
                 const { assetRepository } = await import('../services/assets/AssetRepository');
                 const { assetPreviewGenerator } = await import('../services/assets/AssetPreviewGenerator');
                 const asset = await assetRepository.createAsset(organizationId, {
-                    fileKey: normalizedKey,
+                    fileKey: attachment.fileUrl,
                     fileName: fileName,
                     mimeType: mimeType || undefined,
                     sizeBytes: fileSize || undefined,
@@ -3804,7 +3787,7 @@ export async function registerOrderRoutes(
                 }
             }
 
-            let attachmentData: any = {
+            const baseAttachmentData: any = {
                 orderId,
                 orderLineItemId: resolvedLineItemId,
                 quoteId: quoteId || null,
@@ -3815,126 +3798,96 @@ export async function registerOrderRoutes(
                 side: (side || 'na') as FileSide,
                 isPrimary: isPrimary || false,
             };
-
-            if (fileBuffer && originalFilename) {
-                const { decideStorageTarget } = await import('../services/storageTarget');
-                const { processUploadedFile, generateStoredFilename, generateRelativePath, computeChecksum, getFileExtension } = await import('../utils/fileStorage.js');
-                const buffer = Buffer.from(fileBuffer, 'base64');
-
-                const decidedTarget = decideStorageTarget({
-                    fileName: originalFilename,
-                    fileSizeBytes: buffer.length,
-                    requestedTarget,
+            const attachment = fileBuffer && originalFilename
+                ? (await storageApplicationService.finalizeUpload({
                     organizationId,
-                    context: 'POST /api/orders/:id/files (atomic)',
-                });
-
-                if (decidedTarget === 'supabase' && isSupabaseConfigured()) {
-                    const { SupabaseStorageService } = await import('../supabaseStorage');
-                    const storedFilename = generateStoredFilename(originalFilename);
-                    const relativePath = generateRelativePath({
+                    createdByUserId: userId,
+                    requestedTarget,
+                    resource: {
                         organizationId,
-                        orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
-                        lineItemId: resolvedLineItemId || undefined,
-                        storedFilename,
                         resourceType: 'order',
                         resourceId: orderId,
-                    });
-                    const checksum = computeChecksum(buffer);
-                    const extension = getFileExtension(originalFilename);
-                    const sizeBytes = buffer.length;
-
-                    const supabase = new SupabaseStorageService();
-                    const uploaded = await supabase.uploadFile(relativePath, buffer, mimeType || 'application/octet-stream');
-                    const fileKey = normalizeObjectKeyForDb(uploaded.path);
-
-                    attachmentData = {
-                        ...attachmentData,
-                        fileName: originalFilename,
-                        fileUrl: fileKey,
-                        fileSize: sizeBytes,
-                        mimeType: mimeType || 'application/octet-stream',
-                        thumbnailUrl: thumbnailUrl || null,
-                        originalFilename,
-                        storedFilename,
-                        relativePath: fileKey,
-                        storageProvider: 'supabase',
-                        extension,
-                        sizeBytes,
-                        checksum,
-                    };
-                } else {
-                    const fileMetadata = await processUploadedFile({
-                        originalFilename,
-                        buffer,
-                        mimeType: mimeType || 'application/octet-stream',
-                        organizationId,
                         orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
                         lineItemId: resolvedLineItemId || undefined,
-                    });
-
-                    attachmentData = {
-                        ...attachmentData,
-                        fileName: originalFilename,
-                        fileUrl: fileMetadata.relativePath,
-                        fileSize: fileMetadata.sizeBytes,
+                    },
+                    source: {
+                        kind: 'buffer',
+                        buffer: Buffer.from(fileBuffer, 'base64'),
+                        originalFilename,
                         mimeType: mimeType || 'application/octet-stream',
-                        thumbnailUrl: thumbnailUrl || null,
-                        originalFilename: fileMetadata.originalFilename,
-                        storedFilename: fileMetadata.storedFilename,
-                        relativePath: fileMetadata.relativePath,
-                        storageProvider: 'local',
-                        extension: fileMetadata.extension,
-                        sizeBytes: fileMetadata.sizeBytes,
-                        checksum: fileMetadata.checksum,
-                    };
-                }
-            }
-            else {
-                if (!fileUrl) {
-                    return res.status(400).json({ error: 'fileUrl is required for legacy uploads' });
-                }
-                const resolvedFileName = (fileName || originalFilename) as string;
-                const bucketName = 'titan-private';
-
-                const { decideStorageTarget } = await import('../services/storageTarget');
-                const sizeForDecision = fileSize != null ? Number(fileSize) : 0;
-                const decidedTarget = decideStorageTarget({
-                    fileName: resolvedFileName,
-                    fileSizeBytes: Number.isFinite(sizeForDecision) ? sizeForDecision : 0,
-                    requestedTarget,
-                    organizationId,
-                    context: 'POST /api/orders/:id/files (legacy)',
-                });
-
-                const isHttp = typeof fileUrl === 'string' && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'));
-
-                let storageProvider: 'local' | 'supabase' | undefined;
-                if (isHttp) {
-                    storageProvider = undefined;
-                } else {
-                    storageProvider = decidedTarget === 'supabase' ? 'supabase' : 'local';
-                }
-
-                const normalizedKey =
-                    storageProvider === 'supabase' && typeof fileUrl === 'string' && !isHttp
-                        ? normalizeObjectKeyForDb(fileUrl)
-                        : fileUrl;
-
-                attachmentData = {
-                    ...attachmentData,
-                    fileName: resolvedFileName,
-                    fileUrl: normalizedKey,
-                    relativePath: storageProvider ? normalizedKey : null,
-                    fileSize: fileSize || null,
-                    mimeType: mimeType || null,
-                    thumbnailUrl: storageProvider ? null : (thumbnailUrl || null),
-                    storageProvider,
-                    bucket: bucketName,
-                };
-            }
-
-            const [attachment] = await db.insert(orderAttachments).values(attachmentData).returning();
+                    },
+                    persistLink: async (tx, stored) => {
+                        const [created] = await tx.insert(orderAttachments).values({
+                            ...baseAttachmentData,
+                            fileName: stored.storedObject.originalFilename,
+                            fileUrl: stored.legacyFileUrl,
+                            fileSize: stored.storedObject.sizeBytes,
+                            mimeType: stored.storedObject.mimeType,
+                            thumbnailUrl: thumbnailUrl || null,
+                            originalFilename: stored.storedObject.originalFilename,
+                            storedFilename: stored.storedObject.storedFilename,
+                            relativePath: stored.legacyRelativePath,
+                            storageProvider: stored.legacyStorageProvider,
+                            extension: stored.storedObject.extension,
+                            sizeBytes: stored.storedObject.sizeBytes,
+                            checksum: stored.storedObject.checksum,
+                        }).returning();
+                        if (!created) throw new Error('Failed to create order file link');
+                        return created;
+                    },
+                })).linkedRecord
+                : !fileUrl
+                    ? (() => { throw new Error('fileUrl is required for legacy uploads'); })()
+                    : (typeof fileUrl === 'string' && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://')))
+                        ? (await db.insert(orderAttachments).values({
+                            ...baseAttachmentData,
+                            fileName: (fileName || originalFilename) as string,
+                            fileUrl,
+                            relativePath: null,
+                            fileSize: fileSize || null,
+                            mimeType: mimeType || null,
+                            thumbnailUrl: thumbnailUrl || null,
+                            storageProvider: undefined,
+                            bucket: 'titan-private',
+                        }).returning())[0]
+                        : (await storageApplicationService.finalizeUpload({
+                            organizationId,
+                            createdByUserId: userId,
+                            requestedTarget,
+                            resource: {
+                                organizationId,
+                                resourceType: 'order',
+                                resourceId: orderId,
+                                orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
+                                lineItemId: resolvedLineItemId || undefined,
+                            },
+                            source: {
+                                kind: 'existing-key',
+                                fileUrl: normalizeObjectKeyForDb(fileUrl),
+                                originalFilename: (fileName || originalFilename) as string,
+                                mimeType: mimeType || null,
+                                fileSize: fileSize || null,
+                            },
+                            persistLink: async (tx, stored) => {
+                                const [created] = await tx.insert(orderAttachments).values({
+                                    ...baseAttachmentData,
+                                    fileName: stored.storedObject.originalFilename,
+                                    fileUrl: stored.legacyFileUrl,
+                                    relativePath: stored.legacyRelativePath,
+                                    fileSize: stored.storedObject.sizeBytes,
+                                    mimeType: stored.storedObject.mimeType,
+                                    thumbnailUrl: null,
+                                    originalFilename: stored.storedObject.originalFilename,
+                                    storedFilename: stored.storedObject.storedFilename,
+                                    storageProvider: stored.legacyStorageProvider,
+                                    extension: stored.storedObject.extension,
+                                    sizeBytes: stored.storedObject.sizeBytes,
+                                    checksum: stored.storedObject.checksum,
+                                }).returning();
+                                if (!created) throw new Error('Failed to create order file link');
+                                return created;
+                            },
+                        })).linkedRecord;
 
             if (resolvedLineItemId) {
                 const storagePath =

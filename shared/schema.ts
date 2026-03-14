@@ -2042,7 +2042,285 @@ export type CustomerWithRelations = Customer & {
   creditTransactions: (CustomerCreditTransaction & { user: User })[];
   quotes?: Quote[];
   assignedUser?: User | null;
+  customerProductionFolderReference?: CustomerProductionFolderReference | null;
+  localCompanyFolderPath?: string | null;
 };
+
+// ============================================================
+// STORAGE FOUNDATION (TitanOS BYOS / Titan-managed Phase 1)
+// ============================================================
+
+export const organizationStorageModeEnum = pgEnum("organization_storage_mode", [
+  "titan_managed",
+  "byos_cloud",
+  "byos_local",
+  "hybrid",
+  "disabled",
+]);
+
+export const organizationStorageProfileStatusEnum = pgEnum("organization_storage_profile_status", [
+  "unconfigured",
+  "active",
+  "invalid",
+  "disabled",
+]);
+
+export const storageProviderTypeEnum = pgEnum("storage_provider_type", [
+  "titan_managed",
+  "supabase",
+  "local_filesystem",
+  "gcs",
+  "s3",
+  "azure_blob",
+]);
+
+export const storageProviderRoleEnum = pgEnum("storage_provider_role", [
+  "intake",
+  "canonical",
+  "archive",
+]);
+
+export const storageProviderConfigStatusEnum = pgEnum("storage_provider_config_status", [
+  "missing",
+  "configured",
+  "validated",
+  "invalid",
+  "disabled",
+]);
+
+export const fileStorageClassEnum = pgEnum("file_storage_class", ["hot", "warm", "cold", "archive"]);
+
+export const fileLifecycleStateEnum = pgEnum("file_lifecycle_state", [
+  "upload_pending",
+  "stored_hot",
+  "stored_warm",
+  "stored_cold",
+  "archived",
+  "restore_pending",
+  "deleted",
+]);
+
+export const storagePlacementRoleEnum = pgEnum("storage_placement_role", [
+  "intake",
+  "canonical",
+  "archive",
+  "restore_source",
+]);
+
+export const storagePlacementStateEnum = pgEnum("storage_placement_state", [
+  "active",
+  "superseded",
+  "restore_source",
+  "missing",
+  "deleted",
+]);
+
+export const fileDerivativeTypeEnum = pgEnum("file_derivative_type", [
+  "thumbnail",
+  "preview",
+  "proof",
+  "print_ready",
+  "other",
+]);
+
+export const fileDerivativeStateEnum = pgEnum("file_derivative_state", [
+  "pending",
+  "ready",
+  "failed",
+  "replaced",
+  "deleted",
+]);
+
+export const customerProductionFolderTypeEnum = pgEnum("customer_production_folder_type", [
+  "production_destination",
+]);
+
+export const customerProductionFolderStatusEnum = pgEnum("customer_production_folder_status", [
+  "missing",
+  "configured",
+  "validated",
+  "invalid",
+  "disabled",
+]);
+
+export const storageJobTypeEnum = pgEnum("storage_job_type", [
+  "finalize_upload",
+  "verify_object",
+  "validate_provider",
+  "generate_derivative",
+  "migrate_placement",
+]);
+
+export const storageJobStateEnum = pgEnum("storage_job_state", [
+  "queued",
+  "running",
+  "succeeded",
+  "retryable_failed",
+  "failed",
+  "cancelled",
+]);
+
+export const customerProductionFolderReferences = pgTable("customer_production_folder_references", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  customerId: varchar("customer_id").references(() => customers.id, { onDelete: "set null" }),
+  label: varchar("label", { length: 255 }).notNull(),
+  folderType: customerProductionFolderTypeEnum("folder_type").notNull().default("production_destination"),
+  pathOrUri: text("path_or_uri").notNull(),
+  status: customerProductionFolderStatusEnum("status").notNull().default("configured"),
+  validationError: text("validation_error"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("customer_prod_folder_refs_org_customer_idx").on(table.organizationId, table.customerId),
+  index("customer_prod_folder_refs_org_status_idx").on(table.organizationId, table.status),
+]);
+
+export const insertCustomerProductionFolderReferenceSchema = createInsertSchema(customerProductionFolderReferences).omit({
+  id: true,
+  organizationId: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  label: z.string().min(1).max(255),
+  pathOrUri: z.string().max(2048),
+  folderType: z.enum(["production_destination"]).default("production_destination"),
+  status: z.enum(["missing", "configured", "validated", "invalid", "disabled"]).default("configured"),
+  validationError: z.string().max(2048).optional().nullable(),
+});
+
+export const updateCustomerProductionFolderReferenceSchema = insertCustomerProductionFolderReferenceSchema.partial();
+
+export type InsertCustomerProductionFolderReference = z.infer<typeof insertCustomerProductionFolderReferenceSchema>;
+export type UpdateCustomerProductionFolderReference = z.infer<typeof updateCustomerProductionFolderReferenceSchema>;
+export type CustomerProductionFolderReference = typeof customerProductionFolderReferences.$inferSelect;
+
+export const storageProviderConfigs = pgTable("storage_provider_configs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  providerType: storageProviderTypeEnum("provider_type").notNull(),
+  role: storageProviderRoleEnum("role").notNull(),
+  status: storageProviderConfigStatusEnum("status").notNull().default("configured"),
+  displayName: varchar("display_name", { length: 255 }).notNull(),
+  configJson: jsonb("config_json").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`).notNull(),
+  validationError: text("validation_error"),
+  lastValidatedAt: timestamp("last_validated_at", { withTimezone: true }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("storage_provider_configs_org_idx").on(table.organizationId),
+  index("storage_provider_configs_org_role_idx").on(table.organizationId, table.role),
+  index("storage_provider_configs_org_status_idx").on(table.organizationId, table.status),
+]);
+
+export type StorageProviderConfig = typeof storageProviderConfigs.$inferSelect;
+export type InsertStorageProviderConfig = typeof storageProviderConfigs.$inferInsert;
+
+export const organizationStorageProfiles = pgTable("organization_storage_profiles", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  mode: organizationStorageModeEnum("mode").notNull().default("titan_managed"),
+  status: organizationStorageProfileStatusEnum("status").notNull().default("unconfigured"),
+  primaryProviderConfigId: varchar("primary_provider_config_id").references((): AnyPgColumn => storageProviderConfigs.id, { onDelete: "set null" }),
+  intakeProviderConfigId: varchar("intake_provider_config_id").references((): AnyPgColumn => storageProviderConfigs.id, { onDelete: "set null" }),
+  archiveProviderConfigId: varchar("archive_provider_config_id").references((): AnyPgColumn => storageProviderConfigs.id, { onDelete: "set null" }),
+  productionFolderReferenceId: varchar("production_folder_reference_id").references((): AnyPgColumn => customerProductionFolderReferences.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("organization_storage_profiles_org_uidx").on(table.organizationId),
+  index("organization_storage_profiles_status_idx").on(table.status),
+]);
+
+export type OrganizationStorageProfile = typeof organizationStorageProfiles.$inferSelect;
+export type InsertOrganizationStorageProfile = typeof organizationStorageProfiles.$inferInsert;
+
+export const fileRecords = pgTable("file_records", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  storageClass: fileStorageClassEnum("storage_class").notNull().default("hot"),
+  lifecycleState: fileLifecycleStateEnum("lifecycle_state").notNull().default("upload_pending"),
+  originalFilename: varchar("original_filename", { length: 512 }).notNull(),
+  mimeType: varchar("mime_type", { length: 255 }).notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  checksum: varchar("checksum", { length: 128 }),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("file_records_org_created_idx").on(table.organizationId, table.createdAt),
+  index("file_records_org_state_idx").on(table.organizationId, table.lifecycleState),
+]);
+
+export type FileRecord = typeof fileRecords.$inferSelect;
+export type InsertFileRecord = typeof fileRecords.$inferInsert;
+
+export const storagePlacements = pgTable("storage_placements", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  fileRecordId: varchar("file_record_id").notNull().references(() => fileRecords.id, { onDelete: "cascade" }),
+  providerConfigId: varchar("provider_config_id").notNull().references(() => storageProviderConfigs.id, { onDelete: "restrict" }),
+  placementRole: storagePlacementRoleEnum("placement_role").notNull().default("canonical"),
+  placementState: storagePlacementStateEnum("placement_state").notNull().default("active"),
+  bucket: varchar("bucket", { length: 255 }),
+  objectKey: text("object_key"),
+  localPathRef: text("local_path_ref"),
+  checksum: varchar("checksum", { length: 128 }),
+  sizeBytes: integer("size_bytes"),
+  lastVerifiedAt: timestamp("last_verified_at", { withTimezone: true }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("storage_placements_file_idx").on(table.fileRecordId),
+  index("storage_placements_provider_idx").on(table.providerConfigId),
+  index("storage_placements_state_idx").on(table.placementState),
+]);
+
+export type StoragePlacement = typeof storagePlacements.$inferSelect;
+export type InsertStoragePlacement = typeof storagePlacements.$inferInsert;
+
+export const fileDerivatives = pgTable("file_derivatives", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  fileRecordId: varchar("file_record_id").notNull().references(() => fileRecords.id, { onDelete: "cascade" }),
+  derivativeType: fileDerivativeTypeEnum("derivative_type").notNull().default("preview"),
+  state: fileDerivativeStateEnum("state").notNull().default("pending"),
+  sourcePlacementId: varchar("source_placement_id").references(() => storagePlacements.id, { onDelete: "set null" }),
+  bucket: varchar("bucket", { length: 255 }),
+  objectKey: text("object_key"),
+  mimeType: varchar("mime_type", { length: 255 }),
+  sizeBytes: integer("size_bytes"),
+  errorText: text("error_text"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("file_derivatives_file_idx").on(table.fileRecordId),
+  index("file_derivatives_state_idx").on(table.state),
+]);
+
+export type FileDerivative = typeof fileDerivatives.$inferSelect;
+export type InsertFileDerivative = typeof fileDerivatives.$inferInsert;
+
+export const storageJobs = pgTable("storage_jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  jobType: storageJobTypeEnum("job_type").notNull(),
+  state: storageJobStateEnum("state").notNull().default("queued"),
+  fileRecordId: varchar("file_record_id").references(() => fileRecords.id, { onDelete: "set null" }),
+  sourcePlacementId: varchar("source_placement_id").references(() => storagePlacements.id, { onDelete: "set null" }),
+  targetProviderConfigId: varchar("target_provider_config_id").references(() => storageProviderConfigs.id, { onDelete: "set null" }),
+  payloadJson: jsonb("payload_json").$type<Record<string, unknown> | null>(),
+  errorText: text("error_text"),
+  attempts: integer("attempts").notNull().default(0),
+  scheduledAt: timestamp("scheduled_at", { withTimezone: true }),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("storage_jobs_org_state_idx").on(table.organizationId, table.state),
+  index("storage_jobs_org_created_idx").on(table.organizationId, table.createdAt),
+  index("storage_jobs_file_idx").on(table.fileRecordId),
+]);
+
+export type StorageJob = typeof storageJobs.$inferSelect;
+export type InsertStorageJob = typeof storageJobs.$inferInsert;
 
 // Orders table (Job Management - derived from quotes or standalone)
 export const orders = pgTable("orders", {
