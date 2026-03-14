@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { storagePlacements, type InsertStoragePlacement, type StoragePlacement } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 
 export class StoragePlacementRepository {
   constructor(private readonly dbInstance = db) {}
@@ -15,6 +15,26 @@ export class StoragePlacementRepository {
 
   async listByFileRecordId(fileRecordId: string): Promise<StoragePlacement[]> {
     return this.dbInstance.select().from(storagePlacements).where(eq(storagePlacements.fileRecordId, fileRecordId));
+  }
+
+  async getActiveCanonicalPlacementByFileRecordId(
+    fileRecordId: string,
+    executor: any = this.dbInstance,
+  ): Promise<StoragePlacement | null> {
+    const [placement] = await executor
+      .select()
+      .from(storagePlacements)
+      .where(
+        and(
+          eq(storagePlacements.fileRecordId, fileRecordId),
+          eq(storagePlacements.placementRole, "canonical"),
+          eq(storagePlacements.placementState, "active"),
+        ),
+      )
+      .orderBy(desc(storagePlacements.createdAt))
+      .limit(1);
+
+    return placement ?? null;
   }
 }
 
