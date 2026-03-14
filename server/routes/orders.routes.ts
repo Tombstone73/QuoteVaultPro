@@ -599,6 +599,7 @@ export async function registerOrderRoutes(
                 const [created] = await tx.insert(orderAttachments).values({
                     orderId: args.orderId,
                     quoteId: args.quoteId || null,
+                    fileRecordId: stored.fileRecord.id,
                     uploadedByUserId: args.userId,
                     uploadedByName: args.userName,
                     description: args.description || null,
@@ -2160,116 +2161,104 @@ export async function registerOrderRoutes(
             if (files.length > 0 && process.env.DEBUG_THUMBNAILS) {
                 console.log('[OrderAttachments:GET] 📊 Raw DB record (before enrichment):');
                 console.log('  - attachmentId:', files[0].id);
-                console.log('  - fileName:', files[0].fileName);
-                console.log('  - thumbKey:', files[0].thumbKey);
-                console.log('  - previewKey:', files[0].previewKey);
-                console.log('  - thumbStatus:', files[0].thumbStatus);
-            }
-            
-            const logOnce = createRequestLogOnce();
-            const enrichedFiles = await Promise.all(files.map((f) => enrichAttachmentWithUrls(f, { logOnce })));
-            
-            // Debug logging for thumbnail troubleshooting
-            if (enrichedFiles.length > 0 && process.env.DEBUG_THUMBNAILS) {
-                console.log('[OrderAttachments:GET] 🔍 Enriched attachment (after enrichment):');
-                console.log('  - attachmentId:', enrichedFiles[0].id);
-                console.log('  - thumbUrl:', enrichedFiles[0].thumbUrl);
-                console.log('  - previewUrl:', enrichedFiles[0].previewUrl);
-                console.log('  - thumbKey:', enrichedFiles[0].thumbKey);
-                console.log('  - previewKey:', enrichedFiles[0].previewKey);
-            }
-            
-            return res.json({ success: true, data: enrichedFiles });
-        } catch (error) {
-            console.error("[OrderAttachments:GET] Error:", error);
-            return res.status(500).json({ error: "Failed to fetch order attachments" });
-        }
-    });
+                let canonicalUpload: Awaited<ReturnType<typeof storageApplicationService.finalizeUpload<any>>> | null = null;
 
-    // Unified attachments for Orders list modal: order-level attachments + line-item artwork assets
-    app.get('/api/orders/:orderId/attachments-unified', isAuthenticated, tenantContext, async (req: any, res) => {
-        try {
-            const { orderId } = req.params;
-            const organizationId = getRequestOrganizationId(req);
-            if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+                if (fileBuffer && originalFilename) {
+                    canonicalUpload = await storageApplicationService.finalizeUpload({
+                        organizationId,
+                        createdByUserId: userId,
+                        requestedTarget,
+                        resource: {
+                            organizationId,
+                            resourceType: 'order',
+                            resourceId: orderId,
+                            orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
+                            lineItemId: resolvedLineItemId || undefined,
+                        },
+                        source: {
+                            kind: 'buffer',
+                            buffer: Buffer.from(fileBuffer, 'base64'),
+                            originalFilename,
+                            mimeType: mimeType || 'application/octet-stream',
+                        },
+                        persistLink: async (tx, stored) => {
+                            const [created] = await tx.insert(orderAttachments).values({
+                                ...baseAttachmentData,
+                                fileRecordId: stored.fileRecord.id,
+                                fileName: stored.storedObject.originalFilename,
+                                fileUrl: stored.legacyFileUrl,
+                                fileSize: stored.storedObject.sizeBytes,
+                                mimeType: stored.storedObject.mimeType,
+                                thumbnailUrl: thumbnailUrl || null,
+                                originalFilename: stored.storedObject.originalFilename,
+                                storedFilename: stored.storedObject.storedFilename,
+                                relativePath: stored.legacyRelativePath,
+                                storageProvider: stored.legacyStorageProvider,
+                                extension: stored.storedObject.extension,
+                                sizeBytes: stored.storedObject.sizeBytes,
+                                checksum: stored.storedObject.checksum,
+                            }).returning();
+                            if (!created) throw new Error('Failed to create order file link');
+                            return created;
+                        },
+                    });
+                } else if (!fileUrl) {
+                    throw new Error('fileUrl is required for legacy uploads');
+                } else if (!(typeof fileUrl === 'string' && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://')))) {
+                    canonicalUpload = await storageApplicationService.finalizeUpload({
+                        organizationId,
+                        createdByUserId: userId,
+                        requestedTarget,
+                        resource: {
+                            organizationId,
+                            resourceType: 'order',
+                            resourceId: orderId,
+                            orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
+                            lineItemId: resolvedLineItemId || undefined,
+                        },
+                        source: {
+                            kind: 'existing-key',
+                            fileUrl: normalizeObjectKeyForDb(fileUrl),
+                            originalFilename: (fileName || originalFilename) as string,
+                            mimeType: mimeType || null,
+                            fileSize: fileSize || null,
+                        },
+                        persistLink: async (tx, stored) => {
+                            const [created] = await tx.insert(orderAttachments).values({
+                                ...baseAttachmentData,
+                                fileRecordId: stored.fileRecord.id,
+                                fileName: stored.storedObject.originalFilename,
+                                fileUrl: stored.legacyFileUrl,
+                                relativePath: stored.legacyRelativePath,
+                                fileSize: stored.storedObject.sizeBytes,
+                                mimeType: stored.storedObject.mimeType,
+                                thumbnailUrl: null,
+                                originalFilename: stored.storedObject.originalFilename,
+                                storedFilename: stored.storedObject.storedFilename,
+                                storageProvider: stored.legacyStorageProvider,
+                                extension: stored.storedObject.extension,
+                                sizeBytes: stored.storedObject.sizeBytes,
+                                checksum: stored.storedObject.checksum,
+                            }).returning();
+                            if (!created) throw new Error('Failed to create order file link');
+                            return created;
+                        },
+                    });
+                }
 
-            const [orderRow] = await db
-                .select({ id: orders.id })
-                .from(orders)
-                .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
-                .limit(1);
-
-            if (!orderRow) return res.status(404).json({ error: 'Order not found' });
-
-            const logOnce = createRequestLogOnce();
-
-            // 1) Order-level attachments (legacy order_attachments rows)
-            const attachmentRows = await db
-                .select({
-                    id: orderAttachments.id,
-                    fileName: orderAttachments.fileName,
-                    originalFilename: orderAttachments.originalFilename,
-                    fileUrl: orderAttachments.fileUrl,
-                    storageProvider: orderAttachments.storageProvider,
-                    thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
-                    thumbKey: orderAttachments.thumbKey,
-                    previewKey: orderAttachments.previewKey,
-                    mimeType: orderAttachments.mimeType,
-                    createdAt: orderAttachments.createdAt,
-                    orderLineItemId: orderAttachments.orderLineItemId,
-                })
-                .from(orderAttachments)
-                .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
-                .where(and(eq(orderAttachments.orderId, orderId), eq(orders.organizationId, organizationId)))
-                .orderBy(desc(orderAttachments.createdAt));
-
-            const enrichedAttachments = await Promise.all(
-                attachmentRows.map((a) => enrichAttachmentWithUrls(a as any, { logOnce }))
-            );
-
-            const attachmentItems = (enrichedAttachments as any[]).map((att) => {
-                const filename = String(att?.originalFilename ?? att?.fileName ?? 'Attachment');
-                const objectPath = (att?.objectPath as string | null) ?? null;
-                const objectsUrl = typeof objectPath === 'string' && objectPath.length
-                    ? `/objects/${objectPath}?filename=${encodeURIComponent(filename)}`
-                    : null;
-                const previewThumbnailUrl =
-                    (att?.previewThumbnailUrl as string | null) ??
-                    (att?.thumbnailUrl as string | null) ??
-                    (att?.thumbUrl as string | null) ??
-                    (att?.previewUrl as string | null) ??
-                    null;
-
-                return {
-                    id: String(att?.id),
-                    filename,
-                    mimeType: (att?.mimeType as string | null) ?? null,
-                    fileSize: (att?.fileSize as number | null) ?? null,
-                    originalUrl: objectsUrl ?? ((att?.originalUrl as string | null) ?? null),
-                    objectPath,
-                    downloadUrl:
-                        (att?.downloadUrl as string | null) ??
-                        (objectPath ? `/objects/${objectPath}?download=1&filename=${encodeURIComponent(filename)}` : null),
-                    previewThumbnailUrl,
-                    createdAt: att?.createdAt ?? null,
-                    source: 'order' as const,
-                };
-            });
-
-            // 2) Line-item assets linked via asset_links (PHASE 2 pipeline)
-            const lineItemRows = await db
-                .select({ id: orderLineItems.id })
-                .from(orderLineItems)
-                .where(eq(orderLineItems.orderId, orderId));
-
-            const lineItemIds = lineItemRows.map((r) => r.id).filter(Boolean) as string[];
-
-            let lineItemAssetItems: any[] = [];
-            if (lineItemIds.length) {
-                const linkRows = await db
-                    .select({
-                        lineItemId: assetLinks.parentId,
-                        assetId: assetLinks.assetId,
+                const attachment = canonicalUpload
+                    ? canonicalUpload.linkedRecord
+                    : (await db.insert(orderAttachments).values({
+                        ...baseAttachmentData,
+                        fileName: (fileName || originalFilename) as string,
+                        fileUrl,
+                        relativePath: null,
+                        fileSize: fileSize || null,
+                        mimeType: mimeType || null,
+                        thumbnailUrl: thumbnailUrl || null,
+                        storageProvider: undefined,
+                        bucket: 'titan-private',
+                    }).returning())[0];
                         role: assetLinks.role,
                         createdAt: assetLinks.createdAt,
                     })
@@ -3812,8 +3801,10 @@ export async function registerOrderRoutes(
                         ? 'insert_http_attachment'
                         : 'canonical_finalize_existing_key';
 
-            const attachment = fileBuffer && originalFilename
-                ? (await storageApplicationService.finalizeUpload({
+            let canonicalUpload: Awaited<ReturnType<typeof storageApplicationService.finalizeUpload<any>>> | null = null;
+
+            if (fileBuffer && originalFilename) {
+                canonicalUpload = await storageApplicationService.finalizeUpload({
                     organizationId,
                     createdByUserId: userId,
                     requestedTarget,
@@ -3833,6 +3824,7 @@ export async function registerOrderRoutes(
                     persistLink: async (tx, stored) => {
                         const [created] = await tx.insert(orderAttachments).values({
                             ...baseAttachmentData,
+                            fileRecordId: stored.fileRecord.id,
                             fileName: stored.storedObject.originalFilename,
                             fileUrl: stored.legacyFileUrl,
                             fileSize: stored.storedObject.sizeBytes,
@@ -3849,59 +3841,64 @@ export async function registerOrderRoutes(
                         if (!created) throw new Error('Failed to create order file link');
                         return created;
                     },
-                })).linkedRecord
-                : !fileUrl
-                    ? (() => { throw new Error('fileUrl is required for legacy uploads'); })()
-                    : (typeof fileUrl === 'string' && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://')))
-                        ? (await db.insert(orderAttachments).values({
+                });
+            } else if (!fileUrl) {
+                throw new Error('fileUrl is required for legacy uploads');
+            } else if (!(typeof fileUrl === 'string' && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://')))) {
+                canonicalUpload = await storageApplicationService.finalizeUpload({
+                    organizationId,
+                    createdByUserId: userId,
+                    requestedTarget,
+                    resource: {
+                        organizationId,
+                        resourceType: 'order',
+                        resourceId: orderId,
+                        orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
+                        lineItemId: resolvedLineItemId || undefined,
+                    },
+                    source: {
+                        kind: 'existing-key',
+                        fileUrl: normalizeObjectKeyForDb(fileUrl),
+                        originalFilename: (fileName || originalFilename) as string,
+                        mimeType: mimeType || null,
+                        fileSize: fileSize || null,
+                    },
+                    persistLink: async (tx, stored) => {
+                        const [created] = await tx.insert(orderAttachments).values({
                             ...baseAttachmentData,
-                            fileName: (fileName || originalFilename) as string,
-                            fileUrl,
-                            relativePath: null,
-                            fileSize: fileSize || null,
-                            mimeType: mimeType || null,
-                            thumbnailUrl: thumbnailUrl || null,
-                            storageProvider: undefined,
-                            bucket: 'titan-private',
-                        }).returning())[0]
-                        : (await storageApplicationService.finalizeUpload({
-                            organizationId,
-                            createdByUserId: userId,
-                            requestedTarget,
-                            resource: {
-                                organizationId,
-                                resourceType: 'order',
-                                resourceId: orderId,
-                                orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
-                                lineItemId: resolvedLineItemId || undefined,
-                            },
-                            source: {
-                                kind: 'existing-key',
-                                fileUrl: normalizeObjectKeyForDb(fileUrl),
-                                originalFilename: (fileName || originalFilename) as string,
-                                mimeType: mimeType || null,
-                                fileSize: fileSize || null,
-                            },
-                            persistLink: async (tx, stored) => {
-                                const [created] = await tx.insert(orderAttachments).values({
-                                    ...baseAttachmentData,
-                                    fileName: stored.storedObject.originalFilename,
-                                    fileUrl: stored.legacyFileUrl,
-                                    relativePath: stored.legacyRelativePath,
-                                    fileSize: stored.storedObject.sizeBytes,
-                                    mimeType: stored.storedObject.mimeType,
-                                    thumbnailUrl: null,
-                                    originalFilename: stored.storedObject.originalFilename,
-                                    storedFilename: stored.storedObject.storedFilename,
-                                    storageProvider: stored.legacyStorageProvider,
-                                    extension: stored.storedObject.extension,
-                                    sizeBytes: stored.storedObject.sizeBytes,
-                                    checksum: stored.storedObject.checksum,
-                                }).returning();
-                                if (!created) throw new Error('Failed to create order file link');
-                                return created;
-                            },
-                        })).linkedRecord;
+                            fileRecordId: stored.fileRecord.id,
+                            fileName: stored.storedObject.originalFilename,
+                            fileUrl: stored.legacyFileUrl,
+                            relativePath: stored.legacyRelativePath,
+                            fileSize: stored.storedObject.sizeBytes,
+                            mimeType: stored.storedObject.mimeType,
+                            thumbnailUrl: null,
+                            originalFilename: stored.storedObject.originalFilename,
+                            storedFilename: stored.storedObject.storedFilename,
+                            storageProvider: stored.legacyStorageProvider,
+                            extension: stored.storedObject.extension,
+                            sizeBytes: stored.storedObject.sizeBytes,
+                            checksum: stored.storedObject.checksum,
+                        }).returning();
+                        if (!created) throw new Error('Failed to create order file link');
+                        return created;
+                    },
+                });
+            }
+
+            const attachment = canonicalUpload
+                ? canonicalUpload.linkedRecord
+                : (await db.insert(orderAttachments).values({
+                    ...baseAttachmentData,
+                    fileName: (fileName || originalFilename) as string,
+                    fileUrl,
+                    relativePath: null,
+                    fileSize: fileSize || null,
+                    mimeType: mimeType || null,
+                    thumbnailUrl: thumbnailUrl || null,
+                    storageProvider: undefined,
+                    bucket: 'titan-private',
+                }).returning())[0];
 
             if (resolvedLineItemId) {
                 uploadStep = 'create_line_item_file_record';
@@ -3922,6 +3919,7 @@ export async function registerOrderRoutes(
                         originalFilename: (attachment.originalFilename as string | null) || (attachment.fileName as string),
                         mimeType: attachment.mimeType,
                         sizeBytes: attachment.sizeBytes ?? attachment.fileSize,
+                        fileRecordId: canonicalUpload?.fileRecord.id ?? null,
                         uploadedByUserId: userId,
                     });
                 }

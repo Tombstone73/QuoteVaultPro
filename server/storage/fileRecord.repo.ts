@@ -22,6 +22,16 @@ export class FileRecordRepository {
 
     return row ?? null;
   }
+
+  async getById(id: string, executor: any = this.dbInstance): Promise<FileRecord | null> {
+    const [row] = await executor
+      .select()
+      .from(fileRecords)
+      .where(eq(fileRecords.id, id))
+      .limit(1);
+
+    return row ?? null;
+  }
 }
 
 export const fileRecordRepository = new FileRecordRepository();

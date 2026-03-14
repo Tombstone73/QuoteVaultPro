@@ -306,6 +306,7 @@ export async function registerAttachmentRoutes(
           quoteId: args.quoteId,
           quoteLineItemId: null,
           organizationId: args.organizationId,
+          fileRecordId: stored.fileRecord.id,
           uploadedByUserId: args.userId,
           uploadedByName: args.userName,
           description: args.description || null,
