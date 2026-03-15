@@ -8,6 +8,7 @@ import { isSupabaseConfigured, SupabaseStorageService } from '../../supabaseStor
 import { normalizeObjectKeyForDb, tryExtractSupabaseObjectKeyFromUrl } from '../../lib/supabaseObjectHelpers';
 import { resolveLocalStoragePath } from '../localStoragePath';
 import { normalizeTenantObjectKey } from '../../utils/orgKeys';
+import { persistReadyFileDerivative } from '../storage/persistFileDerivative';
 
 class AssetSourceNotReadyError extends Error {
   constructor(message: string) {
@@ -109,6 +110,23 @@ export class AssetPreviewGenerator {
       const previewKey = normalizeTenantObjectKey(`thumbs/${asset.organizationId}/asset/${asset.id}/preview.jpg`);
       await this.uploadBuffer(previewKey, previewBuffer, 'image/jpeg');
       console.log(`[AssetPreviewGenerator] Uploaded preview to ${previewKey}`);
+
+      await Promise.all([
+        persistReadyFileDerivative({
+          fileRecordId: asset.fileRecordId,
+          derivativeType: 'thumbnail',
+          objectKey: thumbKey,
+          mimeType: 'image/jpeg',
+          sizeBytes: thumbBuffer.length,
+        }),
+        persistReadyFileDerivative({
+          fileRecordId: asset.fileRecordId,
+          derivativeType: 'preview',
+          objectKey: previewKey,
+          mimeType: 'image/jpeg',
+          sizeBytes: previewBuffer.length,
+        }),
+      ]);
 
       // Update asset record
       await assetRepository.setAssetPreviewKeys(asset.organizationId, asset.id, {

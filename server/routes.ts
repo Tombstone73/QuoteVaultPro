@@ -311,6 +311,7 @@ import {
   createRequestLogOnce,
   enrichAttachmentWithUrls,
   normalizeObjectKeyForDb,
+  resolveDerivativeFileAccess,
   resolveOriginalFileAccess,
   scheduleSupabaseObjectSelfCheck,
   tryExtractSupabaseObjectKeyFromUrl
@@ -6712,27 +6713,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Attachment not found" });
       }
 
-      // Generate signed URLs for derived assets if they exist
-      let thumbUrl: string | null = null;
-      let previewUrl: string | null = null;
-
-      if (attachment.thumbKey && isSupabaseConfigured()) {
-        const supabaseService = new SupabaseStorageService();
-        thumbUrl = await supabaseService.getSignedDownloadUrl(attachment.thumbKey, 3600);
-      }
-
-      if (attachment.previewKey && isSupabaseConfigured()) {
-        const supabaseService = new SupabaseStorageService();
-        previewUrl = await supabaseService.getSignedDownloadUrl(attachment.previewKey, 3600);
-      }
+      const derivativeLogOnce = createRequestLogOnce();
+      const [thumbAccess, previewAccess] = await Promise.all([
+        resolveDerivativeFileAccess(attachment, "thumbnail", { logOnce: derivativeLogOnce }),
+        resolveDerivativeFileAccess(attachment, "preview", { logOnce: derivativeLogOnce }),
+      ]);
 
       console.log(`[LineItemFiles:ASSETS] Returning assets for file ${fileId}, thumbStatus=${attachment.thumbStatus}`);
 
       return res.json({
         success: true,
         data: {
-          thumbUrl,
-          previewUrl,
+          thumbUrl: thumbAccess.url,
+          previewUrl: previewAccess.url,
           thumbStatus: attachment.thumbStatus || 'uploaded',
         },
       });
@@ -10800,6 +10793,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           id: orderAttachments.id,
           orderId: orderAttachments.orderId,
           orderLineItemId: orderAttachments.orderLineItemId,
+          fileRecordId: orderAttachments.fileRecordId,
           fileName: orderAttachments.fileName,
           fileUrl: orderAttachments.fileUrl,
           thumbKey: orderAttachments.thumbKey,
@@ -10894,45 +10888,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }>
       >();
 
-      for (const a of attachmentRows) {
-        // Convert legacy external URLs to authenticated /objects/ proxy
-        let fileUrl = a.fileUrl;
-        let thumbnailUrl = a.thumbnailUrl ?? null;
-        
-        // If thumbnailUrl is null but thumbKey exists, construct URL from thumbKey
-        if (!thumbnailUrl && a.thumbKey && a.thumbStatus === 'thumb_ready') {
-          thumbnailUrl = `/objects/${a.thumbKey}`;
-        }
-        
-        // If fileUrl doesn't start with http/https or /objects/, prepend /objects/
-        if (fileUrl && !fileUrl.startsWith('http') && !fileUrl.startsWith('/objects/')) {
-          fileUrl = `/objects/${fileUrl}`;
-        }
-        
-        // If fileUrl contains /objects/ path, convert to proxy URL
-        if (fileUrl && fileUrl.includes('/objects/')) {
-          const match = fileUrl.match(/\/objects\/(.+?)(?:\?|$)/);
-          if (match) {
-            fileUrl = `/objects/${match[1]}`;
-          }
-        }
-        
-        // If thumbnailUrl contains /objects/ path, convert to proxy URL
-        if (thumbnailUrl && thumbnailUrl.includes('/objects/')) {
-          const match = thumbnailUrl.match(/\/objects\/(.+?)(?:\?|$)/);
-          if (match) {
-            thumbnailUrl = `/objects/${match[1]}`;
-          }
-        }
-        
+      const attachmentLogOnce = createRequestLogOnce();
+      const enrichedAttachmentRows = await Promise.all(
+        attachmentRows.map((row) => enrichAttachmentWithUrls(row, { logOnce: attachmentLogOnce })),
+      );
+
+      for (const a of enrichedAttachmentRows) {
         const mapped = {
           id: a.id,
           orderLineItemId: a.orderLineItemId ?? null,
           fileName: a.fileName,
-          fileUrl,
+          fileUrl: a.originalUrl ?? null,
+          availabilityStatus: a.availabilityStatus,
           thumbKey: a.thumbKey ?? null,
           previewKey: a.previewKey ?? null,
-          thumbnailUrl,
+          thumbnailUrl: a.thumbnailUrl ?? null,
           side: a.side ?? "na",
           isPrimary: !!a.isPrimary,
           thumbStatus: a.thumbStatus ?? null,
@@ -10957,12 +10927,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Process new assets/assetLinks data and merge into artwork maps
       const assetLogOnce = createRequestLogOnce();
+      const { enrichAssetPreviewUrls } = await import('./services/assets/enrichAssetWithUrls');
       for (const link of assetLinkRows) {
-        const originalAccess = await resolveOriginalFileAccess(link, { logOnce: assetLogOnce });
-        const normalizedAssetThumbUrl =
-          link.thumbKey && link.previewStatus === "ready"
-            ? `/objects/${String(link.thumbKey).replace(/^\/+/, "")}`
-            : null;
+        const [originalAccess, enrichedAsset] = await Promise.all([
+          resolveOriginalFileAccess(link, { logOnce: assetLogOnce }),
+          enrichAssetPreviewUrls(link as any),
+        ]);
         const mapped = {
           id: link.id,
           orderLineItemId: link.parentType === "order_line_item" ? link.parentId : null,
@@ -10971,7 +10941,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           availabilityStatus: originalAccess.availabilityStatus,
           thumbKey: link.thumbKey ?? null,
           previewKey: link.previewKey ?? null,
-          thumbnailUrl: normalizedAssetThumbUrl,
+          thumbnailUrl:
+            (enrichedAsset as any).previewThumbnailUrl ??
+            (enrichedAsset as any).thumbnailUrl ??
+            (enrichedAsset as any).thumbUrl ??
+            null,
           side: "na", // New assets system doesn't track side yet, could enhance later
           isPrimary: false, // New assets system doesn't track isPrimary yet
           thumbStatus: link.previewStatus ?? null,
@@ -11017,12 +10991,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const computePreviewUrl = (art: any): string | undefined => {
         const thumbUrl = normalizeObjectsUrl(art?.thumbnailUrl);
         if (thumbUrl) return thumbUrl;
-
-        const thumbKey = typeof art?.thumbKey === "string" ? art.thumbKey : null;
-        const thumbStatus = String(art?.thumbStatus || "").toLowerCase();
-        if (thumbKey && (thumbStatus === "thumb_ready" || thumbStatus === "ready")) {
-          return normalizeObjectsUrl(thumbKey) ?? `/objects/${String(thumbKey).replace(/^\/+/, "")}`;
-        }
 
         const ext = getFileExt(art?.fileName) || getFileExt(art?.fileUrl);
         const fileUrl = normalizeObjectsUrl(art?.fileUrl);
@@ -11398,6 +11366,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           id: orderAttachments.id,
           orderId: orderAttachments.orderId,
           orderLineItemId: orderAttachments.orderLineItemId,
+          fileRecordId: orderAttachments.fileRecordId,
           fileName: orderAttachments.fileName,
           fileUrl: orderAttachments.fileUrl,
           thumbKey: orderAttachments.thumbKey,
@@ -11423,45 +11392,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const byOrder: Array<any> = [];
       const byLineItem = new Map<string, Array<any>>();
-      for (const a of attachmentRows) {
-        // Convert legacy relative URLs to authenticated /objects/ proxy
-        let fileUrl = a.fileUrl;
-        let thumbnailUrl = a.thumbnailUrl ?? null;
+      const orderAttachmentLogOnce = createRequestLogOnce();
+      const enrichedOrderAttachments = await Promise.all(
+        attachmentRows.map((row) => enrichAttachmentWithUrls(row, { logOnce: orderAttachmentLogOnce })),
+      );
 
-        // If thumbnailUrl is null but thumbKey exists, construct URL from thumbKey (only when ready)
-        if (!thumbnailUrl && a.thumbKey && a.thumbStatus === "thumb_ready") {
-          thumbnailUrl = `/objects/${a.thumbKey}`;
-        }
-
-        // If fileUrl doesn't start with http/https or /objects/, prepend /objects/
-        if (fileUrl && !fileUrl.startsWith("http") && !fileUrl.startsWith("/objects/")) {
-          fileUrl = `/objects/${fileUrl}`;
-        }
-
-        // If fileUrl contains /objects/ path, normalize to proxy URL
-        if (fileUrl && fileUrl.includes("/objects/")) {
-          const match = fileUrl.match(/\/objects\/(.+?)(?:\?|$)/);
-          if (match) {
-            fileUrl = `/objects/${match[1]}`;
-          }
-        }
-
-        // If thumbnailUrl contains /objects/ path, normalize to proxy URL
-        if (thumbnailUrl && thumbnailUrl.includes("/objects/")) {
-          const match = thumbnailUrl.match(/\/objects\/(.+?)(?:\?|$)/);
-          if (match) {
-            thumbnailUrl = `/objects/${match[1]}`;
-          }
-        }
-
+      for (const a of enrichedOrderAttachments) {
         const mapped = {
           id: a.id,
           orderLineItemId: a.orderLineItemId ?? null,
           fileName: a.fileName,
-          fileUrl,
+          fileUrl: a.originalUrl ?? null,
+          availabilityStatus: a.availabilityStatus,
           thumbKey: a.thumbKey ?? null,
           previewKey: a.previewKey ?? null,
-          thumbnailUrl,
+          thumbnailUrl: a.thumbnailUrl ?? null,
           side: a.side ?? "na",
           isPrimary: !!a.isPrimary,
           thumbStatus: a.thumbStatus ?? null,
@@ -11507,8 +11452,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .orderBy(desc(assetLinks.createdAt));
 
         const assetLogOnce = createRequestLogOnce();
+        const { enrichAssetPreviewUrls } = await import('./services/assets/enrichAssetWithUrls');
         for (const link of assetLinkRows) {
-          const originalAccess = await resolveOriginalFileAccess(link, { logOnce: assetLogOnce });
+          const [originalAccess, enrichedAsset] = await Promise.all([
+            resolveOriginalFileAccess(link, { logOnce: assetLogOnce }),
+            enrichAssetPreviewUrls(link as any),
+          ]);
           const mapped = {
             id: link.id,
             orderLineItemId: link.parentType === "order_line_item" ? link.parentId : null,
@@ -11518,9 +11467,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
             thumbKey: link.thumbKey ?? null,
             previewKey: link.previewKey ?? null,
             thumbnailUrl:
-              link.thumbKey && link.previewStatus === "ready"
-                ? `/objects/${String(link.thumbKey).replace(/^\/+/, "")}`
-                : null,
+              (enrichedAsset as any).previewThumbnailUrl ??
+              (enrichedAsset as any).thumbnailUrl ??
+              (enrichedAsset as any).thumbUrl ??
+              null,
             side: "na",
             isPrimary: false,
             thumbStatus: link.previewStatus ?? null,
@@ -13667,8 +13617,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (orderIdsForThumbFallback.length > 0) {
           const fallbackAttachments = await db
             .select({
+              id: orderAttachments.id,
+              fileRecordId: orderAttachments.fileRecordId,
               orderLineItemId: orderAttachments.orderLineItemId,
               orderId: orderAttachments.orderId,
+              fileName: orderAttachments.fileName,
               thumbKey: orderAttachments.thumbKey,
               thumbnailUrl: orderAttachments.thumbnailUrl,
               fileUrl: orderAttachments.fileUrl,
@@ -13690,22 +13643,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // Map by line item (prefer) or by order id (fallback)
           const fallbackByLineItem = new Map<string, string>();
           const fallbackByOrder = new Map<string, string>();
-          for (const att of fallbackAttachments) {
-            const resolveThumbUrl = (): string | null => {
+          const fallbackLogOnce = createRequestLogOnce();
+          const enrichedFallbackAttachments = await Promise.all(
+            fallbackAttachments.map((att) => enrichAttachmentWithUrls(att, { logOnce: fallbackLogOnce })),
+          );
+
+          for (const att of enrichedFallbackAttachments) {
+            const thumbUrl = (() => {
               if (att.thumbnailUrl) return att.thumbnailUrl;
-              if (att.thumbKey && String(att.thumbStatus || '').toLowerCase() === 'thumb_ready') {
-                return `/objects/${String(att.thumbKey).replace(/^\/+/, '')}`;
-              }
-              const fUrl = String(att.fileUrl || '');
-              if (fUrl) {
-                const ext = fUrl.split('.').pop()?.toLowerCase() ?? '';
-                if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext)) {
-                  return fUrl.startsWith('/objects/') ? fUrl : `/objects/${fUrl.replace(/^\/+/, '')}`;
-                }
+              const fUrl = String(att.originalUrl || '');
+              const ext = String(att.fileName || '').split('.').pop()?.toLowerCase() ?? '';
+              if (fUrl && ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext)) {
+                return fUrl;
               }
               return null;
-            };
-            const thumbUrl = resolveThumbUrl();
+            })();
             if (!thumbUrl) continue;
 
             if (att.orderLineItemId && lineItemIdsNeedingThumbFallback.includes(att.orderLineItemId)) {

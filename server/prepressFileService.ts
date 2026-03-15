@@ -23,6 +23,11 @@ import {
 } from "./utils/fileStorage";
 import { decideStorageTarget } from "./services/storageTarget";
 import { normalizeObjectKeyForDb } from "./lib/supabaseObjectHelpers";
+import {
+  createRequestLogOnce,
+  resolveDerivativeFileAccess,
+  resolveOriginalFileAccess,
+} from "./lib/supabaseObjectHelpers";
 
 const BUCKET_NAME = process.env.PREPRESS_FILES_BUCKET || process.env.GCS_BUCKET_NAME || "quotevaultpro-uploads";
 
@@ -470,6 +475,7 @@ export async function getLineItemFiles(
       sizeBytes: orderAttachments.sizeBytes,
       fileSize: orderAttachments.fileSize,
       role: orderAttachments.role,
+      fileRecordId: orderAttachments.fileRecordId,
       fileUrl: orderAttachments.fileUrl,
       thumbKey: orderAttachments.thumbKey,
       createdAt: orderAttachments.createdAt,
@@ -479,11 +485,13 @@ export async function getLineItemFiles(
     .where(eq(orderAttachments.orderLineItemId, lineItemId))
     .orderBy(orderAttachments.createdAt);
 
-  const bridgedOriginals: BridgedOriginal[] = legacyRows.map((row) => {
-    const key = (row.fileUrl || "").replace(/^\/+/, "");
-    const downloadUrl = key.startsWith("http") ? key : `/objects/${key}`;
-    const thumbKey = (row.thumbKey || "").replace(/^\/+/, "");
-    const thumbnailUrl = thumbKey ? `/objects/${thumbKey}` : null;
+  const logOnce = createRequestLogOnce();
+  const bridgedOriginals: BridgedOriginal[] = await Promise.all(legacyRows.map(async (row) => {
+    const [originalAccess, thumbAccess] = await Promise.all([
+      resolveOriginalFileAccess(row, { logOnce }),
+      resolveDerivativeFileAccess(row, "thumbnail", { logOnce }),
+    ]);
+
     return {
       id: row.id,
       originalFilename: row.originalFilename || row.fileName,
@@ -492,11 +500,11 @@ export async function getLineItemFiles(
       role: row.role ?? "other",
       createdAt: row.createdAt,
       source: "order_attachment" as const,
-      downloadUrl,
-      thumbnailUrl,
+      downloadUrl: originalAccess.downloadUrl ?? originalAccess.originalUrl ?? "",
+      thumbnailUrl: thumbAccess.url,
       uploadedBy: row.uploadedByName ?? null,
     };
-  });
+  }));
 
   return {
     originals: allFiles.filter((f) => f.role === "original"),
