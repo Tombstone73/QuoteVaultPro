@@ -309,6 +309,7 @@ import {
 import { ObjectPermission } from "./objectAcl";
 import { customerProductionFolderReferenceRepository } from "./storage/customerProductionFolderReference.repo";
 import { SupabaseStorageService, isSupabaseConfigured } from "./supabaseStorage";
+import { storageApplicationService } from "./services/storage/StorageApplicationService";
 import {
   createRequestLogOnce,
   enrichAttachmentWithUrls,
@@ -6251,29 +6252,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         (typeof requestedStorageTarget === 'string' ? requestedStorageTarget : null) ||
         (typeof storageTarget === 'string' ? storageTarget : null);
 
-      const bufferForDecision = fileBuffer ? Buffer.from(fileBuffer, 'base64') : null;
-      const sizeForDecision = bufferForDecision ? bufferForDecision.length : (fileSize != null ? Number(fileSize) : 0);
-
-      const { decideStorageTarget, getMaxCloudUploadBytes } = await import('./services/storageTarget');
-      const maxCloudBytes = getMaxCloudUploadBytes();
-      const decidedTarget = decideStorageTarget({
-        fileName: (originalFilename || fileName || null) as any,
-        fileSizeBytes: sizeForDecision,
-        requestedTarget,
-        organizationId,
-        context: 'POST /api/quotes/:quoteId/line-items/:lineItemId/files',
-      });
-
-      // Explicit local_dev selection requires atomic upload payload.
-      // But server enforcement wins: even if client asked for local_dev, we may decide supabase.
-      if (decidedTarget === 'local_dev' && (!fileBuffer || !originalFilename)) {
-        return res.status(400).json({
-          error: "local_dev uploads require fileBuffer + originalFilename",
-          maxCloudBytes,
-          decidedTarget,
-        });
-      }
-
       // Legacy flow requires fileUrl.
       if (!fileBuffer && !fileUrl) {
         return res.status(400).json({ error: "fileUrl is required for legacy uploads" });
@@ -6305,7 +6283,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.warn(`[LineItemFiles:POST] PDF detected but page_count_status column missing; PDF processing disabled for ${fileName}`);
       }
 
-      let attachmentData: any = {
+      const baseAttachmentData = {
         quoteId,
         quoteLineItemId: lineItemId,
         organizationId,
@@ -6313,121 +6291,130 @@ export async function registerRoutes(app: Express): Promise<Server> {
         uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
         description: description || null,
         bucket: 'titan-private',
-      };
+      } as const;
 
-      // Atomic upload path (server decides provider)
-      if (fileBuffer && originalFilename) {
-        const buffer = bufferForDecision || Buffer.from(fileBuffer, 'base64');
-        const contentType = (mimeType || 'application/octet-stream') as string;
+      const defaultThumbStatus = isPdfEarly ? ('thumb_pending' as const) : ('uploaded' as const);
+      const defaultPageCountStatus = pdfColumnsExist ? (isPdfEarly ? ('detecting' as const) : ('unknown' as const)) : null;
+      const isExternalUrl = typeof fileUrl === 'string' && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'));
 
-        if (decidedTarget === 'supabase' && isSupabaseConfigured()) {
-          const { SupabaseStorageService } = await import('./supabaseStorage');
-          const {
-            generateStoredFilename,
-            generateRelativePath,
-            computeChecksum,
-            getFileExtension,
-          } = await import('./utils/fileStorage');
+      let canonicalUpload: Awaited<ReturnType<typeof storageApplicationService.finalizeUpload<any>>> | null = null;
 
-          const storedFilename = generateStoredFilename(originalFilename);
-          const relativePath = generateRelativePath({
+      if (fileBuffer && resolvedUploadName) {
+        canonicalUpload = await storageApplicationService.finalizeUpload({
+          organizationId,
+          createdByUserId: userId ?? null,
+          requestedTarget,
+          resource: {
             organizationId,
             resourceType: 'quote',
             resourceId: quoteId,
-            storedFilename,
-          });
-          const checksum = computeChecksum(buffer);
-          const extension = getFileExtension(originalFilename);
+            lineItemId,
+          },
+          source: {
+            kind: 'buffer',
+            buffer: Buffer.from(fileBuffer, 'base64'),
+            originalFilename: resolvedUploadName,
+            mimeType: (mimeType || 'application/octet-stream') as string,
+          },
+          persistLink: async (tx, stored) => {
+            const [created] = await tx.insert(quoteAttachments).values({
+              ...baseAttachmentData,
+              fileRecordId: stored.fileRecord.id,
+              fileName: stored.storedObject.originalFilename,
+              fileUrl: null,
+              fileSize: stored.storedObject.sizeBytes,
+              mimeType: stored.storedObject.mimeType,
+              originalFilename: stored.storedObject.originalFilename,
+              storedFilename: stored.storedObject.storedFilename,
+              relativePath: null,
+              storageProvider: null,
+              extension: stored.storedObject.extension,
+              sizeBytes: stored.storedObject.sizeBytes,
+              checksum: stored.storedObject.checksum,
+              thumbStatus: defaultThumbStatus,
+              pageCountStatus: defaultPageCountStatus,
+            }).returning();
 
-          const supabase = new SupabaseStorageService();
-          const uploaded = await supabase.uploadFile(relativePath, buffer, contentType);
-
-          attachmentData = {
-            ...attachmentData,
-            fileName: originalFilename,
-            originalFilename,
-            fileUrl: normalizeObjectKeyForDb(uploaded.path),
-            fileSize: buffer.length,
-            mimeType: contentType,
-            storedFilename,
-            relativePath: normalizeObjectKeyForDb(uploaded.path),
-            storageProvider: 'supabase',
-            extension,
-            sizeBytes: buffer.length,
-            checksum,
-            thumbStatus: isPdfEarly ? ('thumb_pending' as const) : ('uploaded' as const),
-          };
-        } else {
-          const { processUploadedFile } = await import('./utils/fileStorage');
-
-          const fileMetadata = await processUploadedFile({
-            originalFilename,
-            buffer,
-            mimeType: contentType,
+            if (!created) throw new Error('Failed to create quote line item attachment link');
+            return created;
+          },
+        });
+      } else if (fileUrl && !isExternalUrl) {
+        canonicalUpload = await storageApplicationService.finalizeUpload({
+          organizationId,
+          createdByUserId: userId ?? null,
+          requestedTarget,
+          resource: {
             organizationId,
             resourceType: 'quote',
             resourceId: quoteId,
-          });
+            lineItemId,
+          },
+          source: {
+            kind: 'existing-key',
+            fileUrl: normalizeObjectKeyForDb(fileUrl),
+            originalFilename: resolvedUploadName,
+            mimeType: mimeType || null,
+            fileSize: fileSize || null,
+          },
+          persistLink: async (tx, stored) => {
+            const [created] = await tx.insert(quoteAttachments).values({
+              ...baseAttachmentData,
+              fileRecordId: stored.fileRecord.id,
+              fileName: stored.storedObject.originalFilename,
+              fileUrl: null,
+              fileSize: stored.storedObject.sizeBytes,
+              mimeType: stored.storedObject.mimeType,
+              originalFilename: stored.storedObject.originalFilename,
+              storedFilename: stored.storedObject.storedFilename,
+              relativePath: null,
+              storageProvider: null,
+              extension: stored.storedObject.extension,
+              sizeBytes: stored.storedObject.sizeBytes,
+              checksum: stored.storedObject.checksum,
+              thumbStatus: defaultThumbStatus,
+              pageCountStatus: defaultPageCountStatus,
+            }).returning();
 
-          attachmentData = {
-            ...attachmentData,
-            fileName: originalFilename,
-            originalFilename: fileMetadata.originalFilename,
-            fileUrl: fileMetadata.relativePath,
-            fileSize: fileMetadata.sizeBytes,
-            mimeType: contentType,
-            storedFilename: fileMetadata.storedFilename,
-            relativePath: fileMetadata.relativePath,
-            storageProvider: 'local',
-            extension: fileMetadata.extension,
-            sizeBytes: fileMetadata.sizeBytes,
-            checksum: fileMetadata.checksum,
-            thumbStatus: isPdfEarly ? ('thumb_pending' as const) : ('uploaded' as const),
-          };
-        }
-      } else {
-        // Legacy/signed-URL path
-        const storageKey = fileUrl as string;
-        let storageProvider: string | undefined;
-
-        if (storageKey && (storageKey.startsWith('http://') || storageKey.startsWith('https://'))) {
-          storageProvider = undefined;
-        } else if (decidedTarget === 'supabase') {
-          storageProvider = 'supabase';
-        } else {
-          storageProvider = 'local';
-        }
-
-        attachmentData = {
-          ...attachmentData,
-          fileName: (fileName || originalFilename) as string,
-          originalFilename: (originalFilename || fileName) as string,
-          fileUrl:
-            storageProvider === 'supabase' && storageKey && !storageKey.startsWith('http://') && !storageKey.startsWith('https://')
-              ? normalizeObjectKeyForDb(storageKey)
-              : storageKey,
-          fileSize: fileSize || null,
-          mimeType: mimeType || null,
-          storageProvider,
-          thumbStatus: isPdfEarly ? ('thumb_pending' as const) : ('uploaded' as const),
-        };
-      }
-
-      // Only include PDF-specific fields if columns exist
-      if (pdfColumnsExist) {
-        attachmentData.pageCountStatus = isPdfEarly ? ('detecting' as const) : ('unknown' as const);
+            if (!created) throw new Error('Failed to create quote line item attachment link');
+            return created;
+          },
+        });
       }
 
       console.log(`[LineItemFiles:POST] Inserting attachment with quoteLineItemId=${lineItemId}`);
-      const [attachment] = await db.insert(quoteAttachments).values(attachmentData).returning();
+      const attachment = canonicalUpload
+        ? canonicalUpload.linkedRecord
+        : (await db.insert(quoteAttachments).values({
+            ...baseAttachmentData,
+            fileRecordId: null,
+            fileName: resolvedUploadName,
+            originalFilename: resolvedUploadName,
+            fileUrl,
+            relativePath: null,
+            fileSize: fileSize || null,
+            mimeType: mimeType || null,
+            storageProvider: undefined,
+            thumbStatus: defaultThumbStatus,
+            pageCountStatus: defaultPageCountStatus,
+          }).returning())[0];
+
+      const canonicalOriginal = attachment.fileRecordId
+        ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
+        : null;
+      const canonicalStorageKey = canonicalOriginal?.objectKey ?? canonicalOriginal?.localPathRef ?? null;
+      const canonicalStorageProvider = canonicalOriginal?.localPathRef
+        ? 'local'
+        : canonicalOriginal?.objectKey
+          ? 'supabase'
+          : null;
 
       // Best-effort self-check for Supabase-backed keys (non-blocking)
-      if (attachment.storageProvider === 'supabase' && attachment.fileUrl) {
-        const supabaseAttachmentKey = attachment.fileUrl;
+      if (canonicalStorageProvider === 'supabase' && canonicalStorageKey) {
         res.on('finish', () => {
           scheduleSupabaseObjectSelfCheck({
             bucket: 'titan-private',
-            path: supabaseAttachmentKey,
+            path: canonicalStorageKey,
             context: { attachmentType: 'quote', quoteId, lineItemId, attachmentId: attachment.id },
           });
         });
@@ -6474,18 +6461,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const isAiByMime = /illustrator/i.test(lowerMimeType) || (/postscript/i.test(lowerMimeType) && isAiByName);
       const isAi = isAiByName || isAiByMime;
 
-      const hasStorageProvider = !!attachment.storageProvider;
-      const isNotHttpUrl =
-        !!attachment.fileUrl &&
-        !attachment.fileUrl.startsWith('http://') &&
-        !attachment.fileUrl.startsWith('https://');
+      const hasStorageProvider = !!canonicalStorageProvider;
+      const isNotHttpUrl = !!canonicalStorageKey;
 
       console.log('[LineItemFiles:POST][Detect]', {
         attachmentId: attachment.id,
         fileName: attachmentFileName,
         mimeType: attachment.mimeType ?? null,
-        storageProvider: attachment.storageProvider ?? null,
-        fileUrl: attachment.fileUrl ?? null,
+        storageProvider: canonicalStorageProvider ?? attachment.storageProvider ?? null,
+        fileUrl: canonicalStorageKey ?? attachment.fileUrl ?? null,
         isPdfByMime,
         isPdfByName,
         isPdf,
@@ -6503,15 +6487,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const attachmentFileNameForThumb = attachment.originalFilename || attachment.fileName || null;
       const isSupportedImage = isSupportedImageType(attachment.mimeType, attachmentFileNameForThumb);
 
-      if (isSupportedImage && hasStorageProvider && isNotHttpUrl && attachment.fileUrl) {
+      if (isSupportedImage && hasStorageProvider && isNotHttpUrl && canonicalStorageKey && canonicalStorageProvider) {
         const { generateImageDerivatives, isThumbnailGenerationEnabled } = await import('./services/thumbnailGenerator');
         if (isThumbnailGenerationEnabled()) {
           void generateImageDerivatives(
             attachment.id,
             'quote',
-            attachment.fileUrl,
+            canonicalStorageKey,
             attachment.mimeType || null,
-            attachment.storageProvider!,
+            canonicalStorageProvider,
             organizationId,
             attachmentFileNameForThumb
           ).catch((error) => {
@@ -6523,17 +6507,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           console.log(`[LineItemFiles:POST] Thumbnail generation disabled, skipping for ${attachment.id}`);
         }
       } else if (isSupportedImage && (!hasStorageProvider || !isNotHttpUrl)) {
-        console.log(`[LineItemFiles:POST] Skipping thumbnail generation for ${attachment.id}: storageProvider=${attachment.storageProvider}, fileUrl starts with http=${attachment.fileUrl?.startsWith('http')}`);
+        console.log(`[LineItemFiles:POST] Skipping thumbnail generation for ${attachment.id}: canonicalStorageProvider=${canonicalStorageProvider}, canonicalStorageKey=${canonicalStorageKey}`);
       }
 
       // Fire-and-forget PDF processing for PDFs (non-blocking)
       // Trigger AFTER response finishes to ensure upload completes successfully first
       // Normalize storageProvider: if missing but Supabase is configured and fileUrl starts with "uploads/", treat as supabase
-      const normalizedStorageProvider =
-        attachment.storageProvider ??
-        (isSupabaseConfigured() && attachment.fileUrl?.startsWith("uploads/")
-          ? "supabase"
-          : null);
+      const normalizedStorageProvider = canonicalStorageProvider;
 
       if (isPdf || isAi) {
         if (!pdfColumnsExist) {
@@ -6542,11 +6522,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           console.warn(`[LineItemFiles:POST] PDF/AI detected but storageProvider missing; skipping processing for attachmentId=${attachment.id}`);
         } else if (!isNotHttpUrl) {
           console.warn(`[LineItemFiles:POST] PDF/AI detected but fileUrl is http(s); skipping processing for attachmentId=${attachment.id}`);
-        } else if (!attachment.fileUrl) {
+        } else if (!canonicalStorageKey) {
           console.warn(`[LineItemFiles:POST] PDF/AI detected but fileUrl missing; skipping processing for attachmentId=${attachment.id}`);
         } else {
           console.log(`[LineItemFiles:POST] PDF/AI detected; queued processing for attachmentId=${attachment.id}, fileName=${attachmentFileName}`);
-          const attachmentStorageKey = attachment.fileUrl;
+          const attachmentStorageKey = canonicalStorageKey;
 
           res.on("finish", () => {
             setImmediate(() => {
@@ -6572,7 +6552,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      res.json({ success: true, data: attachment });
+      const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+      res.json({ success: true, data: enrichedAttachment });
     } catch (error: any) {
       console.error("[LineItemFiles:POST] Error:", error);
       // Provide useful error message without leaking sensitive details
@@ -16023,14 +16004,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return normalizeObjectKeyForDb(keyFromObjectsPrefix);
       };
 
-      type AttachCandidate = {
-        fileKey: string;
-        fileRecordId?: string | null;
-        fileName?: string;
-        mimeType?: string;
-        sizeBytes?: number;
-        role?: string;
-      };
+      type AttachCandidate =
+        | {
+            kind: 'existing-file-record';
+            dedupeKey: string;
+            fileKey: string;
+            fileRecordId: string;
+            fileName?: string;
+            mimeType?: string;
+            sizeBytes?: number;
+            role?: string;
+          }
+        | {
+            kind: 'existing-key';
+            dedupeKey: string;
+            fileKey: string;
+            fileRecordId?: null;
+            fileName?: string;
+            mimeType?: string;
+            sizeBytes?: number;
+            role?: string;
+          }
+        | {
+            kind: 'upload-session';
+            dedupeKey: string;
+            uploadId: string;
+            fileName?: string;
+            mimeType?: string;
+            sizeBytes?: number;
+            role?: string;
+          };
 
       const body = req.body ?? {};
       const requestedTarget =
@@ -16041,9 +16044,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // 1) Preferred (current UI): fileName + fileUrl + optional metadata
       const singleKey = normalizeStorageKeyFromAny(body.fileUrl ?? body.fileKey ?? body.path ?? body.objectId);
       if (singleKey) {
+        const singleFileRecordId = typeof body.fileRecordId === 'string' ? body.fileRecordId : null;
         candidates.push({
+          kind: singleFileRecordId ? 'existing-file-record' : 'existing-key',
+          dedupeKey: singleFileRecordId ? `file-record:${singleFileRecordId}` : `key:${singleKey}`,
           fileKey: singleKey,
-          fileRecordId: typeof body.fileRecordId === 'string' ? body.fileRecordId : null,
+          fileRecordId: singleFileRecordId,
           fileName: typeof body.fileName === 'string' ? body.fileName : undefined,
           mimeType: typeof body.mimeType === 'string' ? body.mimeType : undefined,
           sizeBytes: body.fileSize != null ? Number(body.fileSize) : (body.sizeBytes != null ? Number(body.sizeBytes) : undefined),
@@ -16056,9 +16062,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         for (const f of body.files) {
           const k = normalizeStorageKeyFromAny(f?.fileUrl ?? f?.fileKey ?? f?.path ?? f?.objectId);
           if (!k) continue;
+          const candidateFileRecordId = typeof f?.fileRecordId === 'string' ? f.fileRecordId : null;
           candidates.push({
+            kind: candidateFileRecordId ? 'existing-file-record' : 'existing-key',
+            dedupeKey: candidateFileRecordId ? `file-record:${candidateFileRecordId}` : `key:${k}`,
             fileKey: k,
-            fileRecordId: typeof f?.fileRecordId === 'string' ? f.fileRecordId : null,
+            fileRecordId: candidateFileRecordId,
             fileName: typeof f?.fileName === 'string' ? f.fileName : (typeof f?.originalFilename === 'string' ? f.originalFilename : undefined),
             mimeType: typeof f?.mimeType === 'string' ? f.mimeType : undefined,
             sizeBytes: f?.fileSize != null ? Number(f.fileSize) : (f?.sizeBytes != null ? Number(f.sizeBytes) : undefined),
@@ -16075,6 +16084,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const k = normalizeStorageKeyFromAny(rawKey);
           if (!k) continue;
           candidates.push({
+            kind: 'existing-key',
+            dedupeKey: `key:${k}`,
             fileKey: k,
             role: normalizeRole(body.role),
           });
@@ -16090,57 +16101,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
       if (uploadIds.length > 0) {
-        const { loadUploadSessionMeta, saveUploadSessionMeta } = await import('./services/chunkedUploads');
-        const { decideStorageTarget } = await import('./services/storageTarget');
         for (const uploadId of uploadIds) {
-          const meta = await loadUploadSessionMeta(uploadId);
-          if (meta.organizationId !== organizationId) continue;
-          if (meta.status !== 'finalized' || !meta.relativePath) continue;
-
-          let storageKey = meta.relativePath;
-
-          const decidedTarget = decideStorageTarget({
-            fileName: meta.originalFilename,
-            fileSizeBytes: meta.sizeBytes || 0,
-            requestedTarget,
-            organizationId,
-            context: 'POST /api/orders/:orderId/line-items/:lineItemId/files (uploadId)',
-          });
-
-          // If the file is small enough for cloud, migrate staged local file to Supabase and attach the cloud key.
-          if (decidedTarget === 'supabase' && isSupabaseConfigured() && meta.relativePath) {
-            try {
-              const { SupabaseStorageService } = await import('./supabaseStorage');
-              const { getAbsolutePath, deleteFile: deleteLocalFile } = await import('./utils/fileStorage');
-              const fsPromises = await import('fs/promises');
-
-              const abs = getAbsolutePath(meta.relativePath);
-              const buffer = await fsPromises.readFile(abs);
-
-              const supabase = new SupabaseStorageService();
-              const uploaded = await supabase.uploadFile(meta.relativePath, buffer, meta.mimeType || 'application/octet-stream');
-              const newKey = normalizeObjectKeyForDb(uploaded.path);
-
-              const oldKey = meta.relativePath;
-              meta.relativePath = newKey;
-              await saveUploadSessionMeta(uploadId, meta).catch(() => false);
-              await deleteLocalFile(oldKey).catch(() => false);
-              storageKey = newKey;
-            } catch {
-              // fall back to attaching the staged local key
-            }
-          }
-
-          // NOTE: chunked uploads currently only support quote-attachment/order-attachment.
-          // We allow both here, but always attach as an order_line_item asset.
-          const k = normalizeStorageKeyFromAny(storageKey);
-          if (!k) continue;
-
           candidates.push({
-            fileKey: k,
-            fileName: meta.originalFilename || meta.storedFilename || undefined,
-            mimeType: meta.mimeType || undefined,
-            sizeBytes: meta.sizeBytes || undefined,
+            kind: 'upload-session',
+            dedupeKey: `upload:${uploadId}`,
+            uploadId,
             role: normalizeRole(body.role),
           });
         }
@@ -16148,7 +16113,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // De-dupe by fileKey
       const uniqueCandidates = Array.from(
-        new Map(candidates.map((c) => [c.fileKey, c])).values()
+        new Map(candidates.map((c) => [c.dedupeKey, c])).values()
       );
 
       if (uniqueCandidates.length === 0) {
@@ -16170,29 +16135,103 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const createdAssets: any[] = [];
       for (const c of uniqueCandidates) {
-        const asset = await assetRepository.createAsset(organizationId, {
-          fileRecordId: c.fileRecordId ?? null,
-          fileKey: c.fileRecordId ? null : c.fileKey,
-          fileName: c.fileName || guessFileNameFromKey(c.fileKey),
-          mimeType: c.mimeType,
-          sizeBytes: c.sizeBytes,
-        } as any);
+        const finalized: Awaited<ReturnType<typeof storageApplicationService.finalizeUpload<any>>> | null = c.kind === 'upload-session'
+          ? await storageApplicationService.finalizeUpload({
+              organizationId,
+              createdByUserId: userId ?? null,
+              requestedTarget,
+              resource: {
+                organizationId,
+                resourceType: 'order',
+                resourceId: orderId,
+                lineItemId,
+              },
+              source: {
+                kind: 'upload-session',
+                uploadId: c.uploadId,
+                expectedPurpose: 'order-attachment',
+                expectedParentId: orderId,
+              },
+              persistLink: async (tx, stored) => {
+                const [created] = await tx.insert(assets).values({
+                  organizationId,
+                  fileRecordId: stored.fileRecord.id,
+                  fileKey: null,
+                  fileName: stored.storedObject.originalFilename,
+                  mimeType: stored.storedObject.mimeType,
+                  sizeBytes: stored.storedObject.sizeBytes,
+                }).returning();
+                if (!created) throw new Error('Failed to create order line item asset');
+                return created;
+              },
+            })
+          : c.kind === 'existing-key'
+            ? await storageApplicationService.finalizeUpload({
+                organizationId,
+              createdByUserId: userId ?? null,
+                requestedTarget,
+                resource: {
+                  organizationId,
+                  resourceType: 'order',
+                  resourceId: orderId,
+                  lineItemId,
+                },
+                source: {
+                  kind: 'existing-key',
+                  fileUrl: c.fileKey,
+                  originalFilename: c.fileName || guessFileNameFromKey(c.fileKey),
+                  mimeType: c.mimeType || null,
+                  fileSize: c.sizeBytes || null,
+                },
+                persistLink: async (tx, stored) => {
+                  const [created] = await tx.insert(assets).values({
+                    organizationId,
+                    fileRecordId: stored.fileRecord.id,
+                    fileKey: null,
+                    fileName: stored.storedObject.originalFilename,
+                    mimeType: stored.storedObject.mimeType,
+                    sizeBytes: stored.storedObject.sizeBytes,
+                  }).returning();
+                  if (!created) throw new Error('Failed to create order line item asset');
+                  return created;
+                },
+              })
+            : null;
+
+          const candidateFileRecordId = c.kind === 'existing-file-record' ? c.fileRecordId : null;
+          const candidateFileKey = c.kind === 'upload-session' ? null : c.fileKey;
+          const candidateFileName = c.kind === 'upload-session'
+            ? (c.fileName || 'upload')
+            : (c.fileName || guessFileNameFromKey(c.fileKey));
+
+          const asset: any = finalized?.linkedRecord ?? await assetRepository.createAsset(organizationId, {
+            fileRecordId: candidateFileRecordId,
+            fileKey: c.kind === 'existing-file-record' ? null : candidateFileKey,
+            fileName: candidateFileName,
+            mimeType: c.mimeType,
+            sizeBytes: c.sizeBytes,
+          } as any);
 
         await assetRepository.linkAsset(organizationId, asset.id, 'order_line_item', lineItemId, normalizeRole(c.role) as any);
 
-        if (userId) {
+        const resolvedOriginal = asset.fileRecordId
+          ? await canonicalFileReadResolver.resolveOriginal(String(asset.fileRecordId))
+          : null;
+        const storagePath = resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? candidateFileKey;
+
+        if (userId && storagePath) {
           await createLineItemFileRecord({
             organizationId,
             orderId,
             lineItemId,
             role: 'original',
-            storagePath: c.fileKey,
-            storageKey: c.fileKey,
+            storagePath,
+            storageKey: storagePath,
             storageBucket: null,
-            originalFilename: c.fileName || guessFileNameFromKey(c.fileKey),
-            mimeType: c.mimeType || null,
-            sizeBytes: c.sizeBytes || null,
-            fileRecordId: c.fileRecordId ?? null,
+            originalFilename: asset.fileName || candidateFileName,
+            mimeType: asset.mimeType || c.mimeType || null,
+            sizeBytes: asset.sizeBytes ?? c.sizeBytes ?? null,
+            fileRecordId: asset.fileRecordId ?? candidateFileRecordId,
             uploadedByUserId: userId,
           });
         }
@@ -16232,7 +16271,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   fileSizeBytes: asset.sizeBytes ?? c.sizeBytes ?? null,
                   mimeType: asset.mimeType ?? c.mimeType ?? null,
                   storageProvider: requestedTarget ?? null,
-                  fileKey: asset.fileKey,
+                  fileKey: resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? asset.fileKey ?? null,
                   role: normalizeRole(c.role),
                 },
               },
