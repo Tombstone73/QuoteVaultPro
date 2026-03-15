@@ -15,8 +15,9 @@ import {
  * All methods enforce multi-tenant isolation via organizationId.
  */
 export class AssetRepository {
-  private normalizeAssetFileKey(raw: string): string {
+  private normalizeAssetFileKey(raw: string | null | undefined): string | null {
     let key = (raw || '').toString().trim();
+    if (!key) return null;
 
     // Prefer extracting canonical object keys from URLs.
     if (key.startsWith('http://') || key.startsWith('https://')) {

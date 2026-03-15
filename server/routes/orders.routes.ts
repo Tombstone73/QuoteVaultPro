@@ -607,7 +607,7 @@ export async function registerOrderRoutes(
                     uploadedByName: args.userName,
                     description: args.description || null,
                     fileName: stored.storedObject.originalFilename,
-                    fileUrl: stored.storedObject.objectKey ?? stored.storedObject.localPathRef ?? stored.legacyFileUrl,
+                    fileUrl: null,
                     fileSize: stored.storedObject.sizeBytes,
                     mimeType: stored.storedObject.mimeType,
                     originalFilename: stored.storedObject.originalFilename,
@@ -2473,7 +2473,8 @@ export async function registerOrderRoutes(
                     });
                     inserted.push(created);
                 }
-                return res.json({ success: true, data: inserted });
+                const enrichedInserted = await Promise.all(inserted.map((file) => enrichAttachmentWithUrls(file)));
+                return res.json({ success: true, data: enrichedInserted });
             }
 
             if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
@@ -2523,7 +2524,7 @@ export async function registerOrderRoutes(
                 const assetFileKey = resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? attachment.fileUrl;
                 const asset = await assetRepository.createAsset(organizationId, {
                     fileRecordId: attachment.fileRecordId ?? null,
-                    fileKey: assetFileKey,
+                    fileKey: attachment.fileRecordId ? null : assetFileKey,
                     fileName: fileName,
                     mimeType: mimeType || undefined,
                     sizeBytes: fileSize || undefined,
@@ -2540,7 +2541,8 @@ export async function registerOrderRoutes(
                 console.error(`[OrderAttachments:POST] Asset creation failed (non-blocking):`, assetError);
             }
 
-            return res.json({ success: true, data: attachment });
+            const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+            return res.json({ success: true, data: enrichedAttachment });
         } catch (error) {
             console.error("[OrderAttachments:POST] Error:", error);
             return res.status(500).json({ error: "Failed to attach file to order" });
@@ -2593,6 +2595,8 @@ export async function registerOrderRoutes(
                             .select({ orderRefs: sql<number>`count(*)` })
                             .from(orderAttachments)
                             .where(eq(orderAttachments.fileRecordId, String(attachment.fileRecordId)))
+                        : !storageProvider
+                            ? [{ orderRefs: 0 }]
                         : await db
                             .select({ orderRefs: sql<number>`count(*)` })
                             .from(orderAttachments)
@@ -2613,6 +2617,8 @@ export async function registerOrderRoutes(
                                     eq(quoteAttachments.fileRecordId, String(attachment.fileRecordId))
                                 )
                             )
+                        : !storageProvider
+                            ? [{ quoteRefs: 0 }]
                         : await db
                             .select({ quoteRefs: sql<number>`count(*)` })
                             .from(quoteAttachments)
@@ -3753,7 +3759,7 @@ export async function registerOrderRoutes(
                             ...baseAttachmentData,
                             fileRecordId: stored.fileRecord.id,
                             fileName: stored.storedObject.originalFilename,
-                            fileUrl: stored.storedObject.objectKey ?? stored.storedObject.localPathRef ?? stored.legacyFileUrl,
+                            fileUrl: null,
                             fileSize: stored.storedObject.sizeBytes,
                             mimeType: stored.storedObject.mimeType,
                             thumbnailUrl: thumbnailUrl || null,
@@ -3795,7 +3801,7 @@ export async function registerOrderRoutes(
                             ...baseAttachmentData,
                             fileRecordId: stored.fileRecord.id,
                             fileName: stored.storedObject.originalFilename,
-                            fileUrl: stored.storedObject.objectKey ?? stored.storedObject.localPathRef ?? stored.legacyFileUrl,
+                            fileUrl: null,
                             relativePath: null,
                             fileSize: stored.storedObject.sizeBytes,
                             mimeType: stored.storedObject.mimeType,
@@ -3869,7 +3875,8 @@ export async function registerOrderRoutes(
             });
 
             uploadStep = 'respond_success';
-            res.json({ success: true, data: attachment });
+            const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+            res.json({ success: true, data: enrichedAttachment });
         } catch (error: any) {
             console.error('[POST /api/orders/:id/files] Failed', {
                 step: uploadStep,
