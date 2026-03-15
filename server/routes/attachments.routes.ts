@@ -850,6 +850,7 @@ export async function registerAttachmentRoutes(
       // Lookup asset
       const [asset] = await db
         .select({
+          fileRecordId: assets.fileRecordId,
           fileKey: assets.fileKey,
           fileName: assets.fileName,
           mimeType: assets.mimeType,
@@ -861,16 +862,16 @@ export async function registerAttachmentRoutes(
         ))
         .limit(1);
 
-      if (!asset || !asset.fileKey) {
+      if (!asset) {
         return res.status(404).json({ error: "Asset not found" });
       }
 
-      // Redirect to authenticated /objects/ proxy
-      const objectPath = asset.fileKey;
-      const filename = asset.fileName || 'download';
-      const redirectUrl = `/objects/${objectPath}?filename=${encodeURIComponent(filename)}`;
-      
-      return res.redirect(302, redirectUrl);
+      const resolved = await resolveOriginalFileAccess(asset);
+      if (!resolved.downloadUrl) {
+        return res.status(404).json({ error: "Asset unavailable", availabilityStatus: resolved.availabilityStatus });
+      }
+
+      return res.redirect(302, resolved.downloadUrl);
     } catch (error) {
       console.error("[/api/assets/:id/download] Error:", error);
       return res.status(500).json({ error: "Failed to download asset" });

@@ -6174,7 +6174,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { assetRepository } = await import('./services/assets/AssetRepository');
       const { enrichAssetsWithRoles } = await import('./services/assets/enrichAssetWithUrls');
       const linkedAssets = await assetRepository.listAssetsForParent(organizationId, 'quote_line_item', lineItemId);
-      const enrichedAssets = enrichAssetsWithRoles(linkedAssets);
+      const enrichedAssets = await enrichAssetsWithRoles(linkedAssets);
 
       console.log(`[LineItemFiles:GET] Found ${files.length} files + ${linkedAssets.length} assets for line item ${lineItemId}`);
       res.json({ success: true, data: enrichedFiles, assets: enrichedAssets });
@@ -10831,7 +10831,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           parentId: assetLinks.parentId,
           role: assetLinks.role,
           fileName: assets.fileName,
-          fileKey: assets.fileKey,
+          fileRecordId: assets.fileRecordId,
           thumbKey: assets.thumbKey,
           previewKey: assets.previewKey,
           previewStatus: assets.previewStatus,
@@ -10866,7 +10866,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           id: string;
           orderLineItemId: string | null;
           fileName: string;
-          fileUrl: string;
+          fileUrl: string | null;
+          availabilityStatus?: 'available' | 'archived' | 'restoring' | 'missing';
           thumbKey: string | null;
           previewKey: string | null;
           thumbnailUrl: string | null;
@@ -10882,7 +10883,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           id: string;
           orderLineItemId: string | null;
           fileName: string;
-          fileUrl: string;
+          fileUrl: string | null;
+          availabilityStatus?: 'available' | 'archived' | 'restoring' | 'missing';
           thumbKey: string | null;
           previewKey: string | null;
           thumbnailUrl: string | null;
@@ -10954,10 +10956,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Process new assets/assetLinks data and merge into artwork maps
+      const assetLogOnce = createRequestLogOnce();
       for (const link of assetLinkRows) {
-        const normalizedAssetFileUrl = link.fileKey
-          ? `/objects/${String(link.fileKey).replace(/^\/+/, "")}`
-          : `/api/assets/${link.id}/download`;
+        const originalAccess = await resolveOriginalFileAccess(link, { logOnce: assetLogOnce });
         const normalizedAssetThumbUrl =
           link.thumbKey && link.previewStatus === "ready"
             ? `/objects/${String(link.thumbKey).replace(/^\/+/, "")}`
@@ -10966,7 +10967,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           id: link.id,
           orderLineItemId: link.parentType === "order_line_item" ? link.parentId : null,
           fileName: link.fileName,
-          fileUrl: normalizedAssetFileUrl,
+          fileUrl: originalAccess.originalUrl,
+          availabilityStatus: originalAccess.availabilityStatus,
           thumbKey: link.thumbKey ?? null,
           previewKey: link.previewKey ?? null,
           thumbnailUrl: normalizedAssetThumbUrl,
@@ -11483,7 +11485,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             parentType: assetLinks.parentType,
             parentId: assetLinks.parentId,
             fileName: assets.fileName,
-            fileKey: assets.fileKey,
+            fileRecordId: assets.fileRecordId,
             thumbKey: assets.thumbKey,
             previewKey: assets.previewKey,
             previewStatus: assets.previewStatus,
@@ -11504,12 +11506,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
           )
           .orderBy(desc(assetLinks.createdAt));
 
+        const assetLogOnce = createRequestLogOnce();
         for (const link of assetLinkRows) {
+          const originalAccess = await resolveOriginalFileAccess(link, { logOnce: assetLogOnce });
           const mapped = {
             id: link.id,
             orderLineItemId: link.parentType === "order_line_item" ? link.parentId : null,
             fileName: link.fileName,
-            fileUrl: link.fileKey ? `/objects/${String(link.fileKey).replace(/^\/+/, "")}` : `/api/assets/${link.id}/download`,
+            fileUrl: originalAccess.originalUrl,
+            availabilityStatus: originalAccess.availabilityStatus,
             thumbKey: link.thumbKey ?? null,
             previewKey: link.previewKey ?? null,
             thumbnailUrl:
@@ -15995,7 +16000,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { assetRepository } = await import('./services/assets/AssetRepository');
       const { enrichAssetsWithRoles } = await import('./services/assets/enrichAssetWithUrls');
       const linkedAssets = await assetRepository.listAssetsForParent(organizationId, 'order_line_item', lineItemId);
-      const enrichedAssets = enrichAssetsWithRoles(linkedAssets);
+      const enrichedAssets = await enrichAssetsWithRoles(linkedAssets);
 
       console.log(`[OrderLineItemFiles:GET] Found ${files.length} files + ${linkedAssets.length} assets for line item ${lineItemId}`);
       res.json({ success: true, data: enrichedFiles, assets: enrichedAssets });
@@ -16249,7 +16254,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             console.error('[AssetPreviewGenerator] async generatePreviews failed', err);
           });
         });
-        createdAssets.push({ ...enrichAssetWithUrls(asset), role: normalizeRole(c.role) });
+        createdAssets.push({ ...(await enrichAssetWithUrls(asset)), role: normalizeRole(c.role) });
 
         try {
           await storage.createOrderAuditLog({
