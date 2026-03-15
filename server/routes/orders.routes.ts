@@ -978,7 +978,7 @@ export async function registerOrderRoutes(
                                             for (const assetId of assetIds) {
                                                 const asset = assetsById.get(assetId);
                                                 if (!asset) continue;
-                                                const enriched = enrichAssetPreviewUrls(asset);
+                                                const enriched = await enrichAssetPreviewUrls(asset);
                                                 const thumb =
                                                     (enriched as any).previewThumbnailUrl ??
                                                     (enriched as any).thumbnailUrl ??
@@ -2235,7 +2235,7 @@ export async function registerOrderRoutes(
                             .map(async (link) => {
                                 const asset = assetsById.get(String(link.assetId));
                                 if (!asset) return null;
-                                const enriched = enrichAssetPreviewUrls(asset);
+                                const enriched = await enrichAssetPreviewUrls(asset);
                                 const originalAccess = await resolveOriginalFileAccess(asset, { logOnce });
                                 const filename = String((enriched as any).fileName ?? 'Artwork');
                                 const previewThumbnailUrl =
@@ -2381,7 +2381,7 @@ export async function registerOrderRoutes(
 
                 const raw = assetsById.get(assetId);
                 if (!raw) continue;
-                const enriched = enrichAssetPreviewUrls(raw);
+                const enriched = await enrichAssetPreviewUrls(raw);
 
                 // Use the same priority as client getThumbSrc (previewThumbnailUrl, thumbnailUrl, thumbUrl, previewUrl, pages[0].thumbUrl)
                 const url =

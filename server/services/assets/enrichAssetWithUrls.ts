@@ -1,7 +1,10 @@
 import type { Asset } from '../../../shared/schema';
-import type { AssetVariant } from '../../../shared/schema';
 import { applyThumbnailContract } from '../../lib/thumbnailContract';
-import { resolveOriginalFileAccess, type OriginalFileAccessResult } from '../../lib/supabaseObjectHelpers';
+import {
+  resolveDerivativeFileAccess,
+  resolveOriginalFileAccess,
+  type OriginalFileAccessResult,
+} from '../../lib/supabaseObjectHelpers';
 
 /**
  * Asset with enriched URL fields for frontend consumption
@@ -18,27 +21,20 @@ export interface EnrichedAsset extends Asset {
   previewThumbnailUrl?: string; // Alias for thumbUrl for compatibility
 }
 
-function buildDerivativeUrls(asset: Asset) {
-  const variants = (asset as Asset & { variants?: AssetVariant[] })?.variants ?? [];
-
-  const variantThumbKey =
-    variants.find((v) => v.kind === 'thumb' && v.status === 'ready')?.key ??
-    variants.find((v) => v.kind === 'thumb')?.key;
-  const variantPreviewKey =
-    variants.find((v) => v.kind === 'preview' && v.status === 'ready')?.key ??
-    variants.find((v) => v.kind === 'preview')?.key;
-
-  const previewKey = asset.previewKey ?? variantPreviewKey;
-  const thumbKey = asset.thumbKey ?? variantThumbKey;
+async function buildDerivativeUrls(asset: Asset) {
+  const [previewAccess, thumbAccess] = await Promise.all([
+    resolveDerivativeFileAccess(asset, 'preview'),
+    resolveDerivativeFileAccess(asset, 'thumbnail'),
+  ]);
 
   return {
-    previewUrl: previewKey ? `/objects/${previewKey}` : null,
-    thumbUrl: thumbKey ? `/objects/${thumbKey}` : null,
+    previewUrl: previewAccess.url,
+    thumbUrl: thumbAccess.url,
   };
 }
 
-export function enrichAssetPreviewUrls(asset: Asset): EnrichedAsset {
-  const { previewUrl, thumbUrl } = buildDerivativeUrls(asset);
+export async function enrichAssetPreviewUrls(asset: Asset): Promise<EnrichedAsset> {
+  const { previewUrl, thumbUrl } = await buildDerivativeUrls(asset);
 
   return applyThumbnailContract({
     ...asset,
@@ -59,7 +55,7 @@ export function enrichAssetPreviewUrls(asset: Asset): EnrichedAsset {
  * Preview/thumb fields still come from derivative keys on the asset record.
  */
 export async function enrichAssetWithUrls(asset: Asset): Promise<EnrichedAsset> {
-  const derivativeUrls = enrichAssetPreviewUrls(asset);
+  const derivativeUrls = await enrichAssetPreviewUrls(asset);
   const originalAccess = await resolveOriginalFileAccess(asset);
 
   return applyThumbnailContract({

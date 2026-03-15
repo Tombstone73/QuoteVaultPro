@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage";
 import { applyThumbnailContract } from "./thumbnailContract";
 import { canonicalFileReadResolver, type CanonicalFileReadStatus } from "../services/storage/CanonicalFileReadResolver";
+import { canonicalDerivativeReadResolver, type CanonicalDerivativeReadStatus } from "../services/storage/CanonicalDerivativeReadResolver";
 
 export type FileRole = "artwork" | "proof" | "reference" | "customer_po" | "setup" | "output" | "other";
 export type FileSide = "front" | "back" | "na";
@@ -15,6 +16,12 @@ export type OriginalFileAccessResult = {
     originalUrl: string | null;
     downloadUrl: string | null;
     availabilityStatus: CanonicalFileReadStatus;
+};
+
+export type DerivativeFileAccessResult = {
+    objectPath: string | null;
+    url: string | null;
+    availabilityStatus: CanonicalDerivativeReadStatus;
 };
 
 function objectsProxyUrl(key: string, params?: { download?: boolean; filename?: string; bucket?: string | null }) {
@@ -97,6 +104,63 @@ export async function resolveOriginalFileAccess(
             bucket: resolved.bucket ?? null,
         }),
         availabilityStatus,
+    };
+}
+
+export async function resolveDerivativeFileAccess(
+    attachment: {
+        id?: string | null;
+        fileRecordId?: string | null;
+    },
+    derivativeType: "thumbnail" | "preview",
+    options?: {
+        logOnce?: (key: string, ...args: any[]) => void;
+    }
+): Promise<DerivativeFileAccessResult> {
+    const logOnce = options?.logOnce;
+
+    if (!attachment.fileRecordId) {
+        logOnce?.(
+            `canonical-derivative-missing:${derivativeType}:${attachment.id ?? "unknown"}`,
+            `[CanonicalDerivativeRead] Missing fileRecordId; ${derivativeType} read unavailable`,
+            { attachmentId: attachment.id ?? null, derivativeType }
+        );
+
+        return {
+            objectPath: null,
+            url: null,
+            availabilityStatus: "missing",
+        };
+    }
+
+    const resolved = await canonicalDerivativeReadResolver.resolveDerivative(String(attachment.fileRecordId), derivativeType);
+    const objectPath = resolved.objectKey ?? null;
+
+    if (resolved.status !== "available" || !objectPath) {
+        if (resolved.status === "missing") {
+            logOnce?.(
+                `canonical-derivative-unavailable:${derivativeType}:${attachment.fileRecordId}`,
+                `[CanonicalDerivativeRead] Canonical derivative unavailable`,
+                {
+                    attachmentId: attachment.id ?? null,
+                    fileRecordId: attachment.fileRecordId,
+                    derivativeType,
+                    availabilityStatus: resolved.status,
+                }
+            );
+        }
+
+        return {
+            objectPath: null,
+            url: null,
+            availabilityStatus: resolved.status,
+        };
+    }
+
+    return {
+        objectPath,
+        url: objectsProxyUrl(objectPath, { bucket: resolved.bucket ?? null }),
+        availabilityStatus: resolved.status,
     };
 }
 
@@ -194,15 +258,13 @@ export async function enrichAttachmentWithUrls(
     const bucket = (options?.bucket || attachment.bucket || undefined) as string | undefined;
 
     // Derivative URLs (Thumbnails/Previews)
-    const thumbKey = (attachment.thumbKey ?? null) as string | null;
-    if (thumbKey) {
-        thumbUrl = objectsProxyUrl(thumbKey);
-    }
+    const [thumbAccess, previewAccess] = await Promise.all([
+        resolveDerivativeFileAccess(attachment, "thumbnail", { logOnce }),
+        resolveDerivativeFileAccess(attachment, "preview", { logOnce }),
+    ]);
 
-    const previewKey = (attachment.previewKey ?? null) as string | null;
-    if (previewKey) {
-        previewUrl = objectsProxyUrl(previewKey);
-    }
+    thumbUrl = thumbAccess.url;
+    previewUrl = previewAccess.url;
 
     // Handle PDF pages if applicable
     let pages: any[] = [];

@@ -17,6 +17,7 @@ import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage
 import { fileExists } from "../utils/fileStorage";
 import { resolveLocalStoragePath } from "./localStoragePath";
 import { normalizeTenantObjectKey } from "../utils/orgKeys";
+import { persistReadyFileDerivative } from "./storage/persistFileDerivative";
 import path from "path";
 import * as fsPromises from "fs/promises";
 import { createRequire } from "module";
@@ -279,6 +280,7 @@ export async function generateImageDerivatives(
     const [attachment] = await db
       .select({
         id: baseTable.id,
+        fileRecordId: baseTable.fileRecordId,
         fileUrl: baseTable.fileUrl,
         fileName: baseTable.fileName,
         originalFilename: baseTable.originalFilename,
@@ -416,6 +418,23 @@ export async function generateImageDerivatives(
 
       return;
     }
+
+    await Promise.all([
+      persistReadyFileDerivative({
+        fileRecordId: attachment.fileRecordId,
+        derivativeType: 'thumbnail',
+        objectKey: thumbKey,
+        mimeType: 'image/jpeg',
+        sizeBytes: thumbBuffer.length,
+      }),
+      persistReadyFileDerivative({
+        fileRecordId: attachment.fileRecordId,
+        derivativeType: 'preview',
+        objectKey: previewKey,
+        mimeType: 'image/jpeg',
+        sizeBytes: previewBuffer.length,
+      }),
+    ]);
 
     // Update database with derivative keys (all-or-nothing)
     await db

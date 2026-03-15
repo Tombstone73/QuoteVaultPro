@@ -23,6 +23,7 @@ import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage
 import { fileExists, readFile } from "../utils/fileStorage";
 import { resolveLocalStoragePath } from "./localStoragePath";
 import { normalizeTenantObjectKey } from "../utils/orgKeys";
+import { persistReadyFileDerivative } from "./storage/persistFileDerivative";
 import path from "path";
 import * as fsPromises from "fs/promises";
 
@@ -531,6 +532,14 @@ export async function processPdfAttachmentDerivedData(args: {
             .where(eq(baseTable.id, attachmentId));
           return;
         }
+
+        await persistReadyFileDerivative({
+          fileRecordId: (attachment as any).fileRecordId ?? null,
+          derivativeType: 'thumbnail',
+          objectKey: thumbKey,
+          mimeType: 'image/jpeg',
+          sizeBytes: thumbBuffer.length,
+        });
         
         // Update database with thumbnail key (PERMANENT - final state)
         try {
