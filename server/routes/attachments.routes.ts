@@ -26,6 +26,7 @@ import {
   orders,
   orderLineItems,
   assets,
+  assetLinks,
 } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray, sql } from "drizzle-orm";
 import { storage } from "../storage";
@@ -230,6 +231,157 @@ export async function registerAttachmentRoutes(
   }
 ) {
   const { isAuthenticated, isAdmin, tenantContext: tenantContextMiddleware } = middleware;
+
+  const deleteStoredKeys = async (
+    storageProvider: "local" | "s3" | "gcs" | "supabase" | null | undefined,
+    keys: Array<string | null | undefined>
+  ) => {
+    const uniqueKeys = Array.from(new Set(keys.filter((key): key is string => typeof key === "string" && key.length > 0)));
+    if (uniqueKeys.length === 0 || !storageProvider) return;
+
+    if (storageProvider === "supabase" && isSupabaseConfigured()) {
+      const supabase = new SupabaseStorageService();
+      await Promise.all(uniqueKeys.map((key) => supabase.deleteFile(normalizeObjectKeyForDb(key)).catch(() => false)));
+      return;
+    }
+
+    if (storageProvider === "local") {
+      const { deleteFile: deleteLocalFile } = await import("../utils/fileStorage.js");
+      await Promise.all(uniqueKeys.map((key) => deleteLocalFile(key).catch(() => false)));
+    }
+  };
+
+  const deleteQuoteAttachmentWithCleanup = async (args: {
+    organizationId: string;
+    quoteId: string;
+    attachmentId: string;
+    quoteLineItemId: string | null;
+  }) => {
+    const predicates = [
+      eq(quoteAttachments.id, args.attachmentId),
+      eq(quoteAttachments.quoteId, args.quoteId),
+      eq(quoteAttachments.organizationId, args.organizationId),
+      args.quoteLineItemId === null
+        ? isNull(quoteAttachments.quoteLineItemId)
+        : eq(quoteAttachments.quoteLineItemId, args.quoteLineItemId),
+    ];
+
+    const [attachment] = await db
+      .select()
+      .from(quoteAttachments)
+      .where(and(...predicates))
+      .limit(1);
+
+    if (!attachment) {
+      return false;
+    }
+
+    await db.delete(quoteAttachments).where(and(...predicates));
+
+    try {
+      const resolvedOriginal = attachment.fileRecordId
+        ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
+        : null;
+      const storageKey = String(resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? attachment.fileUrl ?? "");
+      const storageProvider = resolvedOriginal?.localPathRef
+        ? "local"
+        : resolvedOriginal?.objectKey
+          ? "supabase"
+          : ((attachment.storageProvider as "local" | "s3" | "gcs" | "supabase" | null | undefined) ?? null);
+
+      if (!storageKey) {
+        return true;
+      }
+
+      const [{ quoteRefs = 0 } = {}] = attachment.fileRecordId
+        ? await db
+            .select({ quoteRefs: sql<number>`count(*)` })
+            .from(quoteAttachments)
+            .where(
+              and(
+                eq(quoteAttachments.organizationId, args.organizationId),
+                eq(quoteAttachments.fileRecordId, String(attachment.fileRecordId))
+              )
+            )
+        : !storageProvider
+          ? [{ quoteRefs: 0 }]
+          : await db
+              .select({ quoteRefs: sql<number>`count(*)` })
+              .from(quoteAttachments)
+              .where(
+                and(
+                  eq(quoteAttachments.organizationId, args.organizationId),
+                  eq(quoteAttachments.fileUrl, storageKey),
+                  eq(quoteAttachments.storageProvider, storageProvider)
+                )
+              );
+
+      const [{ orderRefs = 0 } = {}] = attachment.fileRecordId
+        ? await db
+            .select({ orderRefs: sql<number>`count(*)` })
+            .from(orderAttachments)
+            .where(eq(orderAttachments.fileRecordId, String(attachment.fileRecordId)))
+        : !storageProvider
+          ? [{ orderRefs: 0 }]
+          : await db
+              .select({ orderRefs: sql<number>`count(*)` })
+              .from(orderAttachments)
+              .where(
+                and(
+                  eq(orderAttachments.fileUrl, storageKey),
+                  eq(orderAttachments.storageProvider, storageProvider)
+                )
+              );
+
+      let hasRemainingAssetLinksForFile = false;
+      try {
+        const matchingAssets = attachment.fileRecordId
+          ? await db
+              .select({ id: assets.id })
+              .from(assets)
+              .where(and(eq(assets.organizationId, args.organizationId), eq(assets.fileRecordId, String(attachment.fileRecordId))))
+          : await db
+              .select({ id: assets.id })
+              .from(assets)
+              .where(and(eq(assets.organizationId, args.organizationId), eq(assets.fileKey, normalizeObjectKeyForDb(storageKey))));
+
+        if (matchingAssets.length > 0) {
+          const linkCounts = await Promise.all(
+            matchingAssets.map(async (asset) => {
+              const [{ cnt = 0 } = {}] = await db
+                .select({ cnt: sql<number>`count(*)` })
+                .from(assetLinks)
+                .where(and(eq(assetLinks.organizationId, args.organizationId), eq(assetLinks.assetId, asset.id)));
+              return Number(cnt);
+            })
+          );
+
+          hasRemainingAssetLinksForFile = linkCounts.some((count) => count > 0);
+        }
+      } catch (assetRefError) {
+        console.error("[QuoteAttachments:DELETE] Asset reference check failed (non-blocking):", assetRefError);
+      }
+
+      if (Number(quoteRefs) + Number(orderRefs) === 0 && !hasRemainingAssetLinksForFile && storageProvider) {
+        const [thumbAccess, previewAccess] = attachment.fileRecordId
+          ? await Promise.all([
+              canonicalDerivativeReadResolver.resolveDerivative(String(attachment.fileRecordId), "thumbnail"),
+              canonicalDerivativeReadResolver.resolveDerivative(String(attachment.fileRecordId), "preview"),
+            ])
+          : [{ objectKey: (attachment as any).thumbKey ?? null }, { objectKey: (attachment as any).previewKey ?? null }];
+
+        await deleteStoredKeys(storageProvider, [
+          storageKey,
+          thumbAccess.objectKey,
+          previewAccess.objectKey,
+        ]);
+      }
+    } catch (cleanupError) {
+      console.error("[QuoteAttachments:DELETE] Storage cleanup failed (non-blocking):", cleanupError);
+    }
+
+    return true;
+  };
 
   const persistQuoteAttachment = async (args: {
     quoteId: string;
@@ -1228,7 +1380,8 @@ export async function registerAttachmentRoutes(
         });
       }
 
-      res.json({ success: true, data: attachment });
+      const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+      res.json({ success: true, data: enrichedAttachment });
     } catch (error) {
       console.error("Error attaching file to quote:", error);
       res.status(500).json({ error: "Failed to attach file to quote" });
@@ -1254,16 +1407,14 @@ export async function registerAttachmentRoutes(
 
       if (!assertQuoteEditable(res, quote)) return;
 
-      await db
-        .delete(quoteAttachments)
-        .where(
-          and(
-            eq(quoteAttachments.id, req.params.fileId),
-            eq(quoteAttachments.quoteId, req.params.id),
-            isNull(quoteAttachments.quoteLineItemId),
-            eq(quoteAttachments.organizationId, organizationId)
-          )
-        );
+      const deleted = await deleteQuoteAttachmentWithCleanup({
+        organizationId,
+        quoteId: req.params.id,
+        attachmentId: req.params.fileId,
+        quoteLineItemId: null,
+      });
+
+      if (!deleted) return res.status(404).json({ error: "Quote attachment not found" });
 
       res.json({ success: true });
     } catch (error) {
@@ -1723,16 +1874,14 @@ export async function registerAttachmentRoutes(
 
       if (!assertQuoteEditable(res, quote)) return;
 
-      await db
-        .delete(quoteAttachments)
-        .where(
-          and(
-            eq(quoteAttachments.id, attachmentId),
-            eq(quoteAttachments.quoteId, quoteId),
-            isNull(quoteAttachments.quoteLineItemId),
-            eq(quoteAttachments.organizationId, organizationId)
-          )
-        );
+      const deleted = await deleteQuoteAttachmentWithCleanup({
+        organizationId,
+        quoteId,
+        attachmentId,
+        quoteLineItemId: null,
+      });
+
+      if (!deleted) return res.status(404).json({ error: "Attachment not found" });
 
       return res.json({ success: true });
     } catch (error) {
