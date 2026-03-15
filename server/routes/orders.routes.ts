@@ -2154,7 +2154,7 @@ export async function registerOrderRoutes(
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
             const order = await storage.getOrderById(organizationId, orderId);
             if (!order) return res.status(404).json({ error: "Order not found" });
-            const whereConditions: any[] = [eq(orderAttachments.orderId, orderId), eq(orderAttachments.organizationId, organizationId)];
+            const whereConditions: any[] = [eq(orderAttachments.orderId, orderId)];
             if (includeLineItems !== 'true') whereConditions.push(isNull(orderAttachments.orderLineItemId));
             const files = await db.select().from(orderAttachments).where(and(...whereConditions)).orderBy(desc(orderAttachments.createdAt));
 
@@ -2176,7 +2176,7 @@ export async function registerOrderRoutes(
                 const lineItemRows = await db
                     .select({ id: orderLineItems.id })
                     .from(orderLineItems)
-                    .where(and(eq(orderLineItems.orderId, orderId), eq(orderLineItems.organizationId, organizationId)));
+                    .where(eq(orderLineItems.orderId, orderId));
 
                 const lineItemIds = lineItemRows.map((row) => row.id).filter(Boolean) as string[];
 
@@ -2229,12 +2229,14 @@ export async function registerOrderRoutes(
                         }
 
                         const { enrichAssetWithUrls } = await import('../services/assets/enrichAssetWithUrls');
+                        const logOnce = createRequestLogOnce();
 
-                        lineItemAssetItems = (linkRows as any[])
-                            .map((link) => {
+                        lineItemAssetItems = (await Promise.all((linkRows as any[])
+                            .map(async (link) => {
                                 const asset = assetsById.get(String(link.assetId));
                                 if (!asset) return null;
                                 const enriched = enrichAssetWithUrls(asset);
+                                const originalAccess = await resolveOriginalFileAccess(asset, { logOnce });
                                 const filename = String((enriched as any).fileName ?? 'Artwork');
                                 const previewThumbnailUrl =
                                     (enriched as any).previewThumbnailUrl ??
@@ -2247,23 +2249,17 @@ export async function registerOrderRoutes(
                                     filename,
                                     mimeType: (enriched as any).mimeType ?? (asset as any)?.mimeType ?? null,
                                     fileSize: (enriched as any).fileSize ?? (asset as any)?.fileSize ?? null,
-                                    objectPath: typeof (asset as any)?.fileKey === 'string' ? String((asset as any).fileKey) : null,
-                                    originalUrl:
-                                        typeof (asset as any)?.fileKey === 'string'
-                                            ? `/objects/${String((asset as any).fileKey)}?filename=${encodeURIComponent(filename)}`
-                                            : ((enriched as any).originalUrl ?? (enriched as any).fileUrl ?? null),
-                                    downloadUrl:
-                                        typeof (asset as any)?.fileKey === 'string'
-                                            ? `/objects/${String((asset as any).fileKey)}?download=1&filename=${encodeURIComponent(filename)}`
-                                            : null,
+                                    objectPath: originalAccess.objectPath,
+                                    originalUrl: originalAccess.originalUrl,
+                                    downloadUrl: originalAccess.downloadUrl,
+                                    availabilityStatus: originalAccess.availabilityStatus,
                                     previewThumbnailUrl,
                                     createdAt: link.createdAt ?? (enriched as any).createdAt ?? null,
                                     source: 'line_item' as const,
                                     parentLineItemId: String(link.lineItemId),
                                     role: String(link.role ?? 'other'),
                                 };
-                            })
-                            .filter(Boolean);
+                            }))).filter(Boolean);
                     }
                 }
             }
@@ -2520,6 +2516,7 @@ export async function registerOrderRoutes(
                 const { assetRepository } = await import('../services/assets/AssetRepository');
                 const { assetPreviewGenerator } = await import('../services/assets/AssetPreviewGenerator');
                 const asset = await assetRepository.createAsset(organizationId, {
+                    fileRecordId: attachment.fileRecordId ?? null,
                     fileKey: attachment.fileUrl,
                     fileName: fileName,
                     mimeType: mimeType || undefined,
@@ -2550,11 +2547,9 @@ export async function registerOrderRoutes(
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
 
-            // Validate order belongs to tenant
             const order = await storage.getOrderById(organizationId, orderId);
             if (!order) return res.status(404).json({ error: "Order not found" });
 
-            // Only delete order-level (non-line-item) attachments from this endpoint
             const [attachment] = await db
                 .select()
                 .from(orderAttachments)
@@ -2569,7 +2564,6 @@ export async function registerOrderRoutes(
 
             if (!attachment) return res.status(404).json({ error: "Attachment not found" });
 
-            // Remove DB link
             await db
                 .delete(orderAttachments)
                 .where(
@@ -2580,72 +2574,56 @@ export async function registerOrderRoutes(
                     )
                 );
 
-            // Best-effort cleanup: delete storage objects only when safe
-            // Safe means: no other attachment rows reference the same storage key, and no remaining Asset links reference that file.
             try {
-                const storageKeyRaw = (attachment as any).fileUrl as string | null | undefined;
-                const storageProviderRaw = (attachment as any).storageProvider as
-                    | "local"
-                    | "s3"
-                    | "gcs"
-                    | "supabase"
-                    | null
-                    | undefined;
-
+                const storageKeyRaw =
+                    (attachment.relativePath as string | null) ||
+                    (attachment.fileUrl as string | null) ||
+                    null;
+                const storageProvider = (attachment.storageProvider as "local" | "s3" | "gcs" | "supabase" | null | undefined) ?? null;
                 const storageKey = storageKeyRaw ? String(storageKeyRaw) : "";
-                const storageProvider = storageProviderRaw ?? null;
 
-                if (
-                    storageKey &&
-                    !storageKey.startsWith("http://") &&
-                    !storageKey.startsWith("https://")
-                ) {
-                    if (!storageProvider) {
-                        // No known storage provider -> nothing safe to delete
-                    } else {
-                        const storageProviderForQuery: "local" | "s3" | "gcs" | "supabase" = storageProvider;
+                if (storageKey && storageProvider) {
+                    const [{ orderRefs = 0 } = {}] = await db
+                        .select({ orderRefs: sql<number>`count(*)` })
+                        .from(orderAttachments)
+                        .where(
+                            and(
+                                eq(orderAttachments.fileUrl, storageKey),
+                                eq(orderAttachments.storageProvider, storageProvider)
+                            )
+                        );
 
-                        const [{ orderRefs = 0 } = {}] = await db
-                            .select({ orderRefs: sql<number>`count(*)` })
-                            .from(orderAttachments)
-                            .where(and(eq(orderAttachments.fileUrl, storageKey), eq(orderAttachments.storageProvider, storageProviderForQuery)));
+                    const [{ quoteRefs = 0 } = {}] = await db
+                        .select({ quoteRefs: sql<number>`count(*)` })
+                        .from(quoteAttachments)
+                        .where(
+                            and(
+                                eq(quoteAttachments.organizationId, organizationId),
+                                eq(quoteAttachments.fileUrl, storageKey),
+                                eq(quoteAttachments.storageProvider, storageProvider)
+                            )
+                        );
 
-                        const [{ quoteRefs = 0 } = {}] = await db
-                            .select({ quoteRefs: sql<number>`count(*)` })
-                            .from(quoteAttachments)
-                            .where(
-                                and(
-                                    eq(quoteAttachments.organizationId, organizationId),
-                                    eq(quoteAttachments.fileUrl, storageKey),
-                                    eq(quoteAttachments.storageProvider, storageProviderForQuery)
-                                )
-                            );
+                    const remainingAttachmentRefs = Number(orderRefs) + Number(quoteRefs);
+                    let hasRemainingAssetLinksForFile = false;
+                    const normalizedFileKey = normalizeObjectKeyForDb(storageKey);
 
-                        const remainingAttachmentRefs = Number(orderRefs) + Number(quoteRefs);
-
-                    // Asset cleanup (PHASE 2 pipeline): unlink matching assets from this order,
-                    // and delete the asset+variants only if the asset is no longer linked anywhere.
-                        let hasRemainingAssetLinksForFile = false;
-                        const normalizedFileKey = normalizeObjectKeyForDb(storageKey);
-
-                        try {
-                            const { assets, assetLinks, assetVariants } = await import("@shared/schema");
-
+                    try {
+                        const { assets, assetLinks, assetVariants } = await import("@shared/schema");
                         const matchingAssets = await db
                             .select({ id: assets.id, fileKey: assets.fileKey })
                             .from(assets)
                             .where(and(eq(assets.organizationId, organizationId), eq(assets.fileKey, normalizedFileKey)));
 
                         if (matchingAssets.length > 0) {
-                            // Unlink all matching assets from this order
                             await Promise.all(
-                                matchingAssets.map((a) =>
+                                matchingAssets.map((asset) =>
                                     db
                                         .delete(assetLinks)
                                         .where(
                                             and(
                                                 eq(assetLinks.organizationId, organizationId),
-                                                eq(assetLinks.assetId, a.id),
+                                                eq(assetLinks.assetId, asset.id),
                                                 eq(assetLinks.parentType, "order"),
                                                 eq(assetLinks.parentId, orderId)
                                             )
@@ -2653,21 +2631,18 @@ export async function registerOrderRoutes(
                                 )
                             );
 
-                            // Determine whether any of these assets remain linked elsewhere
                             const linkCounts = await Promise.all(
-                                matchingAssets.map(async (a) => {
+                                matchingAssets.map(async (asset) => {
                                     const [{ cnt = 0 } = {}] = await db
                                         .select({ cnt: sql<number>`count(*)` })
                                         .from(assetLinks)
-                                        .where(and(eq(assetLinks.organizationId, organizationId), eq(assetLinks.assetId, a.id)));
-                                    return { assetId: a.id, count: Number(cnt) };
+                                        .where(and(eq(assetLinks.organizationId, organizationId), eq(assetLinks.assetId, asset.id)));
+                                    return Number(cnt);
                                 })
                             );
 
-                            hasRemainingAssetLinksForFile = linkCounts.some((c) => c.count > 0);
+                            hasRemainingAssetLinksForFile = linkCounts.some((count) => count > 0);
 
-                            // If assets are now unlinked everywhere AND no other attachment rows reference the file,
-                            // delete asset variants objects + asset rows.
                             if (!hasRemainingAssetLinksForFile && remainingAttachmentRefs === 0) {
                                 const { deleteFile: deleteLocalFile } = await import("../utils/fileStorage.js");
 
@@ -2677,52 +2652,46 @@ export async function registerOrderRoutes(
 
                                     if (storageProvider === "supabase" && isSupabaseConfigured()) {
                                         const supabase = new SupabaseStorageService();
-                                        await Promise.all(uniqueKeys.map((k) => supabase.deleteFile(normalizeObjectKeyForDb(k)).catch(() => false)));
+                                        await Promise.all(uniqueKeys.map((key) => supabase.deleteFile(normalizeObjectKeyForDb(key)).catch(() => false)));
                                     } else if (storageProvider === "local") {
-                                        await Promise.all(uniqueKeys.map((k) => deleteLocalFile(k).catch(() => false)));
+                                        await Promise.all(uniqueKeys.map((key) => deleteLocalFile(key).catch(() => false)));
                                     }
                                 };
 
-                                for (const a of matchingAssets) {
+                                for (const asset of matchingAssets) {
                                     const variants = await db
                                         .select({ key: assetVariants.key })
                                         .from(assetVariants)
-                                        .where(and(eq(assetVariants.organizationId, organizationId), eq(assetVariants.assetId, a.id)));
+                                        .where(and(eq(assetVariants.organizationId, organizationId), eq(assetVariants.assetId, asset.id)));
 
                                     await deleteKeys([
-                                        ...(variants.map((v) => v.key || "")),
+                                        ...variants.map((variant) => variant.key || ""),
                                         normalizedFileKey,
                                     ]);
 
-                                    await db.delete(assets).where(and(eq(assets.organizationId, organizationId), eq(assets.id, a.id)));
+                                    await db.delete(assets).where(and(eq(assets.organizationId, organizationId), eq(assets.id, asset.id)));
                                 }
                             }
                         }
-                        } catch (assetCleanupError) {
-                            // fail-soft: asset pipeline is optional and should not block attachment deletion
-                            console.error("[OrderAttachments:DELETE] Asset cleanup failed (non-blocking):", assetCleanupError);
-                        }
+                    } catch (assetCleanupError) {
+                        console.error("[OrderAttachments:DELETE] Asset cleanup failed (non-blocking):", assetCleanupError);
+                    }
 
-                    // If the file is still referenced anywhere, do not delete storage blobs.
-                    // Also avoid deleting blobs if any asset still links to the file.
-                        if (remainingAttachmentRefs === 0 && !hasRemainingAssetLinksForFile) {
-                            const { deleteFile: deleteLocalFile } = await import("../utils/fileStorage.js");
+                    if (remainingAttachmentRefs === 0 && !hasRemainingAssetLinksForFile) {
+                        const { deleteFile: deleteLocalFile } = await import("../utils/fileStorage.js");
+                        const keysToDelete = [
+                            storageKey,
+                            (attachment as any).thumbKey as string | null | undefined,
+                            (attachment as any).previewKey as string | null | undefined,
+                        ].filter((key): key is string => typeof key === "string" && key.length > 0);
 
-                        const keysToDelete: string[] = [];
-                        keysToDelete.push(storageKey);
-                        const thumbKey = (attachment as any).thumbKey as string | null | undefined;
-                        const previewKey = (attachment as any).previewKey as string | null | undefined;
-                        if (thumbKey) keysToDelete.push(thumbKey);
-                        if (previewKey) keysToDelete.push(previewKey);
+                        const uniqueKeys = Array.from(new Set(keysToDelete.map((key) => String(key)).filter(Boolean)));
 
-                        const uniqueKeys = Array.from(new Set(keysToDelete.map((k) => String(k)).filter(Boolean)));
-
-                            if (storageProviderForQuery === "supabase" && isSupabaseConfigured()) {
-                                const supabase = new SupabaseStorageService();
-                                await Promise.all(uniqueKeys.map((k) => supabase.deleteFile(normalizeObjectKeyForDb(k)).catch(() => false)));
-                            } else if (storageProviderForQuery === "local") {
-                                await Promise.all(uniqueKeys.map((k) => deleteLocalFile(k).catch(() => false)));
-                            }
+                        if (storageProvider === "supabase" && isSupabaseConfigured()) {
+                            const supabase = new SupabaseStorageService();
+                            await Promise.all(uniqueKeys.map((key) => supabase.deleteFile(normalizeObjectKeyForDb(key)).catch(() => false)));
+                        } else if (storageProvider === "local") {
+                            await Promise.all(uniqueKeys.map((key) => deleteLocalFile(key).catch(() => false)));
                         }
                     }
                 }
@@ -5881,8 +5850,8 @@ export async function registerOrderRoutes(
                     lineItemAssetRows = await db
                         .select({
                             id: assets.id,
+                            fileRecordId: assets.fileRecordId,
                             fileName: assets.fileName,
-                            fileKey: assets.fileKey,
                         })
                         .from(assets)
                         .where(and(eq(assets.organizationId, organizationId), inArray(assets.id, assetIds)));
@@ -5897,10 +5866,10 @@ export async function registerOrderRoutes(
                 if (resolved.objectPath) files.push({ filename: resolved.displayFilename, objectPath: resolved.objectPath });
             }
 
+            const logOnce = createRequestLogOnce();
             for (const asset of lineItemAssetRows) {
-                const filename = String(asset.fileName || `asset-${asset.id}`);
-                const objectPath = asset.fileKey as string | null;
-                if (objectPath) files.push({ filename, objectPath });
+                const resolved = await resolveOriginalFileAccess(asset, { logOnce });
+                if (resolved.objectPath) files.push({ filename: resolved.displayFilename, objectPath: resolved.objectPath });
             }
 
             if (files.length === 0) {

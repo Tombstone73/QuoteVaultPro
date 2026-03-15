@@ -6434,6 +6434,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const { assetRepository } = await import('./services/assets/AssetRepository');
         const { assetPreviewGenerator } = await import('./services/assets/AssetPreviewGenerator');
         const asset = await assetRepository.createAsset(organizationId, {
+          fileRecordId: attachment.fileRecordId ?? null,
           fileKey: attachment.fileUrl, // Storage key
           fileName: attachment.fileName,
           mimeType: attachment.mimeType || undefined,
@@ -16071,6 +16072,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       type AttachCandidate = {
         fileKey: string;
+        fileRecordId?: string | null;
         fileName?: string;
         mimeType?: string;
         sizeBytes?: number;
@@ -16088,6 +16090,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (singleKey) {
         candidates.push({
           fileKey: singleKey,
+          fileRecordId: typeof body.fileRecordId === 'string' ? body.fileRecordId : null,
           fileName: typeof body.fileName === 'string' ? body.fileName : undefined,
           mimeType: typeof body.mimeType === 'string' ? body.mimeType : undefined,
           sizeBytes: body.fileSize != null ? Number(body.fileSize) : (body.sizeBytes != null ? Number(body.sizeBytes) : undefined),
@@ -16102,6 +16105,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           if (!k) continue;
           candidates.push({
             fileKey: k,
+            fileRecordId: typeof f?.fileRecordId === 'string' ? f.fileRecordId : null,
             fileName: typeof f?.fileName === 'string' ? f.fileName : (typeof f?.originalFilename === 'string' ? f.originalFilename : undefined),
             mimeType: typeof f?.mimeType === 'string' ? f.mimeType : undefined,
             sizeBytes: f?.fileSize != null ? Number(f.fileSize) : (f?.sizeBytes != null ? Number(f.sizeBytes) : undefined),
@@ -16214,6 +16218,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const createdAssets: any[] = [];
       for (const c of uniqueCandidates) {
         const asset = await assetRepository.createAsset(organizationId, {
+          fileRecordId: c.fileRecordId ?? null,
           fileKey: c.fileKey,
           fileName: c.fileName || guessFileNameFromKey(c.fileKey),
           mimeType: c.mimeType,
@@ -16234,6 +16239,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             originalFilename: c.fileName || guessFileNameFromKey(c.fileKey),
             mimeType: c.mimeType || null,
             sizeBytes: c.sizeBytes || null,
+            fileRecordId: c.fileRecordId ?? null,
             uploadedByUserId: userId,
           });
         }
