@@ -1350,9 +1350,9 @@ export const quoteAttachments = pgTable("quote_attachments", {
   fileRecordId: varchar("file_record_id").references((): AnyPgColumn => fileRecords.id, { onDelete: 'set null' }),
   uploadedByUserId: varchar("uploaded_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   uploadedByName: varchar("uploaded_by_name", { length: 255 }),
-  // Legacy fields (keep for backward compatibility)
+  // Legacy mirror fields (nullable; canonical source of truth is fileRecordId)
   fileName: varchar("file_name", { length: 500 }).notNull(),
-  fileUrl: text("file_url").notNull(),
+  fileUrl: text("file_url"),
   fileSize: integer("file_size"),
   mimeType: varchar("mime_type", { length: 100 }),
   description: text("description"),
@@ -3594,9 +3594,9 @@ export const orderAttachments = pgTable("order_attachments", {
   fileRecordId: varchar("file_record_id").references((): AnyPgColumn => fileRecords.id, { onDelete: 'set null' }),
   uploadedByUserId: varchar("uploaded_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   uploadedByName: varchar("uploaded_by_name", { length: 255 }), // Snapshot
-  // Legacy fields (keep for backward compatibility)
+  // Legacy mirror fields (nullable; canonical source of truth is fileRecordId)
   fileName: varchar("file_name", { length: 500 }).notNull(),
-  fileUrl: text("file_url").notNull(), // GCS path or legacy URL
+  fileUrl: text("file_url"), // legacy storage key or external URL
   fileSize: integer("file_size"), // bytes
   mimeType: varchar("mime_type", { length: 100 }),
   description: text("description"),
@@ -4594,7 +4594,7 @@ export const assets = pgTable('assets', {
   id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   fileRecordId: varchar('file_record_id').references((): AnyPgColumn => fileRecords.id, { onDelete: 'set null' }),
-  fileKey: text('file_key').notNull(), // uploads/org_<orgId>/asset/<assetId>/<filename>
+  fileKey: text('file_key'), // legacy original locator; canonical source of truth is fileRecordId
   fileName: text('file_name').notNull(),
   mimeType: text('mime_type'),
   sizeBytes: integer('size_bytes'),

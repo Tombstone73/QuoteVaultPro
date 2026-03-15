@@ -285,7 +285,7 @@ export async function registerAttachmentRoutes(
           description: args.description || null,
           bucket: stored.storedObject.bucket ?? "titan-private",
           fileName: stored.storedObject.originalFilename,
-          fileUrl: stored.storedObject.objectKey ?? stored.storedObject.localPathRef ?? stored.legacyFileUrl,
+          fileUrl: null,
           fileSize: stored.storedObject.sizeBytes,
           mimeType: stored.storedObject.mimeType,
           originalFilename: stored.storedObject.originalFilename,
@@ -1591,7 +1591,8 @@ export async function registerAttachmentRoutes(
             inserted.push(created);
           }
 
-          return res.json({ success: true, data: inserted });
+          const enrichedInserted = await Promise.all(inserted.map((file) => enrichAttachmentWithUrls(file)));
+          return res.json({ success: true, data: enrichedInserted });
         } catch (error: any) {
           console.error("[QuoteAttachments:POST] Atomic upload failed:", error);
           return res.status(500).json({ error: error?.message || "Failed to upload attachments" });
@@ -1638,7 +1639,8 @@ export async function registerAttachmentRoutes(
             },
           });
 
-      return res.json({ success: true, data: attachment });
+      const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+      return res.json({ success: true, data: enrichedAttachment });
     } catch (error) {
       console.error("[QuoteAttachments:POST] Error:", error);
       return res.status(500).json({ error: "Failed to attach file to quote" });

@@ -9,6 +9,7 @@ import { normalizeObjectKeyForDb, tryExtractSupabaseObjectKeyFromUrl } from '../
 import { resolveLocalStoragePath } from '../localStoragePath';
 import { normalizeTenantObjectKey } from '../../utils/orgKeys';
 import { persistReadyFileDerivative } from '../storage/persistFileDerivative';
+import { canonicalFileReadResolver } from '../storage/CanonicalFileReadResolver';
 
 class AssetSourceNotReadyError extends Error {
   constructor(message: string) {
@@ -64,27 +65,31 @@ export class AssetPreviewGenerator {
         return;
       }
 
-      const normalizedKey = this.normalizeAssetFileKey(asset.fileKey);
+      const sourceDescriptor = await this.resolveAssetSource(asset);
       if (process.env.NODE_ENV === 'development') {
         const storageRoot = process.env.STORAGE_ROOT || './storage';
-        const storageCandidate = this.resolveStorageRootPath(storageRoot, normalizedKey);
-        const uploadCandidate = this.safeResolveFileStoragePath(normalizedKey);
+        const debugKey = sourceDescriptor.objectKey ?? sourceDescriptor.localPathRef ?? '';
+        const storageCandidate = debugKey ? this.resolveStorageRootPath(storageRoot, debugKey) : null;
+        const uploadCandidate = debugKey ? this.safeResolveFileStoragePath(debugKey) : null;
         console.log('[AssetPreviewGenerator][DEV] preview start', {
           assetId: asset.id,
           orgId: asset.organizationId,
-          key: normalizedKey,
+          key: debugKey || null,
           storageRoot,
           storageCandidate,
           fileStorageCandidate: uploadCandidate,
+          fileRecordId: asset.fileRecordId ?? null,
         });
       }
 
-      console.log(`[AssetPreviewGenerator] Reading source bytes key=${normalizedKey}`);
+      console.log(`[AssetPreviewGenerator] Reading source bytes asset=${asset.id} fileRecordId=${asset.fileRecordId ?? 'none'} key=${sourceDescriptor.objectKey ?? sourceDescriptor.localPathRef ?? 'none'}`);
 
       const sourceBytes = await this.readSourceBytes({
         assetId: asset.id,
         organizationId: asset.organizationId,
-        fileKey: normalizedKey,
+        fileRecordId: asset.fileRecordId ?? null,
+        objectKey: sourceDescriptor.objectKey,
+        localPathRef: sourceDescriptor.localPathRef,
       });
 
       const imageBuffer = isPdf
@@ -158,7 +163,7 @@ export class AssetPreviewGenerator {
           console.log('[AssetPreviewGenerator][DEV] source not ready, will retry', {
             assetId: asset.id,
             orgId: asset.organizationId,
-            key: this.safeNormalizeForLog(asset.fileKey),
+            key: this.safeNormalizeForLog(asset.fileKey ?? null),
             reason: error.message,
           });
         }
@@ -175,8 +180,8 @@ export class AssetPreviewGenerator {
         console.error('[AssetPreviewGenerator][DEV] failure context', {
           assetId: asset.id,
           orgId: asset.organizationId,
-          rawFileKey: asset.fileKey,
-          normalizedFileKey: this.safeNormalizeForLog(asset.fileKey),
+          rawFileKey: asset.fileKey ?? null,
+          normalizedFileKey: this.safeNormalizeForLog(asset.fileKey ?? null),
           error: error instanceof Error ? { message: error.message, stack: error.stack } : String(error),
         });
       }
@@ -192,8 +197,9 @@ export class AssetPreviewGenerator {
   /**
    * Normalize asset file key into canonical object key format (relative to /objects/*)
    */
-  private normalizeAssetFileKey(raw: string): string {
+  private normalizeAssetFileKey(raw: string | null | undefined): string {
     let key = (raw || '').toString().trim();
+    if (!key) throw new AssetSourceNotReadyError('Asset source key missing');
 
     // If a URL got persisted accidentally, strip it down to a key.
     if (key.startsWith('http://') || key.startsWith('https://')) {
@@ -219,12 +225,35 @@ export class AssetPreviewGenerator {
     return key;
   }
 
-  private safeNormalizeForLog(raw: string): string {
+  private safeNormalizeForLog(raw: string | null | undefined): string | null {
     try {
       return this.normalizeAssetFileKey(raw);
     } catch {
-      return (raw || '').toString();
+      const fallback = (raw || '').toString();
+      return fallback || null;
     }
+  }
+
+  private async resolveAssetSource(asset: Asset): Promise<{ objectKey: string | null; localPathRef: string | null }> {
+    if (asset.fileRecordId) {
+      const resolved = await canonicalFileReadResolver.resolveOriginal(String(asset.fileRecordId));
+      if (resolved.status === 'available' && (resolved.objectKey || resolved.localPathRef)) {
+        return {
+          objectKey: resolved.objectKey ?? null,
+          localPathRef: resolved.localPathRef ?? null,
+        };
+      }
+    }
+
+    const normalizedKey = asset.fileKey ? this.normalizeAssetFileKey(asset.fileKey) : null;
+    if (!normalizedKey) {
+      throw new AssetSourceNotReadyError('Asset source unavailable: missing canonical original and legacy fileKey');
+    }
+
+    return {
+      objectKey: normalizedKey,
+      localPathRef: null,
+    };
   }
 
   private parseObjectPath(fullPath: string): { bucketName: string; objectName: string } {
@@ -238,9 +267,16 @@ export class AssetPreviewGenerator {
   private async readSourceBytes(args: {
     assetId: string;
     organizationId: string;
-    fileKey: string;
+    fileRecordId?: string | null;
+    objectKey?: string | null;
+    localPathRef?: string | null;
   }): Promise<Buffer> {
-    const { assetId, organizationId, fileKey } = args;
+    const { assetId, organizationId, objectKey, localPathRef } = args;
+    const fileKey = objectKey ?? localPathRef ?? null;
+
+    if (!fileKey) {
+      throw new AssetSourceNotReadyError('Asset source unavailable: no canonical storage path');
+    }
 
     let sawNotFound = false;
 
