@@ -1640,7 +1640,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get('/api/admin/storage-settings', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+  app.get('/api/admin/storage-settings', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) {
@@ -1655,7 +1655,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post('/api/admin/storage-settings/validate', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+  app.post('/api/admin/storage-settings/validate', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) {
@@ -1673,7 +1673,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.put('/api/admin/storage-settings', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+  app.put('/api/admin/storage-settings', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) {
