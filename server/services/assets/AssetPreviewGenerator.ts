@@ -38,7 +38,7 @@ export class AssetPreviewGenerator {
 
   /**
    * Generate previews for an asset
-   * Updates asset.previewKey, asset.thumbKey, asset.previewStatus in database
+   * Updates asset.previewStatus in database while canonical derivative metadata remains source of truth
    */
   async generatePreviews(asset: Asset): Promise<void> {
     console.log(`[AssetPreviewGenerator] Processing asset ${asset.id} (${asset.fileName})`);
@@ -130,8 +130,6 @@ export class AssetPreviewGenerator {
 
       // Update asset record
       await assetRepository.setAssetPreviewKeys(asset.organizationId, asset.id, {
-        thumbKey,
-        previewKey,
         previewStatus: 'ready',
       });
 

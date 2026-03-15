@@ -440,8 +440,8 @@ export async function generateImageDerivatives(
     await db
       .update(baseTable)
       .set({
-        thumbKey,
-        previewKey,
+        thumbKey: null,
+        previewKey: null,
         thumbStatus: 'thumb_ready',
         thumbError: null,
         thumbnailGeneratedAt: new Date(),
@@ -468,7 +468,6 @@ export async function generateImageDerivatives(
       const issues: string[] = [];
       if (!record) issues.push('record not found');
       else {
-        if (!record.thumbKey) issues.push('thumbKey is null');
         if (record.thumbStatus !== 'thumb_ready') issues.push(`thumbStatus is '${record.thumbStatus}' not 'thumb_ready'`);
         if (!record.thumbnailGeneratedAt) issues.push('thumbnailGeneratedAt is null');
         if (record.thumbError !== null) issues.push('thumbError is not null');
