@@ -71,6 +71,13 @@
       "when": 1773619200000,
       "tag": "0009_canonical_file_record_links",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1773705600000,
+      "tag": "0010_assets_file_record_link",
+      "breakpoints": true
     }
   ]
 }
