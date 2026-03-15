@@ -4589,6 +4589,7 @@ export const assetLinkRoleEnum = pgEnum('asset_link_role', ['primary', 'attachme
 export const assets = pgTable('assets', {
   id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  fileRecordId: varchar('file_record_id').references((): AnyPgColumn => fileRecords.id, { onDelete: 'set null' }),
   fileKey: text('file_key').notNull(), // uploads/org_<orgId>/asset/<assetId>/<filename>
   fileName: text('file_name').notNull(),
   mimeType: text('mime_type'),
@@ -4604,6 +4605,7 @@ export const assets = pgTable('assets', {
 }, (table) => [
   index('assets_org_id_idx').on(table.organizationId),
   index('assets_org_asset_idx').on(table.organizationId, table.id),
+  index('assets_file_record_id_idx').on(table.fileRecordId),
   index('assets_file_key_idx').on(table.fileKey),
   index('assets_preview_status_idx').on(table.organizationId, table.previewStatus),
 ]);

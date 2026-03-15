@@ -71,6 +71,7 @@ export class AssetRepository {
       .insert(assets)
       .values({
         ...data,
+        fileRecordId: (data as any).fileRecordId ?? null,
         fileKey: this.normalizeAssetFileKey((data as any).fileKey),
         ...this.getInitialPreviewState((data as any).mimeType),
         organizationId,
