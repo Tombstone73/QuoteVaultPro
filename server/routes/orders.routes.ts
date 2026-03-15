@@ -972,13 +972,13 @@ export async function registerOrderRoutes(
                                                 });
                                             }
 
-                                            const { enrichAssetWithUrls } = await import('../services/assets/enrichAssetWithUrls');
+                                            const { enrichAssetPreviewUrls } = await import('../services/assets/enrichAssetWithUrls');
 
                                             const thumbByAssetId = new Map<string, string | null>();
                                             for (const assetId of assetIds) {
                                                 const asset = assetsById.get(assetId);
                                                 if (!asset) continue;
-                                                const enriched = enrichAssetWithUrls(asset);
+                                                const enriched = enrichAssetPreviewUrls(asset);
                                                 const thumb =
                                                     (enriched as any).previewThumbnailUrl ??
                                                     (enriched as any).thumbnailUrl ??
@@ -2228,14 +2228,14 @@ export async function registerOrderRoutes(
                             });
                         }
 
-                        const { enrichAssetWithUrls } = await import('../services/assets/enrichAssetWithUrls');
+                        const { enrichAssetPreviewUrls } = await import('../services/assets/enrichAssetWithUrls');
                         const logOnce = createRequestLogOnce();
 
                         lineItemAssetItems = (await Promise.all((linkRows as any[])
                             .map(async (link) => {
                                 const asset = assetsById.get(String(link.assetId));
                                 if (!asset) return null;
-                                const enriched = enrichAssetWithUrls(asset);
+                                const enriched = enrichAssetPreviewUrls(asset);
                                 const originalAccess = await resolveOriginalFileAccess(asset, { logOnce });
                                 const filename = String((enriched as any).fileName ?? 'Artwork');
                                 const previewThumbnailUrl =
@@ -2359,7 +2359,7 @@ export async function registerOrderRoutes(
             }
 
             // 4) Enrich URLs for thumb resolution (same helper used elsewhere)
-            const { enrichAssetWithUrls } = await import('../services/assets/enrichAssetWithUrls');
+            const { enrichAssetPreviewUrls } = await import('../services/assets/enrichAssetWithUrls');
 
             // 5) Aggregate per lineItemId
             const assetIdsByLineItem = new Map<string, Set<string>>();
@@ -2381,7 +2381,7 @@ export async function registerOrderRoutes(
 
                 const raw = assetsById.get(assetId);
                 if (!raw) continue;
-                const enriched = enrichAssetWithUrls(raw);
+                const enriched = enrichAssetPreviewUrls(raw);
 
                 // Use the same priority as client getThumbSrc (previewThumbnailUrl, thumbnailUrl, thumbUrl, previewUrl, pages[0].thumbUrl)
                 const url =
@@ -3493,7 +3493,7 @@ export async function registerOrderRoutes(
                     const { assetRepository } = await import('../services/assets/AssetRepository');
                     const { enrichAssetsWithRoles } = await import('../services/assets/enrichAssetWithUrls');
                     const linkedAssets = await assetRepository.listAssetsForParent(organizationId, 'order', req.params.id);
-                    enrichedAssets = enrichAssetsWithRoles(linkedAssets);
+                    enrichedAssets = await enrichAssetsWithRoles(linkedAssets);
                 } catch (assetError) {
                     console.error('[OrderFiles:GET] Asset enrichment failed:', assetError);
                 }
