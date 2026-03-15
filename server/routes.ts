@@ -6809,8 +6809,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log(`[LineItemFiles:GENERATE_THUMBS] Supported image type detected: mimeType=${attachment.mimeType}, fileName=${fileName}`);
 
+      const resolvedOriginal = attachment.fileRecordId
+        ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
+        : null;
+      const attachmentStorageKey = resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? attachment.fileUrl ?? null;
+      const attachmentStorageProvider = resolvedOriginal?.localPathRef
+        ? 'local'
+        : resolvedOriginal?.objectKey
+          ? 'supabase'
+          : attachment.storageProvider ?? null;
+
       // Validate required fields for image generation
-      if (!attachment.fileUrl || !attachment.storageProvider) {
+      if (!attachmentStorageKey || !attachmentStorageProvider) {
         return res.status(400).json({
           success: false,
           message: "Attachment missing required storage information"
@@ -6833,9 +6843,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       void generateImageDerivatives(
         fileId,
         'quote',
-        attachment.fileUrl,
+        attachmentStorageKey,
         attachment.mimeType,
-        attachment.storageProvider,
+        attachmentStorageProvider,
         organizationId,
         attachmentFileName
       ).catch((error) => {
@@ -7000,34 +7010,155 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log(`[LineItemFiles:DELETE] Deleted attachment id=${fileId}`);
 
-      // Best-effort cleanup of stored objects (do not fail request if cleanup fails)
+      // Best-effort cleanup of stored objects and linked assets (do not fail request if cleanup fails)
       try {
-        const keys = [
-          existingAttachment.relativePath,
-          existingAttachment.fileUrl,
-          existingAttachment.thumbnailRelativePath,
-          existingAttachment.thumbKey,
-          existingAttachment.previewKey,
-        ].filter((k): k is string => typeof k === 'string' && k.length > 0);
+        const resolvedOriginal = existingAttachment.fileRecordId
+          ? await canonicalFileReadResolver.resolveOriginal(String(existingAttachment.fileRecordId))
+          : null;
+        const storageKey = String(resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? existingAttachment.fileUrl ?? '');
+        const storageProvider = resolvedOriginal?.localPathRef
+          ? 'local'
+          : resolvedOriginal?.objectKey
+            ? 'supabase'
+            : ((existingAttachment.storageProvider as 'local' | 's3' | 'gcs' | 'supabase' | null | undefined) ?? null);
 
-        if (existingAttachment.storageProvider === 'supabase') {
-          const supabaseStorage = new SupabaseStorageService();
-          await Promise.all(keys.map(async (k) => {
-            try {
-              await supabaseStorage.deleteFile(k);
-            } catch {
-              // ignore
+        if (storageKey) {
+          const [{ quoteRefs = 0 } = {}] = existingAttachment.fileRecordId
+            ? await db
+                .select({ quoteRefs: sql<number>`count(*)` })
+                .from(quoteAttachments)
+                .where(
+                  and(
+                    eq(quoteAttachments.organizationId, organizationId),
+                    eq(quoteAttachments.fileRecordId, String(existingAttachment.fileRecordId))
+                  )
+                )
+            : !storageProvider
+              ? [{ quoteRefs: 0 }]
+              : await db
+                  .select({ quoteRefs: sql<number>`count(*)` })
+                  .from(quoteAttachments)
+                  .where(
+                    and(
+                      eq(quoteAttachments.organizationId, organizationId),
+                      eq(quoteAttachments.fileUrl, storageKey),
+                      eq(quoteAttachments.storageProvider, storageProvider)
+                    )
+                  );
+
+          const [{ orderRefs = 0 } = {}] = existingAttachment.fileRecordId
+            ? await db
+                .select({ orderRefs: sql<number>`count(*)` })
+                .from(orderAttachments)
+                .where(eq(orderAttachments.fileRecordId, String(existingAttachment.fileRecordId)))
+            : !storageProvider
+              ? [{ orderRefs: 0 }]
+              : await db
+                  .select({ orderRefs: sql<number>`count(*)` })
+                  .from(orderAttachments)
+                  .where(
+                    and(
+                      eq(orderAttachments.fileUrl, storageKey),
+                      eq(orderAttachments.storageProvider, storageProvider)
+                    )
+                  );
+
+          let hasRemainingAssetLinksForFile = false;
+          const normalizedFileKey = normalizeObjectKeyForDb(storageKey);
+
+          try {
+            const matchingAssets = existingAttachment.fileRecordId
+              ? await db
+                  .select({ id: assets.id })
+                  .from(assets)
+                  .where(and(eq(assets.organizationId, organizationId), eq(assets.fileRecordId, String(existingAttachment.fileRecordId))))
+              : await db
+                  .select({ id: assets.id })
+                  .from(assets)
+                  .where(and(eq(assets.organizationId, organizationId), eq(assets.fileKey, normalizedFileKey)));
+
+            if (matchingAssets.length > 0) {
+              await Promise.all(
+                matchingAssets.map((asset) =>
+                  db
+                    .delete(assetLinks)
+                    .where(
+                      and(
+                        eq(assetLinks.organizationId, organizationId),
+                        eq(assetLinks.assetId, asset.id),
+                        eq(assetLinks.parentType, 'quote_line_item'),
+                        eq(assetLinks.parentId, lineItemId)
+                      )
+                    )
+                )
+              );
+
+              const linkCounts = await Promise.all(
+                matchingAssets.map(async (asset) => {
+                  const [{ cnt = 0 } = {}] = await db
+                    .select({ cnt: sql<number>`count(*)` })
+                    .from(assetLinks)
+                    .where(and(eq(assetLinks.organizationId, organizationId), eq(assetLinks.assetId, asset.id)));
+                  return Number(cnt);
+                })
+              );
+
+              hasRemainingAssetLinksForFile = linkCounts.some((count) => count > 0);
+
+              if (!hasRemainingAssetLinksForFile && Number(quoteRefs) + Number(orderRefs) === 0) {
+                const { deleteFile: deleteLocalFile } = await import('./utils/fileStorage');
+                const deleteKeys = async (keys: string[]) => {
+                  const uniqueKeys = Array.from(new Set(keys.filter(Boolean)));
+                  if (uniqueKeys.length === 0) return;
+
+                  if (storageProvider === 'supabase') {
+                    const supabaseStorage = new SupabaseStorageService();
+                    await Promise.all(uniqueKeys.map((key) => supabaseStorage.deleteFile(normalizeObjectKeyForDb(key)).catch(() => false)));
+                  } else if (storageProvider === 'local') {
+                    await Promise.all(uniqueKeys.map((key) => deleteLocalFile(key).catch(() => false)));
+                  }
+                };
+
+                for (const asset of matchingAssets) {
+                  const variants = await db
+                    .select({ key: assetVariants.key })
+                    .from(assetVariants)
+                    .where(and(eq(assetVariants.organizationId, organizationId), eq(assetVariants.assetId, asset.id)));
+
+                  await deleteKeys([
+                    ...variants.map((variant) => variant.key || ''),
+                    normalizedFileKey,
+                  ]);
+
+                  await db.delete(assets).where(and(eq(assets.organizationId, organizationId), eq(assets.id, asset.id)));
+                }
+              }
             }
-          }));
-        } else {
-          const { deleteFile: deleteLocalFile } = await import('./utils/fileStorage');
-          await Promise.all(keys.map(async (k) => {
-            try {
-              await deleteLocalFile(k);
-            } catch {
-              // ignore
+          } catch (assetCleanupError) {
+            console.error('[LineItemFiles:DELETE] Asset cleanup failed (non-blocking):', assetCleanupError);
+          }
+
+          if (Number(quoteRefs) + Number(orderRefs) === 0 && !hasRemainingAssetLinksForFile && storageProvider) {
+            const [thumbAccess, previewAccess] = existingAttachment.fileRecordId
+              ? await Promise.all([
+                  canonicalDerivativeReadResolver.resolveDerivative(String(existingAttachment.fileRecordId), 'thumbnail'),
+                  canonicalDerivativeReadResolver.resolveDerivative(String(existingAttachment.fileRecordId), 'preview'),
+                ])
+              : [{ objectKey: existingAttachment.thumbKey ?? null }, { objectKey: existingAttachment.previewKey ?? null }];
+            const keys = [
+              storageKey,
+              thumbAccess.objectKey ?? existingAttachment.thumbnailRelativePath ?? existingAttachment.thumbKey,
+              previewAccess.objectKey ?? existingAttachment.previewKey,
+            ].filter((k): k is string => typeof k === 'string' && k.length > 0);
+
+            if (storageProvider === 'supabase') {
+              const supabaseStorage = new SupabaseStorageService();
+              await Promise.all(keys.map((key) => supabaseStorage.deleteFile(normalizeObjectKeyForDb(key)).catch(() => false)));
+            } else if (storageProvider === 'local') {
+              const { deleteFile: deleteLocalFile } = await import('./utils/fileStorage');
+              await Promise.all(keys.map((key) => deleteLocalFile(key).catch(() => false)));
             }
-          }));
+          }
         }
       } catch {
         // ignore
@@ -16336,41 +16467,167 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const resolvedOriginal = record.fileRecordId
             ? await canonicalFileReadResolver.resolveOriginal(String(record.fileRecordId))
             : null;
-          const [thumbAccess, previewAccess] = record.fileRecordId
-            ? await Promise.all([
-                canonicalDerivativeReadResolver.resolveDerivative(String(record.fileRecordId), 'thumbnail'),
-                canonicalDerivativeReadResolver.resolveDerivative(String(record.fileRecordId), 'preview'),
-              ])
-            : [{ objectKey: record.thumbKey ?? null }, { objectKey: record.previewKey ?? null }];
+          const storageKey = String(resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? record.relativePath ?? record.fileUrl ?? '');
           const effectiveStorageProvider = resolvedOriginal?.localPathRef
             ? 'local'
             : resolvedOriginal?.objectKey
               ? 'supabase'
               : record.storageProvider;
-          const keys = [
-            resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? record.relativePath ?? record.fileUrl,
-            thumbAccess.objectKey ?? record.thumbnailRelativePath ?? record.thumbKey,
-            previewAccess.objectKey ?? record.previewKey,
-          ].filter((k): k is string => typeof k === 'string' && k.length > 0);
 
-          if (effectiveStorageProvider === 'supabase') {
-            const supabaseStorage = new SupabaseStorageService();
-            await Promise.all(keys.map(async (k) => {
-              try {
-                await supabaseStorage.deleteFile(k);
-              } catch {
-                // ignore
+          if (storageKey) {
+            const [{ orderRefs = 0 } = {}] = record.fileRecordId
+              ? await db
+                  .select({ orderRefs: sql<number>`count(*)` })
+                  .from(orderAttachments)
+                  .where(eq(orderAttachments.fileRecordId, String(record.fileRecordId)))
+              : !effectiveStorageProvider
+                ? [{ orderRefs: 0 }]
+                : await db
+                    .select({ orderRefs: sql<number>`count(*)` })
+                    .from(orderAttachments)
+                    .where(
+                      and(
+                        eq(orderAttachments.fileUrl, storageKey),
+                        eq(orderAttachments.storageProvider, effectiveStorageProvider)
+                      )
+                    );
+
+            const [{ quoteRefs = 0 } = {}] = record.fileRecordId
+              ? await db
+                  .select({ quoteRefs: sql<number>`count(*)` })
+                  .from(quoteAttachments)
+                  .where(
+                    and(
+                      eq(quoteAttachments.organizationId, organizationId),
+                      eq(quoteAttachments.fileRecordId, String(record.fileRecordId))
+                    )
+                  )
+              : !effectiveStorageProvider
+                ? [{ quoteRefs: 0 }]
+                : await db
+                    .select({ quoteRefs: sql<number>`count(*)` })
+                    .from(quoteAttachments)
+                    .where(
+                      and(
+                        eq(quoteAttachments.organizationId, organizationId),
+                        eq(quoteAttachments.fileUrl, storageKey),
+                        eq(quoteAttachments.storageProvider, effectiveStorageProvider)
+                      )
+                    );
+
+            let hasRemainingAssetLinksForFile = false;
+            const normalizedFileKey = normalizeObjectKeyForDb(storageKey);
+
+            try {
+              const matchingAssets = record.fileRecordId
+                ? await db
+                    .select({ id: assets.id })
+                    .from(assets)
+                    .where(and(eq(assets.organizationId, organizationId), eq(assets.fileRecordId, String(record.fileRecordId))))
+                : await db
+                    .select({ id: assets.id })
+                    .from(assets)
+                    .where(and(eq(assets.organizationId, organizationId), eq(assets.fileKey, normalizedFileKey)));
+
+              if (matchingAssets.length > 0) {
+                await Promise.all(
+                  matchingAssets.map((asset) =>
+                    db
+                      .delete(assetLinks)
+                      .where(
+                        and(
+                          eq(assetLinks.organizationId, organizationId),
+                          eq(assetLinks.assetId, asset.id),
+                          eq(assetLinks.parentType, 'order_line_item'),
+                          eq(assetLinks.parentId, String(lineItemId))
+                        )
+                      )
+                  )
+                );
+
+                const linkCounts = await Promise.all(
+                  matchingAssets.map(async (asset) => {
+                    const [{ cnt = 0 } = {}] = await db
+                      .select({ cnt: sql<number>`count(*)` })
+                      .from(assetLinks)
+                      .where(and(eq(assetLinks.organizationId, organizationId), eq(assetLinks.assetId, asset.id)));
+                    return Number(cnt);
+                  })
+                );
+
+                hasRemainingAssetLinksForFile = linkCounts.some((count) => count > 0);
+
+                if (!hasRemainingAssetLinksForFile && Number(orderRefs) + Number(quoteRefs) === 0) {
+                  const { deleteFile: deleteLocalFile } = await import('./utils/fileStorage');
+                  const deleteKeys = async (keys: string[]) => {
+                    const uniqueKeys = Array.from(new Set(keys.filter(Boolean)));
+                    if (uniqueKeys.length === 0) return;
+
+                    if (effectiveStorageProvider === 'supabase') {
+                      const supabaseStorage = new SupabaseStorageService();
+                      await Promise.all(uniqueKeys.map((key) => supabaseStorage.deleteFile(normalizeObjectKeyForDb(key)).catch(() => false)));
+                    } else if (effectiveStorageProvider === 'local') {
+                      await Promise.all(uniqueKeys.map((key) => deleteLocalFile(key).catch(() => false)));
+                    }
+                  };
+
+                  for (const asset of matchingAssets) {
+                    const variants = await db
+                      .select({ key: assetVariants.key })
+                      .from(assetVariants)
+                      .where(and(eq(assetVariants.organizationId, organizationId), eq(assetVariants.assetId, asset.id)));
+
+                    await deleteKeys([
+                      ...variants.map((variant) => variant.key || ''),
+                      normalizedFileKey,
+                    ]);
+
+                    await db.delete(assets).where(and(eq(assets.organizationId, organizationId), eq(assets.id, asset.id)));
+                  }
+                }
               }
-            }));
-          } else {
-            const { deleteFile: deleteLocalFile } = await import('./utils/fileStorage');
-            await Promise.all(keys.map(async (k) => {
-              try {
-                await deleteLocalFile(k);
-              } catch {
-                // ignore
+            } catch (assetCleanupError) {
+              console.error('[OrderLineItemFiles:DELETE] Asset cleanup failed (non-blocking):', assetCleanupError);
+            }
+
+            if (record.fileRecordId || storageKey) {
+              await db
+                .update(lineItemFiles)
+                .set({ status: 'superseded' })
+                .where(
+                  and(
+                    eq(lineItemFiles.organizationId, organizationId),
+                    eq(lineItemFiles.orderId, orderId),
+                    eq(lineItemFiles.lineItemId, lineItemId),
+                    eq(lineItemFiles.status, 'active'),
+                    record.fileRecordId
+                      ? eq(lineItemFiles.fileRecordId, String(record.fileRecordId))
+                      : or(eq(lineItemFiles.storagePath, storageKey), eq(lineItemFiles.storageKey, storageKey))!
+                  )
+                );
+            }
+
+            if (Number(orderRefs) + Number(quoteRefs) === 0 && !hasRemainingAssetLinksForFile && effectiveStorageProvider) {
+              const [thumbAccess, previewAccess] = record.fileRecordId
+                ? await Promise.all([
+                    canonicalDerivativeReadResolver.resolveDerivative(String(record.fileRecordId), 'thumbnail'),
+                    canonicalDerivativeReadResolver.resolveDerivative(String(record.fileRecordId), 'preview'),
+                  ])
+                : [{ objectKey: record.thumbKey ?? null }, { objectKey: record.previewKey ?? null }];
+              const keys = [
+                storageKey,
+                thumbAccess.objectKey ?? record.thumbnailRelativePath ?? record.thumbKey,
+                previewAccess.objectKey ?? record.previewKey,
+              ].filter((k): k is string => typeof k === 'string' && k.length > 0);
+
+              if (effectiveStorageProvider === 'supabase') {
+                const supabaseStorage = new SupabaseStorageService();
+                await Promise.all(keys.map((key) => supabaseStorage.deleteFile(normalizeObjectKeyForDb(key)).catch(() => false)));
+              } else if (effectiveStorageProvider === 'local') {
+                const { deleteFile: deleteLocalFile } = await import('./utils/fileStorage');
+                await Promise.all(keys.map((key) => deleteLocalFile(key).catch(() => false)));
               }
-            }));
+            }
           }
         } catch {
           // ignore
@@ -16438,6 +16695,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         removedAsset = await db
           .select({
             id: assets.id,
+            fileRecordId: assets.fileRecordId,
             fileName: assets.fileName,
             fileKey: assets.fileKey,
             mimeType: assets.mimeType,
@@ -16452,6 +16710,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       await assetRepository.unlinkAsset(organizationId, fileId, 'order_line_item', lineItemId);
+
+      try {
+        const resolvedOriginal = removedAsset?.fileRecordId
+          ? await canonicalFileReadResolver.resolveOriginal(String(removedAsset.fileRecordId))
+          : null;
+        const storageKey = resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? removedAsset?.fileKey ?? null;
+
+        if (removedAsset?.fileRecordId || storageKey) {
+          await db
+            .update(lineItemFiles)
+            .set({ status: 'superseded' })
+            .where(
+              and(
+                eq(lineItemFiles.organizationId, organizationId),
+                eq(lineItemFiles.orderId, orderId),
+                eq(lineItemFiles.lineItemId, lineItemId),
+                eq(lineItemFiles.status, 'active'),
+                removedAsset?.fileRecordId
+                  ? eq(lineItemFiles.fileRecordId, String(removedAsset.fileRecordId))
+                  : or(eq(lineItemFiles.storagePath, String(storageKey)), eq(lineItemFiles.storageKey, String(storageKey)))!
+              )
+            );
+        }
+      } catch (lineItemFileCleanupError) {
+        console.warn('[OrderLineItemFiles:DELETE] line_item_files cleanup failed', lineItemFileCleanupError);
+      }
 
       try {
         const userId = getUserId(req.user);
