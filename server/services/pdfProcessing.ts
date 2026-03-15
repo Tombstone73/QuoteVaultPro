@@ -435,9 +435,9 @@ async function persistQuoteAttachmentPageDerivatives(args: {
             .set({
               thumbStatus: 'thumb_ready',
               thumbFileRecordId,
-              thumbKey,
+              thumbKey: null,
               previewFileRecordId,
-              previewKey,
+              previewKey: null,
               thumbError: null,
               updatedAt: new Date(),
             })
@@ -451,9 +451,9 @@ async function persistQuoteAttachmentPageDerivatives(args: {
               pageIndex,
               thumbStatus: 'thumb_ready',
               thumbFileRecordId,
-              thumbKey,
+              thumbKey: null,
               previewFileRecordId,
-              previewKey,
+              previewKey: null,
               thumbError: null,
               updatedAt: new Date(),
             });
