@@ -5746,9 +5746,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     pageIndex: p.pageIndex,
                     thumbStatus: p.thumbStatus,
                     thumbFileRecordId: p.thumbFileRecordId,
-                    thumbKey: p.thumbKey,
+                    thumbKey: null,
                     previewFileRecordId: p.previewFileRecordId,
-                    previewKey: p.previewKey,
+                    previewKey: null,
                     thumbError: p.thumbError,
                     updatedAt: new Date(),
                   } as any);

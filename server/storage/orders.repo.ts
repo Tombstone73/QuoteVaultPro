@@ -39,9 +39,11 @@ import {
     type InsertJobStatusLog,
 } from "@shared/schema";
 import { eq, and, or, ilike, gte, lte, desc, sql, isNull, inArray } from "drizzle-orm";
+import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 
 const ORDER_ATTACHMENT_SAFE_SELECT = {
     id: orderAttachments.id,
+    fileRecordId: orderAttachments.fileRecordId,
     orderId: orderAttachments.orderId,
     orderLineItemId: orderAttachments.orderLineItemId,
     quoteId: orderAttachments.quoteId,
@@ -61,8 +63,8 @@ const ORDER_ATTACHMENT_SAFE_SELECT = {
     checksum: orderAttachments.checksum,
     thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
     thumbnailGeneratedAt: orderAttachments.thumbnailGeneratedAt,
-    thumbKey: orderAttachments.thumbKey, // Required for thumbnail URL enrichment
-    previewKey: orderAttachments.previewKey, // Required for preview URL enrichment
+    thumbKey: orderAttachments.thumbKey,
+    previewKey: orderAttachments.previewKey,
     role: orderAttachments.role,
     side: orderAttachments.side,
     isPrimary: orderAttachments.isPrimary,
@@ -110,38 +112,9 @@ export class OrdersRepository {
         // Join with orders for organizationId filtering since order_attachments doesn't have org column
         const attachmentsQuery = await this.dbInstance
             .select({
+                id: orderAttachments.id,
+                fileRecordId: orderAttachments.fileRecordId,
                 orderId: orderAttachments.orderId,
-                thumbKey: orderAttachments.thumbKey,
-                previewKey: orderAttachments.previewKey,
-                fileName: orderAttachments.fileName,
-            })
-            .from(orderAttachments)
-            .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
-            .where(
-                and(
-                    inArray(orderAttachments.orderId, orderIds),
-                    eq(orders.organizationId, organizationId),
-                    sql`${orderAttachments.thumbStatus} = 'thumb_ready'`
-                )
-            )
-            .orderBy(orderAttachments.createdAt);
-
-        const groupedAttachments = new Map<string, Array<{ thumbKey: string | null; previewKey: string | null; fileName: string }>>();
-        for (const att of attachmentsQuery) {
-            if (!groupedAttachments.has(att.orderId)) {
-                groupedAttachments.set(att.orderId, []);
-            }
-            const group = groupedAttachments.get(att.orderId)!;
-            if (group.length < 3) {
-                group.push({ thumbKey: att.thumbKey, previewKey: att.previewKey, fileName: att.fileName });
-            }
-        }
-
-        // Total attachment count per order (do NOT require thumb_ready)
-        const countQuery = await this.dbInstance
-            .select({
-                orderId: orderAttachments.orderId,
-                count: sql<number>`count(*)::int`,
             })
             .from(orderAttachments)
             .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
@@ -151,20 +124,39 @@ export class OrdersRepository {
                     eq(orders.organizationId, organizationId)
                 )
             )
-            .groupBy(orderAttachments.orderId);
+            .orderBy(orderAttachments.createdAt);
 
+        const groupedAttachments = new Map<string, string[]>();
         const countMap = new Map<string, number>();
-        for (const row of countQuery) {
-            countMap.set(row.orderId, row.count);
+
+        const resolvedRows = await Promise.all(attachmentsQuery.map(async (att) => {
+            const [previewAccess, thumbAccess] = await Promise.all([
+                resolveDerivativeFileAccess(att, "preview"),
+                resolveDerivativeFileAccess(att, "thumbnail"),
+            ]);
+
+            return {
+                orderId: att.orderId,
+                thumbnailUrl: previewAccess.url ?? thumbAccess.url ?? null,
+            };
+        }));
+
+        for (const att of resolvedRows) {
+            if (!att.thumbnailUrl) continue;
+            countMap.set(att.orderId, (countMap.get(att.orderId) || 0) + 1);
+            if (!groupedAttachments.has(att.orderId)) {
+                groupedAttachments.set(att.orderId, []);
+            }
+            const group = groupedAttachments.get(att.orderId)!;
+            if (group.length < 3) {
+                group.push(att.thumbnailUrl);
+            }
         }
 
         // Populate previewData for all requested orders.
         // Thumbnails are only from thumb_ready attachments, but totalCount is ALL attachments.
         for (const orderIdKey of orderIds) {
-            const attachments = groupedAttachments.get(orderIdKey) || [];
-            const thumbnails = attachments
-                .map((att) => att.previewKey || att.thumbKey)
-                .filter((key: string | null): key is string => !!key);
+            const thumbnails = groupedAttachments.get(orderIdKey) || [];
             previewData.set(orderIdKey, {
                 thumbnails,
                 totalCount: countMap.get(orderIdKey) || 0,
