@@ -44,6 +44,7 @@ import {
   createRequestLogOnce,
   enrichAttachmentWithUrls,
   normalizeObjectKeyForDb,
+  resolveDerivativeFileAccess,
   resolveOriginalFileAccess,
   scheduleSupabaseObjectSelfCheck,
   tryExtractSupabaseObjectKeyFromUrl
@@ -895,7 +896,8 @@ export async function registerAttachmentRoutes(
       // Lookup asset
       const [asset] = await db
         .select({
-          thumbKey: assets.thumbKey,
+          id: assets.id,
+          fileRecordId: assets.fileRecordId,
           fileName: assets.fileName,
         })
         .from(assets)
@@ -905,13 +907,21 @@ export async function registerAttachmentRoutes(
         ))
         .limit(1);
 
-      if (!asset || !asset.thumbKey) {
+      if (!asset) {
         // No thumbnail available, return 404
         return res.status(404).json({ error: "Thumbnail not found" });
       }
 
+      const thumbAccess = await resolveDerivativeFileAccess(asset, "thumbnail", {
+        logOnce: createRequestLogOnce(),
+      });
+
+      if (!thumbAccess.url || !thumbAccess.objectPath) {
+        return res.status(404).json({ error: "Thumbnail not found" });
+      }
+
       // Redirect to authenticated /objects/ proxy
-      const objectPath = asset.thumbKey;
+      const objectPath = thumbAccess.objectPath;
       const filename = asset.fileName ? `thumb_${asset.fileName}` : 'thumbnail';
       const redirectUrl = `/objects/${objectPath}?filename=${encodeURIComponent(filename)}`;
       
