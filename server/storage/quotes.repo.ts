@@ -22,6 +22,7 @@ import {
 } from "@shared/schema";
 import { and, eq, isNull, like, gte, lte, desc, asc, sql, inArray } from "drizzle-orm";
 import { DB_TO_WORKFLOW, getEffectiveWorkflowState, type QuoteWorkflowState as WorkflowState } from "@shared/quoteWorkflow";
+import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 
 export class QuotesRepository {
     constructor(private readonly dbInstance = db) { }
@@ -175,57 +176,49 @@ export class QuotesRepository {
 
         const attachmentsQuery = await this.dbInstance
             .select({
+                id: quoteAttachments.id,
                 quoteId: quoteAttachments.quoteId,
-                thumbKey: quoteAttachments.thumbKey,
-                previewKey: quoteAttachments.previewKey,
-                fileName: quoteAttachments.fileName,
+                fileRecordId: quoteAttachments.fileRecordId,
             })
             .from(quoteAttachments)
             .where(
                 and(
                     inArray(quoteAttachments.quoteId, quoteIds),
-                    eq(quoteAttachments.organizationId, organizationId),
-                    sql`${quoteAttachments.thumbStatus} = 'thumb_ready'`
+                    eq(quoteAttachments.organizationId, organizationId)
                 )
             )
             .orderBy(quoteAttachments.createdAt);
 
-        const groupedAttachments = new Map<string, Array<{ thumbKey: string | null; previewKey: string | null; fileName: string }>>();
-        for (const att of attachmentsQuery) {
+        const groupedAttachments = new Map<string, string[]>();
+        const countMap = new Map<string, number>();
+
+        const resolvedRows = await Promise.all(attachmentsQuery.map(async (att) => {
+            const [previewAccess, thumbAccess] = await Promise.all([
+                resolveDerivativeFileAccess(att, "preview"),
+                resolveDerivativeFileAccess(att, "thumbnail"),
+            ]);
+
+            return {
+                quoteId: att.quoteId,
+                thumbnailUrl: previewAccess.url ?? thumbAccess.url ?? null,
+            };
+        }));
+
+        for (const att of resolvedRows) {
+            if (!att.thumbnailUrl) continue;
+
+            countMap.set(att.quoteId, (countMap.get(att.quoteId) || 0) + 1);
             if (!groupedAttachments.has(att.quoteId)) {
                 groupedAttachments.set(att.quoteId, []);
             }
             const group = groupedAttachments.get(att.quoteId)!;
             if (group.length < 3) {
-                group.push({ thumbKey: att.thumbKey, previewKey: att.previewKey, fileName: att.fileName });
+                group.push(att.thumbnailUrl);
             }
         }
 
-        const countQuery = await this.dbInstance
-            .select({
-                quoteId: quoteAttachments.quoteId,
-                count: sql<number>`count(*)::int`,
-            })
-            .from(quoteAttachments)
-            .where(
-                and(
-                    inArray(quoteAttachments.quoteId, quoteIds),
-                    eq(quoteAttachments.organizationId, organizationId),
-                    sql`${quoteAttachments.thumbStatus} = 'thumb_ready'`
-                )
-            )
-            .groupBy(quoteAttachments.quoteId);
-
-        const countMap = new Map<string, number>();
-        for (const row of countQuery) {
-            countMap.set(row.quoteId, row.count);
-        }
-
         for (const quoteIdKey of Array.from(groupedAttachments.keys())) {
-            const attachments = groupedAttachments.get(quoteIdKey)!;
-            const thumbnails = attachments
-                .map((att) => att.previewKey || att.thumbKey)
-                .filter((key: string | null): key is string => !!key);
+            const thumbnails = groupedAttachments.get(quoteIdKey)!;
             previewData.set(quoteIdKey, {
                 thumbnails,
                 totalCount: countMap.get(quoteIdKey) || 0,
@@ -1064,60 +1057,47 @@ export class QuotesRepository {
                 // Query for up to 3 thumbnails per quote
                 const attachmentsQuery = await this.dbInstance
                     .select({
+                        id: quoteAttachments.id,
                         quoteId: quoteAttachments.quoteId,
-                        thumbKey: quoteAttachments.thumbKey,
-                        previewKey: quoteAttachments.previewKey,
-                        fileName: quoteAttachments.fileName,
+                        fileRecordId: quoteAttachments.fileRecordId,
                     })
                     .from(quoteAttachments)
                     .where(
                         and(
                             inArray(quoteAttachments.quoteId, quoteIds),
-                            eq(quoteAttachments.organizationId, organizationId),
-                            sql`${quoteAttachments.thumbStatus} = 'thumb_ready'`
+                            eq(quoteAttachments.organizationId, organizationId)
                         )
                     )
                     .orderBy(quoteAttachments.createdAt);
-                
-                // Group attachments by quoteId and take max 3 per quote
-                const groupedAttachments = new Map<string, Array<{ thumbKey: string | null; previewKey: string | null; fileName: string }>>();
-                for (const att of attachmentsQuery) {
+
+                const groupedAttachments = new Map<string, string[]>();
+                const countMap = new Map<string, number>();
+                const resolvedRows = await Promise.all(attachmentsQuery.map(async (att) => {
+                    const [previewAccess, thumbAccess] = await Promise.all([
+                        resolveDerivativeFileAccess(att, "preview"),
+                        resolveDerivativeFileAccess(att, "thumbnail"),
+                    ]);
+
+                    return {
+                        quoteId: att.quoteId,
+                        thumbnailUrl: previewAccess.url ?? thumbAccess.url ?? null,
+                    };
+                }));
+
+                for (const att of resolvedRows) {
+                    if (!att.thumbnailUrl) continue;
+                    countMap.set(att.quoteId, (countMap.get(att.quoteId) || 0) + 1);
                     if (!groupedAttachments.has(att.quoteId)) {
                         groupedAttachments.set(att.quoteId, []);
                     }
                     const group = groupedAttachments.get(att.quoteId)!;
                     if (group.length < 3) {
-                        group.push({ thumbKey: att.thumbKey, previewKey: att.previewKey, fileName: att.fileName });
+                        group.push(att.thumbnailUrl);
                     }
                 }
-                
-                // Count total attachments per quote
-                const countQuery = await this.dbInstance
-                    .select({
-                        quoteId: quoteAttachments.quoteId,
-                        count: sql<number>`count(*)::int`,
-                    })
-                    .from(quoteAttachments)
-                    .where(
-                        and(
-                            inArray(quoteAttachments.quoteId, quoteIds),
-                            eq(quoteAttachments.organizationId, organizationId),
-                            sql`${quoteAttachments.thumbStatus} = 'thumb_ready'`
-                        )
-                    )
-                    .groupBy(quoteAttachments.quoteId);
-                
-                const countMap = new Map<string, number>();
-                for (const row of countQuery) {
-                    countMap.set(row.quoteId, row.count);
-                }
-                
-                // Build preview data map
+
                 for (const quoteIdKey of Array.from(groupedAttachments.keys())) {
-                    const attachments = groupedAttachments.get(quoteIdKey)!;
-                    const thumbnails = attachments
-                        .map((att: { thumbKey: string | null; previewKey: string | null; fileName: string }) => att.previewKey || att.thumbKey)
-                        .filter((key: string | null): key is string => !!key);
+                    const thumbnails = groupedAttachments.get(quoteIdKey)!;
                     previewData.set(quoteIdKey, {
                         thumbnails,
                         totalCount: countMap.get(quoteIdKey) || 0,
