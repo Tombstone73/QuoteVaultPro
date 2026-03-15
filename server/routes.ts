@@ -55,6 +55,7 @@ import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2Overr
 import { createLineItemFileRecord } from "./services/lineItemFileRecordService";
 import { canonicalFileReadResolver } from "./services/storage/CanonicalFileReadResolver";
 import { canonicalDerivativeReadResolver } from "./services/storage/CanonicalDerivativeReadResolver";
+import { organizationStorageSettingsService } from "./services/storage/OrganizationStorageSettingsService";
 import { stationResolver } from "./services/stations/stationResolver";
 import { routeLineItemToProduction } from "./services/productionRoutingService";
 import { resolveInitialProductionRoute, resolvePostPrepressProductionRoute } from "./services/productionRoutingResolver";
@@ -1636,6 +1637,57 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error patching inventory policy:", error);
       return res.status(500).json({ success: false, message: "Failed to update inventory policy" });
+    }
+  });
+
+  app.get('/api/admin/storage-settings', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(403).json({ success: false, error: 'No organization context' });
+      }
+
+      const settings = await organizationStorageSettingsService.getSettings(organizationId);
+      return res.json({ success: true, data: settings });
+    } catch (error: any) {
+      console.error('[StorageSettings:GET] Error:', error);
+      return res.status(500).json({ success: false, error: error?.message || 'Failed to fetch storage settings' });
+    }
+  });
+
+  app.post('/api/admin/storage-settings/validate', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(403).json({ success: false, error: 'No organization context' });
+      }
+
+      const validation = await organizationStorageSettingsService.validateDraft(organizationId, req.body ?? {});
+      return res.json({ success: true, data: validation });
+    } catch (error: any) {
+      console.error('[StorageSettings:VALIDATE] Error:', error);
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ success: false, error: fromZodError(error).message });
+      }
+      return res.status(500).json({ success: false, error: error?.message || 'Failed to validate storage settings' });
+    }
+  });
+
+  app.put('/api/admin/storage-settings', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(403).json({ success: false, error: 'No organization context' });
+      }
+
+      const settings = await organizationStorageSettingsService.saveSettings(organizationId, req.body ?? {});
+      return res.json({ success: true, data: settings });
+    } catch (error: any) {
+      console.error('[StorageSettings:PUT] Error:', error);
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ success: false, error: fromZodError(error).message });
+      }
+      return res.status(500).json({ success: false, error: error?.message || 'Failed to save storage settings' });
     }
   });
 
