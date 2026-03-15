@@ -237,9 +237,15 @@ export class AssetRepository {
       previewError?: string | null;
     }
   ): Promise<Asset> {
+    const legacyMirrorPatch =
+      data.previewStatus === 'ready'
+        ? { previewKey: null, thumbKey: null }
+        : {};
+
     const [updated] = await db
       .update(assets)
       .set({
+        ...legacyMirrorPatch,
         ...data,
         updatedAt: new Date(),
       })

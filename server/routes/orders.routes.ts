@@ -89,6 +89,8 @@ import {
     updateOrderWorkflowStatus,
 } from "../services/orderWorkflowService";
 import { storageApplicationService } from "../services/storage/StorageApplicationService";
+import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
+import { canonicalDerivativeReadResolver } from "../services/storage/CanonicalDerivativeReadResolver";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -605,13 +607,13 @@ export async function registerOrderRoutes(
                     uploadedByName: args.userName,
                     description: args.description || null,
                     fileName: stored.storedObject.originalFilename,
-                    fileUrl: stored.legacyFileUrl,
+                    fileUrl: stored.storedObject.objectKey ?? stored.storedObject.localPathRef ?? stored.legacyFileUrl,
                     fileSize: stored.storedObject.sizeBytes,
                     mimeType: stored.storedObject.mimeType,
                     originalFilename: stored.storedObject.originalFilename,
                     storedFilename: stored.storedObject.storedFilename,
-                    relativePath: stored.legacyRelativePath,
-                    storageProvider: stored.legacyStorageProvider,
+                    relativePath: null,
+                    storageProvider: null,
                     extension: stored.storedObject.extension,
                     checksum: stored.storedObject.checksum,
                     sizeBytes: stored.storedObject.sizeBytes,
@@ -2515,9 +2517,13 @@ export async function registerOrderRoutes(
             try {
                 const { assetRepository } = await import('../services/assets/AssetRepository');
                 const { assetPreviewGenerator } = await import('../services/assets/AssetPreviewGenerator');
+                const resolvedOriginal = attachment.fileRecordId
+                    ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
+                    : null;
+                const assetFileKey = resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? attachment.fileUrl;
                 const asset = await assetRepository.createAsset(organizationId, {
                     fileRecordId: attachment.fileRecordId ?? null,
-                    fileKey: attachment.fileUrl,
+                    fileKey: assetFileKey,
                     fileName: fileName,
                     mimeType: mimeType || undefined,
                     sizeBytes: fileSize || undefined,
@@ -2575,34 +2581,48 @@ export async function registerOrderRoutes(
                 );
 
             try {
-                const storageKeyRaw =
-                    (attachment.relativePath as string | null) ||
-                    (attachment.fileUrl as string | null) ||
-                    null;
-                const storageProvider = (attachment.storageProvider as "local" | "s3" | "gcs" | "supabase" | null | undefined) ?? null;
-                const storageKey = storageKeyRaw ? String(storageKeyRaw) : "";
+                const resolvedOriginal = attachment.fileRecordId
+                    ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
+                    : null;
+                const storageKey = String(resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? attachment.fileUrl ?? "");
+                const storageProvider = resolvedOriginal?.localPathRef ? "local" : resolvedOriginal?.objectKey ? "supabase" : ((attachment.storageProvider as "local" | "s3" | "gcs" | "supabase" | null | undefined) ?? null);
 
-                if (storageKey && storageProvider) {
-                    const [{ orderRefs = 0 } = {}] = await db
-                        .select({ orderRefs: sql<number>`count(*)` })
-                        .from(orderAttachments)
-                        .where(
-                            and(
-                                eq(orderAttachments.fileUrl, storageKey),
-                                eq(orderAttachments.storageProvider, storageProvider)
-                            )
-                        );
+                if (storageKey) {
+                    const [{ orderRefs = 0 } = {}] = attachment.fileRecordId
+                        ? await db
+                            .select({ orderRefs: sql<number>`count(*)` })
+                            .from(orderAttachments)
+                            .where(eq(orderAttachments.fileRecordId, String(attachment.fileRecordId)))
+                        : await db
+                            .select({ orderRefs: sql<number>`count(*)` })
+                            .from(orderAttachments)
+                            .where(
+                                and(
+                                    eq(orderAttachments.fileUrl, storageKey),
+                                    eq(orderAttachments.storageProvider, storageProvider)
+                                )
+                            );
 
-                    const [{ quoteRefs = 0 } = {}] = await db
-                        .select({ quoteRefs: sql<number>`count(*)` })
-                        .from(quoteAttachments)
-                        .where(
-                            and(
-                                eq(quoteAttachments.organizationId, organizationId),
-                                eq(quoteAttachments.fileUrl, storageKey),
-                                eq(quoteAttachments.storageProvider, storageProvider)
+                    const [{ quoteRefs = 0 } = {}] = attachment.fileRecordId
+                        ? await db
+                            .select({ quoteRefs: sql<number>`count(*)` })
+                            .from(quoteAttachments)
+                            .where(
+                                and(
+                                    eq(quoteAttachments.organizationId, organizationId),
+                                    eq(quoteAttachments.fileRecordId, String(attachment.fileRecordId))
+                                )
                             )
-                        );
+                        : await db
+                            .select({ quoteRefs: sql<number>`count(*)` })
+                            .from(quoteAttachments)
+                            .where(
+                                and(
+                                    eq(quoteAttachments.organizationId, organizationId),
+                                    eq(quoteAttachments.fileUrl, storageKey),
+                                    eq(quoteAttachments.storageProvider, storageProvider)
+                                )
+                            );
 
                     const remainingAttachmentRefs = Number(orderRefs) + Number(quoteRefs);
                     let hasRemainingAssetLinksForFile = false;
@@ -2610,10 +2630,15 @@ export async function registerOrderRoutes(
 
                     try {
                         const { assets, assetLinks, assetVariants } = await import("@shared/schema");
-                        const matchingAssets = await db
-                            .select({ id: assets.id, fileKey: assets.fileKey })
-                            .from(assets)
-                            .where(and(eq(assets.organizationId, organizationId), eq(assets.fileKey, normalizedFileKey)));
+                        const matchingAssets = attachment.fileRecordId
+                            ? await db
+                                .select({ id: assets.id, fileKey: assets.fileKey })
+                                .from(assets)
+                                .where(and(eq(assets.organizationId, organizationId), eq(assets.fileRecordId, String(attachment.fileRecordId))))
+                            : await db
+                                .select({ id: assets.id, fileKey: assets.fileKey })
+                                .from(assets)
+                                .where(and(eq(assets.organizationId, organizationId), eq(assets.fileKey, normalizedFileKey)));
 
                         if (matchingAssets.length > 0) {
                             await Promise.all(
@@ -2677,12 +2702,18 @@ export async function registerOrderRoutes(
                         console.error("[OrderAttachments:DELETE] Asset cleanup failed (non-blocking):", assetCleanupError);
                     }
 
-                    if (remainingAttachmentRefs === 0 && !hasRemainingAssetLinksForFile) {
+                    if (remainingAttachmentRefs === 0 && !hasRemainingAssetLinksForFile && storageProvider) {
                         const { deleteFile: deleteLocalFile } = await import("../utils/fileStorage.js");
+                        const [thumbAccess, previewAccess] = attachment.fileRecordId
+                            ? await Promise.all([
+                                canonicalDerivativeReadResolver.resolveDerivative(String(attachment.fileRecordId), "thumbnail"),
+                                canonicalDerivativeReadResolver.resolveDerivative(String(attachment.fileRecordId), "preview"),
+                            ])
+                            : [{ objectKey: (attachment as any).thumbKey ?? null }, { objectKey: (attachment as any).previewKey ?? null }];
                         const keysToDelete = [
                             storageKey,
-                            (attachment as any).thumbKey as string | null | undefined,
-                            (attachment as any).previewKey as string | null | undefined,
+                            thumbAccess.objectKey,
+                            previewAccess.objectKey,
                         ].filter((key): key is string => typeof key === "string" && key.length > 0);
 
                         const uniqueKeys = Array.from(new Set(keysToDelete.map((key) => String(key)).filter(Boolean)));
@@ -3722,14 +3753,14 @@ export async function registerOrderRoutes(
                             ...baseAttachmentData,
                             fileRecordId: stored.fileRecord.id,
                             fileName: stored.storedObject.originalFilename,
-                            fileUrl: stored.legacyFileUrl,
+                            fileUrl: stored.storedObject.objectKey ?? stored.storedObject.localPathRef ?? stored.legacyFileUrl,
                             fileSize: stored.storedObject.sizeBytes,
                             mimeType: stored.storedObject.mimeType,
                             thumbnailUrl: thumbnailUrl || null,
                             originalFilename: stored.storedObject.originalFilename,
                             storedFilename: stored.storedObject.storedFilename,
-                            relativePath: stored.legacyRelativePath,
-                            storageProvider: stored.legacyStorageProvider,
+                            relativePath: null,
+                            storageProvider: null,
                             extension: stored.storedObject.extension,
                             sizeBytes: stored.storedObject.sizeBytes,
                             checksum: stored.storedObject.checksum,
@@ -3764,14 +3795,14 @@ export async function registerOrderRoutes(
                             ...baseAttachmentData,
                             fileRecordId: stored.fileRecord.id,
                             fileName: stored.storedObject.originalFilename,
-                            fileUrl: stored.legacyFileUrl,
-                            relativePath: stored.legacyRelativePath,
+                            fileUrl: stored.storedObject.objectKey ?? stored.storedObject.localPathRef ?? stored.legacyFileUrl,
+                            relativePath: null,
                             fileSize: stored.storedObject.sizeBytes,
                             mimeType: stored.storedObject.mimeType,
                             thumbnailUrl: null,
                             originalFilename: stored.storedObject.originalFilename,
                             storedFilename: stored.storedObject.storedFilename,
-                            storageProvider: stored.legacyStorageProvider,
+                            storageProvider: null,
                             extension: stored.storedObject.extension,
                             sizeBytes: stored.storedObject.sizeBytes,
                             checksum: stored.storedObject.checksum,
@@ -3798,8 +3829,12 @@ export async function registerOrderRoutes(
 
             if (resolvedLineItemId) {
                 uploadStep = 'create_line_item_file_record';
+                const resolvedOriginal = attachment.fileRecordId
+                    ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
+                    : null;
                 const storagePath =
-                    (attachment.relativePath as string | null) ||
+                    resolvedOriginal?.objectKey ||
+                    resolvedOriginal?.localPathRef ||
                     (attachment.fileUrl as string | null) ||
                     null;
 
@@ -3815,7 +3850,7 @@ export async function registerOrderRoutes(
                         originalFilename: (attachment.originalFilename as string | null) || (attachment.fileName as string),
                         mimeType: attachment.mimeType,
                         sizeBytes: attachment.sizeBytes ?? attachment.fileSize,
-                        fileRecordId: canonicalUpload?.fileRecord.id ?? null,
+                        fileRecordId: attachment.fileRecordId ?? canonicalUpload?.fileRecord.id ?? null,
                         uploadedByUserId: userId,
                     });
                 }

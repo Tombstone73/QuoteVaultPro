@@ -54,6 +54,8 @@ import { ObjectStorageService, ObjectNotFoundError } from "../objectStorage";
 import { ObjectPermission } from "../objectAcl";
 import { resolveLocalStoragePath } from "../services/localStoragePath";
 import { storageApplicationService } from "../services/storage/StorageApplicationService";
+import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
+import { canonicalDerivativeReadResolver } from "../services/storage/CanonicalDerivativeReadResolver";
 import { extractNormalizedOrgIdFromKey, getTenantObjectKeyCandidates, normalizeTenantObjectKey } from "../utils/orgKeys";
 import type { DownloadIntent } from "@shared/schema";
 
@@ -283,13 +285,13 @@ export async function registerAttachmentRoutes(
           description: args.description || null,
           bucket: stored.storedObject.bucket ?? "titan-private",
           fileName: stored.storedObject.originalFilename,
-          fileUrl: stored.legacyFileUrl,
+          fileUrl: stored.storedObject.objectKey ?? stored.storedObject.localPathRef ?? stored.legacyFileUrl,
           fileSize: stored.storedObject.sizeBytes,
           mimeType: stored.storedObject.mimeType,
           originalFilename: stored.storedObject.originalFilename,
           storedFilename: stored.storedObject.storedFilename,
-          relativePath: stored.legacyRelativePath,
-          storageProvider: stored.legacyStorageProvider,
+          relativePath: null,
+          storageProvider: null,
           extension: stored.storedObject.extension,
           sizeBytes: stored.storedObject.sizeBytes,
           checksum: stored.storedObject.checksum,
@@ -1145,12 +1147,18 @@ export async function registerAttachmentRoutes(
               },
             });
 
+      const canonicalOriginal = attachment.fileRecordId
+        ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
+        : null;
+      const canonicalStorageKey = canonicalOriginal?.objectKey ?? canonicalOriginal?.localPathRef ?? null;
+      const canonicalStorageProvider = canonicalOriginal?.localPathRef ? "local" : canonicalOriginal?.objectKey ? "supabase" : null;
+
       // Best-effort self-check for Supabase-backed keys (non-blocking)
-      if (attachment.storageProvider === "supabase" && attachment.fileUrl) {
+      if (canonicalStorageProvider === "supabase" && canonicalStorageKey) {
         res.on("finish", () => {
           scheduleSupabaseObjectSelfCheck({
             bucket: "titan-private",
-            path: attachment.fileUrl,
+            path: canonicalStorageKey,
             context: { attachmentType: "quote", quoteId: req.params.id, attachmentId: attachment.id },
           });
         });
@@ -1161,13 +1169,10 @@ export async function registerAttachmentRoutes(
       const { isSupportedImageType } = await import("../services/thumbnailGenerator");
       const attachmentFileNameForThumb = attachment.originalFilename || attachment.fileName || null;
       const isSupportedImage = isSupportedImageType(attachment.mimeType, attachmentFileNameForThumb);
-      const hasStorageProviderForThumb = !!attachment.storageProvider;
-      const isNotHttpUrlForThumb =
-        attachment.fileUrl &&
-        !attachment.fileUrl.startsWith("http://") &&
-        !attachment.fileUrl.startsWith("https://");
+      const hasStorageProviderForThumb = !!canonicalStorageProvider;
+      const isNotHttpUrlForThumb = !!canonicalStorageKey;
 
-      if (isSupportedImage && hasStorageProviderForThumb && isNotHttpUrlForThumb && attachment.fileUrl) {
+      if (isSupportedImage && hasStorageProviderForThumb && isNotHttpUrlForThumb && canonicalStorageKey && canonicalStorageProvider) {
         const { generateImageDerivatives, isThumbnailGenerationEnabled } = await import(
           "../services/thumbnailGenerator"
         );
@@ -1175,9 +1180,9 @@ export async function registerAttachmentRoutes(
           void generateImageDerivatives(
             attachment.id,
             "quote",
-            attachment.fileUrl,
+            canonicalStorageKey,
             attachment.mimeType || null,
-            attachment.storageProvider!,
+            canonicalStorageProvider,
             organizationId,
             attachmentFileNameForThumb
           ).catch((error) => {
@@ -1189,7 +1194,7 @@ export async function registerAttachmentRoutes(
         }
       } else if (isSupportedImage && (!hasStorageProviderForThumb || !isNotHttpUrlForThumb)) {
         console.log(
-          `[QuoteFiles:POST] Skipping thumbnail generation for ${attachment.id}: storageProvider=${attachment.storageProvider}, fileUrl starts with http=${attachment.fileUrl?.startsWith("http")}`
+          `[QuoteFiles:POST] Skipping thumbnail generation for ${attachment.id}: canonicalStorageProvider=${canonicalStorageProvider}, canonicalStorageKey=${canonicalStorageKey}`
         );
       }
 
@@ -1199,11 +1204,9 @@ export async function registerAttachmentRoutes(
       ).toLowerCase();
       const isPdf =
         (attachment.mimeType ?? "").toLowerCase().includes("pdf") || attachmentFileNameForPdf.endsWith(".pdf");
-      const normalizedStorageProvider =
-        (attachment.storageProvider as any) ??
-        (isSupabaseConfigured() && attachment.fileUrl?.startsWith("uploads/") ? "supabase" : null);
+      const normalizedStorageProvider = canonicalStorageProvider;
 
-      if (isPdf && pdfColumnsExist && normalizedStorageProvider && isNotHttpUrlForThumb && attachment.fileUrl) {
+      if (isPdf && pdfColumnsExist && normalizedStorageProvider && isNotHttpUrlForThumb && canonicalStorageKey) {
         res.on("finish", () => {
           setImmediate(() => {
             void (async () => {
@@ -1212,7 +1215,7 @@ export async function registerAttachmentRoutes(
                 await processPdfAttachmentDerivedData({
                   orgId: organizationId,
                   attachmentId: attachment.id,
-                  storageKey: attachment.fileUrl,
+                  storageKey: canonicalStorageKey,
                   storageProvider: normalizedStorageProvider,
                   mimeType: attachment.mimeType || null,
                   attachmentType: "quote",

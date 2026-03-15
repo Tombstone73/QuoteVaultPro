@@ -53,6 +53,8 @@ import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBoo
 import { resolveMaterialsOverrideModeFromOrgPreferences } from "@shared/materialsOverrideMode";
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2OverrideConfig";
 import { createLineItemFileRecord } from "./services/lineItemFileRecordService";
+import { canonicalFileReadResolver } from "./services/storage/CanonicalFileReadResolver";
+import { canonicalDerivativeReadResolver } from "./services/storage/CanonicalDerivativeReadResolver";
 import { stationResolver } from "./services/stations/stationResolver";
 import { routeLineItemToProduction } from "./services/productionRoutingService";
 import { resolveInitialProductionRoute, resolvePostPrepressProductionRoute } from "./services/productionRoutingResolver";
@@ -16288,6 +16290,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ))
         .returning({
           id: orderAttachments.id,
+          fileRecordId: orderAttachments.fileRecordId,
           storageProvider: orderAttachments.storageProvider,
           fileUrl: orderAttachments.fileUrl,
           relativePath: orderAttachments.relativePath,
@@ -16299,15 +16302,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (deletedAttachment.length) {
         const record = deletedAttachment[0];
         try {
+          const resolvedOriginal = record.fileRecordId
+            ? await canonicalFileReadResolver.resolveOriginal(String(record.fileRecordId))
+            : null;
+          const [thumbAccess, previewAccess] = record.fileRecordId
+            ? await Promise.all([
+                canonicalDerivativeReadResolver.resolveDerivative(String(record.fileRecordId), 'thumbnail'),
+                canonicalDerivativeReadResolver.resolveDerivative(String(record.fileRecordId), 'preview'),
+              ])
+            : [{ objectKey: record.thumbKey ?? null }, { objectKey: record.previewKey ?? null }];
+          const effectiveStorageProvider = resolvedOriginal?.localPathRef
+            ? 'local'
+            : resolvedOriginal?.objectKey
+              ? 'supabase'
+              : record.storageProvider;
           const keys = [
-            record.relativePath,
-            record.fileUrl,
-            record.thumbnailRelativePath,
-            record.thumbKey,
-            record.previewKey,
+            resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? record.relativePath ?? record.fileUrl,
+            thumbAccess.objectKey ?? record.thumbnailRelativePath ?? record.thumbKey,
+            previewAccess.objectKey ?? record.previewKey,
           ].filter((k): k is string => typeof k === 'string' && k.length > 0);
 
-          if (record.storageProvider === 'supabase') {
+          if (effectiveStorageProvider === 'supabase') {
             const supabaseStorage = new SupabaseStorageService();
             await Promise.all(keys.map(async (k) => {
               try {
@@ -16348,7 +16363,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 entityId: String(lineItemId),
                 displayLabel: `Line item ${lineItemId}`,
                 fieldKey: 'file',
-                fromValue: record.fileUrl || record.relativePath || record.thumbKey || record.previewKey || null,
+                fromValue: record.fileUrl || record.relativePath || null,
                 toValue: null,
                 actorUserId: userId ?? null,
                 createdAt: new Date().toISOString(),
@@ -16358,7 +16373,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   attachmentId: record.id,
                   storageProvider: record.storageProvider || null,
                   fileKey:
-                    record.relativePath || record.fileUrl || record.thumbnailRelativePath || record.thumbKey || record.previewKey || null,
+                    record.relativePath || record.fileUrl || null,
                 },
               },
             },
