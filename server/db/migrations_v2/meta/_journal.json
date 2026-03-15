@@ -78,6 +78,13 @@
       "when": 1773705600000,
       "tag": "0010_assets_file_record_link",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1773792000000,
+      "tag": "0011_quote_attachment_page_file_records",
+      "breakpoints": true
     }
   ]
 }

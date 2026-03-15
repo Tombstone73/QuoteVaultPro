@@ -2,6 +2,16 @@ import { db } from "../db";
 import { fileDerivatives, type FileDerivative, type InsertFileDerivative } from "@shared/schema";
 import { and, desc, eq, inArray } from "drizzle-orm";
 
+type ReplaceReadyValues = {
+  fileRecordId: NonNullable<InsertFileDerivative["fileRecordId"]>;
+  derivativeType: NonNullable<InsertFileDerivative["derivativeType"]>;
+  sourcePlacementId?: InsertFileDerivative["sourcePlacementId"];
+  bucket?: InsertFileDerivative["bucket"];
+  objectKey?: InsertFileDerivative["objectKey"];
+  mimeType?: InsertFileDerivative["mimeType"];
+  sizeBytes?: InsertFileDerivative["sizeBytes"];
+};
+
 export class FileDerivativeRepository {
   constructor(private readonly dbInstance = db) {}
 
@@ -36,7 +46,7 @@ export class FileDerivativeRepository {
   }
 
   async replaceReady(
-    values: Pick<InsertFileDerivative, "fileRecordId" | "derivativeType" | "sourcePlacementId" | "bucket" | "objectKey" | "mimeType" | "sizeBytes">,
+    values: ReplaceReadyValues,
     executor: any = this.dbInstance,
   ): Promise<FileDerivative> {
     const now = new Date();

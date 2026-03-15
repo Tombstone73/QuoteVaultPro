@@ -1406,7 +1406,9 @@ export const quoteAttachmentPages = pgTable("quote_attachment_pages", {
   attachmentId: varchar("attachment_id").notNull().references(() => quoteAttachments.id, { onDelete: 'cascade' }),
   pageIndex: integer("page_index").notNull(), // 0-based page index
   thumbStatus: thumbStatusEnum("thumb_status").notNull().default('uploaded'),
+  thumbFileRecordId: varchar("thumb_file_record_id").references(() => fileRecords.id, { onDelete: 'set null' }),
   thumbKey: text("thumb_key"), // Storage key for page thumbnail
+  previewFileRecordId: varchar("preview_file_record_id").references(() => fileRecords.id, { onDelete: 'set null' }),
   previewKey: text("preview_key"), // Storage key for page preview
   thumbError: text("thumb_error"), // Error message if page thumbnail generation failed
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -1414,6 +1416,8 @@ export const quoteAttachmentPages = pgTable("quote_attachment_pages", {
 }, (table) => [
   index("quote_attachment_pages_attachment_id_idx").on(table.attachmentId),
   index("quote_attachment_pages_organization_id_idx").on(table.organizationId),
+  index("quote_attachment_pages_thumb_file_idx").on(table.thumbFileRecordId),
+  index("quote_attachment_pages_preview_file_idx").on(table.previewFileRecordId),
   // Enforce uniqueness: one row per page per attachment
   uniqueIndex("quote_attachment_pages_attachment_page_idx").on(table.attachmentId, table.pageIndex),
 ]);
