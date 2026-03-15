@@ -5688,11 +5688,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
               quoteId: newQuote.id,
               quoteLineItemId: mappedLineItemId,
               organizationId,
+              fileRecordId: att.fileRecordId,
               uploadedByUserId: att.uploadedByUserId,
               uploadedByName: att.uploadedByName,
 
               fileName: att.fileName,
-              fileUrl: att.fileUrl,
+              fileUrl: att.fileUrl ?? null,
               fileSize: att.fileSize,
               mimeType: att.mimeType,
               description: att.description,
@@ -6422,10 +6423,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Best-effort self-check for Supabase-backed keys (non-blocking)
       if (attachment.storageProvider === 'supabase' && attachment.fileUrl) {
+        const supabaseAttachmentKey = attachment.fileUrl;
         res.on('finish', () => {
           scheduleSupabaseObjectSelfCheck({
             bucket: 'titan-private',
-            path: attachment.fileUrl,
+            path: supabaseAttachmentKey,
             context: { attachmentType: 'quote', quoteId, lineItemId, attachmentId: attachment.id },
           });
         });
@@ -6440,7 +6442,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const { assetPreviewGenerator } = await import('./services/assets/AssetPreviewGenerator');
         const asset = await assetRepository.createAsset(organizationId, {
           fileRecordId: attachment.fileRecordId ?? null,
-          fileKey: attachment.fileUrl, // Storage key
+          fileKey: attachment.fileRecordId ? null : attachment.fileUrl,
           fileName: attachment.fileName,
           mimeType: attachment.mimeType || undefined,
           sizeBytes: attachment.fileSize || undefined,
@@ -6544,6 +6546,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           console.warn(`[LineItemFiles:POST] PDF/AI detected but fileUrl missing; skipping processing for attachmentId=${attachment.id}`);
         } else {
           console.log(`[LineItemFiles:POST] PDF/AI detected; queued processing for attachmentId=${attachment.id}, fileName=${attachmentFileName}`);
+          const attachmentStorageKey = attachment.fileUrl;
 
           res.on("finish", () => {
             setImmediate(() => {
@@ -6554,7 +6557,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   await processPdfAttachmentDerivedData({
                     orgId: organizationId,
                     attachmentId: attachment.id,
-                    storageKey: attachment.fileUrl,
+                    storageKey: attachmentStorageKey,
                     storageProvider: normalizedStorageProvider,
                     mimeType: attachment.mimeType || null,
                   });
@@ -15291,6 +15294,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           id: lineItemFiles.id,
           orderId: lineItemFiles.orderId,
           lineItemId: lineItemFiles.lineItemId,
+          fileRecordId: lineItemFiles.fileRecordId,
           storageBucket: lineItemFiles.storageBucket,
           storagePath: lineItemFiles.storagePath,
           storageKey: lineItemFiles.storageKey,
@@ -15323,24 +15327,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      const [attachment] = await db
-        .select({
-          storageProvider: orderAttachments.storageProvider,
-        })
-        .from(orderAttachments)
-        .where(
-          and(
-            eq(orderAttachments.orderId, fileRow.orderId),
-            eq(orderAttachments.orderLineItemId, fileRow.lineItemId),
-            eq(orderAttachments.fileUrl, key),
-          )
-        )
-        .limit(1);
-
-      if (attachment?.storageProvider === "supabase" && isSupabaseConfigured()) {
-        const supabase = new SupabaseStorageService();
-        const signedUrl = await supabase.getSignedDownloadUrl(key, 3600);
-        return res.json({ success: true, data: { thumbnailUrl: signedUrl } });
+      if (fileRow.fileRecordId) {
+        const resolved = await canonicalFileReadResolver.resolveOriginal(String(fileRow.fileRecordId));
+        const objectPath = resolved.objectKey ?? resolved.localPathRef ?? null;
+        if (resolved.status === 'available' && objectPath) {
+          return res.json({ success: true, data: { thumbnailUrl: `/objects/${objectPath}` } });
+        }
       }
 
       return res.json({ success: true, data: { thumbnailUrl: `/objects/${key}` } });
@@ -16180,7 +16172,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       for (const c of uniqueCandidates) {
         const asset = await assetRepository.createAsset(organizationId, {
           fileRecordId: c.fileRecordId ?? null,
-          fileKey: c.fileKey,
+          fileKey: c.fileRecordId ? null : c.fileKey,
           fileName: c.fileName || guessFileNameFromKey(c.fileKey),
           mimeType: c.mimeType,
           sizeBytes: c.sizeBytes,
