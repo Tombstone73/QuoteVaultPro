@@ -53,6 +53,7 @@ import {
   PlugZap,
   Sliders,
   Mail,
+  HardDrive,
   Wrench,
   type LucideIcon,
 } from "lucide-react";
@@ -127,6 +128,12 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     path: "/settings/email", 
     icon: Mail,
     description: "Email configuration for invoices and quotes"
+  },
+  {
+    label: "Storage",
+    path: "/settings/storage",
+    icon: HardDrive,
+    description: "Canonical storage routing and provider status"
   },
   { 
     label: "Production & Operations", 

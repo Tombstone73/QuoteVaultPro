@@ -10,7 +10,7 @@ import {
 } from "../../../utils/fileStorage";
 import { resolveLocalStoragePath } from "../../localStoragePath";
 import { SupabaseStorageService, isSupabaseConfigured } from "../../../supabaseStorage";
-import { getMaxCloudUploadBytes, decideStorageTarget } from "../../storageTarget";
+import { getEffectiveMaxCloudUploadBytes, decideStorageTarget, normalizeTitanManagedStorageConfig } from "../../storageTarget";
 import { normalizeObjectKeyForDb } from "../../../lib/supabaseObjectHelpers";
 import type { StorageProviderConfig } from "@shared/schema";
 import type {
@@ -35,7 +35,25 @@ function buildRelativePath(resource: StorageResourceContext, storedFilename: str
 export class TitanManagedStorageAdapter implements StorageProviderAdapter {
   readonly providerType: StorageProviderConfig["providerType"] = "titan_managed";
 
-  async validateConfig(_config: StorageProviderConfig): Promise<{ valid: boolean; error: string | null; validatedAt: Date }> {
+  async validateConfig(config: StorageProviderConfig): Promise<{ valid: boolean; error: string | null; validatedAt: Date }> {
+    const normalizedConfig = normalizeTitanManagedStorageConfig(config.configJson);
+    if (normalizedConfig.routingMode === "supabase" && !isSupabaseConfigured()) {
+      return {
+        valid: false,
+        error: "Supabase-backed storage is not available in the current server environment.",
+        validatedAt: new Date(),
+      };
+    }
+
+    const maxCloudBytes = getEffectiveMaxCloudUploadBytes(config.configJson);
+    if (!Number.isFinite(maxCloudBytes) || maxCloudBytes <= 0) {
+      return {
+        valid: false,
+        error: "Max cloud upload threshold must be greater than zero.",
+        validatedAt: new Date(),
+      };
+    }
+
     return {
       valid: true,
       error: null,
@@ -58,13 +76,14 @@ export class TitanManagedStorageAdapter implements StorageProviderAdapter {
     token?: string;
     message?: string;
   }> {
-    const maxCloudBytes = getMaxCloudUploadBytes();
+    const maxCloudBytes = getEffectiveMaxCloudUploadBytes(input.providerConfig.configJson);
     const storageTarget = decideStorageTarget({
       fileName: input.fileName,
       fileSizeBytes: input.fileSizeBytes,
       requestedTarget: input.requestedTarget,
       organizationId: input.organizationId,
       context: "StorageApplicationService.initiateUpload",
+      providerConfigJson: input.providerConfig.configJson,
     });
 
     if (storageTarget === "supabase" && isSupabaseConfigured()) {
@@ -102,6 +121,7 @@ export class TitanManagedStorageAdapter implements StorageProviderAdapter {
       requestedTarget: input.requestedTarget,
       organizationId: input.resource.organizationId,
       context: "StorageApplicationService.putObject",
+      providerConfigJson: input.providerConfig.configJson,
     });
 
     if (storageTarget === "supabase" && isSupabaseConfigured()) {
@@ -173,6 +193,7 @@ export class TitanManagedStorageAdapter implements StorageProviderAdapter {
       requestedTarget: input.requestedTarget,
       organizationId: input.resource.organizationId,
       context: "StorageApplicationService.finalizeUpload",
+      providerConfigJson: input.providerConfig.configJson,
     });
 
     if (storageTarget === "supabase" && isSupabaseConfigured()) {

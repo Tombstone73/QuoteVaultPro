@@ -22,6 +22,7 @@ import {
   generateRelativePath,
 } from "./utils/fileStorage";
 import { decideStorageTarget } from "./services/storageTarget";
+import { storagePolicyResolver } from "./services/storage/StoragePolicyResolver";
 import { normalizeObjectKeyForDb } from "./lib/supabaseObjectHelpers";
 import {
   createRequestLogOnce,
@@ -115,11 +116,15 @@ export async function uploadLineItemFile(params: {
     throw new Error(`File size exceeds maximum allowed size of ${MAX_FILE_SIZE_MB}MB`);
   }
 
+  const storagePolicy = await storagePolicyResolver.resolve(organizationId);
+  const canonicalProviderConfig = storagePolicyResolver.resolveCanonicalStorageBehavior(storagePolicy);
+
   const target = decideStorageTarget({
     fileName: originalFilename,
     fileSizeBytes: buffer.length,
     organizationId,
     context: "prepress.uploadLineItemFile",
+    providerConfigJson: canonicalProviderConfig.configJson,
   });
 
   let storagePath = "";
