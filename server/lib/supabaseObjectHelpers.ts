@@ -280,46 +280,28 @@ export async function enrichAttachmentWithUrls(
                     .from(quoteAttachmentPages)
                     .where(eq(quoteAttachmentPages.attachmentId, attachment.id))
                     .orderBy(quoteAttachmentPages.pageIndex);
+                pages = await Promise.all(pageRecords.map(async (page) => {
+                    const [pageThumbAccess, pagePreviewAccess] = await Promise.all([
+                        resolveOriginalFileAccess({
+                            id: page.id,
+                            fileRecordId: page.thumbFileRecordId,
+                            fileName: `${attachment.fileName || attachment.id || "attachment"}-page-${page.pageIndex + 1}.thumb.jpg`,
+                            mimeType: "image/jpeg",
+                        }, { logOnce }),
+                        resolveOriginalFileAccess({
+                            id: page.id,
+                            fileRecordId: page.previewFileRecordId,
+                            fileName: `${attachment.fileName || attachment.id || "attachment"}-page-${page.pageIndex + 1}.preview.jpg`,
+                            mimeType: "image/jpeg",
+                        }, { logOnce }),
+                    ]);
 
-                if (isSupabaseConfigured()) {
-                    const supabaseService = new SupabaseStorageService(bucket);
-                    pages = await Promise.all(pageRecords.map(async (page) => {
-                        let pageThumbUrl: string | null = null;
-                        let pagePreviewUrl: string | null = null;
-
-                        if (page.thumbKey) {
-                            try {
-                                pageThumbUrl = await supabaseService.getSignedDownloadUrl(page.thumbKey, 3600);
-                            } catch (error) {
-                                if (logOnce) {
-                                    logOnce(`pageThumb:${attachment.id}`, "[enrichAttachmentWithUrls] Failed to generate page thumbUrl (fail-soft)", error);
-                                }
-                            }
-                        }
-
-                        if (page.previewKey) {
-                            try {
-                                pagePreviewUrl = await supabaseService.getSignedDownloadUrl(page.previewKey, 3600);
-                            } catch (error) {
-                                if (logOnce) {
-                                    logOnce(`pagePreview:${attachment.id}`, "[enrichAttachmentWithUrls] Failed to generate page previewUrl (fail-soft)", error);
-                                }
-                            }
-                        }
-
-                        return {
-                            ...page,
-                            thumbUrl: pageThumbUrl,
-                            previewUrl: pagePreviewUrl,
-                        };
-                    }));
-                } else {
-                    pages = pageRecords.map((page) => ({
+                    return {
                         ...page,
-                        thumbUrl: page.thumbKey ? objectsProxyUrl(page.thumbKey) : null,
-                        previewUrl: page.previewKey ? objectsProxyUrl(page.previewKey) : null,
-                    }));
-                }
+                        thumbUrl: pageThumbAccess.originalUrl,
+                        previewUrl: pagePreviewAccess.originalUrl,
+                    };
+                }));
             } catch (error) {
                 console.error(`[enrichAttachmentWithUrls] Failed to fetch pages for ${attachment.id}:`, error);
             }
