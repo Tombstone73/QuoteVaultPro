@@ -16,14 +16,16 @@
  * - PERMANENT: Attachment row updated with pageCount, thumbKey, statuses, timestamps
  */
 
-import { db } from "../db";
-import { orderAttachments, quoteAttachments } from "@shared/schema";
+import { db, hasQuoteAttachmentPagesTable } from "../db";
+import { orderAttachments, quoteAttachmentPages, quoteAttachments } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage";
 import { fileExists, readFile } from "../utils/fileStorage";
 import { resolveLocalStoragePath } from "./localStoragePath";
 import { normalizeTenantObjectKey } from "../utils/orgKeys";
 import { persistReadyFileDerivative } from "./storage/persistFileDerivative";
+import { fileRecordRepository } from "../storage/fileRecord.repo";
+import { storagePlacementRepository } from "../storage/storagePlacement.repo";
 import path from "path";
 import * as fsPromises from "fs/promises";
 
@@ -238,6 +240,16 @@ function generateThumbnailKey(args: {
   return normalizeTenantObjectKey(`thumbs/${orgId}/${attachmentType}/${attachmentId}.thumb.jpg`);
 }
 
+function generatePageDerivativeKey(args: {
+  orgId: string;
+  attachmentId: string;
+  pageIndex: number;
+  variant: 'thumb' | 'preview';
+}): string {
+  const { orgId, attachmentId, pageIndex, variant } = args;
+  return normalizeTenantObjectKey(`thumbs/${orgId}/quote/${attachmentId}/pages/${pageIndex}.${variant}.jpg`);
+}
+
 async function verifyDerivativeExists(args: {
   storageProvider: string;
   thumbKey: string;
@@ -248,6 +260,232 @@ async function verifyDerivativeExists(args: {
     return await svc.fileExists(thumbKey);
   }
   return await fileExists(thumbKey);
+}
+
+async function createCanonicalPageFileRecord(args: {
+  tx: any;
+  organizationId: string;
+  sourceFileRecordId: string;
+  storageProvider: string;
+  objectKey: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  createdByUserId?: string | null;
+}): Promise<string> {
+  const canonicalPlacement = await storagePlacementRepository.getActiveCanonicalPlacementByFileRecordId(
+    args.sourceFileRecordId,
+    args.tx,
+  );
+
+  if (!canonicalPlacement?.providerConfigId) {
+    throw new Error(`Missing canonical placement for page derivative source fileRecordId=${args.sourceFileRecordId}`);
+  }
+
+  const fileRecord = await fileRecordRepository.create({
+    organizationId: args.organizationId,
+    storageClass: 'hot',
+    lifecycleState: 'stored_hot',
+    originalFilename: args.fileName,
+    mimeType: args.mimeType,
+    sizeBytes: args.sizeBytes,
+    checksum: null,
+    createdByUserId: args.createdByUserId ?? null,
+  }, args.tx);
+
+  await storagePlacementRepository.create({
+    fileRecordId: fileRecord.id,
+    providerConfigId: canonicalPlacement.providerConfigId,
+    placementRole: 'canonical',
+    placementState: 'active',
+    bucket: args.storageProvider === 'supabase' ? (canonicalPlacement.bucket ?? 'titan-private') : null,
+    objectKey: args.storageProvider === 'supabase' ? args.objectKey : null,
+    localPathRef: args.storageProvider === 'local' ? args.objectKey : null,
+    checksum: null,
+    sizeBytes: args.sizeBytes,
+    lastVerifiedAt: new Date(),
+    createdAt: new Date(),
+  }, args.tx);
+
+  return fileRecord.id;
+}
+
+async function persistQuoteAttachmentPageDerivatives(args: {
+  organizationId: string;
+  attachment: typeof quoteAttachments.$inferSelect;
+  storageProvider: string;
+  pdfDocument: any;
+}): Promise<void> {
+  const { organizationId, attachment, storageProvider, pdfDocument } = args;
+
+  if (!attachment.fileRecordId) {
+    console.warn(`[PdfProcessing] Skipping page derivative canonical persistence for ${attachment.id}: missing fileRecordId`);
+    return;
+  }
+
+  const tableExists = hasQuoteAttachmentPagesTable();
+  if (tableExists !== true) {
+    return;
+  }
+
+  const pageCount = Number(pdfDocument?.numPages ?? 0);
+  if (pageCount <= 0) {
+    return;
+  }
+
+  const sharp = sharpModule.default || sharpModule;
+  const Canvas = canvasModule.createCanvas;
+  const existingPages = await db
+    .select()
+    .from(quoteAttachmentPages)
+    .where(and(
+      eq(quoteAttachmentPages.attachmentId, attachment.id),
+      eq(quoteAttachmentPages.organizationId, organizationId),
+    ));
+  const existingByIndex = new Map(existingPages.map((row) => [row.pageIndex, row]));
+
+  for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+    try {
+      const page = await pdfDocument.getPage(pageIndex + 1);
+      const viewport = page.getViewport({ scale: 2.0 });
+      const canvas = Canvas(viewport.width, viewport.height);
+      const context = canvas.getContext('2d');
+
+      await page.render({
+        canvasContext: context,
+        viewport,
+      }).promise;
+
+      const pageImageBuffer = canvas.toBuffer('image/png');
+      const thumbBuffer = await sharp(pageImageBuffer)
+        .resize(320, undefined, {
+          fit: 'inside',
+          withoutEnlargement: true,
+        })
+        .jpeg({ quality: 85 })
+        .toBuffer();
+      const previewBuffer = await sharp(pageImageBuffer)
+        .resize(1600, undefined, {
+          fit: 'inside',
+          withoutEnlargement: true,
+        })
+        .jpeg({ quality: 90 })
+        .toBuffer();
+
+      const thumbKey = generatePageDerivativeKey({
+        orgId: organizationId,
+        attachmentId: attachment.id,
+        pageIndex,
+        variant: 'thumb',
+      });
+      const previewKey = generatePageDerivativeKey({
+        orgId: organizationId,
+        attachmentId: attachment.id,
+        pageIndex,
+        variant: 'preview',
+      });
+
+      const [thumbUploaded, previewUploaded] = await Promise.all([
+        uploadThumbnailFile(thumbKey, thumbBuffer, storageProvider, organizationId),
+        uploadThumbnailFile(previewKey, previewBuffer, storageProvider, organizationId),
+      ]);
+
+      if (!thumbUploaded || !previewUploaded) {
+        throw new Error(`Failed to upload page derivatives pageIndex=${pageIndex}`);
+      }
+
+      const [thumbExists, previewExists] = await Promise.all([
+        verifyDerivativeExists({ storageProvider, thumbKey }),
+        verifyDerivativeExists({ storageProvider, thumbKey: previewKey }),
+      ]);
+
+      if (!thumbExists || !previewExists) {
+        throw new Error(`Page derivative missing after write pageIndex=${pageIndex}`);
+      }
+
+      const existingRow = existingByIndex.get(pageIndex) ?? null;
+
+      await db.transaction(async (tx) => {
+        const thumbFileRecordId = await createCanonicalPageFileRecord({
+          tx,
+          organizationId,
+          sourceFileRecordId: attachment.fileRecordId!,
+          storageProvider,
+          objectKey: thumbKey,
+          fileName: `${attachment.fileName || attachment.id}-page-${pageIndex + 1}.thumb.jpg`,
+          mimeType: 'image/jpeg',
+          sizeBytes: thumbBuffer.length,
+          createdByUserId: (attachment as any).uploadedByUserId ?? null,
+        });
+        const previewFileRecordId = await createCanonicalPageFileRecord({
+          tx,
+          organizationId,
+          sourceFileRecordId: attachment.fileRecordId!,
+          storageProvider,
+          objectKey: previewKey,
+          fileName: `${attachment.fileName || attachment.id}-page-${pageIndex + 1}.preview.jpg`,
+          mimeType: 'image/jpeg',
+          sizeBytes: previewBuffer.length,
+          createdByUserId: (attachment as any).uploadedByUserId ?? null,
+        });
+
+        if (existingRow) {
+          await tx
+            .update(quoteAttachmentPages)
+            .set({
+              thumbStatus: 'thumb_ready',
+              thumbFileRecordId,
+              thumbKey,
+              previewFileRecordId,
+              previewKey,
+              thumbError: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(quoteAttachmentPages.id, existingRow.id));
+        } else {
+          await tx
+            .insert(quoteAttachmentPages)
+            .values({
+              organizationId,
+              attachmentId: attachment.id,
+              pageIndex,
+              thumbStatus: 'thumb_ready',
+              thumbFileRecordId,
+              thumbKey,
+              previewFileRecordId,
+              previewKey,
+              thumbError: null,
+              updatedAt: new Date(),
+            });
+        }
+      });
+    } catch (error: any) {
+      console.warn(`[PdfProcessing] Failed to persist page derivative for attachment=${attachment.id} pageIndex=${pageIndex}:`, error?.message || error);
+
+      const existingRow = existingByIndex.get(pageIndex) ?? null;
+      if (existingRow) {
+        await db
+          .update(quoteAttachmentPages)
+          .set({
+            thumbStatus: 'thumb_failed',
+            thumbError: String(error?.message || error).slice(0, 500),
+            updatedAt: new Date(),
+          })
+          .where(eq(quoteAttachmentPages.id, existingRow.id));
+      } else {
+        await db
+          .insert(quoteAttachmentPages)
+          .values({
+            organizationId,
+            attachmentId: attachment.id,
+            pageIndex,
+            thumbStatus: 'thumb_failed',
+            thumbError: String(error?.message || error).slice(0, 500),
+            updatedAt: new Date(),
+          });
+      }
+    }
+  }
 }
 
 /**
@@ -453,6 +691,15 @@ export async function processPdfAttachmentDerivedData(args: {
       } catch (dbError: any) {
         console.error(`[PdfProcessing] DB update failed while setting pageCount for ${attachmentId}:`, dbError?.message || dbError);
         throw new Error(`Failed to update pageCount in database: ${dbError?.message || dbError}`);
+      }
+
+      if (hasCanvas && hasSharp) {
+        await persistQuoteAttachmentPageDerivatives({
+          organizationId: orgId,
+          attachment: attachment as typeof quoteAttachments.$inferSelect,
+          storageProvider,
+          pdfDocument,
+        });
       }
     }
 
