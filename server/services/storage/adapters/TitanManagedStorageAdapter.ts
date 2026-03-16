@@ -10,9 +10,10 @@ import {
 } from "../../../utils/fileStorage";
 import { resolveLocalStoragePath } from "../../localStoragePath";
 import { SupabaseStorageService, isSupabaseConfigured } from "../../../supabaseStorage";
-import { getEffectiveMaxCloudUploadBytes, decideStorageTarget, normalizeTitanManagedStorageConfig } from "../../storageTarget";
+import { getEffectiveMaxCloudUploadBytes, decideStorageTarget } from "../../storageTarget";
 import { normalizeObjectKeyForDb } from "../../../lib/supabaseObjectHelpers";
 import type { StorageProviderConfig } from "@shared/schema";
+import { normalizeTitanManagedStorageConfig } from "@shared/storageSettings";
 import type {
   StorageProviderAdapter,
   StoredObjectDescriptor,

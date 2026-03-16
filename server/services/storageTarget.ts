@@ -1,5 +1,7 @@
 import { isSupabaseConfigured } from "../supabaseStorage";
-import { titanManagedStorageConfigSchema, type TitanManagedStorageConfig } from "@shared/storageSettings";
+import { normalizeTitanManagedStorageConfig, type TitanManagedStorageConfig } from "@shared/storageSettings";
+
+export { normalizeTitanManagedStorageConfig };
 
 export type StorageTarget = "supabase" | "local_dev";
 
@@ -47,21 +49,6 @@ function parseBytes(raw: string | undefined | null): number | null {
 export function getMaxCloudUploadBytes(): number {
   const parsed = parseBytes(process.env.SUPABASE_MAX_UPLOAD_BYTES);
   return parsed ?? DEFAULT_MAX_CLOUD_UPLOAD_BYTES;
-}
-
-export function normalizeTitanManagedStorageConfig(raw: unknown): TitanManagedStorageConfig {
-  const parsed = titanManagedStorageConfigSchema.safeParse(raw ?? {});
-  if (!parsed.success) {
-    return {
-      routingMode: "auto",
-      maxCloudUploadBytesOverride: null,
-    };
-  }
-
-  return {
-    routingMode: parsed.data.routingMode ?? "auto",
-    maxCloudUploadBytesOverride: parsed.data.maxCloudUploadBytesOverride ?? null,
-  };
 }
 
 export function getEffectiveMaxCloudUploadBytes(providerConfigJson?: unknown): number {

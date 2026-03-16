@@ -1,16 +1,26 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
+  ConfigurableStorageProviderType,
   CustomerProductionDestinationViewStatus,
+  LocalFilesystemStorageProviderConfig,
   OrganizationStorageProfileViewStatus,
+  S3CompatibleStorageProviderConfig,
+  StorageProviderActivationInput,
+  StorageProviderDraftSaveInput,
   StorageProviderViewStatus,
   StorageSettingsMode,
+  StorageSettingsSaveInput,
+  StorageSettingsSaveRequest,
+  StorageSettingsValidateRequest,
+  SupabaseStorageProviderConfig,
   TitanManagedRoutingMode,
 } from "@shared/storageSettings";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
-type StorageValidationSummary = {
+type OrchestrationValidationSummary = {
+  kind: "orchestration";
   valid: boolean;
   error: string | null;
   warnings: string[];
@@ -24,6 +34,46 @@ type StorageValidationSummary = {
   };
 };
 
+type ProviderValidationSummary = {
+  kind: "provider";
+  valid: boolean;
+  error: string | null;
+  warnings: string[];
+  validatedAt: string;
+  runtimeSupported: boolean;
+  canActivate: boolean;
+  providerType: ConfigurableStorageProviderType;
+};
+
+export type StorageValidationSummary = OrchestrationValidationSummary | ProviderValidationSummary;
+
+type BaseStorageProviderView = {
+  id: string;
+  displayName: string;
+  status: StorageProviderViewStatus;
+  persistedStatus: string;
+  role: string;
+  lastValidatedAt: string | null;
+  validationError: string | null;
+  runtimeSupported: boolean;
+  canActivate: boolean;
+  isActive: boolean;
+};
+
+export type StorageProviderView =
+  | (BaseStorageProviderView & {
+      providerType: "supabase";
+      config: { providerType: "supabase" } & SupabaseStorageProviderConfig;
+    })
+  | (BaseStorageProviderView & {
+      providerType: "local_filesystem";
+      config: { providerType: "local_filesystem" } & LocalFilesystemStorageProviderConfig;
+    })
+  | (BaseStorageProviderView & {
+      providerType: "s3";
+      config: { providerType: "s3" } & Omit<S3CompatibleStorageProviderConfig, "secretAccessKey">;
+    });
+
 export type OrganizationStorageSettingsView = {
   profile: {
     id: string | null;
@@ -31,22 +81,21 @@ export type OrganizationStorageSettingsView = {
     status: OrganizationStorageProfileViewStatus;
     persistedStatus: string | null;
     updatedAt: string | null;
+    activeProviderConfigId: string | null;
   };
-  provider: {
+  orchestration: {
     id: string | null;
-    providerType: "titan_managed";
     displayName: string;
-    status: StorageProviderViewStatus;
-    persistedStatus: string | null;
     config: {
       routingMode: TitanManagedRoutingMode;
       maxCloudUploadBytesOverride?: number | null;
     };
     lastValidatedAt: string | null;
     validationError: string | null;
-    isRuntimeActive: boolean;
+    validation: OrchestrationValidationSummary | null;
   };
-  validation: StorageValidationSummary | null;
+  providers: StorageProviderView[];
+  activeProvider: StorageProviderView | null;
   productionDestinations: {
     status: CustomerProductionDestinationViewStatus;
     totalCustomers: number;
@@ -56,16 +105,8 @@ export type OrganizationStorageSettingsView = {
   };
 };
 
-export type StorageSettingsPayload = {
-  mode: StorageSettingsMode;
-  providerType: "titan_managed";
-  displayName: string;
-  activate?: boolean;
-  config: {
-    routingMode: TitanManagedRoutingMode;
-    maxCloudUploadBytesOverride?: number | null;
-  };
-};
+export type OrchestrationPayload = StorageSettingsSaveInput;
+export type ProviderDraftPayload = StorageProviderDraftSaveInput;
 
 type Envelope<T> = {
   success: boolean;
@@ -95,16 +136,16 @@ export function useStorageSettings() {
   });
 
   const validateMutation = useMutation({
-    mutationFn: async (payload: StorageSettingsPayload) => {
+    mutationFn: async (payload: StorageSettingsValidateRequest) => {
       const response = await apiRequest("POST", "/api/admin/storage-settings/validate", payload);
       return unwrapEnvelope<StorageValidationSummary>(response);
     },
     onSuccess: (validation) => {
       setDraftValidation(validation);
       toast({
-        title: validation.valid ? "Storage draft validated" : "Storage draft needs attention",
+        title: validation.valid ? "Draft validated" : "Draft needs attention",
         description: validation.valid
-          ? "The draft configuration is valid. Runtime behavior will not change until you save it."
+          ? "The draft validated successfully. Save it when ready."
           : validation.error || "Review the validation details before saving.",
         variant: validation.valid ? "default" : "destructive",
       });
@@ -119,23 +160,45 @@ export function useStorageSettings() {
   });
 
   const saveMutation = useMutation({
-    mutationFn: async (payload: StorageSettingsPayload) => {
+    mutationFn: async (payload: StorageSettingsSaveRequest) => {
       const response = await apiRequest("PUT", "/api/admin/storage-settings", payload);
       return unwrapEnvelope<OrganizationStorageSettingsView>(response);
     },
-    onSuccess: async (settings) => {
-      setDraftValidation(settings.validation);
+    onSuccess: async (settings, payload) => {
+      setDraftValidation(payload.kind === "orchestration" ? settings.orchestration.validation : null);
       await queryClient.invalidateQueries({ queryKey: ["/api/admin/storage-settings"] });
       toast({
-        title: "Storage settings saved",
-        description: settings.profile.status === "active"
-          ? "The saved configuration is now active for runtime routing."
-          : "The draft was saved. Runtime behavior still uses the currently active configuration.",
+        title: payload.kind === "orchestration" ? "Orchestration settings saved" : "Provider draft saved",
+        description: payload.kind === "orchestration"
+          ? "Saved orchestration controls are available for runtime routing."
+          : "The provider record was saved. Activate it separately when ready.",
       });
     },
     onError: (error: Error) => {
       toast({
         title: "Failed to save storage settings",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const activateMutation = useMutation({
+    mutationFn: async (payload: StorageProviderActivationInput) => {
+      const response = await apiRequest("POST", "/api/admin/storage-settings/activate", payload);
+      return unwrapEnvelope<OrganizationStorageSettingsView>(response);
+    },
+    onSuccess: async () => {
+      setDraftValidation(null);
+      await queryClient.invalidateQueries({ queryKey: ["/api/admin/storage-settings"] });
+      toast({
+        title: "Provider activated",
+        description: "The selected provider is now the active runtime storage target.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to activate provider",
         description: error.message,
         variant: "destructive",
       });
@@ -150,9 +213,11 @@ export function useStorageSettings() {
     refetch: query.refetch,
     draftValidation,
     clearDraftValidation: () => setDraftValidation(null),
-    validateDraft: validateMutation.mutateAsync,
+    validateRequest: validateMutation.mutateAsync,
     isValidating: validateMutation.isPending,
-    saveSettings: saveMutation.mutateAsync,
+    saveRequest: saveMutation.mutateAsync,
     isSaving: saveMutation.isPending,
+    activateProvider: activateMutation.mutateAsync,
+    isActivating: activateMutation.isPending,
   };
 }

@@ -28,6 +28,27 @@ export class StorageProviderConfigRepository {
     return row ?? null;
   }
 
+  async listByOrganization(
+    organizationId: string,
+    executor: any = this.dbInstance,
+  ): Promise<StorageProviderConfig[]> {
+    return executor
+      .select()
+      .from(storageProviderConfigs)
+      .where(eq(storageProviderConfigs.organizationId, organizationId));
+  }
+
+  async listByOrganizationAndRole(
+    organizationId: string,
+    role: StorageProviderConfig["role"],
+    executor: any = this.dbInstance,
+  ): Promise<StorageProviderConfig[]> {
+    return executor
+      .select()
+      .from(storageProviderConfigs)
+      .where(and(eq(storageProviderConfigs.organizationId, organizationId), eq(storageProviderConfigs.role, role)));
+  }
+
   async create(
     values: InsertStorageProviderConfig,
     executor: any = this.dbInstance,
