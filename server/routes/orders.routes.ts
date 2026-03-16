@@ -2790,15 +2790,27 @@ export async function registerOrderRoutes(
                     }
 
                     if (remainingAttachmentRefs === 0 && !hasRemainingAssetLinksForFile && storageProvider) {
+                        const derivativeRows = attachment.fileRecordId
+                            ? await fileDerivativeRepository.listByFileRecordId(String(attachment.fileRecordId))
+                            : [];
                         const derivativeKeys = attachment.fileRecordId
-                            ? (await fileDerivativeRepository.listByFileRecordId(String(attachment.fileRecordId))).map((row) => row.objectKey ?? null)
+                            ? derivativeRows.map((row) => row.objectKey ?? null)
                             : [(attachment as any).thumbKey ?? null, (attachment as any).previewKey ?? null];
 
-                        await deleteStoredObjectKeys({
+                        const derivativeDeletion = await deleteStoredObjectKeys({
                             fileRecordId: attachment.fileRecordId ? String(attachment.fileRecordId) : null,
                             legacyStorageProvider: storageProvider,
                             keys: [storageKey, ...derivativeKeys],
                         });
+
+                        if (attachment.fileRecordId && derivativeDeletion.failedKeys.length === 0) {
+                            await fileDerivativeRepository.deleteByFileRecordId(String(attachment.fileRecordId));
+                        } else if (attachment.fileRecordId && derivativeDeletion.failedKeys.length > 0) {
+                            console.warn("[OrderAttachments:DELETE] Skipped derivative row cleanup due to storage delete failures", {
+                                fileRecordId: String(attachment.fileRecordId),
+                                failedKeys: derivativeDeletion.failedKeys,
+                            });
+                        }
                     }
                 }
             } catch (cleanupError) {
@@ -4132,15 +4144,27 @@ export async function registerOrderRoutes(
                     }
 
                     if (Number(orderRefs) + Number(quoteRefs) === 0 && !hasRemainingAssetLinksForFile && storageProvider) {
+                        const derivativeRows = file.fileRecordId
+                            ? await fileDerivativeRepository.listByFileRecordId(String(file.fileRecordId))
+                            : [];
                         const derivativeKeys = file.fileRecordId
-                            ? (await fileDerivativeRepository.listByFileRecordId(String(file.fileRecordId))).map((row) => row.objectKey ?? null)
+                            ? derivativeRows.map((row) => row.objectKey ?? null)
                             : [file.thumbnailRelativePath ?? (file as any).thumbKey ?? null, (file as any).previewKey ?? null];
 
-                        await deleteStoredObjectKeys({
+                        const derivativeDeletion = await deleteStoredObjectKeys({
                             fileRecordId: file.fileRecordId ? String(file.fileRecordId) : null,
                             legacyStorageProvider: storageProvider,
                             keys: [storageKey, ...derivativeKeys],
                         });
+
+                        if (file.fileRecordId && derivativeDeletion.failedKeys.length === 0) {
+                            await fileDerivativeRepository.deleteByFileRecordId(String(file.fileRecordId));
+                        } else if (file.fileRecordId && derivativeDeletion.failedKeys.length > 0) {
+                            console.warn("[OrderFiles:DELETE] Skipped derivative row cleanup due to storage delete failures", {
+                                fileRecordId: String(file.fileRecordId),
+                                failedKeys: derivativeDeletion.failedKeys,
+                            });
+                        }
                     }
                 }
             } catch {
