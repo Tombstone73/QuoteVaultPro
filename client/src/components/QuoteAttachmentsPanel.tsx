@@ -8,6 +8,7 @@ import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { hasAnyUnsettledAttachment, isAttachmentSettled } from "@/lib/attachments/attachmentStatus";
+import { toAttachmentViewerAttachment } from "@/lib/attachmentViewer";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -416,7 +417,7 @@ export function QuoteAttachmentsPanel({ quoteId, locked = false }: { quoteId: st
               const isPending = !isAttachmentSettled(a as any);
 
               const openInViewer = () => {
-                setViewerAttachment(a);
+                setViewerAttachment(toAttachmentViewerAttachment(a as any));
                 setViewerOpen(true);
               };
 
