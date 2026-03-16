@@ -296,6 +296,7 @@ async function uploadThumbnailFile(
         buffer: args.buffer,
         originalFilename: args.originalFilename,
         mimeType: args.mimeType,
+        requestedTarget: args.thumbKey,
         providerConfig: canonicalContext.providerConfig,
         resource: {
           organizationId: args.organizationId,

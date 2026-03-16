@@ -18,6 +18,10 @@ import { fileExists } from "../utils/fileStorage";
 import { resolveLocalStoragePath } from "./localStoragePath";
 import { normalizeTenantObjectKey } from "../utils/orgKeys";
 import { persistReadyFileDerivative } from "./storage/persistFileDerivative";
+import { canonicalFileReadResolver } from "./storage/CanonicalFileReadResolver";
+import { storagePlacementRepository } from "../storage/storagePlacement.repo";
+import { storageProviderConfigRepository } from "../storage/storageProviderConfig.repo";
+import { storageRegistry } from "./storage/StorageRegistry";
 import path from "path";
 import * as fsPromises from "fs/promises";
 import { createRequire } from "module";
@@ -57,13 +61,85 @@ export function isThumbnailGenerationEnabled(): boolean {
 
 const LOCAL_ORIGINAL_NOT_PRESENT = "local_original_not_present";
 
+type CanonicalStorageContext = {
+  placementId: string;
+  providerConfig: any;
+  placementBucket: string | null;
+  objectKey: string | null;
+  localPathRef: string | null;
+  adapter: ReturnType<typeof storageRegistry.getAdapter>;
+};
+
+type UploadedDerivativeLocation = {
+  storageKey: string;
+  bucket: string | null;
+  objectKey: string | null;
+  localPathRef: string | null;
+};
+
+async function resolveCanonicalStorageContext(fileRecordId: string | null | undefined): Promise<CanonicalStorageContext | null> {
+  const normalizedFileRecordId = fileRecordId ? String(fileRecordId) : null;
+  if (!normalizedFileRecordId) {
+    return null;
+  }
+
+  const original = await canonicalFileReadResolver.resolveOriginal(normalizedFileRecordId);
+  if (original.status !== "available" || !original.providerConfigId || (!original.objectKey && !original.localPathRef)) {
+    return null;
+  }
+
+  const [providerConfig, placement] = await Promise.all([
+    storageProviderConfigRepository.getById(String(original.providerConfigId)),
+    storagePlacementRepository.getActiveCanonicalPlacementByFileRecordId(normalizedFileRecordId),
+  ]);
+
+  if (!providerConfig || !placement) {
+    return null;
+  }
+
+  return {
+    placementId: placement.id,
+    providerConfig,
+    placementBucket: placement.bucket ?? null,
+    objectKey: original.objectKey ?? null,
+    localPathRef: original.localPathRef ?? null,
+    adapter: storageRegistry.getAdapter(providerConfig.providerType),
+  };
+}
+
 async function verifyDerivativesExist(args: {
   storageProvider: string;
   thumbKey: string;
   previewKey?: string | null;
+  fileRecordId?: string | null;
+  thumbLocation?: UploadedDerivativeLocation | null;
+  previewLocation?: UploadedDerivativeLocation | null;
 }): Promise<{ thumbExists: boolean; previewExists: boolean }>
 {
   const { storageProvider, thumbKey, previewKey } = args;
+
+  const canonicalContext = await resolveCanonicalStorageContext(args.fileRecordId ?? null);
+  if (canonicalContext && args.thumbLocation) {
+    const [thumbVerification, previewVerification] = await Promise.all([
+      canonicalContext.adapter.verifyObject({
+        providerConfig: canonicalContext.providerConfig,
+        objectKey: args.thumbLocation.objectKey,
+        localPathRef: args.thumbLocation.localPathRef,
+      }),
+      args.previewLocation
+        ? canonicalContext.adapter.verifyObject({
+            providerConfig: canonicalContext.providerConfig,
+            objectKey: args.previewLocation.objectKey,
+            localPathRef: args.previewLocation.localPathRef,
+          })
+        : Promise.resolve({ exists: true, verifiedAt: new Date() }),
+    ]);
+
+    return {
+      thumbExists: thumbVerification.exists,
+      previewExists: previewVerification.exists,
+    };
+  }
 
   if (isSupabaseConfigured() && storageProvider === 'supabase') {
     const svc = new SupabaseStorageService();
@@ -208,6 +284,38 @@ async function downloadOriginalFile(fileKey: string, storageProvider: string): P
   }
 }
 
+async function downloadOriginalFileFromCanonical(args: {
+  fileRecordId?: string | null;
+  fallbackStorageKey: string;
+  storageProvider: string;
+}): Promise<Buffer | null> {
+  const canonicalContext = await resolveCanonicalStorageContext(args.fileRecordId ?? null);
+  if (!canonicalContext) {
+    return downloadOriginalFile(args.fallbackStorageKey, args.storageProvider);
+  }
+
+  try {
+    const downloadHandle = await canonicalContext.adapter.getDownloadHandle({
+      providerConfig: canonicalContext.providerConfig,
+      objectKey: canonicalContext.objectKey,
+      localPathRef: canonicalContext.localPathRef,
+    });
+
+    if (downloadHandle.kind === "signed_url") {
+      const response = await fetch(downloadHandle.value);
+      if (!response.ok) {
+        throw new Error(`Failed to download from canonical provider: status=${response.status} ${response.statusText}`);
+      }
+      return Buffer.from(await response.arrayBuffer());
+    }
+
+    return await fsPromises.readFile(downloadHandle.value);
+  } catch (error: any) {
+    console.error(`[ThumbnailGenerator] Failed canonical original download for fileRecordId=${args.fileRecordId}:`, error?.message || String(error));
+    return downloadOriginalFile(args.fallbackStorageKey, args.storageProvider);
+  }
+}
+
 /**
  * Upload derivative file to storage
  */
@@ -215,14 +323,53 @@ async function uploadDerivativeFile(
   derivativeKey: string,
   buffer: Buffer,
   storageProvider: string,
-  organizationId: string
-): Promise<boolean> {
+  organizationId: string,
+  options?: {
+    fileRecordId?: string | null;
+    attachmentType?: 'quote' | 'order';
+    attachmentId?: string | null;
+    originalFilename?: string | null;
+  }
+): Promise<UploadedDerivativeLocation | null> {
   try {
+    const canonicalContext = await resolveCanonicalStorageContext(options?.fileRecordId ?? null);
+    if (canonicalContext && options?.attachmentType && options?.attachmentId) {
+      const stored = await canonicalContext.adapter.putObject({
+        buffer,
+        originalFilename: options.originalFilename ?? derivativeKey.split('/').pop() ?? 'derivative.jpg',
+        mimeType: 'image/jpeg',
+        requestedTarget: derivativeKey,
+        providerConfig: canonicalContext.providerConfig,
+        resource: {
+          organizationId,
+          resourceType: options.attachmentType,
+          resourceId: options.attachmentId,
+        },
+      });
+
+      const storageKey = stored.objectKey ?? stored.localPathRef;
+      if (!storageKey) {
+        throw new Error('Canonical derivative upload returned no object location');
+      }
+
+      return {
+        storageKey,
+        bucket: stored.bucket ?? canonicalContext.placementBucket,
+        objectKey: stored.objectKey ?? null,
+        localPathRef: stored.localPathRef ?? null,
+      };
+    }
+
     if (isSupabaseConfigured() && storageProvider !== 'local') {
       // Supabase storage
       const supabaseService = new SupabaseStorageService();
       await supabaseService.uploadFile(derivativeKey, buffer, 'image/jpeg');
-      return true;
+      return {
+        storageKey: derivativeKey,
+        bucket: null,
+        objectKey: derivativeKey,
+        localPathRef: null,
+      };
     } else {
       // Local file storage - MUST use FILE_STORAGE_ROOT to match /objects route
       const storageRoot = process.env.FILE_STORAGE_ROOT || path.join(process.cwd(), 'uploads');
@@ -248,11 +395,16 @@ async function uploadDerivativeFile(
         console.log(`[ThumbnailGenerator] Successfully wrote ${derivativeKey} to ${fullPath}`);
       }
       
-      return true;
+      return {
+        storageKey: derivativeKey,
+        bucket: null,
+        objectKey: null,
+        localPathRef: derivativeKey,
+      };
     }
   } catch (error) {
     console.error(`[ThumbnailGenerator] Failed to upload derivative ${derivativeKey}:`, error);
-    return false;
+    return null;
   }
 }
 
@@ -318,7 +470,11 @@ export async function generateImageDerivatives(
       return;
     }
     // Download original file
-    const originalBuffer = await downloadOriginalFile(fileKey, storageProvider);
+    const originalBuffer = await downloadOriginalFileFromCanonical({
+      fileRecordId: attachment.fileRecordId,
+      fallbackStorageKey: fileKey,
+      storageProvider,
+    });
     if (!originalBuffer) {
       const isLocal = storageProvider === 'local' || !storageProvider;
       const marker = isLocal ? LOCAL_ORIGINAL_NOT_PRESENT : 'original_download_failed';
@@ -375,8 +531,18 @@ export async function generateImageDerivatives(
     });
 
     // Upload both derivatives (all-or-nothing approach)
-    const thumbUploaded = await uploadDerivativeFile(thumbKey, thumbBuffer, storageProvider, organizationId);
-    const previewUploaded = await uploadDerivativeFile(previewKey, previewBuffer, storageProvider, organizationId);
+    const thumbUploaded = await uploadDerivativeFile(thumbKey, thumbBuffer, storageProvider, organizationId, {
+      fileRecordId: attachment.fileRecordId,
+      attachmentType,
+      attachmentId,
+      originalFilename: `${effectiveFileName || attachmentId}.thumb.jpg`,
+    });
+    const previewUploaded = await uploadDerivativeFile(previewKey, previewBuffer, storageProvider, organizationId, {
+      fileRecordId: attachment.fileRecordId,
+      attachmentType,
+      attachmentId,
+      originalFilename: `${effectiveFileName || attachmentId}.preview.jpg`,
+    });
 
     if (!thumbUploaded || !previewUploaded) {
       console.error(`[ThumbnailGenerator] Failed to upload derivatives for ${attachmentId}`);
@@ -393,8 +559,11 @@ export async function generateImageDerivatives(
     // Enforce invariant: do not claim thumb_ready unless derivatives actually exist.
     const { thumbExists, previewExists } = await verifyDerivativesExist({
       storageProvider,
-      thumbKey,
-      previewKey,
+      thumbKey: thumbUploaded.storageKey,
+      previewKey: previewUploaded.storageKey,
+      fileRecordId: attachment.fileRecordId,
+      thumbLocation: thumbUploaded,
+      previewLocation: previewUploaded,
     });
 
     if (!thumbExists || !previewExists) {

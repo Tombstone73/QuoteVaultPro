@@ -56,9 +56,10 @@ import { ObjectPermission } from "../objectAcl";
 import { resolveLocalStoragePath } from "../services/localStoragePath";
 import { storageApplicationService } from "../services/storage/StorageApplicationService";
 import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
-import { canonicalDerivativeReadResolver } from "../services/storage/CanonicalDerivativeReadResolver";
+import { deleteStoredObjectKeys } from "../services/storage/deleteStoredObjectKeys";
 import { storageRegistry } from "../services/storage/StorageRegistry";
 import { storageProviderConfigRepository } from "../storage/storageProviderConfig.repo";
+import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
 import { extractNormalizedOrgIdFromKey, getTenantObjectKeyCandidates, normalizeTenantObjectKey } from "../utils/orgKeys";
 import type { DownloadIntent } from "@shared/schema";
 
@@ -234,25 +235,6 @@ export async function registerAttachmentRoutes(
 ) {
   const { isAuthenticated, isAdmin, tenantContext: tenantContextMiddleware } = middleware;
 
-  const deleteStoredKeys = async (
-    storageProvider: "local" | "s3" | "gcs" | "supabase" | null | undefined,
-    keys: Array<string | null | undefined>
-  ) => {
-    const uniqueKeys = Array.from(new Set(keys.filter((key): key is string => typeof key === "string" && key.length > 0)));
-    if (uniqueKeys.length === 0 || !storageProvider) return;
-
-    if (storageProvider === "supabase" && isSupabaseConfigured()) {
-      const supabase = new SupabaseStorageService();
-      await Promise.all(uniqueKeys.map((key) => supabase.deleteFile(normalizeObjectKeyForDb(key)).catch(() => false)));
-      return;
-    }
-
-    if (storageProvider === "local") {
-      const { deleteFile: deleteLocalFile } = await import("../utils/fileStorage.js");
-      await Promise.all(uniqueKeys.map((key) => deleteLocalFile(key).catch(() => false)));
-    }
-  };
-
   const tryResolveProviderHandle = async (args: {
     organizationId: string;
     providerConfigId: string | null;
@@ -389,18 +371,15 @@ export async function registerAttachmentRoutes(
       }
 
       if (Number(quoteRefs) + Number(orderRefs) === 0 && !hasRemainingAssetLinksForFile && storageProvider) {
-        const [thumbAccess, previewAccess] = attachment.fileRecordId
-          ? await Promise.all([
-              canonicalDerivativeReadResolver.resolveDerivative(String(attachment.fileRecordId), "thumbnail"),
-              canonicalDerivativeReadResolver.resolveDerivative(String(attachment.fileRecordId), "preview"),
-            ])
-          : [{ objectKey: (attachment as any).thumbKey ?? null }, { objectKey: (attachment as any).previewKey ?? null }];
+        const derivativeKeys = attachment.fileRecordId
+          ? (await fileDerivativeRepository.listByFileRecordId(String(attachment.fileRecordId))).map((row) => row.objectKey ?? null)
+          : [(attachment as any).thumbKey ?? null, (attachment as any).previewKey ?? null];
 
-        await deleteStoredKeys(storageProvider, [
-          storageKey,
-          thumbAccess.objectKey,
-          previewAccess.objectKey,
-        ]);
+        await deleteStoredObjectKeys({
+          fileRecordId: attachment.fileRecordId ? String(attachment.fileRecordId) : null,
+          legacyStorageProvider: storageProvider,
+          keys: [storageKey, ...derivativeKeys],
+        });
       }
     } catch (cleanupError) {
       console.error("[QuoteAttachments:DELETE] Storage cleanup failed (non-blocking):", cleanupError);

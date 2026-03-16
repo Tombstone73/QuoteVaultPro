@@ -54,7 +54,7 @@ import { resolveMaterialsOverrideModeFromOrgPreferences } from "@shared/material
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2OverrideConfig";
 import { createLineItemFileRecord } from "./services/lineItemFileRecordService";
 import { canonicalFileReadResolver } from "./services/storage/CanonicalFileReadResolver";
-import { canonicalDerivativeReadResolver } from "./services/storage/CanonicalDerivativeReadResolver";
+import { deleteStoredObjectKeys } from "./services/storage/deleteStoredObjectKeys";
 import { organizationStorageSettingsService } from "./services/storage/OrganizationStorageSettingsService";
 import { stationResolver } from "./services/stations/stationResolver";
 import { routeLineItemToProduction } from "./services/productionRoutingService";
@@ -77,6 +77,7 @@ import {
   withServerDefaultsForOverride,
 } from "./services/prepressMaterialOverrides";
 import { getAppEnv, getCookieDomain, getPublicWebOrigin } from "./lib/appRuntimeConfig";
+import { fileDerivativeRepository } from "./storage/fileDerivative.repo";
 
 // Auth provider selection logic
 // Priority: AUTH_PROVIDER env var > detection logic
@@ -7001,11 +7002,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
         : null;
       const attachmentStorageKey = resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? attachment.fileUrl ?? null;
-      const attachmentStorageProvider = resolvedOriginal?.localPathRef
+      const attachmentStorageProvider = resolvedOriginal?.providerType === 'local_filesystem'
         ? 'local'
-        : resolvedOriginal?.objectKey
-          ? 'supabase'
-          : attachment.storageProvider ?? null;
+        : resolvedOriginal?.providerType === 's3'
+          ? 's3'
+          : resolvedOriginal?.providerType === 'gcs'
+            ? 'gcs'
+            : resolvedOriginal?.providerType === 'azure_blob'
+              ? 'azure_blob'
+              : resolvedOriginal?.providerType === 'titan_managed'
+                ? 'titan_managed'
+                : resolvedOriginal?.providerType === 'supabase'
+                  ? 'supabase'
+                  : attachment.storageProvider ?? null;
 
       // Validate required fields for image generation
       if (!attachmentStorageKey || !attachmentStorageProvider) {
@@ -7327,25 +7336,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
 
           if (Number(quoteRefs) + Number(orderRefs) === 0 && !hasRemainingAssetLinksForFile && storageProvider) {
-            const [thumbAccess, previewAccess] = existingAttachment.fileRecordId
-              ? await Promise.all([
-                  canonicalDerivativeReadResolver.resolveDerivative(String(existingAttachment.fileRecordId), 'thumbnail'),
-                  canonicalDerivativeReadResolver.resolveDerivative(String(existingAttachment.fileRecordId), 'preview'),
-                ])
-              : [{ objectKey: existingAttachment.thumbKey ?? null }, { objectKey: existingAttachment.previewKey ?? null }];
-            const keys = [
-              storageKey,
-              thumbAccess.objectKey ?? existingAttachment.thumbnailRelativePath ?? existingAttachment.thumbKey,
-              previewAccess.objectKey ?? existingAttachment.previewKey,
-            ].filter((k): k is string => typeof k === 'string' && k.length > 0);
+            const derivativeKeys = existingAttachment.fileRecordId
+              ? (await fileDerivativeRepository.listByFileRecordId(String(existingAttachment.fileRecordId))).map((row) => row.objectKey ?? null)
+              : [existingAttachment.thumbnailRelativePath ?? existingAttachment.thumbKey ?? null, existingAttachment.previewKey ?? null];
 
-            if (storageProvider === 'supabase') {
-              const supabaseStorage = new SupabaseStorageService();
-              await Promise.all(keys.map((key) => supabaseStorage.deleteFile(normalizeObjectKeyForDb(key)).catch(() => false)));
-            } else if (storageProvider === 'local') {
-              const { deleteFile: deleteLocalFile } = await import('./utils/fileStorage');
-              await Promise.all(keys.map((key) => deleteLocalFile(key).catch(() => false)));
-            }
+            await deleteStoredObjectKeys({
+              fileRecordId: existingAttachment.fileRecordId ? String(existingAttachment.fileRecordId) : null,
+              legacyStorageProvider: storageProvider,
+              keys: [storageKey, ...derivativeKeys],
+            });
           }
         }
       } catch {
@@ -16746,29 +16745,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 hasRemainingAssetLinksForFile = linkCounts.some((count) => count > 0);
 
                 if (!hasRemainingAssetLinksForFile && Number(orderRefs) + Number(quoteRefs) === 0) {
-                  const { deleteFile: deleteLocalFile } = await import('./utils/fileStorage');
-                  const deleteKeys = async (keys: string[]) => {
-                    const uniqueKeys = Array.from(new Set(keys.filter(Boolean)));
-                    if (uniqueKeys.length === 0) return;
-
-                    if (effectiveStorageProvider === 'supabase') {
-                      const supabaseStorage = new SupabaseStorageService();
-                      await Promise.all(uniqueKeys.map((key) => supabaseStorage.deleteFile(normalizeObjectKeyForDb(key)).catch(() => false)));
-                    } else if (effectiveStorageProvider === 'local') {
-                      await Promise.all(uniqueKeys.map((key) => deleteLocalFile(key).catch(() => false)));
-                    }
-                  };
-
                   for (const asset of matchingAssets) {
                     const variants = await db
                       .select({ key: assetVariants.key })
                       .from(assetVariants)
                       .where(and(eq(assetVariants.organizationId, organizationId), eq(assetVariants.assetId, asset.id)));
 
-                    await deleteKeys([
-                      ...variants.map((variant) => variant.key || ''),
-                      normalizedFileKey,
-                    ]);
+                    await deleteStoredObjectKeys({
+                      fileRecordId: record.fileRecordId ? String(record.fileRecordId) : null,
+                      legacyStorageProvider: effectiveStorageProvider,
+                      keys: [...variants.map((variant) => variant.key || ''), normalizedFileKey],
+                    });
 
                     await db.delete(assets).where(and(eq(assets.organizationId, organizationId), eq(assets.id, asset.id)));
                   }
@@ -16796,25 +16783,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
 
             if (Number(orderRefs) + Number(quoteRefs) === 0 && !hasRemainingAssetLinksForFile && effectiveStorageProvider) {
-              const [thumbAccess, previewAccess] = record.fileRecordId
-                ? await Promise.all([
-                    canonicalDerivativeReadResolver.resolveDerivative(String(record.fileRecordId), 'thumbnail'),
-                    canonicalDerivativeReadResolver.resolveDerivative(String(record.fileRecordId), 'preview'),
-                  ])
-                : [{ objectKey: record.thumbKey ?? null }, { objectKey: record.previewKey ?? null }];
-              const keys = [
-                storageKey,
-                thumbAccess.objectKey ?? record.thumbnailRelativePath ?? record.thumbKey,
-                previewAccess.objectKey ?? record.previewKey,
-              ].filter((k): k is string => typeof k === 'string' && k.length > 0);
+              const derivativeKeys = record.fileRecordId
+                ? (await fileDerivativeRepository.listByFileRecordId(String(record.fileRecordId))).map((row) => row.objectKey ?? null)
+                : [record.thumbnailRelativePath ?? record.thumbKey ?? null, record.previewKey ?? null];
 
-              if (effectiveStorageProvider === 'supabase') {
-                const supabaseStorage = new SupabaseStorageService();
-                await Promise.all(keys.map((key) => supabaseStorage.deleteFile(normalizeObjectKeyForDb(key)).catch(() => false)));
-              } else if (effectiveStorageProvider === 'local') {
-                const { deleteFile: deleteLocalFile } = await import('./utils/fileStorage');
-                await Promise.all(keys.map((key) => deleteLocalFile(key).catch(() => false)));
-              }
+              await deleteStoredObjectKeys({
+                fileRecordId: record.fileRecordId ? String(record.fileRecordId) : null,
+                legacyStorageProvider: effectiveStorageProvider,
+                keys: [storageKey, ...derivativeKeys],
+              });
             }
           }
         } catch {
