@@ -56,6 +56,7 @@ type StorageProviderValidationSummary = {
   runtimeSupported: boolean;
   canActivate: boolean;
   providerType: "supabase" | "local_filesystem" | "s3";
+  fieldErrors?: Partial<Record<"displayName" | "bucketName" | "pathPrefix" | "subfolderPrefix" | "region" | "endpoint" | "accessKeyId" | "secretAccessKey" | "forcePathStyle" | "providerLabel", string>>;
 };
 
 type ProductionDestinationSummary = {
@@ -99,6 +100,72 @@ function deriveRuntimeModeForProviderType(providerType: StorageProviderConfig["p
     default:
       return "titan_managed";
   }
+}
+
+function firstNonEmptyString(...values: Array<unknown>): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function buildS3ValidationFailure(
+  normalized: ReturnType<typeof normalizeS3CompatibleStorageProviderConfig>,
+  error: any,
+): Pick<StorageProviderValidationSummary, "error" | "fieldErrors"> {
+  const name = firstNonEmptyString(error?.name, error?.Code, error?.code);
+  const message = firstNonEmptyString(error?.message);
+  const statusCode = typeof error?.$metadata?.httpStatusCode === "number" ? error.$metadata.httpStatusCode : null;
+  const rawText = [name, message, statusCode ? `HTTP ${statusCode}` : null].filter(Boolean).join(" | ");
+  const lower = rawText.toLowerCase();
+
+  if (lower.includes("enotfound") || lower.includes("econnrefused") || lower.includes("invalid endpoint") || lower.includes("endpoint") && lower.includes("could not connect")) {
+    return {
+      error: `Could not reach the S3 endpoint ${normalized.endpoint}.`,
+      fieldErrors: {
+        endpoint: "Check the endpoint URL, protocol, and network reachability.",
+      },
+    };
+  }
+
+  if (lower.includes("nosuchbucket") || statusCode === 404) {
+    return {
+      error: `Bucket ${normalized.bucketName} was not found or is not reachable with the current endpoint settings.`,
+      fieldErrors: {
+        bucketName: "Check that the bucket name exists for this provider.",
+        endpoint: "Confirm the endpoint points to the correct S3-compatible service and region.",
+      },
+    };
+  }
+
+  if (lower.includes("authorizationheadermalformed") || lower.includes("permanentredirect") || lower.includes("incorrect region")) {
+    return {
+      error: "The bucket is reachable, but the region or endpoint settings do not match the provider response.",
+      fieldErrors: {
+        region: "Check the exact bucket region required by the provider.",
+        endpoint: "Confirm the endpoint matches the provider's region-specific endpoint.",
+      },
+    };
+  }
+
+  if (statusCode === 403 || lower.includes("accessdenied") || lower.includes("invalidaccesskeyid") || lower.includes("signaturedoesnotmatch") || lower.includes("invalid signature")) {
+    return {
+      error: "The S3-compatible provider rejected the credentials or signing details for this bucket.",
+      fieldErrors: {
+        accessKeyId: "Check that the access key ID is correct for this provider.",
+        secretAccessKey: "Check that the secret access key is correct and complete.",
+        region: "Verify the region matches the bucket's configured region.",
+        endpoint: "Verify the endpoint matches the provider and bucket region.",
+      },
+    };
+  }
+
+  return {
+    error: message || name || "Failed to validate S3-compatible provider.",
+    fieldErrors: {},
+  };
 }
 
 export type StorageProviderView = {
@@ -494,6 +561,7 @@ export class OrganizationStorageSettingsService {
       runtimeSupported: false,
       canActivate: false,
       providerType: "supabase",
+      fieldErrors: {},
     };
   }
 
@@ -509,6 +577,7 @@ export class OrganizationStorageSettingsService {
         runtimeSupported: true,
         canActivate: false,
         providerType: "supabase",
+        fieldErrors: {},
       };
     }
 
@@ -524,6 +593,7 @@ export class OrganizationStorageSettingsService {
         runtimeSupported: true,
         canActivate: true,
         providerType: "supabase",
+        fieldErrors: {},
       };
     } catch (error: any) {
       return {
@@ -535,6 +605,9 @@ export class OrganizationStorageSettingsService {
         runtimeSupported: true,
         canActivate: false,
         providerType: "supabase",
+        fieldErrors: {
+          bucketName: "Check the bucket name and server-side Supabase access for this bucket.",
+        },
       };
     }
   }
@@ -558,6 +631,7 @@ export class OrganizationStorageSettingsService {
         runtimeSupported: true,
         canActivate: true,
         providerType: "local_filesystem",
+        fieldErrors: {},
       };
     } catch (error: any) {
       const warnings = [
@@ -572,6 +646,9 @@ export class OrganizationStorageSettingsService {
         runtimeSupported: true,
         canActivate: false,
         providerType: "local_filesystem",
+        fieldErrors: {
+          subfolderPrefix: "Use a relative subfolder path without .. segments.",
+        },
       };
     }
   }
@@ -588,6 +665,9 @@ export class OrganizationStorageSettingsService {
         runtimeSupported: false,
         canActivate: false,
         providerType: "s3",
+        fieldErrors: {
+          secretAccessKey: "Enter the secret access key before validating this provider.",
+        },
       };
     }
 
@@ -611,17 +691,20 @@ export class OrganizationStorageSettingsService {
         runtimeSupported: true,
         canActivate: true,
         providerType: "s3",
+        fieldErrors: {},
       };
     } catch (error: any) {
+      const failure = buildS3ValidationFailure(normalized, error);
       return {
         kind: "provider",
         valid: false,
-        error: error?.message || "Failed to validate S3-compatible provider.",
+        error: failure.error,
         warnings: [],
         validatedAt: new Date().toISOString(),
         runtimeSupported: true,
         canActivate: false,
         providerType: "s3",
+        fieldErrors: failure.fieldErrors,
       };
     }
   }
