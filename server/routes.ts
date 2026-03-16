@@ -7213,11 +7213,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
           ? await canonicalFileReadResolver.resolveOriginal(String(existingAttachment.fileRecordId))
           : null;
         const storageKey = String(resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? existingAttachment.fileUrl ?? '');
-        const storageProvider = resolvedOriginal?.localPathRef
+        const storageProvider = resolvedOriginal?.providerType === 'local_filesystem'
           ? 'local'
-          : resolvedOriginal?.objectKey
-            ? 'supabase'
-            : ((existingAttachment.storageProvider as 'local' | 's3' | 'gcs' | 'supabase' | null | undefined) ?? null);
+          : resolvedOriginal?.providerType === 's3'
+            ? 's3'
+            : resolvedOriginal?.providerType === 'gcs'
+              ? 'gcs'
+              : resolvedOriginal?.providerType === 'azure_blob'
+                ? 'azure_blob'
+                : resolvedOriginal?.providerType === 'titan_managed'
+                  ? 'titan_managed'
+                  : resolvedOriginal?.providerType === 'supabase'
+                    ? 'supabase'
+                    : ((existingAttachment.storageProvider as 'local' | 's3' | 'gcs' | 'supabase' | 'azure_blob' | 'titan_managed' | null | undefined) ?? null);
 
         if (storageKey) {
           const [{ quoteRefs = 0 } = {}] = existingAttachment.fileRecordId
@@ -7303,29 +7311,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
               hasRemainingAssetLinksForFile = linkCounts.some((count) => count > 0);
 
               if (!hasRemainingAssetLinksForFile && Number(quoteRefs) + Number(orderRefs) === 0) {
-                const { deleteFile: deleteLocalFile } = await import('./utils/fileStorage');
-                const deleteKeys = async (keys: string[]) => {
-                  const uniqueKeys = Array.from(new Set(keys.filter(Boolean)));
-                  if (uniqueKeys.length === 0) return;
-
-                  if (storageProvider === 'supabase') {
-                    const supabaseStorage = new SupabaseStorageService();
-                    await Promise.all(uniqueKeys.map((key) => supabaseStorage.deleteFile(normalizeObjectKeyForDb(key)).catch(() => false)));
-                  } else if (storageProvider === 'local') {
-                    await Promise.all(uniqueKeys.map((key) => deleteLocalFile(key).catch(() => false)));
-                  }
-                };
-
                 for (const asset of matchingAssets) {
                   const variants = await db
                     .select({ key: assetVariants.key })
                     .from(assetVariants)
                     .where(and(eq(assetVariants.organizationId, organizationId), eq(assetVariants.assetId, asset.id)));
 
-                  await deleteKeys([
-                    ...variants.map((variant) => variant.key || ''),
-                    normalizedFileKey,
-                  ]);
+                  await deleteStoredObjectKeys({
+                    fileRecordId: existingAttachment.fileRecordId ? String(existingAttachment.fileRecordId) : null,
+                    legacyStorageProvider: storageProvider,
+                    keys: [...variants.map((variant) => variant.key || ''), normalizedFileKey],
+                  });
 
                   await db.delete(assets).where(and(eq(assets.organizationId, organizationId), eq(assets.id, asset.id)));
                 }
@@ -7336,15 +7332,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
 
           if (Number(quoteRefs) + Number(orderRefs) === 0 && !hasRemainingAssetLinksForFile && storageProvider) {
+            const derivativeRows = existingAttachment.fileRecordId
+              ? await fileDerivativeRepository.listByFileRecordId(String(existingAttachment.fileRecordId))
+              : [];
             const derivativeKeys = existingAttachment.fileRecordId
-              ? (await fileDerivativeRepository.listByFileRecordId(String(existingAttachment.fileRecordId))).map((row) => row.objectKey ?? null)
+              ? derivativeRows.map((row) => row.objectKey ?? null)
               : [existingAttachment.thumbnailRelativePath ?? existingAttachment.thumbKey ?? null, existingAttachment.previewKey ?? null];
 
-            await deleteStoredObjectKeys({
+            const derivativeDeletion = await deleteStoredObjectKeys({
               fileRecordId: existingAttachment.fileRecordId ? String(existingAttachment.fileRecordId) : null,
               legacyStorageProvider: storageProvider,
               keys: [storageKey, ...derivativeKeys],
             });
+
+            if (existingAttachment.fileRecordId && derivativeDeletion.failedKeys.length === 0) {
+              await fileDerivativeRepository.deleteByFileRecordId(String(existingAttachment.fileRecordId));
+            } else if (existingAttachment.fileRecordId && derivativeDeletion.failedKeys.length > 0) {
+              console.warn('[LineItemFiles:DELETE] Skipped derivative row cleanup due to storage delete failures', {
+                fileRecordId: String(existingAttachment.fileRecordId),
+                failedKeys: derivativeDeletion.failedKeys,
+              });
+            }
           }
         }
       } catch {
@@ -16783,15 +16791,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
 
             if (Number(orderRefs) + Number(quoteRefs) === 0 && !hasRemainingAssetLinksForFile && effectiveStorageProvider) {
+              const derivativeRows = record.fileRecordId
+                ? await fileDerivativeRepository.listByFileRecordId(String(record.fileRecordId))
+                : [];
               const derivativeKeys = record.fileRecordId
-                ? (await fileDerivativeRepository.listByFileRecordId(String(record.fileRecordId))).map((row) => row.objectKey ?? null)
+                ? derivativeRows.map((row) => row.objectKey ?? null)
                 : [record.thumbnailRelativePath ?? record.thumbKey ?? null, record.previewKey ?? null];
 
-              await deleteStoredObjectKeys({
+              const derivativeDeletion = await deleteStoredObjectKeys({
                 fileRecordId: record.fileRecordId ? String(record.fileRecordId) : null,
                 legacyStorageProvider: effectiveStorageProvider,
                 keys: [storageKey, ...derivativeKeys],
               });
+
+              if (record.fileRecordId && derivativeDeletion.failedKeys.length === 0) {
+                await fileDerivativeRepository.deleteByFileRecordId(String(record.fileRecordId));
+              } else if (record.fileRecordId && derivativeDeletion.failedKeys.length > 0) {
+                console.warn('[OrderLineItemFiles:DELETE] Skipped derivative row cleanup due to storage delete failures', {
+                  fileRecordId: String(record.fileRecordId),
+                  failedKeys: derivativeDeletion.failedKeys,
+                });
+              }
             }
           }
         } catch {

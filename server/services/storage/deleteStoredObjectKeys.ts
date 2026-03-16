@@ -3,7 +3,7 @@ export async function deleteStoredObjectKeys(args: {
   fileRecordId?: string | null;
   sourcePlacementId?: string | null;
   legacyStorageProvider?: "local" | "s3" | "gcs" | "supabase" | null;
-}): Promise<void> {
+}): Promise<{ deletedKeys: string[]; failedKeys: string[] }> {
   const uniqueKeys = Array.from(
     new Set(
       args.keys
@@ -12,7 +12,7 @@ export async function deleteStoredObjectKeys(args: {
     ),
   );
   if (uniqueKeys.length === 0) {
-    return;
+    return { deletedKeys: [], failedKeys: [] };
   }
 
   const { normalizeObjectKeyForDb } = await import("../../lib/supabaseObjectHelpers");
@@ -31,7 +31,7 @@ export async function deleteStoredObjectKeys(args: {
   if (providerConfig) {
     const { storageRegistry } = await import("./StorageRegistry");
     const adapter = storageRegistry.getAdapter(providerConfig.providerType);
-    await Promise.all(
+    const results = await Promise.all(
       uniqueKeys.map((key) =>
         adapter.deleteObject({
           providerConfig,
@@ -40,21 +40,33 @@ export async function deleteStoredObjectKeys(args: {
         }).catch(() => false),
       ),
     );
-    return;
+    return {
+      deletedKeys: uniqueKeys.filter((_, index) => results[index] === true),
+      failedKeys: uniqueKeys.filter((_, index) => results[index] !== true),
+    };
   }
 
   if (args.legacyStorageProvider === "supabase") {
     const { isSupabaseConfigured, SupabaseStorageService } = await import("../../supabaseStorage");
     if (!isSupabaseConfigured()) {
-      return;
+      return { deletedKeys: [], failedKeys: uniqueKeys };
     }
     const supabase = new SupabaseStorageService();
-    await Promise.all(uniqueKeys.map((key) => supabase.deleteFile(normalizeObjectKeyForDb(key)).catch(() => false)));
-    return;
+    const results = await Promise.all(uniqueKeys.map((key) => supabase.deleteFile(normalizeObjectKeyForDb(key)).catch(() => false)));
+    return {
+      deletedKeys: uniqueKeys.filter((_, index) => results[index] === true),
+      failedKeys: uniqueKeys.filter((_, index) => results[index] !== true),
+    };
   }
 
   if (args.legacyStorageProvider === "local") {
     const { deleteFile } = await import("../../utils/fileStorage");
-    await Promise.all(uniqueKeys.map((key) => deleteFile(key).catch(() => false)));
+    const results = await Promise.all(uniqueKeys.map((key) => deleteFile(key).catch(() => false)));
+    return {
+      deletedKeys: uniqueKeys.filter((_, index) => results[index] === true),
+      failedKeys: uniqueKeys.filter((_, index) => results[index] !== true),
+    };
   }
+
+  return { deletedKeys: [], failedKeys: uniqueKeys };
 }
