@@ -1396,9 +1396,8 @@ export async function registerAttachmentRoutes(
       const lowerMime = (mimeType || "").toString().toLowerCase();
       const isPdfEarly = lowerMime.includes("pdf") || resolvedUploadName.toLowerCase().endsWith(".pdf");
 
-      // Check if PDF processing columns exist (from startup probe)
-      const { hasPageCountStatusColumn } = await import("../db");
-      const pdfColumnsExist = hasPageCountStatusColumn() === true;
+      const thumbStatus = isPdfEarly && pdfColumnsExist ? ("thumb_pending" as const) : ("uploaded" as const);
+      const pageCountStatus = pdfColumnsExist ? (isPdfEarly ? ("detecting" as const) : ("unknown" as const)) : undefined;
 
       if (isPdfEarly && !pdfColumnsExist) {
         console.warn(
@@ -1435,9 +1434,6 @@ export async function registerAttachmentRoutes(
       if (!fileBuffer && !fileUrl) {
         return res.status(400).json({ error: "fileUrl is required for legacy uploads" });
       }
-
-      const thumbStatus = isPdfEarly && pdfColumnsExist ? ("thumb_pending" as const) : ("uploaded" as const);
-      const pageCountStatus = pdfColumnsExist ? (isPdfEarly ? ("detecting" as const) : ("unknown" as const)) : undefined;
 
       const attachment = fileBuffer && originalFilename
         ? await persistQuoteAttachment({
