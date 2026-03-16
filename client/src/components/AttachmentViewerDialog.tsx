@@ -192,10 +192,10 @@ export function AttachmentViewerDialog({
   const isImage = typeof effectiveMimeType === "string" && effectiveMimeType.startsWith("image/");
   const imageViewUrl = isImage ? currentAttachment?.previewUrl ?? currentAttachment?.originalUrl ?? null : null;
   const objectPath = currentAttachment?.objectPath ?? null;
-  const pdfViewUrl = isPdf ? buildPdfViewUrl(objectPath) : null;
+  const pdfViewUrl = isPdf ? currentAttachment?.originalUrl ?? buildPdfViewUrl(objectPath) : null;
   const pdfDownloadUrl = isPdf ? buildPdfDownloadUrl(objectPath, fileName) : null;
   const pdfSourceUrl = isPdf
-    ? pdfViewUrl ?? currentAttachment?.originalUrl ?? currentAttachment?.previewUrl ?? currentAttachment?.fileUrl
+    ? pdfViewUrl ?? currentAttachment?.previewUrl ?? currentAttachment?.fileUrl
     : null;
   const genericDownloadUrl = !isPdf ? currentAttachment?.downloadUrl ?? currentAttachment?.originalUrl ?? currentAttachment?.fileUrl ?? null : null;
   const downloadUrl = isPdf
