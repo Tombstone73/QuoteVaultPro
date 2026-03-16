@@ -19,6 +19,8 @@ import type {
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
+export type StorageProviderFieldName = "displayName" | "bucketName" | "pathPrefix" | "subfolderPrefix" | "region" | "endpoint" | "accessKeyId" | "secretAccessKey" | "forcePathStyle" | "providerLabel";
+
 type OrchestrationValidationSummary = {
   kind: "orchestration";
   valid: boolean;
@@ -43,6 +45,7 @@ type ProviderValidationSummary = {
   runtimeSupported: boolean;
   canActivate: boolean;
   providerType: ConfigurableStorageProviderType;
+  fieldErrors?: Partial<Record<StorageProviderFieldName, string>>;
 };
 
 export type StorageValidationSummary = OrchestrationValidationSummary | ProviderValidationSummary;
@@ -124,6 +127,23 @@ async function unwrapEnvelope<T>(response: Response): Promise<T> {
   return payload.data;
 }
 
+function getValidationMessage(validation: StorageValidationSummary): string {
+  if (validation.error?.trim()) {
+    return validation.error.trim();
+  }
+
+  if (validation.kind === "provider") {
+    const firstFieldError = Object.values(validation.fieldErrors ?? {}).find((value) => typeof value === "string" && value.trim());
+    if (firstFieldError) {
+      return firstFieldError;
+    }
+  }
+
+  return validation.valid
+    ? "The draft validated successfully. Save it when ready."
+    : "Review the validation details before saving.";
+}
+
 export function useStorageSettings() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -146,9 +166,7 @@ export function useStorageSettings() {
       setDraftValidation(validation);
       toast({
         title: validation.valid ? "Draft validated" : "Draft needs attention",
-        description: validation.valid
-          ? "The draft validated successfully. Save it when ready."
-          : validation.error || "Review the validation details before saving.",
+        description: getValidationMessage(validation),
         variant: validation.valid ? "default" : "destructive",
       });
     },

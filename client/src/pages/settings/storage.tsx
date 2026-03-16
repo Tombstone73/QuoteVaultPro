@@ -23,6 +23,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import {
   useStorageSettings,
   type OrganizationStorageSettingsView,
+  type StorageProviderFieldName,
   type StorageProviderView,
   type StorageRuntimeMode,
   type StorageValidationSummary,
@@ -534,6 +535,14 @@ export default function StorageSettingsPage() {
     ? draftValidation
     : settings?.orchestration.validation ?? null;
   const providerValidation = draftValidation?.kind === "provider" ? draftValidation : null;
+  const providerFieldErrors = providerValidation && !providerValidation.valid
+    ? providerValidation.fieldErrors ?? {}
+    : {};
+
+  const getProviderFieldError = (field: StorageProviderFieldName) => providerFieldErrors[field] ?? null;
+  const getProviderFieldClassName = (field: StorageProviderFieldName) => cn(
+    getProviderFieldError(field) ? "border-destructive focus-visible:ring-destructive" : undefined,
+  );
 
   const handleOpenNewProvider = (providerType: ConfigurableStorageProviderType = "supabase") => {
     clearDraftValidation();
@@ -870,6 +879,27 @@ export default function StorageSettingsPage() {
                 </Badge>
               </div>
 
+              {providerValidation && !providerValidation.valid ? (
+                <Alert variant="destructive">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle>Provider draft needs attention</AlertTitle>
+                  <AlertDescription>
+                    <div className="space-y-2">
+                      {providerValidation.error ? <p>{providerValidation.error}</p> : null}
+                      {Object.keys(providerFieldErrors).length > 0 ? (
+                        <ul className="list-disc space-y-1 pl-5">
+                          {Object.entries(providerFieldErrors)
+                            .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].trim().length > 0)
+                            .map(([field, message]) => (
+                              <li key={field}>{message}</li>
+                            ))}
+                        </ul>
+                      ) : null}
+                    </div>
+                  </AlertDescription>
+                </Alert>
+              ) : null}
+
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="provider-type">Provider type</Label>
@@ -891,7 +921,8 @@ export default function StorageSettingsPage() {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="provider-display-name">Display name</Label>
-                  <Input id="provider-display-name" value={providerForm.displayName} onChange={(event) => setProviderForm((current) => ({ ...current, displayName: event.target.value }))} />
+                  <Input id="provider-display-name" className={getProviderFieldClassName("displayName")} value={providerForm.displayName} onChange={(event) => setProviderForm((current) => ({ ...current, displayName: event.target.value }))} />
+                  {getProviderFieldError("displayName") ? <p className="text-xs text-destructive">{getProviderFieldError("displayName")}</p> : null}
                 </div>
               </div>
 
@@ -899,11 +930,13 @@ export default function StorageSettingsPage() {
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
                     <Label htmlFor="supabase-bucket">Bucket name</Label>
-                    <Input id="supabase-bucket" value={providerForm.bucketName} onChange={(event) => setProviderForm((current) => ({ ...current, bucketName: event.target.value }))} />
+                    <Input id="supabase-bucket" className={getProviderFieldClassName("bucketName")} value={providerForm.bucketName} onChange={(event) => setProviderForm((current) => ({ ...current, bucketName: event.target.value }))} />
+                    {getProviderFieldError("bucketName") ? <p className="text-xs text-destructive">{getProviderFieldError("bucketName")}</p> : null}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="supabase-prefix">Path prefix</Label>
-                    <Input id="supabase-prefix" value={providerForm.pathPrefix} onChange={(event) => setProviderForm((current) => ({ ...current, pathPrefix: event.target.value }))} placeholder="optional/folder" />
+                    <Input id="supabase-prefix" className={getProviderFieldClassName("pathPrefix")} value={providerForm.pathPrefix} onChange={(event) => setProviderForm((current) => ({ ...current, pathPrefix: event.target.value }))} placeholder="optional/folder" />
+                    {getProviderFieldError("pathPrefix") ? <p className="text-xs text-destructive">{getProviderFieldError("pathPrefix")}</p> : null}
                   </div>
                 </div>
               ) : null}
@@ -915,7 +948,8 @@ export default function StorageSettingsPage() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="local-subfolder">Server subfolder prefix</Label>
-                    <Input id="local-subfolder" value={providerForm.subfolderPrefix} onChange={(event) => setProviderForm((current) => ({ ...current, subfolderPrefix: event.target.value }))} placeholder="optional/subfolder" />
+                    <Input id="local-subfolder" className={getProviderFieldClassName("subfolderPrefix")} value={providerForm.subfolderPrefix} onChange={(event) => setProviderForm((current) => ({ ...current, subfolderPrefix: event.target.value }))} placeholder="optional/subfolder" />
+                    {getProviderFieldError("subfolderPrefix") ? <p className="text-xs text-destructive">{getProviderFieldError("subfolderPrefix")}</p> : null}
                   </div>
                 </div>
               ) : null}
@@ -924,41 +958,49 @@ export default function StorageSettingsPage() {
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
                     <Label htmlFor="s3-label">Provider label</Label>
-                    <Input id="s3-label" value={providerForm.providerLabel} onChange={(event) => setProviderForm((current) => ({ ...current, providerLabel: event.target.value }))} placeholder="IDrive E2" />
+                    <Input id="s3-label" className={getProviderFieldClassName("providerLabel")} value={providerForm.providerLabel} onChange={(event) => setProviderForm((current) => ({ ...current, providerLabel: event.target.value }))} placeholder="IDrive E2" />
+                    {getProviderFieldError("providerLabel") ? <p className="text-xs text-destructive">{getProviderFieldError("providerLabel")}</p> : null}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="s3-bucket">Bucket name</Label>
-                    <Input id="s3-bucket" value={providerForm.bucketName} onChange={(event) => setProviderForm((current) => ({ ...current, bucketName: event.target.value }))} />
+                    <Input id="s3-bucket" className={getProviderFieldClassName("bucketName")} value={providerForm.bucketName} onChange={(event) => setProviderForm((current) => ({ ...current, bucketName: event.target.value }))} />
+                    {getProviderFieldError("bucketName") ? <p className="text-xs text-destructive">{getProviderFieldError("bucketName")}</p> : null}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="s3-region">Region</Label>
-                    <Input id="s3-region" value={providerForm.region} onChange={(event) => setProviderForm((current) => ({ ...current, region: event.target.value }))} />
+                    <Input id="s3-region" className={getProviderFieldClassName("region")} value={providerForm.region} onChange={(event) => setProviderForm((current) => ({ ...current, region: event.target.value }))} />
+                    {getProviderFieldError("region") ? <p className="text-xs text-destructive">{getProviderFieldError("region")}</p> : null}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="s3-endpoint">Endpoint</Label>
-                    <Input id="s3-endpoint" value={providerForm.endpoint} onChange={(event) => setProviderForm((current) => ({ ...current, endpoint: event.target.value }))} placeholder="https://..." />
+                    <Input id="s3-endpoint" className={getProviderFieldClassName("endpoint")} value={providerForm.endpoint} onChange={(event) => setProviderForm((current) => ({ ...current, endpoint: event.target.value }))} placeholder="https://..." />
+                    {getProviderFieldError("endpoint") ? <p className="text-xs text-destructive">{getProviderFieldError("endpoint")}</p> : null}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="s3-access-key">Access key ID</Label>
-                    <Input id="s3-access-key" value={providerForm.accessKeyId} onChange={(event) => setProviderForm((current) => ({ ...current, accessKeyId: event.target.value }))} />
+                    <Input id="s3-access-key" className={getProviderFieldClassName("accessKeyId")} value={providerForm.accessKeyId} onChange={(event) => setProviderForm((current) => ({ ...current, accessKeyId: event.target.value }))} />
+                    {getProviderFieldError("accessKeyId") ? <p className="text-xs text-destructive">{getProviderFieldError("accessKeyId")}</p> : null}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="s3-secret-key">Secret access key</Label>
-                    <Input id="s3-secret-key" type="password" value={providerForm.secretAccessKey} onChange={(event) => setProviderForm((current) => ({ ...current, secretAccessKey: event.target.value }))} placeholder={selectedProviderKey === NEW_PROVIDER_KEY ? "Required for validation" : "Leave blank to keep existing secret"} />
+                    <Input id="s3-secret-key" className={getProviderFieldClassName("secretAccessKey")} type="password" value={providerForm.secretAccessKey} onChange={(event) => setProviderForm((current) => ({ ...current, secretAccessKey: event.target.value }))} placeholder={selectedProviderKey === NEW_PROVIDER_KEY ? "Required for validation" : "Leave blank to keep existing secret"} />
+                    {getProviderFieldError("secretAccessKey") ? <p className="text-xs text-destructive">{getProviderFieldError("secretAccessKey")}</p> : null}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="s3-prefix">Path prefix</Label>
-                    <Input id="s3-prefix" value={providerForm.pathPrefix} onChange={(event) => setProviderForm((current) => ({ ...current, pathPrefix: event.target.value }))} placeholder="optional/folder" />
+                    <Input id="s3-prefix" className={getProviderFieldClassName("pathPrefix")} value={providerForm.pathPrefix} onChange={(event) => setProviderForm((current) => ({ ...current, pathPrefix: event.target.value }))} placeholder="optional/folder" />
+                    {getProviderFieldError("pathPrefix") ? <p className="text-xs text-destructive">{getProviderFieldError("pathPrefix")}</p> : null}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="s3-path-style">URL style</Label>
                     <Select value={providerForm.forcePathStyle ? "path" : "virtual"} onValueChange={(value) => setProviderForm((current) => ({ ...current, forcePathStyle: value === "path" }))}>
-                      <SelectTrigger id="s3-path-style"><SelectValue placeholder="Select URL style" /></SelectTrigger>
+                      <SelectTrigger id="s3-path-style" className={getProviderFieldClassName("forcePathStyle")}><SelectValue placeholder="Select URL style" /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="path">Force path-style</SelectItem>
                         <SelectItem value="virtual">Virtual-hosted style</SelectItem>
                       </SelectContent>
                     </Select>
+                    {getProviderFieldError("forcePathStyle") ? <p className="text-xs text-destructive">{getProviderFieldError("forcePathStyle")}</p> : null}
                   </div>
                 </div>
               ) : null}
