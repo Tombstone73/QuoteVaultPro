@@ -591,6 +591,18 @@ export async function registerOrderRoutes(
                 extension?: string | null;
             };
     }) => {
+        const sourceMimeType = (
+            args.source.kind === 'buffer'
+                ? args.source.mimeType
+                : args.source.mimeType ?? null
+        )?.toLowerCase() ?? '';
+        const sourceFilename = (
+            args.source.kind === 'upload-session'
+                ? ''
+                : args.source.originalFilename
+        ).toLowerCase();
+        const isPdfSource = sourceMimeType.includes('pdf') || sourceFilename.endsWith('.pdf');
+
         const finalized = await storageApplicationService.finalizeUpload({
             organizationId: args.organizationId,
             createdByUserId: args.userId,
@@ -623,6 +635,7 @@ export async function registerOrderRoutes(
                     extension: stored.storedObject.extension,
                     checksum: stored.storedObject.checksum,
                     sizeBytes: stored.storedObject.sizeBytes,
+                    thumbStatus: isPdfSource ? 'thumb_pending' : 'uploaded',
                     role: args.role ?? 'other',
                     side: args.side ?? 'na',
                     isPrimary: args.isPrimary ?? false,
@@ -637,6 +650,55 @@ export async function registerOrderRoutes(
         });
 
         return finalized.linkedRecord;
+    };
+
+    const kickoffOrderPdfThumbnailProcessing = async (args: {
+        organizationId: string;
+        attachment: any;
+        logLabel: string;
+    }) => {
+        const attachmentFileName = String(args.attachment?.originalFilename ?? args.attachment?.fileName ?? '').toLowerCase();
+        const attachmentMimeType = String(args.attachment?.mimeType ?? '').toLowerCase();
+        const isPdf = attachmentMimeType.includes('pdf') || attachmentFileName.endsWith('.pdf');
+
+        if (!isPdf) {
+            return;
+        }
+
+        const resolvedOriginal = args.attachment.fileRecordId
+            ? await canonicalFileReadResolver.resolveOriginal(String(args.attachment.fileRecordId))
+            : null;
+        const canonicalStorageKey = resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? args.attachment.fileUrl ?? null;
+        const canonicalStorageProvider = resolvedOriginal?.providerType === 'local_filesystem'
+            ? 'local'
+            : resolvedOriginal?.providerType === 's3'
+                ? 's3'
+                : resolvedOriginal?.objectKey
+                    ? 'supabase'
+                    : ((args.attachment.storageProvider as 'local' | 's3' | 'gcs' | 'supabase' | null | undefined) ?? null);
+        const isNotHttpUrl = typeof canonicalStorageKey === 'string' && canonicalStorageKey.length > 0 && !/^https?:\/\//i.test(canonicalStorageKey);
+
+        if (!canonicalStorageProvider || !canonicalStorageKey || !isNotHttpUrl) {
+            return;
+        }
+
+        setImmediate(() => {
+            void (async () => {
+                try {
+                    const { processPdfAttachmentDerivedData } = await import('../services/pdfProcessing');
+                    await processPdfAttachmentDerivedData({
+                        orgId: args.organizationId,
+                        attachmentId: String(args.attachment.id),
+                        storageKey: canonicalStorageKey,
+                        storageProvider: canonicalStorageProvider,
+                        mimeType: args.attachment.mimeType || null,
+                        attachmentType: 'order',
+                    });
+                } catch (error: any) {
+                    console.error(`[${args.logLabel}] PDF kickoff failed for ${args.attachment.id}:`, error);
+                }
+            })();
+        });
     };
 
     app.get("/api/workflow/order", isAuthenticated, tenantContext, async (req: any, res) => {
@@ -2457,6 +2519,11 @@ export async function registerOrderRoutes(
                         expectedParentId: orderId,
                     },
                 });
+                await kickoffOrderPdfThumbnailProcessing({
+                    organizationId,
+                    attachment: created,
+                    logLabel: 'OrderAttachments:POST',
+                });
                 const enriched = await enrichAttachmentWithUrls(created);
                 return res.json({ success: true, data: [enriched] });
             }
@@ -2481,6 +2548,11 @@ export async function registerOrderRoutes(
                         },
                     });
                     inserted.push(created);
+                    await kickoffOrderPdfThumbnailProcessing({
+                        organizationId,
+                        attachment: created,
+                        logLabel: 'OrderAttachments:POST',
+                    });
                 }
                 const enrichedInserted = await Promise.all(inserted.map((file) => enrichAttachmentWithUrls(file)));
                 return res.json({ success: true, data: enrichedInserted });
@@ -2522,6 +2594,12 @@ export async function registerOrderRoutes(
                         fileSize: fileSize || null,
                     },
                 });
+
+            await kickoffOrderPdfThumbnailProcessing({
+                organizationId,
+                attachment,
+                logLabel: 'OrderAttachments:POST',
+            });
 
             // PHASE 2: Create asset + link to order (fail-soft)
             try {
@@ -3705,6 +3783,18 @@ export async function registerOrderRoutes(
                         expectedParentId: orderId,
                     },
                 });
+
+                await kickoffOrderPdfThumbnailProcessing({
+                    organizationId,
+                    attachment,
+                    logLabel: 'OrderFiles:POST',
+                });
+
+            await kickoffOrderPdfThumbnailProcessing({
+                organizationId,
+                attachment,
+                logLabel: 'OrderFiles:POST',
+            });
 
                 const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
                 return res.json({ success: true, data: enrichedAttachment });
