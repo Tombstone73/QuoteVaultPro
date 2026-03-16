@@ -3969,7 +3969,7 @@ export async function registerOrderRoutes(
             if (!order) return res.status(404).json({ error: 'Order not found' });
 
             const userId = getUserId(req.user);
-            const files = await storage.getOrderAttachments(req.params.orderId);
+            const files = await storage.listOrderFiles(req.params.orderId);
             const file = files.find(f => f.id === req.params.fileId);
 
             if (!file) {
