@@ -697,9 +697,9 @@ export function AttachmentViewerDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent hideClose className="max-h-[92vh] w-[min(1280px,96vw)] max-w-[min(1280px,96vw)] overflow-hidden p-0">
+      <DialogContent hideClose className="h-[94vh] max-h-[94vh] w-[min(1600px,98vw)] max-w-[min(1600px,98vw)] overflow-hidden p-0">
         <DialogHeader className="border-b border-border px-6 py-4 text-left">
-          <div className="flex items-start justify-between gap-4 pr-8">
+          <div className="flex flex-col gap-4 pr-8 xl:flex-row xl:items-start xl:justify-between">
             <div className="min-w-0">
               <DialogTitle className="truncate pr-4">
                 {fileName}
@@ -717,7 +717,7 @@ export function AttachmentViewerDialog({
               </DialogDescription>
             </div>
 
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 xl:max-w-[55%]">
               {isImage ? (
                 <>
                   <Button type="button" variant="outline" size="icon" onClick={() => setZoomLevel((value) => Math.max(value - 0.25, 0.5))} title="Zoom out">
@@ -814,7 +814,7 @@ export function AttachmentViewerDialog({
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 py-4">
-          <div className={cn("flex min-h-0 flex-1 gap-4", showMetaPanel ? "lg:flex-row" : "flex-col")}>
+          <div className={cn("flex min-h-0 flex-1 gap-4", showMetaPanel ? "xl:flex-row" : "flex-col")}>
             <div className="relative min-h-0 flex-1 overflow-hidden">
               {renderArrowButton("prev")}
               {renderStage()}
@@ -822,7 +822,7 @@ export function AttachmentViewerDialog({
             </div>
 
             {showMetaPanel ? (
-              <aside className="flex w-full shrink-0 flex-col gap-4 rounded-lg border border-border bg-muted/20 p-4 lg:w-72">
+              <aside className="flex w-full shrink-0 flex-col gap-4 rounded-lg border border-border bg-muted/20 p-4 xl:w-80">
                 <div>
                   <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Details</h3>
                   <div className="mt-3 space-y-2 text-sm">
