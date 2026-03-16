@@ -23,6 +23,7 @@ import type {
   StorageResourceContext,
   StoredObjectDescriptor,
 } from "./StorageProviderAdapter";
+import { normalizeRequestedStorageTarget } from "./StorageProviderAdapter";
 
 function trimSlashes(value?: string | null): string {
   return (value || "").trim().replace(/^\/+|\/+$/g, "");
@@ -142,8 +143,9 @@ export class S3CompatibleStorageAdapter implements StorageProviderAdapter {
     resource: StorageResourceContext;
   }): Promise<StoredObjectDescriptor> {
     const { client, normalized } = this.createClient(input.providerConfig);
-    const storedFilename = generateStoredFilename(input.originalFilename);
-    const objectKey = buildRelativePath(input.resource, storedFilename, normalized.pathPrefix);
+    const requestedTarget = normalizeRequestedStorageTarget(input.requestedTarget);
+    const storedFilename = requestedTarget ? requestedTarget.split("/").pop() ?? input.originalFilename : generateStoredFilename(input.originalFilename);
+    const objectKey = requestedTarget ?? buildRelativePath(input.resource, storedFilename, normalized.pathPrefix);
     const checksum = computeChecksum(input.buffer);
     const extension = getFileExtension(input.originalFilename);
 

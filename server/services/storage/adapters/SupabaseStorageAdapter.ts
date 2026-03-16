@@ -17,6 +17,7 @@ import type {
   StorageResourceContext,
   StoredObjectDescriptor,
 } from "./StorageProviderAdapter";
+import { normalizeRequestedStorageTarget } from "./StorageProviderAdapter";
 
 function buildRelativePath(resource: StorageResourceContext, storedFilename: string, pathPrefix?: string | null): string {
   const base = generateRelativePath({
@@ -99,8 +100,9 @@ export class SupabaseStorageAdapter implements StorageProviderAdapter {
   }): Promise<StoredObjectDescriptor> {
     const normalized = normalizeSupabaseStorageProviderConfig(input.providerConfig.configJson);
     const service = new SupabaseStorageService(normalized.bucketName.trim());
-    const storedFilename = generateStoredFilename(input.originalFilename);
-    const relativePath = buildRelativePath(input.resource, storedFilename, normalized.pathPrefix);
+    const requestedTarget = normalizeRequestedStorageTarget(input.requestedTarget);
+    const storedFilename = requestedTarget ? requestedTarget.split("/").pop() ?? input.originalFilename : generateStoredFilename(input.originalFilename);
+    const relativePath = requestedTarget ?? buildRelativePath(input.resource, storedFilename, normalized.pathPrefix);
     const checksum = computeChecksum(input.buffer);
     const extension = getFileExtension(input.originalFilename);
     const uploaded = await service.uploadFile(relativePath, input.buffer, input.mimeType || "application/octet-stream");

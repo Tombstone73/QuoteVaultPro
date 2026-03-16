@@ -90,7 +90,8 @@ import {
 } from "../services/orderWorkflowService";
 import { storageApplicationService } from "../services/storage/StorageApplicationService";
 import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
-import { canonicalDerivativeReadResolver } from "../services/storage/CanonicalDerivativeReadResolver";
+import { deleteStoredObjectKeys } from "../services/storage/deleteStoredObjectKeys";
+import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -2768,30 +2769,17 @@ export async function registerOrderRoutes(
                             hasRemainingAssetLinksForFile = linkCounts.some((count) => count > 0);
 
                             if (!hasRemainingAssetLinksForFile && remainingAttachmentRefs === 0) {
-                                const { deleteFile: deleteLocalFile } = await import("../utils/fileStorage.js");
-
-                                const deleteKeys = async (keys: string[]) => {
-                                    const uniqueKeys = Array.from(new Set(keys.filter(Boolean)));
-                                    if (uniqueKeys.length === 0) return;
-
-                                    if (storageProvider === "supabase" && isSupabaseConfigured()) {
-                                        const supabase = new SupabaseStorageService();
-                                        await Promise.all(uniqueKeys.map((key) => supabase.deleteFile(normalizeObjectKeyForDb(key)).catch(() => false)));
-                                    } else if (storageProvider === "local") {
-                                        await Promise.all(uniqueKeys.map((key) => deleteLocalFile(key).catch(() => false)));
-                                    }
-                                };
-
                                 for (const asset of matchingAssets) {
                                     const variants = await db
                                         .select({ key: assetVariants.key })
                                         .from(assetVariants)
                                         .where(and(eq(assetVariants.organizationId, organizationId), eq(assetVariants.assetId, asset.id)));
 
-                                    await deleteKeys([
-                                        ...variants.map((variant) => variant.key || ""),
-                                        normalizedFileKey,
-                                    ]);
+                                    await deleteStoredObjectKeys({
+                                        fileRecordId: attachment.fileRecordId ? String(attachment.fileRecordId) : null,
+                                        legacyStorageProvider: storageProvider,
+                                        keys: [...variants.map((variant) => variant.key || ""), normalizedFileKey],
+                                    });
 
                                     await db.delete(assets).where(and(eq(assets.organizationId, organizationId), eq(assets.id, asset.id)));
                                 }
@@ -2802,27 +2790,15 @@ export async function registerOrderRoutes(
                     }
 
                     if (remainingAttachmentRefs === 0 && !hasRemainingAssetLinksForFile && storageProvider) {
-                        const { deleteFile: deleteLocalFile } = await import("../utils/fileStorage.js");
-                        const [thumbAccess, previewAccess] = attachment.fileRecordId
-                            ? await Promise.all([
-                                canonicalDerivativeReadResolver.resolveDerivative(String(attachment.fileRecordId), "thumbnail"),
-                                canonicalDerivativeReadResolver.resolveDerivative(String(attachment.fileRecordId), "preview"),
-                            ])
-                            : [{ objectKey: (attachment as any).thumbKey ?? null }, { objectKey: (attachment as any).previewKey ?? null }];
-                        const keysToDelete = [
-                            storageKey,
-                            thumbAccess.objectKey,
-                            previewAccess.objectKey,
-                        ].filter((key): key is string => typeof key === "string" && key.length > 0);
+                        const derivativeKeys = attachment.fileRecordId
+                            ? (await fileDerivativeRepository.listByFileRecordId(String(attachment.fileRecordId))).map((row) => row.objectKey ?? null)
+                            : [(attachment as any).thumbKey ?? null, (attachment as any).previewKey ?? null];
 
-                        const uniqueKeys = Array.from(new Set(keysToDelete.map((key) => String(key)).filter(Boolean)));
-
-                        if (storageProvider === "supabase" && isSupabaseConfigured()) {
-                            const supabase = new SupabaseStorageService();
-                            await Promise.all(uniqueKeys.map((key) => supabase.deleteFile(normalizeObjectKeyForDb(key)).catch(() => false)));
-                        } else if (storageProvider === "local") {
-                            await Promise.all(uniqueKeys.map((key) => deleteLocalFile(key).catch(() => false)));
-                        }
+                        await deleteStoredObjectKeys({
+                            fileRecordId: attachment.fileRecordId ? String(attachment.fileRecordId) : null,
+                            legacyStorageProvider: storageProvider,
+                            keys: [storageKey, ...derivativeKeys],
+                        });
                     }
                 }
             } catch (cleanupError) {
@@ -4156,25 +4132,15 @@ export async function registerOrderRoutes(
                     }
 
                     if (Number(orderRefs) + Number(quoteRefs) === 0 && !hasRemainingAssetLinksForFile && storageProvider) {
-                        const { deleteFile: deleteLocalFile } = await import('../utils/fileStorage');
-                        const [thumbAccess, previewAccess] = file.fileRecordId
-                            ? await Promise.all([
-                                canonicalDerivativeReadResolver.resolveDerivative(String(file.fileRecordId), 'thumbnail'),
-                                canonicalDerivativeReadResolver.resolveDerivative(String(file.fileRecordId), 'preview'),
-                            ])
-                            : [{ objectKey: (file as any).thumbKey ?? null }, { objectKey: (file as any).previewKey ?? null }];
-                        const keys = [
-                            storageKey,
-                            thumbAccess.objectKey ?? file.thumbnailRelativePath ?? (file as any).thumbKey,
-                            previewAccess.objectKey ?? (file as any).previewKey,
-                        ].filter((key): key is string => typeof key === 'string' && key.length > 0);
+                        const derivativeKeys = file.fileRecordId
+                            ? (await fileDerivativeRepository.listByFileRecordId(String(file.fileRecordId))).map((row) => row.objectKey ?? null)
+                            : [file.thumbnailRelativePath ?? (file as any).thumbKey ?? null, (file as any).previewKey ?? null];
 
-                        if (storageProvider === 'supabase' && isSupabaseConfigured()) {
-                            const supabase = new SupabaseStorageService();
-                            await Promise.all(keys.map((key) => supabase.deleteFile(normalizeObjectKeyForDb(key)).catch(() => false)));
-                        } else if (storageProvider === 'local') {
-                            await Promise.all(keys.map((key) => deleteLocalFile(key).catch(() => false)));
-                        }
+                        await deleteStoredObjectKeys({
+                            fileRecordId: file.fileRecordId ? String(file.fileRecordId) : null,
+                            legacyStorageProvider: storageProvider,
+                            keys: [storageKey, ...derivativeKeys],
+                        });
                     }
                 }
             } catch {

@@ -100,3 +100,12 @@ export interface StorageProviderAdapter {
     verifiedAt: Date;
   }>;
 }
+
+export function normalizeRequestedStorageTarget(value?: string | null): string | null {
+  const normalized = (value || "").trim().replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!normalized) return null;
+  if (normalized.split("/").some((segment) => segment === "..")) {
+    throw new Error("Requested storage target cannot contain path traversal segments.");
+  }
+  return normalized;
+}

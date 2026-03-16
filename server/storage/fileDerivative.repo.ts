@@ -15,6 +15,17 @@ type ReplaceReadyValues = {
 export class FileDerivativeRepository {
   constructor(private readonly dbInstance = db) {}
 
+  async listByFileRecordId(
+    fileRecordId: string,
+    executor: any = this.dbInstance,
+  ): Promise<FileDerivative[]> {
+    return executor
+      .select()
+      .from(fileDerivatives)
+      .where(eq(fileDerivatives.fileRecordId, fileRecordId))
+      .orderBy(desc(fileDerivatives.updatedAt), desc(fileDerivatives.createdAt));
+  }
+
   async listByFileRecordIdAndType(
     fileRecordId: string,
     derivativeType: FileDerivative["derivativeType"],
@@ -50,20 +61,41 @@ export class FileDerivativeRepository {
     executor: any = this.dbInstance,
   ): Promise<FileDerivative> {
     const now = new Date();
+    const existing = await this.listByFileRecordIdAndType(values.fileRecordId, values.derivativeType, executor);
+    const reusable = existing[0] ?? null;
 
-    await executor
-      .update(fileDerivatives)
-      .set({
-        state: "replaced",
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(fileDerivatives.fileRecordId, values.fileRecordId),
-          eq(fileDerivatives.derivativeType, values.derivativeType),
-          inArray(fileDerivatives.state, ["ready", "pending"]),
-        ),
-      );
+    if (reusable) {
+      const redundantIds = existing
+        .filter((row) => row.id !== reusable.id)
+        .map((row) => row.id);
+
+      if (redundantIds.length > 0) {
+        await executor
+          .update(fileDerivatives)
+          .set({
+            state: "replaced",
+            updatedAt: now,
+          })
+          .where(inArray(fileDerivatives.id, redundantIds));
+      }
+
+      const [updated] = await executor
+        .update(fileDerivatives)
+        .set({
+          ...values,
+          state: "ready",
+          errorText: null,
+          updatedAt: now,
+        })
+        .where(eq(fileDerivatives.id, reusable.id))
+        .returning();
+
+      if (!updated) {
+        throw new Error("Failed to persist file derivative");
+      }
+
+      return updated;
+    }
 
     const [created] = await executor
       .insert(fileDerivatives)

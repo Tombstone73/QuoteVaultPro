@@ -105,7 +105,7 @@ async function claimForProcessing(row: PendingAttachmentRow): Promise<void> {
     );
 }
 
-async function getCanonicalOriginalWorkInput(row: PendingAttachmentRow): Promise<{ storageProvider: "local" | "supabase"; storageKey: string } | null> {
+async function getCanonicalOriginalWorkInput(row: PendingAttachmentRow): Promise<{ storageProvider: "local" | "supabase" | "s3" | "gcs" | "azure_blob" | "titan_managed"; storageKey: string } | null> {
   const originalAccess = await canonicalFileReadResolver.resolveOriginal(row.fileRecordId);
   if (originalAccess.status !== "available") return null;
 
@@ -113,7 +113,17 @@ async function getCanonicalOriginalWorkInput(row: PendingAttachmentRow): Promise
   if (!storageKey) return null;
 
   return {
-    storageProvider: originalAccess.localPathRef ? "local" : "supabase",
+    storageProvider: originalAccess.providerType === "local_filesystem"
+      ? "local"
+      : originalAccess.providerType === "s3"
+        ? "s3"
+        : originalAccess.providerType === "gcs"
+          ? "gcs"
+          : originalAccess.providerType === "azure_blob"
+            ? "azure_blob"
+            : originalAccess.providerType === "titan_managed"
+              ? "titan_managed"
+              : "supabase",
     storageKey,
   };
 }

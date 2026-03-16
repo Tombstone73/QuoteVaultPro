@@ -18,6 +18,7 @@ import type {
   StorageResourceContext,
   StoredObjectDescriptor,
 } from "./StorageProviderAdapter";
+import { normalizeRequestedStorageTarget } from "./StorageProviderAdapter";
 
 function buildRelativePath(resource: StorageResourceContext, storedFilename: string, subfolderPrefix?: string | null): string {
   const base = generateRelativePath({
@@ -96,8 +97,9 @@ export class LocalFilesystemStorageAdapter implements StorageProviderAdapter {
   }): Promise<StoredObjectDescriptor> {
     const normalized = normalizeLocalFilesystemStorageProviderConfig(input.providerConfig.configJson);
     const subfolderPrefix = validateSubfolderPrefix(normalized.subfolderPrefix);
-    const storedFilename = generateStoredFilename(input.originalFilename);
-    const relativePath = buildRelativePath(input.resource, storedFilename, subfolderPrefix);
+    const requestedTarget = normalizeRequestedStorageTarget(input.requestedTarget);
+    const storedFilename = requestedTarget ? requestedTarget.split("/").pop() ?? input.originalFilename : generateStoredFilename(input.originalFilename);
+    const relativePath = requestedTarget ?? buildRelativePath(input.resource, storedFilename, subfolderPrefix);
     const checksum = computeChecksum(input.buffer);
     const extension = getFileExtension(input.originalFilename);
     await saveFile(relativePath, input.buffer);
