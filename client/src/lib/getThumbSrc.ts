@@ -16,6 +16,7 @@ export function getThumbSrc(obj: unknown): string | null {
   if (!obj || typeof obj !== "object") return null;
 
   const o = obj as any;
+  const canUseOriginalImage = hasRenderableOriginalImage(o);
 
   // 1) Prefer explicit, already-renderable URLs (from API enrichment).
   const urlCandidates: unknown[] = [
@@ -27,6 +28,7 @@ export function getThumbSrc(obj: unknown): string | null {
     o.url,
     o.pages?.[0]?.thumbUrl,
     o.previewUrl,
+    ...(canUseOriginalImage ? [o.originalUrl] : []),
   ];
 
   for (const candidate of urlCandidates) {
@@ -67,4 +69,21 @@ function coerceRenderableUrl(value: unknown): string | null {
   if (!v) return null;
 
   return resolveObjectsPublicUrl(v);
+}
+
+function hasRenderableOriginalImage(obj: Record<string, unknown>): boolean {
+  const mimeType = typeof obj.mimeType === "string" ? obj.mimeType.toLowerCase() : "";
+  if (mimeType.startsWith("image/")) {
+    return !mimeType.includes("svg");
+  }
+
+  const fileNameCandidate =
+    typeof obj.originalFilename === "string"
+      ? obj.originalFilename
+      : typeof obj.fileName === "string"
+      ? obj.fileName
+      : "";
+  const fileName = fileNameCandidate.toLowerCase();
+
+  return /\.(png|jpe?g|webp|gif|bmp|tiff?)$/i.test(fileName);
 }
