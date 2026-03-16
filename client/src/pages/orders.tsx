@@ -30,6 +30,7 @@ import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
+import { normalizeOrderFileRows } from "@/lib/attachments/orderFileRows";
 import BackNavControls from "@/components/BackNavControls";
 
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "paymentStatus";
@@ -394,7 +395,7 @@ export default function Orders() {
     },
   });
 
-  // Open attachments dialog - fetch all attachments for the order in one call
+  // Open attachments dialog - fetch current stabilized order file rows in one call
   const openAttachmentsDialog = async (orderId: string) => {
     setAttachmentsDialogOrderId(orderId);
     setAttachmentsDialogOpen(true);
@@ -403,7 +404,7 @@ export default function Orders() {
     setLoadingAttachments(orderId);
 
     try {
-      const response = await fetch(`/api/orders/${orderId}/attachments-unified`, {
+      const response = await fetch(`/api/orders/${orderId}/files`, {
         credentials: "include",
       });
 
@@ -412,7 +413,10 @@ export default function Orders() {
       }
 
       const result = await response.json();
-      const attachments = result.data || [];
+      const attachments = normalizeOrderFileRows(
+        Array.isArray(result?.data) ? result.data : [],
+        Array.isArray(result?.assets) ? result.assets : [],
+      );
       setAttachmentsDialogItems(Array.isArray(attachments) ? attachments : []);
     } catch (error: any) {
       console.error("[openAttachmentsDialog] Error:", error);
