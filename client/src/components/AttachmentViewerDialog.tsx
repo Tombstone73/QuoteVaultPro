@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 
-import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
+import pdfCMapProbeUrl from "pdfjs-dist/cmaps/78-EUC-H.bcmap?url";
+import pdfStandardFontProbeUrl from "pdfjs-dist/standard_fonts/FoxitFixed.pfb?url";
 
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -83,6 +85,17 @@ function normalizeThumbnailUrl(value?: string | null) {
   if (!value) return undefined;
   return resolveObjectsPublicUrl(value) ?? value;
 }
+
+function getPdfAssetBaseUrl(assetUrl: string) {
+  const normalized = (assetUrl || "").trim();
+  if (!normalized) return undefined;
+  const index = normalized.lastIndexOf("/");
+  if (index < 0) return undefined;
+  return `${normalized.slice(0, index + 1)}`;
+}
+
+const pdfCMapUrl = getPdfAssetBaseUrl(pdfCMapProbeUrl);
+const pdfStandardFontDataUrl = getPdfAssetBaseUrl(pdfStandardFontProbeUrl);
 
 function FilmstripThumbnail({
   item,
@@ -196,6 +209,17 @@ export function AttachmentViewerDialog({
   const pdfDownloadUrl = isPdf ? buildPdfDownloadUrl(objectPath, fileName) : null;
   const pdfSourceUrl = isPdf
     ? pdfViewUrl ?? currentAttachment?.previewUrl ?? currentAttachment?.fileUrl
+    : null;
+  const pdfSourceKind = isPdf
+    ? currentAttachment?.originalUrl
+      ? "originalUrl"
+      : objectPath
+        ? "objectPath"
+        : currentAttachment?.previewUrl
+          ? "previewUrl"
+          : currentAttachment?.fileUrl
+            ? "fileUrl"
+            : "missing"
     : null;
   const genericDownloadUrl = !isPdf ? currentAttachment?.downloadUrl ?? currentAttachment?.originalUrl ?? currentAttachment?.fileUrl ?? null : null;
   const downloadUrl = isPdf
@@ -314,7 +338,7 @@ export function AttachmentViewerDialog({
     void (async () => {
       try {
         const [pdfjs, pdfBlob] = await Promise.all([
-          import("pdfjs-dist"),
+          import("pdfjs-dist/legacy/build/pdf.mjs"),
           apiFetchBlob(pdfSourceUrl, { method: "GET", credentials: "include" }),
         ]);
 
@@ -324,8 +348,12 @@ export function AttachmentViewerDialog({
 
         const loadingTask = pdfjs.getDocument({
           data: new Uint8Array(await pdfBlob.arrayBuffer()),
+          cMapUrl: pdfCMapUrl,
+          cMapPacked: true,
+          standardFontDataUrl: pdfStandardFontDataUrl,
           useWorkerFetch: false,
           isEvalSupported: false,
+          stopAtErrors: true,
         });
 
         loadedDocument = await loadingTask.promise;
@@ -363,9 +391,14 @@ export function AttachmentViewerDialog({
         if (cancelled) return;
         const message = error instanceof Error ? error.message : "Unable to load PDF preview.";
         setPdfError(message);
-        if (isDev) {
-          console.warn("[AttachmentViewerDialog] PDF.js load failed", error);
-        }
+        console.error("[AttachmentViewerDialog] PDF.js load failed", {
+          attachmentId: currentAttachment?.id ?? null,
+          fileName,
+          pdfSourceKind,
+          pdfSourceUrl,
+          objectPath,
+          error,
+        });
       } finally {
         if (!cancelled) {
           setPdfLoading(false);
@@ -387,7 +420,7 @@ export function AttachmentViewerDialog({
         void loadedDocument.destroy().catch(() => undefined);
       }
     };
-  }, [currentAttachment?.id, currentAttachment?.pageCount, isDev, isPdf, open, pdfSourceUrl]);
+  }, [currentAttachment?.id, currentAttachment?.pageCount, fileName, isPdf, objectPath, open, pdfSourceKind, pdfSourceUrl]);
 
   useEffect(() => {
     if (!open || !isPdf || !pdfDocument || !pdfStageRef.current) {
@@ -487,9 +520,19 @@ export function AttachmentViewerDialog({
         }
         const message = error instanceof Error ? error.message : "Unable to render PDF page.";
         setPdfError(message);
-        if (isDev) {
-          console.warn("[AttachmentViewerDialog] PDF.js render failed", error);
-        }
+        console.error("[AttachmentViewerDialog] PDF.js render failed", {
+          attachmentId: currentAttachment?.id ?? null,
+          fileName,
+          pdfSourceKind,
+          pdfSourceUrl,
+          pageNumber: pdfPageNumber,
+          pageCount: pdfPageCount,
+          stageSize: pdfStageSize,
+          renderedScale: pdfRenderedScale,
+          fitMode: pdfFitMode,
+          rotation: pdfRotation,
+          error,
+        });
       }
     })();
 
@@ -504,7 +547,7 @@ export function AttachmentViewerDialog({
         pdfRenderTaskRef.current = null;
       }
     };
-  }, [isDev, isPdf, open, pdfDocument, pdfFitMode, pdfPageNumber, pdfRotation, pdfStageSize.height, pdfStageSize.width, pdfZoomLevel]);
+  }, [currentAttachment?.id, fileName, isPdf, open, pdfDocument, pdfFitMode, pdfPageCount, pdfPageNumber, pdfRenderedScale, pdfRotation, pdfSourceKind, pdfSourceUrl, pdfStageSize, pdfZoomLevel]);
 
   if (!currentAttachment) return null;
 
@@ -603,6 +646,11 @@ export function AttachmentViewerDialog({
             ? "Missing file reference. Download the file to view it."
             : "Some browsers block embedded PDFs. Download the file or open it in a new tab instead."}
         </p>
+        {pdfError ? (
+          <p className="max-w-md text-[11px] text-muted-foreground/80">
+            Source: {pdfSourceKind ?? "unknown"}
+          </p>
+        ) : null}
       </div>
       <div className="mt-4 flex flex-col gap-2">
         {downloadUrl ? (
