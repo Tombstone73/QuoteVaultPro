@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { FileText, Loader2 } from "lucide-react";
 import { isPdfAttachment } from "@/lib/attachments";
 import { getAttachmentPollingInterval, isAttachmentSettled } from "@/lib/attachments/attachmentStatus";
+import { mergeQuoteLineItemRows } from "@/lib/attachments/quoteLineItemRows";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 
 type LineItemThumbnailProps = {
@@ -78,7 +79,7 @@ export function LineItemThumbnail({
       const json = await response.json();
       const data = (json?.data || []) as AttachmentData[];
       const assets = (json?.assets || []) as AttachmentData[];
-      return [...data, ...assets];
+      return parentType === "quote" ? mergeQuoteLineItemRows(data, assets) : [...data, ...assets];
     },
     enabled: shouldFetch,
     refetchInterval: (query) => {
