@@ -6594,11 +6594,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
         : null;
       const canonicalStorageKey = canonicalOriginal?.objectKey ?? canonicalOriginal?.localPathRef ?? null;
-      const canonicalStorageProvider = canonicalOriginal?.localPathRef
-        ? 'local'
-        : canonicalOriginal?.objectKey
-          ? 'supabase'
-          : null;
+      const canonicalStorageProvider = canonicalOriginal?.providerType
+        ?? (canonicalOriginal?.localPathRef ? 'local_filesystem' : canonicalOriginal?.objectKey ? 'supabase' : null);
 
       // Best-effort self-check for Supabase-backed keys (non-blocking)
       if (canonicalStorageProvider === 'supabase' && canonicalStorageKey) {

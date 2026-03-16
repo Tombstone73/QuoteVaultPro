@@ -1493,13 +1493,8 @@ export async function registerAttachmentRoutes(
         ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
         : null;
       const canonicalStorageKey = canonicalOriginal?.objectKey ?? canonicalOriginal?.localPathRef ?? null;
-      const canonicalStorageProvider = canonicalOriginal?.providerType === "local_filesystem"
-        ? "local"
-        : canonicalOriginal?.providerType === "s3"
-          ? "s3"
-          : canonicalOriginal?.objectKey
-            ? "supabase"
-            : null;
+      const canonicalStorageProvider = canonicalOriginal?.providerType
+        ?? (canonicalOriginal?.localPathRef ? "local_filesystem" : canonicalOriginal?.objectKey ? "supabase" : null);
 
       // Best-effort self-check for Supabase-backed keys (non-blocking)
       if (canonicalStorageProvider === "supabase" && canonicalStorageKey) {
@@ -1564,7 +1559,6 @@ export async function registerAttachmentRoutes(
         isPdf &&
         pdfColumnsExist &&
         normalizedStorageProvider &&
-        (normalizedStorageProvider === "local" || normalizedStorageProvider === "supabase") &&
         isNotHttpUrlForThumb &&
         canonicalStorageKey
       ) {
@@ -1937,11 +1931,8 @@ export async function registerAttachmentRoutes(
             ? await canonicalFileReadResolver.resolveOriginal(String(created.fileRecordId))
             : null;
           const canonicalStorageKey = canonicalOriginal?.objectKey ?? canonicalOriginal?.localPathRef ?? null;
-          const canonicalStorageProvider = canonicalOriginal?.localPathRef
-            ? "local"
-            : canonicalOriginal?.objectKey
-              ? "supabase"
-              : null;
+          const canonicalStorageProvider = canonicalOriginal?.providerType
+            ?? (canonicalOriginal?.localPathRef ? "local_filesystem" : canonicalOriginal?.objectKey ? "supabase" : null);
 
           if (isPdfUpload && pdfColumnsExist && canonicalStorageKey && canonicalStorageProvider) {
             res.on("finish", () => {
