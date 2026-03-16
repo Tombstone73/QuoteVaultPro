@@ -413,7 +413,7 @@ export default function StorageSettingsPage() {
   } = useStorageSettings();
 
   const [orchestrationForm, setOrchestrationForm] = useState<OrchestrationFormState>(buildOrchestrationFormState());
-  const [selectedProviderKey, setSelectedProviderKey] = useState<string>(NEW_PROVIDER_KEY);
+  const [selectedProviderKey, setSelectedProviderKey] = useState<string>("");
   const [providerForm, setProviderForm] = useState<ProviderFormState>(buildEmptyProviderForm("supabase"));
 
   const savedOrchestration = useMemo(() => buildOrchestrationFormState(settings), [settings]);
@@ -451,10 +451,9 @@ export default function StorageSettingsPage() {
       return;
     }
     setSelectedProviderKey((current) => {
-      if (current === NEW_PROVIDER_KEY) return current;
       return settings.providers.some((provider) => provider.id === current)
         ? current
-        : settings.activeProvider?.id ?? settings.providers[0]?.id ?? NEW_PROVIDER_KEY;
+        : settings.activeProvider?.id ?? settings.providers[0]?.id ?? "";
     });
   }, [settings]);
 
@@ -492,6 +491,17 @@ export default function StorageSettingsPage() {
     ? draftValidation
     : settings?.orchestration.validation ?? null;
   const providerValidation = draftValidation?.kind === "provider" ? draftValidation : null;
+
+  const handleOpenNewProvider = (providerType: ConfigurableStorageProviderType = "supabase") => {
+    clearDraftValidation();
+    setSelectedProviderKey(NEW_PROVIDER_KEY);
+    setProviderForm(buildEmptyProviderForm(providerType));
+  };
+
+  const handleSelectExistingProvider = (providerId: string) => {
+    clearDraftValidation();
+    setSelectedProviderKey(providerId);
+  };
 
   const handleValidateOrchestration = async () => {
     try {
@@ -532,7 +542,24 @@ export default function StorageSettingsPage() {
 
   const handleSaveProvider = async () => {
     try {
-      await saveRequest(buildProviderRequest(providerForm));
+      const nextSettings = await saveRequest(buildProviderRequest(providerForm));
+      const savedProvider = nextSettings.providers.find((provider) => {
+        if (provider.providerType !== providerForm.providerType) {
+          return false;
+        }
+        if (provider.displayName !== providerForm.displayName.trim()) {
+          return false;
+        }
+        if (providerForm.providerConfigId) {
+          return provider.id === providerForm.providerConfigId;
+        }
+        return true;
+      }) ?? null;
+
+      if (savedProvider) {
+        setSelectedProviderKey(savedProvider.id);
+        setProviderForm(buildProviderFormState(savedProvider));
+      }
     } catch (error: any) {
       toast({
         title: "Save failed",
@@ -723,11 +750,11 @@ export default function StorageSettingsPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex flex-wrap gap-2">
-                <Button type="button" variant={selectedProviderKey === NEW_PROVIDER_KEY ? "default" : "outline"} onClick={() => setSelectedProviderKey(NEW_PROVIDER_KEY)}>
+                <Button type="button" variant={selectedProviderKey === NEW_PROVIDER_KEY ? "default" : "outline"} onClick={() => handleOpenNewProvider(providerForm.providerType)}>
                   New provider
                 </Button>
                 {settings.providers.map((provider) => (
-                  <Button key={provider.id} type="button" variant={selectedProviderKey === provider.id ? "default" : "outline"} onClick={() => setSelectedProviderKey(provider.id)}>
+                  <Button key={provider.id} type="button" variant={selectedProviderKey === provider.id ? "default" : "outline"} onClick={() => handleSelectExistingProvider(provider.id)}>
                     {provider.displayName}
                   </Button>
                 ))}
@@ -777,6 +804,12 @@ export default function StorageSettingsPage() {
               <CardDescription>Edit the selected provider record or create a new one.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="outline" className={selectedProviderKey === NEW_PROVIDER_KEY ? "border-blue-300 bg-blue-50 text-blue-900" : providerStatusClasses[selectedExistingProvider?.status ?? "missing"]}>
+                  {selectedProviderKey === NEW_PROVIDER_KEY ? "Creating new provider" : selectedExistingProvider ? `Editing ${selectedExistingProvider.displayName}` : "No provider selected"}
+                </Badge>
+              </div>
+
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="provider-type">Provider type</Label>
@@ -784,8 +817,7 @@ export default function StorageSettingsPage() {
                     value={providerForm.providerType}
                     onValueChange={(value) => {
                       const nextType = value as ConfigurableStorageProviderType;
-                      setSelectedProviderKey(NEW_PROVIDER_KEY);
-                      setProviderForm(buildEmptyProviderForm(nextType));
+                      handleOpenNewProvider(nextType);
                     }}
                     disabled={selectedProviderKey !== NEW_PROVIDER_KEY}
                   >
