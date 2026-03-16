@@ -110,7 +110,9 @@ function FilmstripThumbnail({
   const itemMimeType = item.mimeType ?? inferMimeType(itemName);
   const itemIsPdf = isPdfFile(itemMimeType, itemName);
   const itemIsImage = typeof itemMimeType === "string" && itemMimeType.startsWith("image/");
-  const normalizedThumbUrl = normalizeThumbnailUrl(item.thumbUrl ?? item.pages?.[0]?.thumbUrl ?? null);
+  const normalizedThumbUrl = normalizeThumbnailUrl(
+    item.thumbUrl ?? item.pages?.[0]?.thumbUrl ?? (itemIsImage ? item.previewUrl ?? item.originalUrl ?? null : null)
+  );
   const [thumbFailed, setThumbFailed] = useState(false);
 
   useEffect(() => {
