@@ -862,7 +862,7 @@ export function LineItemAttachmentsPanel({
                             {file.pages && file.pages.length > 0 && ` • ${file.pages.length} thumbnail${file.pages.length === 1 ? '' : 's'}`}
                           </span>
                         )}
-                        {file.thumbStatus && file.thumbStatus !== 'uploaded' && !isPdf && (() => {
+                        {file.thumbStatus && file.thumbStatus !== 'uploaded' && !isPdf && !hasAnyThumbnail && (() => {
                           const isUnavailable = file.thumbStatus === 'thumb_failed' && isThumbsUnavailableError(file.thumbError);
                           const isLocalMissing = file.thumbStatus === 'thumb_failed' && isLocalPreviewUnavailableError(file.thumbError);
                           return (
