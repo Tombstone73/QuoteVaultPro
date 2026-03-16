@@ -1881,6 +1881,8 @@ export async function registerAttachmentRoutes(
       const requestedTarget =
         (typeof requestedStorageTarget === 'string' ? requestedStorageTarget : null) ||
         (typeof storageTarget === 'string' ? storageTarget : null);
+      const { hasPageCountStatusColumn } = await import("../db");
+      const pdfColumnsExist = hasPageCountStatusColumn() === true;
 
       // Validate quote belongs to org
       const [quote] = await db
