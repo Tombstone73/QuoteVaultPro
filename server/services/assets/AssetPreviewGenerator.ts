@@ -36,6 +36,47 @@ export class AssetPreviewGenerator {
   private readonly THUMB_SIZE = 320;
   private readonly PREVIEW_SIZE = 1600;
   private readonly JPEG_QUALITY = 85;
+  private readonly SOURCE_RETRY_DELAYS_MS = [5_000, 15_000, 30_000];
+  private readonly sourceRetryTimers = new Map<string, NodeJS.Timeout>();
+  private readonly sourceRetryAttempts = new Map<string, number>();
+
+  private resetSourceRetry(assetId: string): void {
+    const existingTimer = this.sourceRetryTimers.get(assetId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.sourceRetryTimers.delete(assetId);
+    }
+    this.sourceRetryAttempts.delete(assetId);
+  }
+
+  private scheduleSourceRetry(asset: Asset, reason: string): void {
+    if (this.sourceRetryTimers.has(asset.id)) {
+      return;
+    }
+
+    const attempt = this.sourceRetryAttempts.get(asset.id) ?? 0;
+    if (attempt >= this.SOURCE_RETRY_DELAYS_MS.length) {
+      console.log(`[AssetPreviewGenerator] Source not ready for asset ${asset.id}; leaving pending for worker retry (${reason})`);
+      return;
+    }
+
+    const delayMs = this.SOURCE_RETRY_DELAYS_MS[attempt];
+    this.sourceRetryAttempts.set(asset.id, attempt + 1);
+
+    const timer = setTimeout(() => {
+      this.sourceRetryTimers.delete(asset.id);
+      void this.generatePreviews(asset).catch((retryError) => {
+        console.error(`[AssetPreviewGenerator] Scheduled retry failed for asset ${asset.id}:`, retryError);
+      });
+    }, delayMs);
+
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
+
+    this.sourceRetryTimers.set(asset.id, timer);
+    console.log(`[AssetPreviewGenerator] Scheduled source retry ${attempt + 1}/${this.SOURCE_RETRY_DELAYS_MS.length} for asset ${asset.id} in ${delayMs}ms`);
+  }
 
   /**
    * Generate previews for an asset
@@ -55,6 +96,7 @@ export class AssetPreviewGenerator {
       const isPdf = mimeType === 'application/pdf';
 
       if (!isImage && !isPdf) {
+        this.resetSourceRetry(asset.id);
         console.log(
           `[AssetPreviewGenerator] Unsupported type ${mimeType}, marking as failed`
         );
@@ -154,6 +196,7 @@ export class AssetPreviewGenerator {
         'ready'
       );
 
+      this.resetSourceRetry(asset.id);
       console.log(`[AssetPreviewGenerator] Successfully processed asset ${asset.id}`);
     } catch (error) {
       // Common in signed-URL uploads: asset row exists before the object becomes readable.
@@ -171,9 +214,11 @@ export class AssetPreviewGenerator {
           previewStatus: 'pending',
           previewError: null,
         });
+        this.scheduleSourceRetry(asset, error.message);
         return;
       }
 
+      this.resetSourceRetry(asset.id);
       console.error(`[AssetPreviewGenerator] Failed to process asset ${asset.id}:`, error);
 
       if (process.env.NODE_ENV === 'development') {
