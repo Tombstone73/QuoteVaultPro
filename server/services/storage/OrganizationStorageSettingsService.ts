@@ -88,6 +88,19 @@ type PublicProviderConfig =
       providerLabel: string | null;
     };
 
+function deriveRuntimeModeForProviderType(providerType: StorageProviderConfig["providerType"]): OrganizationStorageProfile["mode"] {
+  switch (providerType) {
+    case "local_filesystem":
+      return "byos_local";
+    case "supabase":
+    case "s3":
+      return "byos_cloud";
+    case "titan_managed":
+    default:
+      return "titan_managed";
+  }
+}
+
 export type StorageProviderView = {
   id: string;
   providerType: "supabase" | "local_filesystem" | "s3";
@@ -106,7 +119,7 @@ export type StorageProviderView = {
 export type OrganizationStorageSettingsView = {
   profile: {
     id: string | null;
-    mode: "titan_managed" | "disabled";
+    mode: OrganizationStorageProfile["mode"];
     status: OrganizationStorageProfileViewStatus;
     persistedStatus: OrganizationStorageProfile["status"] | null;
     updatedAt: string | null;
@@ -174,7 +187,7 @@ export class OrganizationStorageSettingsService {
     return {
       profile: {
         id: profile?.id ?? null,
-        mode: profile?.mode === "disabled" ? "disabled" : "titan_managed",
+        mode: profile?.mode ?? "titan_managed",
         status: deriveProfileViewStatus(profile),
         persistedStatus: profile?.status ?? null,
         updatedAt: profile?.updatedAt ? new Date(profile.updatedAt).toISOString() : null,
@@ -230,7 +243,7 @@ export class OrganizationStorageSettingsService {
     const existingProfile = await organizationStorageProfileRepository.getByOrganizationId(organizationId);
     const profileValues = {
       organizationId,
-      mode: "titan_managed" as const,
+      mode: deriveRuntimeModeForProviderType(provider.providerType),
       status: validation.valid ? "active" as const : "invalid" as const,
       primaryProviderConfigId: provider.id,
       intakeProviderConfigId: intakeProvider.id,
@@ -322,21 +335,44 @@ export class OrganizationStorageSettingsService {
       : await storageProviderConfigRepository.create(intakeValues);
 
     const existingProfile = await organizationStorageProfileRepository.getByOrganizationId(organizationId);
+    const existingPrimaryProvider = existingProfile?.primaryProviderConfigId
+      ? await storageProviderConfigRepository.getByIdForOrganization(organizationId, existingProfile.primaryProviderConfigId)
+      : null;
+    const activeByosProvider = existingPrimaryProvider && existingPrimaryProvider.providerType !== "titan_managed"
+      ? existingPrimaryProvider
+      : null;
     const activePointersNeedDefaults = !existingProfile?.primaryProviderConfigId || !existingProfile?.intakeProviderConfigId;
+    const nextMode: OrganizationStorageProfile["mode"] = input.mode === "disabled"
+      ? "disabled"
+      : activeByosProvider
+        ? deriveRuntimeModeForProviderType(activeByosProvider.providerType)
+        : input.mode;
     const nextStatus: OrganizationStorageProfile["status"] = input.mode === "disabled"
       ? "disabled"
-      : existingProfile?.primaryProviderConfigId && existingProfile.primaryProviderConfigId !== canonical.id
-        ? existingProfile.status
+      : activeByosProvider
+        ? existingProfile?.status ?? "active"
         : validation.valid
           ? "active"
           : "invalid";
 
     const profileValues = {
       organizationId,
-      mode: input.mode,
+      mode: nextMode,
       status: nextStatus,
-      primaryProviderConfigId: activePointersNeedDefaults ? canonical.id : existingProfile?.primaryProviderConfigId ?? canonical.id,
-      intakeProviderConfigId: activePointersNeedDefaults ? intake.id : existingProfile?.intakeProviderConfigId ?? intake.id,
+      primaryProviderConfigId: input.mode === "disabled"
+        ? existingProfile?.primaryProviderConfigId ?? canonical.id
+        : activeByosProvider
+          ? activeByosProvider.id
+          : activePointersNeedDefaults
+            ? canonical.id
+            : existingProfile?.primaryProviderConfigId ?? canonical.id,
+      intakeProviderConfigId: input.mode === "disabled"
+        ? existingProfile?.intakeProviderConfigId ?? intake.id
+        : activeByosProvider
+          ? existingProfile?.intakeProviderConfigId ?? intake.id
+          : activePointersNeedDefaults
+            ? intake.id
+            : existingProfile?.intakeProviderConfigId ?? intake.id,
       archiveProviderConfigId: existingProfile?.archiveProviderConfigId ?? null,
     };
 
@@ -510,22 +546,28 @@ export class OrganizationStorageSettingsService {
       if (subfolder.split("/").some((segment) => segment === "..")) {
         throw new Error("Subfolder prefix cannot contain path traversal segments.");
       }
+      const warnings = [
+        "Local filesystem providers write to the application server disk under FILE_STORAGE_ROOT, not to the browser user's personal computer.",
+      ];
       return {
         kind: "provider",
         valid: true,
         error: null,
-        warnings: [],
+        warnings,
         validatedAt: new Date().toISOString(),
         runtimeSupported: true,
         canActivate: true,
         providerType: "local_filesystem",
       };
     } catch (error: any) {
+      const warnings = [
+        "Local filesystem providers write to the application server disk under FILE_STORAGE_ROOT, not to the browser user's personal computer.",
+      ];
       return {
         kind: "provider",
         valid: false,
         error: error?.message || "Failed to validate local filesystem provider.",
-        warnings: [],
+        warnings,
         validatedAt: new Date().toISOString(),
         runtimeSupported: true,
         canActivate: false,
