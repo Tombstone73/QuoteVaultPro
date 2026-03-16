@@ -26,6 +26,9 @@ import { normalizeTenantObjectKey } from "../utils/orgKeys";
 import { persistReadyFileDerivative } from "./storage/persistFileDerivative";
 import { fileRecordRepository } from "../storage/fileRecord.repo";
 import { storagePlacementRepository } from "../storage/storagePlacement.repo";
+import { storageProviderConfigRepository } from "../storage/storageProviderConfig.repo";
+import { canonicalFileReadResolver } from "./storage/CanonicalFileReadResolver";
+import { storageRegistry } from "./storage/StorageRegistry";
 import path from "path";
 import * as fsPromises from "fs/promises";
 
@@ -37,6 +40,64 @@ let canvasAvailable = false;
 let sharpModule: any = null;
 let sharpAvailable = false;
 let dependencyWarningLogged = false;
+
+type PdfStorageProvider = "local" | "supabase" | "local_filesystem" | "titan_managed" | "s3";
+
+type CanonicalStorageContext = {
+  placementId: string;
+  providerConfig: any;
+  placementBucket: string | null;
+  objectKey: string | null;
+  localPathRef: string | null;
+  adapter: ReturnType<typeof storageRegistry.getAdapter>;
+};
+
+type UploadedDerivativeLocation = {
+  storageKey: string;
+  bucket: string | null;
+  objectKey: string | null;
+  localPathRef: string | null;
+};
+
+function normalizeLegacyStorageProvider(storageProvider: string | null | undefined): "supabase" | "local" | null {
+  if (storageProvider === "local" || storageProvider === "local_filesystem") {
+    return "local";
+  }
+  if (storageProvider === "supabase") {
+    return "supabase";
+  }
+  return null;
+}
+
+async function resolveCanonicalStorageContext(fileRecordId: string | null | undefined): Promise<CanonicalStorageContext | null> {
+  const normalizedFileRecordId = fileRecordId ? String(fileRecordId) : null;
+  if (!normalizedFileRecordId) {
+    return null;
+  }
+
+  const original = await canonicalFileReadResolver.resolveOriginal(normalizedFileRecordId);
+  if (original.status !== "available" || !original.providerConfigId || (!original.objectKey && !original.localPathRef)) {
+    return null;
+  }
+
+  const [providerConfig, placement] = await Promise.all([
+    storageProviderConfigRepository.getById(String(original.providerConfigId)),
+    storagePlacementRepository.getActiveCanonicalPlacementByFileRecordId(normalizedFileRecordId),
+  ]);
+
+  if (!providerConfig || !placement) {
+    return null;
+  }
+
+  return {
+    placementId: placement.id,
+    providerConfig,
+    placementBucket: placement.bucket ?? null,
+    objectKey: original.objectKey ?? null,
+    localPathRef: original.localPathRef ?? null,
+    adapter: storageRegistry.getAdapter(providerConfig.providerType),
+  };
+}
 
 /**
  * Load pdfjs-dist by trying known valid paths
@@ -124,7 +185,9 @@ async function ensureSharp(): Promise<boolean> {
  */
 async function downloadPdfFile(fileKey: string, storageProvider: string): Promise<Buffer | null> {
   try {
-    if (storageProvider === 'supabase') {
+    const legacyStorageProvider = normalizeLegacyStorageProvider(storageProvider);
+
+    if (legacyStorageProvider === 'supabase') {
       // Supabase storage
       console.log(`[PdfProcessing] Downloading from Supabase storage: ${fileKey}`);
       const supabaseService = new SupabaseStorageService();
@@ -137,7 +200,7 @@ async function downloadPdfFile(fileKey: string, storageProvider: string): Promis
       const buffer = Buffer.from(arrayBuffer);
       console.log(`[PdfProcessing] Downloaded from Supabase: ${fileKey}, size=${buffer.length} bytes`);
       return buffer;
-    } else if (storageProvider === 'local') {
+    } else if (legacyStorageProvider === 'local') {
       // Local file storage - resolve path and read directly
       const normalizedFileKey = normalizeTenantObjectKey(fileKey.replace(/\\/g, '/'));
       const resolvedPath = resolveLocalStoragePath(normalizedFileKey);
@@ -176,33 +239,108 @@ async function downloadPdfFile(fileKey: string, storageProvider: string): Promis
   }
 }
 
+async function downloadPdfFileFromCanonical(args: {
+  fileRecordId?: string | null;
+  fallbackStorageKey: string;
+  storageProvider: string;
+}): Promise<Buffer | null> {
+  const canonicalContext = await resolveCanonicalStorageContext(args.fileRecordId ?? null);
+  if (!canonicalContext) {
+    return downloadPdfFile(args.fallbackStorageKey, args.storageProvider);
+  }
+
+  try {
+    const downloadHandle = await canonicalContext.adapter.getDownloadHandle({
+      providerConfig: canonicalContext.providerConfig,
+      objectKey: canonicalContext.objectKey,
+      localPathRef: canonicalContext.localPathRef,
+    });
+
+    if (downloadHandle.kind === "signed_url") {
+      const response = await fetch(downloadHandle.value);
+      if (!response.ok) {
+        throw new Error(`Failed to download from canonical provider: ${response.statusText} (status=${response.status})`);
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      return Buffer.from(arrayBuffer);
+    }
+
+    return await fsPromises.readFile(downloadHandle.value);
+  } catch (error: any) {
+    const errorMsg = error?.message || String(error);
+    console.error(`[PdfProcessing] Failed canonical PDF download for fileRecordId=${args.fileRecordId}:`, errorMsg);
+    return downloadPdfFile(args.fallbackStorageKey, args.storageProvider);
+  }
+}
+
 /**
  * Upload thumbnail file to storage
  */
 async function uploadThumbnailFile(
-  thumbKey: string,
-  buffer: Buffer,
-  storageProvider: string,
-  organizationId: string
-): Promise<boolean> {
+  args: {
+    thumbKey: string;
+    buffer: Buffer;
+    storageProvider: string;
+    organizationId: string;
+    attachmentType: 'quote' | 'order';
+    attachmentId: string;
+    fileRecordId?: string | null;
+    originalFilename: string;
+    mimeType: string;
+  }
+): Promise<UploadedDerivativeLocation | null> {
   try {
-    if (storageProvider === 'supabase') {
+    const canonicalContext = await resolveCanonicalStorageContext(args.fileRecordId ?? null);
+    if (canonicalContext) {
+      const stored = await canonicalContext.adapter.putObject({
+        buffer: args.buffer,
+        originalFilename: args.originalFilename,
+        mimeType: args.mimeType,
+        providerConfig: canonicalContext.providerConfig,
+        resource: {
+          organizationId: args.organizationId,
+          resourceType: args.attachmentType,
+          resourceId: args.attachmentId,
+        },
+      });
+
+      const storageKey = stored.objectKey ?? stored.localPathRef;
+      if (!storageKey) {
+        throw new Error("Canonical derivative upload returned no object location");
+      }
+
+      return {
+        storageKey,
+        bucket: stored.bucket ?? canonicalContext.placementBucket,
+        objectKey: stored.objectKey ?? null,
+        localPathRef: stored.localPathRef ?? null,
+      };
+    }
+
+    const legacyStorageProvider = normalizeLegacyStorageProvider(args.storageProvider);
+
+    if (legacyStorageProvider === 'supabase') {
       // Supabase storage
       const supabaseService = new SupabaseStorageService();
-      await supabaseService.uploadFile(thumbKey, buffer, 'image/jpeg');
-      return true;
-    } else if (storageProvider === 'local') {
+      await supabaseService.uploadFile(args.thumbKey, args.buffer, args.mimeType);
+      return {
+        storageKey: args.thumbKey,
+        bucket: null,
+        objectKey: args.thumbKey,
+        localPathRef: null,
+      };
+    } else if (legacyStorageProvider === 'local') {
       // Local file storage - MUST use FILE_STORAGE_ROOT to match /objects route
       const storageRoot = process.env.FILE_STORAGE_ROOT || path.join(process.cwd(), 'uploads');
-      const fullPath = path.resolve(storageRoot, thumbKey);
+      const fullPath = path.resolve(storageRoot, args.thumbKey);
       
       // DEBUG_THUMBNAILS logging
       if (process.env.DEBUG_THUMBNAILS) {
         console.log(`[PdfProcessing] Writing PDF thumbnail to filesystem:`, {
-          thumbKey,
+          thumbKey: args.thumbKey,
           storageRoot,
           fullPath,
-          bufferSize: buffer.length,
+          bufferSize: args.buffer.length,
         });
       }
       
@@ -210,20 +348,25 @@ async function uploadThumbnailFile(
       await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
       
       // Write file
-      await fsPromises.writeFile(fullPath, buffer);
+      await fsPromises.writeFile(fullPath, args.buffer);
       
       if (process.env.DEBUG_THUMBNAILS) {
-        console.log(`[PdfProcessing] Successfully wrote PDF thumbnail ${thumbKey} to ${fullPath}`);
+        console.log(`[PdfProcessing] Successfully wrote PDF thumbnail ${args.thumbKey} to ${fullPath}`);
       }
       
-      return true;
+      return {
+        storageKey: args.thumbKey,
+        bucket: null,
+        objectKey: null,
+        localPathRef: args.thumbKey,
+      };
     } else {
       console.error(`[PdfProcessing] Unsupported storage provider for thumbnail upload: ${storageProvider}`);
-      return false;
+      return null;
     }
   } catch (error) {
-    console.error(`[PdfProcessing] Failed to upload thumbnail ${thumbKey}:`, error);
-    return false;
+    console.error(`[PdfProcessing] Failed to upload thumbnail ${args.thumbKey}:`, error);
+    return null;
   }
 }
 
@@ -253,9 +396,22 @@ function generatePageDerivativeKey(args: {
 async function verifyDerivativeExists(args: {
   storageProvider: string;
   thumbKey: string;
+  fileRecordId?: string | null;
+  location?: UploadedDerivativeLocation | null;
 }): Promise<boolean> {
   const { storageProvider, thumbKey } = args;
-  if (isSupabaseConfigured() && storageProvider === 'supabase') {
+  const canonicalContext = await resolveCanonicalStorageContext(args.fileRecordId ?? null);
+  if (canonicalContext && args.location) {
+    const verification = await canonicalContext.adapter.verifyObject({
+      providerConfig: canonicalContext.providerConfig,
+      objectKey: args.location.objectKey,
+      localPathRef: args.location.localPathRef,
+    });
+    return verification.exists;
+  }
+
+  const legacyStorageProvider = normalizeLegacyStorageProvider(storageProvider);
+  if (isSupabaseConfigured() && legacyStorageProvider === 'supabase') {
     const svc = new SupabaseStorageService();
     return await svc.fileExists(thumbKey);
   }
@@ -266,8 +422,7 @@ async function createCanonicalPageFileRecord(args: {
   tx: any;
   organizationId: string;
   sourceFileRecordId: string;
-  storageProvider: string;
-  objectKey: string;
+  storedLocation: UploadedDerivativeLocation;
   fileName: string;
   mimeType: string;
   sizeBytes: number;
@@ -298,9 +453,9 @@ async function createCanonicalPageFileRecord(args: {
     providerConfigId: canonicalPlacement.providerConfigId,
     placementRole: 'canonical',
     placementState: 'active',
-    bucket: args.storageProvider === 'supabase' ? (canonicalPlacement.bucket ?? 'titan-private') : null,
-    objectKey: args.storageProvider === 'supabase' ? args.objectKey : null,
-    localPathRef: args.storageProvider === 'local' ? args.objectKey : null,
+    bucket: args.storedLocation.bucket ?? canonicalPlacement.bucket ?? null,
+    objectKey: args.storedLocation.objectKey,
+    localPathRef: args.storedLocation.localPathRef,
     checksum: null,
     sizeBytes: args.sizeBytes,
     lastVerifiedAt: new Date(),
@@ -386,8 +541,28 @@ async function persistQuoteAttachmentPageDerivatives(args: {
       });
 
       const [thumbUploaded, previewUploaded] = await Promise.all([
-        uploadThumbnailFile(thumbKey, thumbBuffer, storageProvider, organizationId),
-        uploadThumbnailFile(previewKey, previewBuffer, storageProvider, organizationId),
+        uploadThumbnailFile({
+          thumbKey,
+          buffer: thumbBuffer,
+          storageProvider,
+          organizationId,
+          attachmentType: 'quote',
+          attachmentId: attachment.id,
+          fileRecordId: attachment.fileRecordId,
+          originalFilename: `${attachment.fileName || attachment.id}-page-${pageIndex + 1}.thumb.jpg`,
+          mimeType: 'image/jpeg',
+        }),
+        uploadThumbnailFile({
+          thumbKey: previewKey,
+          buffer: previewBuffer,
+          storageProvider,
+          organizationId,
+          attachmentType: 'quote',
+          attachmentId: attachment.id,
+          fileRecordId: attachment.fileRecordId,
+          originalFilename: `${attachment.fileName || attachment.id}-page-${pageIndex + 1}.preview.jpg`,
+          mimeType: 'image/jpeg',
+        }),
       ]);
 
       if (!thumbUploaded || !previewUploaded) {
@@ -395,8 +570,18 @@ async function persistQuoteAttachmentPageDerivatives(args: {
       }
 
       const [thumbExists, previewExists] = await Promise.all([
-        verifyDerivativeExists({ storageProvider, thumbKey }),
-        verifyDerivativeExists({ storageProvider, thumbKey: previewKey }),
+        verifyDerivativeExists({
+          storageProvider,
+          thumbKey: thumbUploaded.storageKey,
+          fileRecordId: attachment.fileRecordId,
+          location: thumbUploaded,
+        }),
+        verifyDerivativeExists({
+          storageProvider,
+          thumbKey: previewUploaded.storageKey,
+          fileRecordId: attachment.fileRecordId,
+          location: previewUploaded,
+        }),
       ]);
 
       if (!thumbExists || !previewExists) {
@@ -410,8 +595,7 @@ async function persistQuoteAttachmentPageDerivatives(args: {
           tx,
           organizationId,
           sourceFileRecordId: attachment.fileRecordId!,
-          storageProvider,
-          objectKey: thumbKey,
+          storedLocation: thumbUploaded,
           fileName: `${attachment.fileName || attachment.id}-page-${pageIndex + 1}.thumb.jpg`,
           mimeType: 'image/jpeg',
           sizeBytes: thumbBuffer.length,
@@ -421,8 +605,7 @@ async function persistQuoteAttachmentPageDerivatives(args: {
           tx,
           organizationId,
           sourceFileRecordId: attachment.fileRecordId!,
-          storageProvider,
-          objectKey: previewKey,
+          storedLocation: previewUploaded,
           fileName: `${attachment.fileName || attachment.id}-page-${pageIndex + 1}.preview.jpg`,
           mimeType: 'image/jpeg',
           sizeBytes: previewBuffer.length,
@@ -635,7 +818,11 @@ export async function processPdfAttachmentDerivedData(args: {
 
     // Download PDF file
     console.log(`[PdfProcessing] Attempting to read PDF file: storageKey=${storageKey}, storageProvider=${storageProvider}`);
-    const pdfBuffer = await downloadPdfFile(storageKey, storageProvider);
+    const pdfBuffer = await downloadPdfFileFromCanonical({
+      fileRecordId: (attachment as any).fileRecordId ?? null,
+      fallbackStorageKey: storageKey,
+      storageProvider,
+    });
     if (!pdfBuffer) {
       const errorMsg = `Failed to download PDF file from storageKey=${storageKey}`;
       console.error(`[PdfProcessing] ${errorMsg}`);
@@ -755,17 +942,32 @@ export async function processPdfAttachmentDerivedData(args: {
 
       // Upload thumbnail
       console.log(`[PdfProcessing] Uploading thumbnail to storage for ${attachmentId}`);
-      const thumbUploaded = await uploadThumbnailFile(thumbKey, thumbBuffer, storageProvider, orgId);
+      const thumbUploaded = await uploadThumbnailFile({
+        thumbKey,
+        buffer: thumbBuffer,
+        storageProvider,
+        organizationId: orgId,
+        attachmentType,
+        attachmentId,
+        fileRecordId: (attachment as any).fileRecordId ?? null,
+        originalFilename: `${attachment.originalFilename || attachment.fileName || attachmentId}.thumb.jpg`,
+        mimeType: 'image/jpeg',
+      });
 
       if (thumbUploaded) {
         console.log(`[PdfProcessing] Thumbnail stored successfully for ${attachmentId}`);
 
         // Enforce invariant: do not claim thumb_ready unless the derivative actually exists.
-        const thumbExists = await verifyDerivativeExists({ storageProvider, thumbKey });
+        const thumbExists = await verifyDerivativeExists({
+          storageProvider,
+          thumbKey: thumbUploaded.storageKey,
+          fileRecordId: (attachment as any).fileRecordId ?? null,
+          location: thumbUploaded,
+        });
         if (!thumbExists) {
           console.warn(`[PdfProcessing] Derivative existence check failed for ${attachmentId}; not marking thumb_ready`, {
             storageProvider,
-            thumbKey,
+            thumbKey: thumbUploaded.storageKey,
           });
 
           const baseTable = attachmentType === 'quote' ? quoteAttachments : orderAttachments;
@@ -784,7 +986,7 @@ export async function processPdfAttachmentDerivedData(args: {
         await persistReadyFileDerivative({
           fileRecordId: (attachment as any).fileRecordId ?? null,
           derivativeType: 'thumbnail',
-          objectKey: thumbKey,
+          objectKey: thumbUploaded.storageKey,
           mimeType: 'image/jpeg',
           sizeBytes: thumbBuffer.length,
         });
@@ -832,7 +1034,7 @@ export async function processPdfAttachmentDerivedData(args: {
           }
 
           if (debugEnabled) {
-            console.log(`[PdfProcessing] ✅ Thumbnail persisted to canonical derivatives: attachmentId=${attachmentId}, thumbKey=${thumbKey}, thumbStatus=thumb_ready`);
+            console.log(`[PdfProcessing] ✅ Thumbnail persisted to canonical derivatives: attachmentId=${attachmentId}, thumbKey=${thumbUploaded.storageKey}, thumbStatus=thumb_ready`);
           }
         } catch (dbError: any) {
           console.error(`[PdfProcessing] DB update failed while setting thumbKey for ${attachmentId}:`, dbError?.message || dbError);

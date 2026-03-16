@@ -1,5 +1,6 @@
 import type { FileDerivative } from "@shared/schema";
 import { fileDerivativeRepository } from "../../storage/fileDerivative.repo";
+import { storagePlacementRepository } from "../../storage/storagePlacement.repo";
 
 export type CanonicalDerivativeReadStatus = "available" | "pending" | "missing";
 
@@ -10,6 +11,7 @@ export type CanonicalDerivativeReadResult = {
   status: CanonicalDerivativeReadStatus;
   bucket: string | null;
   objectKey: string | null;
+  providerConfigId: string | null;
   mimeType: string | null;
   sizeBytes: number | null;
 };
@@ -20,6 +22,9 @@ export class CanonicalDerivativeReadResolver {
     derivativeType: FileDerivative["derivativeType"],
   ): Promise<CanonicalDerivativeReadResult> {
     const derivative = await fileDerivativeRepository.getPreferredByFileRecordIdAndType(fileRecordId, derivativeType);
+    const sourcePlacement = derivative?.sourcePlacementId
+      ? await storagePlacementRepository.getById(String(derivative.sourcePlacementId))
+      : null;
 
     return {
       fileRecordId,
@@ -33,6 +38,7 @@ export class CanonicalDerivativeReadResolver {
             : "missing",
       bucket: derivative?.bucket ?? null,
       objectKey: derivative?.objectKey ?? null,
+      providerConfigId: sourcePlacement?.providerConfigId ?? null,
       mimeType: derivative?.mimeType ?? null,
       sizeBytes: derivative?.sizeBytes ?? null,
     };

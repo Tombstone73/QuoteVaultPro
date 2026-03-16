@@ -5,6 +5,16 @@ import { and, desc, eq } from "drizzle-orm";
 export class StoragePlacementRepository {
   constructor(private readonly dbInstance = db) {}
 
+  async getById(id: string, executor: any = this.dbInstance): Promise<StoragePlacement | null> {
+    const [placement] = await executor
+      .select()
+      .from(storagePlacements)
+      .where(eq(storagePlacements.id, id))
+      .limit(1);
+
+    return placement ?? null;
+  }
+
   async create(values: InsertStoragePlacement, executor: any = this.dbInstance): Promise<StoragePlacement> {
     const [created] = await executor.insert(storagePlacements).values(values).returning();
     if (!created) {
