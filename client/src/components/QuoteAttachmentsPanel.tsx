@@ -7,7 +7,7 @@ import { isValidHttpUrl } from "@/lib/utils";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { getThumbSrc } from "@/lib/getThumbSrc";
-import { hasAnyUnsettledAttachment, isAttachmentSettled } from "@/lib/attachments/attachmentStatus";
+import { getAttachmentPollingInterval, isAttachmentSettled } from "@/lib/attachments/attachmentStatus";
 import { toAttachmentViewerAttachment } from "@/lib/attachmentViewer";
 import {
   AlertDialog,
@@ -41,9 +41,10 @@ type QuoteAttachment = {
   previewKey?: string | null;
   thumbStatus?: string | null;
   thumbError?: string | null;
+  pageCountStatus?: string | null;
   objectPath?: string | null;
   downloadUrl?: string | null;
-  pages?: Array<{ thumbUrl?: string | null }>;
+  pages?: Array<{ thumbUrl?: string | null; thumbStatus?: string | null }>;
 };
 
 function formatFileSize(bytes: number | null | undefined): string {
@@ -87,31 +88,13 @@ export function QuoteAttachmentsPanel({ quoteId, locked = false }: { quoteId: st
     },
     enabled: !!quoteId,
     refetchInterval: (query) => {
-      const MAX_POLL_MS = 60_000;
-      const MAX_ATTEMPTS = 40;
-      const POLL_INTERVAL_MS = 1500;
-
       const data = query?.state?.data as QuoteAttachment[] | undefined;
 
-      if (!hasAnyUnsettledAttachment(data)) {
-        pollingGuardRef.current = { startAt: null, attempts: 0 };
-        return false;
-      }
-
-      if (pollingGuardRef.current.startAt === null) {
-        pollingGuardRef.current.startAt = Date.now();
-        pollingGuardRef.current.attempts = 0;
-      }
-
-      pollingGuardRef.current.attempts += 1;
-      const elapsed = Date.now() - pollingGuardRef.current.startAt;
-      if (elapsed > MAX_POLL_MS || pollingGuardRef.current.attempts > MAX_ATTEMPTS) {
-        console.warn(`[QuoteAttachmentsPanel] Polling guard tripped for ${attachmentsApiPath}: elapsed=${elapsed}ms attempts=${pollingGuardRef.current.attempts}`);
-        pollingGuardRef.current = { startAt: null, attempts: 0 };
-        return false;
-      }
-
-      return POLL_INTERVAL_MS;
+      return getAttachmentPollingInterval({
+        attachments: data,
+        guard: pollingGuardRef.current,
+        logLabel: attachmentsApiPath,
+      });
     },
   });
 
@@ -415,6 +398,7 @@ export function QuoteAttachmentsPanel({ quoteId, locked = false }: { quoteId: st
               const thumbSrc = getThumbSrc(a as any);
               const isPdf = a.mimeType?.toLowerCase().includes("pdf") || displayName.toLowerCase().endsWith(".pdf");
               const isPending = !isAttachmentSettled(a as any);
+              const isFailed = !thumbSrc && a.thumbStatus === "thumb_failed";
 
               const openInViewer = () => {
                 setViewerAttachment(toAttachmentViewerAttachment(a as any));
@@ -453,6 +437,18 @@ export function QuoteAttachmentsPanel({ quoteId, locked = false }: { quoteId: st
                   {isPending && !thumbSrc && (
                     <div className="absolute top-1 left-1 rounded-full bg-amber-500/90 p-1" title="Generating thumbnail...">
                       <Loader2 className="w-3 h-3 text-white animate-spin" />
+                    </div>
+                  )}
+
+                  {isFailed && (
+                    <div className="absolute top-1 left-1 rounded-full bg-destructive/90 px-1.5 py-0.5 text-[10px] font-medium text-white" title="Thumbnail generation failed">
+                      !
+                    </div>
+                  )}
+
+                  {isPdf && !thumbSrc && !isPending && !isFailed && (
+                    <div className="absolute top-1 left-1 rounded-full bg-background/80 px-1.5 py-0.5 text-[10px] font-medium text-foreground" title="Thumbnail not ready yet">
+                      PDF
                     </div>
                   )}
 

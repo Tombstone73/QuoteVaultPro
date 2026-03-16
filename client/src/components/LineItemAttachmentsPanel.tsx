@@ -5,7 +5,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Paperclip, Upload, Download, X, Loader2, Image, FileText, File, ChevronDown, ChevronUp, Sparkles, Eye } from "lucide-react";
 import { cn, isValidHttpUrl } from "@/lib/utils";
 import { getAttachmentDisplayName, isPdfAttachment, getPdfPageCount } from "@/lib/attachments";
-import { hasAnyUnsettledAttachment } from "@/lib/attachments/attachmentStatus";
+import { getAttachmentPollingInterval, isAttachmentSettled } from "@/lib/attachments/attachmentStatus";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
@@ -256,43 +256,14 @@ export function LineItemAttachmentsPanel({
       const POLL_INTERVAL_MS = 1500; // 1.5 seconds
 
       const data = query.state.data as LineItemAttachment[] | undefined;
-      if (!data || data.length === 0) {
-        // No attachments: reset guard and stop polling
-        pollingGuardRef.current = { startAt: null, attempts: 0 };
-        return false;
-      }
-
-      const needsPolling = hasAnyUnsettledAttachment(data);
-
-      if (!needsPolling) {
-        // All attachments settled: reset guard and stop polling
-        pollingGuardRef.current = { startAt: null, attempts: 0 };
-        return false;
-      }
-
-      // Has unsettled attachments: initialize guard if needed
-      if (pollingGuardRef.current.startAt === null) {
-        pollingGuardRef.current.startAt = Date.now();
-        pollingGuardRef.current.attempts = 0;
-      }
-
-      // Increment attempts
-      pollingGuardRef.current.attempts++;
-
-      // Check guards
-      const elapsed = Date.now() - pollingGuardRef.current.startAt;
-      if (elapsed > MAX_POLL_MS || pollingGuardRef.current.attempts > MAX_ATTEMPTS) {
-        // Guard tripped: stop polling silently (fail-soft)
-        console.warn(
-          `[LineItemAttachments] Polling guard tripped for ${filesApiPath}: ` +
-          `elapsed=${elapsed}ms, attempts=${pollingGuardRef.current.attempts}`
-        );
-        pollingGuardRef.current = { startAt: null, attempts: 0 };
-        return false;
-      }
-
-      // Continue polling
-      return POLL_INTERVAL_MS;
+      return getAttachmentPollingInterval({
+        attachments: data,
+        guard: pollingGuardRef.current,
+        maxPollMs: MAX_POLL_MS,
+        maxAttempts: MAX_ATTEMPTS,
+        intervalMs: POLL_INTERVAL_MS,
+        logLabel: filesApiPath ?? undefined,
+      });
     },
   });
 
@@ -816,6 +787,7 @@ export function LineItemAttachmentsPanel({
                 const thumbnailUrl = getThumbSrc(file);
 
                 const hasAnyThumbnail = !!thumbnailUrl;
+                const isPending = !isAttachmentSettled(file as any);
                 const fileName = getAttachmentDisplayName(file);
                 const pageCount = getPdfPageCount(file);
                 const showPageCount = isPdf && pageCount !== null && pageCount > 1;
@@ -870,7 +842,14 @@ export function LineItemAttachmentsPanel({
                             </div>
                           </>
                         ) : (
-                          <FileIcon className="w-5 h-5 text-muted-foreground pointer-events-none select-none" />
+                          <>
+                            <FileIcon className="w-5 h-5 text-muted-foreground pointer-events-none select-none" />
+                            {isPending && (
+                              <div className="absolute -top-0.5 -right-0.5 rounded-full bg-amber-500/90 p-0.5" title="Generating thumbnail...">
+                                <Loader2 className="h-2.5 w-2.5 animate-spin text-white" />
+                              </div>
+                            )}
+                          </>
                         )}
                       </div>
                       
@@ -905,7 +884,7 @@ export function LineItemAttachmentsPanel({
                             {file.pages && file.pages.length > 0 && ` • ${file.pages.length} thumbnail${file.pages.length === 1 ? '' : 's'}`}
                           </span>
                         )}
-                        {file.thumbStatus && file.thumbStatus !== 'uploaded' && !isPdf && !hasAnyThumbnail && (() => {
+                        {file.thumbStatus && file.thumbStatus !== 'uploaded' && !hasAnyThumbnail && (() => {
                           const isUnavailable = file.thumbStatus === 'thumb_failed' && isThumbsUnavailableError(file.thumbError);
                           const isLocalMissing = file.thumbStatus === 'thumb_failed' && isLocalPreviewUnavailableError(file.thumbError);
                           return (
@@ -918,7 +897,7 @@ export function LineItemAttachmentsPanel({
                             )}
                             title={isLocalMissing ? "Preview unavailable (Local dev file not on this machine)" : undefined}>
                               {file.thumbStatus === 'thumb_ready' && '✓ Thumbs ready'}
-                              {file.thumbStatus === 'thumb_pending' && '⏳ Generating...'}
+                              {file.thumbStatus === 'thumb_pending' && (isPdf ? '⏳ PDF thumbnail processing...' : '⏳ Generating...')}
                               {file.thumbStatus === 'thumb_failed' && isLocalMissing && 'Preview unavailable (Local dev file not on this machine)'}
                               {file.thumbStatus === 'thumb_failed' && isUnavailable && 'Thumbnails temporarily unavailable'}
                               {file.thumbStatus === 'thumb_failed' && !isUnavailable && !isLocalMissing && '✗ Generation failed'}
