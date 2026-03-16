@@ -16839,13 +16839,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Second try: asset pipeline link unlink (validate link existed first)
-      const { assetLinks, assets } = await import('@shared/schema');
-      const existingLink = await db.select({ id: assetLinks.id }).from(assetLinks)
+      const { assetLinks: importedAssetLinks, assets: importedAssets } = await import('@shared/schema');
+      const existingLink = await db.select({ id: importedAssetLinks.id }).from(importedAssetLinks)
         .where(and(
-          eq(assetLinks.organizationId, organizationId),
-          eq(assetLinks.assetId, fileId),
-          eq(assetLinks.parentType, 'order_line_item'),
-          eq(assetLinks.parentId, String(lineItemId))
+          eq(importedAssetLinks.organizationId, organizationId),
+          eq(importedAssetLinks.assetId, fileId),
+          eq(importedAssetLinks.parentType, 'order_line_item'),
+          eq(importedAssetLinks.parentId, String(lineItemId))
         ))
         .limit(1);
 
@@ -16859,15 +16859,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       try {
         removedAsset = await db
           .select({
-            id: assets.id,
-            fileRecordId: assets.fileRecordId,
-            fileName: assets.fileName,
-            fileKey: assets.fileKey,
-            mimeType: assets.mimeType,
-            sizeBytes: assets.sizeBytes,
+            id: importedAssets.id,
+            fileRecordId: importedAssets.fileRecordId,
+            fileName: importedAssets.fileName,
+            fileKey: importedAssets.fileKey,
+            mimeType: importedAssets.mimeType,
+            sizeBytes: importedAssets.sizeBytes,
           })
-          .from(assets)
-          .where(and(eq(assets.organizationId, organizationId), eq(assets.id, fileId)))
+          .from(importedAssets)
+          .where(and(eq(importedAssets.organizationId, organizationId), eq(importedAssets.id, fileId)))
           .limit(1)
           .then((rows) => rows[0]);
       } catch {
