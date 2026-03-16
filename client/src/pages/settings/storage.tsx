@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
+  ConfigurableStorageProviderType,
   CustomerProductionDestinationViewStatus,
   OrganizationStorageProfileViewStatus,
   StorageProviderViewStatus,
   StorageSettingsMode,
+  StorageSettingsSaveRequest,
+  StorageSettingsValidateRequest,
   TitanManagedRoutingMode,
 } from "@shared/storageSettings";
 import { TitanCard } from "@/components/titan";
@@ -16,16 +19,13 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Switch } from "@/components/ui/switch";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { useStorageSettings, type OrganizationStorageSettingsView, type StorageSettingsPayload } from "@/hooks/useStorageSettings";
+  useStorageSettings,
+  type OrganizationStorageSettingsView,
+  type StorageProviderView,
+  type StorageValidationSummary,
+} from "@/hooks/useStorageSettings";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import {
@@ -36,23 +36,32 @@ import {
   Loader2,
   Save,
   Server,
+  Zap,
 } from "lucide-react";
 
-type StorageSettingsFormState = {
+type OrchestrationFormState = {
   mode: StorageSettingsMode;
   displayName: string;
-  activate: boolean;
   routingMode: TitanManagedRoutingMode;
   maxCloudUploadBytesOverrideInput: string;
 };
 
-const DEFAULT_FORM_STATE: StorageSettingsFormState = {
-  mode: "titan_managed",
-  displayName: "Titan Managed Storage",
-  activate: false,
-  routingMode: "auto",
-  maxCloudUploadBytesOverrideInput: "",
+type ProviderFormState = {
+  providerConfigId: string | null;
+  providerType: ConfigurableStorageProviderType;
+  displayName: string;
+  bucketName: string;
+  pathPrefix: string;
+  subfolderPrefix: string;
+  region: string;
+  endpoint: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  forcePathStyle: boolean;
+  providerLabel: string;
 };
+
+const NEW_PROVIDER_KEY = "__new__";
 
 const providerStatusClasses: Record<StorageProviderViewStatus, string> = {
   missing: "bg-muted text-muted-foreground",
@@ -81,37 +90,111 @@ function formatStatusLabel(value: string) {
   return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
-function buildFormState(settings?: OrganizationStorageSettingsView | null): StorageSettingsFormState {
-  if (!settings) return DEFAULT_FORM_STATE;
-
+function buildOrchestrationFormState(settings?: OrganizationStorageSettingsView | null): OrchestrationFormState {
   return {
-    mode: settings.profile.mode,
-    displayName: settings.provider.displayName || "Titan Managed Storage",
-    activate: settings.profile.status === "active",
-    routingMode: settings.provider.config.routingMode || "auto",
+    mode: settings?.profile.mode ?? "titan_managed",
+    displayName: settings?.orchestration.displayName ?? "Titan Managed Orchestration",
+    routingMode: settings?.orchestration.config.routingMode ?? "auto",
     maxCloudUploadBytesOverrideInput:
-      settings.provider.config.maxCloudUploadBytesOverride == null
+      settings?.orchestration.config.maxCloudUploadBytesOverride == null
         ? ""
-        : String(settings.provider.config.maxCloudUploadBytesOverride),
+        : String(settings.orchestration.config.maxCloudUploadBytesOverride),
   };
 }
 
-function normalizeFormState(formState: StorageSettingsFormState) {
+function buildEmptyProviderForm(providerType: ConfigurableStorageProviderType): ProviderFormState {
   return {
-    ...formState,
-    displayName: formState.displayName.trim(),
-    maxCloudUploadBytesOverrideInput: formState.maxCloudUploadBytesOverrideInput.trim(),
-    activate: formState.mode === "disabled" ? false : formState.activate,
+    providerConfigId: null,
+    providerType,
+    displayName:
+      providerType === "supabase"
+        ? "Supabase Storage"
+        : providerType === "local_filesystem"
+          ? "Local Filesystem Storage"
+          : "IDrive E2 / S3-Compatible Storage",
+    bucketName: providerType === "supabase" ? "titan-private" : "",
+    pathPrefix: "",
+    subfolderPrefix: "",
+    region: "",
+    endpoint: "",
+    accessKeyId: "",
+    secretAccessKey: "",
+    forcePathStyle: true,
+    providerLabel: providerType === "s3" ? "IDrive E2" : "",
   };
 }
 
-function parsePayload(formState: StorageSettingsFormState): StorageSettingsPayload {
-  const normalized = normalizeFormState(formState);
-  const rawThreshold = normalized.maxCloudUploadBytesOverrideInput;
+function buildProviderFormState(provider?: StorageProviderView | null): ProviderFormState {
+  if (!provider) {
+    return buildEmptyProviderForm("supabase");
+  }
 
+  if (provider.providerType === "supabase") {
+    const config = provider.config as Extract<StorageProviderView["config"], { providerType: "supabase" }>;
+    return {
+      ...buildEmptyProviderForm("supabase"),
+      providerConfigId: provider.id,
+      displayName: provider.displayName,
+      bucketName: config.bucketName,
+      pathPrefix: config.pathPrefix ?? "",
+    };
+  }
+
+  if (provider.providerType === "local_filesystem") {
+    const config = provider.config as Extract<StorageProviderView["config"], { providerType: "local_filesystem" }>;
+    return {
+      ...buildEmptyProviderForm("local_filesystem"),
+      providerConfigId: provider.id,
+      displayName: provider.displayName,
+      subfolderPrefix: config.subfolderPrefix ?? "",
+    };
+  }
+
+  const config = provider.config as Extract<StorageProviderView["config"], { providerType: "s3" }>;
+  return {
+    ...buildEmptyProviderForm("s3"),
+    providerConfigId: provider.id,
+    displayName: provider.displayName,
+    bucketName: config.bucketName,
+    pathPrefix: config.pathPrefix ?? "",
+    region: config.region,
+    endpoint: config.endpoint,
+    accessKeyId: config.accessKeyId,
+    secretAccessKey: "",
+    forcePathStyle: config.forcePathStyle,
+    providerLabel: config.providerLabel ?? "",
+  };
+}
+
+function normalizeOrchestrationFormState(state: OrchestrationFormState) {
+  return {
+    ...state,
+    displayName: state.displayName.trim(),
+    maxCloudUploadBytesOverrideInput: state.maxCloudUploadBytesOverrideInput.trim(),
+  };
+}
+
+function normalizeProviderFormState(state: ProviderFormState) {
+  return {
+    ...state,
+    displayName: state.displayName.trim(),
+    bucketName: state.bucketName.trim(),
+    pathPrefix: state.pathPrefix.trim(),
+    subfolderPrefix: state.subfolderPrefix.trim(),
+    region: state.region.trim(),
+    endpoint: state.endpoint.trim(),
+    accessKeyId: state.accessKeyId.trim(),
+    secretAccessKey: state.secretAccessKey.trim(),
+    providerLabel: state.providerLabel.trim(),
+  };
+}
+
+function buildOrchestrationRequest(state: OrchestrationFormState): StorageSettingsSaveRequest {
+  const normalized = normalizeOrchestrationFormState(state);
   let maxCloudUploadBytesOverride: number | null = null;
-  if (rawThreshold.length > 0) {
-    const parsed = Number(rawThreshold);
+
+  if (normalized.maxCloudUploadBytesOverrideInput) {
+    const parsed = Number(normalized.maxCloudUploadBytesOverrideInput);
     if (!Number.isInteger(parsed) || parsed <= 0) {
       throw new Error("Max cloud upload bytes override must be a positive whole number or blank.");
     }
@@ -119,53 +202,197 @@ function parsePayload(formState: StorageSettingsFormState): StorageSettingsPaylo
   }
 
   if (!normalized.displayName) {
-    throw new Error("Display name is required.");
+    throw new Error("Orchestration display name is required.");
   }
 
   return {
-    mode: normalized.mode,
-    providerType: "titan_managed",
-    displayName: normalized.displayName,
-    activate: normalized.mode === "disabled" ? false : normalized.activate,
-    config: {
-      routingMode: normalized.routingMode,
-      maxCloudUploadBytesOverride,
+    kind: "orchestration",
+    data: {
+      mode: normalized.mode,
+      providerType: "titan_managed",
+      displayName: normalized.displayName,
+      activate: false,
+      config: {
+        routingMode: normalized.routingMode,
+        maxCloudUploadBytesOverride,
+      },
     },
   };
 }
 
-function SummaryCard({
+function buildProviderRequest(state: ProviderFormState): StorageSettingsSaveRequest {
+  const normalized = normalizeProviderFormState(state);
+  if (!normalized.displayName) {
+    throw new Error("Provider display name is required.");
+  }
+
+  if (normalized.providerType === "supabase") {
+    if (!normalized.bucketName) {
+      throw new Error("Supabase bucket name is required.");
+    }
+    return {
+      kind: "provider",
+      data: {
+        providerConfigId: normalized.providerConfigId,
+        providerType: "supabase",
+        displayName: normalized.displayName,
+        config: {
+          bucketName: normalized.bucketName,
+          pathPrefix: normalized.pathPrefix || null,
+        },
+      },
+    };
+  }
+
+  if (normalized.providerType === "local_filesystem") {
+    return {
+      kind: "provider",
+      data: {
+        providerConfigId: normalized.providerConfigId,
+        providerType: "local_filesystem",
+        displayName: normalized.displayName,
+        config: {
+          subfolderPrefix: normalized.subfolderPrefix || null,
+        },
+      },
+    };
+  }
+
+  if (!normalized.bucketName || !normalized.region || !normalized.endpoint || !normalized.accessKeyId) {
+    throw new Error("Bucket, region, endpoint, and access key are required for S3-compatible storage.");
+  }
+
+  return {
+    kind: "provider",
+    data: {
+      providerConfigId: normalized.providerConfigId,
+      providerType: "s3",
+      displayName: normalized.displayName,
+      config: {
+        bucketName: normalized.bucketName,
+        region: normalized.region,
+        endpoint: normalized.endpoint,
+        accessKeyId: normalized.accessKeyId,
+        secretAccessKey: normalized.secretAccessKey || null,
+        pathPrefix: normalized.pathPrefix || null,
+        forcePathStyle: normalized.forcePathStyle,
+        providerLabel: normalized.providerLabel || null,
+      },
+    },
+  };
+}
+
+function ValidationCard({
   title,
   description,
-  status,
-  statusClassName,
-  icon: Icon,
-  children,
+  validation,
 }: {
   title: string;
   description: string;
-  status: string;
-  statusClassName: string;
-  icon: typeof HardDrive;
-  children: ReactNode;
+  validation: StorageValidationSummary | null;
 }) {
   return (
     <Card>
-      <CardHeader className="space-y-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="space-y-1">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Icon className="h-4 w-4" />
-              {title}
-            </CardTitle>
-            <CardDescription>{description}</CardDescription>
-          </div>
-          <Badge variant="outline" className={statusClassName}>
-            {formatStatusLabel(status)}
-          </Badge>
-        </div>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
       </CardHeader>
-      <CardContent>{children}</CardContent>
+      <CardContent className="space-y-4">
+        {validation ? (
+          <>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge
+                variant="outline"
+                className={validation.valid
+                  ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+                  : "border-destructive/30 bg-destructive/10 text-destructive"}
+              >
+                {validation.valid ? "Valid" : "Invalid"}
+              </Badge>
+              {validation.kind === "provider" ? (
+                <Badge variant="outline" className="border-border text-muted-foreground">
+                  {formatStatusLabel(validation.providerType)}
+                </Badge>
+              ) : null}
+              <span className="text-xs text-muted-foreground">
+                Validated {new Date(validation.validatedAt).toLocaleString()}
+              </span>
+            </div>
+
+            {validation.error ? (
+              <Alert variant="destructive">
+                <AlertCircle className="h-4 w-4" />
+                <AlertTitle>Validation error</AlertTitle>
+                <AlertDescription>{validation.error}</AlertDescription>
+              </Alert>
+            ) : null}
+
+            {validation.warnings.length > 0 ? (
+              <Alert>
+                <AlertCircle className="h-4 w-4" />
+                <AlertTitle>Warnings</AlertTitle>
+                <AlertDescription>
+                  <ul className="list-disc space-y-1 pl-5">
+                    {validation.warnings.map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
+                </AlertDescription>
+              </Alert>
+            ) : null}
+
+            {validation.kind === "orchestration" ? (
+              <div className="rounded-lg border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Preview item</TableHead>
+                      <TableHead>Result</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow>
+                      <TableCell>Routing mode</TableCell>
+                      <TableCell>{formatStatusLabel(validation.preview.routingMode)}</TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell>Cloud threshold</TableCell>
+                      <TableCell>{validation.preview.maxCloudUploadBytes.toLocaleString()} bytes</TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell>Small file preview (10 MB)</TableCell>
+                      <TableCell>{formatStatusLabel(validation.preview.smallFileTarget)}</TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell>Large file preview (100 MB)</TableCell>
+                      <TableCell>{formatStatusLabel(validation.preview.largeFileTarget)}</TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell>Supabase availability</TableCell>
+                      <TableCell>{validation.preview.supabaseConfigured ? "Configured" : "Not configured"}</TableCell>
+                    </TableRow>
+                  </TableBody>
+                </Table>
+              </div>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-lg border p-3 text-sm">
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">Runtime support</div>
+                  <div className="mt-1 font-medium text-foreground">{validation.runtimeSupported ? "Supported" : "Not yet supported"}</div>
+                </div>
+                <div className="rounded-lg border p-3 text-sm">
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">Activation</div>
+                  <div className="mt-1 font-medium text-foreground">{validation.canActivate ? "Can activate" : "Cannot activate yet"}</div>
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+            Validate the current draft to see fresh results.
+          </div>
+        )}
+      </CardContent>
     </Card>
   );
 }
@@ -177,56 +404,153 @@ export default function StorageSettingsPage() {
     isLoading,
     draftValidation,
     clearDraftValidation,
-    validateDraft,
+    validateRequest,
     isValidating,
-    saveSettings,
+    saveRequest,
     isSaving,
+    activateProvider,
+    isActivating,
   } = useStorageSettings();
 
-  const [formState, setFormState] = useState<StorageSettingsFormState>(DEFAULT_FORM_STATE);
+  const [orchestrationForm, setOrchestrationForm] = useState<OrchestrationFormState>(buildOrchestrationFormState());
+  const [selectedProviderKey, setSelectedProviderKey] = useState<string>(NEW_PROVIDER_KEY);
+  const [providerForm, setProviderForm] = useState<ProviderFormState>(buildEmptyProviderForm("supabase"));
 
-  const savedFormState = useMemo(() => buildFormState(settings), [settings]);
-  const isDirty = useMemo(() => {
-    return JSON.stringify(normalizeFormState(formState)) !== JSON.stringify(normalizeFormState(savedFormState));
-  }, [formState, savedFormState]);
+  const savedOrchestration = useMemo(() => buildOrchestrationFormState(settings), [settings]);
+  const selectedExistingProvider = useMemo(
+    () => settings?.providers.find((provider) => provider.id === selectedProviderKey) ?? null,
+    [selectedProviderKey, settings],
+  );
+  const savedProviderState = useMemo(
+    () => buildProviderFormState(selectedExistingProvider),
+    [selectedExistingProvider],
+  );
 
-  useEffect(() => {
-    setFormState(savedFormState);
-  }, [savedFormState]);
+  const orchestrationDirty = useMemo(() => {
+    return JSON.stringify(normalizeOrchestrationFormState(orchestrationForm)) !== JSON.stringify(normalizeOrchestrationFormState(savedOrchestration));
+  }, [orchestrationForm, savedOrchestration]);
 
-  useEffect(() => {
-    if (draftValidation) {
-      clearDraftValidation();
+  const providerDirty = useMemo(() => {
+    if (selectedProviderKey === NEW_PROVIDER_KEY) {
+      return JSON.stringify(normalizeProviderFormState(providerForm)) !== JSON.stringify(normalizeProviderFormState(buildEmptyProviderForm(providerForm.providerType)));
     }
+    return JSON.stringify(normalizeProviderFormState(providerForm)) !== JSON.stringify(normalizeProviderFormState(savedProviderState));
+  }, [providerForm, savedProviderState, selectedProviderKey]);
+
+  useEffect(() => {
+    setOrchestrationForm(savedOrchestration);
+  }, [savedOrchestration]);
+
+  useEffect(() => {
+    if (!settings) {
+      return;
+    }
+    if (settings.providers.length === 0) {
+      setSelectedProviderKey(NEW_PROVIDER_KEY);
+      setProviderForm(buildEmptyProviderForm("supabase"));
+      return;
+    }
+    setSelectedProviderKey((current) => {
+      if (current === NEW_PROVIDER_KEY) return current;
+      return settings.providers.some((provider) => provider.id === current)
+        ? current
+        : settings.activeProvider?.id ?? settings.providers[0]?.id ?? NEW_PROVIDER_KEY;
+    });
+  }, [settings]);
+
+  useEffect(() => {
+    if (selectedProviderKey === NEW_PROVIDER_KEY) {
+      setProviderForm((current) => buildEmptyProviderForm(current.providerType));
+      return;
+    }
+    setProviderForm(savedProviderState);
+  }, [savedProviderState, selectedProviderKey]);
+
+  useEffect(() => {
+    clearDraftValidation();
   }, [
     clearDraftValidation,
-    draftValidation,
-    formState.mode,
-    formState.displayName,
-    formState.activate,
-    formState.routingMode,
-    formState.maxCloudUploadBytesOverrideInput,
+    orchestrationForm.mode,
+    orchestrationForm.displayName,
+    orchestrationForm.routingMode,
+    orchestrationForm.maxCloudUploadBytesOverrideInput,
+    providerForm.providerConfigId,
+    providerForm.providerType,
+    providerForm.displayName,
+    providerForm.bucketName,
+    providerForm.pathPrefix,
+    providerForm.subfolderPrefix,
+    providerForm.region,
+    providerForm.endpoint,
+    providerForm.accessKeyId,
+    providerForm.secretAccessKey,
+    providerForm.forcePathStyle,
+    providerForm.providerLabel,
   ]);
 
-  const displayedValidation = draftValidation ?? settings?.validation ?? null;
+  const orchestrationValidation = draftValidation?.kind === "orchestration"
+    ? draftValidation
+    : settings?.orchestration.validation ?? null;
+  const providerValidation = draftValidation?.kind === "provider" ? draftValidation : null;
 
-  const handleValidate = async () => {
+  const handleValidateOrchestration = async () => {
     try {
-      await validateDraft(parsePayload(formState));
+      const payload = buildOrchestrationRequest(orchestrationForm) as StorageSettingsValidateRequest;
+      await validateRequest(payload);
     } catch (error: any) {
-      if (error instanceof Error) {
-        toast({ title: "Validation failed", description: error.message, variant: "destructive" });
-      }
+      toast({
+        title: "Validation failed",
+        description: error instanceof Error ? error.message : "Unable to validate orchestration settings.",
+        variant: "destructive",
+      });
     }
   };
 
-  const handleSave = async () => {
+  const handleSaveOrchestration = async () => {
     try {
-      await saveSettings(parsePayload(formState));
+      await saveRequest(buildOrchestrationRequest(orchestrationForm));
     } catch (error: any) {
-      if (error instanceof Error) {
-        toast({ title: "Save failed", description: error.message, variant: "destructive" });
-      }
+      toast({
+        title: "Save failed",
+        description: error instanceof Error ? error.message : "Unable to save orchestration settings.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleValidateProvider = async () => {
+    try {
+      await validateRequest(buildProviderRequest(providerForm) as StorageSettingsValidateRequest);
+    } catch (error: any) {
+      toast({
+        title: "Validation failed",
+        description: error instanceof Error ? error.message : "Unable to validate provider settings.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleSaveProvider = async () => {
+    try {
+      await saveRequest(buildProviderRequest(providerForm));
+    } catch (error: any) {
+      toast({
+        title: "Save failed",
+        description: error instanceof Error ? error.message : "Unable to save provider settings.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleActivateProvider = async (providerId: string) => {
+    try {
+      await activateProvider({ providerConfigId: providerId });
+    } catch (error: any) {
+      toast({
+        title: "Activation failed",
+        description: error instanceof Error ? error.message : "Unable to activate provider.",
+        variant: "destructive",
+      });
     }
   };
 
@@ -258,341 +582,343 @@ export default function StorageSettingsPage() {
             <h2 className="text-titan-lg font-semibold text-titan-text-primary">Storage</h2>
           </div>
           <p className="text-sm text-titan-text-secondary">
-            Configure saved TitanOS storage routing. Draft edits stay temporary until you validate and save them.
+            Manage orchestration rules, saved provider records, and the currently active runtime provider separately.
           </p>
         </div>
 
         <Alert>
           <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Saved config controls runtime behavior</AlertTitle>
+          <AlertTitle>Saved drafts and active runtime are separate</AlertTitle>
           <AlertDescription>
-            Unsaved form changes never affect live routing. TitanOS only reads the saved active configuration for upload decisions.
+            Validating and saving a provider draft stores a reusable record. Runtime behavior only changes when you activate a supported provider.
           </AlertDescription>
         </Alert>
 
         <div className="grid gap-4 xl:grid-cols-3">
-          <SummaryCard
-            title="Organization profile"
-            description="Overall storage state for this organization"
-            status={settings.profile.status}
-            statusClassName={profileStatusClasses[settings.profile.status]}
-            icon={Server}
-          >
-            <div className="space-y-2 text-sm text-muted-foreground">
-              <div className="flex items-center justify-between gap-3">
-                <span>Mode</span>
-                <span className="font-medium text-foreground">{formatStatusLabel(settings.profile.mode)}</span>
+          <Card>
+            <CardHeader className="space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="flex items-center gap-2 text-base"><Server className="h-4 w-4" />Organization profile</CardTitle>
+                  <CardDescription>Overall storage state for this organization</CardDescription>
+                </div>
+                <Badge variant="outline" className={profileStatusClasses[settings.profile.status]}>{formatStatusLabel(settings.profile.status)}</Badge>
               </div>
-              <div className="flex items-center justify-between gap-3">
-                <span>Persisted state</span>
-                <span className="font-medium text-foreground">{settings.profile.persistedStatus ? formatStatusLabel(settings.profile.persistedStatus) : "Not saved yet"}</span>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <span>Updated</span>
-                <span className="font-medium text-foreground">{settings.profile.updatedAt ? new Date(settings.profile.updatedAt).toLocaleString() : "Never"}</span>
-              </div>
-            </div>
-          </SummaryCard>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm text-muted-foreground">
+              <div className="flex items-center justify-between gap-3"><span>Mode</span><span className="font-medium text-foreground">{formatStatusLabel(settings.profile.mode)}</span></div>
+              <div className="flex items-center justify-between gap-3"><span>Persisted state</span><span className="font-medium text-foreground">{settings.profile.persistedStatus ? formatStatusLabel(settings.profile.persistedStatus) : "Not saved yet"}</span></div>
+              <div className="flex items-center justify-between gap-3"><span>Updated</span><span className="font-medium text-foreground">{settings.profile.updatedAt ? new Date(settings.profile.updatedAt).toLocaleString() : "Never"}</span></div>
+            </CardContent>
+          </Card>
 
-          <SummaryCard
-            title="Provider"
-            description="Canonical and intake provider configuration"
-            status={settings.provider.status}
-            statusClassName={providerStatusClasses[settings.provider.status]}
-            icon={HardDrive}
-          >
-            <div className="space-y-2 text-sm text-muted-foreground">
-              <div className="flex items-center justify-between gap-3">
-                <span>Display name</span>
-                <span className="font-medium text-foreground">{settings.provider.displayName}</span>
+          <Card>
+            <CardHeader className="space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="flex items-center gap-2 text-base"><Zap className="h-4 w-4" />Active provider</CardTitle>
+                  <CardDescription>Current runtime canonical storage target</CardDescription>
+                </div>
+                <Badge variant="outline" className={settings.activeProvider ? providerStatusClasses[settings.activeProvider.status] : providerStatusClasses.missing}>
+                  {formatStatusLabel(settings.activeProvider?.status ?? "missing")}
+                </Badge>
               </div>
-              <div className="flex items-center justify-between gap-3">
-                <span>Provider type</span>
-                <span className="font-medium text-foreground">Titan managed</span>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <span>Last validated</span>
-                <span className="font-medium text-foreground">{settings.provider.lastValidatedAt ? new Date(settings.provider.lastValidatedAt).toLocaleString() : "Never"}</span>
-              </div>
-            </div>
-          </SummaryCard>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm text-muted-foreground">
+              <div className="flex items-center justify-between gap-3"><span>Provider</span><span className="font-medium text-foreground">{settings.activeProvider?.displayName ?? "No active provider"}</span></div>
+              <div className="flex items-center justify-between gap-3"><span>Type</span><span className="font-medium text-foreground">{settings.activeProvider ? formatStatusLabel(settings.activeProvider.providerType) : "—"}</span></div>
+              <div className="flex items-center justify-between gap-3"><span>Runtime support</span><span className="font-medium text-foreground">{settings.activeProvider ? settings.activeProvider.runtimeSupported ? "Supported" : "Not yet supported" : "—"}</span></div>
+            </CardContent>
+          </Card>
 
-          <SummaryCard
-            title="Production destinations"
-            description="Separate customer production folder references"
-            status={settings.productionDestinations.status}
-            statusClassName={destinationStatusClasses[settings.productionDestinations.status]}
-            icon={FolderTree}
-          >
-            <div className="space-y-2 text-sm text-muted-foreground">
-              <div className="flex items-center justify-between gap-3">
-                <span>Customers</span>
-                <span className="font-medium text-foreground">{settings.productionDestinations.totalCustomers}</span>
+          <Card>
+            <CardHeader className="space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="flex items-center gap-2 text-base"><FolderTree className="h-4 w-4" />Production destinations</CardTitle>
+                  <CardDescription>Customer production folder references remain separate</CardDescription>
+                </div>
+                <Badge variant="outline" className={destinationStatusClasses[settings.productionDestinations.status]}>{formatStatusLabel(settings.productionDestinations.status)}</Badge>
               </div>
-              <div className="flex items-center justify-between gap-3">
-                <span>Set references</span>
-                <span className="font-medium text-foreground">{settings.productionDestinations.setCount}</span>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <span>Invalid references</span>
-                <span className="font-medium text-foreground">{settings.productionDestinations.invalidCount}</span>
-              </div>
-            </div>
-          </SummaryCard>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm text-muted-foreground">
+              <div className="flex items-center justify-between gap-3"><span>Customers</span><span className="font-medium text-foreground">{settings.productionDestinations.totalCustomers}</span></div>
+              <div className="flex items-center justify-between gap-3"><span>Set references</span><span className="font-medium text-foreground">{settings.productionDestinations.setCount}</span></div>
+              <div className="flex items-center justify-between gap-3"><span>Invalid references</span><span className="font-medium text-foreground">{settings.productionDestinations.invalidCount}</span></div>
+            </CardContent>
+          </Card>
         </div>
 
-        <div className="grid gap-6 xl:grid-cols-[1.25fr_0.9fr]">
+        <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
           <Card>
             <CardHeader>
-              <CardTitle>Provider draft</CardTitle>
-              <CardDescription>
-                This form edits the next saved storage config. It does not change runtime routing until you save it.
-              </CardDescription>
+              <CardTitle>Orchestration and routing</CardTitle>
+              <CardDescription>Controls Titan-managed routing logic independently from provider records.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="storage-mode">Storage mode</Label>
-                  <Select
-                    value={formState.mode}
-                    onValueChange={(value) => setFormState((current) => ({ ...current, mode: value as StorageSettingsMode }))}
-                  >
-                    <SelectTrigger id="storage-mode">
-                      <SelectValue placeholder="Select mode" />
-                    </SelectTrigger>
+                  <Select value={orchestrationForm.mode} onValueChange={(value) => setOrchestrationForm((current) => ({ ...current, mode: value as StorageSettingsMode }))}>
+                    <SelectTrigger id="storage-mode"><SelectValue placeholder="Select mode" /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="titan_managed">Titan managed</SelectItem>
                       <SelectItem value="disabled">Disabled</SelectItem>
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">
-                    Disabled keeps the saved provider record but prevents it from being the active runtime profile.
-                  </p>
                 </div>
-
                 <div className="space-y-2">
-                  <Label htmlFor="storage-display-name">Display name</Label>
-                  <Input
-                    id="storage-display-name"
-                    value={formState.displayName}
-                    onChange={(event) => setFormState((current) => ({ ...current, displayName: event.target.value }))}
-                    placeholder="Titan Managed Storage"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Admin-facing label for the saved provider configuration.
-                  </p>
+                  <Label htmlFor="orchestration-display-name">Display name</Label>
+                  <Input id="orchestration-display-name" value={orchestrationForm.displayName} onChange={(event) => setOrchestrationForm((current) => ({ ...current, displayName: event.target.value }))} />
                 </div>
               </div>
-
-              <Separator />
 
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="routing-mode">Routing mode</Label>
-                  <Select
-                    value={formState.routingMode}
-                    onValueChange={(value) => setFormState((current) => ({ ...current, routingMode: value as TitanManagedRoutingMode }))}
-                    disabled={formState.mode === "disabled"}
-                  >
-                    <SelectTrigger id="routing-mode">
-                      <SelectValue placeholder="Select routing mode" />
-                    </SelectTrigger>
+                  <Select value={orchestrationForm.routingMode} onValueChange={(value) => setOrchestrationForm((current) => ({ ...current, routingMode: value as TitanManagedRoutingMode }))} disabled={orchestrationForm.mode === "disabled"}>
+                    <SelectTrigger id="routing-mode"><SelectValue placeholder="Select routing mode" /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="auto">Auto</SelectItem>
                       <SelectItem value="supabase">Force Supabase</SelectItem>
                       <SelectItem value="local_dev">Force local dev</SelectItem>
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">
-                    Auto routes by the saved threshold and environment readiness. Forced modes always target one location.
-                  </p>
                 </div>
-
                 <div className="space-y-2">
                   <Label htmlFor="max-cloud-upload">Max cloud upload bytes override</Label>
-                  <Input
-                    id="max-cloud-upload"
-                    inputMode="numeric"
-                    value={formState.maxCloudUploadBytesOverrideInput}
-                    onChange={(event) => setFormState((current) => ({ ...current, maxCloudUploadBytesOverrideInput: event.target.value }))}
-                    placeholder="Leave blank to use default"
-                    disabled={formState.mode === "disabled"}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Optional integer override for the largest file TitanOS should send to cloud storage in auto mode.
-                  </p>
+                  <Input id="max-cloud-upload" inputMode="numeric" value={orchestrationForm.maxCloudUploadBytesOverrideInput} onChange={(event) => setOrchestrationForm((current) => ({ ...current, maxCloudUploadBytesOverrideInput: event.target.value }))} placeholder="Leave blank to use default" disabled={orchestrationForm.mode === "disabled"} />
                 </div>
-              </div>
-
-              <div className="flex items-start justify-between gap-4 rounded-lg border p-4">
-                <div className="space-y-1">
-                  <Label htmlFor="activate-storage-draft" className="text-sm font-medium">
-                    Make this config active on save
-                  </Label>
-                  <p className="text-xs text-muted-foreground">
-                    Turn this on to promote the saved draft to the active organization storage profile after save.
-                  </p>
-                </div>
-                <Switch
-                  id="activate-storage-draft"
-                  checked={formState.mode === "disabled" ? false : formState.activate}
-                  onCheckedChange={(checked) => setFormState((current) => ({ ...current, activate: checked }))}
-                  disabled={formState.mode === "disabled"}
-                />
               </div>
 
               <div className="flex flex-wrap items-center gap-3">
-                <Button type="button" variant="outline" onClick={handleValidate} disabled={isValidating || isSaving}>
-                  {isValidating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
-                  Validate draft
+                <Button type="button" variant="outline" onClick={handleValidateOrchestration} disabled={isValidating || isSaving}>
+                  {isValidating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}Validate orchestration
                 </Button>
-                <Button type="button" onClick={handleSave} disabled={isSaving || isValidating}>
-                  {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                  Save settings
+                <Button type="button" onClick={handleSaveOrchestration} disabled={isSaving || isValidating}>
+                  {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}Save orchestration
                 </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={() => setFormState(savedFormState)}
-                  disabled={!isDirty || isSaving || isValidating}
-                >
-                  Reset to saved
-                </Button>
-                <Badge variant="outline" className={cn(isDirty ? "border-amber-300 text-amber-800 bg-amber-50" : "border-emerald-300 text-emerald-800 bg-emerald-50")}>
-                  {isDirty ? "Unsaved draft" : "Draft matches saved config"}
+                <Button type="button" variant="ghost" onClick={() => setOrchestrationForm(savedOrchestration)} disabled={!orchestrationDirty || isSaving || isValidating}>Reset</Button>
+                <Badge variant="outline" className={cn(orchestrationDirty ? "border-amber-300 text-amber-800 bg-amber-50" : "border-emerald-300 text-emerald-800 bg-emerald-50")}>
+                  {orchestrationDirty ? "Unsaved orchestration draft" : "Orchestration matches saved"}
                 </Badge>
               </div>
             </CardContent>
           </Card>
 
-          <div className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>Validation preview</CardTitle>
-                <CardDescription>
-                  Preview how TitanOS would route small and large files with the current saved or newly validated draft.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {displayedValidation ? (
-                  <>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge
-                        variant="outline"
-                        className={displayedValidation.valid
-                          ? "border-emerald-300 bg-emerald-50 text-emerald-800"
-                          : "border-destructive/30 bg-destructive/10 text-destructive"}
-                      >
-                        {displayedValidation.valid ? "Valid" : "Invalid"}
-                      </Badge>
-                      <span className="text-xs text-muted-foreground">
-                        Validated {new Date(displayedValidation.validatedAt).toLocaleString()}
-                      </span>
-                    </div>
-
-                    {displayedValidation.error ? (
-                      <Alert variant="destructive">
-                        <AlertCircle className="h-4 w-4" />
-                        <AlertTitle>Validation error</AlertTitle>
-                        <AlertDescription>{displayedValidation.error}</AlertDescription>
-                      </Alert>
-                    ) : null}
-
-                    {displayedValidation.warnings.length > 0 ? (
-                      <Alert>
-                        <AlertCircle className="h-4 w-4" />
-                        <AlertTitle>Warnings</AlertTitle>
-                        <AlertDescription>
-                          <ul className="list-disc space-y-1 pl-5">
-                            {displayedValidation.warnings.map((warning) => (
-                              <li key={warning}>{warning}</li>
-                            ))}
-                          </ul>
-                        </AlertDescription>
-                      </Alert>
-                    ) : null}
-
-                    <div className="rounded-lg border">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>Preview item</TableHead>
-                            <TableHead>Result</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          <TableRow>
-                            <TableCell>Routing mode</TableCell>
-                            <TableCell>{formatStatusLabel(displayedValidation.preview.routingMode)}</TableCell>
-                          </TableRow>
-                          <TableRow>
-                            <TableCell>Cloud threshold</TableCell>
-                            <TableCell>{displayedValidation.preview.maxCloudUploadBytes.toLocaleString()} bytes</TableCell>
-                          </TableRow>
-                          <TableRow>
-                            <TableCell>Small file preview (10 MB)</TableCell>
-                            <TableCell>{formatStatusLabel(displayedValidation.preview.smallFileTarget)}</TableCell>
-                          </TableRow>
-                          <TableRow>
-                            <TableCell>Large file preview (100 MB)</TableCell>
-                            <TableCell>{formatStatusLabel(displayedValidation.preview.largeFileTarget)}</TableCell>
-                          </TableRow>
-                          <TableRow>
-                            <TableCell>Supabase availability</TableCell>
-                            <TableCell>{displayedValidation.preview.supabaseConfigured ? "Configured" : "Not configured"}</TableCell>
-                          </TableRow>
-                        </TableBody>
-                      </Table>
-                    </div>
-                  </>
-                ) : (
-                  <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-                    Validate the current draft to see a fresh routing preview.
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Production destination references</CardTitle>
-                <CardDescription>
-                  Customer production folder paths stay separate from canonical storage provider settings.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4 text-sm text-muted-foreground">
-                <div className="rounded-lg border p-4">
-                  <p className="font-medium text-foreground">These references are downstream destinations only.</p>
-                  <p className="mt-1">
-                    They do not control where TitanOS stores canonical uploads. Keep storage provider decisions here, and customer-specific production folders in the customer workflow.
-                  </p>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <div className="rounded-lg border p-3">
-                    <div className="text-xs uppercase tracking-wide text-muted-foreground">Set</div>
-                    <div className="mt-1 text-2xl font-semibold text-foreground">{settings.productionDestinations.setCount}</div>
-                  </div>
-                  <div className="rounded-lg border p-3">
-                    <div className="text-xs uppercase tracking-wide text-muted-foreground">Invalid</div>
-                    <div className="mt-1 text-2xl font-semibold text-foreground">{settings.productionDestinations.invalidCount}</div>
-                  </div>
-                  <div className="rounded-lg border p-3">
-                    <div className="text-xs uppercase tracking-wide text-muted-foreground">Disabled</div>
-                    <div className="mt-1 text-2xl font-semibold text-foreground">{settings.productionDestinations.disabledCount}</div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
+          <ValidationCard
+            title="Orchestration validation"
+            description="Preview how TitanOS would route small and large files with the current orchestration settings."
+            validation={orchestrationValidation}
+          />
         </div>
 
-        {settings.provider.validationError ? (
+        <Separator />
+
+        <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
+          <Card>
+            <CardHeader>
+              <CardTitle>Saved provider records</CardTitle>
+              <CardDescription>Configure reusable provider records for Supabase, local storage, and S3-compatible backends.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant={selectedProviderKey === NEW_PROVIDER_KEY ? "default" : "outline"} onClick={() => setSelectedProviderKey(NEW_PROVIDER_KEY)}>
+                  New provider
+                </Button>
+                {settings.providers.map((provider) => (
+                  <Button key={provider.id} type="button" variant={selectedProviderKey === provider.id ? "default" : "outline"} onClick={() => setSelectedProviderKey(provider.id)}>
+                    {provider.displayName}
+                  </Button>
+                ))}
+              </div>
+
+              <div className="rounded-lg border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Type</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Activation</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {settings.providers.length > 0 ? settings.providers.map((provider) => (
+                      <TableRow key={provider.id}>
+                        <TableCell>
+                          <div className="font-medium text-foreground">{provider.displayName}</div>
+                          <div className="text-xs text-muted-foreground">{provider.lastValidatedAt ? `Validated ${new Date(provider.lastValidatedAt).toLocaleString()}` : "Not validated yet"}</div>
+                        </TableCell>
+                        <TableCell>{formatStatusLabel(provider.providerType)}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline" className={providerStatusClasses[provider.status]}>{formatStatusLabel(provider.status)}</Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Button type="button" size="sm" variant="outline" disabled={!provider.canActivate || provider.isActive || isActivating} onClick={() => handleActivateProvider(provider.id)}>
+                            {provider.isActive ? "Active" : provider.canActivate ? "Activate" : "Blocked"}
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    )) : (
+                      <TableRow>
+                        <TableCell colSpan={4} className="text-sm text-muted-foreground">No provider records saved yet.</TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Provider draft editor</CardTitle>
+              <CardDescription>Edit the selected provider record or create a new one.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="provider-type">Provider type</Label>
+                  <Select
+                    value={providerForm.providerType}
+                    onValueChange={(value) => {
+                      const nextType = value as ConfigurableStorageProviderType;
+                      setSelectedProviderKey(NEW_PROVIDER_KEY);
+                      setProviderForm(buildEmptyProviderForm(nextType));
+                    }}
+                    disabled={selectedProviderKey !== NEW_PROVIDER_KEY}
+                  >
+                    <SelectTrigger id="provider-type"><SelectValue placeholder="Select provider type" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="supabase">Supabase</SelectItem>
+                      <SelectItem value="local_filesystem">Local storage</SelectItem>
+                      <SelectItem value="s3">IDrive E2 / S3-compatible</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="provider-display-name">Display name</Label>
+                  <Input id="provider-display-name" value={providerForm.displayName} onChange={(event) => setProviderForm((current) => ({ ...current, displayName: event.target.value }))} />
+                </div>
+              </div>
+
+              {providerForm.providerType === "supabase" ? (
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="supabase-bucket">Bucket name</Label>
+                    <Input id="supabase-bucket" value={providerForm.bucketName} onChange={(event) => setProviderForm((current) => ({ ...current, bucketName: event.target.value }))} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="supabase-prefix">Path prefix</Label>
+                    <Input id="supabase-prefix" value={providerForm.pathPrefix} onChange={(event) => setProviderForm((current) => ({ ...current, pathPrefix: event.target.value }))} placeholder="optional/folder" />
+                  </div>
+                </div>
+              ) : null}
+
+              {providerForm.providerType === "local_filesystem" ? (
+                <div className="space-y-2">
+                  <Label htmlFor="local-subfolder">Subfolder prefix</Label>
+                  <Input id="local-subfolder" value={providerForm.subfolderPrefix} onChange={(event) => setProviderForm((current) => ({ ...current, subfolderPrefix: event.target.value }))} placeholder="optional/subfolder" />
+                </div>
+              ) : null}
+
+              {providerForm.providerType === "s3" ? (
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="s3-label">Provider label</Label>
+                    <Input id="s3-label" value={providerForm.providerLabel} onChange={(event) => setProviderForm((current) => ({ ...current, providerLabel: event.target.value }))} placeholder="IDrive E2" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="s3-bucket">Bucket name</Label>
+                    <Input id="s3-bucket" value={providerForm.bucketName} onChange={(event) => setProviderForm((current) => ({ ...current, bucketName: event.target.value }))} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="s3-region">Region</Label>
+                    <Input id="s3-region" value={providerForm.region} onChange={(event) => setProviderForm((current) => ({ ...current, region: event.target.value }))} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="s3-endpoint">Endpoint</Label>
+                    <Input id="s3-endpoint" value={providerForm.endpoint} onChange={(event) => setProviderForm((current) => ({ ...current, endpoint: event.target.value }))} placeholder="https://..." />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="s3-access-key">Access key ID</Label>
+                    <Input id="s3-access-key" value={providerForm.accessKeyId} onChange={(event) => setProviderForm((current) => ({ ...current, accessKeyId: event.target.value }))} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="s3-secret-key">Secret access key</Label>
+                    <Input id="s3-secret-key" type="password" value={providerForm.secretAccessKey} onChange={(event) => setProviderForm((current) => ({ ...current, secretAccessKey: event.target.value }))} placeholder={selectedProviderKey === NEW_PROVIDER_KEY ? "Required for validation" : "Leave blank to keep existing secret"} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="s3-prefix">Path prefix</Label>
+                    <Input id="s3-prefix" value={providerForm.pathPrefix} onChange={(event) => setProviderForm((current) => ({ ...current, pathPrefix: event.target.value }))} placeholder="optional/folder" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="s3-path-style">URL style</Label>
+                    <Select value={providerForm.forcePathStyle ? "path" : "virtual"} onValueChange={(value) => setProviderForm((current) => ({ ...current, forcePathStyle: value === "path" }))}>
+                      <SelectTrigger id="s3-path-style"><SelectValue placeholder="Select URL style" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="path">Force path-style</SelectItem>
+                        <SelectItem value="virtual">Virtual-hosted style</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="flex flex-wrap items-center gap-3">
+                <Button type="button" variant="outline" onClick={handleValidateProvider} disabled={isValidating || isSaving}>
+                  {isValidating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}Validate provider
+                </Button>
+                <Button type="button" onClick={handleSaveProvider} disabled={isSaving || isValidating}>
+                  {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}Save provider draft
+                </Button>
+                {selectedProviderKey !== NEW_PROVIDER_KEY && providerForm.providerConfigId ? (
+                  <Button type="button" variant="secondary" onClick={() => handleActivateProvider(providerForm.providerConfigId!)} disabled={isActivating || !selectedExistingProvider?.canActivate || selectedExistingProvider?.isActive}>
+                    {isActivating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                    {selectedExistingProvider?.isActive ? "Already active" : "Activate provider"}
+                  </Button>
+                ) : null}
+                <Button type="button" variant="ghost" onClick={() => setProviderForm(selectedProviderKey === NEW_PROVIDER_KEY ? buildEmptyProviderForm(providerForm.providerType) : savedProviderState)} disabled={!providerDirty || isSaving || isValidating}>Reset</Button>
+                <Badge variant="outline" className={cn(providerDirty ? "border-amber-300 text-amber-800 bg-amber-50" : "border-emerald-300 text-emerald-800 bg-emerald-50")}>
+                  {providerDirty ? "Unsaved provider draft" : "Provider draft matches saved"}
+                </Badge>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="grid gap-6 xl:grid-cols-[1fr_1fr]">
+          <ValidationCard
+            title="Provider validation"
+            description="Use this to test the selected provider draft before saving or activating it."
+            validation={providerValidation}
+          />
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Production destination references</CardTitle>
+              <CardDescription>Customer-specific production folder references remain downstream destinations only.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4 text-sm text-muted-foreground">
+              <div className="rounded-lg border p-4">
+                <p className="font-medium text-foreground">Keep canonical storage and production drop folders separate.</p>
+                <p className="mt-1">Canonical uploads are controlled by the active provider above. Customer production folders stay in customer workflow configuration.</p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-lg border p-3"><div className="text-xs uppercase tracking-wide text-muted-foreground">Set</div><div className="mt-1 text-2xl font-semibold text-foreground">{settings.productionDestinations.setCount}</div></div>
+                <div className="rounded-lg border p-3"><div className="text-xs uppercase tracking-wide text-muted-foreground">Invalid</div><div className="mt-1 text-2xl font-semibold text-foreground">{settings.productionDestinations.invalidCount}</div></div>
+                <div className="rounded-lg border p-3"><div className="text-xs uppercase tracking-wide text-muted-foreground">Disabled</div><div className="mt-1 text-2xl font-semibold text-foreground">{settings.productionDestinations.disabledCount}</div></div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {settings.activeProvider?.validationError ? (
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
-            <AlertTitle>Saved provider issue</AlertTitle>
-            <AlertDescription>
-              The saved provider currently reports: {settings.provider.validationError}
-            </AlertDescription>
+            <AlertTitle>Active provider issue</AlertTitle>
+            <AlertDescription>{settings.activeProvider.validationError}</AlertDescription>
           </Alert>
         ) : null}
       </div>
