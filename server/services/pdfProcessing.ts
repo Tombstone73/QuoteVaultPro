@@ -362,7 +362,7 @@ async function uploadThumbnailFile(
         localPathRef: args.thumbKey,
       };
     } else {
-      console.error(`[PdfProcessing] Unsupported storage provider for thumbnail upload: ${storageProvider}`);
+      console.error(`[PdfProcessing] Unsupported storage provider for thumbnail upload: ${args.storageProvider}`);
       return null;
     }
   } catch (error) {
