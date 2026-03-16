@@ -15,6 +15,15 @@ type ReplaceReadyValues = {
 export class FileDerivativeRepository {
   constructor(private readonly dbInstance = db) {}
 
+  async deleteByFileRecordId(
+    fileRecordId: string,
+    executor: any = this.dbInstance,
+  ): Promise<void> {
+    await executor
+      .delete(fileDerivatives)
+      .where(eq(fileDerivatives.fileRecordId, fileRecordId));
+  }
+
   async listByFileRecordId(
     fileRecordId: string,
     executor: any = this.dbInstance,

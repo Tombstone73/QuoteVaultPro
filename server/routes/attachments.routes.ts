@@ -371,15 +371,27 @@ export async function registerAttachmentRoutes(
       }
 
       if (Number(quoteRefs) + Number(orderRefs) === 0 && !hasRemainingAssetLinksForFile && storageProvider) {
+        const derivativeRows = attachment.fileRecordId
+          ? await fileDerivativeRepository.listByFileRecordId(String(attachment.fileRecordId))
+          : [];
         const derivativeKeys = attachment.fileRecordId
-          ? (await fileDerivativeRepository.listByFileRecordId(String(attachment.fileRecordId))).map((row) => row.objectKey ?? null)
+          ? derivativeRows.map((row) => row.objectKey ?? null)
           : [(attachment as any).thumbKey ?? null, (attachment as any).previewKey ?? null];
 
-        await deleteStoredObjectKeys({
+        const derivativeDeletion = await deleteStoredObjectKeys({
           fileRecordId: attachment.fileRecordId ? String(attachment.fileRecordId) : null,
           legacyStorageProvider: storageProvider,
           keys: [storageKey, ...derivativeKeys],
         });
+
+        if (attachment.fileRecordId && derivativeDeletion.failedKeys.length === 0) {
+          await fileDerivativeRepository.deleteByFileRecordId(String(attachment.fileRecordId));
+        } else if (attachment.fileRecordId && derivativeDeletion.failedKeys.length > 0) {
+          console.warn("[QuoteAttachments:DELETE] Skipped derivative row cleanup due to storage delete failures", {
+            fileRecordId: String(attachment.fileRecordId),
+            failedKeys: derivativeDeletion.failedKeys,
+          });
+        }
       }
     } catch (cleanupError) {
       console.error("[QuoteAttachments:DELETE] Storage cleanup failed (non-blocking):", cleanupError);
