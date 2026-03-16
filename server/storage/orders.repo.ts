@@ -1169,7 +1169,7 @@ export class OrdersRepository {
         const rows = await this.dbInstance
             .select(ORDER_ATTACHMENT_SAFE_SELECT)
             .from(orderAttachments)
-            .where(eq(orderAttachments.orderId, orderId))
+            .where(and(eq(orderAttachments.orderId, orderId), isNull(orderAttachments.orderLineItemId)))
             .orderBy(desc(orderAttachments.createdAt));
 
         return rows as any;
@@ -1288,7 +1288,7 @@ export class OrdersRepository {
     async detachOrderFile(id: string): Promise<boolean> {
         const deleted = await this.dbInstance
             .delete(orderAttachments)
-            .where(eq(orderAttachments.id, id))
+            .where(and(eq(orderAttachments.id, id), isNull(orderAttachments.orderLineItemId)))
             .returning({ id: orderAttachments.id });
 
         return deleted.length > 0;
