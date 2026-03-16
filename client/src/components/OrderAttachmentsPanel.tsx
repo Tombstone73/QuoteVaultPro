@@ -45,7 +45,7 @@ type OrderAttachment = {
   thumbError?: string | null;
   objectPath?: string | null;
   downloadUrl?: string | null;
-  pages?: Array<{ thumbUrl?: string | null }>;
+  pages?: Array<{ thumbUrl?: string | null; thumbStatus?: string | null }>;
 };
 
 function formatFileSize(bytes: number | null | undefined): string {
@@ -513,6 +513,7 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
           ) : null}
 
       <AttachmentViewerDialog
+        attachment={viewerAttachment as any}
         attachments={viewerAttachments as any}
         initialIndex={viewerInitialIndex}
         open={viewerOpen}
