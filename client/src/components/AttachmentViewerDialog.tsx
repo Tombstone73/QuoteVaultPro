@@ -176,9 +176,17 @@ export function AttachmentViewerDialog({
   const [pdfFitMode, setPdfFitMode] = useState<"page" | "width" | "custom">("page");
   const [pdfStageSize, setPdfStageSize] = useState({ width: 0, height: 0 });
   const [pdfMetadata, setPdfMetadata] = useState<Record<string, string | number | null>>({});
+  const [isPdfDragging, setIsPdfDragging] = useState(false);
   const imageBlobUrlRef = useRef<string | null>(null);
   const dragPointerIdRef = useRef<number | null>(null);
   const dragOriginRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const pdfDragPointerIdRef = useRef<number | null>(null);
+  const pdfDragOriginRef = useRef<{ x: number; y: number; scrollLeft: number; scrollTop: number }>({
+    x: 0,
+    y: 0,
+    scrollLeft: 0,
+    scrollTop: 0,
+  });
   const pdfStageRef = useRef<HTMLDivElement | null>(null);
   const pdfCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const pdfRenderTaskRef = useRef<any | null>(null);
@@ -261,7 +269,9 @@ export function AttachmentViewerDialog({
     setPdfRotation(0);
     setPdfFitMode("page");
     setPdfMetadata({});
+    setIsPdfDragging(false);
     dragPointerIdRef.current = null;
+    pdfDragPointerIdRef.current = null;
   }, [currentAttachment?.id, open]);
 
   useEffect(() => {
@@ -565,6 +575,7 @@ export function AttachmentViewerDialog({
   const clampPdfZoom = (value: number) => Math.min(4, Math.max(0.4, value));
   const pdfCanGoPrev = isPdf && pdfPageNumber > 1;
   const pdfCanGoNext = isPdf && pdfPageCount > 0 && pdfPageNumber < pdfPageCount;
+  const canPanPdf = isPdf && !pdfLoading && !pdfError && pdfRenderedScale > 0;
 
   const resetImageView = () => {
     setZoomLevel(1);
@@ -572,6 +583,18 @@ export function AttachmentViewerDialog({
     setPanY(0);
     setIsDragging(false);
     dragPointerIdRef.current = null;
+  };
+
+  const resetPdfView = () => {
+    setPdfFitMode("page");
+    setPdfZoomLevel(1);
+    setPdfRotation(0);
+    setIsPdfDragging(false);
+    pdfDragPointerIdRef.current = null;
+    if (pdfStageRef.current) {
+      pdfStageRef.current.scrollLeft = 0;
+      pdfStageRef.current.scrollTop = 0;
+    }
   };
 
   const handleImageWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
@@ -610,6 +633,47 @@ export function AttachmentViewerDialog({
     }
     dragPointerIdRef.current = null;
     setIsDragging(false);
+  };
+
+  const handlePdfPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!canPanPdf || event.button !== 0) return;
+    const stage = pdfStageRef.current;
+    if (!stage) return;
+
+    pdfDragPointerIdRef.current = event.pointerId;
+    pdfDragOriginRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      scrollLeft: stage.scrollLeft,
+      scrollTop: stage.scrollTop,
+    };
+    setIsPdfDragging(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  };
+
+  const handlePdfPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!canPanPdf || !isPdfDragging || pdfDragPointerIdRef.current !== event.pointerId) return;
+    const stage = pdfStageRef.current;
+    if (!stage) return;
+
+    const deltaX = event.clientX - pdfDragOriginRef.current.x;
+    const deltaY = event.clientY - pdfDragOriginRef.current.y;
+    stage.scrollLeft = pdfDragOriginRef.current.scrollLeft - deltaX;
+    stage.scrollTop = pdfDragOriginRef.current.scrollTop - deltaY;
+    event.preventDefault();
+  };
+
+  const stopPdfDragging = (event?: ReactPointerEvent<HTMLDivElement>) => {
+    if (event && pdfDragPointerIdRef.current === event.pointerId) {
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      } catch {
+        // no-op
+      }
+    }
+    pdfDragPointerIdRef.current = null;
+    setIsPdfDragging(false);
   };
 
   const renderArrowButton = (direction: "prev" | "next") => {
@@ -714,7 +778,18 @@ export function AttachmentViewerDialog({
     if (isPdf && pdfDocument && !pdfError) {
       return (
         <div className="flex h-full min-h-[360px] flex-col rounded-lg bg-muted/30">
-          <div ref={pdfStageRef} className="flex min-h-[360px] flex-1 items-center justify-center overflow-auto rounded-lg border border-border bg-zinc-950/90 p-4">
+          <div
+            ref={pdfStageRef}
+            className={cn(
+              "flex min-h-[360px] flex-1 items-center justify-center overflow-auto rounded-lg border border-border bg-zinc-950/90 p-4 select-none touch-none",
+              canPanPdf ? (isPdfDragging ? "cursor-grabbing" : "cursor-grab") : "cursor-default"
+            )}
+            onPointerDown={handlePdfPointerDown}
+            onPointerMove={handlePdfPointerMove}
+            onPointerUp={stopPdfDragging}
+            onPointerLeave={stopPdfDragging}
+            onPointerCancel={stopPdfDragging}
+          >
             {pdfLoading ? (
               <div className="text-sm text-muted-foreground">Loading PDF…</div>
             ) : (
@@ -799,11 +874,11 @@ export function AttachmentViewerDialog({
                   <Button type="button" variant="outline" size="icon" onClick={() => setPdfPageNumber((value) => Math.min(pdfPageCount || value, value + 1))} disabled={!pdfCanGoNext} title="Next page">
                     <ChevronRight className="h-4 w-4" />
                   </Button>
-                  <Button type="button" variant="outline" size="icon" onClick={() => setPdfFitMode("width")} title="Fit width">
+                  <Button type="button" variant="outline" size="icon" onClick={resetPdfView} title="Reset view">
                     <House className="h-4 w-4" />
                   </Button>
-                  <Button type="button" variant="outline" size="sm" onClick={() => setPdfFitMode("page")} title="Fit page">
-                    Fit
+                  <Button type="button" variant="outline" size="sm" onClick={() => setPdfFitMode("width")} title="Fit width">
+                    Width
                   </Button>
                   <Button type="button" variant="outline" size="icon" onClick={() => {
                     setPdfFitMode("custom");
@@ -814,7 +889,11 @@ export function AttachmentViewerDialog({
                   <Button type="button" variant="outline" size="sm" onClick={() => {
                     setPdfFitMode("custom");
                     setPdfZoomLevel(1);
-                  }} title="Reset PDF zoom">
+                    if (pdfStageRef.current) {
+                      pdfStageRef.current.scrollLeft = 0;
+                      pdfStageRef.current.scrollTop = 0;
+                    }
+                  }} title="Actual size">
                     {Math.round(pdfRenderedScale * 100)}%
                   </Button>
                   <Button type="button" variant="outline" size="icon" onClick={() => {
