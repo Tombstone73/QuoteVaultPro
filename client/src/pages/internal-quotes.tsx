@@ -186,6 +186,25 @@ export default function InternalQuotes() {
   const [attachmentsListOpen, setAttachmentsListOpen] = useState(false);
   const [loadingAttachments, setLoadingAttachments] = useState<string | null>(null);
 
+  const modalAttachmentBuckets = useMemo(() => {
+    const quoteLevel: any[] = [];
+    const lineItemLevel: any[] = [];
+
+    for (const attachment of viewerAttachments) {
+      const normalized = { ...attachment, orderId: attachment.quoteId };
+      if (attachment?.quoteLineItemId) {
+        lineItemLevel.push({ ...normalized, source: "line-item" as const });
+      } else {
+        quoteLevel.push({ ...normalized, source: "order" as const });
+      }
+    }
+
+    return {
+      quoteLevel,
+      lineItemLevel,
+    };
+  }, [viewerAttachments]);
+
   const orgIdForPrefs = organization?.id;
   const pageSizeKey = orgIdForPrefs && user?.id ? `titan:list:internalQuotes:pageSize:org_${orgIdForPrefs}:user_${user.id}` : null;
   const includeThumbsKey = orgIdForPrefs && user?.id ? `titan:list:internalQuotes:includeThumbnails:org_${orgIdForPrefs}:user_${user.id}` : null;
@@ -1586,8 +1605,8 @@ export default function InternalQuotes() {
       <ViewAllAttachmentsDialog
         open={attachmentsListOpen}
         onOpenChange={setAttachmentsListOpen}
-        orderAttachments={viewerAttachments.map((a) => ({ ...a, source: "order" as const, orderId: a.quoteId }))}
-        lineItemAttachments={[]}
+        orderAttachments={modalAttachmentBuckets.quoteLevel}
+        lineItemAttachments={modalAttachmentBuckets.lineItemLevel}
         onViewAttachment={(a) => {
           const index = viewerAttachments.findIndex((att) => att.id === a.id);
           setViewerInitialIndex(Math.max(0, index));
