@@ -355,7 +355,10 @@ export async function resolveDerivativeFileAccess(
 
     return {
         objectPath,
-        url: objectsProxyUrl(objectPath, { bucket: resolved.bucket ?? null }),
+        url: objectsProxyUrl(objectPath, {
+            bucket: resolved.bucket ?? null,
+            providerConfigId: resolved.providerConfigId ?? null,
+        }),
         availabilityStatus: resolved.status,
     };
 }
