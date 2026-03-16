@@ -13,13 +13,9 @@ import { getThumbSrc } from "@/lib/getThumbSrc";
 import { objectsUrl } from "@/lib/apiConfig";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { setPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
-import { SUPABASE_MAX_UPLOAD_BYTES } from "@/lib/config/storage";
-import { fileToBase64 } from "@/lib/uploads/fileToBase64";
 import { uploadAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-
-type StorageTarget = "supabase" | "local_dev";
 
 const LOCAL_ORIGINAL_NOT_PRESENT = "local_original_not_present";
 
@@ -367,85 +363,36 @@ export function LineItemAttachmentsPanel({
 
     try {
       for (const file of filesToUpload) {
-        if (file.size > SUPABASE_MAX_UPLOAD_BYTES) {
-          try {
-            if (parentType === "order") {
-              if (!orderId) {
-                throw new Error("Order ID is required for order line item uploads.");
-              }
-
-              await uploadAttachmentViaChunked({
-                file,
-                purpose: "order-attachment",
-                parentId: orderId,
-                linkUrl: uploadApiPath,
-                linkBody: {
-                  orderLineItemId: targetLineItemId,
-                  role: "other",
-                  side: "na",
-                },
-              });
-            } else {
-              if (!targetQuoteId) {
-                throw new Error("Quote ID is required for quote line item uploads.");
-              }
-
-              await uploadAttachmentViaChunked({
-                file,
-                purpose: "quote-attachment",
-                parentId: targetQuoteId,
-                linkUrl: uploadApiPath,
-              });
+        try {
+          if (parentType === "order") {
+            if (!orderId) {
+              throw new Error("Order ID is required for order line item uploads.");
             }
 
-            successCount++;
-            continue;
-          } catch (fileError: any) {
-            console.error(`[LineItemAttachmentsPanel] Error uploading ${file.name}:`, fileError);
-            errorCount++;
-            continue;
-          }
-        }
+            await uploadAttachmentViaChunked({
+              file,
+              purpose: "order-attachment",
+              parentId: orderId,
+              linkUrl: uploadApiPath,
+              linkBody: {
+                orderLineItemId: targetLineItemId,
+                role: "other",
+                side: "na",
+              },
+            });
+          } else {
+            if (!targetQuoteId) {
+              throw new Error("Quote ID is required for quote line item uploads.");
+            }
 
-        // Backend-mediated upload: browser never talks to Supabase directly.
-        // The backend receives the file bytes, decides storage target, and
-        // uploads to Supabase server-side — eliminating CORS on the signed-upload endpoint.
-        const requestedStorageTarget: StorageTarget = file.size > SUPABASE_MAX_UPLOAD_BYTES ? "local_dev" : "supabase";
-
-        try {
-          console.log(`[LineItemAttachmentsPanel] Uploading ${file.name} (${file.size} bytes) via backend`);
-          const fileBufferBase64 = await fileToBase64(file);
-
-          const payload: Record<string, any> = {
-            originalFilename: file.name,
-            fileName: file.name,
-            fileSize: file.size,
-            mimeType: file.type,
-            fileBuffer: fileBufferBase64,
-            requestedStorageTarget,
-          };
-
-          if (parentType === "order") {
-            payload.orderLineItemId = targetLineItemId;
-            payload.role = "other";
-            payload.side = "na";
+            await uploadAttachmentViaChunked({
+              file,
+              purpose: "quote-attachment",
+              parentId: targetQuoteId,
+              linkUrl: uploadApiPath,
+            });
           }
 
-          const attachResponse = await fetch(uploadApiPath, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify(payload),
-          });
-
-          if (!attachResponse.ok) {
-            const json = await attachResponse.json().catch(() => ({}));
-            const msg = json?.error || json?.message || `Upload failed (HTTP ${attachResponse.status})`;
-            console.error(`[LineItemAttachmentsPanel] Upload failed for ${file.name}:`, msg);
-            throw new Error(msg);
-          }
-
-          console.log(`[LineItemAttachmentsPanel] Upload succeeded for ${file.name}`);
           successCount++;
         } catch (fileError: any) {
           console.error(`[LineItemAttachmentsPanel] Error uploading ${file.name}:`, fileError);
