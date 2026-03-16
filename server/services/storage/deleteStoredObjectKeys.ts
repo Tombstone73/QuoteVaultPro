@@ -1,9 +1,3 @@
-import { isSupabaseConfigured, SupabaseStorageService } from "../../supabaseStorage";
-import { normalizeObjectKeyForDb } from "../../lib/supabaseObjectHelpers";
-import { storagePlacementRepository } from "../../storage/storagePlacement.repo";
-import { storageProviderConfigRepository } from "../../storage/storageProviderConfig.repo";
-import { storageRegistry } from "./StorageRegistry";
-
 export async function deleteStoredObjectKeys(args: {
   keys: Array<string | null | undefined>;
   fileRecordId?: string | null;
@@ -21,6 +15,10 @@ export async function deleteStoredObjectKeys(args: {
     return;
   }
 
+  const { normalizeObjectKeyForDb } = await import("../../lib/supabaseObjectHelpers");
+  const { storagePlacementRepository } = await import("../../storage/storagePlacement.repo");
+  const { storageProviderConfigRepository } = await import("../../storage/storageProviderConfig.repo");
+
   const placement = args.sourcePlacementId
     ? await storagePlacementRepository.getById(String(args.sourcePlacementId))
     : args.fileRecordId
@@ -31,6 +29,7 @@ export async function deleteStoredObjectKeys(args: {
     : null;
 
   if (providerConfig) {
+    const { storageRegistry } = await import("./StorageRegistry");
     const adapter = storageRegistry.getAdapter(providerConfig.providerType);
     await Promise.all(
       uniqueKeys.map((key) =>
@@ -44,7 +43,11 @@ export async function deleteStoredObjectKeys(args: {
     return;
   }
 
-  if (args.legacyStorageProvider === "supabase" && isSupabaseConfigured()) {
+  if (args.legacyStorageProvider === "supabase") {
+    const { isSupabaseConfigured, SupabaseStorageService } = await import("../../supabaseStorage");
+    if (!isSupabaseConfigured()) {
+      return;
+    }
     const supabase = new SupabaseStorageService();
     await Promise.all(uniqueKeys.map((key) => supabase.deleteFile(normalizeObjectKeyForDb(key)).catch(() => false)));
     return;
