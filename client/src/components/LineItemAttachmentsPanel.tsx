@@ -204,7 +204,49 @@ export function LineItemAttachmentsPanel({
         return [...mappedAttachments, ...mappedAssets] as LineItemAttachment[];
       }
 
-      return json.data || [];
+      const attachments = Array.isArray(json?.data) ? json.data : [];
+      const assets = Array.isArray(json?.assets) ? json.assets : [];
+
+      if (assets.length === 0) {
+        return attachments;
+      }
+
+      const makeMatchKey = (item: any) => {
+        const fileRecordId = (item?.fileRecordId ?? "").toString().trim();
+        if (fileRecordId) return `fr:${fileRecordId}`;
+
+        const fileName = (item?.originalFilename ?? item?.fileName ?? "").toString().trim().toLowerCase();
+        const size = Number(item?.fileSize ?? item?.sizeBytes ?? 0);
+        return `legacy:${fileName}:${Number.isFinite(size) ? size : 0}`;
+      };
+
+      const assetByKey = new Map<string, any>();
+      for (const asset of assets) {
+        assetByKey.set(makeMatchKey(asset), asset);
+      }
+
+      return attachments.map((attachment: any) => {
+        const matchedAsset = assetByKey.get(makeMatchKey(attachment));
+        if (!matchedAsset) {
+          return attachment;
+        }
+
+        return {
+          ...attachment,
+          originalUrl: attachment.originalUrl ?? matchedAsset.originalUrl ?? null,
+          downloadUrl: attachment.downloadUrl ?? matchedAsset.downloadUrl ?? null,
+          objectPath: attachment.objectPath ?? matchedAsset.objectPath ?? null,
+          previewUrl: attachment.previewUrl ?? matchedAsset.previewUrl ?? null,
+          thumbUrl: attachment.thumbUrl ?? matchedAsset.thumbUrl ?? matchedAsset.thumbnailUrl ?? null,
+          thumbnailUrl: attachment.thumbnailUrl ?? matchedAsset.thumbnailUrl ?? matchedAsset.thumbUrl ?? null,
+          previewThumbnailUrl:
+            attachment.previewThumbnailUrl ??
+            matchedAsset.previewThumbnailUrl ??
+            matchedAsset.thumbnailUrl ??
+            matchedAsset.thumbUrl ??
+            null,
+        };
+      });
     },
     enabled: !!filesApiPath,
     refetchInterval: (query) => {

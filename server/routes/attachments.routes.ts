@@ -1386,6 +1386,8 @@ export async function registerAttachmentRoutes(
       const requestedTarget =
         (typeof requestedStorageTarget === 'string' ? requestedStorageTarget : null) ||
         (typeof storageTarget === 'string' ? storageTarget : null);
+      const { hasPageCountStatusColumn } = await import("../db");
+      const pdfColumnsExist = hasPageCountStatusColumn() === true;
 
       const bufferForDecision = fileBuffer ? Buffer.from(fileBuffer, 'base64') : null;
 
@@ -1897,7 +1899,7 @@ export async function registerAttachmentRoutes(
       // Chunked upload link: finalize happens via /api/uploads/:uploadId/finalize.
       // This endpoint links a finalized upload into quote_attachments.
       if (uploadId && typeof uploadId === "string") {
-        const created = await persistQuoteAttachment({
+        let created = await persistQuoteAttachment({
           quoteId,
           organizationId,
           userId,
@@ -1911,6 +1913,58 @@ export async function registerAttachmentRoutes(
             expectedParentId: quoteId,
           },
         });
+
+        const createdFileName = (created.originalFilename ?? created.fileName ?? "").toString();
+        const createdMimeType = (created.mimeType ?? "").toString().toLowerCase();
+        const isPdfUpload = createdMimeType.includes("pdf") || createdFileName.toLowerCase().endsWith(".pdf");
+
+        if (isPdfUpload && pdfColumnsExist) {
+          const [updated] = await db
+            .update(quoteAttachments)
+            .set({
+              thumbStatus: "thumb_pending",
+              pageCountStatus: "detecting" as any,
+              updatedAt: new Date(),
+            })
+            .where(and(eq(quoteAttachments.id, created.id), eq(quoteAttachments.organizationId, organizationId)))
+            .returning();
+
+          if (updated) {
+            created = updated;
+          }
+        }
+
+        const canonicalOriginal = created.fileRecordId
+          ? await canonicalFileReadResolver.resolveOriginal(String(created.fileRecordId))
+          : null;
+        const canonicalStorageKey = canonicalOriginal?.objectKey ?? canonicalOriginal?.localPathRef ?? null;
+        const canonicalStorageProvider = canonicalOriginal?.localPathRef
+          ? "local"
+          : canonicalOriginal?.objectKey
+            ? "supabase"
+            : null;
+
+        if (isPdfUpload && pdfColumnsExist && canonicalStorageKey && canonicalStorageProvider) {
+          res.on("finish", () => {
+            setImmediate(() => {
+              void (async () => {
+                try {
+                  const { processPdfAttachmentDerivedData } = await import("../services/pdfProcessing");
+                  await processPdfAttachmentDerivedData({
+                    orgId: organizationId,
+                    attachmentId: created.id,
+                    storageKey: canonicalStorageKey,
+                    storageProvider: canonicalStorageProvider,
+                    mimeType: created.mimeType || null,
+                    attachmentType: "quote",
+                  });
+                } catch (error: any) {
+                  console.error(`[QuoteAttachments:POST] PDF kickoff failed for ${created.id}:`, error);
+                }
+              })();
+            });
+          });
+        }
 
         const enriched = await enrichAttachmentWithUrls(created);
         return res.json({ success: true, data: [enriched] });

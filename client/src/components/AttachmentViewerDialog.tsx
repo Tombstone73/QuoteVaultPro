@@ -195,7 +195,7 @@ export function AttachmentViewerDialog({
   const pdfViewUrl = isPdf ? buildPdfViewUrl(objectPath) : null;
   const pdfDownloadUrl = isPdf ? buildPdfDownloadUrl(objectPath, fileName) : null;
   const pdfSourceUrl = isPdf
-    ? currentAttachment?.originalUrl ?? currentAttachment?.previewUrl ?? currentAttachment?.fileUrl ?? pdfViewUrl
+    ? pdfViewUrl ?? currentAttachment?.originalUrl ?? currentAttachment?.previewUrl ?? currentAttachment?.fileUrl
     : null;
   const genericDownloadUrl = !isPdf ? currentAttachment?.downloadUrl ?? currentAttachment?.originalUrl ?? currentAttachment?.fileUrl ?? null : null;
   const downloadUrl = isPdf
