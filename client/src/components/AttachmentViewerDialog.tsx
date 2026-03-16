@@ -390,7 +390,7 @@ export function AttachmentViewerDialog({
   }, [currentAttachment?.id, currentAttachment?.pageCount, isDev, isPdf, open, pdfSourceUrl]);
 
   useEffect(() => {
-    if (!open || !isPdf || !pdfStageRef.current) {
+    if (!open || !isPdf || !pdfDocument || !pdfStageRef.current) {
       return;
     }
 
@@ -407,7 +407,7 @@ export function AttachmentViewerDialog({
     return () => {
       observer.disconnect();
     };
-  }, [isPdf, open]);
+  }, [currentAttachment?.id, isPdf, open, pdfDocument]);
 
   useEffect(() => {
     if (!open || !isPdf || !pdfDocument || !pdfCanvasRef.current || !pdfStageSize.width || !pdfStageSize.height) {

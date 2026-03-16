@@ -818,7 +818,7 @@ export async function processPdfAttachmentDerivedData(args: {
           const record = verification[0];
           const debugEnabled = process.env.DEBUG_THUMBNAILS === '1' || process.env.DEBUG_THUMBNAILS === 'true';
           
-          if (!record || !record.thumbKey || record.thumbStatus !== 'thumb_ready' || !record.thumbnailGeneratedAt || record.thumbError !== null) {
+          if (!record || record.thumbStatus !== 'thumb_ready' || !record.thumbnailGeneratedAt || record.thumbError !== null) {
             const issues: string[] = [];
             if (!record) issues.push('record not found');
             else {
@@ -831,7 +831,7 @@ export async function processPdfAttachmentDerivedData(args: {
           }
 
           if (debugEnabled) {
-            console.log(`[PdfProcessing] ✅ Thumbnail persisted to DB: attachmentId=${attachmentId}, thumbKey=${thumbKey}, thumbStatus=thumb_ready`);
+            console.log(`[PdfProcessing] ✅ Thumbnail persisted to canonical derivatives: attachmentId=${attachmentId}, thumbKey=${thumbKey}, thumbStatus=thumb_ready`);
           }
         } catch (dbError: any) {
           console.error(`[PdfProcessing] DB update failed while setting thumbKey for ${attachmentId}:`, dbError?.message || dbError);
