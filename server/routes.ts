@@ -5559,6 +5559,376 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  const cloneQuoteToDraft = async (args: {
+    tx: any;
+    organizationId: string;
+    userId: string;
+    userName: string;
+    sourceQuoteId: string;
+    isInternalUser: boolean;
+    operation: 'duplicate' | 'revise';
+    includeArtwork: boolean;
+  }) => {
+    const {
+      tx,
+      organizationId,
+      userId,
+      userName,
+      sourceQuoteId,
+      isInternalUser,
+      operation,
+      includeArtwork,
+    } = args;
+
+    const whereParts = [
+      eq(quotes.id, sourceQuoteId),
+      eq(quotes.organizationId, organizationId),
+    ];
+
+    if (!isInternalUser) {
+      whereParts.push(eq(quotes.userId, userId));
+    }
+
+    const sourceQuote = await tx
+      .select()
+      .from(quotes)
+      .where(and(...whereParts))
+      .limit(1)
+      .then((rows: any[]) => rows[0]);
+
+    if (!sourceQuote) {
+      throw Object.assign(new Error('Quote not found'), { statusCode: 404 });
+    }
+
+    if (operation === 'revise') {
+      const isApproved = String((sourceQuote as any).status) === 'active';
+      const isConverted = !!(sourceQuote as any).convertedToOrderId;
+
+      if (!isApproved && !isConverted) {
+        throw Object.assign(new Error('Only approved or converted quotes can be revised.'), { statusCode: 409 });
+      }
+    }
+
+    let quoteNumberVar = await tx
+      .select()
+      .from(globalVariables)
+      .where(and(
+        eq(globalVariables.name, 'next_quote_number'),
+        eq(globalVariables.organizationId, organizationId)
+      ))
+      .limit(1)
+      .then((rows: any[]) => rows[0]);
+
+    if (!quoteNumberVar) {
+      const [createdVar] = await tx
+        .insert(globalVariables)
+        .values({
+          organizationId,
+          name: 'next_quote_number',
+          value: '1000',
+          description: 'Next quote number sequence (auto-initialized)',
+          category: 'numbering',
+          isActive: true,
+        })
+        .returning();
+      quoteNumberVar = createdVar;
+    }
+
+    const parsed = parseInt(String(quoteNumberVar.value), 10);
+    const nextQuoteNumber = Number.isFinite(parsed) ? parsed : 1000;
+
+    const [newQuote] = await tx
+      .insert(quotes)
+      .values({
+        organizationId,
+        quoteNumber: nextQuoteNumber,
+        label: operation === 'duplicate' ? null : sourceQuote.label,
+        userId: sourceQuote.userId,
+        status: 'draft' as any,
+        customerId: sourceQuote.customerId,
+        contactId: sourceQuote.contactId,
+        customerName: sourceQuote.customerName,
+        source: sourceQuote.source,
+        subtotal: sourceQuote.subtotal,
+        taxRate: sourceQuote.taxRate,
+        taxAmount: sourceQuote.taxAmount,
+        taxableSubtotal: sourceQuote.taxableSubtotal,
+        marginPercentage: sourceQuote.marginPercentage,
+        discountAmount: sourceQuote.discountAmount,
+        totalPrice: sourceQuote.totalPrice,
+
+        billToName: sourceQuote.billToName,
+        billToCompany: sourceQuote.billToCompany,
+        billToAddress1: sourceQuote.billToAddress1,
+        billToAddress2: sourceQuote.billToAddress2,
+        billToCity: sourceQuote.billToCity,
+        billToState: sourceQuote.billToState,
+        billToPostalCode: sourceQuote.billToPostalCode,
+        billToCountry: sourceQuote.billToCountry,
+        billToPhone: sourceQuote.billToPhone,
+        billToEmail: sourceQuote.billToEmail,
+
+        shippingMethod: sourceQuote.shippingMethod,
+        shippingMode: sourceQuote.shippingMode,
+        shipToName: sourceQuote.shipToName,
+        shipToCompany: sourceQuote.shipToCompany,
+        shipToAddress1: sourceQuote.shipToAddress1,
+        shipToAddress2: sourceQuote.shipToAddress2,
+        shipToCity: sourceQuote.shipToCity,
+        shipToState: sourceQuote.shipToState,
+        shipToPostalCode: sourceQuote.shipToPostalCode,
+        shipToCountry: sourceQuote.shipToCountry,
+        shipToPhone: sourceQuote.shipToPhone,
+        shipToEmail: sourceQuote.shipToEmail,
+        carrier: sourceQuote.carrier,
+        carrierAccountNumber: sourceQuote.carrierAccountNumber,
+        shippingInstructions: sourceQuote.shippingInstructions,
+
+        requestedDueDate: sourceQuote.requestedDueDate,
+        validUntil: sourceQuote.validUntil,
+
+        convertedToOrderId: null,
+      } as any)
+      .returning();
+
+    await tx
+      .update(globalVariables)
+      .set({
+        value: String(nextQuoteNumber + 1),
+        updatedAt: new Date(),
+      })
+      .where(eq(globalVariables.id, quoteNumberVar.id));
+
+    const sourceLineItems = await tx
+      .select()
+      .from(quoteLineItems)
+      .where(eq(quoteLineItems.quoteId, sourceQuoteId))
+      .orderBy(asc(quoteLineItems.displayOrder), asc(quoteLineItems.createdAt));
+
+    const lineItemIdMap = new Map<string, string>();
+
+    for (const li of sourceLineItems) {
+      const [createdLi] = await tx
+        .insert(quoteLineItems)
+        .values({
+          quoteId: newQuote.id,
+          status: (li.status as any) ?? 'active',
+          productId: li.productId,
+          productName: li.productName,
+          variantId: li.variantId,
+          variantName: li.variantName,
+          productType: li.productType,
+          width: li.width,
+          height: li.height,
+          quantity: li.quantity,
+          specsJson: li.specsJson,
+          selectedOptions: li.selectedOptions as any,
+          linePrice: li.linePrice,
+          formulaLinePrice: (li as any).formulaLinePrice ?? null,
+          priceOverride: (li as any).priceOverride ?? null,
+          priceBreakdown: li.priceBreakdown as any,
+          materialUsages: (li as any).materialUsages ?? [],
+          taxAmount: (li as any).taxAmount ?? '0',
+          isTaxableSnapshot: (li as any).isTaxableSnapshot ?? true,
+          displayOrder: li.displayOrder,
+          isTemporary: false,
+          createdByUserId: li.createdByUserId ?? null,
+        } as any)
+        .returning();
+
+      lineItemIdMap.set(li.id, createdLi.id);
+    }
+
+    if (includeArtwork) {
+      const sourceAttachments = await tx
+        .select()
+        .from(quoteAttachments)
+        .where(and(
+          eq(quoteAttachments.quoteId, sourceQuoteId),
+          eq(quoteAttachments.organizationId, organizationId),
+        ))
+        .orderBy(asc(quoteAttachments.createdAt));
+
+      for (const att of sourceAttachments) {
+        const mappedLineItemId = att.quoteLineItemId
+          ? (lineItemIdMap.get(att.quoteLineItemId) ?? null)
+          : null;
+
+        if (att.quoteLineItemId && !mappedLineItemId) {
+          throw Object.assign(new Error('Attachment references a line item that could not be mapped.'), { statusCode: 500 });
+        }
+
+        const [createdAtt] = await tx
+          .insert(quoteAttachments)
+          .values({
+            quoteId: newQuote.id,
+            quoteLineItemId: mappedLineItemId,
+            organizationId,
+            fileRecordId: att.fileRecordId,
+            uploadedByUserId: att.uploadedByUserId,
+            uploadedByName: att.uploadedByName,
+
+            fileName: att.fileName,
+            fileUrl: att.fileUrl ?? null,
+            fileSize: att.fileSize,
+            mimeType: att.mimeType,
+            description: att.description,
+
+            originalFilename: att.originalFilename,
+            storedFilename: att.storedFilename,
+            relativePath: att.relativePath,
+            storageProvider: att.storageProvider,
+            extension: att.extension,
+            sizeBytes: att.sizeBytes,
+            checksum: att.checksum,
+
+            thumbnailRelativePath: att.thumbnailRelativePath,
+            thumbnailGeneratedAt: att.thumbnailGeneratedAt,
+            thumbStatus: att.thumbStatus,
+            thumbKey: att.thumbKey,
+            previewKey: att.previewKey,
+            thumbError: att.thumbError,
+
+            pageCount: att.pageCount,
+            pageCountStatus: att.pageCountStatus,
+            pageCountError: att.pageCountError,
+            pageCountUpdatedAt: att.pageCountUpdatedAt,
+
+            bucket: att.bucket,
+            updatedAt: new Date(),
+          } as any)
+          .returning();
+
+        const { hasQuoteAttachmentPagesTable } = await import('./db');
+        const pagesTableExists = hasQuoteAttachmentPagesTable();
+
+        if (pagesTableExists === true) {
+          try {
+            const sourcePages = await tx
+              .select()
+              .from(quoteAttachmentPages)
+              .where(and(
+                eq(quoteAttachmentPages.attachmentId, att.id),
+                eq(quoteAttachmentPages.organizationId, organizationId),
+              ))
+              .orderBy(asc(quoteAttachmentPages.pageIndex));
+
+            for (const p of sourcePages) {
+              await tx
+                .insert(quoteAttachmentPages)
+                .values({
+                  organizationId,
+                  attachmentId: createdAtt.id,
+                  pageIndex: p.pageIndex,
+                  thumbStatus: p.thumbStatus,
+                  thumbFileRecordId: p.thumbFileRecordId,
+                  thumbKey: null,
+                  previewFileRecordId: p.previewFileRecordId,
+                  previewKey: null,
+                  thumbError: p.thumbError,
+                  updatedAt: new Date(),
+                } as any);
+            }
+          } catch (error: any) {
+            const pgCode = error?.code;
+            const logPrefix = operation === 'revise' ? '[ReviseQuote]' : '[DuplicateQuote]';
+            if (pgCode === '42P01') {
+              console.warn(`${logPrefix} Skipping attachment page copy: quote_attachment_pages missing (42P01)`);
+            } else {
+              console.error(`${logPrefix} Error copying attachment pages (non-fatal):`, error);
+            }
+          }
+        } else {
+          const logPrefix = operation === 'revise' ? '[ReviseQuote]' : '[DuplicateQuote]';
+          console.log(`${logPrefix} Skipping attachment page copy: quote_attachment_pages table not available`);
+        }
+      }
+    }
+
+    const actionSuffix = operation === 'revise'
+      ? ''
+      : includeArtwork
+        ? ' with artwork'
+        : '';
+
+    await tx.insert(auditLogs).values({
+      organizationId,
+      userId,
+      userName,
+      actionType: 'CREATE',
+      entityType: 'quote',
+      entityId: newQuote.id,
+      entityName: newQuote.quoteNumber != null ? String(newQuote.quoteNumber) : undefined,
+      description: operation === 'revise'
+        ? `Created as revision of quote ${sourceQuote.quoteNumber ?? ''}`.trim()
+        : `Created as duplicate of quote ${sourceQuote.quoteNumber ?? ''}${actionSuffix}`.trim(),
+      newValues: operation === 'revise'
+        ? { sourceQuoteId: sourceQuote.id, sourceQuoteNumber: sourceQuote.quoteNumber }
+        : { sourceQuoteId: sourceQuote.id, sourceQuoteNumber: sourceQuote.quoteNumber, includeArtwork },
+    } as any);
+
+    await tx.insert(auditLogs).values({
+      organizationId,
+      userId,
+      userName,
+      actionType: 'UPDATE',
+      entityType: 'quote',
+      entityId: sourceQuote.id,
+      entityName: sourceQuote.quoteNumber != null ? String(sourceQuote.quoteNumber) : undefined,
+      description: operation === 'revise'
+        ? `Revised to quote ${newQuote.quoteNumber ?? ''}`.trim()
+        : `Duplicated to quote ${newQuote.quoteNumber ?? ''}${actionSuffix}`.trim(),
+      newValues: operation === 'revise'
+        ? { revisedQuoteId: newQuote.id, revisedQuoteNumber: newQuote.quoteNumber }
+        : { duplicatedQuoteId: newQuote.id, duplicatedQuoteNumber: newQuote.quoteNumber, includeArtwork },
+    } as any);
+
+    return {
+      id: newQuote.id,
+      quoteNumber: newQuote.quoteNumber,
+      includeArtwork,
+    };
+  };
+
+  app.post("/api/quotes/:id/duplicate", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ message: "Not authenticated" });
+
+      const userRole = req.user?.role || 'customer';
+      const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
+      const sourceQuoteId = req.params.id;
+      const mode = req.body?.mode;
+
+      if (mode !== 'quote_only' && mode !== 'quote_with_artwork') {
+        return res.status(400).json({ message: 'Invalid duplicate mode. Expected quote_only or quote_with_artwork.' });
+      }
+
+      const userName = `${req.user?.firstName || ''} ${req.user?.lastName || ''}`.trim() || req.user?.email || 'Unknown';
+
+      const result = await db.transaction(async (tx) => cloneQuoteToDraft({
+        tx,
+        organizationId,
+        userId,
+        userName,
+        sourceQuoteId,
+        isInternalUser,
+        operation: 'duplicate',
+        includeArtwork: mode === 'quote_with_artwork',
+      }));
+
+      return res.json(result);
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      const message = error?.message || 'Failed to duplicate quote';
+      console.error('[Quote:Duplicate] Error:', error);
+      return res.status(status).json({ message });
+    }
+  });
+
   // Revise an approved quote: clone into a new editable draft
   app.post("/api/quotes/:id/revise", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -5574,310 +5944,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const userName = `${req.user?.firstName || ''} ${req.user?.lastName || ''}`.trim() || req.user?.email || 'Unknown';
 
-      const result = await db.transaction(async (tx) => {
-        const whereParts = [
-          eq(quotes.id, sourceQuoteId),
-          eq(quotes.organizationId, organizationId),
-        ];
-        if (!isInternalUser) {
-          whereParts.push(eq(quotes.userId, userId));
-        }
-
-        const sourceQuote = await tx
-          .select()
-          .from(quotes)
-          .where(and(...whereParts))
-          .limit(1)
-          .then((rows) => rows[0]);
-
-        if (!sourceQuote) {
-          throw Object.assign(new Error('Quote not found'), { statusCode: 404 });
-        }
-
-        // Allow revising approved quotes (status='active') OR converted quotes (has convertedToOrderId)
-        // This enables creating new drafts from terminal states that warrant revision
-        const isApproved = String((sourceQuote as any).status) === 'active';
-        const isConverted = !!(sourceQuote as any).convertedToOrderId;
-
-        if (!isApproved && !isConverted) {
-          throw Object.assign(new Error('Only approved or converted quotes can be revised.'), { statusCode: 409 });
-        }
-
-        // Get or auto-initialize next quote number (same logic as createQuote)
-        let quoteNumberVar = await tx
-          .select()
-          .from(globalVariables)
-          .where(and(
-            eq(globalVariables.name, 'next_quote_number'),
-            eq(globalVariables.organizationId, organizationId)
-          ))
-          .limit(1)
-          .then((rows) => rows[0]);
-
-        if (!quoteNumberVar) {
-          const [createdVar] = await tx
-            .insert(globalVariables)
-            .values({
-              organizationId,
-              name: 'next_quote_number',
-              value: '1000',
-              description: 'Next quote number sequence (auto-initialized)',
-              category: 'numbering',
-              isActive: true,
-            })
-            .returning();
-          quoteNumberVar = createdVar;
-        }
-
-        const parsed = parseInt(String(quoteNumberVar.value), 10);
-        const nextQuoteNumber = Number.isFinite(parsed) ? parsed : 1000;
-
-        const [newQuote] = await tx
-          .insert(quotes)
-          .values({
-            organizationId,
-            quoteNumber: nextQuoteNumber,
-            label: sourceQuote.label,
-            userId: sourceQuote.userId,
-            status: 'draft' as any,
-            customerId: sourceQuote.customerId,
-            contactId: sourceQuote.contactId,
-            customerName: sourceQuote.customerName,
-            source: sourceQuote.source,
-            subtotal: sourceQuote.subtotal,
-            taxRate: sourceQuote.taxRate,
-            taxAmount: sourceQuote.taxAmount,
-            taxableSubtotal: sourceQuote.taxableSubtotal,
-            marginPercentage: sourceQuote.marginPercentage,
-            discountAmount: sourceQuote.discountAmount,
-            totalPrice: sourceQuote.totalPrice,
-
-            billToName: sourceQuote.billToName,
-            billToCompany: sourceQuote.billToCompany,
-            billToAddress1: sourceQuote.billToAddress1,
-            billToAddress2: sourceQuote.billToAddress2,
-            billToCity: sourceQuote.billToCity,
-            billToState: sourceQuote.billToState,
-            billToPostalCode: sourceQuote.billToPostalCode,
-            billToCountry: sourceQuote.billToCountry,
-            billToPhone: sourceQuote.billToPhone,
-            billToEmail: sourceQuote.billToEmail,
-
-            shippingMethod: sourceQuote.shippingMethod,
-            shippingMode: sourceQuote.shippingMode,
-            shipToName: sourceQuote.shipToName,
-            shipToCompany: sourceQuote.shipToCompany,
-            shipToAddress1: sourceQuote.shipToAddress1,
-            shipToAddress2: sourceQuote.shipToAddress2,
-            shipToCity: sourceQuote.shipToCity,
-            shipToState: sourceQuote.shipToState,
-            shipToPostalCode: sourceQuote.shipToPostalCode,
-            shipToCountry: sourceQuote.shipToCountry,
-            shipToPhone: sourceQuote.shipToPhone,
-            shipToEmail: sourceQuote.shipToEmail,
-            carrier: sourceQuote.carrier,
-            carrierAccountNumber: sourceQuote.carrierAccountNumber,
-            shippingInstructions: sourceQuote.shippingInstructions,
-
-            requestedDueDate: sourceQuote.requestedDueDate,
-            validUntil: sourceQuote.validUntil,
-
-            convertedToOrderId: null,
-          } as any)
-          .returning();
-
-        await tx
-          .update(globalVariables)
-          .set({
-            value: String(nextQuoteNumber + 1),
-            updatedAt: new Date(),
-          })
-          .where(eq(globalVariables.id, quoteNumberVar.id));
-
-        // Copy line items (preserve ordering)
-        const sourceLineItems = await tx
-          .select()
-          .from(quoteLineItems)
-          .where(and(
-            eq(quoteLineItems.quoteId, sourceQuoteId),
-          ))
-          .orderBy(asc(quoteLineItems.displayOrder), asc(quoteLineItems.createdAt));
-
-        const lineItemIdMap = new Map<string, string>();
-
-        for (const li of sourceLineItems) {
-          const [createdLi] = await tx
-            .insert(quoteLineItems)
-            .values({
-              quoteId: newQuote.id,
-              status: (li.status as any) ?? 'active',
-              productId: li.productId,
-              productName: li.productName,
-              variantId: li.variantId,
-              variantName: li.variantName,
-              productType: li.productType,
-              width: li.width,
-              height: li.height,
-              quantity: li.quantity,
-              specsJson: li.specsJson,
-              selectedOptions: li.selectedOptions as any,
-              linePrice: li.linePrice,
-              formulaLinePrice: (li as any).formulaLinePrice ?? null,
-              priceOverride: (li as any).priceOverride ?? null,
-              priceBreakdown: li.priceBreakdown as any,
-              materialUsages: (li as any).materialUsages ?? [],
-              taxAmount: (li as any).taxAmount ?? '0',
-              isTaxableSnapshot: (li as any).isTaxableSnapshot ?? true,
-              displayOrder: li.displayOrder,
-              isTemporary: false,
-              createdByUserId: li.createdByUserId ?? null,
-            } as any)
-            .returning();
-
-          lineItemIdMap.set(li.id, createdLi.id);
-        }
-
-        // Copy attachments (quote-level + line-item). Also copy attachment pages for PDF thumbnails.
-        const sourceAttachments = await tx
-          .select()
-          .from(quoteAttachments)
-          .where(and(
-            eq(quoteAttachments.quoteId, sourceQuoteId),
-            eq(quoteAttachments.organizationId, organizationId),
-          ))
-          .orderBy(asc(quoteAttachments.createdAt));
-
-        const attachmentIdMap = new Map<string, string>();
-
-        for (const att of sourceAttachments) {
-          const mappedLineItemId = att.quoteLineItemId
-            ? (lineItemIdMap.get(att.quoteLineItemId) ?? null)
-            : null;
-
-          if (att.quoteLineItemId && !mappedLineItemId) {
-            throw Object.assign(new Error('Attachment references a line item that could not be mapped.'), { statusCode: 500 });
-          }
-
-          const [createdAtt] = await tx
-            .insert(quoteAttachments)
-            .values({
-              quoteId: newQuote.id,
-              quoteLineItemId: mappedLineItemId,
-              organizationId,
-              fileRecordId: att.fileRecordId,
-              uploadedByUserId: att.uploadedByUserId,
-              uploadedByName: att.uploadedByName,
-
-              fileName: att.fileName,
-              fileUrl: att.fileUrl ?? null,
-              fileSize: att.fileSize,
-              mimeType: att.mimeType,
-              description: att.description,
-
-              originalFilename: att.originalFilename,
-              storedFilename: att.storedFilename,
-              relativePath: att.relativePath,
-              storageProvider: att.storageProvider,
-              extension: att.extension,
-              sizeBytes: att.sizeBytes,
-              checksum: att.checksum,
-
-              thumbnailRelativePath: att.thumbnailRelativePath,
-              thumbnailGeneratedAt: att.thumbnailGeneratedAt,
-              thumbStatus: att.thumbStatus,
-              thumbKey: att.thumbKey,
-              previewKey: att.previewKey,
-              thumbError: att.thumbError,
-
-              pageCount: att.pageCount,
-              pageCountStatus: att.pageCountStatus,
-              pageCountError: att.pageCountError,
-              pageCountUpdatedAt: att.pageCountUpdatedAt,
-
-              bucket: att.bucket,
-              updatedAt: new Date(),
-            } as any)
-            .returning();
-
-          attachmentIdMap.set(att.id, createdAtt.id);
-
-          // Copy PDF thumbnail pages if present (only if table exists)
-          const { hasQuoteAttachmentPagesTable } = await import('./db');
-          const pagesTableExists = hasQuoteAttachmentPagesTable();
-
-          if (pagesTableExists === true) {
-            try {
-              const sourcePages = await tx
-                .select()
-                .from(quoteAttachmentPages)
-                .where(and(
-                  eq(quoteAttachmentPages.attachmentId, att.id),
-                  eq(quoteAttachmentPages.organizationId, organizationId),
-                ))
-                .orderBy(asc(quoteAttachmentPages.pageIndex));
-
-              for (const p of sourcePages) {
-                await tx
-                  .insert(quoteAttachmentPages)
-                  .values({
-                    organizationId,
-                    attachmentId: createdAtt.id,
-                    pageIndex: p.pageIndex,
-                    thumbStatus: p.thumbStatus,
-                    thumbFileRecordId: p.thumbFileRecordId,
-                    thumbKey: null,
-                    previewFileRecordId: p.previewFileRecordId,
-                    previewKey: null,
-                    thumbError: p.thumbError,
-                    updatedAt: new Date(),
-                  } as any);
-              }
-            } catch (error: any) {
-              // If table was dropped mid-transaction or other DB error, log and continue
-              // Don't fail the entire revise operation for missing page metadata
-              const pgCode = error?.code;
-              if (pgCode === '42P01') {
-                console.warn('[ReviseQuote] Skipping attachment page copy: quote_attachment_pages missing (42P01)');
-              } else {
-                console.error('[ReviseQuote] Error copying attachment pages (non-fatal):', error);
-              }
-              // Continue with revise operation - page metadata is not critical
-            }
-          } else {
-            console.log('[ReviseQuote] Skipping attachment page copy: quote_attachment_pages table not available');
-          }
-        }
-
-        // Provenance via audit logs (both quotes)
-        await tx.insert(auditLogs).values({
-          organizationId,
-          userId,
-          userName,
-          actionType: 'CREATE',
-          entityType: 'quote',
-          entityId: newQuote.id,
-          entityName: newQuote.quoteNumber != null ? String(newQuote.quoteNumber) : undefined,
-          description: `Created as revision of quote ${sourceQuote.quoteNumber ?? ''}`.trim(),
-          newValues: { sourceQuoteId: sourceQuote.id, sourceQuoteNumber: sourceQuote.quoteNumber },
-        } as any);
-
-        await tx.insert(auditLogs).values({
-          organizationId,
-          userId,
-          userName,
-          actionType: 'UPDATE',
-          entityType: 'quote',
-          entityId: sourceQuote.id,
-          entityName: sourceQuote.quoteNumber != null ? String(sourceQuote.quoteNumber) : undefined,
-          description: `Revised to quote ${newQuote.quoteNumber ?? ''}`.trim(),
-          newValues: { revisedQuoteId: newQuote.id, revisedQuoteNumber: newQuote.quoteNumber },
-        } as any);
-
-        return {
-          id: newQuote.id,
-          quoteNumber: newQuote.quoteNumber,
-        };
-      });
+      const result = await db.transaction(async (tx) => cloneQuoteToDraft({
+        tx,
+        organizationId,
+        userId,
+        userName,
+        sourceQuoteId,
+        isInternalUser,
+        operation: 'revise',
+        includeArtwork: true,
+      }));
 
       return res.json(result);
     } catch (error: any) {
