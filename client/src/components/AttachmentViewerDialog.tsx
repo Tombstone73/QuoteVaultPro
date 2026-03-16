@@ -397,7 +397,14 @@ export function AttachmentViewerDialog({
     const element = pdfStageRef.current;
     const updateSize = () => {
       const rect = element.getBoundingClientRect();
-      setPdfStageSize({ width: rect.width, height: rect.height });
+      const nextWidth = Math.round(rect.width);
+      const nextHeight = Math.round(rect.height);
+      setPdfStageSize((current) => {
+        if (current.width === nextWidth && current.height === nextHeight) {
+          return current;
+        }
+        return { width: nextWidth, height: nextHeight };
+      });
     };
 
     updateSize();

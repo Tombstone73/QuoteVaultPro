@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Paperclip, Upload, Download, X, Loader2, Image, FileText, File, ChevronDown, ChevronUp, Sparkles } from "lucide-react";
+import { Paperclip, Upload, Download, X, Loader2, Image, FileText, File, ChevronDown, ChevronUp, Sparkles, Eye } from "lucide-react";
 import { cn, isValidHttpUrl } from "@/lib/utils";
 import { getAttachmentDisplayName, isPdfAttachment, getPdfPageCount } from "@/lib/attachments";
 import { hasAnyUnsettledAttachment } from "@/lib/attachments/attachmentStatus";
@@ -777,6 +777,7 @@ export function LineItemAttachmentsPanel({
                 const fileName = getAttachmentDisplayName(file);
                 const pageCount = getPdfPageCount(file);
                 const showPageCount = isPdf && pageCount !== null && pageCount > 1;
+                const openPreview = () => setPreviewIndex(fileIndex);
                 
                 return (
                   <div key={file.id} className="space-y-1">
@@ -790,7 +791,7 @@ export function LineItemAttachmentsPanel({
                         }
                         e.stopPropagation();
                         console.log("[PreviewClick]", file.id);
-                        setPreviewIndex(fileIndex);
+                        openPreview();
                       }}
                       onPointerDownCapture={(e) => {
                         const target = e.target as HTMLElement;
@@ -884,6 +885,20 @@ export function LineItemAttachmentsPanel({
                         })()}
                       </div>
                       <div className="flex gap-0.5 shrink-0">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 w-6 p-0"
+                          aria-label={`Preview ${fileName}`}
+                          title="Open preview"
+                          onPointerDownCapture={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openPreview();
+                          }}
+                        >
+                          <Eye className="w-3 h-3" />
+                        </Button>
                         {(() => {
                           if (parentType === "order") return null;
 

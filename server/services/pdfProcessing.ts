@@ -591,8 +591,9 @@ export async function processPdfAttachmentDerivedData(args: {
       return;
     }
 
-    // Verify this is still the same file (stale task guard)
-    if (attachment.fileUrl !== storageKey) {
+    // Verify this is still the same file for legacy non-canonical rows only.
+    // Canonical attachments intentionally persist `fileRecordId` and often keep `fileUrl=null`.
+    if (!attachment.fileRecordId && attachment.fileUrl !== storageKey) {
       console.log(`[PdfProcessing] Skipping ${attachmentId}: fileUrl mismatch (expected ${storageKey}, got ${attachment.fileUrl})`);
       return;
     }
