@@ -7,6 +7,7 @@ import { cn, isValidHttpUrl } from "@/lib/utils";
 import { getAttachmentDisplayName, isPdfAttachment, getPdfPageCount } from "@/lib/attachments";
 import { getAttachmentPollingInterval, isAttachmentSettled } from "@/lib/attachments/attachmentStatus";
 import { mergeQuoteLineItemRows } from "@/lib/attachments/quoteLineItemRows";
+import { normalizeOrderFileRows } from "@/lib/attachments/orderFileRows";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
@@ -161,48 +162,39 @@ export function LineItemAttachmentsPanel({
         const attachments = Array.isArray(json?.data) ? json.data : [];
         const assets = Array.isArray(json?.assets) ? json.assets : [];
 
-        const mappedAttachments = attachments.map((a: any) => ({
-          ...a,
-          source: 'attachment' as const,
-        })) as LineItemAttachment[];
-
-        const mappedAssets = assets.map((a: any) => ({
-          id: a.id,
-          source: 'asset' as const,
-          fileName: a.fileName || a.originalFilename || "file",
-          originalFilename: a.originalFilename || a.fileName || null,
-          fileUrl: a.fileUrl || a.fileKey || a.key || "",
-          fileSize: a.fileSize ?? a.sizeBytes ?? null,
-          mimeType: a.mimeType ?? null,
-          createdAt: a.createdAt || new Date().toISOString(),
-          originalUrl: a.originalUrl ?? null,
-          downloadUrl: a.downloadUrl ?? null,
-          thumbUrl: a.thumbUrl ?? a.thumbnailUrl ?? null,
-          previewUrl: a.previewUrl ?? null,
-          // Contract aliases (server-side applyThumbnailContract)
-          thumbnailUrl: a.thumbnailUrl ?? null,
-          previewThumbnailUrl: a.previewThumbnailUrl ?? null,
-
-          // Map canonical asset preview pipeline state into existing attachment-style fields
-          // so the existing polling logic continues to work for order assets.
-          thumbStatus:
-            a.previewStatus === "ready"
-              ? ("thumb_ready" as const)
-              : a.previewStatus === "pending"
-              ? ("thumb_pending" as const)
-              : a.previewStatus === "failed"
-              ? ("thumb_failed" as const)
-              : undefined,
-          thumbError: a.previewError ?? a.thumbError,
-
-          // Preserve optional fields if present
-          thumbKey: a.thumbKey,
-          previewKey: a.previewKey,
-          pageCount: a.pageCount,
-          pages: a.pages,
-        } as LineItemAttachment));
-
-        return [...mappedAttachments, ...mappedAssets] as LineItemAttachment[];
+        return normalizeOrderFileRows(
+          attachments,
+          assets.map((a: any) => ({
+            id: a.id,
+            fileRecordId: a.fileRecordId ?? null,
+            fileName: a.fileName || a.originalFilename || "file",
+            originalFilename: a.originalFilename || a.fileName || null,
+            fileUrl: a.fileUrl || a.fileKey || a.key || "",
+            fileSize: a.fileSize ?? a.sizeBytes ?? null,
+            sizeBytes: a.sizeBytes ?? a.fileSize ?? null,
+            mimeType: a.mimeType ?? null,
+            createdAt: a.createdAt || new Date().toISOString(),
+            originalUrl: a.originalUrl ?? null,
+            downloadUrl: a.downloadUrl ?? null,
+            thumbUrl: a.thumbUrl ?? a.thumbnailUrl ?? null,
+            previewUrl: a.previewUrl ?? null,
+            thumbnailUrl: a.thumbnailUrl ?? null,
+            previewThumbnailUrl: a.previewThumbnailUrl ?? null,
+            thumbStatus:
+              a.previewStatus === "ready"
+                ? ("thumb_ready" as const)
+                : a.previewStatus === "pending"
+                ? ("thumb_pending" as const)
+                : a.previewStatus === "failed"
+                ? ("thumb_failed" as const)
+                : undefined,
+            thumbError: a.previewError ?? a.thumbError,
+            thumbKey: a.thumbKey,
+            previewKey: a.previewKey,
+            pageCount: a.pageCount,
+            pages: a.pages,
+          })),
+        ) as LineItemAttachment[];
       }
 
       const attachments = Array.isArray(json?.data) ? json.data : [];

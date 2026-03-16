@@ -4,6 +4,7 @@ import { FileText, Loader2 } from "lucide-react";
 import { isPdfAttachment } from "@/lib/attachments";
 import { getAttachmentPollingInterval, isAttachmentSettled } from "@/lib/attachments/attachmentStatus";
 import { mergeQuoteLineItemRows } from "@/lib/attachments/quoteLineItemRows";
+import { normalizeOrderFileRows } from "@/lib/attachments/orderFileRows";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 
 type LineItemThumbnailProps = {
@@ -33,7 +34,7 @@ type AttachmentData = {
   thumbError?: string | null;
   pageCount?: number | null;
   fileUrl?: string | null;
-  pages?: Array<{ thumbUrl?: string | null }>;
+  pages?: Array<{ thumbUrl?: string | null; thumbStatus?: string | null }>;
 };
 
 /**
@@ -79,7 +80,7 @@ export function LineItemThumbnail({
       const json = await response.json();
       const data = (json?.data || []) as AttachmentData[];
       const assets = (json?.assets || []) as AttachmentData[];
-      return parentType === "quote" ? mergeQuoteLineItemRows(data, assets) : [...data, ...assets];
+      return parentType === "quote" ? mergeQuoteLineItemRows(data, assets) : normalizeOrderFileRows(data, assets);
     },
     enabled: shouldFetch,
     refetchInterval: (query) => {
