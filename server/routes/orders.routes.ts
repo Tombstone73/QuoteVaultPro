@@ -3641,6 +3641,7 @@ export async function registerOrderRoutes(
             const orderId = String(req.params.id);
 
             const {
+                uploadId,
                 fileName,
                 fileUrl,
                 fileSize,
@@ -3673,6 +3674,32 @@ export async function registerOrderRoutes(
             const requestedTarget =
                 (typeof requestedStorageTarget === 'string' ? requestedStorageTarget : null) ||
                 (typeof storageTarget === 'string' ? storageTarget : null);
+
+            if (uploadId && typeof uploadId === 'string') {
+                const attachment = await persistOrderAttachment({
+                    orderId,
+                    quoteId: quoteId || null,
+                    organizationId,
+                    userId,
+                    userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                    description,
+                    requestedTarget,
+                    orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
+                    orderLineItemId: orderLineItemId ? String(orderLineItemId) : null,
+                    role: (role || 'other') as FileRole,
+                    side: (side || 'na') as FileSide,
+                    isPrimary: isPrimary || false,
+                    source: {
+                        kind: 'upload-session',
+                        uploadId,
+                        expectedPurpose: 'order-attachment',
+                        expectedParentId: orderId,
+                    },
+                });
+
+                const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+                return res.json({ success: true, data: enrichedAttachment });
+            }
 
             if (!fileName && !originalFilename) {
                 return res.status(400).json({ error: 'fileName or originalFilename is required' });
