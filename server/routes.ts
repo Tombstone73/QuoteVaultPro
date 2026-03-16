@@ -1662,7 +1662,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ success: false, error: 'No organization context' });
       }
 
-      const validation = await organizationStorageSettingsService.validateDraft(organizationId, req.body ?? {});
+      const validation = await organizationStorageSettingsService.validateRequest(organizationId, req.body ?? {});
       return res.json({ success: true, data: validation });
     } catch (error: any) {
       console.error('[StorageSettings:VALIDATE] Error:', error);
@@ -1680,7 +1680,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ success: false, error: 'No organization context' });
       }
 
-      const settings = await organizationStorageSettingsService.saveSettings(organizationId, req.body ?? {});
+      const settings = await organizationStorageSettingsService.saveRequest(organizationId, req.body ?? {});
       return res.json({ success: true, data: settings });
     } catch (error: any) {
       console.error('[StorageSettings:PUT] Error:', error);
@@ -1688,6 +1688,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ success: false, error: fromZodError(error).message });
       }
       return res.status(500).json({ success: false, error: error?.message || 'Failed to save storage settings' });
+    }
+  });
+
+  app.post('/api/admin/storage-settings/activate', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(403).json({ success: false, error: 'No organization context' });
+      }
+
+      const providerConfigId = typeof req.body?.providerConfigId === 'string' ? req.body.providerConfigId : '';
+      if (!providerConfigId) {
+        return res.status(400).json({ success: false, error: 'providerConfigId is required' });
+      }
+
+      const settings = await organizationStorageSettingsService.activateProvider(organizationId, providerConfigId);
+      return res.json({ success: true, data: settings });
+    } catch (error: any) {
+      console.error('[StorageSettings:ACTIVATE] Error:', error);
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ success: false, error: fromZodError(error).message });
+      }
+      return res.status(500).json({ success: false, error: error?.message || 'Failed to activate storage provider' });
     }
   });
 
