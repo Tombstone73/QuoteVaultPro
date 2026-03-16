@@ -3,6 +3,7 @@ import type { FileRecord, StoragePlacement, StorageProviderConfig, StorageJob } 
 import { deleteUploadSession, loadUploadSessionMeta, saveUploadSessionMeta } from "../chunkedUploads";
 import { fileRecordRepository } from "../../storage/fileRecord.repo";
 import { storagePlacementRepository } from "../../storage/storagePlacement.repo";
+import { normalizeLocalFilesystemStorageProviderConfig, normalizeS3CompatibleStorageProviderConfig, normalizeSupabaseStorageProviderConfig } from "@shared/storageSettings";
 import { storageJobRepository } from "../../storage/storageJob.repo";
 import { storagePolicyResolver } from "./StoragePolicyResolver";
 import { storageRegistry } from "./StorageRegistry";
@@ -81,7 +82,7 @@ export class StorageApplicationService {
       fileRecord: FileRecord;
       placement: StoragePlacement;
       storedObject: StoredObjectDescriptor;
-      legacyStorageProvider: "local" | "supabase";
+      legacyStorageProvider: "local" | "supabase" | "s3";
       legacyFileUrl: string;
       legacyRelativePath: string | null;
     }) => Promise<TLinked>;
@@ -172,21 +173,49 @@ export class StorageApplicationService {
         }
 
         stage = "prepare_existing_key";
-        const looksSupabaseKey = rawKey.startsWith("uploads/") || rawKey.startsWith("titan-private/");
-        const storageTarget = input.requestedTarget === "supabase"
-          ? "supabase"
-          : input.requestedTarget === "local_dev"
-            ? "local_dev"
-            : looksSupabaseKey
-              ? "supabase"
-              : "local_dev";
+        let storageTarget: StoredObjectDescriptor["storageTarget"];
+        let bucket: string | null;
+        let objectKey: string | null;
+        let localPathRef: string | null;
+
+        if (providerConfig.providerType === "s3") {
+          const normalized = normalizeS3CompatibleStorageProviderConfig(providerConfig.configJson);
+          storageTarget = "s3";
+          bucket = normalized.bucketName.trim() || null;
+          objectKey = rawKey;
+          localPathRef = null;
+        } else if (providerConfig.providerType === "supabase") {
+          const normalized = normalizeSupabaseStorageProviderConfig(providerConfig.configJson);
+          storageTarget = "supabase";
+          bucket = normalized.bucketName.trim() || null;
+          objectKey = rawKey;
+          localPathRef = null;
+        } else if (providerConfig.providerType === "local_filesystem") {
+          normalizeLocalFilesystemStorageProviderConfig(providerConfig.configJson);
+          storageTarget = "local_dev";
+          bucket = null;
+          objectKey = null;
+          localPathRef = rawKey;
+        } else {
+          const looksSupabaseKey = rawKey.startsWith("uploads/") || rawKey.startsWith("titan-private/");
+          storageTarget = input.requestedTarget === "supabase"
+            ? "supabase"
+            : input.requestedTarget === "local_dev"
+              ? "local_dev"
+              : looksSupabaseKey
+                ? "supabase"
+                : "local_dev";
+          bucket = storageTarget === "supabase" ? "titan-private" : null;
+          objectKey = storageTarget === "supabase" ? rawKey : null;
+          localPathRef = storageTarget === "supabase" ? null : rawKey;
+        }
 
         storedObject = {
           providerType: providerConfig.providerType,
           storageTarget,
-          bucket: storageTarget === "supabase" ? "titan-private" : null,
-          objectKey: storageTarget === "supabase" ? rawKey : null,
-          localPathRef: storageTarget === "supabase" ? null : rawKey,
+          bucket,
+          objectKey,
+          localPathRef,
           checksum: input.source.checksum ?? null,
           sizeBytes: Math.max(0, Number(input.source.fileSize || 0)),
           mimeType: input.source.mimeType || "application/octet-stream",
@@ -250,7 +279,12 @@ export class StorageApplicationService {
           fileRecord,
           placement,
           storedObject: persistedObject,
-          legacyStorageProvider: persistedObject.storageTarget === "supabase" ? "supabase" : "local",
+          legacyStorageProvider:
+            persistedObject.storageTarget === "supabase"
+              ? "supabase"
+              : persistedObject.storageTarget === "s3"
+                ? "s3"
+                : "local",
           legacyFileUrl: persistedObject.objectKey ?? persistedObject.localPathRef ?? "",
           legacyRelativePath: persistedObject.objectKey ?? persistedObject.localPathRef ?? null,
         });

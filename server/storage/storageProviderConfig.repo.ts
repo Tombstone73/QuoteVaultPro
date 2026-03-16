@@ -5,6 +5,16 @@ import { and, eq } from "drizzle-orm";
 export class StorageProviderConfigRepository {
   constructor(private readonly dbInstance = db) {}
 
+  async getById(id: string, executor: any = this.dbInstance): Promise<StorageProviderConfig | null> {
+    const [row] = await executor
+      .select()
+      .from(storageProviderConfigs)
+      .where(eq(storageProviderConfigs.id, id))
+      .limit(1);
+
+    return row ?? null;
+  }
+
   async getByIdForOrganization(organizationId: string, id: string): Promise<StorageProviderConfig | null> {
     const [row] = await this.dbInstance
       .select()

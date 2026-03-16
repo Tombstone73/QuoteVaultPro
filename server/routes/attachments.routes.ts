@@ -57,6 +57,8 @@ import { resolveLocalStoragePath } from "../services/localStoragePath";
 import { storageApplicationService } from "../services/storage/StorageApplicationService";
 import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
 import { canonicalDerivativeReadResolver } from "../services/storage/CanonicalDerivativeReadResolver";
+import { storageRegistry } from "../services/storage/StorageRegistry";
+import { storageProviderConfigRepository } from "../storage/storageProviderConfig.repo";
 import { extractNormalizedOrgIdFromKey, getTenantObjectKeyCandidates, normalizeTenantObjectKey } from "../utils/orgKeys";
 import type { DownloadIntent } from "@shared/schema";
 
@@ -251,6 +253,28 @@ export async function registerAttachmentRoutes(
     }
   };
 
+  const tryResolveProviderHandle = async (args: {
+    organizationId: string;
+    providerConfigId: string | null;
+    key: string;
+  }): Promise<{ kind: "signed_url" | "local_path"; value: string } | null> => {
+    if (!args.providerConfigId) {
+      return null;
+    }
+
+    const providerConfig = await storageProviderConfigRepository.getByIdForOrganization(args.organizationId, args.providerConfigId);
+    if (!providerConfig) {
+      return null;
+    }
+
+    const adapter = storageRegistry.getAdapter(providerConfig.providerType);
+    return adapter.getDownloadHandle({
+      providerConfig,
+      objectKey: providerConfig.providerType === "local_filesystem" ? null : args.key,
+      localPathRef: providerConfig.providerType === "local_filesystem" ? args.key : null,
+    });
+  };
+
   const deleteQuoteAttachmentWithCleanup = async (args: {
     organizationId: string;
     quoteId: string;
@@ -283,11 +307,13 @@ export async function registerAttachmentRoutes(
         ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
         : null;
       const storageKey = String(resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? attachment.fileUrl ?? "");
-      const storageProvider = resolvedOriginal?.localPathRef
+      const storageProvider = resolvedOriginal?.providerType === "local_filesystem"
         ? "local"
-        : resolvedOriginal?.objectKey
-          ? "supabase"
-          : ((attachment.storageProvider as "local" | "s3" | "gcs" | "supabase" | null | undefined) ?? null);
+        : resolvedOriginal?.providerType === "s3"
+          ? "s3"
+          : resolvedOriginal?.objectKey
+            ? "supabase"
+            : ((attachment.storageProvider as "local" | "s3" | "gcs" | "supabase" | null | undefined) ?? null);
 
       if (!storageKey) {
         return true;
@@ -519,6 +545,53 @@ export async function registerAttachmentRoutes(
 
       const bucketParamRaw = (req.query.bucket ?? "").toString().trim();
       const bucketParam = /^[a-z0-9._-]+$/i.test(bucketParamRaw) ? bucketParamRaw : "";
+      const providerConfigId = typeof req.query.providerConfigId === "string" ? req.query.providerConfigId : null;
+
+      if (providerConfigId) {
+        for (const keyToTry of candidateKeys) {
+          try {
+            const handle = await tryResolveProviderHandle({
+              organizationId,
+              providerConfigId,
+              key: keyToTry,
+            });
+
+            if (!handle) {
+              break;
+            }
+
+            if (handle.kind === "local_path") {
+              await fsPromises.access(handle.value, fsPromises.constants.R_OK);
+              return res.download(path.resolve(handle.value), resolvedName);
+            }
+
+            const upstream = await fetch(handle.value);
+            if (!upstream.ok) {
+              throw new Error(`Upstream fetch failed: ${upstream.status} ${upstream.statusText}`);
+            }
+
+            res.setHeader("Content-Disposition", `attachment; filename="${resolvedName}"`);
+            res.setHeader("Content-Type", upstream.headers.get("content-type") || "application/octet-stream");
+            res.setHeader("Cache-Control", "private, max-age=0, must-revalidate");
+
+            const body: any = (upstream as any).body;
+            if (body && typeof Readable.fromWeb === "function") {
+              const nodeStream = Readable.fromWeb(body);
+              nodeStream.on("error", (err) => {
+                console.error("[objects:download] Stream error:", err);
+                if (!res.headersSent) res.status(500).end();
+              });
+              return nodeStream.pipe(res);
+            }
+
+            return res.send(Buffer.from(await upstream.arrayBuffer()));
+          } catch (providerError: any) {
+            if (process.env.NODE_ENV === "development") {
+              console.log(`[objects:download] provider miss key="${keyToTry}":`, providerError?.message || providerError);
+            }
+          }
+        }
+      }
 
       // 1) Supabase: fetch bytes server-side and stream with attachment headers.
       if (isSupabaseConfigured()) {
@@ -674,6 +747,7 @@ export async function registerAttachmentRoutes(
 
     const bucketParamRaw = (req.query.bucket ?? "").toString().trim();
     const bucketParam = /^[a-z0-9._-]+$/i.test(bucketParamRaw) ? bucketParamRaw : "";
+    const providerConfigId = typeof req.query.providerConfigId === "string" ? req.query.providerConfigId : null;
 
     // Optional DB lookup: map object key -> original uploaded filename/mimeType (scoped to org).
     // This allows /objects/uploads/<uuid> to still download as the original filename.
@@ -703,6 +777,102 @@ export async function registerAttachmentRoutes(
     try {
       // Try Supabase then local filesystem for each candidate key.
       for (const keyToTry of candidateKeys) {
+        if (providerConfigId) {
+          try {
+            const handle = await tryResolveProviderHandle({
+              organizationId,
+              providerConfigId,
+              key: keyToTry,
+            });
+
+            if (handle) {
+              const ext = path.extname(keyToTry).toLowerCase();
+              const contentTypes: { [key: string]: string } = {
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".png": "image/png",
+                ".gif": "image/gif",
+                ".webp": "image/webp",
+                ".pdf": "application/pdf",
+              };
+              const dbMimeLower = (assetMeta?.mimeType ?? "").toLowerCase();
+              const safeLower = safeName.toLowerCase();
+              const isPdf = ext === ".pdf" || safeLower.endsWith(".pdf") || dbMimeLower.includes("pdf");
+              const isImage =
+                [".jpg", ".jpeg", ".png", ".gif", ".webp"].includes(ext) ||
+                safeLower.endsWith(".jpg") ||
+                safeLower.endsWith(".jpeg") ||
+                safeLower.endsWith(".png") ||
+                safeLower.endsWith(".gif") ||
+                safeLower.endsWith(".webp") ||
+                dbMimeLower.startsWith("image/");
+
+              if (handle.kind === "local_path") {
+                await fsPromises.access(handle.value, fsPromises.constants.R_OK);
+                const contentType = isPdf
+                  ? (!wantsDownload ? contentTypes[".pdf"] : (assetMeta?.mimeType || contentTypes[".pdf"]))
+                  : (contentTypes[ext] || assetMeta?.mimeType || "application/octet-stream");
+
+                res.setHeader("Content-Type", contentType);
+                res.setHeader(
+                  "Content-Disposition",
+                  `${wantsDownload ? "attachment" : "inline"}; filename="${safeName}"`
+                );
+                res.setHeader("Cache-Control", wantsDownload ? "private, max-age=0, must-revalidate" : "public, max-age=86400");
+                res.removeHeader("X-Frame-Options");
+                const ancestors = getFrameAncestors(req);
+                res.setHeader("Content-Security-Policy", `frame-ancestors ${ancestors.join(" ")};`);
+                return res.sendFile(path.resolve(handle.value));
+              }
+
+              const upstream = await fetch(handle.value);
+              if (!upstream.ok) {
+                const e: any = new Error(`Upstream fetch failed: ${upstream.status} ${upstream.statusText}`);
+                e.status = upstream.status;
+                throw e;
+              }
+
+              const upstreamType = upstream.headers.get("content-type") || "";
+              const inferredType = contentTypes[ext] || "";
+              const contentType = isPdf
+                ? (!wantsDownload ? "application/pdf" : (upstreamType || assetMeta?.mimeType || "application/pdf"))
+                : isImage
+                  ? (upstreamType || assetMeta?.mimeType || inferredType || "image/*")
+                  : (upstreamType || assetMeta?.mimeType || inferredType || "application/octet-stream");
+
+              res.setHeader("Content-Type", contentType);
+              res.setHeader(
+                "Content-Disposition",
+                `${wantsDownload ? "attachment" : "inline"}; filename="${safeName}"`
+              );
+              res.setHeader("Cache-Control", wantsDownload ? "private, max-age=0, must-revalidate" : "public, max-age=86400");
+              res.removeHeader("X-Frame-Options");
+              const ancestors = getFrameAncestors(req);
+              res.setHeader("Content-Security-Policy", `frame-ancestors ${ancestors.join(" ")};`);
+
+              const body: any = (upstream as any).body;
+              if (body && typeof Readable.fromWeb === "function") {
+                const nodeStream = Readable.fromWeb(body);
+                nodeStream.on("error", (err) => {
+                  console.error("[objects] upstream stream error:", err);
+                  if (!res.headersSent) res.status(500).end();
+                });
+                return nodeStream.pipe(res);
+              }
+
+              return res.send(Buffer.from(await upstream.arrayBuffer()));
+            }
+          } catch (providerError: any) {
+            if (isNotFoundError(providerError)) {
+              logExpectedNotFoundOnce("provider", keyToTry);
+            } else if (isDev) {
+              console.warn(`[objects] provider error key="${keyToTry}":`, providerError?.message || providerError);
+            } else {
+              console.error("[objects] provider error:", providerError);
+            }
+          }
+        }
+
         // 1) Supabase
         if (isSupabaseConfigured()) {
           const supabaseService = new SupabaseStorageService(bucketParam || undefined);
@@ -1303,7 +1473,13 @@ export async function registerAttachmentRoutes(
         ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
         : null;
       const canonicalStorageKey = canonicalOriginal?.objectKey ?? canonicalOriginal?.localPathRef ?? null;
-      const canonicalStorageProvider = canonicalOriginal?.localPathRef ? "local" : canonicalOriginal?.objectKey ? "supabase" : null;
+      const canonicalStorageProvider = canonicalOriginal?.providerType === "local_filesystem"
+        ? "local"
+        : canonicalOriginal?.providerType === "s3"
+          ? "s3"
+          : canonicalOriginal?.objectKey
+            ? "supabase"
+            : null;
 
       // Best-effort self-check for Supabase-backed keys (non-blocking)
       if (canonicalStorageProvider === "supabase" && canonicalStorageKey) {
@@ -1324,7 +1500,13 @@ export async function registerAttachmentRoutes(
       const hasStorageProviderForThumb = !!canonicalStorageProvider;
       const isNotHttpUrlForThumb = !!canonicalStorageKey;
 
-      if (isSupportedImage && hasStorageProviderForThumb && isNotHttpUrlForThumb && canonicalStorageKey && canonicalStorageProvider) {
+      if (
+        isSupportedImage &&
+        hasStorageProviderForThumb &&
+        isNotHttpUrlForThumb &&
+        canonicalStorageKey &&
+        (canonicalStorageProvider === "local" || canonicalStorageProvider === "supabase")
+      ) {
         const { generateImageDerivatives, isThumbnailGenerationEnabled } = await import(
           "../services/thumbnailGenerator"
         );
@@ -1358,7 +1540,14 @@ export async function registerAttachmentRoutes(
         (attachment.mimeType ?? "").toLowerCase().includes("pdf") || attachmentFileNameForPdf.endsWith(".pdf");
       const normalizedStorageProvider = canonicalStorageProvider;
 
-      if (isPdf && pdfColumnsExist && normalizedStorageProvider && isNotHttpUrlForThumb && canonicalStorageKey) {
+      if (
+        isPdf &&
+        pdfColumnsExist &&
+        normalizedStorageProvider &&
+        (normalizedStorageProvider === "local" || normalizedStorageProvider === "supabase") &&
+        isNotHttpUrlForThumb &&
+        canonicalStorageKey
+      ) {
         res.on("finish", () => {
           setImmediate(() => {
             void (async () => {

@@ -882,7 +882,7 @@ export function useQuoteEditorState() {
                 throw new Error("Failed to get upload URL");
             }
 
-            const { url, method } = await urlResponse.json();
+            const { url, method, path } = await urlResponse.json();
 
             // Step 2: Upload file to storage
             const uploadResponse = await fetch(url, {
@@ -898,7 +898,7 @@ export function useQuoteEditorState() {
             }
 
             // Step 3: Extract the file URL (remove query params)
-            const fileUrl = url.split("?")[0];
+            const fileUrl = typeof path === "string" && path ? path : url.split("?")[0];
 
             // Step 4: Attach file to line item
             const filesApiPath = quoteId
