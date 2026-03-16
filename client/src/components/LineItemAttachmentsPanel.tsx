@@ -15,7 +15,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { setPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
 import { SUPABASE_MAX_UPLOAD_BYTES } from "@/lib/config/storage";
 import { fileToBase64 } from "@/lib/uploads/fileToBase64";
-import { LargeFileLocalDevWarningDialog } from "@/components/LargeFileLocalDevWarningDialog";
+import { uploadAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
@@ -115,8 +115,6 @@ export function LineItemAttachmentsPanel({
   const [isCreatingQuote, setIsCreatingQuote] = useState(false);
   const [isPersistingLineItem, setIsPersistingLineItem] = useState(false);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
-  const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
-  const [largeFileDialogOpen, setLargeFileDialogOpen] = useState(false);
   // Store ensured IDs to use during upload (props may not have updated yet)
   const ensuredIdsRef = useRef<{ quoteId: string | null; lineItemId: string | null }>({
     quoteId: null,
@@ -369,6 +367,46 @@ export function LineItemAttachmentsPanel({
 
     try {
       for (const file of filesToUpload) {
+        if (file.size > SUPABASE_MAX_UPLOAD_BYTES) {
+          try {
+            if (parentType === "order") {
+              if (!orderId) {
+                throw new Error("Order ID is required for order line item uploads.");
+              }
+
+              await uploadAttachmentViaChunked({
+                file,
+                purpose: "order-attachment",
+                parentId: orderId,
+                linkUrl: uploadApiPath,
+                linkBody: {
+                  orderLineItemId: targetLineItemId,
+                  role: "other",
+                  side: "na",
+                },
+              });
+            } else {
+              if (!targetQuoteId) {
+                throw new Error("Quote ID is required for quote line item uploads.");
+              }
+
+              await uploadAttachmentViaChunked({
+                file,
+                purpose: "quote-attachment",
+                parentId: targetQuoteId,
+                linkUrl: uploadApiPath,
+              });
+            }
+
+            successCount++;
+            continue;
+          } catch (fileError: any) {
+            console.error(`[LineItemAttachmentsPanel] Error uploading ${file.name}:`, fileError);
+            errorCount++;
+            continue;
+          }
+        }
+
         // Backend-mediated upload: browser never talks to Supabase directly.
         // The backend receives the file bytes, decides storage target, and
         // uploads to Supabase server-side — eliminating CORS on the signed-upload endpoint.
@@ -477,34 +515,11 @@ export function LineItemAttachmentsPanel({
     }
   };
 
-  const handleLargeFileContinue = async () => {
-    setLargeFileDialogOpen(false);
-    const files = pendingFiles;
-    setPendingFiles(null);
-    if (!files || files.length === 0) {
-      clearFileInput();
-      return;
-    }
-    await performUpload(files);
-  };
-
-  const handleLargeFileCancel = () => {
-    setLargeFileDialogOpen(false);
-    setPendingFiles(null);
-    clearFileInput();
-  };
-
   // Handle file upload
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
 
     const filesToUpload = Array.from(e.target.files);
-    const hasOversized = filesToUpload.some((f) => f.size > SUPABASE_MAX_UPLOAD_BYTES);
-    if (hasOversized) {
-      setPendingFiles(filesToUpload);
-      setLargeFileDialogOpen(true);
-      return;
-    }
 
     await performUpload(filesToUpload);
   };
@@ -1037,13 +1052,6 @@ export function LineItemAttachmentsPanel({
         }}
       />
 
-      <LargeFileLocalDevWarningDialog
-        open={largeFileDialogOpen}
-        onContinue={() => {
-          void handleLargeFileContinue();
-        }}
-        onCancel={handleLargeFileCancel}
-      />
     </div>
   );
 }

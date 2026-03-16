@@ -35,7 +35,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { SUPABASE_MAX_UPLOAD_BYTES } from "@/lib/config/storage";
 import { fileToBase64 } from "@/lib/uploads/fileToBase64";
-import { LargeFileLocalDevWarningDialog } from "@/components/LargeFileLocalDevWarningDialog";
+import { uploadAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 type StorageTarget = "supabase" | "local_dev";
@@ -97,9 +97,6 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
   // Upload state
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
-  const [largeFileDialogOpen, setLargeFileDialogOpen] = useState(false);
-
   // Edit dialog form state
   const [editRole, setEditRole] = useState<string>('other');
   const [editSide, setEditSide] = useState<string>('na');
@@ -117,6 +114,24 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
 
     try {
       for (const file of filesToUpload) {
+        if (file.size > SUPABASE_MAX_UPLOAD_BYTES) {
+          try {
+            await uploadAttachmentViaChunked({
+              file,
+              purpose: "order-attachment",
+              parentId: orderId,
+              linkUrl: `/api/orders/${orderId}/files`,
+              linkBody: { role: "other", side: "na" },
+            });
+            successCount++;
+            continue;
+          } catch (fileError: any) {
+            console.error(`[OrderArtworkPanel] Error uploading ${file.name}:`, fileError);
+            errorCount++;
+            continue;
+          }
+        }
+
         // Backend-mediated upload: browser never talks to Supabase directly.
         // The backend receives the file bytes, decides storage target, and
         // uploads to Supabase server-side — eliminating the CORS issue on
@@ -196,12 +211,6 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
     if (!e.target.files || e.target.files.length === 0) return;
 
     const filesToUpload = Array.from(e.target.files);
-    const hasOversized = filesToUpload.some((f) => f.size > SUPABASE_MAX_UPLOAD_BYTES);
-    if (hasOversized) {
-      setPendingFiles(filesToUpload);
-      setLargeFileDialogOpen(true);
-      return;
-    }
 
     await uploadFiles(filesToUpload);
   };
@@ -289,20 +298,6 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
 
   return (
     <>
-      <LargeFileLocalDevWarningDialog
-        open={largeFileDialogOpen}
-        onCancel={() => {
-          setLargeFileDialogOpen(false);
-          setPendingFiles(null);
-          clearFileInput();
-        }}
-        onContinue={async () => {
-          const filesToUpload = pendingFiles || [];
-          setLargeFileDialogOpen(false);
-          setPendingFiles(null);
-          await uploadFiles(filesToUpload);
-        }}
-      />
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
