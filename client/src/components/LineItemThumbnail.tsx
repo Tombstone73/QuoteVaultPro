@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { FileText } from "lucide-react";
+import { FileText, Loader2 } from "lucide-react";
 import { isPdfAttachment } from "@/lib/attachments";
+import { getAttachmentPollingInterval, isAttachmentSettled } from "@/lib/attachments/attachmentStatus";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 
 type LineItemThumbnailProps = {
@@ -26,6 +27,11 @@ type AttachmentData = {
   originalUrl?: string | null;
   thumbnailUrl?: string | null;
   previewThumbnailUrl?: string | null;
+  thumbStatus?: string | null;
+  pageCountStatus?: string | null;
+  thumbError?: string | null;
+  pageCount?: number | null;
+  fileUrl?: string | null;
   pages?: Array<{ thumbUrl?: string | null }>;
 };
 
@@ -41,6 +47,10 @@ export function LineItemThumbnail({
   placeholderOnly = false
 }: LineItemThumbnailProps) {
   const [imageError, setImageError] = useState(false);
+  const pollingGuardRef = useRef<{ startAt: number | null; attempts: number }>({
+    startAt: null,
+    attempts: 0,
+  });
 
   const isRenderableUrl = (value: unknown): value is string => {
     if (typeof value !== "string") return false;
@@ -71,6 +81,14 @@ export function LineItemThumbnail({
       return [...data, ...assets];
     },
     enabled: shouldFetch,
+    refetchInterval: (query) => {
+      const data = query.state.data as AttachmentData[] | undefined;
+      return getAttachmentPollingInterval({
+        attachments: data,
+        guard: pollingGuardRef.current,
+        logLabel: filesApiPath,
+      });
+    },
     // Fail soft: don't log errors to console
     retry: false,
     meta: { suppressErrorToast: true },
@@ -93,6 +111,7 @@ export function LineItemThumbnail({
 
   const isPdf = isPdfAttachment(first);
   const thumbSrc = !imageError ? getThumbSrc(first) : null;
+  const isPending = !thumbSrc && !isAttachmentSettled(first as any);
 
   const devTitle =
     import.meta.env.DEV && !thumbSrc
@@ -116,6 +135,11 @@ export function LineItemThumbnail({
       ) : (
         <div className="h-full w-full flex items-center justify-center relative">
           <FileText className="h-5 w-5 text-muted-foreground" />
+          {isPending ? (
+            <div className="absolute right-0.5 top-0.5 rounded-full bg-amber-500/90 p-0.5" title="Generating thumbnail...">
+              <Loader2 className="h-2.5 w-2.5 animate-spin text-white" />
+            </div>
+          ) : null}
           {isPdf && (
             <div className="absolute bottom-1 right-1 rounded-sm bg-background/70 px-1 py-0.5 text-[10px] font-semibold text-foreground">
               PDF

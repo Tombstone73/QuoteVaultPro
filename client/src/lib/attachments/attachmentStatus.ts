@@ -102,3 +102,50 @@ export function hasAnyUnsettledAttachment(
   
   return attachments.some(att => !isAttachmentSettled(att));
 }
+
+type PollingGuardState = {
+  startAt: number | null;
+  attempts: number;
+};
+
+export function getAttachmentPollingInterval(args: {
+  attachments: AttachmentWithStatus[] | null | undefined;
+  guard: PollingGuardState;
+  maxPollMs?: number;
+  maxAttempts?: number;
+  intervalMs?: number;
+  logLabel?: string;
+}): number | false {
+  const {
+    attachments,
+    guard,
+    maxPollMs = 180_000,
+    maxAttempts = 120,
+    intervalMs = 1500,
+    logLabel,
+  } = args;
+
+  if (!hasAnyUnsettledAttachment(attachments)) {
+    guard.startAt = null;
+    guard.attempts = 0;
+    return false;
+  }
+
+  if (guard.startAt === null) {
+    guard.startAt = Date.now();
+    guard.attempts = 0;
+  }
+
+  guard.attempts += 1;
+  const elapsed = Date.now() - guard.startAt;
+  if (elapsed > maxPollMs || guard.attempts > maxAttempts) {
+    if (logLabel) {
+      console.warn(`[AttachmentPolling] Guard tripped for ${logLabel}: elapsed=${elapsed}ms attempts=${guard.attempts}`);
+    }
+    guard.startAt = null;
+    guard.attempts = 0;
+    return false;
+  }
+
+  return intervalMs;
+}
