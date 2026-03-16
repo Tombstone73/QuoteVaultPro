@@ -7,6 +7,7 @@ import { isValidHttpUrl } from "@/lib/utils";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { getThumbSrc } from "@/lib/getThumbSrc";
+import { hasAnyUnsettledAttachment, isAttachmentSettled } from "@/lib/attachments/attachmentStatus";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -62,6 +63,10 @@ export function QuoteAttachmentsPanel({ quoteId, locked = false }: { quoteId: st
   const [uploadItems, setUploadItems] = useState<
     Array<{ key: string; name: string; percent: number; error?: string | null }>
   >([]);
+  const pollingGuardRef = useRef<{ startAt: number | null; attempts: number }>({
+    startAt: null,
+    attempts: 0,
+  });
 
   const attachmentsApiPath = `/api/quotes/${quoteId}/attachments`;
 
@@ -80,13 +85,32 @@ export function QuoteAttachmentsPanel({ quoteId, locked = false }: { quoteId: st
       return json.data || [];
     },
     enabled: !!quoteId,
-    // Auto-refresh while thumbnails are pending (worker polls every 10s)
     refetchInterval: (query) => {
-      const data = query?.state?.data;
-      const hasPending = data?.some((a: QuoteAttachment) => 
-        a.thumbStatus === 'uploaded' || a.thumbStatus === 'thumb_pending'
-      );
-      return hasPending ? 5000 : false; // Poll every 5s when pending, otherwise don't poll
+      const MAX_POLL_MS = 60_000;
+      const MAX_ATTEMPTS = 40;
+      const POLL_INTERVAL_MS = 1500;
+
+      const data = query?.state?.data as QuoteAttachment[] | undefined;
+
+      if (!hasAnyUnsettledAttachment(data)) {
+        pollingGuardRef.current = { startAt: null, attempts: 0 };
+        return false;
+      }
+
+      if (pollingGuardRef.current.startAt === null) {
+        pollingGuardRef.current.startAt = Date.now();
+        pollingGuardRef.current.attempts = 0;
+      }
+
+      pollingGuardRef.current.attempts += 1;
+      const elapsed = Date.now() - pollingGuardRef.current.startAt;
+      if (elapsed > MAX_POLL_MS || pollingGuardRef.current.attempts > MAX_ATTEMPTS) {
+        console.warn(`[QuoteAttachmentsPanel] Polling guard tripped for ${attachmentsApiPath}: elapsed=${elapsed}ms attempts=${pollingGuardRef.current.attempts}`);
+        pollingGuardRef.current = { startAt: null, attempts: 0 };
+        return false;
+      }
+
+      return POLL_INTERVAL_MS;
     },
   });
 
@@ -389,7 +413,7 @@ export function QuoteAttachmentsPanel({ quoteId, locked = false }: { quoteId: st
               const displayName = a.originalFilename || a.fileName;
               const thumbSrc = getThumbSrc(a as any);
               const isPdf = a.mimeType?.toLowerCase().includes("pdf") || displayName.toLowerCase().endsWith(".pdf");
-              const isPending = a.thumbStatus === 'uploaded' || a.thumbStatus === 'thumb_pending';
+              const isPending = !isAttachmentSettled(a as any);
 
               const openInViewer = () => {
                 setViewerAttachment(a);

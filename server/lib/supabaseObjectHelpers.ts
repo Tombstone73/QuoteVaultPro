@@ -33,6 +33,111 @@ function objectsProxyUrl(key: string, params?: { download?: boolean; filename?: 
     return `/objects/${key}${query ? `?${query}` : ""}`;
 }
 
+function extractLegacyObjectPath(candidate: string | null | undefined): string | null {
+    const raw = (candidate ?? "").toString().trim();
+    if (!raw) return null;
+
+    if (/^https?:\/\//i.test(raw)) {
+        try {
+            const url = new URL(raw);
+            const objectPath = url.pathname.match(/^\/objects\/(.+)$/)?.[1] ?? null;
+            return objectPath ? normalizeObjectKeyForDb(decodeURIComponent(objectPath)) : null;
+        } catch {
+            return null;
+        }
+    }
+
+    const [pathOnly] = raw.split("?");
+
+    if (pathOnly.startsWith("/objects/")) {
+        return normalizeObjectKeyForDb(decodeURIComponent(pathOnly.slice("/objects/".length)));
+    }
+
+    if (pathOnly.startsWith("objects/")) {
+        return normalizeObjectKeyForDb(decodeURIComponent(pathOnly.slice("objects/".length)));
+    }
+
+    if (pathOnly.startsWith("/") || pathOnly.startsWith("thumbs/") || pathOnly.startsWith("thumbnails/") || pathOnly.startsWith("uploads/")) {
+        return normalizeObjectKeyForDb(decodeURIComponent(pathOnly));
+    }
+
+    return normalizeObjectKeyForDb(decodeURIComponent(pathOnly));
+}
+
+function buildLegacyReadableUrls(args: {
+    candidate: string | null | undefined;
+    filename?: string | null;
+    bucket?: string | null;
+    providerConfigId?: string | null;
+}): { objectPath: string | null; originalUrl: string | null; downloadUrl: string | null } {
+    const raw = (args.candidate ?? "").toString().trim();
+    if (!raw) {
+        return { objectPath: null, originalUrl: null, downloadUrl: null };
+    }
+
+    if (/^https?:\/\//i.test(raw)) {
+        const objectPath = extractLegacyObjectPath(raw);
+        if (objectPath) {
+            return {
+                objectPath,
+                originalUrl: objectsProxyUrl(objectPath, { bucket: args.bucket ?? null, providerConfigId: args.providerConfigId ?? null }),
+                downloadUrl: objectsProxyUrl(objectPath, {
+                    download: true,
+                    filename: args.filename ?? undefined,
+                    bucket: args.bucket ?? null,
+                    providerConfigId: args.providerConfigId ?? null,
+                }),
+            };
+        }
+
+        return {
+            objectPath: null,
+            originalUrl: raw,
+            downloadUrl: raw,
+        };
+    }
+
+    const objectPath = extractLegacyObjectPath(raw);
+    if (!objectPath) {
+        return { objectPath: null, originalUrl: null, downloadUrl: null };
+    }
+
+    return {
+        objectPath,
+        originalUrl: objectsProxyUrl(objectPath, { bucket: args.bucket ?? null, providerConfigId: args.providerConfigId ?? null }),
+        downloadUrl: objectsProxyUrl(objectPath, {
+            download: true,
+            filename: args.filename ?? undefined,
+            bucket: args.bucket ?? null,
+            providerConfigId: args.providerConfigId ?? null,
+        }),
+    };
+}
+
+function buildLegacyDerivativeAccess(args: {
+    derivativeCandidate: string | null | undefined;
+    bucket?: string | null;
+}): DerivativeFileAccessResult {
+    const urls = buildLegacyReadableUrls({
+        candidate: args.derivativeCandidate,
+        bucket: args.bucket ?? null,
+    });
+
+    if (!urls.originalUrl) {
+        return {
+            objectPath: null,
+            url: null,
+            availabilityStatus: "missing",
+        };
+    }
+
+    return {
+        objectPath: urls.objectPath,
+        url: urls.originalUrl,
+        availabilityStatus: "available",
+    };
+}
+
 export async function resolveOriginalFileAccess(
     attachment: {
         id?: string | null;
@@ -40,6 +145,10 @@ export async function resolveOriginalFileAccess(
         fileName?: string | null;
         originalFilename?: string | null;
         mimeType?: string | null;
+        fileUrl?: string | null;
+        fileKey?: string | null;
+        bucket?: string | null;
+        providerConfigId?: string | null;
     },
     options?: {
         logOnce?: (key: string, ...args: any[]) => void;
@@ -48,8 +157,31 @@ export async function resolveOriginalFileAccess(
     const displayFilename = String(attachment.originalFilename || attachment.fileName || `attachment-${attachment.id || "unknown"}`);
     const fallbackMimeType = attachment.mimeType ?? null;
     const logOnce = options?.logOnce;
+    const legacyOriginal = buildLegacyReadableUrls({
+        candidate: attachment.fileUrl ?? attachment.fileKey ?? null,
+        filename: displayFilename,
+        bucket: attachment.bucket ?? null,
+        providerConfigId: attachment.providerConfigId ?? null,
+    });
 
     if (!attachment.fileRecordId) {
+        if (legacyOriginal.originalUrl) {
+            logOnce?.(
+                `canonical-missing-legacy:${attachment.id ?? displayFilename}`,
+                "[CanonicalOriginalRead] Missing fileRecordId; falling back to legacy file location",
+                { attachmentId: attachment.id ?? null, displayFilename, objectPath: legacyOriginal.objectPath }
+            );
+
+            return {
+                displayFilename,
+                mimeType: fallbackMimeType,
+                objectPath: legacyOriginal.objectPath,
+                originalUrl: legacyOriginal.originalUrl,
+                downloadUrl: legacyOriginal.downloadUrl,
+                availabilityStatus: "available",
+            };
+        }
+
         logOnce?.(
             `canonical-missing:${attachment.id ?? displayFilename}`,
             "[CanonicalOriginalRead] Missing fileRecordId; original file read unavailable",
@@ -73,6 +205,28 @@ export async function resolveOriginalFileAccess(
     const canonicalMimeType = resolved.mimeType ?? fallbackMimeType;
 
     if (availabilityStatus !== "available" || !objectPath) {
+        if (legacyOriginal.originalUrl) {
+            logOnce?.(
+                `canonical-fallback:${attachment.fileRecordId}`,
+                "[CanonicalOriginalRead] Canonical original unavailable; falling back to legacy file location",
+                {
+                    attachmentId: attachment.id ?? null,
+                    fileRecordId: attachment.fileRecordId,
+                    availabilityStatus,
+                    fallbackObjectPath: legacyOriginal.objectPath,
+                }
+            );
+
+            return {
+                displayFilename: canonicalDisplayName,
+                mimeType: canonicalMimeType,
+                objectPath: legacyOriginal.objectPath,
+                originalUrl: legacyOriginal.originalUrl,
+                downloadUrl: legacyOriginal.downloadUrl,
+                availabilityStatus: "available",
+            };
+        }
+
         logOnce?.(
             `canonical-unavailable:${attachment.fileRecordId}`,
             "[CanonicalOriginalRead] Canonical original unavailable",
@@ -113,6 +267,13 @@ export async function resolveDerivativeFileAccess(
     attachment: {
         id?: string | null;
         fileRecordId?: string | null;
+        thumbKey?: string | null;
+        previewKey?: string | null;
+        thumbUrl?: string | null;
+        previewUrl?: string | null;
+        thumbnailUrl?: string | null;
+        previewThumbnailUrl?: string | null;
+        bucket?: string | null;
     },
     derivativeType: "thumbnail" | "preview",
     options?: {
@@ -120,8 +281,25 @@ export async function resolveDerivativeFileAccess(
     }
 ): Promise<DerivativeFileAccessResult> {
     const logOnce = options?.logOnce;
+    const legacyDerivative = buildLegacyDerivativeAccess({
+        derivativeCandidate:
+            derivativeType === "thumbnail"
+                ? (attachment.thumbUrl ?? attachment.thumbnailUrl ?? attachment.thumbKey ?? null)
+                : (attachment.previewUrl ?? attachment.previewThumbnailUrl ?? attachment.previewKey ?? null),
+        bucket: attachment.bucket ?? null,
+    });
 
     if (!attachment.fileRecordId) {
+        if (legacyDerivative.url) {
+            logOnce?.(
+                `canonical-derivative-missing-legacy:${derivativeType}:${attachment.id ?? "unknown"}`,
+                `[CanonicalDerivativeRead] Missing fileRecordId; falling back to legacy ${derivativeType} location`,
+                { attachmentId: attachment.id ?? null, derivativeType, objectPath: legacyDerivative.objectPath }
+            );
+
+            return legacyDerivative;
+        }
+
         logOnce?.(
             `canonical-derivative-missing:${derivativeType}:${attachment.id ?? "unknown"}`,
             `[CanonicalDerivativeRead] Missing fileRecordId; ${derivativeType} read unavailable`,
@@ -139,6 +317,22 @@ export async function resolveDerivativeFileAccess(
     const objectPath = resolved.objectKey ?? null;
 
     if (resolved.status !== "available" || !objectPath) {
+        if (legacyDerivative.url) {
+            logOnce?.(
+                `canonical-derivative-fallback:${derivativeType}:${attachment.fileRecordId}`,
+                `[CanonicalDerivativeRead] Canonical ${derivativeType} unavailable; falling back to legacy location`,
+                {
+                    attachmentId: attachment.id ?? null,
+                    fileRecordId: attachment.fileRecordId,
+                    derivativeType,
+                    availabilityStatus: resolved.status,
+                    fallbackObjectPath: legacyDerivative.objectPath,
+                }
+            );
+
+            return legacyDerivative;
+        }
+
         if (resolved.status === "missing") {
             logOnce?.(
                 `canonical-derivative-unavailable:${derivativeType}:${attachment.fileRecordId}`,
