@@ -24,6 +24,7 @@ import {
   useStorageSettings,
   type OrganizationStorageSettingsView,
   type StorageProviderView,
+  type StorageRuntimeMode,
   type StorageValidationSummary,
 } from "@/hooks/useStorageSettings";
 import { useToast } from "@/hooks/use-toast";
@@ -90,9 +91,51 @@ function formatStatusLabel(value: string) {
   return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+function formatRuntimeModeDescription(mode: StorageRuntimeMode) {
+  switch (mode) {
+    case "byos_local":
+      return "Saved BYOS local provider controls uploads.";
+    case "byos_cloud":
+      return "Saved BYOS cloud provider controls uploads.";
+    case "hybrid":
+      return "Hybrid runtime mode is active.";
+    case "disabled":
+      return "Storage is disabled for this organization.";
+    case "titan_managed":
+    default:
+      return "Titan-managed routing controls uploads.";
+  }
+}
+
+function formatProviderDestination(provider: StorageProviderView | null) {
+  if (!provider) {
+    return "No active destination";
+  }
+
+  if (provider.providerType === "local_filesystem") {
+    const prefix = provider.config.subfolderPrefix?.trim();
+    return prefix
+      ? `Application server disk under FILE_STORAGE_ROOT/${prefix}`
+      : "Application server disk under FILE_STORAGE_ROOT";
+  }
+
+  if (provider.providerType === "supabase") {
+    const prefix = provider.config.pathPrefix?.trim();
+    return prefix
+      ? `Supabase bucket ${provider.config.bucketName} / ${prefix}`
+      : `Supabase bucket ${provider.config.bucketName}`;
+  }
+
+  const prefix = provider.config.pathPrefix?.trim();
+  const label = provider.config.providerLabel?.trim() || "S3-compatible";
+  return prefix
+    ? `${label} bucket ${provider.config.bucketName} / ${prefix}`
+    : `${label} bucket ${provider.config.bucketName}`;
+}
+
 function buildOrchestrationFormState(settings?: OrganizationStorageSettingsView | null): OrchestrationFormState {
   return {
-    mode: settings?.profile.mode ?? "titan_managed",
+    mode: settings?.profile.mode === "disabled" ? "disabled" : "titan_managed",
     displayName: settings?.orchestration.displayName ?? "Titan Managed Orchestration",
     routingMode: settings?.orchestration.config.routingMode ?? "auto",
     maxCloudUploadBytesOverrideInput:
@@ -110,7 +153,7 @@ function buildEmptyProviderForm(providerType: ConfigurableStorageProviderType): 
       providerType === "supabase"
         ? "Supabase Storage"
         : providerType === "local_filesystem"
-          ? "Local Filesystem Storage"
+          ? "Server Filesystem Storage"
           : "IDrive E2 / S3-Compatible Storage",
     bucketName: providerType === "supabase" ? "titan-private" : "",
     pathPrefix: "",
@@ -609,7 +652,7 @@ export default function StorageSettingsPage() {
             <h2 className="text-titan-lg font-semibold text-titan-text-primary">Storage</h2>
           </div>
           <p className="text-sm text-titan-text-secondary">
-            Manage orchestration rules, saved provider records, and the currently active runtime provider separately.
+            Manage Titan-managed orchestration settings, saved BYOS provider records, and the current runtime destination explicitly.
           </p>
         </div>
 
@@ -617,7 +660,7 @@ export default function StorageSettingsPage() {
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Saved drafts and active runtime are separate</AlertTitle>
           <AlertDescription>
-            Validating and saving a provider draft stores a reusable record. Runtime behavior only changes when you activate a supported provider.
+            Validating and saving a provider draft stores a reusable record. Upload destination only changes when you activate a supported provider.
           </AlertDescription>
         </Alert>
 
@@ -633,7 +676,8 @@ export default function StorageSettingsPage() {
               </div>
             </CardHeader>
             <CardContent className="space-y-2 text-sm text-muted-foreground">
-              <div className="flex items-center justify-between gap-3"><span>Mode</span><span className="font-medium text-foreground">{formatStatusLabel(settings.profile.mode)}</span></div>
+              <div className="flex items-center justify-between gap-3"><span>Runtime mode</span><span className="font-medium text-foreground">{formatStatusLabel(settings.profile.mode)}</span></div>
+              <div className="rounded-lg border p-3 text-xs text-muted-foreground">{formatRuntimeModeDescription(settings.profile.mode)}</div>
               <div className="flex items-center justify-between gap-3"><span>Persisted state</span><span className="font-medium text-foreground">{settings.profile.persistedStatus ? formatStatusLabel(settings.profile.persistedStatus) : "Not saved yet"}</span></div>
               <div className="flex items-center justify-between gap-3"><span>Updated</span><span className="font-medium text-foreground">{settings.profile.updatedAt ? new Date(settings.profile.updatedAt).toLocaleString() : "Never"}</span></div>
             </CardContent>
@@ -644,7 +688,7 @@ export default function StorageSettingsPage() {
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <CardTitle className="flex items-center gap-2 text-base"><Zap className="h-4 w-4" />Active provider</CardTitle>
-                  <CardDescription>Current runtime canonical storage target</CardDescription>
+                  <CardDescription>Current runtime upload destination truth for BYOS testing</CardDescription>
                 </div>
                 <Badge variant="outline" className={settings.activeProvider ? providerStatusClasses[settings.activeProvider.status] : providerStatusClasses.missing}>
                   {formatStatusLabel(settings.activeProvider?.status ?? "missing")}
@@ -654,7 +698,13 @@ export default function StorageSettingsPage() {
             <CardContent className="space-y-2 text-sm text-muted-foreground">
               <div className="flex items-center justify-between gap-3"><span>Provider</span><span className="font-medium text-foreground">{settings.activeProvider?.displayName ?? "No active provider"}</span></div>
               <div className="flex items-center justify-between gap-3"><span>Type</span><span className="font-medium text-foreground">{settings.activeProvider ? formatStatusLabel(settings.activeProvider.providerType) : "—"}</span></div>
+              <div className="flex items-center justify-between gap-3"><span>Destination</span><span className="text-right font-medium text-foreground">{formatProviderDestination(settings.activeProvider)}</span></div>
               <div className="flex items-center justify-between gap-3"><span>Runtime support</span><span className="font-medium text-foreground">{settings.activeProvider ? settings.activeProvider.runtimeSupported ? "Supported" : "Not yet supported" : "—"}</span></div>
+              {settings.activeProvider?.providerType === "local_filesystem" ? (
+                <div className="rounded-lg border p-3 text-xs text-muted-foreground">
+                  Local filesystem means the hosted application server disk under FILE_STORAGE_ROOT, not Batman&apos;s PC path.
+                </div>
+              ) : null}
             </CardContent>
           </Card>
 
@@ -680,9 +730,19 @@ export default function StorageSettingsPage() {
           <Card>
             <CardHeader>
               <CardTitle>Orchestration and routing</CardTitle>
-              <CardDescription>Controls Titan-managed routing logic independently from provider records.</CardDescription>
+              <CardDescription>Titan-managed routing rules are separate from the saved active BYOS provider.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
+              {settings.activeProvider ? (
+                <Alert>
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle>BYOS provider is active</AlertTitle>
+                  <AlertDescription>
+                    Titan-managed routing previews below do not control current uploads while {settings.activeProvider.displayName} is active. They only apply if runtime is switched back to Titan managed.
+                  </AlertDescription>
+                </Alert>
+              ) : null}
+
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="storage-mode">Storage mode</Label>
@@ -746,7 +806,7 @@ export default function StorageSettingsPage() {
           <Card>
             <CardHeader>
               <CardTitle>Saved provider records</CardTitle>
-              <CardDescription>Configure reusable provider records for Supabase, local storage, and S3-compatible backends.</CardDescription>
+              <CardDescription>Configure reusable provider records for Supabase, server filesystem, and S3-compatible backends.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex flex-wrap gap-2">
@@ -824,7 +884,7 @@ export default function StorageSettingsPage() {
                     <SelectTrigger id="provider-type"><SelectValue placeholder="Select provider type" /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="supabase">Supabase</SelectItem>
-                      <SelectItem value="local_filesystem">Local storage</SelectItem>
+                      <SelectItem value="local_filesystem">Server filesystem</SelectItem>
                       <SelectItem value="s3">IDrive E2 / S3-compatible</SelectItem>
                     </SelectContent>
                   </Select>
@@ -849,9 +909,14 @@ export default function StorageSettingsPage() {
               ) : null}
 
               {providerForm.providerType === "local_filesystem" ? (
-                <div className="space-y-2">
-                  <Label htmlFor="local-subfolder">Subfolder prefix</Label>
-                  <Input id="local-subfolder" value={providerForm.subfolderPrefix} onChange={(event) => setProviderForm((current) => ({ ...current, subfolderPrefix: event.target.value }))} placeholder="optional/subfolder" />
+                <div className="space-y-3">
+                  <div className="rounded-lg border p-3 text-sm text-muted-foreground">
+                    Server filesystem providers write to the hosted app server disk under FILE_STORAGE_ROOT. They do not write to Batman&apos;s personal computer.
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="local-subfolder">Server subfolder prefix</Label>
+                    <Input id="local-subfolder" value={providerForm.subfolderPrefix} onChange={(event) => setProviderForm((current) => ({ ...current, subfolderPrefix: event.target.value }))} placeholder="optional/subfolder" />
+                  </div>
                 </div>
               ) : null}
 

@@ -74,10 +74,12 @@ export type StorageProviderView =
       config: { providerType: "s3" } & Omit<S3CompatibleStorageProviderConfig, "secretAccessKey">;
     });
 
+export type StorageRuntimeMode = "titan_managed" | "byos_cloud" | "byos_local" | "hybrid" | "disabled";
+
 export type OrganizationStorageSettingsView = {
   profile: {
     id: string | null;
-    mode: StorageSettingsMode;
+    mode: StorageRuntimeMode;
     status: OrganizationStorageProfileViewStatus;
     persistedStatus: string | null;
     updatedAt: string | null;
