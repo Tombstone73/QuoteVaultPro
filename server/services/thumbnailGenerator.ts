@@ -311,8 +311,9 @@ export async function generateImageDerivatives(
       return;
     }
 
-    // Stale task guard: if fileUrl has changed, skip (attachment was replaced)
-    if (attachment.fileUrl !== fileKey) {
+    // Stale task guard for legacy non-canonical rows only.
+    // Canonical attachments intentionally persist `fileRecordId` and often keep `fileUrl=null`.
+    if (!attachment.fileRecordId && attachment.fileUrl !== fileKey) {
       console.log(`[ThumbnailGenerator] Skipping ${attachmentId}: fileUrl mismatch (expected ${fileKey}, got ${attachment.fileUrl})`);
       return;
     }
