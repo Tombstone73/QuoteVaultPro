@@ -1,5 +1,6 @@
 import type { StorageProviderConfig } from "@shared/schema";
 import { localFilesystemStorageAdapter } from "./adapters/LocalFilesystemStorageAdapter";
+import { s3CompatibleStorageAdapter } from "./adapters/S3CompatibleStorageAdapter";
 import { supabaseStorageAdapter } from "./adapters/SupabaseStorageAdapter";
 import { titanManagedStorageAdapter } from "./adapters/TitanManagedStorageAdapter";
 import type { StorageProviderAdapter } from "./adapters/StorageProviderAdapter";
@@ -9,6 +10,7 @@ export class StorageRegistry {
     ["titan_managed", titanManagedStorageAdapter],
     ["supabase", supabaseStorageAdapter],
     ["local_filesystem", localFilesystemStorageAdapter],
+    ["s3", s3CompatibleStorageAdapter],
   ]);
 
   getAdapter(providerType: StorageProviderConfig["providerType"]): StorageProviderAdapter {

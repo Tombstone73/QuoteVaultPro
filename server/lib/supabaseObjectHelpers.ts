@@ -24,11 +24,12 @@ export type DerivativeFileAccessResult = {
     availabilityStatus: CanonicalDerivativeReadStatus;
 };
 
-function objectsProxyUrl(key: string, params?: { download?: boolean; filename?: string; bucket?: string | null }) {
+function objectsProxyUrl(key: string, params?: { download?: boolean; filename?: string; bucket?: string | null; providerConfigId?: string | null }) {
     const download = params?.download ? "download=1" : "";
     const filename = params?.filename ? `filename=${encodeURIComponent(params.filename)}` : "";
     const bucketParam = params?.bucket ? `bucket=${encodeURIComponent(params.bucket)}` : "";
-    const query = [download, filename, bucketParam].filter(Boolean).join("&");
+    const providerConfigParam = params?.providerConfigId ? `providerConfigId=${encodeURIComponent(params.providerConfigId)}` : "";
+    const query = [download, filename, bucketParam, providerConfigParam].filter(Boolean).join("&");
     return `/objects/${key}${query ? `?${query}` : ""}`;
 }
 
@@ -97,11 +98,12 @@ export async function resolveOriginalFileAccess(
         displayFilename: canonicalDisplayName,
         mimeType: canonicalMimeType,
         objectPath,
-        originalUrl: objectsProxyUrl(objectPath, { bucket: resolved.bucket ?? null }),
+        originalUrl: objectsProxyUrl(objectPath, { bucket: resolved.bucket ?? null, providerConfigId: resolved.providerConfigId }),
         downloadUrl: objectsProxyUrl(objectPath, {
             download: true,
             filename: canonicalDisplayName,
             bucket: resolved.bucket ?? null,
+            providerConfigId: resolved.providerConfigId,
         }),
         availabilityStatus,
     };
