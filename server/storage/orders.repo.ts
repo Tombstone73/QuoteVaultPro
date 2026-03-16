@@ -1211,7 +1211,7 @@ export class OrdersRepository {
             })
             .from(orderAttachments)
             .leftJoin(users, eq(orderAttachments.uploadedByUserId, users.id))
-            .where(eq(orderAttachments.orderId, orderId))
+            .where(and(eq(orderAttachments.orderId, orderId), isNull(orderAttachments.orderLineItemId)))
             .orderBy(desc(orderAttachments.createdAt));
 
         return files.map(f => ({

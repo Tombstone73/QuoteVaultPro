@@ -556,6 +556,7 @@ export async function registerOrderRoutes(
 
     const persistOrderAttachment = async (args: {
         orderId: string;
+        orderLineItemId?: string | null;
         quoteId?: string | null;
         organizationId: string;
         userId: string | null;
@@ -563,6 +564,9 @@ export async function registerOrderRoutes(
         description?: string | null;
         requestedTarget?: string | null;
         orderNumber?: string | null;
+        role?: FileRole;
+        side?: FileSide;
+        isPrimary?: boolean;
         source:
             | {
                 kind: "buffer";
@@ -596,11 +600,13 @@ export async function registerOrderRoutes(
                 resourceType: "order",
                 resourceId: args.orderId,
                 orderNumber: args.orderNumber ?? undefined,
+                lineItemId: args.orderLineItemId ?? undefined,
             },
             source: args.source,
             persistLink: async (tx, stored) => {
                 const [created] = await tx.insert(orderAttachments).values({
                     orderId: args.orderId,
+                    orderLineItemId: args.orderLineItemId ?? null,
                     quoteId: args.quoteId || null,
                     fileRecordId: stored.fileRecord.id,
                     uploadedByUserId: args.userId,
@@ -617,6 +623,9 @@ export async function registerOrderRoutes(
                     extension: stored.storedObject.extension,
                     checksum: stored.storedObject.checksum,
                     sizeBytes: stored.storedObject.sizeBytes,
+                    role: args.role ?? 'other',
+                    side: args.side ?? 'na',
+                    isPrimary: args.isPrimary ?? false,
                 }).returning();
 
                 if (!created) {
@@ -3732,18 +3741,6 @@ export async function registerOrderRoutes(
 
                 if (!lineItem) {
                     return res.status(404).json({ error: 'Line item not found' });
-                }
-            } else {
-                const candidateLineItems = await db
-                    .select({ id: orderLineItems.id })
-                    .from(orderLineItems)
-                    .where(eq(orderLineItems.orderId, orderId))
-                    .limit(2);
-
-                if (candidateLineItems.length === 1) {
-                    resolvedLineItemId = candidateLineItems[0].id;
-                } else if (candidateLineItems.length > 1) {
-                    return res.status(400).json({ error: 'lineItemId is required when an order has multiple line items' });
                 }
             }
 

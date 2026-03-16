@@ -33,12 +33,8 @@ import { isValidHttpUrl } from "@/lib/utils";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
-import { SUPABASE_MAX_UPLOAD_BYTES } from "@/lib/config/storage";
-import { fileToBase64 } from "@/lib/uploads/fileToBase64";
 import { uploadAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-
-type StorageTarget = "supabase" | "local_dev";
 
 const FILE_ROLES = [
   { value: 'artwork', label: 'Artwork', icon: ImageIcon },
@@ -114,59 +110,14 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
 
     try {
       for (const file of filesToUpload) {
-        if (file.size > SUPABASE_MAX_UPLOAD_BYTES) {
-          try {
-            await uploadAttachmentViaChunked({
-              file,
-              purpose: "order-attachment",
-              parentId: orderId,
-              linkUrl: `/api/orders/${orderId}/files`,
-              linkBody: { role: "other", side: "na" },
-            });
-            successCount++;
-            continue;
-          } catch (fileError: any) {
-            console.error(`[OrderArtworkPanel] Error uploading ${file.name}:`, fileError);
-            errorCount++;
-            continue;
-          }
-        }
-
-        // Backend-mediated upload: browser never talks to Supabase directly.
-        // The backend receives the file bytes, decides storage target, and
-        // uploads to Supabase server-side — eliminating the CORS issue on
-        // the Supabase signed-upload endpoint.
-        const requestedStorageTarget: StorageTarget =
-          file.size > SUPABASE_MAX_UPLOAD_BYTES ? "local_dev" : "supabase";
-
         try {
-          console.log(`[OrderArtworkPanel] Uploading ${file.name} (${file.size} bytes) via backend`);
-          const fileBufferBase64 = await fileToBase64(file);
-
-          const res = await fetch(`/api/orders/${orderId}/files`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({
-              originalFilename: file.name,
-              fileName: file.name,
-              fileSize: file.size,
-              mimeType: file.type,
-              fileBuffer: fileBufferBase64,
-              role: "other",
-              side: "na",
-              requestedStorageTarget,
-            }),
+          await uploadAttachmentViaChunked({
+            file,
+            purpose: "order-attachment",
+            parentId: orderId,
+            linkUrl: `/api/orders/${orderId}/files`,
+            linkBody: { role: "other", side: "na" },
           });
-
-          if (!res.ok) {
-            const json = await res.json().catch(() => ({}));
-            const msg = json?.error || json?.message || `Upload failed (HTTP ${res.status})`;
-            console.error(`[OrderArtworkPanel] Upload failed for ${file.name}:`, msg);
-            throw new Error(msg);
-          }
-
-          console.log(`[OrderArtworkPanel] Upload succeeded for ${file.name}`);
           successCount++;
         } catch (fileError: any) {
           console.error(`[OrderArtworkPanel] Error uploading ${file.name}:`, fileError);
