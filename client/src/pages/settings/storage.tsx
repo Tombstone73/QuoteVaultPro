@@ -400,7 +400,7 @@ function ValidationCard({
                       <TableCell>{formatStatusLabel(validation.preview.routingMode)}</TableCell>
                     </TableRow>
                     <TableRow>
-                      <TableCell>Cloud threshold</TableCell>
+                      <TableCell>Titan-managed cloud threshold</TableCell>
                       <TableCell>{validation.preview.maxCloudUploadBytes.toLocaleString()} bytes</TableCell>
                     </TableRow>
                     <TableRow>
@@ -782,8 +782,8 @@ export default function StorageSettingsPage() {
                   </Select>
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="max-cloud-upload">Max cloud upload bytes override</Label>
-                  <Input id="max-cloud-upload" inputMode="numeric" value={orchestrationForm.maxCloudUploadBytesOverrideInput} onChange={(event) => setOrchestrationForm((current) => ({ ...current, maxCloudUploadBytesOverrideInput: event.target.value }))} placeholder="Leave blank to use default" disabled={orchestrationForm.mode === "disabled"} />
+                  <Label htmlFor="max-cloud-upload">Titan-managed cloud upload threshold</Label>
+                  <Input id="max-cloud-upload" inputMode="numeric" value={orchestrationForm.maxCloudUploadBytesOverrideInput} onChange={(event) => setOrchestrationForm((current) => ({ ...current, maxCloudUploadBytesOverrideInput: event.target.value }))} placeholder="Leave blank to use default when Titan-managed routing is active" disabled={orchestrationForm.mode === "disabled"} />
                 </div>
               </div>
 

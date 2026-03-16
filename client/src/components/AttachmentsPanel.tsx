@@ -9,7 +9,7 @@ import { Paperclip, Upload, Download, X, Loader2, FileText, Image, File } from "
 import { isValidHttpUrl } from "@/lib/utils";
 import { SUPABASE_MAX_UPLOAD_BYTES, formatBytes } from "@/lib/config/storage";
 import { fileToBase64 } from "@/lib/uploads/fileToBase64";
-import { LargeFileLocalDevWarningDialog } from "@/components/LargeFileLocalDevWarningDialog";
+import { uploadAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
 
 type StorageTarget = "supabase" | "local_dev";
 
@@ -52,8 +52,6 @@ export function AttachmentsPanel({
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
-  const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
-  const [largeFileDialogOpen, setLargeFileDialogOpen] = useState(false);
 
   // Build API paths based on owner type
   const filesApiPath = ownerType === "quote" 
@@ -118,6 +116,26 @@ export function AttachmentsPanel({
           });
           errorCount++;
           continue;
+        }
+
+        if (file.size > SUPABASE_MAX_UPLOAD_BYTES) {
+          try {
+            await uploadAttachmentViaChunked({
+              file,
+              purpose: ownerType === "quote" ? "quote-attachment" : "order-attachment",
+              parentId: ownerId,
+              linkUrl: filesApiPath,
+              linkBody: ownerType === "order"
+                ? { role: "other", side: "na" }
+                : undefined,
+            });
+            successCount++;
+            continue;
+          } catch (fileError: any) {
+            console.error(`Error uploading ${file.name}:`, fileError);
+            errorCount++;
+            continue;
+          }
         }
 
         const requestedStorageTarget: StorageTarget = file.size > SUPABASE_MAX_UPLOAD_BYTES ? "local_dev" : "supabase";
@@ -271,13 +289,6 @@ export function AttachmentsPanel({
 
     const filesToUpload = Array.from(e.target.files);
 
-    const hasOversized = filesToUpload.some((f) => f.size > SUPABASE_MAX_UPLOAD_BYTES);
-    if (hasOversized) {
-      setPendingFiles(filesToUpload);
-      setLargeFileDialogOpen(true);
-      return;
-    }
-
     await uploadFiles(filesToUpload);
   };
 
@@ -316,20 +327,6 @@ export function AttachmentsPanel({
 
   return (
     <Card className={compact ? "rounded-xl bg-card/80 border-border/60 shadow-md" : ""}>
-      <LargeFileLocalDevWarningDialog
-        open={largeFileDialogOpen}
-        onCancel={() => {
-          setLargeFileDialogOpen(false);
-          setPendingFiles(null);
-          clearFileInput();
-        }}
-        onContinue={async () => {
-          const files = pendingFiles || [];
-          setLargeFileDialogOpen(false);
-          setPendingFiles(null);
-          await uploadFiles(files);
-        }}
-      />
       <CardHeader className={compact ? "pb-2 px-5 pt-4" : ""}>
         <CardTitle className={compact ? "text-sm font-medium flex items-center gap-2" : "flex items-center gap-2"}>
           <Paperclip className={compact ? "w-4 h-4" : "w-5 h-5"} />

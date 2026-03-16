@@ -6315,20 +6315,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (!assertQuoteEditable(res, quote)) return;
 
-      const { fileName, fileUrl, fileSize, mimeType, description, fileBuffer, originalFilename, storageTarget, requestedStorageTarget } = req.body;
+      const { uploadId, fileName, fileUrl, fileSize, mimeType, description, fileBuffer, originalFilename, storageTarget, requestedStorageTarget } = req.body;
 
       console.log(`[LineItemFiles:POST] quoteId=${quoteId}, lineItemId=${lineItemId}, fileName=${fileName}`);
-
-      if (!fileName && !originalFilename) {
-        return res.status(400).json({ error: "fileName or originalFilename is required" });
-      }
 
       const requestedTarget =
         (typeof requestedStorageTarget === 'string' ? requestedStorageTarget : null) ||
         (typeof storageTarget === 'string' ? storageTarget : null);
 
+      if (!uploadId && !fileName && !originalFilename) {
+        return res.status(400).json({ error: "fileName or originalFilename is required" });
+      }
+
       // Legacy flow requires fileUrl.
-      if (!fileBuffer && !fileUrl) {
+      if (!uploadId && !fileBuffer && !fileUrl) {
         return res.status(400).json({ error: "fileUrl is required for legacy uploads" });
       }
 
@@ -6374,7 +6374,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       let canonicalUpload: Awaited<ReturnType<typeof storageApplicationService.finalizeUpload<any>>> | null = null;
 
-      if (fileBuffer && resolvedUploadName) {
+      if (uploadId && typeof uploadId === 'string') {
+        canonicalUpload = await storageApplicationService.finalizeUpload({
+          organizationId,
+          createdByUserId: userId ?? null,
+          requestedTarget,
+          resource: {
+            organizationId,
+            resourceType: 'quote',
+            resourceId: quoteId,
+            lineItemId,
+          },
+          source: {
+            kind: 'upload-session',
+            uploadId,
+            expectedPurpose: 'quote-attachment',
+            expectedParentId: quoteId,
+          },
+          persistLink: async (tx, stored) => {
+            const [created] = await tx.insert(quoteAttachments).values({
+              ...baseAttachmentData,
+              fileRecordId: stored.fileRecord.id,
+              fileName: stored.storedObject.originalFilename,
+              fileUrl: null,
+              fileSize: stored.storedObject.sizeBytes,
+              mimeType: stored.storedObject.mimeType,
+              originalFilename: stored.storedObject.originalFilename,
+              storedFilename: stored.storedObject.storedFilename,
+              relativePath: null,
+              storageProvider: null,
+              extension: stored.storedObject.extension,
+              sizeBytes: stored.storedObject.sizeBytes,
+              checksum: stored.storedObject.checksum,
+              thumbStatus: defaultThumbStatus,
+              pageCountStatus: defaultPageCountStatus,
+            }).returning();
+
+            if (!created) throw new Error('Failed to create quote line item attachment link');
+            return created;
+          },
+        });
+      } else if (fileBuffer && resolvedUploadName) {
         canonicalUpload = await storageApplicationService.finalizeUpload({
           organizationId,
           createdByUserId: userId ?? null,

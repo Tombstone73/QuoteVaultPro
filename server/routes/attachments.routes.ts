@@ -1381,7 +1381,7 @@ export async function registerAttachmentRoutes(
 
       if (!assertQuoteEditable(res, quote)) return;
 
-      const { fileName, fileUrl, fileSize, mimeType, description, fileBuffer, originalFilename, storageTarget, requestedStorageTarget } = req.body;
+      const { uploadId, fileName, fileUrl, fileSize, mimeType, description, fileBuffer, originalFilename, storageTarget, requestedStorageTarget } = req.body;
 
       const requestedTarget =
         (typeof requestedStorageTarget === 'string' ? requestedStorageTarget : null) ||
@@ -1402,6 +1402,28 @@ export async function registerAttachmentRoutes(
         console.warn(
           `[QuoteFiles:POST] PDF detected but page_count_status column missing; PDF processing disabled for ${resolvedUploadName}`
         );
+      }
+
+      if (uploadId && typeof uploadId === "string") {
+        const attachment = await persistQuoteAttachment({
+          quoteId: req.params.id,
+          organizationId,
+          userId,
+          userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+          description,
+          requestedTarget,
+          thumbStatus,
+          pageCountStatus,
+          source: {
+            kind: "upload-session",
+            uploadId,
+            expectedPurpose: "quote-attachment",
+            expectedParentId: req.params.id,
+          },
+        });
+
+        const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+        return res.json({ success: true, data: enrichedAttachment });
       }
 
       // Support both legacy and new upload methods
