@@ -1932,36 +1932,40 @@ export async function registerAttachmentRoutes(
           }
         }
 
-        const canonicalOriginal = created.fileRecordId
-          ? await canonicalFileReadResolver.resolveOriginal(String(created.fileRecordId))
-          : null;
-        const canonicalStorageKey = canonicalOriginal?.objectKey ?? canonicalOriginal?.localPathRef ?? null;
-        const canonicalStorageProvider = canonicalOriginal?.localPathRef
-          ? "local"
-          : canonicalOriginal?.objectKey
-            ? "supabase"
+        try {
+          const canonicalOriginal = created.fileRecordId
+            ? await canonicalFileReadResolver.resolveOriginal(String(created.fileRecordId))
             : null;
+          const canonicalStorageKey = canonicalOriginal?.objectKey ?? canonicalOriginal?.localPathRef ?? null;
+          const canonicalStorageProvider = canonicalOriginal?.localPathRef
+            ? "local"
+            : canonicalOriginal?.objectKey
+              ? "supabase"
+              : null;
 
-        if (isPdfUpload && pdfColumnsExist && canonicalStorageKey && canonicalStorageProvider) {
-          res.on("finish", () => {
-            setImmediate(() => {
-              void (async () => {
-                try {
-                  const { processPdfAttachmentDerivedData } = await import("../services/pdfProcessing");
-                  await processPdfAttachmentDerivedData({
-                    orgId: organizationId,
-                    attachmentId: created.id,
-                    storageKey: canonicalStorageKey,
-                    storageProvider: canonicalStorageProvider,
-                    mimeType: created.mimeType || null,
-                    attachmentType: "quote",
-                  });
-                } catch (error: any) {
-                  console.error(`[QuoteAttachments:POST] PDF kickoff failed for ${created.id}:`, error);
-                }
-              })();
+          if (isPdfUpload && pdfColumnsExist && canonicalStorageKey && canonicalStorageProvider) {
+            res.on("finish", () => {
+              setImmediate(() => {
+                void (async () => {
+                  try {
+                    const { processPdfAttachmentDerivedData } = await import("../services/pdfProcessing");
+                    await processPdfAttachmentDerivedData({
+                      orgId: organizationId,
+                      attachmentId: created.id,
+                      storageKey: canonicalStorageKey,
+                      storageProvider: canonicalStorageProvider,
+                      mimeType: created.mimeType || null,
+                      attachmentType: "quote",
+                    });
+                  } catch (error: any) {
+                    console.error(`[QuoteAttachments:POST] PDF kickoff failed for ${created.id}:`, error);
+                  }
+                })();
+              });
             });
-          });
+          }
+        } catch (kickoffPreparationError: any) {
+          console.error(`[QuoteAttachments:POST] PDF kickoff preparation failed (non-blocking) for ${created.id}:`, kickoffPreparationError);
         }
 
         const enriched = await enrichAttachmentWithUrls(created);
