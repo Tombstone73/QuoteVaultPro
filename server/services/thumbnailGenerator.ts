@@ -464,7 +464,7 @@ export async function generateImageDerivatives(
     const record = verification[0];
     const debugEnabled = process.env.DEBUG_THUMBNAILS === '1' || process.env.DEBUG_THUMBNAILS === 'true';
     
-    if (!record || !record.thumbKey || record.thumbStatus !== 'thumb_ready' || !record.thumbnailGeneratedAt || record.thumbError !== null) {
+    if (!record || record.thumbStatus !== 'thumb_ready' || !record.thumbnailGeneratedAt || record.thumbError !== null) {
       const issues: string[] = [];
       if (!record) issues.push('record not found');
       else {
@@ -477,7 +477,7 @@ export async function generateImageDerivatives(
     }
 
     if (debugEnabled) {
-      console.log(`[ThumbnailGenerator] ✅ Thumbnails persisted to DB: attachmentId=${attachmentId}, thumbKey=${thumbKey}, previewKey=${previewKey}, thumbStatus=thumb_ready`);
+      console.log(`[ThumbnailGenerator] ✅ Thumbnails persisted to canonical derivatives: attachmentId=${attachmentId}, thumbKey=${thumbKey}, previewKey=${previewKey}, thumbStatus=thumb_ready`);
     }
   } catch (error: any) {
     console.error(`[ThumbnailGenerator] Error generating derivatives for ${attachmentId}:`, error);
