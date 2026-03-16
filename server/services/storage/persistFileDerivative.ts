@@ -2,6 +2,7 @@ import type { FileDerivative } from "@shared/schema";
 import { isSupabaseConfigured } from "../../supabaseStorage";
 import { fileDerivativeRepository } from "../../storage/fileDerivative.repo";
 import { storagePlacementRepository } from "../../storage/storagePlacement.repo";
+import { deleteStoredObjectKeys } from "./deleteStoredObjectKeys";
 
 const DEFAULT_PRIVATE_BUCKET = "titan-private";
 
@@ -18,6 +19,7 @@ export async function persistReadyFileDerivative(args: {
   }
 
   const canonicalPlacement = await storagePlacementRepository.getActiveCanonicalPlacementByFileRecordId(fileRecordId);
+  const existing = await fileDerivativeRepository.listByFileRecordIdAndType(fileRecordId, args.derivativeType);
 
   await fileDerivativeRepository.replaceReady({
     fileRecordId,
@@ -28,4 +30,24 @@ export async function persistReadyFileDerivative(args: {
     mimeType: args.mimeType ?? null,
     sizeBytes: args.sizeBytes ?? null,
   });
+
+  const staleKeys = existing
+    .map((row) => row.objectKey ?? null)
+    .filter((key): key is string => typeof key === "string" && key.length > 0 && key !== args.objectKey);
+
+  if (staleKeys.length > 0) {
+    await deleteStoredObjectKeys({
+      keys: staleKeys,
+      fileRecordId,
+      sourcePlacementId: canonicalPlacement?.id ?? null,
+      legacyStorageProvider: isSupabaseConfigured() ? "supabase" : null,
+    }).catch((error) => {
+      console.warn("[persistReadyFileDerivative] Failed to remove superseded derivative objects", {
+        fileRecordId,
+        derivativeType: args.derivativeType,
+        staleKeys,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
 }

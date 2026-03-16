@@ -1,4 +1,5 @@
 import fs from "fs/promises";
+import path from "path";
 import {
   computeChecksum,
   deleteFile,
@@ -19,6 +20,7 @@ import type {
   StoredObjectDescriptor,
   StorageResourceContext,
 } from "./StorageProviderAdapter";
+import { normalizeRequestedStorageTarget } from "./StorageProviderAdapter";
 
 const TITAN_MANAGED_BUCKET = "titan-private";
 
@@ -126,8 +128,9 @@ export class TitanManagedStorageAdapter implements StorageProviderAdapter {
     });
 
     if (storageTarget === "supabase" && isSupabaseConfigured()) {
-      const storedFilename = generateStoredFilename(input.originalFilename);
-      const relativePath = buildRelativePath(input.resource, storedFilename);
+      const requestedTarget = normalizeRequestedStorageTarget(input.requestedTarget);
+      const storedFilename = requestedTarget ? requestedTarget.split("/").pop() ?? input.originalFilename : generateStoredFilename(input.originalFilename);
+      const relativePath = requestedTarget ?? buildRelativePath(input.resource, storedFilename);
       const checksum = computeChecksum(input.buffer);
       const extension = getFileExtension(input.originalFilename);
       const supabase = new SupabaseStorageService();
@@ -149,16 +152,35 @@ export class TitanManagedStorageAdapter implements StorageProviderAdapter {
       };
     }
 
-    const fileMetadata = await processUploadedFile({
-      originalFilename: input.originalFilename,
-      buffer: input.buffer,
-      mimeType: input.mimeType,
-      organizationId: input.resource.organizationId,
-      orderNumber: input.resource.orderNumber ?? undefined,
-      lineItemId: input.resource.lineItemId ?? undefined,
-      resourceType: input.resource.resourceType,
-      resourceId: input.resource.resourceId,
-    });
+    const requestedTarget = normalizeRequestedStorageTarget(input.requestedTarget);
+    const fileMetadata = requestedTarget
+      ? (() => {
+          const extension = getFileExtension(input.originalFilename);
+          return {
+            relativePath: requestedTarget,
+            checksum: computeChecksum(input.buffer),
+            sizeBytes: input.buffer.length,
+            originalFilename: input.originalFilename,
+            storedFilename: requestedTarget.split("/").pop() ?? input.originalFilename,
+            extension,
+          };
+        })()
+      : await processUploadedFile({
+          originalFilename: input.originalFilename,
+          buffer: input.buffer,
+          mimeType: input.mimeType,
+          organizationId: input.resource.organizationId,
+          orderNumber: input.resource.orderNumber ?? undefined,
+          lineItemId: input.resource.lineItemId ?? undefined,
+          resourceType: input.resource.resourceType,
+          resourceId: input.resource.resourceId,
+        });
+
+    if (requestedTarget) {
+      const absolutePath = resolveLocalStoragePath(requestedTarget);
+      await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+      await fs.writeFile(absolutePath, input.buffer);
+    }
 
     return {
       providerType: this.providerType,
