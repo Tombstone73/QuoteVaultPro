@@ -319,9 +319,7 @@ export function useDetachOrderLineItemFile(orderId: string, lineItemId: string) 
 
   return useMutation({
     mutationFn: async (fileId: string) => {
-      // For now, use the order-level delete endpoint
-      // In future, could add line-item-specific endpoint
-      const res = await fetch(`/api/orders/${orderId}/files/${fileId}`, {
+      const res = await fetch(`/api/orders/${orderId}/line-items/${lineItemId}/files/${fileId}`, {
         method: 'DELETE',
         credentials: 'include',
       });
