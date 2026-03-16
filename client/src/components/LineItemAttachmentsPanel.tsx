@@ -444,14 +444,14 @@ export function LineItemAttachmentsPanel({
     try {
       let deleteUrl: string | null = `${filesApiPath}/${file.id}`;
 
-      // Order line-items can contain either:
-      // - DB-backed order_attachments (json.data) -> delete via /api/orders/:orderId/files/:fileId
-      // - Asset pipeline links (json.assets) -> unlink via /api/orders/:orderId/line-items/:lineItemId/files/:assetId
+      // Order line-item surfaces must always delete through the line-item endpoint.
+      // That backend route correctly handles both:
+      // - DB-backed order_attachments rows for this line item
+      // - asset-link rows for this line item
       if (parentType === 'order') {
-        if (!orderId) return;
-        if (file.source === 'attachment') {
-          deleteUrl = `/api/orders/${orderId}/files/${file.id}`;
-        }
+        const targetLineItemId = lineItemId ?? ensuredIdsRef.current.lineItemId;
+        if (!orderId || !targetLineItemId) return;
+        deleteUrl = `/api/orders/${orderId}/line-items/${targetLineItemId}/files/${file.id}`;
       }
 
       const response = await fetch(deleteUrl, {
