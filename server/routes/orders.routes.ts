@@ -2587,7 +2587,13 @@ export async function registerOrderRoutes(
                     ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
                     : null;
                 const storageKey = String(resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? attachment.fileUrl ?? "");
-                const storageProvider = resolvedOriginal?.localPathRef ? "local" : resolvedOriginal?.objectKey ? "supabase" : ((attachment.storageProvider as "local" | "s3" | "gcs" | "supabase" | null | undefined) ?? null);
+                const storageProvider = resolvedOriginal?.providerType === "local_filesystem"
+                    ? "local"
+                    : resolvedOriginal?.providerType === "s3"
+                        ? "s3"
+                        : resolvedOriginal?.objectKey
+                            ? "supabase"
+                            : ((attachment.storageProvider as "local" | "s3" | "gcs" | "supabase" | null | undefined) ?? null);
 
                 if (storageKey) {
                     const [{ orderRefs = 0 } = {}] = attachment.fileRecordId
@@ -3957,11 +3963,13 @@ export async function registerOrderRoutes(
                     ? await canonicalFileReadResolver.resolveOriginal(String(file.fileRecordId))
                     : null;
                 const storageKey = String(resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? file.fileUrl ?? '');
-                const storageProvider = resolvedOriginal?.localPathRef
+                const storageProvider = resolvedOriginal?.providerType === 'local_filesystem'
                     ? 'local'
-                    : resolvedOriginal?.objectKey
-                        ? 'supabase'
-                        : ((file.storageProvider as 'local' | 's3' | 'gcs' | 'supabase' | null | undefined) ?? null);
+                    : resolvedOriginal?.providerType === 's3'
+                        ? 's3'
+                        : resolvedOriginal?.objectKey
+                            ? 'supabase'
+                            : ((file.storageProvider as 'local' | 's3' | 'gcs' | 'supabase' | null | undefined) ?? null);
 
                 if (storageKey) {
                     const [{ orderRefs = 0 } = {}] = file.fileRecordId

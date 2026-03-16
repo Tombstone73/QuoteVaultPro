@@ -564,10 +564,10 @@ export class OrganizationStorageSettingsService {
         kind: "provider",
         valid: true,
         error: null,
-        warnings: ["S3-compatible providers can be saved and validated now, but activation remains blocked until legacy direct-upload surfaces are migrated to generic provider adapters."],
+        warnings: [],
         validatedAt: new Date().toISOString(),
-        runtimeSupported: false,
-        canActivate: false,
+        runtimeSupported: true,
+        canActivate: true,
         providerType: "s3",
       };
     } catch (error: any) {
@@ -577,7 +577,7 @@ export class OrganizationStorageSettingsService {
         error: error?.message || "Failed to validate S3-compatible provider.",
         warnings: [],
         validatedAt: new Date().toISOString(),
-        runtimeSupported: false,
+        runtimeSupported: true,
         canActivate: false,
         providerType: "s3",
       };

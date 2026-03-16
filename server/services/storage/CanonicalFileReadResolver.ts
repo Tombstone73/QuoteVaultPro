@@ -1,6 +1,7 @@
 import type { FileRecord, StoragePlacement } from "@shared/schema";
 import { fileRecordRepository } from "../../storage/fileRecord.repo";
 import { storagePlacementRepository } from "../../storage/storagePlacement.repo";
+import { storageProviderConfigRepository } from "../../storage/storageProviderConfig.repo";
 
 export type CanonicalFileReadStatus = "available" | "archived" | "restoring" | "missing";
 
@@ -9,6 +10,7 @@ export type CanonicalFileReadResult = {
   status: CanonicalFileReadStatus;
   placementState: StoragePlacement["placementState"] | null;
   providerConfigId: string | null;
+  providerType: "titan_managed" | "supabase" | "local_filesystem" | "s3" | "gcs" | "azure_blob" | null;
   bucket: string | null;
   objectKey: string | null;
   localPathRef: string | null;
@@ -53,12 +55,16 @@ export class CanonicalFileReadResolver {
     const placement = fileRecord
       ? await storagePlacementRepository.getActiveCanonicalPlacementByFileRecordId(fileRecordId)
       : null;
+    const providerConfig = placement?.providerConfigId
+      ? await storageProviderConfigRepository.getById(placement.providerConfigId)
+      : null;
 
     return {
       fileRecordId,
       status: deriveStatus(fileRecord, placement),
       placementState: placement?.placementState ?? null,
       providerConfigId: placement?.providerConfigId ?? null,
+      providerType: providerConfig?.providerType ?? null,
       bucket: placement?.bucket ?? null,
       objectKey: placement?.objectKey ?? null,
       localPathRef: placement?.localPathRef ?? null,
