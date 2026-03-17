@@ -665,7 +665,7 @@ export default function InternalQuotes() {
       case "quoteNumber":
         return (
           <TableCell style={getColStyle("quoteNumber")}>
-            <span className="font-mono text-titan-accent hover:text-titan-accent-hover hover:underline cursor-pointer block truncate">
+            <span className="font-medium text-titan-accent hover:text-titan-accent-hover hover:underline cursor-pointer block truncate">
               {quote.quoteNumber || "N/A"}
             </span>
           </TableCell>
