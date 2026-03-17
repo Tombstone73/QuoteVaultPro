@@ -18,6 +18,7 @@ import { ViewAllAttachmentsDialog } from "@/components/ViewAllAttachmentsDialog"
 import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
@@ -207,26 +208,22 @@ export default function InternalQuotes() {
 
   const orgIdForPrefs = organization?.id;
   const pageSizeKey = orgIdForPrefs && user?.id ? `titan:list:internalQuotes:pageSize:org_${orgIdForPrefs}:user_${user.id}` : null;
-  const includeThumbsKey = orgIdForPrefs && user?.id ? `titan:list:internalQuotes:includeThumbnails:org_${orgIdForPrefs}:user_${user.id}` : null;
 
   useEffect(() => {
-    if (!pageSizeKey || !includeThumbsKey) return;
+    if (!pageSizeKey) return;
     try {
       const savedPageSize = window.localStorage.getItem(pageSizeKey);
-      const savedThumbs = window.localStorage.getItem(includeThumbsKey);
       if (savedPageSize) {
         const n = parseInt(savedPageSize, 10);
         if (Number.isFinite(n) && n >= 1 && n <= 200) setPageSize(n);
       }
-      if (savedThumbs !== null) {
-        setIncludeThumbnails(savedThumbs === 'true');
-      }
     } catch {
       // ignore
     }
+    setIncludeThumbnails(false);
     // Reset paging when org/user changes
     setPage(1);
-  }, [pageSizeKey, includeThumbsKey]);
+  }, [pageSizeKey]);
 
   useEffect(() => {
     if (!pageSizeKey) return;
@@ -237,15 +234,6 @@ export default function InternalQuotes() {
     }
   }, [pageSizeKey, pageSize]);
 
-  useEffect(() => {
-    if (!includeThumbsKey) return;
-    try {
-      window.localStorage.setItem(includeThumbsKey, includeThumbnails ? 'true' : 'false');
-    } catch {
-      // ignore
-    }
-  }, [includeThumbsKey, includeThumbnails]);
-  
   // Sorting state
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
@@ -1317,15 +1305,19 @@ export default function InternalQuotes() {
             className="h-9 w-[140px]"
           />
           <div className="flex flex-wrap items-center gap-3 whitespace-nowrap md:ml-auto">
-            <div className="flex items-center gap-2">
-              <Checkbox
+            <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2">
+              <Switch
                 id="quotes-include-thumbnails"
                 checked={includeThumbnails}
                 onCheckedChange={(checked) => setIncludeThumbnails(checked === true)}
+                aria-label="Toggle quote thumbnails"
               />
-              <Label htmlFor="quotes-include-thumbnails" className="cursor-pointer text-sm text-muted-foreground">
-                Show thumbnails
+              <Label htmlFor="quotes-include-thumbnails" className="cursor-pointer text-sm text-foreground">
+                Thumbnails
               </Label>
+              <Badge variant={includeThumbnails ? "default" : "secondary"} className="pointer-events-none text-[10px] uppercase tracking-wide">
+                {includeThumbnails ? "On" : "Off"}
+              </Badge>
             </div>
             <div className="flex items-center gap-3">
               <Label className="text-sm text-muted-foreground">Rows per page</Label>
