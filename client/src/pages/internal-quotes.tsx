@@ -18,7 +18,7 @@ import { ViewAllAttachmentsDialog } from "@/components/ViewAllAttachmentsDialog"
 import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -40,6 +40,7 @@ import { objectsUrlFromKey } from "@/lib/getThumbSrc";
 import {
   FileText,
   Plus,
+  Search,
   Edit,
   Package,
   Eye,
@@ -62,7 +63,6 @@ import {
   Page,
   PageHeader,
   ContentLayout,
-  FilterPanel,
   DataCard,
   ColumnConfig,
   useColumnSettings,
@@ -1156,9 +1156,9 @@ export default function InternalQuotes() {
 
   if (error) {
     return (
-      <Page>
+      <Page maxWidth="full">
         <PageHeader
-          title="Internal Quotes"
+          title="Quotes"
           subtitle="Manage internal quotes and convert them to orders"
           className="pb-3"
           backButton={
@@ -1168,7 +1168,7 @@ export default function InternalQuotes() {
         />
         <ContentLayout className="space-y-3">
           <DataCard
-            title="Internal Quotes"
+            title="Quotes"
             description="There was a problem loading quotes."
             className="mt-0"
           >
@@ -1183,7 +1183,7 @@ export default function InternalQuotes() {
 
   if (!hasEverLoaded && isInitialLoading) {
     return (
-      <Page>
+      <Page maxWidth="full">
         <PageHeader
           title="Quotes"
           subtitle="Loading internal quotes..."
@@ -1194,15 +1194,18 @@ export default function InternalQuotes() {
           actions={<NewQuoteButton />}
         />
         <ContentLayout className="space-y-3">
-          <div className="flex flex-row items-center gap-3 flex-wrap mb-4">
+          <Skeleton className="h-10 w-[420px] max-w-full" />
+          <div className="flex flex-row items-center gap-3 flex-wrap">
             <Skeleton className="flex-1 min-w-[200px] h-9" />
             <Skeleton className="w-[180px] h-9" />
             <Skeleton className="w-[140px] h-9" />
             <Skeleton className="w-[140px] h-9" />
+            <Skeleton className="w-[160px] h-9" />
+            <Skeleton className="w-[120px] h-9" />
           </div>
 
           <DataCard
-            title="Internal Quotes"
+            title="Quotes"
             description="Loading quotes…"
             className="mt-0"
             headerActions={<Skeleton className="h-8 w-24" />}
@@ -1221,7 +1224,7 @@ export default function InternalQuotes() {
   return (
     <Page maxWidth="full">
       <PageHeader
-        title="Internal Quotes"
+        title="Quotes"
         subtitle="Manage internal quotes and convert them to orders"
         className="pb-3"
         backButton={
@@ -1233,171 +1236,125 @@ export default function InternalQuotes() {
       />
 
       <ContentLayout className="space-y-3">
-        {/* Toolbar: 2-Row Grid Layout */}
-        <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-2">
-          {/* Row 1 Left: Filter Controls */}
-          <div className="flex flex-wrap items-center gap-3">
+        {isInternalUser && (
+          <Tabs value={statusFilter} onValueChange={(value) => setStatusFilter(value as QuoteWorkflowState | "all")}>
+            <TabsList className="h-auto flex-wrap justify-start">
+              <TabsTrigger value="all">All</TabsTrigger>
+              <TabsTrigger value="draft">Draft</TabsTrigger>
+              {requireApproval && (
+                <TabsTrigger value="pending_approval">Pending Approval</TabsTrigger>
+              )}
+              <TabsTrigger value="sent">Sent</TabsTrigger>
+              <TabsTrigger value="approved">Approved</TabsTrigger>
+              <TabsTrigger value="converted">Converted</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        )}
+
+        {isInternalUser && requireApproval && (() => {
+          const pendingApprovalCount = quotesList.filter((q: QuoteRow) => {
+            return q.status === 'pending_approval' && !q.convertedToOrderId;
+          }).length;
+
+          if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development' && quotesList.length > 0) {
+            console.log('[InternalQuotes] Approval status check:', {
+              totalRows: quotesList.length,
+              pendingApprovalCount,
+              currentFilter: statusFilter,
+            });
+          }
+
+          return pendingApprovalCount > 0 ? (
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              <button
+                type="button"
+                className="flex items-center gap-1.5 text-amber-600 transition-colors hover:text-amber-700"
+                onClick={() => setStatusFilter('pending_approval')}
+                title="Click to filter Pending Approval quotes"
+              >
+                <div className="h-2 w-2 rounded-full bg-amber-500" />
+                <span>{pendingApprovalCount} need{pendingApprovalCount === 1 ? 's' : ''} approval (on this page)</span>
+              </button>
+            </div>
+          ) : null;
+        })()}
+
+        <div className="flex flex-row items-center gap-3 flex-wrap">
+          <div className="relative flex-1 min-w-[220px]">
+            <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               placeholder="Search customers..."
               value={searchCustomer}
               onChange={(e) => setSearchCustomer(e.target.value)}
-              className="flex-1 min-w-[200px] h-9"
-            />
-            <Select value={searchProduct} onValueChange={setSearchProduct}>
-              <SelectTrigger className="w-[180px] h-9">
-                <SelectValue placeholder="All Products" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Products</SelectItem>
-                {products?.map((product) => (
-                  <SelectItem key={product.id} value={product.id}>
-                    {product.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              placeholder="Start date"
-              className="w-[140px] h-9"
-            />
-            <Input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              placeholder="End date"
-              className="w-[140px] h-9"
+              className="h-9 pl-8"
             />
           </div>
-
-          {/* Row 1 Right: Show Thumbnails Toggle */}
-          <div className="flex items-center justify-end gap-3 whitespace-nowrap md:justify-self-end">
-            <Label className="text-sm text-muted-foreground">Show thumbnails</Label>
-            <Switch checked={includeThumbnails} onCheckedChange={setIncludeThumbnails} />
-          </div>
-
-          {/* Row 2 Left: Status Chips and Approval Indicators */}
-          <div className="flex flex-col gap-1">
-            {/* Status Filter Chips (only for internal users) */}
-            {isInternalUser && (
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm text-muted-foreground">Status:</span>
-                <Button
-                  variant={statusFilter === "all" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setStatusFilter("all")}
-                >
-                  All
-                </Button>
-                <Button
-                  variant={statusFilter === "draft" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setStatusFilter("draft")}
-                >
-                  Draft
-                </Button>
-                {requireApproval && (
-                  <Button
-                    variant={statusFilter === "pending_approval" ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setStatusFilter("pending_approval")}
-                  >
-                    Pending Approval
-                  </Button>
-                )}
-                <Button
-                  variant={statusFilter === "sent" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setStatusFilter("sent")}
-                >
-                  Sent
-                </Button>
-                <Button
-                  variant={statusFilter === "approved" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setStatusFilter("approved")}
-                >
-                  Approved
-                </Button>
-                <Button
-                  variant={statusFilter === "converted" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setStatusFilter("converted")}
-                >
-                  Converted
-                </Button>
-              </div>
-            )}
-            
-            {/* Approval Indicators (only when requireApproval is enabled) */}
-            {/* Note: Org-level approval means ALL drafts need approval before sending */}
-            {isInternalUser && requireApproval && (() => {
-              // CRITICAL: Only pending_approval status indicates quotes that need approval
-              // Drafts are not yet submitted and should NOT show approval indicators
-              
-              // Pending approval quotes (workflow state = pending_approval, submitted for approval)
-              const pendingApprovalCount = quotesList.filter((q: QuoteRow) => {
-                return q.status === 'pending_approval' && !q.convertedToOrderId;
-              }).length;
-              
-              // Temporary debug log (remove after testing)
-              if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development' && quotesList.length > 0) {
-                console.log('[InternalQuotes] Approval status check:', {
-                  totalRows: quotesList.length,
-                  pendingApprovalCount,
-                  currentFilter: statusFilter,
-                });
-              }
-              
-              return (
-                <div className="flex flex-wrap items-center gap-3 text-sm">
-                  {pendingApprovalCount > 0 && (
-                    <button
-                      type="button"
-                      className="flex items-center gap-1.5 text-amber-600 hover:text-amber-700 transition-colors cursor-pointer"
-                      onClick={() => setStatusFilter('pending_approval')}
-                      title="Click to filter Pending Approval quotes"
-                    >
-                      <div className="w-2 h-2 rounded-full bg-amber-500" />
-                      <span>{pendingApprovalCount} need{pendingApprovalCount === 1 ? 's' : ''} approval (on this page)</span>
-                    </button>
-                  )}
-                </div>
-              );
-            })()}
-          </div>
-
-          {/* Row 2 Right: Rows Per Page Dropdown */}
-          <div className="flex items-center justify-end gap-3 whitespace-nowrap md:justify-self-end">
-            <Label className="text-sm text-muted-foreground">Rows per page</Label>
-            <Select value={String(pageSize)} onValueChange={(v) => setPageSize(parseInt(v, 10))}>
-              <SelectTrigger className="w-[140px] h-9">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="10">10</SelectItem>
-                <SelectItem value="25">25</SelectItem>
-                <SelectItem value="50">50</SelectItem>
-                <SelectItem value="100">100</SelectItem>
-                <SelectItem value="200">200</SelectItem>
-              </SelectContent>
-            </Select>
+          <Select value={searchProduct} onValueChange={setSearchProduct}>
+            <SelectTrigger className="h-9 w-[180px]">
+              <SelectValue placeholder="All Products" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Products</SelectItem>
+              {products?.map((product) => (
+                <SelectItem key={product.id} value={product.id}>
+                  {product.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Input
+            type="date"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+            placeholder="Start date"
+            className="h-9 w-[140px]"
+          />
+          <Input
+            type="date"
+            value={endDate}
+            onChange={(e) => setEndDate(e.target.value)}
+            placeholder="End date"
+            className="h-9 w-[140px]"
+          />
+          <div className="flex flex-wrap items-center gap-3 whitespace-nowrap md:ml-auto">
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="quotes-include-thumbnails"
+                checked={includeThumbnails}
+                onCheckedChange={(checked) => setIncludeThumbnails(checked === true)}
+              />
+              <Label htmlFor="quotes-include-thumbnails" className="cursor-pointer text-sm text-muted-foreground">
+                Show thumbnails
+              </Label>
+            </div>
+            <div className="flex items-center gap-3">
+              <Label className="text-sm text-muted-foreground">Rows per page</Label>
+              <Select value={String(pageSize)} onValueChange={(v) => setPageSize(parseInt(v, 10))}>
+                <SelectTrigger className="h-9 w-[100px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="10">10</SelectItem>
+                  <SelectItem value="25">25</SelectItem>
+                  <SelectItem value="50">50</SelectItem>
+                  <SelectItem value="100">100</SelectItem>
+                  <SelectItem value="200">200</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </div>
 
 
-
         {/* Quotes List */}
         <DataCard
-          title="Internal Quotes"
+          title="Quotes"
           description={
             quotesResponse
-              ? `${quotesResponse.totalCount} quote${quotesResponse.totalCount !== 1 ? "s" : ""} found • Page ${quotesResponse.page} of ${quotesResponse.totalPages}`
+              ? `${quotesList.length} quote${quotesList.length !== 1 ? "s" : ""} on this page • ${quotesResponse.totalCount} total matching quotes`
               : `${quotesList.length ?? 0} quote${quotesList.length !== 1 ? "s" : ""} found`
           }
-          className="-mt-1"
+          className="mt-0"
           headerActions={
             <div className="flex items-center gap-2">
               {isRefreshing && (
@@ -1425,9 +1382,10 @@ export default function InternalQuotes() {
               />
             </div>
           }
+          noPadding
         >
           {quotesList.length === 0 ? (
-            <div className="py-8 text-center">
+            <div className="p-8 text-center">
               <FileText className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
               <p className="mb-2 text-muted-foreground">No quotes found</p>
               <p className="mb-4 text-sm text-muted-foreground">
@@ -1439,9 +1397,8 @@ export default function InternalQuotes() {
             </div>
           ) : (
             <>
-              <div className="overflow-x-auto -mx-5">
-                <div className="min-w-full inline-block align-middle">
-                  <Table className="table-dense w-full">
+              <div className="overflow-x-auto">
+                <Table className="table-dense">
                 <TableHeader>
                   <TableRow>
                     {orderedColumns.map((col) => {
@@ -1480,10 +1437,9 @@ export default function InternalQuotes() {
                   ))}
                 </TableBody>
               </Table>
-                </div>
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-2 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t px-5 py-3">
                 <div className="text-sm text-muted-foreground">
                   Showing {quotesList.length} on this page
                 </div>
