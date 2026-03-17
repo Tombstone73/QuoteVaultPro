@@ -359,8 +359,9 @@ export async function transitionToStation(
     );
   }
 
-  // 6. Resolve station_id for the target station
-  let stationId: string | null = null;
+  // 6. Resolve station_id for the target station. Fail closed: a missing station
+  //    must block ownership creation rather than produce a station_id-null job row.
+  let stationId: string;
   try {
     const stationResult = await tx.execute(sql`
       SELECT id FROM stations
@@ -368,16 +369,33 @@ export async function transitionToStation(
         AND key = ${args.targetStationKey}
       LIMIT 1
     `);
-    stationId = stationResult.rows[0]?.id
+    const resolvedId = stationResult.rows[0]?.id
       ? String(stationResult.rows[0].id)
       : null;
-  } catch {
-    stationId = null;
+    if (!resolvedId) {
+      throw Object.assign(
+        new Error(
+          `[productionOwnership] station row not found for key="${args.targetStationKey}" in org="${args.organizationId}". ` +
+          `Ensure the station exists in the stations table before creating ownership records. ` +
+          `Refusing to create production_job with no station identity.`,
+        ),
+        { statusCode: 409, targetStationKey: args.targetStationKey, organizationId: args.organizationId, lineItemId: args.lineItemId },
+      );
+    }
+    stationId = resolvedId;
+  } catch (error: any) {
+    // Re-throw our own sentinel errors without wrapping
+    if (error?.statusCode) throw error;
+    // Unexpected DB error — rethrow with context
+    throw Object.assign(
+      new Error(
+        `[productionOwnership] station_id resolution DB error for key="${args.targetStationKey}": ${(error as Error).message}`,
+      ),
+      { statusCode: 500, cause: error, targetStationKey: args.targetStationKey, lineItemId: args.lineItemId },
+    );
   }
 
-  // 7. Create new job at target station.
-  //    Some DEV databases still enforce one row per (org, line item, station_id),
-  //    so a historical terminal row for the same station cannot be inserted again.
+  // 7. Create new job at target station (stationId guaranteed non-null — fail-closed above).
   //    Use ON CONFLICT to safely recycle a terminal row without aborting the transaction.
   let newJob: {
     id: string;
@@ -386,42 +404,31 @@ export async function transitionToStation(
     status: string;
   };
 
-  const insertResult = stationId
-    ? await tx.execute(sql`
-        INSERT INTO production_jobs (
-          organization_id, order_id, line_item_id, station_id,
-          station_key, step_key, status, total_seconds, started_at, completed_at, updated_at
-        ) VALUES (
-          ${args.organizationId}, ${args.orderId}, ${args.lineItemId}, ${stationId},
-          ${args.targetStationKey}, ${args.targetStepKey}, ${"queued"}, ${0}, ${null}, ${null}, ${now}
-        )
-        ON CONFLICT (organization_id, line_item_id, station_id)
-        WHERE station_id IS NOT NULL
-        DO UPDATE SET
-          order_id = EXCLUDED.order_id,
-          station_key = EXCLUDED.station_key,
-          step_key = EXCLUDED.step_key,
-          status = EXCLUDED.status,
-          total_seconds = EXCLUDED.total_seconds,
-          started_at = EXCLUDED.started_at,
-          completed_at = EXCLUDED.completed_at,
-          updated_at = EXCLUDED.updated_at
-        WHERE lower(coalesce(production_jobs.status, '')) IN (${sql.join(
-          TERMINAL_JOB_STATUSES.map((status) => sql`${status}`),
-          sql`, `,
-        )})
-        RETURNING id, station_key AS "stationKey", step_key AS "stepKey", status
-      `)
-    : await tx.execute(sql`
-        INSERT INTO production_jobs (
-          organization_id, order_id, line_item_id,
-          station_key, step_key, status, total_seconds
-        ) VALUES (
-          ${args.organizationId}, ${args.orderId}, ${args.lineItemId},
-          ${args.targetStationKey}, ${args.targetStepKey}, ${"queued"}, ${0}
-        )
-        RETURNING id, station_key AS "stationKey", step_key AS "stepKey", status
-      `);
+  const insertResult = await tx.execute(sql`
+      INSERT INTO production_jobs (
+        organization_id, order_id, line_item_id, station_id,
+        station_key, step_key, status, total_seconds, started_at, completed_at, updated_at
+      ) VALUES (
+        ${args.organizationId}, ${args.orderId}, ${args.lineItemId}, ${stationId},
+        ${args.targetStationKey}, ${args.targetStepKey}, ${"queued"}, ${0}, ${null}, ${null}, ${now}
+      )
+      ON CONFLICT (organization_id, line_item_id, station_id)
+      WHERE station_id IS NOT NULL
+      DO UPDATE SET
+        order_id = EXCLUDED.order_id,
+        station_key = EXCLUDED.station_key,
+        step_key = EXCLUDED.step_key,
+        status = EXCLUDED.status,
+        total_seconds = EXCLUDED.total_seconds,
+        started_at = EXCLUDED.started_at,
+        completed_at = EXCLUDED.completed_at,
+        updated_at = EXCLUDED.updated_at
+      WHERE lower(coalesce(production_jobs.status, '')) IN (${sql.join(
+        TERMINAL_JOB_STATUSES.map((status) => sql`${status}`),
+        sql`, `,
+      )})
+      RETURNING id, station_key AS "stationKey", step_key AS "stepKey", status
+    `);
 
   const insertedRow = insertResult.rows[0] as
     | { id: string; stationKey: string; stepKey: string; status: string }

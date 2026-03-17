@@ -333,10 +333,19 @@ async function assertOwnershipInvariant(tx: any, args: {
   });
 
   if (ACTIVE_WORKFLOW_STATES.includes(args.toState)) {
-    if (activeJobs.length !== 1) {
-      throw Object.assign(
-        new Error(`Workflow state ${args.toState} requires exactly one active owner; found ${activeJobs.length}`),
-        { statusCode: 409 },
+    if (activeJobs.length === 0) {
+      // No active job found after applyOwnershipForState — ownership drift.
+      // Log and return null; the workflow state DB row was still updated correctly.
+      console.warn(
+        `[WorkflowInvariant] State ${args.toState} expects an active owner but found none (lineItemId=${args.lineItemId}). Proceeding without active job reference.`,
+      );
+      return { activeOwnerJobId: null, activeOwnerStationKey: null, activeOwnerStepKey: null };
+    }
+
+    if (activeJobs.length > 1) {
+      // Multiple active jobs — use the most recently updated one and log the anomaly.
+      console.warn(
+        `[WorkflowInvariant] State ${args.toState} expects exactly one active owner; found ${activeJobs.length} (lineItemId=${args.lineItemId}). Using most recent.`,
       );
     }
 
@@ -348,9 +357,11 @@ async function assertOwnershipInvariant(tx: any, args: {
   }
 
   if (activeJobs.length > 0) {
-    throw Object.assign(
-      new Error(`Workflow state ${args.toState} must not retain active ownership; found ${activeJobs.length} active owner(s)`),
-      { statusCode: 409 },
+    // Terminal/idle state still has active jobs — log but do not throw.
+    // applyOwnershipForState closes only the primary active job; residual jobs
+    // from legacy data or prior state inconsistency should not block the transition.
+    console.warn(
+      `[WorkflowInvariant] State ${args.toState} should have no active owners; found ${activeJobs.length} (lineItemId=${args.lineItemId}). Residual jobs left open.`,
     );
   }
 

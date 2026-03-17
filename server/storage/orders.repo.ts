@@ -848,11 +848,18 @@ export class OrdersRepository {
 
         // Convert quote line items to order line items
         const orderLineItemsData: CreateOrderLineItemInput[] = quoteLines.map((ql, index) => {
-            const requiresPrepress = productPrepressMap.get(ql.productId) ?? orgPrepressDefault;
+            // TEMP→PERMANENT routing truth handoff:
+            // If the quote line item carries explicit routing intent (migration 0015), use it.
+            // Otherwise fall back to productType / org-level default (pre-existing behavior).
+            const qlAny = ql as any;
+            const requiresDesign: boolean = qlAny.requiresDesign === true;
+            const requiresPrepress: boolean = typeof qlAny.requiresPrepress === 'boolean'
+                ? qlAny.requiresPrepress
+                : (productPrepressMap.get(ql.productId) ?? orgPrepressDefault);
             // Line item lifecycle: new → in_production → complete | canceled
             const initialStatus = 'new' as unknown as InsertOrderLineItem['status'];
             const workflowState = getInitialWorkflowState({
-                requiresDesign: false,
+                requiresDesign,
                 requiresPrepress,
             });
 
@@ -870,7 +877,7 @@ export class OrdersRepository {
                 totalPrice: parseFloat(ql.linePrice),
                 status: initialStatus,
                 workflowState,
-                requiresDesign: false,
+                requiresDesign, // From quote line item routing truth (migration 0015)
                 requiresPrepress, // Snapshot prepress requirement (TEMP→PERMANENT)
                 specsJson: ql.specsJson,
                 selectedOptions: ql.selectedOptions,
