@@ -1532,7 +1532,7 @@ export default function PrepressProductionPageV2() {
                           </td>
                           <td className="px-4 py-3 font-medium text-slate-200">{file.displayName}</td>
                           <td className="px-4 py-3 font-mono">{file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "—"}</td>
-                          <td className="px-4 py-3">{formatDistanceToNow(new Date(file.createdAt), { addSuffix: true })}</td>
+                          <td className="px-4 py-3">{file.createdAt ? formatDistanceToNow(new Date(file.createdAt), { addSuffix: true }) : "—"}</td>
                           <td className="px-4 py-3">{file.uploadedByLabel}</td>
                           <td className="px-4 py-3">
                             <span className="bg-slate-700 px-2 py-0.5 rounded">{file.tagLabel}</span>
@@ -1571,7 +1571,7 @@ export default function PrepressProductionPageV2() {
                               </td>
                               <td className="px-4 py-3 font-medium text-slate-200">{file.displayName}</td>
                               <td className="px-4 py-3 font-mono">{file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "—"}</td>
-                              <td className="px-4 py-3">{formatDistanceToNow(new Date(file.createdAt), { addSuffix: true })}</td>
+                              <td className="px-4 py-3">{file.createdAt ? formatDistanceToNow(new Date(file.createdAt), { addSuffix: true }) : "—"}</td>
                               <td className="px-4 py-3">{file.uploadedByLabel}</td>
                               <td className="px-4 py-3">
                                 <span className="bg-amber-900/50 text-amber-300 border border-amber-700/40 px-2 py-0.5 rounded text-[9px] font-bold uppercase">{file.tagLabel}</span>
@@ -1641,7 +1641,7 @@ export default function PrepressProductionPageV2() {
                               </span>
                               <span className="text-slate-500 font-mono">{file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "—"}</span>
                               <span className="text-slate-400 italic">
-                                Uploaded by {file.uploadedByLabel} ({formatDistanceToNow(new Date(file.createdAt), { addSuffix: true })})
+                                Uploaded by {file.uploadedByLabel} ({file.createdAt ? formatDistanceToNow(new Date(file.createdAt), { addSuffix: true }) : "unknown"})
                               </span>
                             </div>
                           </div>

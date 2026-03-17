@@ -10,7 +10,7 @@ import busboy from "busboy";
 import { storage } from "./storage";
 import * as prepressFileService from "./prepressFileService";
 import { db, hasQuoteAttachmentPagesTable } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, inventoryReservations, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, authIdentities, bugReports, prepressSessions, lineItemFiles, reprintRequests } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, inventoryReservations, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, assetVariants, authIdentities, bugReports, prepressSessions, lineItemFiles, reprintRequests } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, asc, inArray, notInArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -91,6 +91,13 @@ const isProduction = nodeEnv === 'production';
 
 let authProvider: string;
 let auth: typeof localAuth | typeof replitAuth;
+
+function toLegacyStorageProvider(provider: string | null | undefined): "local" | "s3" | "gcs" | "supabase" | null {
+  if (provider === "local" || provider === "s3" || provider === "gcs" || provider === "supabase") {
+    return provider;
+  }
+  return null;
+}
 
 if (authProviderEnv) {
   // Explicit AUTH_PROVIDER env var takes precedence
@@ -7279,7 +7286,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     and(
                       eq(quoteAttachments.organizationId, organizationId),
                       eq(quoteAttachments.fileUrl, storageKey),
-                      eq(quoteAttachments.storageProvider, storageProvider)
+                      eq(quoteAttachments.storageProvider, toLegacyStorageProvider(storageProvider) ?? 'supabase')
                     )
                   );
 
@@ -7296,7 +7303,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   .where(
                     and(
                       eq(orderAttachments.fileUrl, storageKey),
-                      eq(orderAttachments.storageProvider, storageProvider)
+                      eq(orderAttachments.storageProvider, toLegacyStorageProvider(storageProvider) ?? 'supabase')
                     )
                   );
 
@@ -7362,7 +7369,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
                   await deleteStoredObjectKeys({
                     fileRecordId: existingAttachment.fileRecordId ? String(existingAttachment.fileRecordId) : null,
-                    legacyStorageProvider: storageProvider,
+                    legacyStorageProvider: toLegacyStorageProvider(storageProvider),
                     keys: [...variants.map((variant) => variant.key || ''), normalizedFileKey],
                   });
 
@@ -7384,7 +7391,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             const derivativeDeletion = await deleteStoredObjectKeys({
               fileRecordId: existingAttachment.fileRecordId ? String(existingAttachment.fileRecordId) : null,
-              legacyStorageProvider: storageProvider,
+              legacyStorageProvider: toLegacyStorageProvider(storageProvider),
               keys: [storageKey, ...derivativeKeys],
             });
 
@@ -7438,7 +7445,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
                 const pageDeletion = await deleteStoredObjectKeys({
                   fileRecordId,
-                  legacyStorageProvider: storageProvider,
+                  legacyStorageProvider: toLegacyStorageProvider(storageProvider),
                   keys: [pageStorageKey],
                 });
 
@@ -10149,7 +10156,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         throw new Error("Reorder payload does not match current station steps");
       }
 
-      for (const [index, key] of requestedKeys.entries()) {
+      for (let index = 0; index < requestedKeys.length; index += 1) {
+        const key = requestedKeys[index];
         await tx.execute(sql`
           update production_station_steps
           set sort_order = ${(index + 1) * 10},
@@ -15054,6 +15062,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         error?.constraint === "uq_prepress_active_session_per_line_item"
       ) {
         try {
+          if (!organizationId) {
+            throw new Error("Missing organization context");
+          }
           const existingActiveSession = await db
             .select({
               id: prepressSessions.id,
@@ -15069,7 +15080,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .from(prepressSessions)
             .where(
               and(
-                eq(prepressSessions.organizationId, orgId),
+                eq(prepressSessions.organizationId, organizationId),
                 eq(prepressSessions.lineItemId, lineItemId),
                 eq(prepressSessions.status, "active"),
               ),
@@ -16950,7 +16961,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     .where(
                       and(
                         eq(orderAttachments.fileUrl, storageKey),
-                        eq(orderAttachments.storageProvider, effectiveStorageProvider)
+                        eq(orderAttachments.storageProvider, toLegacyStorageProvider(effectiveStorageProvider) ?? 'supabase')
                       )
                     );
 
@@ -16973,7 +16984,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                       and(
                         eq(quoteAttachments.organizationId, organizationId),
                         eq(quoteAttachments.fileUrl, storageKey),
-                        eq(quoteAttachments.storageProvider, effectiveStorageProvider)
+                        eq(quoteAttachments.storageProvider, toLegacyStorageProvider(effectiveStorageProvider) ?? 'supabase')
                       )
                     );
 
@@ -17028,7 +17039,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
                     await deleteStoredObjectKeys({
                       fileRecordId: record.fileRecordId ? String(record.fileRecordId) : null,
-                      legacyStorageProvider: effectiveStorageProvider,
+                      legacyStorageProvider: toLegacyStorageProvider(effectiveStorageProvider),
                       keys: [...variants.map((variant) => variant.key || ''), normalizedFileKey],
                     });
 
