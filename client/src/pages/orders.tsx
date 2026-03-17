@@ -493,7 +493,7 @@ export default function Orders() {
       case "orderNumber": {
         const { displayNumber, isTest } = getDisplayOrderNumber(row);
         return (
-          <Link to={ROUTES.orders.detail(row.id)} state={{ referrer: buildReferrer(location) }} className="text-blue-600 hover:underline font-medium flex items-center gap-1.5">
+          <Link to={ROUTES.orders.detail(row.id)} state={{ referrer: buildReferrer(location) }} className="text-sm text-blue-600 hover:underline font-medium flex items-center gap-1.5">
             <span>{displayNumber}</span>
             {isTest && (
               <span className="text-[10px] bg-yellow-100 text-yellow-800 px-1.5 py-0.5 rounded font-medium">Test</span>
