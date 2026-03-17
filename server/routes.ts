@@ -9,7 +9,7 @@ import Papa from "papaparse";
 import busboy from "busboy";
 import { storage } from "./storage";
 import * as prepressFileService from "./prepressFileService";
-import { db } from "./db";
+import { db, hasQuoteAttachmentPagesTable } from "./db";
 import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, inventoryReservations, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, authIdentities, bugReports, prepressSessions, lineItemFiles, reprintRequests } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, asc, inArray, notInArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
@@ -7193,7 +7193,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Attachment not found" });
       }
 
-      const pageDerivativeRows = hasQuoteAttachmentPagesTable() === true
+      const pagePagesTableState = hasQuoteAttachmentPagesTable();
+      const pageDerivativeRows = pagePagesTableState === true
         ? await db
             .select({
               thumbFileRecordId: quoteAttachmentPages.thumbFileRecordId,
@@ -7207,6 +7208,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
               eq(quoteAttachmentPages.organizationId, organizationId),
             ))
         : [];
+
+      console.log('[LineItemFiles:DELETE] page derivative preload', {
+        quoteId,
+        lineItemId,
+        attachmentId: existingAttachment.id,
+        fileRecordId: existingAttachment.fileRecordId ?? null,
+        pagesTableState: pagePagesTableState,
+        pageDerivativeRowCount: pageDerivativeRows.length,
+        pageDerivativeRows: pageDerivativeRows.map((row) => ({
+          thumbFileRecordId: row.thumbFileRecordId ?? null,
+          thumbKey: row.thumbKey ?? null,
+          previewFileRecordId: row.previewFileRecordId ?? null,
+          previewKey: row.previewKey ?? null,
+        })),
+      });
 
       // Delete from database (and validate it actually deleted)
       const deleted = await db.delete(quoteAttachments)
@@ -7314,6 +7330,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 )
               );
 
+          console.log('[LineItemFiles:DELETE] final cleanup gate', {
+            quoteId,
+            lineItemId,
+            attachmentId: existingAttachment.id,
+            fileRecordId: existingAttachment.fileRecordId ?? null,
+            storageKey,
+            storageProvider,
+            quoteRefs: Number(quoteRefs),
+            orderRefs: Number(orderRefs),
+          });
+
               const linkCounts = await Promise.all(
                 matchingAssets.map(async (asset) => {
                   const [{ cnt = 0 } = {}] = await db
@@ -7361,6 +7388,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
               keys: [storageKey, ...derivativeKeys],
             });
 
+            console.log('[LineItemFiles:DELETE] top-level derivative cleanup result', {
+              quoteId,
+              lineItemId,
+              attachmentId: existingAttachment.id,
+              keys: [storageKey, ...derivativeKeys],
+              deletedKeys: derivativeDeletion.deletedKeys,
+              failedKeys: derivativeDeletion.failedKeys,
+            });
+
             for (const pageDerivativeRow of pageDerivativeRows) {
               const pageDerivativeCandidates = [
                 {
@@ -7379,7 +7415,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   ? await canonicalFileReadResolver.resolveOriginal(fileRecordId)
                   : null;
                 const pageStorageKey = resolvedPageOriginal?.objectKey ?? resolvedPageOriginal?.localPathRef ?? candidate.fallbackKey ?? null;
+                console.log('[LineItemFiles:DELETE] page derivative candidate', {
+                  quoteId,
+                  lineItemId,
+                  attachmentId: existingAttachment.id,
+                  fileRecordId,
+                  fallbackKey: candidate.fallbackKey ?? null,
+                  resolvedPageStorageKey: pageStorageKey,
+                  resolvedProviderType: resolvedPageOriginal?.providerType ?? null,
+                  resolvedStatus: resolvedPageOriginal?.status ?? null,
+                });
                 if (!pageStorageKey) {
+                  console.warn('[LineItemFiles:DELETE] page derivative key missing; skipping physical delete', {
+                    quoteId,
+                    lineItemId,
+                    attachmentId: existingAttachment.id,
+                    fileRecordId,
+                    fallbackKey: candidate.fallbackKey ?? null,
+                  });
                   continue;
                 }
 
@@ -7387,6 +7440,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   fileRecordId,
                   legacyStorageProvider: storageProvider,
                   keys: [pageStorageKey],
+                });
+
+                console.log('[LineItemFiles:DELETE] page derivative delete result', {
+                  quoteId,
+                  lineItemId,
+                  attachmentId: existingAttachment.id,
+                  fileRecordId,
+                  pageStorageKey,
+                  deletedKeys: pageDeletion.deletedKeys,
+                  failedKeys: pageDeletion.failedKeys,
                 });
 
                 if (fileRecordId && pageDeletion.failedKeys.length === 0) {
