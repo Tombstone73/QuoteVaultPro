@@ -377,6 +377,9 @@ export function LineItemsSection({
   const [notes, setNotes] = useState<string>("");
   const [description, setDescription] = useState<string>("");
   const [productionNotes, setProductionNotes] = useState<string>("");
+  // Canonical routing intent (migration 0015)
+  const [requiresDesign, setRequiresDesign] = useState<boolean>(false);
+  const [requiresPrepress, setRequiresPrepress] = useState<boolean | null>(null);
   const [optionSelections, setOptionSelections] = useState<Record<string, OptionSelection>>({});
   const [optionSelectionsV2, setOptionSelectionsV2] = useState<LineItemOptionSelectionsV2>({ schemaVersion: 2, selected: {} });
   const [optionsV2Valid, setOptionsV2Valid] = useState(true);
@@ -411,6 +414,9 @@ export function LineItemsSection({
     setNotes((expandedItem.specsJson as any)?.notes || expandedItem.notes || "");
     setDescription(expandedItem.description || "");
     setProductionNotes(expandedItem.productionNotes || "");
+    // Rehydrate routing intent from quote line item (migration 0015)
+    setRequiresDesign((expandedItem as any).requiresDesign === true);
+    setRequiresPrepress(typeof (expandedItem as any).requiresPrepress === 'boolean' ? (expandedItem as any).requiresPrepress : null);
     const selections: Record<string, OptionSelection> = {};
     (expandedItem.selectedOptions || []).forEach((opt: any) => {
       selections[opt.optionId] = {
@@ -596,10 +602,13 @@ export function LineItemsSection({
       notes: notes || undefined,
       description: description || undefined,
       productionNotes: productionNotes || undefined,
+      // Canonical routing intent (migration 0015)
+      requiresDesign,
+      requiresPrepress,
       ...(v2Patch as any),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expandedKey, widthNum, heightNum, qtyNum, notes, description, productionNotes, isExpandedTreeV2, optionSelectionsV2]);
+  }, [expandedKey, widthNum, heightNum, qtyNum, notes, description, productionNotes, requiresDesign, requiresPrepress, isExpandedTreeV2, optionSelectionsV2]);
 
   // Identity persistence must not reset edit snapshot; only explicit user saves do.
   // The snapshot is already correctly updated in handleSaveItem when user clicks Save.
@@ -895,6 +904,10 @@ export function LineItemsSection({
                             productionNotes={productionNotes}
                             onDescriptionChange={setDescription}
                             onProductionNotesChange={setProductionNotes}
+                            requiresDesign={requiresDesign}
+                            requiresPrepress={requiresPrepress}
+                            onRequiresDesignChange={setRequiresDesign}
+                            onRequiresPrepressChange={setRequiresPrepress}
                             optionsSlot={
                               <>
                                 {isExpandedTreeV2 && expandedOptionTreeJson ? (

@@ -4528,6 +4528,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // Line item enhancements (migration 0039, 0040)
           description: item.description || null,
           productionNotes: item.productionNotes || null,
+          // Canonical routing intent (migration 0015)
+          requiresDesign: item.requiresDesign === true,
+          requiresPrepress: typeof item.requiresPrepress === 'boolean' ? item.requiresPrepress : null,
           // Tax fields (convert to string for storage)
           taxAmount: taxData.taxAmount.toString(),
           isTaxableSnapshot: taxData.isTaxableSnapshot,
@@ -5744,6 +5747,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           displayOrder: li.displayOrder,
           isTemporary: false,
           createdByUserId: li.createdByUserId ?? null,
+          // Canonical routing intent (migration 0015) — preserved through clone/revise
+          requiresDesign: (li as any).requiresDesign ?? false,
+          requiresPrepress: (li as any).requiresPrepress ?? null,
         } as any)
         .returning();
 
@@ -6048,6 +6054,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         },
         displayOrder: lineItem.displayOrder || 0,
         isTemporary: false,
+        // Canonical routing intent (migration 0015)
+        requiresDesign: lineItem.requiresDesign === true,
+        requiresPrepress: typeof lineItem.requiresPrepress === 'boolean' ? lineItem.requiresPrepress : null,
       };
 
       const createdLineItem = await storage.addLineItem(id, validatedLineItem);
@@ -6245,6 +6254,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Line item enhancements (migrations 0039, 0040)
       if (lineItem.description !== undefined) updateData.description = lineItem.description;
       if (lineItem.productionNotes !== undefined) updateData.productionNotes = lineItem.productionNotes;
+      // Canonical routing intent (migration 0015)
+      if (lineItem.requiresDesign !== undefined) updateData.requiresDesign = lineItem.requiresDesign === true;
+      if (lineItem.requiresPrepress !== undefined) updateData.requiresPrepress = typeof lineItem.requiresPrepress === 'boolean' ? lineItem.requiresPrepress : null;
 
       const updatedLineItem = await storage.updateLineItem(lineItemId, updateData);
       res.json(updatedLineItem);

@@ -558,6 +558,9 @@ export class QuotesRepository {
             pbv2TreeVersionId: (item as any).pbv2TreeVersionId || null,
             pbv2SnapshotJson: (item as any).pbv2SnapshotJson || {},
             pricedAt: (item as any).pricedAt || new Date(),
+            // Canonical routing intent (migration 0015)
+            requiresDesign: (item as any).requiresDesign === true,
+            requiresPrepress: typeof (item as any).requiresPrepress === 'boolean' ? (item as any).requiresPrepress : null,
         }));
 
         const createdLineItems = lineItemsData.length
@@ -793,6 +796,9 @@ export class QuotesRepository {
             pbv2TreeVersionId: (lineItem as any).pbv2TreeVersionId || null,
             pbv2SnapshotJson: (lineItem as any).pbv2SnapshotJson || {},
             pricedAt: (lineItem as any).pricedAt || new Date(),
+            // Canonical routing intent (migration 0015)
+            requiresDesign: (lineItem as any).requiresDesign === true,
+            requiresPrepress: typeof (lineItem as any).requiresPrepress === 'boolean' ? (lineItem as any).requiresPrepress : null,
         };
 
         const [created] = await this.dbInstance.insert(quoteLineItems).values(lineItemData).returning();
@@ -815,6 +821,9 @@ export class QuotesRepository {
         if (lineItem.linePrice !== undefined) updateData.linePrice = lineItem.linePrice.toString();
         if (lineItem.priceBreakdown !== undefined) updateData.priceBreakdown = lineItem.priceBreakdown;
         if (lineItem.displayOrder !== undefined) updateData.displayOrder = lineItem.displayOrder;
+        // Canonical routing intent (migration 0015)
+        if ((lineItem as any).requiresDesign !== undefined) updateData.requiresDesign = (lineItem as any).requiresDesign === true;
+        if ((lineItem as any).requiresPrepress !== undefined) updateData.requiresPrepress = typeof (lineItem as any).requiresPrepress === 'boolean' ? (lineItem as any).requiresPrepress : null;
 
         const [updated] = await this.dbInstance
             .update(quoteLineItems)
