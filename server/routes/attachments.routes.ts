@@ -60,6 +60,7 @@ import { deleteStoredObjectKeys } from "../services/storage/deleteStoredObjectKe
 import { storageRegistry } from "../services/storage/StorageRegistry";
 import { storageProviderConfigRepository } from "../storage/storageProviderConfig.repo";
 import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
+import { fileRecordRepository } from "../storage/fileRecord.repo";
 import { extractNormalizedOrgIdFromKey, getTenantObjectKeyCandidates, normalizeTenantObjectKey } from "../utils/orgKeys";
 import type { DownloadIntent } from "@shared/schema";
 
@@ -282,6 +283,21 @@ export async function registerAttachmentRoutes(
       return false;
     }
 
+    const pageDerivativeRows = hasQuoteAttachmentPagesTable() === true
+      ? await db
+          .select({
+            thumbFileRecordId: quoteAttachmentPages.thumbFileRecordId,
+            thumbKey: quoteAttachmentPages.thumbKey,
+            previewFileRecordId: quoteAttachmentPages.previewFileRecordId,
+            previewKey: quoteAttachmentPages.previewKey,
+          })
+          .from(quoteAttachmentPages)
+          .where(and(
+            eq(quoteAttachmentPages.attachmentId, attachment.id),
+            eq(quoteAttachmentPages.organizationId, args.organizationId),
+          ))
+      : [];
+
     await db.delete(quoteAttachments).where(and(...predicates));
 
     try {
@@ -383,6 +399,45 @@ export async function registerAttachmentRoutes(
           legacyStorageProvider: storageProvider,
           keys: [storageKey, ...derivativeKeys],
         });
+
+        for (const pageDerivativeRow of pageDerivativeRows) {
+          const pageDerivativeCandidates = [
+            {
+              fileRecordId: pageDerivativeRow.thumbFileRecordId,
+              fallbackKey: pageDerivativeRow.thumbKey,
+            },
+            {
+              fileRecordId: pageDerivativeRow.previewFileRecordId,
+              fallbackKey: pageDerivativeRow.previewKey,
+            },
+          ];
+
+          for (const candidate of pageDerivativeCandidates) {
+            const fileRecordId = candidate.fileRecordId ? String(candidate.fileRecordId) : null;
+            const resolvedPageOriginal = fileRecordId
+              ? await canonicalFileReadResolver.resolveOriginal(fileRecordId)
+              : null;
+            const pageStorageKey = resolvedPageOriginal?.objectKey ?? resolvedPageOriginal?.localPathRef ?? candidate.fallbackKey ?? null;
+            if (!pageStorageKey) {
+              continue;
+            }
+
+            const pageDeletion = await deleteStoredObjectKeys({
+              fileRecordId,
+              legacyStorageProvider: storageProvider,
+              keys: [pageStorageKey],
+            });
+
+            if (fileRecordId && pageDeletion.failedKeys.length === 0) {
+              await fileRecordRepository.deleteById(fileRecordId);
+            } else if (fileRecordId && pageDeletion.failedKeys.length > 0) {
+              console.warn("[QuoteAttachments:DELETE] Skipped page derivative fileRecord cleanup due to storage delete failures", {
+                fileRecordId,
+                failedKeys: pageDeletion.failedKeys,
+              });
+            }
+          }
+        }
 
         if (attachment.fileRecordId && derivativeDeletion.failedKeys.length === 0) {
           await fileDerivativeRepository.deleteByFileRecordId(String(attachment.fileRecordId));
