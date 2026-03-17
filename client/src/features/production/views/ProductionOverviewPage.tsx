@@ -191,21 +191,11 @@ function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): str
 
   const normalizeArtworkImageUrl = (value: string): string | null => resolveObjectsPublicUrl(value);
   
-  // 1. Prefer thumbnailUrl (always an image if present)
+  // 1. Prefer thumbnailUrl (always an image if present).
   if (artwork.thumbnailUrl && artwork.thumbnailUrl.trim()) {
     return normalizeArtworkImageUrl(artwork.thumbnailUrl);
   }
   
-  // 2. Fallback to fileUrl, but ONLY if it's an image file
-  if (artwork.fileUrl && artwork.fileUrl.trim()) {
-    const fileName = (artwork.fileName || "").toLowerCase();
-    const imageExtensions = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".bmp", ".tif", ".tiff"];
-    const isImageFile = imageExtensions.some((ext) => fileName.endsWith(ext));
-    
-    if (isImageFile) {
-      return normalizeArtworkImageUrl(artwork.fileUrl);
-    }
-  }
   
   return null;
 }

@@ -76,6 +76,14 @@ const ORDER_ATTACHMENT_SAFE_SELECT = {
 export class OrdersRepository {
     constructor(private readonly dbInstance = db) { }
 
+    private async resolvePreviewThumbnailUrl(att: { fileRecordId?: string | null; thumbKey?: string | null; previewKey?: string | null }) {
+        const previewAccess = await resolveDerivativeFileAccess(att, "preview");
+        if (previewAccess.url) return previewAccess.url;
+
+        const thumbAccess = await resolveDerivativeFileAccess(att, "thumbnail");
+        return thumbAccess.url ?? null;
+    }
+
     private async generateNextOrderNumber(organizationId: string, tx?: any): Promise<string> {
         // Try globalVariables first (pattern similar to quotes). If missing, fallback to MAX(order_number)+1
         const executor = tx || this.dbInstance;
@@ -105,7 +113,11 @@ export class OrdersRepository {
     }
 
     private async getPreviewThumbnailsForOrderIds(organizationId: string, orderIds: string[]) {
-        const previewData: Map<string, { thumbnails: string[]; totalCount: number }> = new Map();
+        const previewData: Map<string, {
+            thumbnails: string[];
+            totalCount: number;
+            previews: Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }>;
+        }> = new Map();
         if (!orderIds.length) return previewData;
 
         // Query orderAttachments with thumb_ready status (matches Quotes pattern exactly)
@@ -115,6 +127,9 @@ export class OrdersRepository {
                 id: orderAttachments.id,
                 fileRecordId: orderAttachments.fileRecordId,
                 orderId: orderAttachments.orderId,
+                fileName: orderAttachments.fileName,
+                originalFilename: orderAttachments.originalFilename,
+                mimeType: orderAttachments.mimeType,
             })
             .from(orderAttachments)
             .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
@@ -127,29 +142,41 @@ export class OrdersRepository {
             .orderBy(orderAttachments.createdAt);
 
         const groupedAttachments = new Map<string, string[]>();
+        const groupedPreviews = new Map<string, Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }>>();
         const countMap = new Map<string, number>();
 
         const resolvedRows = await Promise.all(attachmentsQuery.map(async (att) => {
-            const [previewAccess, thumbAccess] = await Promise.all([
-                resolveDerivativeFileAccess(att, "preview"),
-                resolveDerivativeFileAccess(att, "thumbnail"),
-            ]);
-
             return {
+                id: String(att.id),
                 orderId: att.orderId,
-                thumbnailUrl: previewAccess.url ?? thumbAccess.url ?? null,
+                filename: String(att.originalFilename ?? att.fileName ?? "Attachment"),
+                mimeType: att.mimeType ?? null,
+                thumbnailUrl: await this.resolvePreviewThumbnailUrl(att),
             };
         }));
 
         for (const att of resolvedRows) {
-            if (!att.thumbnailUrl) continue;
             countMap.set(att.orderId, (countMap.get(att.orderId) || 0) + 1);
+            if (!att.thumbnailUrl) continue;
             if (!groupedAttachments.has(att.orderId)) {
                 groupedAttachments.set(att.orderId, []);
             }
             const group = groupedAttachments.get(att.orderId)!;
             if (group.length < 3) {
                 group.push(att.thumbnailUrl);
+            }
+
+            if (!groupedPreviews.has(att.orderId)) {
+                groupedPreviews.set(att.orderId, []);
+            }
+            const previewGroup = groupedPreviews.get(att.orderId)!;
+            if (previewGroup.length < 3) {
+                previewGroup.push({
+                    id: att.id,
+                    filename: att.filename,
+                    mimeType: att.mimeType,
+                    thumbnailUrl: att.thumbnailUrl,
+                });
             }
         }
 
@@ -160,6 +187,7 @@ export class OrdersRepository {
             previewData.set(orderIdKey, {
                 thumbnails,
                 totalCount: countMap.get(orderIdKey) || 0,
+                previews: groupedPreviews.get(orderIdKey) || [],
             });
         }
 
@@ -185,6 +213,10 @@ export class OrdersRepository {
             lineItemsCount: number;
             previewThumbnails?: string[];
             thumbsCount?: number;
+            attachmentsSummary?: {
+                totalCount: number;
+                previews: Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }>;
+            };
             listLabel?: string | null;
         }>;
         page: number;
@@ -278,7 +310,11 @@ export class OrdersRepository {
             .offset(offset);
 
         const orderIds = rows.map((r) => r.order.id);
-        let previewData = new Map<string, { thumbnails: string[]; totalCount: number }>();
+        let previewData = new Map<string, {
+            thumbnails: string[];
+            totalCount: number;
+            previews: Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }>;
+        }>();
         
         if (opts.includeThumbnails) {
             try {
@@ -317,6 +353,12 @@ export class OrdersRepository {
             lineItemsCount,
             previewThumbnails: previewData.get(order.id)?.thumbnails || [],
             thumbsCount: previewData.get(order.id)?.totalCount || 0,
+            attachmentsSummary: previewData.get(order.id)
+                ? {
+                    totalCount: previewData.get(order.id)?.totalCount || 0,
+                    previews: previewData.get(order.id)?.previews || [],
+                }
+                : { totalCount: 0, previews: [] },
             listLabel: listNotesMap.get(order.id) || null,
         }));
 

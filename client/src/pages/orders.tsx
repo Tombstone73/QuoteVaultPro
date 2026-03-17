@@ -140,7 +140,7 @@ export default function Orders() {
   // Pagination + performance controls (persisted per org+user, matching Quotes)
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
-  const [includeThumbnails, setIncludeThumbnails] = useState(true);
+  const [includeThumbnails, setIncludeThumbnails] = useState(false);
   
   // Attachments dialog state (list of files for an order)
   const [attachmentsDialogOpen, setAttachmentsDialogOpen] = useState(false);

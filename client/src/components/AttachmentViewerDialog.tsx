@@ -215,18 +215,18 @@ export function AttachmentViewerDialog({
   const isImage = typeof effectiveMimeType === "string" && effectiveMimeType.startsWith("image/");
   const imageViewUrl = isImage ? currentAttachment?.previewUrl ?? currentAttachment?.originalUrl ?? null : null;
   const objectPath = currentAttachment?.objectPath ?? null;
-  const pdfViewUrl = isPdf ? currentAttachment?.originalUrl ?? buildPdfViewUrl(objectPath) : null;
+  const pdfViewUrl = isPdf ? currentAttachment?.previewUrl ?? currentAttachment?.originalUrl ?? buildPdfViewUrl(objectPath) : null;
   const pdfDownloadUrl = isPdf ? buildPdfDownloadUrl(objectPath, fileName) : null;
   const pdfSourceUrl = isPdf
-    ? pdfViewUrl ?? currentAttachment?.previewUrl ?? currentAttachment?.fileUrl
+    ? pdfViewUrl ?? currentAttachment?.fileUrl
     : null;
   const pdfSourceKind = isPdf
-    ? currentAttachment?.originalUrl
-      ? "originalUrl"
-      : objectPath
-        ? "objectPath"
-        : currentAttachment?.previewUrl
-          ? "previewUrl"
+    ? currentAttachment?.previewUrl
+      ? "previewUrl"
+      : currentAttachment?.originalUrl
+        ? "originalUrl"
+        : objectPath
+          ? "objectPath"
           : currentAttachment?.fileUrl
             ? "fileUrl"
             : "missing"

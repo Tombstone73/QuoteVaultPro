@@ -873,43 +873,6 @@ export async function registerOrderRoutes(
                     try {
                         const orderIds = result.items.map((o: any) => o.id).filter(Boolean);
                         if (orderIds.length) {
-                            const attachmentRows = await db
-                                .select({
-                                    orderId: orderAttachments.orderId,
-                                    id: orderAttachments.id,
-                                    fileUrl: orderAttachments.fileUrl,
-                                    storageProvider: orderAttachments.storageProvider,
-                                    thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
-                                    thumbKey: orderAttachments.thumbKey,
-                                    previewKey: orderAttachments.previewKey,
-                                    mimeType: orderAttachments.mimeType,
-                                    fileName: orderAttachments.fileName,
-                                    originalFilename: orderAttachments.originalFilename,
-                                    createdAt: orderAttachments.createdAt,
-                                })
-                                .from(orderAttachments)
-                                .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
-                                .where(
-                                    and(
-                                        inArray(orderAttachments.orderId, orderIds),
-                                        eq(orders.organizationId, organizationId),
-                                    )
-                                )
-                                .orderBy(desc(orderAttachments.createdAt));
-
-                            const logOnce = createRequestLogOnce();
-                            const countsByOrderId: Record<string, number> = {};
-                            const previewsByOrderId: Record<string, any[]> = {};
-
-                            for (const row of attachmentRows) {
-                                const orderId = row.orderId as string;
-                                countsByOrderId[orderId] = (countsByOrderId[orderId] ?? 0) + 1;
-                                if (!previewsByOrderId[orderId]) previewsByOrderId[orderId] = [];
-                                if (previewsByOrderId[orderId].length < 3) {
-                                    previewsByOrderId[orderId].push(row);
-                                }
-                            }
-
                             const attachmentsSummaryByOrderId: Record<
                                 string,
                                 { totalCount: number; previews: Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }> }
@@ -920,33 +883,10 @@ export async function registerOrderRoutes(
                             const previewCountByOrderId: Record<string, number> = {};
 
                             for (const orderId of orderIds) {
-                                const totalCount = countsByOrderId[orderId] ?? 0;
-                                const previewRows = previewsByOrderId[orderId] ?? [];
-
-                                const previews: Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }> = [];
-                                for (const att of previewRows) {
-                                    // Canonical thumbnail doctrine (READS must match WRITES):
-                                    // - Do not attempt to render legacy `thumbnailRelativePath` as a URL.
-                                    //   That field has historically carried mismatched keys (causing /objects/* -> Supabase 404 spam).
-                                    // - Prefer `thumbKey`/`previewKey` via `enrichAttachmentWithUrls`, which is aligned
-                                    //   with the current thumbnail writers (see server/workers/thumbnailWorker.ts).
-                                    // NOTE: We intentionally do NOT fall back to originalUrl here (could be a PDF).
-                                    const enriched = await enrichAttachmentWithUrls(att, { logOnce });
-                                    const thumbnailUrl =
-                                        (enriched?.thumbnailUrl as string | null) ??
-                                        (enriched?.previewThumbnailUrl as string | null) ??
-                                        (enriched?.thumbUrl as string | null) ??
-                                        (enriched?.previewUrl as string | null) ??
-                                        (enriched?.pages?.[0]?.thumbUrl as string | null) ??
-                                        null;
-
-                                    previews.push({
-                                        id: String(att.id),
-                                        filename: String(att.originalFilename ?? att.fileName ?? 'Attachment'),
-                                        mimeType: (att.mimeType ?? null) as string | null,
-                                        thumbnailUrl,
-                                    });
-                                }
+                                const item = result.items.find((entry: any) => entry.id === orderId);
+                                const attachmentsSummary = item?.attachmentsSummary ?? { totalCount: 0, previews: [] };
+                                const previews = attachmentsSummary.previews ?? [];
+                                const totalCount = attachmentsSummary.totalCount ?? 0;
 
                                 attachmentsSummaryByOrderId[orderId] = {
                                     totalCount,

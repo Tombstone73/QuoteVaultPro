@@ -32,6 +32,11 @@ import {
 
 const BUCKET_NAME = process.env.PREPRESS_FILES_BUCKET || process.env.GCS_BUCKET_NAME || "quotevaultpro-uploads";
 
+function buildPrepressDownloadEtag(fileId: string, sizeBytes: number | null | undefined, createdAt: Date | string | null | undefined) {
+  const createdAtValue = createdAt ? new Date(createdAt).getTime() : 0;
+  return `W/\"prepress-${fileId}-${sizeBytes ?? 0}-${createdAtValue}\"`;
+}
+
 /**
  * Normalized shape for order-level attachments surfaced in the prepress file panel.
  * These originate from the `order_attachments` table (uploaded on the order/quote page)
@@ -288,12 +293,29 @@ export async function downloadLineItemFile(
   });
   const downloadFilename = `${jobNumber}  ${computedDisplayFilename}`;
   const dispositionType = options?.inline ? "inline" : "attachment";
+  const etag = buildPrepressDownloadEtag(file.file.id, file.file.sizeBytes, file.file.createdAt);
+  const ifNoneMatchHeader = Array.isArray(res.req?.headers["if-none-match"])
+    ? res.req?.headers["if-none-match"][0]
+    : res.req?.headers["if-none-match"];
+  const ifNoneMatch = typeof ifNoneMatchHeader === "string" ? ifNoneMatchHeader : null;
+  const lastModified = file.file.createdAt ? new Date(file.file.createdAt).toUTCString() : null;
+
+  if (ifNoneMatch && ifNoneMatch === etag) {
+    res.status(304).end();
+    return;
+  }
 
   res.set({
     "Content-Type": file.file.mimeType,
     "Content-Disposition": `${dispositionType}; filename="${downloadFilename}"`,
-    "Cache-Control": "private, no-cache",
+    "Cache-Control": "private, max-age=0, must-revalidate",
+    ETag: etag,
+    "X-Served-As": "original",
   });
+
+  if (lastModified) {
+    res.set("Last-Modified", lastModified);
+  }
 
   // Prepress bucket path
   if (file.file.storageBucket) {
@@ -382,6 +404,7 @@ export async function downloadOriginalsAsZip(
     "Content-Type": "application/zip",
     "Content-Disposition": `attachment; filename="${zipFilename}"`,
     "Cache-Control": "private, no-cache",
+    "X-Served-As": "download",
   });
 
   const archive = archiver("zip", { zlib: { level: 6 } });
