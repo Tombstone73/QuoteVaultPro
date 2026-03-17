@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -1023,15 +1023,19 @@ export default function Orders() {
                 <div className="text-sm text-muted-foreground">
                   Showing {((page - 1) * pageSize) + 1}-{Math.min(page * pageSize, filteredOrders.length)} of {filteredOrders.length}
                 </div>
-                <div className="flex items-center gap-2">
-                  <Checkbox
+                <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2">
+                  <Switch
                     id="includeThumbnails"
                     checked={includeThumbnails}
                     onCheckedChange={(checked) => setIncludeThumbnails(checked === true)}
+                    aria-label="Toggle order thumbnails"
                   />
-                  <Label htmlFor="includeThumbnails" className="text-sm text-muted-foreground cursor-pointer">
-                    Show thumbnails
+                  <Label htmlFor="includeThumbnails" className="cursor-pointer text-sm text-foreground">
+                    Thumbnails
                   </Label>
+                  <Badge variant={includeThumbnails ? "default" : "secondary"} className="pointer-events-none text-[10px] uppercase tracking-wide">
+                    {includeThumbnails ? "On" : "Off"}
+                  </Badge>
                 </div>
               </div>
               <div className="flex items-center gap-2">
