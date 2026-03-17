@@ -85,6 +85,7 @@ type BridgedOriginalFile = {
   originalFilename: string;
   mimeType: string | null;
   sizeBytes: number | null;
+  role: string;
   createdAt: string;
   source: "order_attachment";
   downloadUrl: string;
@@ -234,6 +235,12 @@ function formatElapsedDuration(totalSeconds: number): string {
   return [hours, minutes, seconds].map((value) => String(value).padStart(2, "0")).join(":");
 }
 
+const PREPRESS_QUEUE_QUERY_KEY = ["/api/prepress/queue"] as const;
+
+function getPrepressLineItemQueryKey(lineItemId: string | null) {
+  return ["/api/prepress/line-item", lineItemId] as const;
+}
+
 export default function PrepressProductionPageV2() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -267,17 +274,43 @@ export default function PrepressProductionPageV2() {
   const [overrideUom, setOverrideUom] = useState<"sqft" | "ft" | "each">("sqft");
   const [overrideReasonNote, setOverrideReasonNote] = useState("");
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const normalizedSearchQuery = searchQuery.trim();
+
+  const queueFilters = useMemo(
+    () => ({
+      printType: printTypeFilter,
+      status: statusFilter,
+      rush: rushFilter,
+      sortBy,
+      sortAsc,
+      search: normalizedSearchQuery,
+    }),
+    [normalizedSearchQuery, printTypeFilter, rushFilter, sortAsc, sortBy, statusFilter],
+  );
+
+  const refreshPrepressQueue = React.useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: PREPRESS_QUEUE_QUERY_KEY });
+    await queryClient.refetchQueries({ queryKey: PREPRESS_QUEUE_QUERY_KEY, type: "active" });
+  }, [queryClient]);
+
+  const refreshLineItemQueries = React.useCallback(async (lineItemId: string | null) => {
+    if (!lineItemId) return;
+    const queryKey = getPrepressLineItemQueryKey(lineItemId);
+    await queryClient.invalidateQueries({ queryKey });
+    await queryClient.refetchQueries({ queryKey, type: "active" });
+  }, [queryClient]);
 
   // Queue Query
-  const { data: queueData, isLoading: queueLoading } = useQuery({
-    queryKey: ["/api/prepress/queue", { printType: printTypeFilter, status: statusFilter, rush: rushFilter, sortBy, sortAsc }],
+  const { data: queueData, isLoading: queueLoading, isFetching: queueFetching, refetch: refetchQueue } = useQuery({
+    queryKey: [...PREPRESS_QUEUE_QUERY_KEY, queueFilters],
     queryFn: async () => {
       const params = new URLSearchParams();
-      if (printTypeFilter !== "all") params.set("printType", printTypeFilter);
-      if (statusFilter !== "all") params.set("status", statusFilter);
-      if (rushFilter) params.set("rush", "true");
-      params.set("sortBy", sortBy);
-      params.set("sortOrder", sortAsc ? "asc" : "desc");
+      if (queueFilters.printType !== "all") params.set("printType", queueFilters.printType);
+      if (queueFilters.status !== "all") params.set("status", queueFilters.status);
+      if (queueFilters.rush) params.set("rush", "true");
+      if (queueFilters.search) params.set("search", queueFilters.search);
+      params.set("sortBy", queueFilters.sortBy);
+      params.set("sortOrder", queueFilters.sortAsc ? "asc" : "desc");
       
       const res = await fetch(`/api/prepress/queue?${params}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch queue");
@@ -287,10 +320,12 @@ export default function PrepressProductionPageV2() {
       }
       return data.data as QueueItem[];
     },
-    placeholderData: (previousData) => previousData,
-    refetchInterval: 15000,
+    staleTime: 0,
+    refetchInterval: 10000,
     refetchIntervalInBackground: true,
     refetchOnWindowFocus: true,
+    refetchOnMount: "always",
+    refetchOnReconnect: true,
   });
 
   // Line Item Files Query
@@ -402,10 +437,15 @@ export default function PrepressProductionPageV2() {
       }
       return res.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/prepress/line-item", selectedLineItemId] });
-      toast({ title: "Prepress started", description: "Session created successfully" });
+    onSuccess: async (response, lineItemId) => {
+      await Promise.all([
+        refreshPrepressQueue(),
+        refreshLineItemQueries(lineItemId),
+      ]);
+      toast({
+        title: response?.data?.resumed ? "Prepress resumed" : "Prepress started",
+        description: response?.data?.resumed ? "Existing session restored" : "Session created successfully",
+      });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -426,8 +466,11 @@ export default function PrepressProductionPageV2() {
       }
       return res.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+    onSuccess: async () => {
+      await Promise.all([
+        refreshPrepressQueue(),
+        refreshLineItemQueries(selectedLineItemId),
+      ]);
       toast({ title: "Notes saved", description: "Prepress notes updated" });
     },
     onError: (error: Error) => {
@@ -447,10 +490,14 @@ export default function PrepressProductionPageV2() {
       }
       return res.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
-      // Invalidate production board so downstream boards reflect the prepress_complete status change.
-      queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+    onSuccess: async (response) => {
+      const lineItemId = response?.data?.lineItemId ?? selectedLineItemId;
+      await Promise.all([
+        refreshPrepressQueue(),
+        refreshLineItemQueries(lineItemId),
+        queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
+        queryClient.refetchQueries({ queryKey: ["/api/production/jobs"], type: "active" }),
+      ]);
       toast({ title: "Prepress complete", description: "Prepress is complete. Use Send to Production for handoff." });
     },
     onError: (error: Error) => {
@@ -481,8 +528,11 @@ export default function PrepressProductionPageV2() {
       if (!res.ok) throw new Error("Upload failed");
       return res.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/prepress/line-item", selectedLineItemId] });
+    onSuccess: async (_response, variables) => {
+      await Promise.all([
+        refreshLineItemQueries(variables.lineItemId),
+        refreshPrepressQueue(),
+      ]);
       toast({ title: "Upload complete", description: "File uploaded successfully" });
     },
     onError: (error: Error) => {
@@ -505,9 +555,12 @@ export default function PrepressProductionPageV2() {
       
       return res.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+    onSuccess: async () => {
+      await Promise.all([
+        refreshPrepressQueue(),
+        queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
+        queryClient.refetchQueries({ queryKey: ["/api/production/jobs"], type: "active" }),
+      ]);
       // Clear selection since item will move to production boards
       setSelectedLineItemId(null);
       toast({ 
@@ -538,9 +591,12 @@ export default function PrepressProductionPageV2() {
       }
       return res.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+    onSuccess: async () => {
+      await Promise.all([
+        refreshPrepressQueue(),
+        queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
+        queryClient.refetchQueries({ queryKey: ["/api/production/jobs"], type: "active" }),
+      ]);
       toast({ title: "Print type updated" });
     },
     onError: (error: Error) => {
@@ -580,25 +636,8 @@ export default function PrepressProductionPageV2() {
 
   // Derived state
   const queue = queueData || [];
-  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
-  const filteredQueue = useMemo(() => {
-    if (!normalizedSearchQuery) return queue;
-
-    return queue.filter((item) => {
-      const searchFields = [
-        item.jobNumber,
-        item.orderId,
-        item.customerName,
-        item.productName,
-        item.printType,
-        item.media,
-        item.lineItemId,
-      ];
-
-      return searchFields.some((value) => String(value || "").toLowerCase().includes(normalizedSearchQuery));
-    });
-  }, [normalizedSearchQuery, queue]);
-  const selectedItem = filteredQueue.find(q => q.lineItemId === selectedLineItemId) ?? null;
+  const filteredQueue = queue;
+  const selectedItem = queue.find(q => q.lineItemId === selectedLineItemId) ?? null;
   const originalFiles = filesData?.originals || [];
   const finalFiles = filesData?.finals || [];
   const bridgedOriginalFiles = filesData?.bridgedOriginals || [];
@@ -662,6 +701,10 @@ export default function PrepressProductionPageV2() {
     return nextIndex >= 0 ? nextIndex : 0;
   }, [normalizedVisibleFiles]);
   const hasFinalFiles = finalFiles.length > 0;
+  const hasUsableExistingArtwork =
+    originalFiles.length > 0 ||
+    bridgedOriginalFiles.some((file) => file.role === "artwork" || file.role === "proof" || file.role === "reference");
+  const canCompleteWithExistingArtwork = !hasFinalFiles && hasUsableExistingArtwork;
   const materialsPayload = materialsEffectiveData?.data;
   const plannedMaterials = materialsPayload?.plannedMaterials || [];
   const effectiveMaterials = materialsPayload?.effectiveMaterials || [];
@@ -685,7 +728,7 @@ export default function PrepressProductionPageV2() {
   const canComplete =
     isOwnedByPrepress &&
     selectedItem?.prepressStage === "in_prepress" &&
-    hasFinalFiles &&
+    (hasFinalFiles || hasUsableExistingArtwork) &&
     !!selectedItem?.sessionId;
   const canSendToPrint =
     isOwnedByPrepress &&
@@ -779,7 +822,7 @@ export default function PrepressProductionPageV2() {
 
   // Handlers
   const handleRefresh = () => {
-    queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+    void refetchQueue();
   };
 
   const handleOpenHistory = () => {
@@ -993,8 +1036,8 @@ export default function PrepressProductionPageV2() {
             <div>
               <h1 className="text-xl font-bold tracking-tight">Prepress Queue</h1>
             </div>
-            <button onClick={handleRefresh} className="p-2 hover:bg-white/10 rounded-lg transition-colors" disabled={queueLoading}>
-              <RefreshCw className={cn("w-4 h-4", queueLoading && "animate-spin")} />
+            <button onClick={handleRefresh} className="p-2 hover:bg-white/10 rounded-lg transition-colors" disabled={queueFetching}>
+              <RefreshCw className={cn("w-4 h-4", queueFetching && "animate-spin")} />
             </button>
           </div>
 
@@ -1771,6 +1814,11 @@ export default function PrepressProductionPageV2() {
               <div className="flex items-center gap-2 text-green-500">
                 <CheckCircle className="w-4 h-4" />
                 <span className="text-xs font-medium">Final file detected</span>
+              </div>
+            ) : canCompleteWithExistingArtwork ? (
+              <div className="flex items-center gap-2 text-green-500">
+                <CheckCircle className="w-4 h-4" />
+                <span className="text-xs font-medium">Existing artwork ready for completion</span>
               </div>
             ) : (
               <div className="flex items-center gap-2 text-amber-500">
