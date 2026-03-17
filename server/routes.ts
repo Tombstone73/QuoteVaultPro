@@ -15094,6 +15094,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .where(and(eq(auditLogs.organizationId, organizationId), auditFilter!))
         .orderBy(desc(auditLogs.createdAt));
 
+      const describeProductionEvent = (type: string, payload: any) => {
+        const eventType = String(payload?.eventType || "").trim().toLowerCase();
+        const formatState = (value: unknown) => String(value || "").replace(/_/g, " ").trim();
+
+        if (eventType === "workflow_transition") {
+          const fromState = formatState(payload?.fromState);
+          const toState = formatState(payload?.toState);
+          if (fromState && toState) {
+            return `Workflow transitioned from ${fromState} to ${toState}`;
+          }
+        }
+
+        if (eventType === "workflow_reconciled") {
+          const toState = formatState(payload?.toState);
+          return toState
+            ? `Workflow reconciled to ${toState}`
+            : "Workflow reconciled";
+        }
+
+        if (eventType === "materials_reserved") {
+          return "Materials reserved for production";
+        }
+
+        if (eventType === "materials_rebalanced") {
+          return "Material reservations rebalanced";
+        }
+
+        if (eventType === "material_override") {
+          return "Material override applied";
+        }
+
+        if (type === "routing_override") {
+          const fromStation = String(payload?.from?.stationKey || payload?.previousStationKey || "").trim();
+          const toStation = String(payload?.to?.stationKey || payload?.stationKey || "").trim();
+          if (fromStation && toStation) {
+            return `Ownership moved from ${fromStation} to ${toStation}`;
+          }
+        }
+
+        if (typeof payload?.text === "string" && payload.text.trim().length > 0) {
+          return payload.text;
+        }
+
+        if (eventType) {
+          return eventType.replace(/_/g, " ");
+        }
+
+        return `${type}`;
+      };
+
       const timeline = [
         ...sessions.map((s) => ({
           at: s.updatedAt || s.startedAt,
@@ -15109,9 +15159,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           at: e.createdAt,
           source: "production_event",
           type: e.type,
-          description: typeof e.payload?.text === "string" && e.payload.text.trim().length > 0
-            ? e.payload.text
-            : `${e.type}`,
+          description: describeProductionEvent(String(e.type || "note"), e.payload),
         })),
         ...audits.map((a) => ({
           at: a.createdAt,
@@ -15903,9 +15951,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         materialFingerprint: effectiveFingerprint,
       });
 
-    } catch (error) {
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
       console.error("[Send to Print] Error:", error);
-      res.status(500).json({ error: "Failed to send to print queue" });
+      res.status(status).json({ error: error?.message || "Failed to send to print queue" });
     }
   });
 
@@ -16061,9 +16110,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json({ success: true, message: "Sent to prepress for editing", sessionId: result.sessionId, prepressJobId: result.prepressJobId });
 
-    } catch (error) {
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
       console.error("[Send to Prepress] Error:", error);
-      res.status(500).json({ error: "Failed to send to prepress" });
+      res.status(status).json({ error: error?.message || "Failed to send to prepress" });
     }
   });
 
