@@ -40,7 +40,7 @@ import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel"
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
 import { useToast } from "@/hooks/use-toast";
-import { useCreateOrderLineItem, useDeleteOrderLineItem, useUpdateOrderLineItem } from "@/hooks/useOrders";
+import { useCreateOrderLineItem, useDeleteOrderLineItem, useTransitionLineItemWorkflow, useUpdateOrderLineItem } from "@/hooks/useOrders";
 import { useOrderFiles } from "@/hooks/useOrderFiles";
 import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
 import { useOrderLineItemPreviews } from "@/hooks/useOrderLineItemPreviews";
@@ -257,6 +257,77 @@ function stableStringify(value: unknown): string {
   return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`).join(",")}}`;
 }
 
+const WORKFLOW_LABELS: Record<string, string> = {
+  new: "New",
+  needs_design: "Needs Design",
+  in_design: "In Design",
+  ready_for_prepress: "Ready for Prepress",
+  in_prepress: "In Prepress",
+  ready_for_production: "Ready for Production",
+  in_production: "In Production",
+  completed: "Completed",
+  on_hold: "On Hold",
+  canceled: "Canceled",
+};
+
+function workflowBadgeVariant(state: string | undefined): "default" | "secondary" | "outline" | "destructive" {
+  if (state === "completed") return "default";
+  if (state === "canceled") return "destructive";
+  if (state === "on_hold") return "secondary";
+  if (state === "in_design" || state === "in_prepress" || state === "in_production") return "default";
+  return "outline";
+}
+
+function getWorkflowActions(state: string | undefined) {
+  switch (state) {
+    case "new":
+      return [
+        { label: "Send to Design", toState: "needs_design" as const },
+        { label: "Send to Prepress", toState: "ready_for_prepress" as const },
+      ];
+    case "needs_design":
+      return [
+        { label: "Start Design", toState: "in_design" as const },
+        { label: "Hold", toState: "on_hold" as const },
+        { label: "Cancel", toState: "canceled" as const },
+      ];
+    case "in_design":
+      return [
+        { label: "Back to Needs Design", toState: "needs_design" as const },
+        { label: "Send to Prepress", toState: "ready_for_prepress" as const },
+        { label: "Hold", toState: "on_hold" as const },
+      ];
+    case "ready_for_prepress":
+      return [
+        { label: "Start Prepress", toState: "in_prepress" as const },
+        { label: "Send to Production", toState: "ready_for_production" as const },
+        { label: "Hold", toState: "on_hold" as const },
+      ];
+    case "in_prepress":
+      return [
+        { label: "Send to Production", toState: "ready_for_production" as const },
+        { label: "Back to Design", toState: "in_design" as const },
+        { label: "Back to Needs Design", toState: "needs_design" as const },
+      ];
+    case "ready_for_production":
+      return [
+        { label: "Start Production", toState: "in_production" as const },
+        { label: "Return to Prepress", toState: "in_prepress" as const },
+        { label: "Hold", toState: "on_hold" as const },
+      ];
+    case "in_production":
+      return [
+        { label: "Complete", toState: "completed" as const },
+        { label: "Return to Prepress", toState: "in_prepress" as const },
+        { label: "Hold", toState: "on_hold" as const },
+      ];
+    case "on_hold":
+      return [];
+    default:
+      return [];
+  }
+}
+
 function buildOneLineOptionsSummary(selectedOptions: any[] | undefined | null): string {
   if (!Array.isArray(selectedOptions) || selectedOptions.length === 0) return "";
 
@@ -325,6 +396,7 @@ export function OrderLineItemsSection({
   // Production scheduling state
   const [selectedForProduction, setSelectedForProduction] = useState<Set<string>>(new Set());
   const scheduleProduction = useScheduleOrderLineItemsForProduction(orderId);;
+  const transitionWorkflow = useTransitionLineItemWorkflow(orderId);
 
   const acceptPbv2Components = useMutation({
     mutationFn: async (lineItemId: string) => {
@@ -1731,6 +1803,39 @@ export function OrderLineItemsSection({
                                 onRemove={readOnly ? undefined : () => void handleRemoveItem(item.id)}
                                 readOnly={readOnly}
                               />
+
+                              <div className="mt-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-xs font-medium text-muted-foreground">Workflow</span>
+                                  <Badge variant={workflowBadgeVariant((item as any).workflowState)}>
+                                    {WORKFLOW_LABELS[String((item as any).workflowState || "new")] || String((item as any).workflowState || "new")}
+                                  </Badge>
+                                  {Boolean((item as any).requiresDesign) && (
+                                    <Badge variant="outline">Design</Badge>
+                                  )}
+                                  {Boolean((item as any).requiresPrepress) && (
+                                    <Badge variant="outline">Prepress</Badge>
+                                  )}
+                                </div>
+
+                                {!readOnly && getWorkflowActions(String((item as any).workflowState || "new")).length > 0 && (
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    {getWorkflowActions(String((item as any).workflowState || "new")).map((action) => (
+                                      <Button
+                                        key={`${item.id}-${action.toState}`}
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-8"
+                                        disabled={transitionWorkflow.isPending}
+                                        onClick={() => transitionWorkflow.mutate({ lineItemId: String(item.id), toState: action.toState })}
+                                      >
+                                        {action.label}
+                                      </Button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           </div>
                         </div>

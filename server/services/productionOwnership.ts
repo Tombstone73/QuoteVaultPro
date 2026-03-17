@@ -110,6 +110,19 @@ export function isPrepressOwnershipJob(
   return stepKey === "prepress" || stationKey === "prepress";
 }
 
+export function isDesignOwnershipJob(
+  job:
+    | Pick<ActiveProductionJob, "stationKey" | "stepKey">
+    | { stationKey?: string | null; stepKey?: string | null }
+    | null
+    | undefined,
+): boolean {
+  if (!job) return false;
+  const stationKey = String(job.stationKey ?? "").trim().toLowerCase();
+  const stepKey = String(job.stepKey ?? "").trim().toLowerCase();
+  return stepKey === "design" || stationKey === "design";
+}
+
 export async function resolveActiveProductionOwners(
   runner: any,
   args: ResolveActiveProductionOwnersArgs,

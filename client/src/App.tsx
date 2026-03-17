@@ -56,6 +56,7 @@ import PurchaseOrderDetailPage from "@/pages/purchase-order-detail";
 import ProductsPage from "@/pages/products";
 import ProductEditorPage from "@/pages/ProductEditorPage";
 import PrepressPage from "@/pages/prepress";
+import DesignProductionPage from "@/pages/DesignProductionPage";
 import PrepressProductionPageV2 from "@/pages/PrepressProductionPageV2";
 import ProductBuilderV2Page from "@/pages/product-builder-v2";
 import PlatformOrgCreatePage from "@/pages/platform/PlatformOrgCreatePage";
@@ -191,6 +192,7 @@ function Router() {
         <Route path="/production/flatbed" element={<ProductionBoard />} />
         <Route path="/production/roll" element={<ProductionBoard />} />
         <Route path="/production/apparel" element={<ProductionBoard />} />
+        <Route path="/production/design" element={<DesignProductionPage />} />
         <Route path="/production/prepress" element={<PrepressProductionPageV2 />} />
         <Route path="/production/jobs/:jobId" element={<ProductionJobDetailPage />} />
         <Route path="/jobs/:id" element={<JobDetail />} />

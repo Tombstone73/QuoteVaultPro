@@ -38,6 +38,22 @@ export type DownloadIntent = "original" | "print" | "proof" | "preferred";
 
 export const downloadIntentSchema = z.enum(["original", "print", "proof", "preferred"]).default("original");
 
+export const lineItemWorkflowStateValues = [
+  "new",
+  "needs_design",
+  "in_design",
+  "ready_for_prepress",
+  "in_prepress",
+  "ready_for_production",
+  "in_production",
+  "completed",
+  "on_hold",
+  "canceled",
+] as const;
+
+export const lineItemWorkflowStateSchema = z.enum(lineItemWorkflowStateValues);
+export type LineItemWorkflowState = (typeof lineItemWorkflowStateValues)[number];
+
 // ============================================================
 // MULTI-TENANT ORGANIZATION SYSTEM
 // ============================================================
@@ -2558,6 +2574,8 @@ export const orderLineItems = pgTable("order_line_items", {
   materialUsages: jsonb("material_usages").$type<LineItemMaterialUsage[]>().default(sql`'[]'::jsonb`).notNull(), // structured material usage tracking
   requiresInventory: boolean("requires_inventory").notNull().default(true), // flag if inventory tracking is needed
   sortOrder: integer("sort_order").notNull().default(0), // Display order in UI (for drag-and-drop reordering)
+  workflowState: varchar("workflow_state", { length: 50 }).notNull().default("new"),
+  requiresDesign: boolean("requires_design").notNull().default(false),
   // Prepress requirement snapshot (migration 0051 - TEMP→PERMANENT contract)
   requiresPrepress: boolean("requires_prepress").notNull().default(true),
   // Tax system fields
@@ -2576,6 +2594,8 @@ export const orderLineItems = pgTable("order_line_items", {
   index("order_line_items_order_id_idx").on(table.orderId),
   index("order_line_items_product_id_idx").on(table.productId),
   index("order_line_items_status_idx").on(table.status),
+  index("order_line_items_workflow_state_idx").on(table.workflowState),
+  index("order_line_items_requires_design_idx").on(table.requiresDesign),
   index("order_line_items_requires_prepress_idx").on(table.requiresPrepress),
   index("order_line_items_product_type_idx").on(table.productType),
   index("order_line_items_pbv2_tree_version_id_idx").on(table.pbv2TreeVersionId),
@@ -2628,6 +2648,8 @@ export const insertOrderLineItemSchema = createInsertSchema(orderLineItems).omit
   height: z.coerce.number().positive().optional().nullable(),
   sqft: z.coerce.number().positive().optional().nullable(),
   status: z.enum(["new", "in_production", "complete", "canceled"]).default("new"),
+  workflowState: lineItemWorkflowStateSchema.default("new"),
+  requiresDesign: z.boolean().default(false),
   specsJson: z.record(z.any()).optional().nullable(),
   // PBV2 request-only fields (not persisted directly; snapshots are persisted).
   // Keep validation permissive enough for future option expansions, but still JSON-safe.
