@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { orderLineItems, orders, products, productionEvents, productionJobs, type LineItemWorkflowState } from "@shared/schema";
 import { appendEvent } from "../productionHelpers";
-import { completeActiveJob, findActiveJobForLineItem, transitionToStation } from "./productionOwnership";
+import { completeActiveJob, findActiveJobForLineItem, findAllActiveJobsForLineItem, transitionToStation } from "./productionOwnership";
 import { routeLineItemToProduction } from "./productionRoutingService";
 import { resolvePostPrepressProductionRoute } from "./productionRoutingResolver";
 
@@ -56,6 +56,12 @@ type OwnershipRoute = {
   stationKey: string;
   stepKey: string;
   reason: string;
+};
+
+type OwnershipInvariantResult = {
+  activeOwnerJobId: string | null;
+  activeOwnerStationKey: string | null;
+  activeOwnerStepKey: string | null;
 };
 
 export type WorkflowTransitionResult = {
@@ -316,6 +322,45 @@ async function applyOwnershipForState(tx: any, args: {
   };
 }
 
+async function assertOwnershipInvariant(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  toState: LineItemWorkflowState;
+}): Promise<OwnershipInvariantResult> {
+  const activeJobs = await findAllActiveJobsForLineItem(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+  });
+
+  if (ACTIVE_WORKFLOW_STATES.includes(args.toState)) {
+    if (activeJobs.length !== 1) {
+      throw Object.assign(
+        new Error(`Workflow state ${args.toState} requires exactly one active owner; found ${activeJobs.length}`),
+        { statusCode: 409 },
+      );
+    }
+
+    return {
+      activeOwnerJobId: activeJobs[0].id,
+      activeOwnerStationKey: activeJobs[0].stationKey,
+      activeOwnerStepKey: activeJobs[0].stepKey,
+    };
+  }
+
+  if (activeJobs.length > 0) {
+    throw Object.assign(
+      new Error(`Workflow state ${args.toState} must not retain active ownership; found ${activeJobs.length} active owner(s)`),
+      { statusCode: 409 },
+    );
+  }
+
+  return {
+    activeOwnerJobId: null,
+    activeOwnerStationKey: null,
+    activeOwnerStepKey: null,
+  };
+}
+
 export async function transitionLineItemWorkflowState(tx: any, args: {
   organizationId: string;
   lineItemId: string;
@@ -344,20 +389,101 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
     hasActiveProductionOwner: Boolean(activeJob),
   });
 
+  const lifecycleStatus = deriveLifecycleStatusForState({
+    toState: args.toState,
+    fromState,
+    currentStatus: lineItem.status,
+  });
+
+  const normalizedStoredWorkflowState = normalizeWorkflowState(lineItem.workflowState);
+  const normalizedStoredLifecycleStatus = String(lineItem.status || "").trim().toLowerCase();
+
   if (fromState === args.toState) {
+    const shouldRepairStoredState =
+      normalizedStoredWorkflowState !== args.toState ||
+      normalizedStoredLifecycleStatus !== lifecycleStatus;
+
+    const activeOwnershipCount = await findAllActiveJobsForLineItem(tx, {
+      organizationId: args.organizationId,
+      lineItemId: args.lineItemId,
+    });
+
+    const requiresActiveOwnership = ACTIVE_WORKFLOW_STATES.includes(args.toState);
+    const ownershipDrift = requiresActiveOwnership ? activeOwnershipCount.length !== 1 : activeOwnershipCount.length !== 0;
+
+    if (!shouldRepairStoredState && !ownershipDrift) {
+      return {
+        lineItemId: lineItem.id,
+        fromState,
+        toState: args.toState,
+        lifecycleStatus,
+        activeOwnerJobId: activeJob?.id ?? null,
+        activeOwnerStationKey: activeJob?.stationKey ?? null,
+        activeOwnerStepKey: activeJob?.stepKey ?? null,
+        ownershipAction: "none",
+      };
+    }
+
+    const ownership = await applyOwnershipForState(tx, {
+      lineItem,
+      toState: args.toState,
+      actorUserId: args.actorUserId,
+    });
+
+    const invariant = await assertOwnershipInvariant(tx, {
+      organizationId: args.organizationId,
+      lineItemId: args.lineItemId,
+      toState: args.toState,
+    });
+
+    await tx
+      .update(orderLineItems)
+      .set({
+        workflowState: args.toState,
+        status: lifecycleStatus as any,
+        requiresDesign:
+          args.toState === "needs_design" || args.toState === "in_design"
+            ? true
+            : lineItem.requiresDesign,
+        requiresPrepress:
+          args.toState === "ready_for_prepress" || args.toState === "in_prepress"
+            ? true
+            : lineItem.requiresPrepress,
+        updatedAt: new Date(),
+      })
+      .where(eq(orderLineItems.id, lineItem.id));
+
+    const eventJobId = invariant.activeOwnerJobId ?? ownership.activeOwnerJobId ?? activeJob?.id ?? null;
+    if (eventJobId) {
+      await appendEvent({
+        tx,
+        organizationId: args.organizationId,
+        productionJobId: eventJobId,
+        type: "note",
+        payload: {
+          eventType: "workflow_reconciled",
+          fromState,
+          toState: args.toState,
+          storedWorkflowState: lineItem.workflowState,
+          storedLifecycleStatus: lineItem.status,
+          lifecycleStatus,
+          ownerAction: ownership.ownershipAction,
+          actorUserId: args.actorUserId ?? null,
+          note: args.note ?? null,
+          metadata: args.metadata ?? {},
+        },
+      });
+    }
+
     return {
       lineItemId: lineItem.id,
       fromState,
       toState: args.toState,
-      lifecycleStatus: deriveLifecycleStatusForState({
-        toState: args.toState,
-        fromState,
-        currentStatus: lineItem.status,
-      }),
-      activeOwnerJobId: activeJob?.id ?? null,
-      activeOwnerStationKey: activeJob?.stationKey ?? null,
-      activeOwnerStepKey: activeJob?.stepKey ?? null,
-      ownershipAction: "none",
+      lifecycleStatus,
+      activeOwnerJobId: invariant.activeOwnerJobId,
+      activeOwnerStationKey: invariant.activeOwnerStationKey,
+      activeOwnerStepKey: invariant.activeOwnerStepKey,
+      ownershipAction: ownership.ownershipAction,
     };
   }
 
@@ -378,16 +504,16 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
     throw Object.assign(new Error(`Invalid workflow transition ${fromState} -> ${args.toState}`), { statusCode: 409 });
   }
 
-  const lifecycleStatus = deriveLifecycleStatusForState({
-    toState: args.toState,
-    fromState,
-    currentStatus: lineItem.status,
-  });
-
   const ownership = await applyOwnershipForState(tx, {
     lineItem,
     toState: args.toState,
     actorUserId: args.actorUserId,
+  });
+
+  const invariant = await assertOwnershipInvariant(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+    toState: args.toState,
   });
 
   await tx
@@ -407,7 +533,7 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
     })
     .where(eq(orderLineItems.id, lineItem.id));
 
-  const eventJobId = ownership.activeOwnerJobId ?? activeJob?.id ?? null;
+  const eventJobId = invariant.activeOwnerJobId ?? ownership.activeOwnerJobId ?? activeJob?.id ?? null;
   if (eventJobId) {
     await appendEvent({
       tx,
@@ -432,9 +558,9 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
     fromState,
     toState: args.toState,
     lifecycleStatus,
-    activeOwnerJobId: ownership.activeOwnerJobId,
-    activeOwnerStationKey: ownership.activeOwnerStationKey,
-    activeOwnerStepKey: ownership.activeOwnerStepKey,
+    activeOwnerJobId: invariant.activeOwnerJobId,
+    activeOwnerStationKey: invariant.activeOwnerStationKey,
+    activeOwnerStepKey: invariant.activeOwnerStepKey,
     ownershipAction: ownership.ownershipAction,
   };
 }
