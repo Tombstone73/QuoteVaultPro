@@ -278,6 +278,12 @@ function workflowBadgeVariant(state: string | undefined): "default" | "secondary
   return "outline";
 }
 
+function getInitialWorkflowStateForFlags(requiresDesign: boolean, requiresPrepress: boolean): string {
+  if (requiresDesign) return "needs_design";
+  if (requiresPrepress) return "ready_for_prepress";
+  return "ready_for_production";
+}
+
 function getWorkflowActions(state: string | undefined) {
   switch (state) {
     case "new":
@@ -673,6 +679,8 @@ export function OrderLineItemsSection({
   const [heightText, setHeightText] = useState("");
   const [qty, setQty] = useState<number>(1);
   const [notes, setNotes] = useState<string>("");
+  const [requiresDesignInput, setRequiresDesignInput] = useState(false);
+  const [requiresPrepressInput, setRequiresPrepressInput] = useState(true);
   const [optionSelections, setOptionSelections] = useState<Record<string, OptionSelection>>({});
   const [optionSelectionsV2, setOptionSelectionsV2] = useState<LineItemOptionSelectionsV2>({ schemaVersion: 2, selected: {} });
   const [optionsV2Valid, setOptionsV2Valid] = useState(true);
@@ -692,6 +700,8 @@ export function OrderLineItemsSection({
         quantity: number;
         notes: string;
         productionNotes: string;
+        requiresDesign: boolean;
+        requiresPrepress: boolean;
         optionSelections: Record<string, OptionSelection>;
         totalPrice: number;
       }
@@ -755,6 +765,8 @@ export function OrderLineItemsSection({
       (((expandedItem.specsJson as any)?.lineItemNotes as any)?.descLong as string | undefined) ||
       "";
     setNotesDraftById((prev) => ({ ...prev, [itemId]: nextProductionNotes }));
+    setRequiresDesignInput(Boolean((expandedItem as any).requiresDesign));
+    setRequiresPrepressInput(Boolean((expandedItem as any).requiresPrepress));
 
     const selections: Record<string, OptionSelection> = {};
     const savedSelectedOptions = (expandedItem.specsJson as any)?.selectedOptions;
@@ -804,6 +816,8 @@ export function OrderLineItemsSection({
       quantity: expandedItem.quantity || 1,
       notes: nextNotes,
       productionNotes: nextProductionNotes,
+      requiresDesign: Boolean((expandedItem as any).requiresDesign),
+      requiresPrepress: Boolean((expandedItem as any).requiresPrepress),
       optionSelections: selections,
       totalPrice: currentTotal,
     };
@@ -859,9 +873,11 @@ export function OrderLineItemsSection({
       qtyNum !== saved.quantity ||
       currentNotes !== savedNotes ||
       currentProductionNotes !== savedProductionNotes ||
+      requiresDesignInput !== saved.requiresDesign ||
+      requiresPrepressInput !== saved.requiresPrepress ||
       currentOptions !== savedOptions
     );
-  }, [expandedItem, widthNum, heightNum, qtyNum, notes, notesDraftById, optionSelections]);
+  }, [expandedItem, widthNum, heightNum, qtyNum, notes, notesDraftById, optionSelections, requiresDesignInput, requiresPrepressInput]);
 
   // Debounced price calculation for expanded item
   useDebouncedEffect(
@@ -990,6 +1006,8 @@ export function OrderLineItemsSection({
           height: dimsRequired ? heightNum : null,
           quantity: qtyNum,
           description: notes || "",
+          requiresDesign: requiresDesignInput,
+          requiresPrepress: requiresPrepressInput,
           unitPrice: unitPrice.toFixed(2),
           totalPrice: totalPrice.toFixed(2),
           selectedOptions: selectedOptionsArray,
@@ -1006,6 +1024,8 @@ export function OrderLineItemsSection({
         quantity: qtyNum,
         notes: notes || "",
         productionNotes: productionNotesDraft,
+        requiresDesign: requiresDesignInput,
+        requiresPrepress: requiresPrepressInput,
         optionSelections,
         totalPrice,
       };
@@ -1112,6 +1132,8 @@ export function OrderLineItemsSection({
         unitPrice: item.unitPrice,
         totalPrice: item.totalPrice,
         status: item.status || "new",
+        requiresDesign: Boolean((item as any).requiresDesign),
+        requiresPrepress: Boolean((item as any).requiresPrepress),
         specsJson: item.specsJson || null,
       };
 
@@ -1818,6 +1840,42 @@ export function OrderLineItemsSection({
                                   )}
                                 </div>
 
+                                {!readOnly && isExpanded && expandedItem && expandedItem.id === item.id && (
+                                  <div className="mt-3 rounded-md border border-border/40 bg-background/70 p-3">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <div>
+                                        <div className="text-sm font-medium">Intake routing</div>
+                                        <div className="text-xs text-muted-foreground">
+                                          Changes reseed workflow only before ownership or downstream work starts.
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-2 text-xs">
+                                        <span className="text-muted-foreground">Initial stage</span>
+                                        <Badge variant="outline">
+                                          {WORKFLOW_LABELS[getInitialWorkflowStateForFlags(requiresDesignInput, requiresPrepressInput)]}
+                                        </Badge>
+                                      </div>
+                                    </div>
+
+                                    <div className="mt-3 flex flex-wrap gap-4">
+                                      <label className="flex items-center gap-2 text-sm text-foreground">
+                                        <Checkbox
+                                          checked={requiresDesignInput}
+                                          onCheckedChange={(checked) => setRequiresDesignInput(checked === true)}
+                                        />
+                                        Requires Design
+                                      </label>
+                                      <label className="flex items-center gap-2 text-sm text-foreground">
+                                        <Checkbox
+                                          checked={requiresPrepressInput}
+                                          onCheckedChange={(checked) => setRequiresPrepressInput(checked === true)}
+                                        />
+                                        Requires Prepress
+                                      </label>
+                                    </div>
+                                  </div>
+                                )}
+
                                 {!readOnly && getWorkflowActions(String((item as any).workflowState || "new")).length > 0 && (
                                   <div className="mt-2 flex flex-wrap gap-2">
                                     {getWorkflowActions(String((item as any).workflowState || "new")).map((action) => (
@@ -1885,7 +1943,6 @@ export function OrderLineItemsSection({
                                 quantity: 1,
                                 unitPrice: "0.00",
                                 totalPrice: "0.00",
-                                status: "new",
                                 specsJson: { notes: "", selectedOptions: [] },
                               });
                               const nextId = created?.data?.id ?? created?.id ?? null;

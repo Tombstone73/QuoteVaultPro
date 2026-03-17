@@ -40,6 +40,7 @@ import {
 } from "@shared/schema";
 import { eq, and, or, ilike, gte, lte, desc, sql, isNull, inArray } from "drizzle-orm";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
+import { getInitialWorkflowState } from "../services/lineItemWorkflowService";
 
 const ORDER_ATTACHMENT_SAFE_SELECT = {
     id: orderAttachments.id,
@@ -73,29 +74,13 @@ const ORDER_ATTACHMENT_SAFE_SELECT = {
     updatedAt: orderAttachments.updatedAt,
 } as const;
 
-type CreateOrderLineItemInput = Pick<InsertOrderLineItem, 'productId' | 'quantity'> & {
-    productVariantId?: string | null;
+type CreateOrderLineItemInput = Omit<InsertOrderLineItem, 'orderId'> & {
     variantId?: string | null;
-    productType?: string | null;
-    description?: string | null;
     productName?: string | null;
-    width?: number | string | null;
-    height?: number | string | null;
-    sqft?: number | string | null;
-    unitPrice?: number | string | null;
     unit_price?: number | string | null;
-    totalPrice?: number | string | null;
     total_price?: number | string | null;
     linePrice?: number | string | null;
     line_price?: number | string | null;
-    status?: InsertOrderLineItem['status'];
-    quoteLineItemId?: string | null;
-    specsJson?: Record<string, any> | null;
-    selectedOptions?: InsertOrderLineItem['selectedOptions'];
-    nestingConfigSnapshot?: InsertOrderLineItem['nestingConfigSnapshot'];
-    sortOrder?: number | null;
-    taxAmount?: number | string | null;
-    isTaxableSnapshot?: boolean | null;
 };
 
 export class OrdersRepository {
@@ -673,6 +658,12 @@ export class OrdersRepository {
                 const taxAmountSafe = Number.isFinite(Number(taxAmountRaw)) ? Number(taxAmountRaw) : 0;
                 const isTaxableSnapshotRaw = (li as any).isTaxableSnapshot;
                 const isTaxableSnapshotSafe = typeof isTaxableSnapshotRaw === "boolean" ? isTaxableSnapshotRaw : true;
+                const requiresDesignSafe = Boolean((li as any).requiresDesign);
+                const requiresPrepressSafe = typeof (li as any).requiresPrepress === "boolean" ? (li as any).requiresPrepress : true;
+                const workflowStateSafe = getInitialWorkflowState({
+                    requiresDesign: requiresDesignSafe,
+                    requiresPrepress: requiresPrepressSafe,
+                });
                 return {
                     orderId: order.id,
                     quoteLineItemId: (li as any).quoteLineItemId || null,
@@ -687,6 +678,9 @@ export class OrdersRepository {
                     unitPrice: unitSafe.toString(),
                     totalPrice: totalSafe.toString(),
                     status: 'new',
+                    workflowState: workflowStateSafe,
+                    requiresDesign: requiresDesignSafe,
+                    requiresPrepress: requiresPrepressSafe,
                     specsJson: (li as any).specsJson || null,
                     selectedOptions: selectedOptionsSafe,
                     nestingConfigSnapshot: (li as any).nestingConfigSnapshot || null,
@@ -796,7 +790,7 @@ export class OrdersRepository {
         dueDate?: Date;
         promisedDate?: Date;
         priority?: string;
-        notesInternal?: Date;
+        notesInternal?: string | null;
     }): Promise<OrderWithRelations> {
         // Fetch the quote with line items
         const [quote] = await this.dbInstance.select().from(quotes).where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)));
@@ -840,12 +834,16 @@ export class OrdersRepository {
         }
 
         // Convert quote line items to order line items
-        const orderLineItemsData = quoteLines.map((ql, index) => {
+        const orderLineItemsData: CreateOrderLineItemInput[] = quoteLines.map((ql, index) => {
             const requiresPrepress = productPrepressMap.get(ql.productId) ?? orgPrepressDefault;
             // Line item lifecycle: new → in_production → complete | canceled
             const initialStatus = 'new' as unknown as InsertOrderLineItem['status'];
+            const workflowState = getInitialWorkflowState({
+                requiresDesign: false,
+                requiresPrepress,
+            });
 
-            const lineItemData = {
+            const lineItemData: CreateOrderLineItemInput = {
                 quoteLineItemId: ql.id,
                 productId: ql.productId,
                 productVariantId: ql.variantId,
@@ -858,7 +856,7 @@ export class OrdersRepository {
                 unitPrice: parseFloat(ql.linePrice) / ql.quantity,
                 totalPrice: parseFloat(ql.linePrice),
                 status: initialStatus,
-                workflowState: 'new',
+                workflowState,
                 requiresDesign: false,
                 requiresPrepress, // Snapshot prepress requirement (TEMP→PERMANENT)
                 specsJson: ql.specsJson,
@@ -1120,6 +1118,12 @@ export class OrdersRepository {
             unitPrice: lineItem.unitPrice.toString(),
             totalPrice: lineItem.totalPrice.toString(),
             status: lineItem.status,
+            workflowState: lineItem.workflowState ?? getInitialWorkflowState({
+                requiresDesign: Boolean(lineItem.requiresDesign),
+                requiresPrepress: typeof lineItem.requiresPrepress === "boolean" ? lineItem.requiresPrepress : true,
+            }),
+            requiresDesign: lineItem.requiresDesign ?? false,
+            requiresPrepress: lineItem.requiresPrepress ?? true,
             specsJson: lineItem.specsJson ?? undefined,
             selectedOptions,
             nestingConfigSnapshot,
