@@ -86,6 +86,11 @@ function normalizeThumbnailUrl(value?: string | null) {
   return resolveObjectsPublicUrl(value) ?? value;
 }
 
+function buildImagePreviewCacheKey(attachment: AttachmentData | null | undefined, imageUrl: string, mimeType: string | null) {
+  const identity = attachment?.id || attachment?.objectPath || attachment?.fileUrl || attachment?.fileName || "unknown";
+  return `${identity}::${mimeType || "unknown"}::${imageUrl}`;
+}
+
 function getPdfAssetBaseUrl(assetUrl: string) {
   const normalized = (assetUrl || "").trim();
   if (!normalized) return undefined;
@@ -96,6 +101,7 @@ function getPdfAssetBaseUrl(assetUrl: string) {
 
 const pdfCMapUrl = getPdfAssetBaseUrl(pdfCMapProbeUrl);
 const pdfStandardFontDataUrl = getPdfAssetBaseUrl(pdfStandardFontProbeUrl);
+const MAX_IMAGE_PREVIEW_CACHE_ENTRIES = 12;
 
 function FilmstripThumbnail({
   item,
@@ -180,6 +186,7 @@ export function AttachmentViewerDialog({
   const [pdfMetadata, setPdfMetadata] = useState<Record<string, string | number | null>>({});
   const [isPdfDragging, setIsPdfDragging] = useState(false);
   const imageBlobUrlRef = useRef<string | null>(null);
+  const imagePreviewCacheRef = useRef<Map<string, string>>(new Map());
   const dragPointerIdRef = useRef<number | null>(null);
   const dragOriginRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const pdfDragPointerIdRef = useRef<number | null>(null);
@@ -286,24 +293,43 @@ export function AttachmentViewerDialog({
   }, [zoomLevel]);
 
   useEffect(() => {
-    const revokeBlobUrl = () => {
-      if (!imageBlobUrlRef.current) return;
-      URL.revokeObjectURL(imageBlobUrlRef.current);
+    return () => {
+      imagePreviewCacheRef.current.forEach((objectUrl) => {
+        URL.revokeObjectURL(objectUrl);
+      });
+      imagePreviewCacheRef.current.clear();
       imageBlobUrlRef.current = null;
     };
+  }, []);
 
-    revokeBlobUrl();
+  useEffect(() => {
+    const setActiveBlobUrl = (objectUrl: string | null) => {
+      imageBlobUrlRef.current = objectUrl;
+      setImageBlobUrl(objectUrl);
+    };
+
     setImageBlobUrl(null);
     setImagePreviewLoading(false);
     setImagePreviewError(null);
 
-    if (!open || !currentAttachment?.id || !isImage) {
-      return () => revokeBlobUrl();
+    if (!open || !currentAttachment || !isImage) {
+      setActiveBlobUrl(null);
+      return;
     }
 
     if (!imageViewUrl) {
+      setActiveBlobUrl(null);
       setImagePreviewError("Preview URL unavailable.");
-      return () => revokeBlobUrl();
+      return;
+    }
+
+    const imageCacheKey = buildImagePreviewCacheKey(currentAttachment, imageViewUrl, effectiveMimeType);
+    const cachedObjectUrl = imagePreviewCacheRef.current.get(imageCacheKey);
+    if (cachedObjectUrl) {
+      imagePreviewCacheRef.current.delete(imageCacheKey);
+      imagePreviewCacheRef.current.set(imageCacheKey, cachedObjectUrl);
+      setActiveBlobUrl(cachedObjectUrl);
+      return;
     }
 
     let cancelled = false;
@@ -314,10 +340,21 @@ export function AttachmentViewerDialog({
         const blob = await apiFetchBlob(imageViewUrl, { method: "GET", credentials: "include" });
         if (cancelled) return;
         const objectUrl = URL.createObjectURL(blob);
-        imageBlobUrlRef.current = objectUrl;
-        setImageBlobUrl(objectUrl);
+        const cache = imagePreviewCacheRef.current;
+        cache.set(imageCacheKey, objectUrl);
+        while (cache.size > MAX_IMAGE_PREVIEW_CACHE_ENTRIES) {
+          const oldestKey = cache.keys().next().value;
+          if (!oldestKey) break;
+          const oldestObjectUrl = cache.get(oldestKey);
+          cache.delete(oldestKey);
+          if (oldestObjectUrl) {
+            URL.revokeObjectURL(oldestObjectUrl);
+          }
+        }
+        setActiveBlobUrl(objectUrl);
       } catch (error) {
         if (cancelled) return;
+        setActiveBlobUrl(null);
         const message = error instanceof Error ? error.message : "Failed to load preview";
         setImagePreviewError("Unable to load image preview. Use Download original.");
         if (isDev) {
@@ -332,9 +369,8 @@ export function AttachmentViewerDialog({
 
     return () => {
       cancelled = true;
-      revokeBlobUrl();
     };
-  }, [currentAttachment?.id, imageViewUrl, isDev, isImage, open]);
+  }, [currentAttachment, effectiveMimeType, imageViewUrl, isDev, isImage, open]);
 
   useEffect(() => {
     if (!open || !isPdf || !currentAttachment?.id || !pdfSourceUrl) {
