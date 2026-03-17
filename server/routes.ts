@@ -59,8 +59,10 @@ import { organizationStorageSettingsService } from "./services/storage/Organizat
 import { stationResolver } from "./services/stations/stationResolver";
 import { routeLineItemToProduction } from "./services/productionRoutingService";
 import { resolveInitialProductionRoute, resolvePostPrepressProductionRoute } from "./services/productionRoutingResolver";
+import { getInitialWorkflowState, transitionLineItemWorkflowState } from "./services/lineItemWorkflowService";
 import {
   findActiveJobForLineItem,
+  isDesignOwnershipJob,
   isPrepressOwnershipJob,
   resolveActiveProductionOwners,
   transitionToStation,
@@ -10260,8 +10262,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   }) => {
     const computedStatus = String(args.rawStatus || "").toLowerCase();
     if (args.isActivelyOwnedByPrepress && args.hasActiveSession) return "in_prepress" as const;
-    if (computedStatus === "prepress_complete") return "prepress_complete" as const;
-    if (args.hasCompletedSession && computedStatus !== "pending_prepress") return "prepress_complete" as const;
+    if (computedStatus === "in_prepress") return "in_prepress" as const;
+    if (computedStatus === "ready_for_production") return "prepress_complete" as const;
+    if (args.hasCompletedSession && computedStatus !== "ready_for_prepress") return "prepress_complete" as const;
     return "pending_prepress" as const;
   };
 
@@ -10535,6 +10538,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             orderId: orderLineItems.orderId,
             productTypeId: products.productTypeId,
             status: orderLineItems.status,
+            requiresDesign: orderLineItems.requiresDesign,
             requiresPrepress: orderLineItems.requiresPrepress,
           })
           .from(orderLineItems)
@@ -10548,6 +10552,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const resolvedRoute = await resolveInitialProductionRoute({
           organizationId,
           productTypeId: li.productTypeId,
+          lineItemRequiresDesignSnapshot:
+            typeof li.requiresDesign === "boolean" ? li.requiresDesign : undefined,
           lineItemRequiresPrepressSnapshot:
             typeof li.requiresPrepress === "boolean" ? li.requiresPrepress : undefined,
         });
@@ -10566,35 +10572,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
 
         const job = await db.transaction(async (tx) => {
-          const routingResult = await routeLineItemToProduction({
-            tx,
-            organizationId,
-            orderId: li.orderId,
-            lineItemId: li.id,
-            stationKey,
-            stepKey,
-            trigger: "intake",
-            extraEventPayload: { fromStatus: null, toStatus: li.status, routingReason: resolvedRoute.reason },
+          const targetState = getInitialWorkflowState({
+            requiresDesign: Boolean(li.requiresDesign),
+            requiresPrepress: Boolean(li.requiresPrepress),
           });
 
-          // Keep line item status lifecycle-only.
-          // Board ownership is determined by the production job, not line_item.status.
-          if (routingResult.outcome === "created") {
-            const neutralStatuses = ['new', ''];
-            if (neutralStatuses.includes(li.status || '')) {
-              const targetStatus =
-                stepKey.toLowerCase() === 'prepress' || stationKey.toLowerCase() === 'prepress'
-                  ? 'pending_prepress'
-                  : 'in_production';
-              await tx
-                .update(orderLineItems)
-                .set({ status: targetStatus as any, updatedAt: new Date() })
-                .where(eq(orderLineItems.id, li.id));
+          const transition = await transitionLineItemWorkflowState(tx, {
+            organizationId,
+            lineItemId: li.id,
+            toState: targetState,
+            actorUserId: getUserId(req.user) ?? null,
+            metadata: {
+              source: "production_intake",
+              routingReason: resolvedRoute.reason,
+              resolvedStationKey: stationKey,
+              resolvedStepKey: stepKey,
+            },
+          });
 
-              if (process.env.NODE_ENV !== "production") {
-                console.log(`[ProductionIntake] Set lineItem ${li.id} status: ${li.status} → ${targetStatus}`);
-              }
-            }
+          if (!transition.activeOwnerJobId) {
+            return null;
           }
 
           const [out] = await tx
@@ -10607,7 +10604,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               status: productionJobs.status,
             })
             .from(productionJobs)
-            .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, routingResult.jobId)))
+            .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, transition.activeOwnerJobId)))
             .limit(1);
           return out;
         });
@@ -13860,12 +13857,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const sortOrder = String(req.query.sortOrder || "asc").toLowerCase() === "desc" ? "desc" : "asc";
 
       // Build base WHERE conditions.
-      // Prepress queue shows ONLY items that require prepress (requiresPrepress=true).
-      // Visibility is now derived canonically from production_jobs (active prepress job).
-      // The status filter param is kept for UI compat but now maps to production job state, not line_item.status.
+      // Operational truth is workflow_state + active ownership, not line_item.status or routing snapshots.
+      // The status filter param is kept for UI compatibility and maps to derived prepress stage.
       const conditions: any[] = [
         eq(orders.organizationId, organizationId),           // Always filter by org
-        eq(orderLineItems.requiresPrepress, true),           // Prepress queue = prepress items only
+        inArray(orderLineItems.workflowState, ["ready_for_prepress", "in_prepress"] as any),
         notInArray(orders.status, ['completed', 'canceled']), // Exclude orders by legacy status field
         // Also filter on the canonical TitanOS state column (deprecated `status` field alone misses
         // orders that were closed via the newer state system).
@@ -13882,6 +13878,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           lineItemId: orderLineItems.id,
           orderId: orders.id,
           status: orderLineItems.status,
+          workflowState: orderLineItems.workflowState,
           description: orderLineItems.description,
           productType: orderLineItems.productType,
           pbv2TreeVersionId: orderLineItems.pbv2TreeVersionId,
@@ -14202,7 +14199,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const optionsRows = buildPrepressOptionRows(item, item.pbv2TreeVersionId ? treeByVersionId.get(item.pbv2TreeVersionId) : undefined);
         const activeOwner = activeOwnerByLineItem.get(item.lineItemId) ?? null;
         const activeOwnerIsPrepress = isPrepressOwnershipJob(activeOwner);
-        const computedStatus = String(item.status || '').toLowerCase();
+        const computedWorkflowState = String(item.workflowState || '').toLowerCase();
 
         if (process.env.NODE_ENV !== "production" && index === 0) {
           const selectedCount = (() => {
@@ -14229,9 +14226,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           media: item.materialName ?? null,
           dueDate: item.dueDate ?? null,
           status: item.status,
+          workflowState: item.workflowState,
           // Computed display stage for the prepress board (membership is owner-driven, display still uses session/status truth)
           prepressStage: derivePrepressStage({
-            rawStatus: item.status,
+            rawStatus: item.workflowState,
             isActivelyOwnedByPrepress: activeOwnerIsPrepress,
             hasActiveSession: !!latestSession?.id,
             hasCompletedSession: completedSessionLineItems.has(item.lineItemId),
@@ -14336,6 +14334,217 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("[Prepress] Error fetching queue:", error);
       res.status(500).json({ error: error?.message || "Failed to fetch prepress queue" });
+    }
+  });
+
+  app.get("/api/design/queue", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const items = await db
+        .select({
+          lineItemId: orderLineItems.id,
+          orderId: orders.id,
+          status: orderLineItems.status,
+          workflowState: orderLineItems.workflowState,
+          requiresDesign: orderLineItems.requiresDesign,
+          requiresPrepress: orderLineItems.requiresPrepress,
+          description: orderLineItems.description,
+          productType: orderLineItems.productType,
+          quantity: orderLineItems.quantity,
+          width: orderLineItems.width,
+          height: orderLineItems.height,
+          sqft: orderLineItems.sqft,
+          orderNumber: orders.orderNumber,
+          dueDate: orders.dueDate,
+          priority: orders.priority,
+          customerName: customers.companyName,
+          materialName: materials.name,
+        })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .innerJoin(customers, eq(orders.customerId, customers.id))
+        .leftJoin(materials, eq(orderLineItems.materialId, materials.id))
+        .where(
+          and(
+            eq(orders.organizationId, organizationId),
+            inArray(orderLineItems.workflowState, ["needs_design", "in_design"] as any),
+            notInArray(orders.state, ["closed", "canceled", "production_complete"]),
+          ),
+        )
+        .orderBy(asc(orders.dueDate), desc(orders.priority));
+
+      const lineItemIds = items.map((item) => item.lineItemId);
+      const activeOwnerByLineItem = lineItemIds.length > 0
+        ? await resolveActiveProductionOwners(db, {
+            organizationId,
+            lineItemIds,
+            debugLabel: "GET /api/design/queue",
+          })
+        : new Map<string, any>();
+
+      const fileCounts = lineItemIds.length > 0
+        ? await db
+            .select({
+              lineItemId: lineItemFiles.lineItemId,
+              role: lineItemFiles.role,
+              count: sql<number>`count(*)::int`,
+            })
+            .from(lineItemFiles)
+            .where(and(inArray(lineItemFiles.lineItemId, lineItemIds), eq(lineItemFiles.status, "active")))
+            .groupBy(lineItemFiles.lineItemId, lineItemFiles.role)
+        : [];
+
+      const bridgedArtworkCounts = lineItemIds.length > 0
+        ? await db
+            .select({
+              lineItemId: orderAttachments.orderLineItemId,
+              role: orderAttachments.role,
+              count: sql<number>`count(*)::int`,
+            })
+            .from(orderAttachments)
+            .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
+            .where(
+              and(
+                eq(orders.organizationId, organizationId),
+                inArray(orderAttachments.orderLineItemId as any, lineItemIds),
+                inArray(orderAttachments.role, ["artwork", "proof"] as any),
+              ),
+            )
+            .groupBy(orderAttachments.orderLineItemId, orderAttachments.role)
+        : [];
+
+      const queue = items
+        .filter((item) => {
+          const activeOwner = activeOwnerByLineItem.get(item.lineItemId);
+          return isDesignOwnershipJob(activeOwner) || ["needs_design", "in_design"].includes(String(item.workflowState || ""));
+        })
+        .map((item) => {
+          const activeOwner = activeOwnerByLineItem.get(item.lineItemId) ?? null;
+          const originals =
+            (fileCounts.find((row) => row.lineItemId === item.lineItemId && row.role === "original")?.count || 0) +
+            (bridgedArtworkCounts.find((row) => row.lineItemId === item.lineItemId && row.role === "artwork")?.count || 0);
+          const proofs = bridgedArtworkCounts.find((row) => row.lineItemId === item.lineItemId && row.role === "proof")?.count || 0;
+
+          return {
+            lineItemId: item.lineItemId,
+            orderId: item.orderId,
+            jobNumber: item.orderNumber,
+            customerName: item.customerName ?? "—",
+            productName: item.description,
+            printType: item.productType ?? null,
+            media: item.materialName ?? null,
+            dueDate: item.dueDate ?? null,
+            status: item.status,
+            workflowState: item.workflowState,
+            designStage: item.workflowState,
+            rush: item.priority === "rush",
+            quantity: Number(item.quantity) || 0,
+            width: item.width != null ? Number(item.width) : null,
+            height: item.height != null ? Number(item.height) : null,
+            sqFootage: item.sqft != null ? Number(item.sqft) : null,
+            requiresDesign: item.requiresDesign,
+            requiresPrepress: item.requiresPrepress,
+            activeOwnerJobId: activeOwner?.id ?? null,
+            activeOwnerStationKey: activeOwner?.stationKey ?? null,
+            activeOwnerStepKey: activeOwner?.stepKey ?? null,
+            fileCounts: {
+              originals,
+              proofs,
+            },
+          };
+        });
+
+      return res.json({ success: true, data: queue });
+    } catch (error: any) {
+      console.error("[Design] Error fetching queue:", error);
+      return res.status(500).json({ error: error?.message || "Failed to fetch design queue" });
+    }
+  });
+
+  app.post("/api/line-items/:lineItemId/workflow-transition", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const lineItemId = String(req.params.lineItemId);
+      const parsed = z.object({
+        toState: z.enum([
+          "new",
+          "needs_design",
+          "in_design",
+          "ready_for_prepress",
+          "in_prepress",
+          "ready_for_production",
+          "in_production",
+          "completed",
+          "on_hold",
+          "canceled",
+        ]),
+        note: z.string().optional().nullable(),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const [currentLineItem] = await db
+        .select({
+          id: orderLineItems.id,
+          status: orderLineItems.status,
+          workflowState: orderLineItems.workflowState,
+        })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+
+      if (!currentLineItem) {
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      const result = await db.transaction(async (tx) => {
+        return transitionLineItemWorkflowState(tx, {
+          organizationId,
+          lineItemId,
+          toState: parsed.data.toState,
+          actorUserId: userId,
+          note: parsed.data.note ?? null,
+          metadata: { source: "api_line_item_workflow_transition" },
+        });
+      });
+
+      await db.insert(auditLogs).values({
+        organizationId,
+        userId,
+        userName: req.user?.email || req.user?.name || null,
+        actionType: "UPDATE",
+        entityType: "order_line_item",
+        entityId: lineItemId,
+        entityName: `Line item ${lineItemId}`,
+        description: `Workflow transition ${result.fromState} -> ${result.toState}`,
+        oldValues: { workflowState: currentLineItem.workflowState, status: currentLineItem.status },
+        newValues: {
+          workflowState: result.toState,
+          status: result.lifecycleStatus,
+          ownerJobId: result.activeOwnerJobId,
+          ownerStationKey: result.activeOwnerStationKey,
+          ownerStepKey: result.activeOwnerStepKey,
+        },
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+      } as any);
+
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Workflow] Error transitioning line item workflow:", error);
+      return res.status(status).json({ error: error?.message || "Failed to transition workflow" });
     }
   });
 
@@ -14980,7 +15189,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .limit(1);
 
         const effectivePrepressStage = derivePrepressStage({
-          rawStatus: lineItem.status,
+          rawStatus: lineItem.workflowState,
           isActivelyOwnedByPrepress: true,
           hasActiveSession: activeSessions.length > 0,
           hasCompletedSession: completedSessions.length > 0,
@@ -14990,17 +15199,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         if (existingActiveSession) {
           startFailureStage = "resume_existing_session";
-          if (String(lineItem.status || "").toLowerCase() !== "in_prepress") {
-            await tx
-              .update(orderLineItems)
-              .set({ status: "in_prepress" as any, updatedAt: new Date() })
-              .where(eq(orderLineItems.id, lineItemId));
-          }
+          await transitionLineItemWorkflowState(tx, {
+            organizationId: orgId,
+            lineItemId,
+            toState: "in_prepress",
+            actorUserId: userId,
+            metadata: { source: "prepress_session_resume" },
+          });
 
           return {
             ...existingActiveSession,
             lineItemId,
-            lineItemStatus: "in_prepress",
+            lineItemStatus: "in_production",
+            lineItemWorkflowState: "in_prepress",
             prepressStage: "in_prepress",
             resumed: true,
           };
@@ -15025,10 +15236,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           })
           .returning();
 
-        await tx
-          .update(orderLineItems)
-          .set({ status: "in_prepress" as any, updatedAt: new Date() })
-          .where(eq(orderLineItems.id, lineItemId));
+        await transitionLineItemWorkflowState(tx, {
+          organizationId: orgId,
+          lineItemId,
+          toState: "in_prepress",
+          actorUserId: userId,
+          metadata: { source: "prepress_session_start" },
+        });
 
         startFailureStage = "write_audit_log";
         // Audit log
@@ -15049,7 +15263,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return {
           ...session,
           lineItemId,
-          lineItemStatus: "in_prepress",
+          lineItemStatus: "in_production",
+          lineItemWorkflowState: "in_prepress",
           prepressStage: "in_prepress",
           resumed: false,
         };
@@ -15089,10 +15304,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .limit(1);
 
           if (existingActiveSession[0]) {
-            await db
-              .update(orderLineItems)
-              .set({ status: "in_prepress" as any, updatedAt: new Date() })
-              .where(eq(orderLineItems.id, lineItemId));
+            const recoveryOrganizationId = organizationId;
+            await db.transaction(async (tx) => {
+              await transitionLineItemWorkflowState(tx, {
+                organizationId: recoveryOrganizationId,
+                lineItemId,
+                toState: "in_prepress",
+                actorUserId: getUserId(req.user) ?? null,
+                metadata: { source: "prepress_session_collision_recovery" },
+              });
+            });
 
             return res.json({ success: true, data: existingActiveSession[0] });
           }
@@ -15267,14 +15488,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           })
           .where(eq(prepressSessions.id, sessionId));
 
-        await tx
-          .update(orderLineItems)
-          .set({
-            status: "prepress_complete" as any,
-            updatedAt: new Date(),
-          })
-          .where(eq(orderLineItems.id, session.lineItemId));
-
         completeFailureStage = "write_audit_log";
         // Audit log
         await tx.insert(auditLogs).values({
@@ -15333,6 +15546,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           id: orderLineItems.id,
           orderId: orderLineItems.orderId,
           status: orderLineItems.status,
+          workflowState: orderLineItems.workflowState,
           productId: orderLineItems.productId,
           productType: orderLineItems.productType,
           requiresPrepress: orderLineItems.requiresPrepress,
@@ -15372,8 +15586,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      if (String(item.status || '').toLowerCase() !== 'prepress_complete') {
-        return res.status(400).json({ error: "Line item must be prepress_complete before send to production" });
+      if (String(item.workflowState || '').toLowerCase() !== 'in_prepress') {
+        return res.status(400).json({ error: "Line item must be in_prepress before send to production" });
       }
 
       // 3. Verify at least one FINAL file exists
@@ -15425,25 +15639,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const effectiveFingerprint = effectivePayload?.effectiveFingerprint || buildEffectiveMaterialsFingerprint([]);
 
       // 5. Close prepress owner and create the downstream owner in one transaction.
-      const handoffResult: StationTransitionResult = await db.transaction(async (tx) => {
-        const transitionResult: StationTransitionResult = await transitionToStation(tx, {
+      const handoffResult = await db.transaction(async (tx) => {
+        const workflowTransition = await transitionLineItemWorkflowState(tx, {
           organizationId,
-          orderId: item.orderId,
           lineItemId,
-          targetStationKey: downstreamRoute.stationKey,
-          targetStepKey: downstreamRoute.stepKey,
-          reason: "post_prepress_handoff",
+          toState: "ready_for_production",
           actorUserId: userId,
+          metadata: {
+            source: "prepress_send_to_print",
+            routingReason: downstreamRoute.reason,
+            targetStationKey: downstreamRoute.stationKey,
+            targetStepKey: downstreamRoute.stepKey,
+          },
         });
 
-        await tx.update(orderLineItems)
-          .set({
-            status: 'print_ready' as any,
-            updatedAt: new Date()
-          })
-          .where(eq(orderLineItems.id, lineItemId));
-
-        const productionJobId = transitionResult.createdJobId;
+        const productionJobId = workflowTransition.activeOwnerJobId;
+        if (!productionJobId) {
+          throw new Error("Workflow transition did not create downstream production ownership");
+        }
 
         if (materialContext?.lineItem?.orderId) {
           const alreadyReserved = await wasMaterialsLifecycleEventProcessed(tx, {
@@ -15489,31 +15702,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
           entityId: lineItemId,
           entityName: `Line item ${lineItemId}`,
           description: "Sent to print queue from prepress",
-          oldValues: { status: item.status },
+          oldValues: { workflowState: item.workflowState, status: item.status },
           newValues: {
-            status: 'print_ready',
+            workflowState: 'ready_for_production',
+            status: workflowTransition.lifecycleStatus,
             materialFingerprint: effectiveFingerprint,
-            closedJobId: transitionResult.closedJobId,
-            productionJobId: transitionResult.createdJobId,
-            stationKey: transitionResult.newStationKey,
-            stepKey: transitionResult.newStepKey,
+            productionJobId,
+            stationKey: workflowTransition.activeOwnerStationKey,
+            stepKey: workflowTransition.activeOwnerStepKey,
           },
           ipAddress: req.ip || null,
           userAgent: req.headers["user-agent"] || null,
         } as any);
 
-        return transitionResult;
+        return workflowTransition;
       });
 
       if (process.env.NODE_ENV !== "production") {
-        console.log(`[DEV][Send to Print] lineItemId=${lineItemId} closedJobId=${handoffResult.closedJobId} newJobId=${handoffResult.createdJobId} station=${handoffResult.newStationKey} step=${handoffResult.newStepKey}`);
+        console.log(`[DEV][Send to Print] lineItemId=${lineItemId} productionJobId=${handoffResult.activeOwnerJobId} station=${handoffResult.activeOwnerStationKey} step=${handoffResult.activeOwnerStepKey}`);
       }
 
       res.json({ 
         success: true, 
         message: "Sent to print queue successfully",
-        newStatus: 'print_ready',
-        productionJobId: handoffResult.createdJobId,
+        workflowState: 'ready_for_production',
+        productionJobId: handoffResult.activeOwnerJobId,
         materialFingerprint: effectiveFingerprint,
       });
 
@@ -15546,6 +15759,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const [lineItem] = await db.select({
           id: orderLineItems.id,
           status: orderLineItems.status,
+          workflowState: orderLineItems.workflowState,
           orderId: orderLineItems.orderId,
         })
         .from(orderLineItems)
@@ -15567,35 +15781,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
           lineItemId,
         });
 
-        let prepressJobId: string;
+        const workflowTransition = await transitionLineItemWorkflowState(tx, {
+          organizationId,
+          lineItemId,
+          toState: "in_prepress",
+          actorUserId: userId,
+          note: note.trim(),
+          metadata: {
+            source: "production_send_to_prepress",
+            noPrintsCompletedYet: noPrintsCompletedYet || false,
+          },
+        });
 
-        if (activeJob && isPrepressOwnershipJob(activeJob)) {
-          // Already at prepress — idempotent (reuse existing prepress job)
-          prepressJobId = activeJob.id;
-        } else if (activeJob) {
-          // Active downstream job — canonical close/create transition to prepress
-          const transition = await transitionToStation(tx, {
-            organizationId,
-            orderId: lineItem.orderId,
-            lineItemId,
-            targetStationKey: "flatbed",
-            targetStepKey: "prepress",
-            reason: "return_to_prepress_edit_request",
-            actorUserId: userId,
-          });
-          prepressJobId = transition.createdJobId;
-        } else {
-          // No active job at all — create fresh prepress job
-          const routeResult = await routeLineItemToProduction({
-            tx,
-            organizationId,
-            orderId: lineItem.orderId,
-            lineItemId,
-            stationKey: "flatbed",
-            stepKey: "prepress",
-            trigger: "prepress",
-          });
-          prepressJobId = routeResult.jobId;
+        const prepressJobId = workflowTransition.activeOwnerJobId;
+        if (!prepressJobId) {
+          throw new Error("Workflow transition did not create prepress ownership");
         }
 
         // 2. Create or reuse the active prepress session for this edit request.
@@ -15657,14 +15857,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           sessionId = session.id;
         }
 
-        // 3. Update line item lifecycle status to in_production (keep lifecycle-only)
-        if (lineItem.status !== 'pending_prepress') {
-          await tx.update(orderLineItems)
-            .set({ status: 'pending_prepress' as any, updatedAt: new Date() })
-            .where(eq(orderLineItems.id, lineItemId));
-        }
-
-        // 4. Audit log
+        // 3. Audit log
         await tx.insert(auditLogs).values({
           organizationId,
           userId,
@@ -15674,8 +15867,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           entityId: lineItemId,
           entityName: `Line item ${lineItemId}`,
           description: "Sent to prepress for editing from production board",
-          oldValues: { status: lineItem.status },
-          newValues: { note: note.trim(), noPrintsCompletedYet: noPrintsCompletedYet || false, prepressJobId },
+          oldValues: { status: lineItem.status, workflowState: lineItem.workflowState },
+          newValues: {
+            note: note.trim(),
+            noPrintsCompletedYet: noPrintsCompletedYet || false,
+            prepressJobId,
+            workflowState: "in_prepress",
+            status: workflowTransition.lifecycleStatus,
+          },
           ipAddress: req.ip || null,
           userAgent: req.headers["user-agent"] || null,
         } as any);
