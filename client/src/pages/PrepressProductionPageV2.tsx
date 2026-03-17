@@ -29,8 +29,6 @@ type QueueItem = {
   status: string;
   workflowState?: "ready_for_prepress" | "in_prepress" | "ready_for_production" | "in_production" | "completed" | "on_hold" | "canceled" | string;
   hasCompletedSession?: boolean;
-  /** Computed prepress stage derived from production_jobs + sessions (backend-computed). */
-  prepressStage?: "pending_prepress" | "in_prepress" | "prepress_complete";
   rush: boolean;
   assignedTo: string | null;
   sessionId: string | null;
@@ -1196,6 +1194,11 @@ export default function PrepressProductionPageV2() {
                   )}
                   {selectedItem.assignedTo && (
                     <span className="text-slate-400 text-xs">Assigned to: {selectedItem.assignedTo}</span>
+                  )}
+                  {(selectedItem.activeOwnerStepKey || selectedItem.activeOwnerStationKey) && (
+                    <span className="text-slate-400 text-xs">
+                      Owner: {selectedItem.activeOwnerStepKey || selectedItem.activeOwnerStationKey}
+                    </span>
                   )}
                   {selectedWorkflowState === "in_prepress" && selectedItem.sessionStartedAt && (
                     <span className="text-[#1773cf] text-xs font-semibold">

@@ -28,7 +28,7 @@ const ACTIVE_WORKFLOW_STATES: LineItemWorkflowState[] = [
 ];
 
 const VALID_TRANSITIONS: Record<LineItemWorkflowState, LineItemWorkflowState[]> = {
-  new: ["needs_design", "ready_for_prepress", "on_hold", "canceled"],
+  new: ["needs_design", "ready_for_prepress", "ready_for_production", "on_hold", "canceled"],
   needs_design: ["in_design", "on_hold", "canceled"],
   in_design: ["needs_design", "ready_for_prepress", "on_hold", "canceled"],
   ready_for_prepress: ["in_prepress", "ready_for_production", "on_hold", "canceled"],
@@ -133,7 +133,7 @@ function deriveLegacyWorkflowState(args: {
   if (status === "printing" || status === "finishing" || status === "in_production") return "in_production";
   if (args.requiresDesign) return "needs_design";
   if (args.requiresPrepress) return "ready_for_prepress";
-  return "new";
+  return "ready_for_production";
 }
 
 async function loadLineItemForWorkflow(tx: any, args: { organizationId: string; lineItemId: string }): Promise<LoadedLineItem> {

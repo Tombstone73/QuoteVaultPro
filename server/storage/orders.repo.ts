@@ -41,6 +41,7 @@ import {
 import { eq, and, or, ilike, gte, lte, desc, sql, isNull, inArray } from "drizzle-orm";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 import { getInitialWorkflowState } from "../services/lineItemWorkflowService";
+import { resolveActiveProductionOwners } from "../services/productionOwnership";
 
 const ORDER_ATTACHMENT_SAFE_SELECT = {
     id: orderAttachments.id,
@@ -433,6 +434,14 @@ export class OrdersRepository {
         const [order] = await this.dbInstance.select().from(orders).where(and(eq(orders.id, id), eq(orders.organizationId, organizationId)));
         if (!order) return undefined;
         const rawLineItems = await this.dbInstance.select().from(orderLineItems).where(eq(orderLineItems.orderId, id));
+        const lineItemIds = rawLineItems.map((lineItem) => String(lineItem.id));
+        const activeOwnerByLineItem = lineItemIds.length > 0
+            ? await resolveActiveProductionOwners(this.dbInstance, {
+                organizationId,
+                lineItemIds,
+                debugLabel: "OrdersRepository.getOrderById",
+            })
+            : new Map<string, any>();
 
         const acceptedComponents = await this.dbInstance
             .select()
@@ -458,12 +467,16 @@ export class OrdersRepository {
                 if (li.productVariantId) {
                     [productVariant] = await this.dbInstance.select().from(productVariants).where(eq(productVariants.id, li.productVariantId));
                 }
+                const activeOwner = activeOwnerByLineItem.get(String(li.id)) ?? null;
                 return {
                     ...li,
                     product,
                     productVariant,
                     pbv2ActiveTreeVersionId: (product as any)?.pbv2ActiveTreeVersionId ? String((product as any).pbv2ActiveTreeVersionId) : null,
                     components: componentsByLineItemId.get(String(li.id)) ?? [],
+                    activeOwnerJobId: activeOwner?.id ?? null,
+                    activeOwnerStationKey: activeOwner?.stationKey ?? null,
+                    activeOwnerStepKey: activeOwner?.stepKey ?? null,
                 } as any;
             })
         );
