@@ -47,6 +47,8 @@ import { ensureCustomerForUser } from "../db/syncUsersToCustomers";
 import { updateOrderFulfillmentStatus } from "../fulfillmentService";
 import { portalContext, tenantContext, getPortalCustomer } from "../tenantContext";
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
+import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
+import { findActiveJobForLineItem } from "../services/productionOwnership";
 import { pbv2ToChildItemProposals, pbv2ToMaterialEffects, pbv2ToPricingAddons } from "@shared/pbv2/pricingAdapter";
 import { computePbv2InputSignature } from "@shared/pbv2/pbv2InputSignature";
 import { pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
@@ -118,6 +120,37 @@ const productionLineItemStatusRuleSchema = z
         sortOrder: z.number().int().optional().nullable(),
     })
     .strict();
+
+async function resolveEffectiveLineItemRouting(args: {
+    organizationId: string;
+    productId: string;
+    requestedRequiresDesign?: boolean | null;
+    requestedRequiresPrepress?: boolean | null;
+}) {
+    const [org] = await db
+        .select({ prepressDefaultEnabled: organizations.prepressDefaultEnabled })
+        .from(organizations)
+        .where(eq(organizations.id, args.organizationId))
+        .limit(1);
+
+    const [productRow] = await db
+        .select({ requiresPrepressOverride: productTypes.requiresPrepressOverride })
+        .from(products)
+        .leftJoin(productTypes, eq(products.productTypeId, productTypes.id))
+        .where(eq(products.id, args.productId))
+        .limit(1);
+
+    const requiresDesign = args.requestedRequiresDesign === true;
+    const requiresPrepress = typeof args.requestedRequiresPrepress === "boolean"
+        ? args.requestedRequiresPrepress
+        : productRow?.requiresPrepressOverride ?? org?.prepressDefaultEnabled ?? true;
+
+    return {
+        requiresDesign,
+        requiresPrepress,
+        workflowState: getInitialWorkflowState({ requiresDesign, requiresPrepress }),
+    };
+}
 
 const productionLineItemStatusRulesSchema = z.array(productionLineItemStatusRuleSchema);
 
@@ -1631,7 +1664,7 @@ export async function registerOrderRoutes(
                 return res.status(400).json({ message: "status is required" });
             }
 
-            const validStatuses = ['new', 'in_production', 'complete', 'canceled'];
+            const validStatuses = ['complete', 'canceled'];
             if (!validStatuses.includes(status)) {
                 return res.status(400).json({ message: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
             }
@@ -1648,24 +1681,28 @@ export async function registerOrderRoutes(
             if (lineItemIds && Array.isArray(lineItemIds) && lineItemIds.length > 0) {
                 itemsToUpdate = allLineItems.filter(li => lineItemIds.includes(li.id));
             } else {
-                itemsToUpdate = allLineItems.filter(li => li.status !== 'done' && li.status !== 'canceled');
+                itemsToUpdate = allLineItems.filter(li => li.status !== 'complete' && li.status !== 'canceled');
             }
 
             if (itemsToUpdate.length === 0) {
                 return res.json({ success: true, message: "No line items to update", updatedCount: 0 });
             }
 
-            const updatePromises = itemsToUpdate.map(li =>
-                db
-                    .update(orderLineItems)
-                    .set({
-                        status: status as any,
-                        updatedAt: sql`now()`
-                    })
-                    .where(eq(orderLineItems.id, li.id))
-            );
-
-            await Promise.all(updatePromises);
+            const targetState = status === 'complete' ? 'completed' : 'canceled';
+            await db.transaction(async (tx) => {
+                for (const lineItem of itemsToUpdate) {
+                    await transitionLineItemWorkflowState(tx, {
+                        organizationId,
+                        lineItemId: lineItem.id,
+                        toState: targetState,
+                        actorUserId: userId,
+                        metadata: {
+                            source: 'bulk_line_item_status_patch',
+                            requestedStatus: status,
+                        },
+                    });
+                }
+            });
 
             const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
             await storage.createOrderAuditLog({
@@ -1683,38 +1720,6 @@ export async function registerOrderRoutes(
                 },
             });
             
-            // Trigger: Auto-schedule production when line items move into in_production
-            if (status === 'in_production') {
-                if (process.env.NODE_ENV === 'development') {
-                    console.log(`[BulkLineItemStatus:TRIGGER] Detected ${itemsToUpdate.length} items moving to in_production for orderId=${orderId}`);
-                }
-                
-                try {
-                    const { scheduleOrderLineItemsForProduction } = await import('../services/productionScheduling');
-                    const { loadProductionLineItemStatusRulesForOrganization, appendEvent } = await import('../productionHelpers');
-                    
-                    // Only schedule items that weren't already in production
-                    const itemsMovingIntoProduction = itemsToUpdate.filter(li => li.status !== 'in_production');
-                    
-                    if (itemsMovingIntoProduction.length > 0) {
-                        const scheduleResult = await scheduleOrderLineItemsForProduction({
-                            organizationId,
-                            orderId,
-                            lineItemIds: itemsMovingIntoProduction.map(li => li.id),
-                            loadRoutingRules: loadProductionLineItemStatusRulesForOrganization,
-                            appendEvent,
-                        });
-                        
-                        if (process.env.NODE_ENV === 'development') {
-                            console.log(`[BulkLineItemStatus:TRIGGER] Auto-scheduled production for ${itemsMovingIntoProduction.length} items:`, scheduleResult.data);
-                        }
-                    }
-                } catch (productionErr: any) {
-                    console.error('[BulkLineItemStatus:TRIGGER] Production auto-scheduling failed:', productionErr);
-                    // Fail soft - don't break the status update
-                }
-            }
-
             // Billing readiness recompute (fail-soft)
             try {
                 const recompute = await recomputeOrderBillingStatus({ organizationId, orderId });
@@ -1791,7 +1796,7 @@ export async function registerOrderRoutes(
             if (toStatus === 'completed') {
                 const requireLineItemsDone = orgPreferences?.orders?.requireLineItemsDoneToComplete ?? true;
                 if (requireLineItemsDone) {
-                    const incompleteLi = lineItems.filter(li => li.status !== 'done' && li.status !== 'canceled');
+                    const incompleteLi = lineItems.filter(li => li.status !== 'complete' && li.status !== 'canceled');
                     if (incompleteLi.length > 0) {
                         return res.status(400).json({
                             success: false,
@@ -1932,7 +1937,7 @@ export async function registerOrderRoutes(
             }
 
             const lineItems = await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
-            const remainingLineItems = lineItems.filter((li: any) => li.status !== 'done' && li.status !== 'canceled');
+            const remainingLineItems = lineItems.filter((li: any) => li.status !== 'complete' && li.status !== 'canceled');
             const remainingCount = remainingLineItems.length;
             const remainingIds = remainingLineItems.map((li: any) => li.id);
 
@@ -1956,7 +1961,18 @@ export async function registerOrderRoutes(
                 if (remainingCount > 0 && shouldAutoMark) {
                     didAutoMark = true;
                     autoMarkedCount = remainingCount;
-                    await tx.update(orderLineItems).set({ status: 'done', updatedAt: sql`now()` as any }).where(and(eq(orderLineItems.orderId, orderId), inArray(orderLineItems.id, remainingIds)));
+                    for (const lineItemId of remainingIds) {
+                        await transitionLineItemWorkflowState(tx, {
+                            organizationId,
+                            lineItemId,
+                            toState: 'completed',
+                            actorUserId: userId,
+                            metadata: {
+                                source: 'order_complete_production_auto_mark',
+                                orderId,
+                            },
+                        });
+                    }
                 }
 
                 const routingTarget = determineRoutingTarget(order as any);
@@ -4241,15 +4257,17 @@ export async function registerOrderRoutes(
             const parsed = insertOrderLineItemSchema.parse(req.body);
             
             // Server-authoritative: ignore any client-supplied pbv2 or price fields
-            const { 
-                pbv2ExplicitSelections, 
-                pbv2Env, 
+            const {
+                pbv2ExplicitSelections,
+                pbv2Env,
                 pbv2TreeVersionId: _ignoredTreeVersionId,
                 pbv2SnapshotJson: _ignoredSnapshot,
                 pricedAt: _ignoredPricedAt,
                 unitPrice: _ignoredUnitPrice,
                 totalPrice: _ignoredTotalPrice,
-                ...lineItemData 
+                workflowState: _ignoredWorkflowState,
+                status: _ignoredStatus,
+                ...lineItemData
             } = parsed as any;
 
             // Log warning if client tried to send forbidden fields
@@ -4286,9 +4304,20 @@ export async function registerOrderRoutes(
             // Structured logging for PBV2 pricing persistence
             console.log(`[PBV2_PRICE_PERSIST] orderId=${lineItemData.orderId} treeVersionId=${pricingResult.pbv2TreeVersionId} totalCents=${pricingResult.lineTotalCents} pricedAt=${new Date().toISOString()}`);
 
+            const routing = await resolveEffectiveLineItemRouting({
+                organizationId,
+                productId: String(lineItemData.productId),
+                requestedRequiresDesign: lineItemData.requiresDesign,
+                requestedRequiresPrepress: lineItemData.requiresPrepress,
+            });
+
             // Create line item with server-computed pricing
             const created = await storage.createOrderLineItem({
                 ...lineItemData,
+                status: "new",
+                workflowState: routing.workflowState,
+                requiresDesign: routing.requiresDesign,
+                requiresPrepress: routing.requiresPrepress,
                 pbv2TreeVersionId: pricingResult.pbv2TreeVersionId,
                 pbv2SnapshotJson: pricingResult.pbv2SnapshotJson as any,
                 pricedAt: new Date(),
@@ -4306,7 +4335,7 @@ export async function registerOrderRoutes(
                     .where(eq(products.id, String(created.productId)))
                     .limit(1);
 
-                if (ptRow?.sendToProductionDefault === true) {
+                if (ptRow?.sendToProductionDefault === true && created.workflowState === "ready_for_production") {
                     const { scheduleOrderLineItemsForProduction } = await import('../services/productionScheduling');
                     const { loadProductionLineItemStatusRulesForOrganization, appendEvent } = await import('../productionHelpers');
                     const scheduleResult = await scheduleOrderLineItemsForProduction({
@@ -4341,7 +4370,11 @@ export async function registerOrderRoutes(
             const userId = getUserId(req.user);
             const parsed = updateOrderLineItemSchema.parse({ ...(req.body as any), id: req.params.id });
             const { pbv2ExplicitSelections, pbv2Env, ...lineItemData } = parsed as any;
-            const { id, ...updateData } = lineItemData;
+            const {
+                id,
+                workflowState: _ignoredWorkflowState,
+                ...updateData
+            } = lineItemData;
 
             void pbv2ExplicitSelections;
             void pbv2Env;
@@ -4357,6 +4390,40 @@ export async function registerOrderRoutes(
 
             const oldLineItem = await storage.getOrderLineItemById(lineItemId);
             if (!oldLineItem) return res.status(404).json({ message: "Order line item not found" });
+
+            const requestedRequiresDesign = updateData.requiresDesign;
+            const requestedRequiresPrepress = updateData.requiresPrepress;
+            const hasRoutingChange =
+                (typeof requestedRequiresDesign === "boolean" && requestedRequiresDesign !== Boolean((oldLineItem as any).requiresDesign)) ||
+                (typeof requestedRequiresPrepress === "boolean" && requestedRequiresPrepress !== Boolean((oldLineItem as any).requiresPrepress));
+
+            if (hasRoutingChange) {
+                const activeJob = await findActiveJobForLineItem(db, {
+                    organizationId,
+                    lineItemId,
+                });
+                const currentWorkflowState = String((oldLineItem as any).workflowState || "new").trim().toLowerCase();
+                const intakeSafeStates = new Set(["new", "needs_design", "ready_for_prepress", "ready_for_production"]);
+
+                if (activeJob || !intakeSafeStates.has(currentWorkflowState)) {
+                    throw Object.assign(
+                        new Error("Cannot change Design/Prepress routing after active workflow has started. Use workflow transitions instead."),
+                        { statusCode: 409 },
+                    );
+                }
+
+                const routing = await resolveEffectiveLineItemRouting({
+                    organizationId,
+                    productId: String(updateData.productId ?? oldLineItem.productId),
+                    requestedRequiresDesign: typeof requestedRequiresDesign === "boolean" ? requestedRequiresDesign : Boolean((oldLineItem as any).requiresDesign),
+                    requestedRequiresPrepress: typeof requestedRequiresPrepress === "boolean" ? requestedRequiresPrepress : Boolean((oldLineItem as any).requiresPrepress),
+                });
+
+                updateData.requiresDesign = routing.requiresDesign;
+                updateData.requiresPrepress = routing.requiresPrepress;
+                updateData.workflowState = routing.workflowState;
+                updateData.status = "new";
+            }
 
             // Server-authoritative: detect pricing-relevant changes
             const pricingFieldsChanged =
@@ -4615,7 +4682,7 @@ export async function registerOrderRoutes(
                         .where(eq(products.id, newProductId))
                         .limit(1);
 
-                    if (ptRow?.sendToProductionDefault === true) {
+                    if (ptRow?.sendToProductionDefault === true && String((finalLineItem ?? lineItem).workflowState || "") === "ready_for_production") {
                         const { scheduleOrderLineItemsForProduction } = await import('../services/productionScheduling');
                         const { loadProductionLineItemStatusRulesForOrganization, appendEvent } = await import('../productionHelpers');
                         const scheduleResult = await scheduleOrderLineItemsForProduction({
@@ -5307,17 +5374,16 @@ export async function registerOrderRoutes(
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
             const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ error: "Unauthorized" });
             const { orderId, lineItemId } = req.params;
             const { status } = req.body;
 
-            const routing = await loadProductionLineItemStatusRulesForOrganization(organizationId);
-            const routingRules = routing.rules;
-            const fallbackValidStatuses = ['new', 'in_production', 'complete', 'canceled'];
-            const rule = routingRules.find((r) => r.id === status);
+            const fallbackValidStatuses = ['complete', 'canceled'];
 
             if (!status) return res.status(400).json({ message: "Invalid status" });
-            // Allow org-configured statuses; also allow legacy statuses for back-compat.
-            if (!rule && !fallbackValidStatuses.includes(status)) return res.status(400).json({ message: "Invalid status" });
+            if (!fallbackValidStatuses.includes(status)) {
+                return res.status(400).json({ message: "Direct line item status edits only support complete or canceled. Use workflow transitions for operational moves." });
+            }
 
             const order = await storage.getOrderById(organizationId, orderId);
             if (!order) return res.status(404).json({ message: "Order not found" });
@@ -5325,7 +5391,21 @@ export async function registerOrderRoutes(
             const oldLineItem = await storage.getOrderLineItemById(lineItemId);
             if (!oldLineItem || oldLineItem.orderId !== orderId) return res.status(404).json({ message: "Line item not found" });
 
-            const updatedLineItem = await storage.updateOrderLineItem(lineItemId, { status });
+            const targetState = status === 'complete' ? 'completed' : 'canceled';
+            const transition = await db.transaction(async (tx) => {
+                return transitionLineItemWorkflowState(tx, {
+                    organizationId,
+                    lineItemId,
+                    toState: targetState,
+                    actorUserId: userId,
+                    metadata: {
+                        source: 'legacy_line_item_status_patch',
+                        requestedStatus: status,
+                    },
+                });
+            });
+            const updatedLineItem = await storage.getOrderLineItemById(lineItemId);
+            if (!updatedLineItem) return res.status(404).json({ message: "Line item not found after update" });
             if (userId && oldLineItem.status !== status) {
                 const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
                 try {
@@ -5345,74 +5425,7 @@ export async function registerOrderRoutes(
             }
 
             await recomputeOrderBillingStatus({ organizationId, orderId });
-            let productionJobHandledByTrigger = false;
-            // Trigger: Auto-schedule production when single line item moves into in_production
-            if (status === 'in_production' && oldLineItem.status !== 'in_production') {
-                if (process.env.NODE_ENV === 'development') {
-                    console.log(`[SingleLineItemStatus:TRIGGER] Detected line item ${lineItemId} moving to in_production for orderId=${orderId}`);
-                }
-                
-                try {
-                    const { scheduleOrderLineItemsForProduction } = await import('../services/productionScheduling');
-                    const { loadProductionLineItemStatusRulesForOrganization, appendEvent } = await import('../productionHelpers');
-                    
-                    const scheduleResult = await scheduleOrderLineItemsForProduction({
-                        organizationId,
-                        orderId,
-                        lineItemIds: [lineItemId],
-                        loadRoutingRules: loadProductionLineItemStatusRulesForOrganization,
-                        appendEvent,
-                    });
-                    productionJobHandledByTrigger = true;
-                    if (process.env.NODE_ENV === 'development') {
-                        console.log(`[SingleLineItemStatus:TRIGGER] Auto-scheduled production for item ${lineItemId}:`, scheduleResult.data);
-                    }
-                } catch (productionErr: any) {
-                    console.error('[SingleLineItemStatus:TRIGGER] Production auto-scheduling failed:', productionErr);
-                    // Fail soft - don't break the status update
-                }
-            }
-
-            const warnings: string[] = [];
-            if (routing.source !== 'org') {
-                console.warn(`[OrderLineItemStatus] No org routing config (source=${routing.source}); skipping production intake.`);
-                warnings.push('Production routing config missing/invalid; no job created.');
-            } else if (!rule) {
-                warnings.push('Status saved. No production routing rule found for this status.');
-            } else if (rule.sendToProduction && !productionJobHandledByTrigger) {
-                const stationKey = String(rule.stationKey ?? '').trim();
-                const stepKey = String((rule as any).stepKey ?? '').trim();
-
-                if (!stationKey || !stepKey) {
-                    console.warn('[OrderLineItemStatus] Routing rule missing station/step; skipping intake.');
-                    warnings.push('Routing rule missing station/step; no job created.');
-                } else {
-                    try {
-                        const { routeLineItemToProduction: _routeLineItem } = await import('../services/productionRoutingService');
-                        await db.transaction(async (tx) => {
-                            await _routeLineItem({
-                                tx,
-                                organizationId,
-                                orderId,
-                                lineItemId,
-                                stationKey,
-                                stepKey,
-                                trigger: "line_item_status",
-                                extraEventPayload: {
-                                    fromStatus: oldLineItem.status,
-                                    toStatus: status,
-                                    requested: { stationKey, stepKey },
-                                },
-                            });
-                        });
-                    } catch (e: any) {
-                        console.warn('[OrderLineItemStatus] production intake failed:', e);
-                        warnings.push('Production intake failed (status saved).');
-                    }
-                }
-            }
-
-            res.json({ success: true, data: updatedLineItem, warnings: warnings.length ? warnings : undefined });
+            res.json({ success: true, data: updatedLineItem, workflow: transition });
         } catch (error) {
             const err: any = error;
             console.error({

@@ -27,6 +27,8 @@ type QueueItem = {
   media: string | null;
   dueDate: string | null;
   status: string;
+  workflowState?: "ready_for_prepress" | "in_prepress" | "ready_for_production" | "in_production" | "completed" | "on_hold" | "canceled" | string;
+  hasCompletedSession?: boolean;
   /** Computed prepress stage derived from production_jobs + sessions (backend-computed). */
   prepressStage?: "pending_prepress" | "in_prepress" | "prepress_complete";
   rush: boolean;
@@ -118,6 +120,28 @@ type PendingViewerRequest = {
   lineItemId: string;
   preferredFileId?: string | null;
 };
+
+function getPrepressWorkflowDisplay(item: Pick<QueueItem, "workflowState" | "hasCompletedSession"> | null | undefined) {
+  const workflowState = String(item?.workflowState || "ready_for_prepress").toLowerCase();
+
+  if (workflowState === "in_prepress") {
+    return {
+      label: "IN PREPRESS",
+      bgClass: "bg-[#1773cf]/20",
+      textClass: "text-[#1773cf]",
+      borderClass: "border-[#1773cf]/30",
+      note: item?.hasCompletedSession ? "Session complete" : null,
+    };
+  }
+
+  return {
+    label: "READY FOR PREPRESS",
+    bgClass: "bg-slate-700",
+    textClass: "text-slate-300",
+    borderClass: "border-[#2d3748]",
+    note: null,
+  };
+}
 
 type HistoryEntry = {
   at: string;
@@ -721,26 +745,28 @@ export default function PrepressProductionPageV2() {
   const materialsAvailability = materialsAvailabilityData?.items || [];
   const materialsAllAvailable = materialsAvailabilityData?.allAvailable ?? true;
   const isOwnedByPrepress = !!selectedItem?.isActivelyOwnedByPrepress;
+  const selectedWorkflowState = String(selectedItem?.workflowState || "").toLowerCase();
+  const selectedWorkflowDisplay = getPrepressWorkflowDisplay(selectedItem);
   const canStartPrepress =
     !!selectedItem &&
     isOwnedByPrepress &&
-    selectedItem.prepressStage === "pending_prepress" &&
+    selectedWorkflowState === "ready_for_prepress" &&
     !selectedItem.sessionId;
-  // NOTE: Both gates key off prepressStage (server-derived from production_jobs),
-  // NOT raw orderLineItems.status, so display and gating use the same authoritative value.
   const canComplete =
     isOwnedByPrepress &&
-    selectedItem?.prepressStage === "in_prepress" &&
+    selectedWorkflowState === "in_prepress" &&
     (hasFinalFiles || hasUsableExistingArtwork) &&
     !!selectedItem?.sessionId;
   const canSendToPrint =
     isOwnedByPrepress &&
-    selectedItem?.prepressStage === "prepress_complete" &&
+    selectedWorkflowState === "in_prepress" &&
+    !!selectedItem?.hasCompletedSession &&
+    !selectedItem?.sessionId &&
     !selectedItem?.hasDownstreamActiveJob &&
     hasFinalFiles;
   const activeSessionStartedAt = selectedItem?.sessionStartedAt ? new Date(selectedItem.sessionStartedAt) : null;
   const activeSessionElapsedSeconds =
-    selectedItem?.prepressStage === "in_prepress" && activeSessionStartedAt && Number.isFinite(activeSessionStartedAt.getTime())
+    selectedWorkflowState === "in_prepress" && activeSessionStartedAt && Number.isFinite(activeSessionStartedAt.getTime())
       ? Math.max(0, Math.floor((nowMs - activeSessionStartedAt.getTime()) / 1000))
       : 0;
 
@@ -752,7 +778,7 @@ export default function PrepressProductionPageV2() {
   }, [selectedLineItemId, selectedItem]);
 
   useEffect(() => {
-    if (selectedItem?.prepressStage !== "in_prepress" || !selectedItem?.sessionStartedAt) {
+    if (selectedWorkflowState !== "in_prepress" || !selectedItem?.sessionStartedAt) {
       setNowMs(Date.now());
       return;
     }
@@ -765,7 +791,7 @@ export default function PrepressProductionPageV2() {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [selectedItem?.prepressStage, selectedItem?.sessionStartedAt]);
+  }, [selectedItem?.sessionStartedAt, selectedWorkflowState]);
 
   React.useEffect(() => {
     setViewerOpen(false);
@@ -1074,9 +1100,8 @@ export default function PrepressProductionPageV2() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">Status: All</SelectItem>
-                  <SelectItem value="pending_prepress">Pending</SelectItem>
+                  <SelectItem value="ready_for_prepress">Ready for Prepress</SelectItem>
                   <SelectItem value="in_prepress">In Prepress</SelectItem>
-                  <SelectItem value="prepress_complete">Prepress Complete</SelectItem>
                 </SelectContent>
               </Select>
 
@@ -1160,18 +1185,19 @@ export default function PrepressProductionPageV2() {
                 <div className="flex items-center gap-2 mt-1">
                   <span className={cn(
                     "text-[10px] font-bold px-2 py-0.5 rounded border uppercase tracking-widest",
-                    selectedItem.prepressStage === "in_prepress" && "bg-[#1773cf]/20 text-[#1773cf] border-[#1773cf]/30",
-                    selectedItem.prepressStage === "pending_prepress" && "bg-slate-700 text-slate-300 border-[#2d3748]",
-                    selectedItem.prepressStage === "prepress_complete" && "bg-green-700/20 text-green-400 border-green-700/30"
+                    selectedWorkflowDisplay.bgClass,
+                    selectedWorkflowDisplay.textClass,
+                    selectedWorkflowDisplay.borderClass,
                   )}>
-                    {selectedItem.prepressStage === "in_prepress" && "In Prepress"}
-                    {selectedItem.prepressStage === "pending_prepress" && "Pending"}
-                    {selectedItem.prepressStage === "prepress_complete" && "Complete"}
+                    {selectedWorkflowDisplay.label}
                   </span>
+                  {selectedWorkflowDisplay.note && (
+                    <span className="text-emerald-300 text-xs">{selectedWorkflowDisplay.note}</span>
+                  )}
                   {selectedItem.assignedTo && (
                     <span className="text-slate-400 text-xs">Assigned to: {selectedItem.assignedTo}</span>
                   )}
-                  {selectedItem.prepressStage === "in_prepress" && selectedItem.sessionStartedAt && (
+                  {selectedWorkflowState === "in_prepress" && selectedItem.sessionStartedAt && (
                     <span className="text-[#1773cf] text-xs font-semibold">
                       Timer: {formatElapsedDuration(activeSessionElapsedSeconds)}
                     </span>
@@ -1191,7 +1217,7 @@ export default function PrepressProductionPageV2() {
                   {selectedItem?.dueDate ? new Date(selectedItem.dueDate).toLocaleDateString() : "—"}
                 </p>
               </div>
-              {selectedItem?.prepressStage === "in_prepress" && selectedItem.sessionStartedAt ? (
+              {selectedWorkflowState === "in_prepress" && selectedItem?.sessionStartedAt ? (
                 <div>
                   <p className="text-[10px] uppercase text-slate-500 font-bold tracking-tighter">Started</p>
                   <p className="text-sm font-semibold text-[#1773cf]">
@@ -2083,28 +2109,7 @@ export default function PrepressProductionPageV2() {
 }
 
 function JobCard({ item, isSelected, onClick, onPreviewClick }: { item: QueueItem; isSelected: boolean; onClick: () => void; onPreviewClick: () => void }) {
-  const statusConfig: Record<string, { label: string; bgClass: string; textClass: string; borderClass: string }> = {
-    in_prepress: {
-      label: "IN PREPRESS",
-      bgClass: "bg-[#1773cf]/20",
-      textClass: "text-[#1773cf]",
-      borderClass: "border-[#1773cf]/30",
-    },
-    prepress_complete: {
-      label: "COMPLETE",
-      bgClass: "bg-green-700/20",
-      textClass: "text-green-400",
-      borderClass: "border-green-700/30",
-    },
-    pending_prepress: {
-      label: "PENDING",
-      bgClass: "bg-slate-700",
-      textClass: "text-slate-300",
-      borderClass: "border-[#2d3748]",
-    },
-  };
-
-  const config = statusConfig[item.prepressStage || "pending_prepress"] || statusConfig.pending_prepress;
+  const config = getPrepressWorkflowDisplay(item);
 
   React.useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -2156,9 +2161,12 @@ function JobCard({ item, isSelected, onClick, onPreviewClick }: { item: QueueIte
           <span className="text-sm font-bold text-white">
             {item.jobNumber}
           </span>
-          <span className={cn("text-[8px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider", config.bgClass, config.textClass, config.borderClass)}>
-            {config.label}
-          </span>
+          <div className="flex flex-col items-end gap-1">
+            <span className={cn("text-[8px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider", config.bgClass, config.textClass, config.borderClass)}>
+              {config.label}
+            </span>
+            {config.note && <span className="text-[8px] font-semibold text-emerald-300">{config.note}</span>}
+          </div>
         </div>
         <p className="text-xs font-semibold truncate text-slate-200">{item.customerName}</p>
         <p className="text-[10px] truncate text-slate-400">{item.productName}</p>
