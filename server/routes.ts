@@ -12489,6 +12489,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
             productionJobId: jobId,
             userId,
           });
+
+          const [lineItem] = await tx
+            .select({
+              workflowState: orderLineItems.workflowState,
+              status: orderLineItems.status,
+            })
+            .from(orderLineItems)
+            .where(and(eq(orderLineItems.orderId, job.orderId), eq(orderLineItems.id, job.lineItemId)))
+            .limit(1);
+
+          if (lineItem && lineItem.workflowState !== "completed" && lineItem.workflowState !== "canceled") {
+            await tx
+              .update(orderLineItems)
+              .set({ workflowState: "completed", status: "complete", updatedAt: now })
+              .where(eq(orderLineItems.id, job.lineItemId));
+
+            await appendEvent({
+              tx,
+              organizationId,
+              productionJobId: jobId,
+              type: "note",
+              payload: {
+                eventType: "workflow_transition",
+                fromState: lineItem.workflowState,
+                toState: "completed",
+                lifecycleStatus: "complete",
+                ownerAction: "completed",
+                actorUserId: userId,
+                metadata: {
+                  source: "production_job_complete",
+                  skipProduction,
+                  previousLifecycleStatus: lineItem.status,
+                },
+              },
+            });
+          }
         }
 
         await tx.insert(auditLogs).values({
@@ -14227,6 +14263,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           dueDate: item.dueDate ?? null,
           status: item.status,
           workflowState: item.workflowState,
+          hasCompletedSession: completedSessionLineItems.has(item.lineItemId),
           // Computed display stage for the prepress board (membership is owner-driven, display still uses session/status truth)
           prepressStage: derivePrepressStage({
             rawStatus: item.workflowState,
@@ -14264,9 +14301,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
         };
       });
 
-      // Apply prepressStage filter (maps legacy status filter values to computed stage)
+      const matchesPrepressStatusFilter = (item: any, filterValue: string) => {
+        const normalizedFilter = String(filterValue || '').trim().toLowerCase();
+        const workflowState = String(item.workflowState || '').trim().toLowerCase();
+
+        if (normalizedFilter === 'ready_for_prepress' || normalizedFilter === 'pending_prepress') {
+          return workflowState === 'ready_for_prepress';
+        }
+
+        if (normalizedFilter === 'in_prepress') {
+          return workflowState === 'in_prepress';
+        }
+
+        if (normalizedFilter === 'prepress_complete') {
+          return workflowState === 'in_prepress' && item.hasCompletedSession === true;
+        }
+
+        return false;
+      };
+
+      // Prefer canonical workflowState filters; keep legacy prepressStage values accepted for compatibility.
       const filteredQueue = statusFilter.length > 0
-        ? queue.filter((q: any) => statusFilter.includes(q.prepressStage))
+        ? queue.filter((q: any) => statusFilter.some((filterValue) => matchesPrepressStatusFilter(q, filterValue)))
         : queue;
 
       const normalizedSearchQuery = searchQuery?.trim().toLowerCase() || "";
@@ -15188,13 +15244,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           )
           .limit(1);
 
-        const effectivePrepressStage = derivePrepressStage({
-          rawStatus: lineItem.workflowState,
-          isActivelyOwnedByPrepress: true,
-          hasActiveSession: activeSessions.length > 0,
-          hasCompletedSession: completedSessions.length > 0,
-        });
-
         const existingActiveSession = activeSessions[0] ?? null;
 
         if (existingActiveSession) {
@@ -15217,8 +15266,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           };
         }
 
-        if (effectivePrepressStage !== "pending_prepress") {
-          throw Object.assign(new Error("Line item must be pending_prepress before starting prepress"), { statusCode: 400 });
+        if (String(lineItem.workflowState || "").toLowerCase() !== "ready_for_prepress") {
+          throw Object.assign(new Error("Line item must be ready_for_prepress before starting prepress"), { statusCode: 400 });
         }
 
         startFailureStage = "create_session";

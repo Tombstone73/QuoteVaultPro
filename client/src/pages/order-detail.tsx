@@ -542,7 +542,7 @@ export default function OrderDetail() {
   };
 
   // Calculate incomplete line items for completion workflow
-  const incompleteLi = order?.lineItems?.filter(li => li.status !== 'done' && li.status !== 'canceled') || [];
+  const incompleteLi = order?.lineItems?.filter(li => li.status !== 'complete' && li.status !== 'canceled') || [];
 
   // Fetch customers for the customer change dialog (kept for backward compat)
   const { data: customers = [] } = useQuery({
@@ -705,11 +705,11 @@ export default function OrderDetail() {
     if (newStatus === 'completed') {
       // Check if there are incomplete line items and strict mode is enabled
       if (requireLineItemsDone && incompleteLi.length > 0) {
-        // Show dialog offering to mark items done
+        // Show dialog offering to mark items complete
         setPendingStatusTransition({ toStatus: newStatus, requiresReason: false });
         return;
       }
-      // If not strict OR all items done, show regular confirmation
+      // If not strict OR all items are complete, show regular confirmation
       setPendingStatusTransition({ toStatus: newStatus, requiresReason: false });
       return;
     }
@@ -726,10 +726,10 @@ export default function OrderDetail() {
     if (!pendingStatusTransition) return;
     
     try {
-      // If completing and there are incomplete items in strict mode, mark them done first
+      // If completing and there are incomplete items in strict mode, mark them complete first
       if (pendingStatusTransition.toStatus === 'completed' && requireLineItemsDone && incompleteLi.length > 0) {
-        // Mark all incomplete items as done
-        await bulkUpdateLineItemStatus.mutateAsync({ status: 'done' });
+        // Mark all incomplete items as complete
+        await bulkUpdateLineItemStatus.mutateAsync({ status: 'complete' });
         
         // Small delay to ensure queries invalidated
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -3128,8 +3128,8 @@ export default function OrderDetail() {
                 <>
                   {requireLineItemsDone && incompleteLi.length > 0 ? (
                     <p>
-                      <strong>{incompleteLi.length} line item(s)</strong> aren't marked Done yet. 
-                      Do you want to mark them as Done and complete this order?
+                      <strong>{incompleteLi.length} line item(s)</strong> aren't marked complete yet. 
+                      Do you want to mark them complete and complete this order?
                     </p>
                   ) : (
                     <p>Are you sure you want to mark this order as completed? This will lock the order from further edits.</p>
@@ -3150,7 +3150,7 @@ export default function OrderDetail() {
               {pendingStatusTransition?.toStatus === 'canceled' 
                 ? 'Cancel Order' 
                 : (requireLineItemsDone && incompleteLi.length > 0 
-                    ? 'Mark Done & Complete' 
+                    ? 'Mark Complete & Finish Order' 
                     : 'Complete Order'
                   )
               }
