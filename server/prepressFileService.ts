@@ -10,7 +10,7 @@
 
 import { db } from "./db";
 import { lineItemFiles, orders, orderLineItems, orderAttachments } from "../shared/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 import { getStorageClient } from "./objectStorage";
 import type { Response } from "express";
 import archiver from "archiver";
@@ -49,6 +49,12 @@ export type BridgedOriginal = {
   downloadUrl: string;
   thumbnailUrl: string | null;
   uploadedBy: string | null;
+};
+
+export type EnsuredFinalArtworkResult = {
+  file: LineItemFile;
+  source: "existing_final" | "line_item_original" | "order_attachment";
+  created: boolean;
 };
 const MAX_FILE_SIZE_MB = 250;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
@@ -516,6 +522,151 @@ export async function getLineItemFiles(
     finals: allFiles.filter((f) => f.role === "final"),
     references: allFiles.filter((f) => f.role === "reference"),
     bridgedOriginals,
+  };
+}
+
+export async function ensureFinalArtworkForLineItem(params: {
+  organizationId: string;
+  orderId: string;
+  lineItemId: string;
+  prepressSessionId?: string | null;
+  createdByUserId: string;
+}): Promise<EnsuredFinalArtworkResult | null> {
+  const { organizationId, orderId, lineItemId, prepressSessionId, createdByUserId } = params;
+
+  const [existingFinal] = await db
+    .select()
+    .from(lineItemFiles)
+    .where(
+      and(
+        eq(lineItemFiles.organizationId, organizationId),
+        eq(lineItemFiles.lineItemId, lineItemId),
+        eq(lineItemFiles.role, "final"),
+        eq(lineItemFiles.status, "active"),
+      ),
+    )
+    .orderBy(desc(lineItemFiles.createdAt))
+    .limit(1);
+
+  if (existingFinal) {
+    return {
+      file: existingFinal,
+      source: "existing_final",
+      created: false,
+    };
+  }
+
+  const [existingOriginal] = await db
+    .select()
+    .from(lineItemFiles)
+    .where(
+      and(
+        eq(lineItemFiles.organizationId, organizationId),
+        eq(lineItemFiles.lineItemId, lineItemId),
+        eq(lineItemFiles.role, "original"),
+        eq(lineItemFiles.status, "active"),
+      ),
+    )
+    .orderBy(desc(lineItemFiles.createdAt))
+    .limit(1);
+
+  if (existingOriginal) {
+    const [clonedFinal] = await db.insert(lineItemFiles).values({
+      organizationId,
+      orderId,
+      lineItemId,
+      prepressSessionId: prepressSessionId || existingOriginal.prepressSessionId || null,
+      fileRecordId: existingOriginal.fileRecordId || null,
+      role: "final",
+      status: "active",
+      tag: "final_print",
+      storageBucket: existingOriginal.storageBucket || null,
+      storagePath: existingOriginal.storagePath,
+      storageKey: existingOriginal.storageKey || existingOriginal.storagePath,
+      originalFilename: existingOriginal.originalFilename,
+      mimeType: existingOriginal.mimeType,
+      sizeBytes: existingOriginal.sizeBytes,
+      supersedesFileId: null,
+      createdByUserId,
+    }).returning();
+
+    return {
+      file: clonedFinal,
+      source: "line_item_original",
+      created: true,
+    };
+  }
+
+  const attachmentCandidates = await db
+    .select({
+      id: orderAttachments.id,
+      fileRecordId: orderAttachments.fileRecordId,
+      fileName: orderAttachments.fileName,
+      originalFilename: orderAttachments.originalFilename,
+      mimeType: orderAttachments.mimeType,
+      fileUrl: orderAttachments.fileUrl,
+      relativePath: orderAttachments.relativePath,
+      sizeBytes: orderAttachments.sizeBytes,
+      fileSize: orderAttachments.fileSize,
+      role: orderAttachments.role,
+      isPrimary: orderAttachments.isPrimary,
+      createdAt: orderAttachments.createdAt,
+    })
+    .from(orderAttachments)
+    .where(eq(orderAttachments.orderLineItemId, lineItemId))
+    .orderBy(desc(orderAttachments.isPrimary), desc(orderAttachments.createdAt));
+
+  const eligibleAttachment = attachmentCandidates.find((candidate) =>
+    candidate.role === "artwork" || candidate.role === "proof" || candidate.role === "reference",
+  );
+
+  if (!eligibleAttachment) {
+    return null;
+  }
+
+  const resolvedOriginal = await resolveOriginalFileAccess({
+    id: eligibleAttachment.id,
+    fileRecordId: eligibleAttachment.fileRecordId,
+    fileName: eligibleAttachment.fileName,
+    originalFilename: eligibleAttachment.originalFilename,
+    mimeType: eligibleAttachment.mimeType,
+    fileUrl: eligibleAttachment.fileUrl,
+    fileKey: eligibleAttachment.relativePath,
+  });
+
+  const resolvedStoragePath =
+    resolvedOriginal.objectPath ||
+    eligibleAttachment.relativePath ||
+    eligibleAttachment.fileUrl ||
+    null;
+
+  if (resolvedOriginal.availabilityStatus !== "available" || !resolvedStoragePath) {
+    return null;
+  }
+
+  const [clonedAttachmentFinal] = await db.insert(lineItemFiles).values({
+    organizationId,
+    orderId,
+    lineItemId,
+    prepressSessionId: prepressSessionId || null,
+    fileRecordId: eligibleAttachment.fileRecordId || null,
+    role: "final",
+    status: "active",
+    tag: "final_print",
+    storageBucket: null,
+    storagePath: resolvedStoragePath,
+    storageKey: resolvedStoragePath,
+    originalFilename: eligibleAttachment.originalFilename || eligibleAttachment.fileName || `artwork-${eligibleAttachment.id}`,
+    mimeType: eligibleAttachment.mimeType || resolvedOriginal.mimeType || "application/octet-stream",
+    sizeBytes: Math.max(0, Number(eligibleAttachment.sizeBytes ?? eligibleAttachment.fileSize ?? 0)),
+    supersedesFileId: null,
+    createdByUserId,
+  }).returning();
+
+  return {
+    file: clonedAttachmentFinal,
+    source: "order_attachment",
+    created: true,
   };
 }
 
