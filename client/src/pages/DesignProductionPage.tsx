@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { useDesignQueue } from "@/hooks/useOrders";
+import { useToast } from "@/hooks/use-toast";
 
 const WORKFLOW_LABELS: Record<string, string> = {
   needs_design: "Needs Design",
@@ -41,6 +42,7 @@ function getDesignActions(state: string | undefined) {
 
 export default function DesignProductionPage() {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const { data: queue = [], isLoading } = useDesignQueue();
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
 
@@ -80,6 +82,13 @@ export default function DesignProductionPage() {
         queryClient.invalidateQueries({ queryKey: ["orders", "detail", selectedItem.orderId] });
       }
       queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Workflow update failed",
+        description: error.message,
+        variant: "destructive",
+      });
     },
   });
 
