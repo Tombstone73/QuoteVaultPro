@@ -24,7 +24,7 @@ WITH latest_active_job AS (
 completed_prepress AS (
   SELECT DISTINCT ps.line_item_id
   FROM prepress_sessions ps
-  WHERE lower(coalesce(ps.status, '')) = 'complete'
+  WHERE lower(coalesce(ps.status::text, '')) = 'complete'
 ),
 workflow_backfill AS (
   SELECT
