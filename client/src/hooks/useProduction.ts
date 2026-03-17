@@ -163,8 +163,8 @@ export function useProductionJobs(
       const json = await res.json();
       return json.data || [];
     },
-    staleTime: 10_000,
-    refetchOnWindowFocus: true,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
     enabled: options?.enabled !== false,
   });
 }
@@ -180,6 +180,8 @@ export function useProductionJob(jobId: string | undefined) {
       return json.data;
     },
     enabled: !!jobId,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
 }
 

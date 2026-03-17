@@ -27,6 +27,14 @@ import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 export class QuotesRepository {
     constructor(private readonly dbInstance = db) { }
 
+    private async resolvePreviewThumbnailUrl(att: { fileRecordId?: string | null; thumbKey?: string | null; previewKey?: string | null }) {
+        const previewAccess = await resolveDerivativeFileAccess(att, "preview");
+        if (previewAccess.url) return previewAccess.url;
+
+        const thumbAccess = await resolveDerivativeFileAccess(att, "thumbnail");
+        return thumbAccess.url ?? null;
+    }
+
     private buildUserQuotesConditions(
         organizationId: string,
         userId: string,
@@ -193,14 +201,9 @@ export class QuotesRepository {
         const countMap = new Map<string, number>();
 
         const resolvedRows = await Promise.all(attachmentsQuery.map(async (att) => {
-            const [previewAccess, thumbAccess] = await Promise.all([
-                resolveDerivativeFileAccess(att, "preview"),
-                resolveDerivativeFileAccess(att, "thumbnail"),
-            ]);
-
             return {
                 quoteId: att.quoteId,
-                thumbnailUrl: previewAccess.url ?? thumbAccess.url ?? null,
+                thumbnailUrl: await this.resolvePreviewThumbnailUrl(att),
             };
         }));
 

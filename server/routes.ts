@@ -11423,10 +11423,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const computePreviewUrl = (art: any): string | undefined => {
         const thumbUrl = normalizeObjectsUrl(art?.thumbnailUrl);
         if (thumbUrl) return thumbUrl;
-
-        const ext = getFileExt(art?.fileName) || getFileExt(art?.fileUrl);
-        const fileUrl = normalizeObjectsUrl(art?.fileUrl);
-        if (fileUrl && isImageExt(ext)) return fileUrl;
         return undefined;
       };
 
@@ -13950,6 +13946,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .select({
               id: lineItemFiles.id,
               lineItemId: lineItemFiles.lineItemId,
+              fileRecordId: lineItemFiles.fileRecordId,
               role: lineItemFiles.role,
               mimeType: lineItemFiles.mimeType,
               createdAt: lineItemFiles.createdAt,
@@ -13995,7 +13992,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }>();
       const previewCandidatesByLineItem = new Map<string, {
         originalImageId: string | null;
+        originalImageFileRecordId: string | null;
         finalImageId: string | null;
+        finalImageFileRecordId: string | null;
         firstOriginalMimeType: string | null;
         firstFinalMimeType: string | null;
       }>();
@@ -14003,23 +14002,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const isImage = !!pf.mimeType?.startsWith("image/");
         const bucket = previewCandidatesByLineItem.get(pf.lineItemId) || {
           originalImageId: null,
+          originalImageFileRecordId: null,
           finalImageId: null,
+          finalImageFileRecordId: null,
           firstOriginalMimeType: null,
           firstFinalMimeType: null,
         };
 
         if (pf.role === "original") {
           if (!bucket.firstOriginalMimeType) bucket.firstOriginalMimeType = pf.mimeType || null;
-          if (isImage && !bucket.originalImageId) bucket.originalImageId = pf.id;
+          if (isImage && !bucket.originalImageId) {
+            bucket.originalImageId = pf.id;
+            bucket.originalImageFileRecordId = pf.fileRecordId ?? null;
+          }
         } else if (pf.role === "final") {
           if (!bucket.firstFinalMimeType) bucket.firstFinalMimeType = pf.mimeType || null;
-          if (isImage && !bucket.finalImageId) bucket.finalImageId = pf.id;
+          if (isImage && !bucket.finalImageId) {
+            bucket.finalImageId = pf.id;
+            bucket.finalImageFileRecordId = pf.fileRecordId ?? null;
+          }
         }
         previewCandidatesByLineItem.set(pf.lineItemId, bucket);
       }
 
       for (const [lineItemId, candidate] of Array.from(previewCandidatesByLineItem.entries())) {
         const thumbFileId = candidate.originalImageId || candidate.finalImageId || null;
+        const thumbFileRecordId = candidate.originalImageFileRecordId || candidate.finalImageFileRecordId || null;
         const thumbSelectionReason: 'original_fallback' | 'final_fallback' | 'none' =
           candidate.originalImageId ? 'original_fallback' :
           candidate.finalImageId ? 'final_fallback' :
@@ -14029,9 +14037,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           candidate.finalImageId ? candidate.firstFinalMimeType :
           (candidate.firstOriginalMimeType || candidate.firstFinalMimeType || null);
 
+        const thumbnailAccess = thumbFileRecordId
+          ? await resolveDerivativeFileAccess({ id: thumbFileId, fileRecordId: thumbFileRecordId }, "thumbnail")
+          : { url: null };
+
         firstPreviewByLineItem.set(lineItemId, {
           thumbFileId,
-          thumbnailUrl: thumbFileId ? `/api/prepress/files/${thumbFileId}/download?inline=1` : null,
+          thumbnailUrl: thumbnailAccess.url ?? null,
           thumbSelectionReason,
           thumbCandidateMimeType,
         });
@@ -14083,15 +14095,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           );
 
           for (const att of enrichedFallbackAttachments) {
-            const thumbUrl = (() => {
-              if (att.thumbnailUrl) return att.thumbnailUrl;
-              const fUrl = String(att.originalUrl || '');
-              const ext = String(att.fileName || '').split('.').pop()?.toLowerCase() ?? '';
-              if (fUrl && ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext)) {
-                return fUrl;
-              }
-              return null;
-            })();
+            const thumbUrl =
+              (att.thumbnailUrl as string | null) ??
+              (att.previewThumbnailUrl as string | null) ??
+              (att.thumbUrl as string | null) ??
+              null;
             if (!thumbUrl) continue;
 
             if (att.orderLineItemId && lineItemIdsNeedingThumbFallback.includes(att.orderLineItemId)) {
@@ -15857,28 +15865,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "File not found" });
       }
 
+      res.set("X-Served-As", "thumbnail");
+
       const isImage = !!fileRow.mimeType?.startsWith("image/");
-      const key = (fileRow.storageKey || fileRow.storagePath || "").trim();
-      if (!isImage || !key) {
+      if (!isImage) {
         return res.json({ success: true, data: { thumbnailUrl: null }, message: "File is not an image" });
       }
 
-      if (fileRow.storageBucket) {
+      if (!fileRow.fileRecordId) {
         return res.json({
           success: true,
-          data: { thumbnailUrl: `/api/prepress/files/${fileRow.id}/download?inline=1` },
+          data: { thumbnailUrl: null },
+          message: "Thumbnail derivative unavailable",
         });
       }
 
-      if (fileRow.fileRecordId) {
-        const resolved = await canonicalFileReadResolver.resolveOriginal(String(fileRow.fileRecordId));
-        const objectPath = resolved.objectKey ?? resolved.localPathRef ?? null;
-        if (resolved.status === 'available' && objectPath) {
-          return res.json({ success: true, data: { thumbnailUrl: `/objects/${objectPath}` } });
-        }
+      const resolved = await resolveDerivativeFileAccess(
+        { id: fileRow.id, fileRecordId: fileRow.fileRecordId },
+        "thumbnail"
+      );
+
+      if (resolved.url) {
+        return res.json({ success: true, data: { thumbnailUrl: resolved.url } });
       }
 
-      return res.json({ success: true, data: { thumbnailUrl: `/objects/${key}` } });
+      return res.json({
+        success: true,
+        data: { thumbnailUrl: null },
+        message: "Thumbnail derivative unavailable",
+      });
     } catch (error: any) {
       console.error("[Prepress] Thumbnail URL error:", error);
       res.status(500).json({ error: error?.message || "Failed to resolve thumbnail URL" });
@@ -15909,22 +15924,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
       const files = await prepressFileService.getLineItemFiles(req.params.lineItemId, organizationId);
-      const enhance = (f: any) => ({
-        ...f,
-        computedDisplayFilename: prepressFileService.buildComputedDisplayFilename({
-          role: f.role,
-          originalFilename: f.originalFilename,
-          tag: f.tag,
-        }),
-        thumbnailUrl: f.mimeType?.startsWith("image/")
-          ? `/api/prepress/files/${f.id}/download?inline=1`
-          : null,
-      });
+      const enhance = async (f: any) => {
+        const [thumbnailAccess, previewAccess] = f.fileRecordId
+          ? await Promise.all([
+              resolveDerivativeFileAccess({ id: f.id, fileRecordId: f.fileRecordId }, "thumbnail"),
+              resolveDerivativeFileAccess({ id: f.id, fileRecordId: f.fileRecordId }, "preview"),
+            ])
+          : [{ url: null }, { url: null }];
+
+        return {
+          ...f,
+          computedDisplayFilename: prepressFileService.buildComputedDisplayFilename({
+            role: f.role,
+            originalFilename: f.originalFilename,
+            tag: f.tag,
+          }),
+          originalUrl: `/api/prepress/files/${f.id}/download`,
+          downloadUrl: `/api/prepress/files/${f.id}/download`,
+          previewUrl: previewAccess.url ?? null,
+          thumbnailUrl: thumbnailAccess.url ?? null,
+        };
+      };
+
+      const [originals, finals, references] = await Promise.all([
+        Promise.all(files.originals.map(enhance)),
+        Promise.all(files.finals.map(enhance)),
+        Promise.all(files.references.map(enhance)),
+      ]);
 
       const data = {
-        originals: files.originals.map(enhance),
-        finals: files.finals.map(enhance),
-        references: files.references.map(enhance),
+        originals,
+        finals,
+        references,
         bridgedOriginals: files.bridgedOriginals,
       };
 
