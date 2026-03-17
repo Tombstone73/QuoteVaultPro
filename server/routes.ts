@@ -13852,6 +13852,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const statusFilter = req.query.status ? String(req.query.status).split(",") : [];
       const printTypeFilter = req.query.printType as string | undefined;
       const searchQuery = req.query.search as string | undefined;
+      const sortBy = typeof req.query.sortBy === "string" ? req.query.sortBy : "due_date";
+      const sortOrder = String(req.query.sortOrder || "asc").toLowerCase() === "desc" ? "desc" : "asc";
 
       // Build base WHERE conditions.
       // Prepress queue shows ONLY items that require prepress (requiresPrepress=true).
@@ -14253,11 +14255,68 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ? queue.filter((q: any) => statusFilter.includes(q.prepressStage))
         : queue;
 
+      const normalizedSearchQuery = searchQuery?.trim().toLowerCase() || "";
+      const searchedQueue = normalizedSearchQuery
+        ? filteredQueue.filter((item: any) => {
+            const searchFields = [
+              item.jobNumber,
+              item.orderId,
+              item.customerName,
+              item.productName,
+              item.printType,
+              item.media,
+              item.lineItemId,
+            ];
+
+            return searchFields.some((value) => String(value || "").toLowerCase().includes(normalizedSearchQuery));
+          })
+        : filteredQueue;
+
+      const compareStrings = (left: string | null | undefined, right: string | null | undefined) =>
+        String(left || "").localeCompare(String(right || ""), undefined, { numeric: true, sensitivity: "base" });
+
+      const compareDates = (left: string | null | undefined, right: string | null | undefined) => {
+        const leftValue = left ? new Date(left).getTime() : Number.POSITIVE_INFINITY;
+        const rightValue = right ? new Date(right).getTime() : Number.POSITIVE_INFINITY;
+
+        if (leftValue === rightValue) return 0;
+        return leftValue < rightValue ? -1 : 1;
+      };
+
+      const sortedQueue = [...searchedQueue].sort((left: any, right: any) => {
+        let comparison = 0;
+
+        switch (sortBy) {
+          case "job_number":
+            comparison = compareStrings(left.jobNumber, right.jobNumber);
+            break;
+          case "client":
+            comparison = compareStrings(left.customerName, right.customerName);
+            break;
+          case "type":
+            comparison = compareStrings(left.printType, right.printType);
+            break;
+          case "material":
+            comparison = compareStrings(left.media, right.media);
+            break;
+          case "due_date":
+          default:
+            comparison = compareDates(left.dueDate, right.dueDate);
+            break;
+        }
+
+        if (comparison === 0) {
+          comparison = compareStrings(left.jobNumber, right.jobNumber);
+        }
+
+        return sortOrder === "desc" ? comparison * -1 : comparison;
+      });
+
       if (process.env.NODE_ENV !== "production") {
-        console.log(`[Prepress Queue] org=${organizationId} ownerDrivenQueue=${filteredQueue.length}`);
+        console.log(`[Prepress Queue] org=${organizationId} ownerDrivenQueue=${sortedQueue.length}`);
       }
 
-      res.json({ success: true, data: filteredQueue });
+      res.json({ success: true, data: sortedQueue });
     } catch (error: any) {
       console.error("[Prepress] Error fetching queue:", error);
       res.status(500).json({ error: error?.message || "Failed to fetch prepress queue" });
@@ -14807,11 +14866,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/prepress/session/start", isAuthenticated, tenantContext, async (req: any, res) => {
     let organizationId: string | null = null;
     let lineItemId = "";
+    let startFailureStage = "request_validation";
 
     try {
       if (!assertInternalUser(req, res)) return;
       organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const orgId = organizationId;
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ error: "User ID not found" });
 
@@ -14824,6 +14885,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       lineItemId = parsed.data.lineItemId;
 
       const result = await db.transaction(async (tx) => {
+        startFailureStage = "load_line_item";
         // Get line item
         const lineItems = await tx
           .select({
@@ -14835,7 +14897,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .where(
             and(
               eq(orderLineItems.id, lineItemId),
-              eq(orders.organizationId, organizationId)
+              eq(orders.organizationId, orgId)
             )
           )
           .limit(1);
@@ -14847,15 +14909,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const lineItem = lineItems[0].lineItem;
         const order = lineItems[0].order;
 
+        startFailureStage = "resolve_active_owner";
         const activeOwner = await findActiveJobForLineItem(tx, {
-          organizationId,
+          organizationId: orgId,
           lineItemId,
         });
 
         if (!activeOwner || !isPrepressOwnershipJob(activeOwner)) {
+          console.warn("[Prepress] Start session blocked: line item not actively owned by prepress", {
+            organizationId,
+            lineItemId,
+            activeOwnerJobId: activeOwner?.id ?? null,
+            activeOwnerStationKey: activeOwner?.stationKey ?? null,
+            activeOwnerStepKey: activeOwner?.stepKey ?? null,
+          });
           throw Object.assign(new Error("Line item is not actively owned by prepress"), { statusCode: 409 });
         }
 
+        startFailureStage = "load_active_sessions";
         const activeSessions = await tx
           .select({
             id: prepressSessions.id,
@@ -14871,7 +14942,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .from(prepressSessions)
           .where(
             and(
-              eq(prepressSessions.organizationId, organizationId),
+              eq(prepressSessions.organizationId, orgId),
               eq(prepressSessions.lineItemId, lineItemId),
               eq(prepressSessions.status, "active"),
             ),
@@ -14879,12 +14950,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .orderBy(desc(prepressSessions.startedAt))
           .limit(1);
 
+        startFailureStage = "load_completed_sessions";
         const completedSessions = await tx
           .select({ id: prepressSessions.id })
           .from(prepressSessions)
           .where(
             and(
-              eq(prepressSessions.organizationId, organizationId),
+              eq(prepressSessions.organizationId, orgId),
               eq(prepressSessions.lineItemId, lineItemId),
               eq(prepressSessions.status, "complete"),
             ),
@@ -14901,6 +14973,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const existingActiveSession = activeSessions[0] ?? null;
 
         if (existingActiveSession) {
+          startFailureStage = "resume_existing_session";
           if (String(lineItem.status || "").toLowerCase() !== "in_prepress") {
             await tx
               .update(orderLineItems)
@@ -14908,18 +14981,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
               .where(eq(orderLineItems.id, lineItemId));
           }
 
-          return existingActiveSession;
+          return {
+            ...existingActiveSession,
+            lineItemId,
+            lineItemStatus: "in_prepress",
+            prepressStage: "in_prepress",
+            resumed: true,
+          };
         }
 
         if (effectivePrepressStage !== "pending_prepress") {
           throw Object.assign(new Error("Line item must be pending_prepress before starting prepress"), { statusCode: 400 });
         }
 
+        startFailureStage = "create_session";
         // Create new session
         const [session] = await tx
           .insert(prepressSessions)
           .values({
-            organizationId,
+            organizationId: orgId,
             orderId: order.id,
             lineItemId,
             status: "active",
@@ -14934,9 +15014,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .set({ status: "in_prepress" as any, updatedAt: new Date() })
           .where(eq(orderLineItems.id, lineItemId));
 
+        startFailureStage = "write_audit_log";
         // Audit log
         await tx.insert(auditLogs).values({
-          organizationId,
+          organizationId: orgId,
           userId,
           userName: req.user?.email || req.user?.name || null,
           actionType: "CREATE",
@@ -14949,7 +15030,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           userAgent: req.headers["user-agent"] || null,
         } as any);
 
-        return session;
+        return {
+          ...session,
+          lineItemId,
+          lineItemStatus: "in_prepress",
+          prepressStage: "in_prepress",
+          resumed: false,
+        };
       });
 
       res.json({ success: true, data: result });
@@ -14974,7 +15061,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .from(prepressSessions)
             .where(
               and(
-                eq(prepressSessions.organizationId, organizationId),
+                eq(prepressSessions.organizationId, orgId),
                 eq(prepressSessions.lineItemId, lineItemId),
                 eq(prepressSessions.status, "active"),
               ),
@@ -14996,7 +15083,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const status = error?.statusCode || 500;
-      console.error("[Prepress] Error starting session:", error);
+      console.error("[Prepress] Error starting session:", {
+        stage: startFailureStage,
+        organizationId,
+        lineItemId,
+        message: error?.message || "Unknown error",
+      });
       res.status(status).json({ error: error?.message || "Failed to start session" });
     }
   });
@@ -15072,16 +15164,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // POST /api/prepress/session/:id/complete - Mark prepress complete
   app.post("/api/prepress/session/:id/complete", isAuthenticated, tenantContext, async (req: any, res) => {
+    let completeFailureStage = "request_validation";
+    let sessionLineItemId: string | null = null;
+
     try {
       if (!assertInternalUser(req, res)) return;
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const orgId = organizationId;
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ error: "User ID not found" });
 
       const sessionId = req.params.id;
 
       const result = await db.transaction(async (tx) => {
+        completeFailureStage = "load_session";
         // Get session
         const sessions = await tx
           .select()
@@ -15089,7 +15186,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .where(
             and(
               eq(prepressSessions.id, sessionId),
-              eq(prepressSessions.organizationId, organizationId)
+              eq(prepressSessions.organizationId, orgId)
             )
           )
           .limit(1);
@@ -15099,13 +15196,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
 
         const session = sessions[0];
+        sessionLineItemId = session.lineItemId;
 
+        completeFailureStage = "resolve_active_owner";
         const activeOwner = await findActiveJobForLineItem(tx, {
-          organizationId,
+          organizationId: orgId,
           lineItemId: session.lineItemId,
         });
 
         if (!activeOwner || !isPrepressOwnershipJob(activeOwner)) {
+          console.warn("[Prepress] Complete session blocked: line item not actively owned by prepress", {
+            organizationId,
+            sessionId,
+            lineItemId: session.lineItemId,
+            activeOwnerJobId: activeOwner?.id ?? null,
+            activeOwnerStationKey: activeOwner?.stationKey ?? null,
+            activeOwnerStepKey: activeOwner?.stepKey ?? null,
+          });
           throw Object.assign(new Error("Line item is not actively owned by prepress"), { statusCode: 409 });
         }
 
@@ -15114,26 +15221,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return { id: session.id, lineItemId: session.lineItemId, status: "complete" };
         }
 
-        // Validate at least one FINAL file exists for this line item (any session, any uploader)
-        const finalFiles = await tx
-          .select()
-          .from(lineItemFiles)
-          .where(
-            and(
-              eq(lineItemFiles.lineItemId, session.lineItemId),
-              eq(lineItemFiles.role, "final"),
-              eq(lineItemFiles.status, "active")
-            )
-          )
-          .limit(1);
+        completeFailureStage = "ensure_final_artwork";
+        const finalArtwork = await prepressFileService.ensureFinalArtworkForLineItem({
+          organizationId: orgId,
+          orderId: session.orderId,
+          lineItemId: session.lineItemId,
+          prepressSessionId: session.id,
+          createdByUserId: userId,
+        });
 
-        if (!finalFiles[0]) {
+        if (!finalArtwork) {
           throw Object.assign(
-            new Error("Cannot complete prepress without at least one final file"),
+            new Error("Cannot complete prepress without usable artwork. Upload a replacement file or keep an existing linked artwork file."),
             { statusCode: 400 }
           );
         }
 
+        completeFailureStage = "mark_session_complete";
         // Mark session complete
         await tx
           .update(prepressSessions)
@@ -15152,9 +15256,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           })
           .where(eq(orderLineItems.id, session.lineItemId));
 
+        completeFailureStage = "write_audit_log";
         // Audit log
         await tx.insert(auditLogs).values({
-          organizationId,
+          organizationId: orgId,
           userId,
           userName: req.user?.email || req.user?.name || null,
           actionType: "UPDATE",
@@ -15168,13 +15273,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
           userAgent: req.headers["user-agent"] || null,
         } as any);
 
-        return session;
+        return {
+          ...session,
+          lineItemId: session.lineItemId,
+          status: "complete",
+          completedAt: new Date(),
+          finalArtworkSource: finalArtwork.source,
+          finalFileId: finalArtwork.file.id,
+          createdFinalFile: finalArtwork.created,
+        };
       });
 
       res.json({ success: true, data: result });
     } catch (error: any) {
       const status = error?.statusCode || 500;
-      console.error("[Prepress] Error completing session:", error);
+      console.error("[Prepress] Error completing session:", {
+        stage: completeFailureStage,
+        sessionId: req.params.id,
+        lineItemId: sessionLineItemId,
+        message: error?.message || "Unknown error",
+      });
       res.status(status).json({ error: error?.message || "Failed to complete session" });
     }
   });
