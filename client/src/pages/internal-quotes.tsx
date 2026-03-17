@@ -1584,7 +1584,6 @@ export default function InternalQuotes() {
         attachments={viewerAttachments}
         initialIndex={viewerInitialIndex}
         open={attachmentViewerOpen}
-        hideFilmstrip={false}
         showMetaPanel={true}
         onOpenChange={(open) => {
           setAttachmentViewerOpen(open);

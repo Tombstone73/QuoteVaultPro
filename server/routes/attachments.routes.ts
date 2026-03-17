@@ -1623,7 +1623,7 @@ export async function registerAttachmentRoutes(
         hasStorageProviderForThumb &&
         isNotHttpUrlForThumb &&
         canonicalStorageKey &&
-        (canonicalStorageProvider === "local" || canonicalStorageProvider === "supabase")
+        (canonicalStorageProvider === "local_filesystem" || canonicalStorageProvider === "supabase")
       ) {
         const { generateImageDerivatives, isThumbnailGenerationEnabled } = await import(
           "../services/thumbnailGenerator"

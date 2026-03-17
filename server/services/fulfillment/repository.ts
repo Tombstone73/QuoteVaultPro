@@ -547,7 +547,7 @@ export class PickupRepo {
         .update(orders)
         .set({
           fulfillmentStatus: 'packed',
-          updatedAt: new Date(),
+          updatedAt: new Date().toISOString(),
         })
         .where(and(eq(orders.id, ticket.orderId), eq(orders.organizationId, orgId)));
 
@@ -641,7 +641,7 @@ export class PickupRepo {
         .update(orders)
         .set({
           fulfillmentStatus: 'delivered',
-          updatedAt: new Date(),
+          updatedAt: new Date().toISOString(),
         })
         .where(and(eq(orders.id, ticket.orderId), eq(orders.organizationId, orgId)));
 
