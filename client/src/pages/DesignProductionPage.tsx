@@ -20,15 +20,19 @@ function getDesignActions(state: string | undefined) {
   switch (state) {
     case "needs_design":
       return [
-        { label: "Start Design", toState: "in_design" },
+        { label: "Start Design", action: "start" },
         { label: "Hold", toState: "on_hold" },
         { label: "Cancel", toState: "canceled" },
       ];
     case "in_design":
       return [
-        { label: "Back to Needs Design", toState: "needs_design" },
-        { label: "Send to Prepress", toState: "ready_for_prepress" },
+        { label: "Return to Needs Design", action: "return-to-needs-design" },
+        { label: "Send to Prepress", action: "send-to-prepress" },
         { label: "Hold", toState: "on_hold" },
+      ];
+    case "new":
+      return [
+        { label: "Send to Design", action: "send" },
       ];
     default:
       return [];
@@ -52,12 +56,16 @@ export default function DesignProductionPage() {
   );
 
   const transitionWorkflow = useMutation({
-    mutationFn: async ({ lineItemId, toState }: { lineItemId: string; toState: string }) => {
-      const response = await fetch(`/api/line-items/${lineItemId}/workflow-transition`, {
+    mutationFn: async ({ lineItemId, toState, action }: { lineItemId: string; toState?: string; action?: string }) => {
+      const endpoint = action
+        ? `/api/design/line-item/${lineItemId}/${action}`
+        : `/api/line-items/${lineItemId}/workflow-transition`;
+
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ toState }),
+        body: JSON.stringify(toState ? { toState } : {}),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -131,6 +139,11 @@ export default function DesignProductionPage() {
                 <Badge variant={selectedItem.workflowState === "in_design" ? "default" : "outline"}>
                   {WORKFLOW_LABELS[selectedItem.workflowState] || selectedItem.workflowState}
                 </Badge>
+                {(selectedItem.activeOwnerStepKey || selectedItem.activeOwnerStationKey) && (
+                  <Badge variant="secondary">
+                    Owner: {selectedItem.activeOwnerStepKey || selectedItem.activeOwnerStationKey}
+                  </Badge>
+                )}
                 {selectedItem.requiresPrepress && <Badge variant="outline">Requires Prepress</Badge>}
               </div>
 
@@ -158,12 +171,16 @@ export default function DesignProductionPage() {
               <div className="flex flex-wrap gap-2">
                 {getDesignActions(selectedItem.workflowState).map((action) => (
                   <Button
-                    key={action.toState}
+                    key={action.action || action.toState}
                     type="button"
                     variant="outline"
                     size="sm"
                     disabled={transitionWorkflow.isPending}
-                    onClick={() => transitionWorkflow.mutate({ lineItemId: selectedItem.lineItemId, toState: action.toState })}
+                    onClick={() => transitionWorkflow.mutate({
+                      lineItemId: selectedItem.lineItemId,
+                      toState: action.toState,
+                      action: action.action,
+                    })}
                   >
                     {action.label}
                   </Button>

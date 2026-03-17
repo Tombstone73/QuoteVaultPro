@@ -1832,6 +1832,11 @@ export function OrderLineItemsSection({
                                   <Badge variant={workflowBadgeVariant((item as any).workflowState)}>
                                     {WORKFLOW_LABELS[String((item as any).workflowState || "new")] || String((item as any).workflowState || "new")}
                                   </Badge>
+                                  {(item as any).activeOwnerStepKey && (
+                                    <Badge variant="secondary">
+                                      Owner: {String((item as any).activeOwnerStepKey || (item as any).activeOwnerStationKey || "unassigned")}
+                                    </Badge>
+                                  )}
                                   {Boolean((item as any).requiresDesign) && (
                                     <Badge variant="outline">Design</Badge>
                                   )}
