@@ -10,6 +10,7 @@ type SchedulingCandidateLineItem = {
   productTypeId: string | null;
   materialId: string | null;
   status: string;
+  lineItemRequiresDesignSnapshot: boolean | null;
   lineItemRequiresPrepressSnapshot: boolean | null;
   requiresProductionJob: boolean;
 };
@@ -144,6 +145,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
         productTypeId: products.productTypeId,
         materialId: orderLineItems.materialId,
         status: orderLineItems.status,
+        lineItemRequiresDesignSnapshot: orderLineItems.requiresDesign,
         lineItemRequiresPrepressSnapshot: orderLineItems.requiresPrepress,
         requiresProductionJob: products.requiresProductionJob,
       })
@@ -231,6 +233,10 @@ export async function scheduleOrderLineItemsForProduction(args: {
         const route = await resolveRoute({
           organizationId,
           productTypeId: item.productTypeId,
+          lineItemRequiresDesignSnapshot:
+            typeof item.lineItemRequiresDesignSnapshot === "boolean"
+              ? item.lineItemRequiresDesignSnapshot
+              : undefined,
           lineItemRequiresPrepressSnapshot:
             typeof item.lineItemRequiresPrepressSnapshot === "boolean"
               ? item.lineItemRequiresPrepressSnapshot
@@ -254,6 +260,24 @@ export async function scheduleOrderLineItemsForProduction(args: {
             routingReason: route.reason,
           },
         });
+
+        const targetWorkflowState =
+          route.stationKey === "design" || route.stepKey === "design"
+            ? "needs_design"
+            : route.stationKey === "prepress" || route.stepKey === "prepress"
+              ? "ready_for_prepress"
+              : "ready_for_production";
+
+        const targetLifecycleStatus = targetWorkflowState === "ready_for_production" ? "in_production" : "new";
+
+        await tx
+          .update(orderLineItems)
+          .set({
+            workflowState: targetWorkflowState as any,
+            status: targetLifecycleStatus as any,
+            updatedAt: new Date(),
+          })
+          .where(eq(orderLineItems.id, item.lineItemId));
 
         if (routingResult.outcome === "existing" && routingResult.reason) {
           console.warn(

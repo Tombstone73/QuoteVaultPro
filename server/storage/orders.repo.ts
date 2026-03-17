@@ -73,6 +73,31 @@ const ORDER_ATTACHMENT_SAFE_SELECT = {
     updatedAt: orderAttachments.updatedAt,
 } as const;
 
+type CreateOrderLineItemInput = Pick<InsertOrderLineItem, 'productId' | 'quantity'> & {
+    productVariantId?: string | null;
+    variantId?: string | null;
+    productType?: string | null;
+    description?: string | null;
+    productName?: string | null;
+    width?: number | string | null;
+    height?: number | string | null;
+    sqft?: number | string | null;
+    unitPrice?: number | string | null;
+    unit_price?: number | string | null;
+    totalPrice?: number | string | null;
+    total_price?: number | string | null;
+    linePrice?: number | string | null;
+    line_price?: number | string | null;
+    status?: InsertOrderLineItem['status'];
+    quoteLineItemId?: string | null;
+    specsJson?: Record<string, any> | null;
+    selectedOptions?: InsertOrderLineItem['selectedOptions'];
+    nestingConfigSnapshot?: InsertOrderLineItem['nestingConfigSnapshot'];
+    sortOrder?: number | null;
+    taxAmount?: number | string | null;
+    isTaxableSnapshot?: boolean | null;
+};
+
 export class OrdersRepository {
     constructor(private readonly dbInstance = db) { }
 
@@ -502,7 +527,7 @@ export class OrdersRepository {
         discount?: number;
         notesInternal?: string | null;
         createdByUserId: string;
-        lineItems: Omit<InsertOrderLineItem, 'orderId'>[];
+        lineItems: CreateOrderLineItemInput[];
         taxRate?: number;
         taxAmount?: number;
         taxableSubtotal?: number;
@@ -815,12 +840,12 @@ export class OrdersRepository {
         }
 
         // Convert quote line items to order line items
-        const orderLineItemsData: Omit<InsertOrderLineItem, 'orderId'>[] = quoteLines.map((ql, index) => {
+        const orderLineItemsData = quoteLines.map((ql, index) => {
             const requiresPrepress = productPrepressMap.get(ql.productId) ?? orgPrepressDefault;
             // Line item lifecycle: new → in_production → complete | canceled
             const initialStatus = 'new' as unknown as InsertOrderLineItem['status'];
 
-            return {
+            const lineItemData = {
                 quoteLineItemId: ql.id,
                 productId: ql.productId,
                 productVariantId: ql.variantId,
@@ -833,6 +858,8 @@ export class OrdersRepository {
                 unitPrice: parseFloat(ql.linePrice) / ql.quantity,
                 totalPrice: parseFloat(ql.linePrice),
                 status: initialStatus,
+                workflowState: 'new',
+                requiresDesign: false,
                 requiresPrepress, // Snapshot prepress requirement (TEMP→PERMANENT)
                 specsJson: ql.specsJson,
                 selectedOptions: ql.selectedOptions,
@@ -848,6 +875,8 @@ export class OrdersRepository {
                 taxAmount: ql.taxAmount || '0',
                 isTaxableSnapshot: ql.isTaxableSnapshot,
             };
+
+            return lineItemData;
         });
 
         // Create the order

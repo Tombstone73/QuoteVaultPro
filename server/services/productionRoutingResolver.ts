@@ -146,9 +146,10 @@ export async function resolvePostPrepressProductionRoute(args: {
 export async function resolveInitialProductionRoute(args: {
   organizationId: string;
   productTypeId?: string | null;
+  lineItemRequiresDesignSnapshot?: boolean;
   lineItemRequiresPrepressSnapshot?: boolean;
 }): Promise<InitialProductionRoute> {
-  const { organizationId, productTypeId, lineItemRequiresPrepressSnapshot } = args;
+  const { organizationId, productTypeId, lineItemRequiresDesignSnapshot, lineItemRequiresPrepressSnapshot } = args;
 
   const [org] = await db
     .select({ prepressDefaultEnabled: organizations.prepressDefaultEnabled })
@@ -172,6 +173,14 @@ export async function resolveInitialProductionRoute(args: {
     : [];
 
   const override = productType?.requiresPrepressOverride;
+
+  if (lineItemRequiresDesignSnapshot === true) {
+    return {
+      stationKey: "design",
+      stepKey: "design",
+      reason: "line_item_requires_design_snapshot_true",
+    };
+  }
 
   const requiresPrepressEffective =
     override === true
