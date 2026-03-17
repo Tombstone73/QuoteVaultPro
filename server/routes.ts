@@ -78,6 +78,7 @@ import {
 } from "./services/prepressMaterialOverrides";
 import { getAppEnv, getCookieDomain, getPublicWebOrigin } from "./lib/appRuntimeConfig";
 import { fileDerivativeRepository } from "./storage/fileDerivative.repo";
+import { fileRecordRepository } from "./storage/fileRecord.repo";
 
 // Auth provider selection logic
 // Priority: AUTH_PROVIDER env var > detection logic
@@ -7192,6 +7193,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Attachment not found" });
       }
 
+      const pageDerivativeRows = hasQuoteAttachmentPagesTable() === true
+        ? await db
+            .select({
+              thumbFileRecordId: quoteAttachmentPages.thumbFileRecordId,
+              thumbKey: quoteAttachmentPages.thumbKey,
+              previewFileRecordId: quoteAttachmentPages.previewFileRecordId,
+              previewKey: quoteAttachmentPages.previewKey,
+            })
+            .from(quoteAttachmentPages)
+            .where(and(
+              eq(quoteAttachmentPages.attachmentId, existingAttachment.id),
+              eq(quoteAttachmentPages.organizationId, organizationId),
+            ))
+        : [];
+
       // Delete from database (and validate it actually deleted)
       const deleted = await db.delete(quoteAttachments)
         .where(and(
@@ -7344,6 +7360,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
               legacyStorageProvider: storageProvider,
               keys: [storageKey, ...derivativeKeys],
             });
+
+            for (const pageDerivativeRow of pageDerivativeRows) {
+              const pageDerivativeCandidates = [
+                {
+                  fileRecordId: pageDerivativeRow.thumbFileRecordId,
+                  fallbackKey: pageDerivativeRow.thumbKey,
+                },
+                {
+                  fileRecordId: pageDerivativeRow.previewFileRecordId,
+                  fallbackKey: pageDerivativeRow.previewKey,
+                },
+              ];
+
+              for (const candidate of pageDerivativeCandidates) {
+                const fileRecordId = candidate.fileRecordId ? String(candidate.fileRecordId) : null;
+                const resolvedPageOriginal = fileRecordId
+                  ? await canonicalFileReadResolver.resolveOriginal(fileRecordId)
+                  : null;
+                const pageStorageKey = resolvedPageOriginal?.objectKey ?? resolvedPageOriginal?.localPathRef ?? candidate.fallbackKey ?? null;
+                if (!pageStorageKey) {
+                  continue;
+                }
+
+                const pageDeletion = await deleteStoredObjectKeys({
+                  fileRecordId,
+                  legacyStorageProvider: storageProvider,
+                  keys: [pageStorageKey],
+                });
+
+                if (fileRecordId && pageDeletion.failedKeys.length === 0) {
+                  await fileRecordRepository.deleteById(fileRecordId);
+                } else if (fileRecordId && pageDeletion.failedKeys.length > 0) {
+                  console.warn('[LineItemFiles:DELETE] Skipped page derivative fileRecord cleanup due to storage delete failures', {
+                    fileRecordId,
+                    failedKeys: pageDeletion.failedKeys,
+                  });
+                }
+              }
+            }
 
             if (existingAttachment.fileRecordId && derivativeDeletion.failedKeys.length === 0) {
               await fileDerivativeRepository.deleteByFileRecordId(String(existingAttachment.fileRecordId));

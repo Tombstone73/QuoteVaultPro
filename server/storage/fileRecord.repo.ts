@@ -32,6 +32,12 @@ export class FileRecordRepository {
 
     return row ?? null;
   }
+
+  async deleteById(id: string, executor: any = this.dbInstance): Promise<void> {
+    await executor
+      .delete(fileRecords)
+      .where(eq(fileRecords.id, id));
+  }
 }
 
 export const fileRecordRepository = new FileRecordRepository();
