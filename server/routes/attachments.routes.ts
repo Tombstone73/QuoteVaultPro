@@ -16,7 +16,7 @@ import type { Express } from "express";
 import path from "path";
 import { Readable } from "stream";
 import { promises as fsPromises } from "fs";
-import { db } from "../db";
+import { db, hasQuoteAttachmentPagesTable } from "../db";
 import {
   quotes,
   quoteAttachments,
@@ -283,7 +283,8 @@ export async function registerAttachmentRoutes(
       return false;
     }
 
-    const pageDerivativeRows = hasQuoteAttachmentPagesTable() === true
+    const pagePagesTableState = hasQuoteAttachmentPagesTable();
+    const pageDerivativeRows = pagePagesTableState === true
       ? await db
           .select({
             thumbFileRecordId: quoteAttachmentPages.thumbFileRecordId,
@@ -297,6 +298,20 @@ export async function registerAttachmentRoutes(
             eq(quoteAttachmentPages.organizationId, args.organizationId),
           ))
       : [];
+
+    console.log('[QuoteAttachments:DELETE] page derivative preload', {
+      quoteId: args.quoteId,
+      attachmentId: attachment.id,
+      fileRecordId: attachment.fileRecordId ?? null,
+      pagesTableState: pagePagesTableState,
+      pageDerivativeRowCount: pageDerivativeRows.length,
+      pageDerivativeRows: pageDerivativeRows.map((row) => ({
+        thumbFileRecordId: row.thumbFileRecordId ?? null,
+        thumbKey: row.thumbKey ?? null,
+        previewFileRecordId: row.previewFileRecordId ?? null,
+        previewKey: row.previewKey ?? null,
+      })),
+    });
 
     await db.delete(quoteAttachments).where(and(...predicates));
 
@@ -357,6 +372,16 @@ export async function registerAttachmentRoutes(
                 )
               );
 
+      console.log('[QuoteAttachments:DELETE] final cleanup gate', {
+        quoteId: args.quoteId,
+        attachmentId: attachment.id,
+        fileRecordId: attachment.fileRecordId ?? null,
+        storageKey,
+        storageProvider,
+        quoteRefs: Number(quoteRefs),
+        orderRefs: Number(orderRefs),
+      });
+
       let hasRemainingAssetLinksForFile = false;
       try {
         const matchingAssets = attachment.fileRecordId
@@ -400,6 +425,14 @@ export async function registerAttachmentRoutes(
           keys: [storageKey, ...derivativeKeys],
         });
 
+        console.log('[QuoteAttachments:DELETE] top-level derivative cleanup result', {
+          quoteId: args.quoteId,
+          attachmentId: attachment.id,
+          keys: [storageKey, ...derivativeKeys],
+          deletedKeys: derivativeDeletion.deletedKeys,
+          failedKeys: derivativeDeletion.failedKeys,
+        });
+
         for (const pageDerivativeRow of pageDerivativeRows) {
           const pageDerivativeCandidates = [
             {
@@ -418,7 +451,22 @@ export async function registerAttachmentRoutes(
               ? await canonicalFileReadResolver.resolveOriginal(fileRecordId)
               : null;
             const pageStorageKey = resolvedPageOriginal?.objectKey ?? resolvedPageOriginal?.localPathRef ?? candidate.fallbackKey ?? null;
+            console.log('[QuoteAttachments:DELETE] page derivative candidate', {
+              quoteId: args.quoteId,
+              attachmentId: attachment.id,
+              fileRecordId,
+              fallbackKey: candidate.fallbackKey ?? null,
+              resolvedPageStorageKey: pageStorageKey,
+              resolvedProviderType: resolvedPageOriginal?.providerType ?? null,
+              resolvedStatus: resolvedPageOriginal?.status ?? null,
+            });
             if (!pageStorageKey) {
+              console.warn('[QuoteAttachments:DELETE] page derivative key missing; skipping physical delete', {
+                quoteId: args.quoteId,
+                attachmentId: attachment.id,
+                fileRecordId,
+                fallbackKey: candidate.fallbackKey ?? null,
+              });
               continue;
             }
 
@@ -426,6 +474,15 @@ export async function registerAttachmentRoutes(
               fileRecordId,
               legacyStorageProvider: storageProvider,
               keys: [pageStorageKey],
+            });
+
+            console.log('[QuoteAttachments:DELETE] page derivative delete result', {
+              quoteId: args.quoteId,
+              attachmentId: attachment.id,
+              fileRecordId,
+              pageStorageKey,
+              deletedKeys: pageDeletion.deletedKeys,
+              failedKeys: pageDeletion.failedKeys,
             });
 
             if (fileRecordId && pageDeletion.failedKeys.length === 0) {
