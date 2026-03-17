@@ -32,6 +32,13 @@ export type QuoteLineItemDraft = {
   description?: string | null; // Per-line-item description
   // Migration 0040: Production notes (internal only)
   productionNotes?: string | null; // Internal production notes (not shown to customers)
+  // Migration 0015: Canonical routing intent for quote-to-order conversion.
+  // requiresDesign: true  → converted order line item lands in needs_design
+  // requiresPrepress: true  → ready_for_prepress (after design, if any)
+  //                   false → production-direct (skip prepress)
+  //                   null/undefined → fall back to productType / org default at conversion
+  requiresDesign?: boolean;
+  requiresPrepress?: boolean | null;
   // DEPRECATED: Legacy override fields (kept for backward compatibility)
   priceOverridden?: boolean;
   overriddenPrice?: number | null;

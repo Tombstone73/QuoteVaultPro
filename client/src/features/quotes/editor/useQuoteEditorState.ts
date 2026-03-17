@@ -1794,6 +1794,9 @@ export function useQuoteEditorState() {
                         },
                         displayOrder: li.displayOrder ?? 0,
                         status: li.status === "canceled" ? "canceled" : "active",
+                        // Canonical routing intent (migration 0015)
+                        requiresDesign: li.requiresDesign ?? false,
+                        requiresPrepress: li.requiresPrepress ?? null,
                     };
 
                     if (li.id) {

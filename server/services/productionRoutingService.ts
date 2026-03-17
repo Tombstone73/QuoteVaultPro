@@ -70,26 +70,46 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
   let step = "start";
 
   try {
-    // Resolve station_id from station_key for uniqueness alignment.
-    let stationId: string | null = null;
-    if (stationKey) {
-      try {
-        step = "resolve_station_id";
-        const stationResult = await runner.execute(sql`
-          select id
-          from stations
-          where organization_id = ${organizationId}
-            and key = ${stationKey}
-          limit 1
-        `);
-        const stationRow = stationResult.rows[0] as { id?: string } | undefined;
-        stationId = stationRow?.id ? String(stationRow.id) : null;
-      } catch (error) {
-        if (process.env.NODE_ENV !== "production") {
-          console.warn("[productionRoutingService] station_id resolution failed; continuing with station_key only", error);
-        }
-        stationId = null;
+    // Resolve station_id from station_key. Fail closed: a missing or
+    // misconfigured station must block job creation rather than allow a
+    // station_id-null row that the unique index cannot protect against.
+    if (!stationKey) {
+      throw Object.assign(
+        new Error("[productionRoutingService] stationKey is required; refusing to create production job without a station target"),
+        { statusCode: 400, stationKey, lineItemId },
+      );
+    }
+
+    step = "resolve_station_id";
+    let stationId: string;
+    try {
+      const stationResult = await runner.execute(sql`
+        select id
+        from stations
+        where organization_id = ${organizationId}
+          and key = ${stationKey}
+        limit 1
+      `);
+      const stationRow = stationResult.rows[0] as { id?: string } | undefined;
+      if (!stationRow?.id) {
+        throw Object.assign(
+          new Error(
+            `[productionRoutingService] station row not found for key="${stationKey}" in org="${organizationId}". ` +
+            `Ensure the station exists in the stations table before routing jobs to it. ` +
+            `Refusing to create production_job with no station identity.`,
+          ),
+          { statusCode: 409, stationKey, organizationId, lineItemId },
+        );
       }
+      stationId = String(stationRow.id);
+    } catch (error: any) {
+      // Re-throw our own sentinel errors without wrapping
+      if (error?.statusCode) throw error;
+      // Unexpected DB error — rethrow with context
+      throw Object.assign(
+        new Error(`[productionRoutingService] station_id resolution DB error for key="${stationKey}": ${(error as Error).message}`),
+        { statusCode: 500, cause: error, stationKey, lineItemId },
+      );
     }
 
     // B) Active-owner idempotency guard: historical done jobs must not block a new owner.
@@ -228,61 +248,31 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
       };
     }
 
-    // C) Insert new production job
+    // C) Insert new production job (stationId guaranteed non-null — fail-closed above)
     step = "insert_production_job";
-    if (!stationId) {
-      // WARNING: stationId could not be resolved for stationKey. The insert below
-      // has no DB-level ON CONFLICT guard in this path. Log for visibility.
-      console.warn(
-        "[productionRoutingService] inserting job without stationId — station_key not found in stations table",
-        { organizationId, lineItemId, stationKey, stepKey }
-      );
-    }
-    const insertedResult = stationId
-      ? await runner.execute(sql`
-          insert into production_jobs (
-            organization_id,
-            order_id,
-            line_item_id,
-            station_id,
-            station_key,
-            step_key,
-            status,
-            total_seconds
-          )
-          values (
-            ${organizationId},
-            ${orderId},
-            ${lineItemId},
-            ${stationId},
-            ${stationKey},
-            ${stepKey},
-            ${"queued"},
-            ${0}
-          )
-          returning id, station_key as "stationKey", step_key as "stepKey", status
-        `)
-      : await runner.execute(sql`
-          insert into production_jobs (
-            organization_id,
-            order_id,
-            line_item_id,
-            station_key,
-            step_key,
-            status,
-            total_seconds
-          )
-          values (
-            ${organizationId},
-            ${orderId},
-            ${lineItemId},
-            ${stationKey},
-            ${stepKey},
-            ${"queued"},
-            ${0}
-          )
-          returning id, station_key as "stationKey", step_key as "stepKey", status
-        `);
+    const insertedResult = await runner.execute(sql`
+        insert into production_jobs (
+          organization_id,
+          order_id,
+          line_item_id,
+          station_id,
+          station_key,
+          step_key,
+          status,
+          total_seconds
+        )
+        values (
+          ${organizationId},
+          ${orderId},
+          ${lineItemId},
+          ${stationId},
+          ${stationKey},
+          ${stepKey},
+          ${"queued"},
+          ${0}
+        )
+        returning id, station_key as "stationKey", step_key as "stepKey", status
+      `);
 
     const inserted = insertedResult.rows[0] as {
       id: string;
@@ -302,7 +292,7 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
         payload: {
           trigger,
           stationKey,
-          ...(stationId ? { stationId } : {}),
+          stationId,
           stepKey,
           outcome: "created",
           actorUserId,

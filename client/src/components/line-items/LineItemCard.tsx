@@ -94,6 +94,12 @@ export type LineItemCardProps = {
   onDescriptionChange?: (value: string) => void;
   onProductionNotesChange?: (value: string) => void;
 
+  // Expanded view - Routing intent (migration 0015, internal / staff only)
+  requiresDesign?: boolean;
+  requiresPrepress?: boolean | null;
+  onRequiresDesignChange?: (value: boolean) => void;
+  onRequiresPrepressChange?: (value: boolean) => void;
+
   // Expanded view - Options slot (left column)
   optionsSlot?: ReactNode;
 
@@ -161,6 +167,10 @@ export function LineItemCard({
   productionNotes,
   onDescriptionChange,
   onProductionNotesChange,
+  requiresDesign = false,
+  requiresPrepress = null,
+  onRequiresDesignChange,
+  onRequiresPrepressChange,
   optionsSlot,
   artworkSlot,
   detailsSide = "left",
@@ -205,6 +215,40 @@ export function LineItemCard({
           className="w-full min-h-[60px] px-3 py-2 text-sm rounded-md border border-input bg-background resize-y focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
           disabled={readOnly}
         />
+      </div>
+
+      <div className="mt-3 space-y-1.5">
+        <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+          Routing Intent
+          <span className="text-xs text-amber-600 dark:text-amber-500 bg-amber-50 dark:bg-amber-950/50 px-2 py-0.5 rounded">
+            Staff only
+          </span>
+        </label>
+        <div className="flex items-center gap-5">
+          <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={requiresDesign === true}
+              onChange={(e) => onRequiresDesignChange?.(e.target.checked)}
+              disabled={readOnly}
+              className="h-4 w-4 rounded border-input accent-primary"
+            />
+            Requires Design
+          </label>
+          <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={requiresPrepress === true}
+              onChange={(e) => onRequiresPrepressChange?.(e.target.checked)}
+              disabled={readOnly}
+              className="h-4 w-4 rounded border-input accent-primary"
+            />
+            Requires Prepress
+          </label>
+        </div>
+        {requiresPrepress === null && (
+          <p className="text-xs text-muted-foreground">Prepress routing not explicitly set — will default to product type / org setting on conversion.</p>
+        )}
       </div>
     </>
   );

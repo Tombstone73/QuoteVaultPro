@@ -1292,6 +1292,15 @@ export const quoteLineItems = pgTable("quote_line_items", {
   productionNotes: text("production_notes"),
   createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  // Canonical routing intent (migration 0015).
+  // These fields carry explicit routing truth so quote-to-order conversion
+  // preserves mixed routing without heuristic inference.
+  //   requiresDesign   = true  → needs_design on conversion
+  //   requiresPrepress = true  → ready_for_prepress (after design, if any)
+  //   requiresPrepress = false → ready_for_production (skip prepress)
+  //   requiresPrepress = null  → fall back to productType / org default at conversion time
+  requiresDesign: boolean("requires_design").notNull().default(false),
+  requiresPrepress: boolean("requires_prepress"),
 }, (table) => [
   index("quote_line_items_quote_id_idx").on(table.quoteId),
   index("quote_line_items_product_id_idx").on(table.productId),
