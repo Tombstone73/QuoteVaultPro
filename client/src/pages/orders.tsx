@@ -905,6 +905,20 @@ export default function Orders() {
             </SelectContent>
           </Select>
           <div className="flex items-center gap-3 whitespace-nowrap">
+            <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2">
+              <Switch
+                id="orders-include-thumbnails"
+                checked={includeThumbnails}
+                onCheckedChange={(checked) => setIncludeThumbnails(checked === true)}
+                aria-label="Toggle order thumbnails"
+              />
+              <Label htmlFor="orders-include-thumbnails" className="cursor-pointer text-sm text-foreground">
+                Thumbnails
+              </Label>
+              <Badge variant={includeThumbnails ? "default" : "secondary"} className="pointer-events-none text-[10px] uppercase tracking-wide">
+                {includeThumbnails ? "On" : "Off"}
+              </Badge>
+            </div>
             <Label className="text-sm text-muted-foreground">Rows per page</Label>
             <Select value={String(pageSize)} onValueChange={(v) => setPageSize(parseInt(v, 10))}>
               <SelectTrigger className="w-[100px] h-9">
@@ -1022,20 +1036,6 @@ export default function Orders() {
               <div className="flex items-center gap-3">
                 <div className="text-sm text-muted-foreground">
                   Showing {((page - 1) * pageSize) + 1}-{Math.min(page * pageSize, filteredOrders.length)} of {filteredOrders.length}
-                </div>
-                <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2">
-                  <Switch
-                    id="includeThumbnails"
-                    checked={includeThumbnails}
-                    onCheckedChange={(checked) => setIncludeThumbnails(checked === true)}
-                    aria-label="Toggle order thumbnails"
-                  />
-                  <Label htmlFor="includeThumbnails" className="cursor-pointer text-sm text-foreground">
-                    Thumbnails
-                  </Label>
-                  <Badge variant={includeThumbnails ? "default" : "secondary"} className="pointer-events-none text-[10px] uppercase tracking-wide">
-                    {includeThumbnails ? "On" : "Off"}
-                  </Badge>
                 </div>
               </div>
               <div className="flex items-center gap-2">
