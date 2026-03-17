@@ -52,7 +52,7 @@ export default function PrepressProductionPage() {
   const queryClient = useQueryClient();
   
   // State
-  const [statusFilter, setStatusFilter] = useState("pending_prepress,in_prepress");
+  const [statusFilter, setStatusFilter] = useState("ready_for_prepress,in_prepress");
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
   const [issueFlag, setIssueFlag] = useState(false);
@@ -227,10 +227,10 @@ export default function PrepressProductionPage() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="pending_prepress,in_prepress">Pending & In Progress</SelectItem>
-              <SelectItem value="pending_prepress">Pending Prepress</SelectItem>
+              <SelectItem value="ready_for_prepress,in_prepress">Ready & In Progress</SelectItem>
+              <SelectItem value="ready_for_prepress">Ready for Prepress</SelectItem>
               <SelectItem value="in_prepress">In Prepress</SelectItem>
-              <SelectItem value="prepress_complete">Complete</SelectItem>
+              <SelectItem value="ready_for_production">Ready for Production</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -246,8 +246,8 @@ export default function PrepressProductionPage() {
             >
               <div className="flex items-center justify-between mb-2">
                 <span className="font-medium">{item.order.orderNumber}</span>
-                <Badge variant={item.lineItem.status === "in_prepress" ? "default" : "secondary"}>
-                  {item.lineItem.status.replace(/_/g, " ")}
+                <Badge variant={(item.lineItem.workflowState || item.lineItem.status) === "in_prepress" ? "default" : "secondary"}>
+                  {String(item.lineItem.workflowState || item.lineItem.status || "ready_for_prepress").replace(/_/g, " ")}
                 </Badge>
               </div>
               <p className="text-sm text-muted-foreground line-clamp-2">{item.lineItem.description}</p>
@@ -462,7 +462,7 @@ export default function PrepressProductionPage() {
                 <CardTitle>Prepress Controls</CardTitle>
               </CardHeader>
               <CardContent className="flex gap-2">
-                {!isLocked && selectedItem.lineItem.status === "pending_prepress" && (
+                {!isLocked && (selectedItem.lineItem.workflowState || selectedItem.lineItem.status) === "ready_for_prepress" && (
                   <Button onClick={handleStartPrepress} disabled={startSession.isPending}>
                     Start Prepress
                   </Button>

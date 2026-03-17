@@ -10254,20 +10254,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   };
 
-  const derivePrepressStage = (args: {
-    rawStatus?: string | null;
-    isActivelyOwnedByPrepress: boolean;
-    hasActiveSession: boolean;
-    hasCompletedSession: boolean;
-  }) => {
-    const computedStatus = String(args.rawStatus || "").toLowerCase();
-    if (args.isActivelyOwnedByPrepress && args.hasActiveSession) return "in_prepress" as const;
-    if (computedStatus === "in_prepress") return "in_prepress" as const;
-    if (computedStatus === "ready_for_production") return "prepress_complete" as const;
-    if (args.hasCompletedSession && computedStatus !== "ready_for_prepress") return "prepress_complete" as const;
-    return "pending_prepress" as const;
-  };
-
   // 9) GET /api/production/config
   app.get("/api/production/config", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -14201,7 +14187,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      // Query completed prepress sessions to identify "prepress_complete" stage items
+      // Query completed prepress sessions for handoff/readiness context only
       const completedSessionLineItemIds = lineItemIdsForQueue.length > 0
         ? await db
             .select({ lineItemId: prepressSessions.lineItemId })
@@ -14264,13 +14250,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           status: item.status,
           workflowState: item.workflowState,
           hasCompletedSession: completedSessionLineItems.has(item.lineItemId),
-          // Computed display stage for the prepress board (membership is owner-driven, display still uses session/status truth)
-          prepressStage: derivePrepressStage({
-            rawStatus: item.workflowState,
-            isActivelyOwnedByPrepress: activeOwnerIsPrepress,
-            hasActiveSession: !!latestSession?.id,
-            hasCompletedSession: completedSessionLineItems.has(item.lineItemId),
-          }),
           rush: item.priority === "rush",
           assignedTo: null,
           sessionId: latestSession?.id ?? null,
@@ -14305,7 +14284,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const normalizedFilter = String(filterValue || '').trim().toLowerCase();
         const workflowState = String(item.workflowState || '').trim().toLowerCase();
 
-        if (normalizedFilter === 'ready_for_prepress' || normalizedFilter === 'pending_prepress') {
+        if (!normalizedFilter || normalizedFilter === 'all') {
+          return true;
+        }
+
+        if (normalizedFilter === 'ready_for_prepress') {
           return workflowState === 'ready_for_prepress';
         }
 
@@ -14313,14 +14296,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return workflowState === 'in_prepress';
         }
 
-        if (normalizedFilter === 'prepress_complete') {
-          return workflowState === 'in_prepress' && item.hasCompletedSession === true;
-        }
-
         return false;
       };
 
-      // Prefer canonical workflowState filters; keep legacy prepressStage values accepted for compatibility.
       const filteredQueue = statusFilter.length > 0
         ? queue.filter((q: any) => statusFilter.some((filterValue) => matchesPrepressStatusFilter(q, filterValue)))
         : queue;
@@ -14517,6 +14495,154 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("[Design] Error fetching queue:", error);
       return res.status(500).json({ error: error?.message || "Failed to fetch design queue" });
+    }
+  });
+
+  const executeExplicitLineItemWorkflowAction = async (args: {
+    req: any;
+    res: any;
+    lineItemId: string;
+    toState: "needs_design" | "in_design" | "ready_for_prepress";
+    source: string;
+    description: string;
+    note?: string | null;
+  }) => {
+    const organizationId = getRequestOrganizationId(args.req);
+    if (!organizationId) {
+      args.res.status(500).json({ error: "Missing organization context" });
+      return;
+    }
+
+    const userId = getUserId(args.req.user);
+    if (!userId) {
+      args.res.status(401).json({ error: "User ID not found" });
+      return;
+    }
+
+    const [currentLineItem] = await db
+      .select({
+        id: orderLineItems.id,
+        status: orderLineItems.status,
+        workflowState: orderLineItems.workflowState,
+      })
+      .from(orderLineItems)
+      .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+      .where(and(eq(orderLineItems.id, args.lineItemId), eq(orders.organizationId, organizationId)))
+      .limit(1);
+
+    if (!currentLineItem) {
+      args.res.status(404).json({ error: "Line item not found" });
+      return;
+    }
+
+    const result = await db.transaction(async (tx) => {
+      return transitionLineItemWorkflowState(tx, {
+        organizationId,
+        lineItemId: args.lineItemId,
+        toState: args.toState,
+        actorUserId: userId,
+        note: args.note ?? null,
+        metadata: { source: args.source },
+      });
+    });
+
+    await db.insert(auditLogs).values({
+      organizationId,
+      userId,
+      userName: args.req.user?.email || args.req.user?.name || null,
+      actionType: "UPDATE",
+      entityType: "order_line_item",
+      entityId: args.lineItemId,
+      entityName: `Line item ${args.lineItemId}`,
+      description: args.description,
+      oldValues: { workflowState: currentLineItem.workflowState, status: currentLineItem.status },
+      newValues: {
+        workflowState: result.toState,
+        status: result.lifecycleStatus,
+        ownerJobId: result.activeOwnerJobId,
+        ownerStationKey: result.activeOwnerStationKey,
+        ownerStepKey: result.activeOwnerStepKey,
+      },
+      ipAddress: args.req.ip || null,
+      userAgent: args.req.headers["user-agent"] || null,
+    } as any);
+
+    args.res.json({ success: true, data: result });
+  };
+
+  app.post("/api/design/line-item/:lineItemId/send", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      await executeExplicitLineItemWorkflowAction({
+        req,
+        res,
+        lineItemId: String(req.params.lineItemId),
+        toState: "needs_design",
+        source: "api_design_send",
+        description: "Sent line item to Design",
+        note: typeof req.body?.note === "string" ? req.body.note : null,
+      });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Design] Error sending line item to design:", error);
+      res.status(status).json({ error: error?.message || "Failed to send line item to design" });
+    }
+  });
+
+  app.post("/api/design/line-item/:lineItemId/start", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      await executeExplicitLineItemWorkflowAction({
+        req,
+        res,
+        lineItemId: String(req.params.lineItemId),
+        toState: "in_design",
+        source: "api_design_start",
+        description: "Started Design work on line item",
+        note: typeof req.body?.note === "string" ? req.body.note : null,
+      });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Design] Error starting design:", error);
+      res.status(status).json({ error: error?.message || "Failed to start design" });
+    }
+  });
+
+  app.post("/api/design/line-item/:lineItemId/return-to-needs-design", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      await executeExplicitLineItemWorkflowAction({
+        req,
+        res,
+        lineItemId: String(req.params.lineItemId),
+        toState: "needs_design",
+        source: "api_design_return_to_needs_design",
+        description: "Returned line item to Needs Design",
+        note: typeof req.body?.note === "string" ? req.body.note : null,
+      });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Design] Error returning line item to needs design:", error);
+      res.status(status).json({ error: error?.message || "Failed to return line item to needs design" });
+    }
+  });
+
+  app.post("/api/design/line-item/:lineItemId/send-to-prepress", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      await executeExplicitLineItemWorkflowAction({
+        req,
+        res,
+        lineItemId: String(req.params.lineItemId),
+        toState: "ready_for_prepress",
+        source: "api_design_send_to_prepress",
+        description: "Handed off line item from Design to Prepress",
+        note: typeof req.body?.note === "string" ? req.body.note : null,
+      });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Design] Error sending line item to prepress:", error);
+      res.status(status).json({ error: error?.message || "Failed to send line item to prepress" });
     }
   });
 
@@ -15261,7 +15387,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
             lineItemId,
             lineItemStatus: "in_production",
             lineItemWorkflowState: "in_prepress",
-            prepressStage: "in_prepress",
             resumed: true,
           };
         }
@@ -15314,7 +15439,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           lineItemId,
           lineItemStatus: "in_production",
           lineItemWorkflowState: "in_prepress",
-          prepressStage: "in_prepress",
           resumed: false,
         };
       });
