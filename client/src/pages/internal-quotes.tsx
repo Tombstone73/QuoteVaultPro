@@ -160,7 +160,7 @@ export default function InternalQuotes() {
   // Pagination + performance controls (persisted per org+user)
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
-  const [includeThumbnails, setIncludeThumbnails] = useState(true);
+  const [includeThumbnails, setIncludeThumbnails] = useState(false);
   const [convertDialogOpen, setConvertDialogOpen] = useState(false);
   const [selectedQuoteId, setSelectedQuoteId] = useState<string | null>(null);
   const [orderDueDate, setOrderDueDate] = useState("");

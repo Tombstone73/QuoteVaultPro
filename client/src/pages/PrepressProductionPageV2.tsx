@@ -76,6 +76,9 @@ type LineItemFile = {
   createdAt: string;
   uploadedBy: string;
   computedDisplayFilename?: string;
+  originalUrl?: string | null;
+  previewUrl?: string | null;
+  downloadUrl?: string | null;
   thumbnailUrl?: string | null;
   mimeType?: string;
 };
@@ -649,13 +652,13 @@ export default function PrepressProductionPageV2() {
     fileSize: file.sizeBytes,
     mimeType: file.mimeType || null,
     createdAt: file.createdAt,
-    originalUrl: `/api/prepress/files/${file.id}/download`,
-    previewUrl: `/api/prepress/files/${file.id}/download`,
+    originalUrl: file.originalUrl ?? `/api/prepress/files/${file.id}/download`,
+    previewUrl: file.previewUrl ?? null,
     thumbUrl: file.thumbnailUrl || null,
     displayName: file.computedDisplayFilename || file.originalFilename,
     uploadedByLabel: file.uploadedBy,
     tagLabel: file.tag || defaultTag,
-    downloadUrl: `/api/prepress/files/${file.id}/download`,
+    downloadUrl: file.downloadUrl ?? `/api/prepress/files/${file.id}/download`,
     sizeBytesValue: file.sizeBytes,
   });
   const toVisibleBridgedFile = (file: BridgedOriginalFile): VisibleFileRecord => ({
