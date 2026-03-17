@@ -595,7 +595,9 @@ export async function registerOrderRoutes(
         const sourceMimeType = (
             args.source.kind === 'buffer'
                 ? args.source.mimeType
-                : args.source.mimeType ?? null
+                : 'mimeType' in args.source
+                    ? args.source.mimeType ?? null
+                    : null
         )?.toLowerCase() ?? '';
         const sourceFilename = (
             args.source.kind === 'upload-session'
