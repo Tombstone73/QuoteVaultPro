@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { chromium, type Page } from "playwright";
+import { chromium, type Browser, type Page } from "playwright";
 import { and, desc, eq, sql } from "drizzle-orm";
 
 import { db } from "../server/db";
@@ -69,7 +69,7 @@ const checks: CheckResult[] = [];
 
 async function main() {
   const browser = await chromium.launch({ channel: "msedge", headless: true });
-  const page = await browser.newPage();
+  let page = await browser.newPage();
 
   try {
     const [user] = await db.select({ id: users.id }).from(users).where(eq(users.email, EMAIL)).limit(1);
@@ -158,6 +158,7 @@ async function main() {
 
       expect(orderId.length > 0, ORDER_ID ? "Provided order id is empty" : "Convert response did not include an order id");
 
+      page = await ensureUsablePage(browser, page);
       await page.goto(urlFor(`/orders/${orderId}`), { waitUntil: "networkidle" });
       await ensureNotRedirectedToLogin(page);
       await page.reload({ waitUntil: "networkidle" });
@@ -383,6 +384,20 @@ async function main() {
     await page.close().catch(() => undefined);
     await browser.close().catch(() => undefined);
   }
+}
+
+async function ensureUsablePage(browser: Browser, currentPage: Page): Promise<Page> {
+  if (!browser.isConnected()) {
+    throw new Error("Browser disconnected before validation could continue");
+  }
+
+  if (!currentPage.isClosed()) {
+    return currentPage;
+  }
+
+  const replacementPage = await browser.newPage();
+  await login(replacementPage);
+  return replacementPage;
 }
 
 function buildSummary(duplicateQuoteId: string | null) {
