@@ -39,6 +39,7 @@ import {
   APPROVED_LOCK_MESSAGE,
   CONVERTED_LOCK_MESSAGE,
 } from "@shared/quoteWorkflow";
+import { proofQueueSliceSchema } from "@shared/proofing";
 import { registerAttachmentRoutes } from "./routes/attachments.routes";
 import { registerOrderRoutes } from "./routes/orders.routes";
 import { registerPrepressRoutes } from "./prepress/routes";
@@ -60,7 +61,14 @@ import { stationResolver } from "./services/stations/stationResolver";
 import { routeLineItemToProduction } from "./services/productionRoutingService";
 import { resolveInitialProductionRoute, resolvePostPrepressProductionRoute } from "./services/productionRoutingResolver";
 import { getInitialWorkflowState, transitionLineItemWorkflowState } from "./services/lineItemWorkflowService";
-import { createLineItemProofVersion, markProofVersionSent, recordProofResponse, resolveLineItemProofingTruth } from "./services/proofingService";
+import {
+  createLineItemProofVersion,
+  listProofingQueue,
+  markProofVersionSent,
+  recordManualProofApprovalOverride,
+  recordProofResponse,
+  resolveLineItemProofingTruth,
+} from "./services/proofingService";
 import {
   findActiveJobForLineItem,
   isDesignOwnershipJob,
@@ -14744,6 +14752,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/proofing/queue", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const parsedSlice = proofQueueSliceSchema.safeParse(req.query?.slice ?? "all");
+      if (!parsedSlice.success) {
+        return res.status(400).json({ error: fromZodError(parsedSlice.error).message });
+      }
+
+      const queue = await listProofingQueue(db, {
+        organizationId,
+        slice: parsedSlice.data,
+      });
+
+      return res.json({ success: true, data: queue });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error fetching proofing queue:", error);
+      return res.status(status).json({ error: error?.message || "Failed to fetch proofing queue" });
+    }
+  });
+
   app.get("/api/proofing/line-item/:lineItemId", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -14962,6 +14994,77 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const status = error?.statusCode || 500;
       console.error("[Proofing] Error recording proof response:", error);
       return res.status(status).json({ error: error?.message || "Failed to record proof response" });
+    }
+  });
+
+  app.post("/api/proofing/line-item/:lineItemId/manual-approval-override", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.object({
+        proofVersionId: z.string().min(1).optional().nullable(),
+        overrideReason: z.string().trim().min(1, "Override reason is required"),
+        internalNote: z.string().optional().nullable(),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const lineItemId = String(req.params.lineItemId);
+      const result = await db.transaction(async (tx) => {
+        const overrideResult = await recordManualProofApprovalOverride(tx, {
+          organizationId,
+          lineItemId,
+          proofVersionId: parsed.data.proofVersionId ?? null,
+          actorUserId: userId,
+          actorName: req.user?.name ?? null,
+          actorEmail: req.user?.email ?? null,
+          overrideReason: parsed.data.overrideReason,
+          internalNote: parsed.data.internalNote ?? null,
+        });
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "CREATE",
+          entityType: "line_item_proof_manual_approval_override",
+          entityId: overrideResult.manualApprovalOverride.id,
+          entityName: `Manual proof override ${overrideResult.manualApprovalOverride.id}`,
+          description: `Manual approval override recorded for proof version ${overrideResult.manualApprovalOverride.proofVersionId}`,
+          newValues: {
+            source: "manual_override",
+            lineItemId,
+            proofVersionId: overrideResult.manualApprovalOverride.proofVersionId,
+            overrideReason: overrideResult.manualApprovalOverride.overrideReason,
+            internalNote: overrideResult.manualApprovalOverride.internalNote,
+            workflowState: overrideResult.workflowTransition.toState,
+          },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        const proofing = await resolveLineItemProofingTruth(tx, {
+          organizationId,
+          lineItemId,
+        });
+
+        return {
+          ...overrideResult,
+          proofing,
+        };
+      });
+
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error recording manual approval override:", error);
+      return res.status(status).json({ error: error?.message || "Failed to record manual approval override" });
     }
   });
 

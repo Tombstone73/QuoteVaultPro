@@ -33,9 +33,16 @@ jest.mock("../services/productionRoutingService", () => {
 
 import { db } from "../db";
 import { tenantContext, getRequestOrganizationId } from "../tenantContext";
-import { auditLogs } from "../../shared/schema";
-import { proofingReadModelSchema, type ProofVersionHistoryEntry } from "../../shared/proofing";
-import { createLineItemProofVersion, markProofVersionSent, recordProofResponse, resolveLineItemProofingTruth } from "../services/proofingService";
+import { auditLogs, lineItemProofManualApprovalOverrides } from "../../shared/schema";
+import { proofingQueueResponseSchema, proofingReadModelSchema, type ProofVersionHistoryEntry } from "../../shared/proofing";
+import {
+  createLineItemProofVersion,
+  listProofingQueue,
+  markProofVersionSent,
+  recordManualProofApprovalOverride,
+  recordProofResponse,
+  resolveLineItemProofingTruth,
+} from "../services/proofingService";
 import { transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
 
 async function ensureProofingSchemaReady() {
@@ -125,6 +132,30 @@ async function ensureProofingSchemaReady() {
   await db.execute(sql`create unique index if not exists line_item_proof_approvals_version_uidx on line_item_proof_approvals (proof_version_id)`);
 
   await db.execute(sql`
+    create table if not exists line_item_proof_manual_approval_overrides (
+      id varchar primary key default gen_random_uuid()::text,
+      organization_id varchar not null references organizations(id) on delete cascade,
+      order_id varchar not null references orders(id) on delete cascade,
+      line_item_id varchar not null references order_line_items(id) on delete cascade,
+      proof_version_id varchar not null references line_item_proof_versions(id) on delete cascade,
+      source varchar(50) not null default 'manual_override',
+      override_reason text not null,
+      internal_note text,
+      actor_user_id varchar references users(id) on delete set null,
+      actor_name varchar(255),
+      actor_email varchar(255),
+      overridden_at timestamp with time zone not null default now(),
+      created_at timestamp with time zone not null default now()
+    )
+  `);
+
+  await db.execute(sql`create index if not exists line_item_proof_manual_approval_overrides_org_idx on line_item_proof_manual_approval_overrides (organization_id)`);
+  await db.execute(sql`create index if not exists line_item_proof_manual_approval_overrides_order_idx on line_item_proof_manual_approval_overrides (order_id)`);
+  await db.execute(sql`create index if not exists line_item_proof_manual_approval_overrides_line_item_idx on line_item_proof_manual_approval_overrides (line_item_id)`);
+  await db.execute(sql`create index if not exists line_item_proof_manual_approval_overrides_created_at_idx on line_item_proof_manual_approval_overrides (created_at)`);
+  await db.execute(sql`create unique index if not exists line_item_proof_manual_approval_overrides_version_uidx on line_item_proof_manual_approval_overrides (proof_version_id)`);
+
+  await db.execute(sql`
     do $$
     begin
       if not exists (
@@ -182,6 +213,29 @@ function createTestApp() {
     if (req.isAuthenticated && req.isAuthenticated()) return next();
     return res.status(401).json({ error: "Unauthorized" });
   };
+
+  const isAdmin = (req: any, res: Response, next: NextFunction) => {
+    const role = String(req.user?.role ?? "").toLowerCase();
+    if (role === "admin" || role === "owner") return next();
+    return res.status(403).json({ error: "Admin access required" });
+  };
+
+  app.get("/api/proofing/queue", isAuthenticated, tenantContext, async (req: any, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const queue = await listProofingQueue(db, {
+        organizationId,
+        slice: typeof req.query?.slice === "string" ? req.query.slice : "all",
+      });
+
+      return res.json({ success: true, data: queue });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to fetch proofing queue" });
+    }
+  });
 
   app.get("/api/proofing/line-item/:lineItemId", isAuthenticated, tenantContext, async (req: any, res: Response) => {
     try {
@@ -354,6 +408,75 @@ function createTestApp() {
     }
   });
 
+  app.post("/api/proofing/line-item/:lineItemId/manual-approval-override", isAuthenticated, tenantContext, isAdmin, async (req: any, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.object({
+        proofVersionId: z.string().min(1).optional().nullable(),
+        overrideReason: z.string().trim().min(1, "Override reason is required"),
+        internalNote: z.string().optional().nullable(),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const lineItemId = String(req.params.lineItemId);
+      const result = await db.transaction(async (tx) => {
+        const overrideResult = await recordManualProofApprovalOverride(tx, {
+          organizationId,
+          lineItemId,
+          proofVersionId: parsed.data.proofVersionId ?? null,
+          actorUserId: userId,
+          actorName: req.user?.name ?? null,
+          actorEmail: req.user?.email ?? null,
+          overrideReason: parsed.data.overrideReason,
+          internalNote: parsed.data.internalNote ?? null,
+        });
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "CREATE",
+          entityType: "line_item_proof_manual_approval_override",
+          entityId: overrideResult.manualApprovalOverride.id,
+          entityName: `Manual proof override ${overrideResult.manualApprovalOverride.id}`,
+          description: `Manual approval override recorded for proof version ${overrideResult.manualApprovalOverride.proofVersionId}`,
+          newValues: {
+            source: "manual_override",
+            lineItemId,
+            proofVersionId: overrideResult.manualApprovalOverride.proofVersionId,
+            overrideReason: overrideResult.manualApprovalOverride.overrideReason,
+            internalNote: overrideResult.manualApprovalOverride.internalNote,
+            workflowState: overrideResult.workflowTransition.toState,
+          },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        const proofing = await resolveLineItemProofingTruth(tx, {
+          organizationId,
+          lineItemId,
+        });
+
+        return {
+          ...overrideResult,
+          proofing,
+        };
+      });
+
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to record manual approval override" });
+    }
+  });
+
   app.post("/api/line-items/:lineItemId/workflow-transition", isAuthenticated, tenantContext, async (req: any, res: Response) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -491,9 +614,10 @@ describe("proofing route integration", () => {
   });
 
   afterEach(async () => {
-    await db.execute(sql`delete from audit_logs where organization_id = ${orgId} and entity_type in ('line_item_proof_version', 'line_item_proof_approval')`);
+    await db.execute(sql`delete from audit_logs where organization_id = ${orgId} and entity_type in ('line_item_proof_version', 'line_item_proof_approval', 'line_item_proof_manual_approval_override')`);
     await db.execute(sql`delete from production_events where organization_id = ${orgId}`);
     await db.execute(sql`delete from production_jobs where organization_id = ${orgId}`);
+    await db.execute(sql`delete from line_item_proof_manual_approval_overrides where organization_id = ${orgId}`);
     await db.execute(sql`delete from line_item_proof_approvals where organization_id = ${orgId}`);
     await db.execute(sql`delete from line_item_proof_versions where organization_id = ${orgId}`);
     await db.execute(sql`delete from order_attachments where order_id = ${orderId}`);
@@ -625,6 +749,8 @@ describe("proofing route integration", () => {
     expect(approveRes.body?.data?.workflowTransition?.toState).toBe("ready_for_prepress");
     const proofing = proofingReadModelSchema.parse(approveRes.body?.data?.proofing);
     expect(proofing.approvedProofVersionId).toBe(proofVersionId);
+    expect(proofing.approvedNormally).toBe(true);
+    expect(proofing.approvedByOverride).toBe(false);
     expect(proofing.blockedPendingProofApproval).toBe(false);
 
     const repeatRes = await request(app)
@@ -654,6 +780,174 @@ describe("proofing route integration", () => {
     const proofing = proofingReadModelSchema.parse(rejectRes.body?.data?.proofing);
     expect(proofing.approvedProofVersionId).toBeNull();
     expect(proofing.proofDecisionHistory[0]?.decision).toBe("rejected");
+  });
+
+  test("returns proofing queue slices from canonical proofing truth", async () => {
+    const { lineItemId: awaitingSendLineItemId, proofFileA: awaitingSendProofFile } = await createLineItemFixture("queue_draft");
+    await request(app)
+      .post(`/api/proofing/line-item/${awaitingSendLineItemId}/versions`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ proofFileId: awaitingSendProofFile })
+      .expect(200);
+
+    const { lineItemId: awaitingApprovalLineItemId, proofFileA: awaitingApprovalProofFile } = await createLineItemFixture("queue_awaiting");
+    await createAndSendProof(awaitingApprovalLineItemId, awaitingApprovalProofFile);
+
+    const { lineItemId: revisionLineItemId, proofFileA: revisionProofFile } = await createLineItemFixture("queue_revision");
+    const { proofVersionId: revisionProofVersionId } = await createAndSendProof(revisionLineItemId, revisionProofFile);
+    await request(app)
+      .post(`/api/proofing/versions/${revisionProofVersionId}/respond`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ decision: "revision_requested", responseNotes: "Please revise" })
+      .expect(200);
+
+    const { lineItemId: approvedLineItemId, proofFileA: approvedProofFile } = await createLineItemFixture("queue_approved");
+    const { proofVersionId: approvedProofVersionId } = await createAndSendProof(approvedLineItemId, approvedProofFile);
+    await request(app)
+      .post(`/api/proofing/versions/${approvedProofVersionId}/respond`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ decision: "approved", responseNotes: "approved" })
+      .expect(200);
+
+    const allQueueRes = await request(app)
+      .get("/api/proofing/queue")
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .expect(200);
+
+    const allQueue = proofingQueueResponseSchema.parse(allQueueRes.body?.data);
+    expect(allQueue.counts.all).toBe(4);
+    expect(allQueue.counts.awaitingSend).toBe(1);
+    expect(allQueue.counts.awaitingApproval).toBe(1);
+    expect(allQueue.counts.revisionRequested).toBe(1);
+    expect(allQueue.counts.approved).toBe(1);
+
+    const awaitingApprovalRow = allQueue.rows.find((row) => row.lineItemId === awaitingApprovalLineItemId);
+    expect(awaitingApprovalRow?.currentQueueStatus).toBe("awaiting_approval");
+    expect(awaitingApprovalRow?.blockedPendingProofApproval).toBe(true);
+    expect(awaitingApprovalRow?.currentDisplayedProofVersionLabel).toBe("Proof v1");
+
+    const approvedOnlyRes = await request(app)
+      .get("/api/proofing/queue")
+      .query({ slice: "approved" })
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .expect(200);
+
+    const approvedQueue = proofingQueueResponseSchema.parse(approvedOnlyRes.body?.data);
+    expect(approvedQueue.rows).toHaveLength(1);
+    expect(approvedQueue.rows[0]?.lineItemId).toBe(approvedLineItemId);
+    expect(approvedQueue.rows[0]?.approvedNormally).toBe(true);
+  });
+
+  test("records manual approval override as a first-class approval source with durable history", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("override_success");
+    const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
+
+    const overrideRes = await request(app)
+      .post(`/api/proofing/line-item/${lineItemId}/manual-approval-override`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ proofVersionId, overrideReason: "Customer approved by phone", internalNote: "CSR confirmed at 4:30 PM" })
+      .expect(200);
+
+    expect(overrideRes.body?.data?.workflowTransition?.toState).toBe("ready_for_prepress");
+    const proofing = proofingReadModelSchema.parse(overrideRes.body?.data?.proofing);
+    expect(proofing.approvedProofVersionId).toBe(proofVersionId);
+    expect(proofing.approvedProofSource).toBe("manual_override");
+    expect(proofing.approvedByOverride).toBe(true);
+    expect(proofing.approvedNormally).toBe(false);
+    expect(proofing.manualApprovalOverrideHistory).toHaveLength(1);
+    expect(proofing.manualApprovalOverrideHistory[0]?.overrideReason).toBe("Customer approved by phone");
+
+    const [overrideRow] = await db
+      .select({
+        proofVersionId: lineItemProofManualApprovalOverrides.proofVersionId,
+        overrideReason: lineItemProofManualApprovalOverrides.overrideReason,
+        source: lineItemProofManualApprovalOverrides.source,
+      })
+      .from(lineItemProofManualApprovalOverrides)
+      .where(sql`${lineItemProofManualApprovalOverrides.organizationId} = ${orgId} and ${lineItemProofManualApprovalOverrides.lineItemId} = ${lineItemId}`)
+      .limit(1);
+
+    expect(overrideRow?.proofVersionId).toBe(proofVersionId);
+    expect(overrideRow?.overrideReason).toBe("Customer approved by phone");
+    expect(overrideRow?.source).toBe("manual_override");
+
+    const [auditRow] = await db
+      .select({ entityType: auditLogs.entityType, entityId: auditLogs.entityId })
+      .from(auditLogs)
+      .where(sql`${auditLogs.organizationId} = ${orgId} and ${auditLogs.entityType} = 'line_item_proof_manual_approval_override'`)
+      .limit(1);
+
+    expect(auditRow?.entityType).toBe("line_item_proof_manual_approval_override");
+  });
+
+  test("rejects manual approval override when reason is missing", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("override_missing_reason");
+    const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
+
+    const res = await request(app)
+      .post(`/api/proofing/line-item/${lineItemId}/manual-approval-override`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ proofVersionId, overrideReason: "   " })
+      .expect(400);
+
+    expect(String(res.body?.error || "")).toMatch(/override reason is required/i);
+  });
+
+  test("rejects stale or invalid manual approval override attempts", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("override_invalid");
+
+    const createDraftRes = await request(app)
+      .post(`/api/proofing/line-item/${lineItemId}/versions`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ proofFileId: proofFileA })
+      .expect(200);
+
+    const draftProofVersionId = createDraftRes.body?.data?.proofVersion?.id as string;
+
+    const invalidDraftOverrideRes = await request(app)
+      .post(`/api/proofing/line-item/${lineItemId}/manual-approval-override`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ proofVersionId: draftProofVersionId, overrideReason: "Force approval" })
+      .expect(409);
+
+    expect(invalidDraftOverrideRes.body?.error).toBe("Line item is not eligible for manual approval override");
+
+    const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
+    await request(app)
+      .post(`/api/proofing/versions/${proofVersionId}/respond`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ decision: "approved" })
+      .expect(200);
+
+    const staleOverrideRes = await request(app)
+      .post(`/api/proofing/line-item/${lineItemId}/manual-approval-override`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ proofVersionId, overrideReason: "Late override" })
+      .expect(409);
+
+    expect(String(staleOverrideRes.body?.error || "")).toMatch(/already has an approved proof|not eligible/i);
   });
 
   test("records revision requests and returns the line item to design", async () => {
