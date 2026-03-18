@@ -152,6 +152,25 @@ async function resolveEffectiveLineItemRouting(args: {
     };
 }
 
+export const ROUTING_EDIT_INTAKE_SAFE_STATES = [
+    "new",
+    "needs_design",
+    "ready_for_prepress",
+    "ready_for_production",
+] as const;
+
+export function canEditLineItemRouting(args: {
+    workflowState?: string | null;
+    hasActiveJob: boolean;
+}): boolean {
+    if (args.hasActiveJob) {
+        return false;
+    }
+
+    const currentWorkflowState = String(args.workflowState || "new").trim().toLowerCase();
+    return ROUTING_EDIT_INTAKE_SAFE_STATES.includes(currentWorkflowState as (typeof ROUTING_EDIT_INTAKE_SAFE_STATES)[number]);
+}
+
 const productionLineItemStatusRulesSchema = z.array(productionLineItemStatusRuleSchema);
 
 const workflowStatusInputSchema = z
@@ -4402,10 +4421,10 @@ export async function registerOrderRoutes(
                     organizationId,
                     lineItemId,
                 });
-                const currentWorkflowState = String((oldLineItem as any).workflowState || "new").trim().toLowerCase();
-                const intakeSafeStates = new Set(["new", "needs_design", "ready_for_prepress", "ready_for_production"]);
-
-                if (activeJob || !intakeSafeStates.has(currentWorkflowState)) {
+                if (!canEditLineItemRouting({
+                    workflowState: (oldLineItem as any).workflowState,
+                    hasActiveJob: Boolean(activeJob),
+                })) {
                     throw Object.assign(
                         new Error("Cannot change Design/Prepress routing after active workflow has started. Use workflow transitions instead."),
                         { statusCode: 409 },

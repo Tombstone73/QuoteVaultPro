@@ -2,9 +2,9 @@ import "dotenv/config";
 import { chromium, type Browser, type Page } from "playwright";
 import { and, desc, eq, sql } from "drizzle-orm";
 
-import { db } from "../server/db";
-import { createLineItemFileRecord } from "../server/services/lineItemFileRecordService";
-import { createOrderLineItem } from "../server/storage";
+import { db } from "../../server/db";
+import { createLineItemFileRecord } from "../../server/services/lineItemFileRecordService";
+import { createOrderLineItem } from "../../server/storage";
 import {
   lineItemFiles,
   orderLineItems,
@@ -13,7 +13,7 @@ import {
   productionJobs,
   quoteLineItems,
   users,
-} from "../shared/schema";
+} from "../../shared/schema";
 
 const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || "https://www.printershero.com";
 const EMAIL = process.env.PLAYWRIGHT_EMAIL || "qa.quote.validation+20260312@titanos.dev";

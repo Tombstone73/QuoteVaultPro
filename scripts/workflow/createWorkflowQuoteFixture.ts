@@ -1,8 +1,8 @@
 import "dotenv/config";
 import { eq } from "drizzle-orm";
-import { db } from "../server/db";
-import { customers, productVariants, products, users } from "../shared/schema";
-import { createQuote } from "../server/storage";
+import { db } from "../../server/db";
+import { customers, productVariants, products, users } from "../../shared/schema";
+import { createQuote } from "../../server/storage";
 
 const ORG_ID = "org_titan_001";
 const OWNER_EMAIL = "qa.quote.validation+20260312@titanos.dev";

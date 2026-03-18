@@ -18,13 +18,20 @@ export const NON_TERMINAL_WORKFLOW_STATES: LineItemWorkflowState[] = [
 
 export const TERMINAL_WORKFLOW_STATES: LineItemWorkflowState[] = ["completed", "canceled"];
 
-const ACTIVE_WORKFLOW_STATES: LineItemWorkflowState[] = [
+export const OWNERSHIP_REQUIRED_WORKFLOW_STATES: LineItemWorkflowState[] = [
   "needs_design",
   "in_design",
   "ready_for_prepress",
   "in_prepress",
   "ready_for_production",
   "in_production",
+];
+
+export const OWNERLESS_WORKFLOW_STATES: LineItemWorkflowState[] = [
+  "new",
+  "on_hold",
+  "completed",
+  "canceled",
 ];
 
 const VALID_TRANSITIONS: Record<LineItemWorkflowState, LineItemWorkflowState[]> = {
@@ -98,6 +105,14 @@ function isTerminalWorkflowState(state: LineItemWorkflowState): boolean {
   return TERMINAL_WORKFLOW_STATES.includes(state);
 }
 
+export function workflowStateRequiresActiveOwner(state: LineItemWorkflowState): boolean {
+  return OWNERSHIP_REQUIRED_WORKFLOW_STATES.includes(state);
+}
+
+export function workflowStateIsIntentionallyOwnerless(state: LineItemWorkflowState): boolean {
+  return OWNERLESS_WORKFLOW_STATES.includes(state);
+}
+
 function deriveLifecycleStatusForState(args: {
   toState: LineItemWorkflowState;
   fromState: LineItemWorkflowState;
@@ -109,7 +124,7 @@ function deriveLifecycleStatusForState(args: {
     return "in_production";
   }
   if (args.toState === "on_hold") {
-    return String(args.currentStatus || "").toLowerCase() === "in_production" || ACTIVE_WORKFLOW_STATES.includes(args.fromState)
+    return String(args.currentStatus || "").toLowerCase() === "in_production" || OWNERSHIP_REQUIRED_WORKFLOW_STATES.includes(args.fromState)
       ? "in_production"
       : "new";
   }
@@ -332,7 +347,7 @@ async function assertOwnershipInvariant(tx: any, args: {
     lineItemId: args.lineItemId,
   });
 
-  if (ACTIVE_WORKFLOW_STATES.includes(args.toState)) {
+  if (workflowStateRequiresActiveOwner(args.toState)) {
     if (activeJobs.length === 0) {
       // No active job found after applyOwnershipForState — ownership drift.
       // Log and return null; the workflow state DB row was still updated correctly.
@@ -419,7 +434,7 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
       lineItemId: args.lineItemId,
     });
 
-    const requiresActiveOwnership = ACTIVE_WORKFLOW_STATES.includes(args.toState);
+    const requiresActiveOwnership = workflowStateRequiresActiveOwner(args.toState);
     const ownershipDrift = requiresActiveOwnership ? activeOwnershipCount.length !== 1 : activeOwnershipCount.length !== 0;
 
     if (!shouldRepairStoredState && !ownershipDrift) {
