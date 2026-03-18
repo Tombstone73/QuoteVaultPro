@@ -42,6 +42,7 @@ export const lineItemWorkflowStateValues = [
   "new",
   "needs_design",
   "in_design",
+  "awaiting_proof_approval",
   "ready_for_prepress",
   "in_prepress",
   "ready_for_production",
@@ -2585,8 +2586,10 @@ export const orderLineItems = pgTable("order_line_items", {
   sortOrder: integer("sort_order").notNull().default(0), // Display order in UI (for drag-and-drop reordering)
   workflowState: varchar("workflow_state", { length: 50 }).notNull().default("new"),
   requiresDesign: boolean("requires_design").notNull().default(false),
+  requiresProofApproval: boolean("requires_proof_approval").notNull().default(false),
   // Prepress requirement snapshot (migration 0051 - TEMP→PERMANENT contract)
   requiresPrepress: boolean("requires_prepress").notNull().default(true),
+  approvedProofVersionId: varchar("approved_proof_version_id"),
   // Tax system fields
   taxAmount: decimal("tax_amount", { precision: 10, scale: 2 }).default("0").notNull(),
   isTaxableSnapshot: boolean("is_taxable_snapshot").default(true).notNull(),
@@ -2605,7 +2608,9 @@ export const orderLineItems = pgTable("order_line_items", {
   index("order_line_items_status_idx").on(table.status),
   index("order_line_items_workflow_state_idx").on(table.workflowState),
   index("order_line_items_requires_design_idx").on(table.requiresDesign),
+  index("order_line_items_requires_proof_approval_idx").on(table.requiresProofApproval),
   index("order_line_items_requires_prepress_idx").on(table.requiresPrepress),
+  index("order_line_items_approved_proof_version_idx").on(table.approvedProofVersionId),
   index("order_line_items_product_type_idx").on(table.productType),
   index("order_line_items_pbv2_tree_version_id_idx").on(table.pbv2TreeVersionId),
 ]);
@@ -2648,6 +2653,7 @@ export const insertOrderLineItemSchema = createInsertSchema(orderLineItems).omit
   id: true,
   createdAt: true,
   updatedAt: true,
+  approvedProofVersionId: true,
 }).extend({
   productType: z.string().default('wide_roll'),
   quantity: z.coerce.number().int().positive(),
@@ -2659,6 +2665,7 @@ export const insertOrderLineItemSchema = createInsertSchema(orderLineItems).omit
   status: z.enum(["new", "in_production", "complete", "canceled"]).default("new"),
   workflowState: lineItemWorkflowStateSchema.default("new"),
   requiresDesign: z.boolean().default(false),
+  requiresProofApproval: z.boolean().default(false),
   specsJson: z.record(z.any()).optional().nullable(),
   // PBV2 request-only fields (not persisted directly; snapshots are persisted).
   // Keep validation permissive enough for future option expansions, but still JSON-safe.
@@ -4885,6 +4892,69 @@ export const lineItemFiles = pgTable("line_item_files", {
   index("line_item_files_supersedes_idx").on(table.supersedesFileId),
 ]);
 
+export const lineItemProofVersionStatusEnum = pgEnum('line_item_proof_version_status', [
+  'draft',
+  'awaiting_response',
+  'approved',
+  'rejected',
+  'revision_requested',
+  'superseded',
+]);
+
+export const lineItemProofResponseDecisionEnum = pgEnum('line_item_proof_response_decision', [
+  'approved',
+  'rejected',
+  'revision_requested',
+]);
+
+export const lineItemProofVersions = pgTable("line_item_proof_versions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  proofFileId: varchar("proof_file_id").notNull().references(() => orderAttachments.id, { onDelete: 'restrict' }),
+  versionNumber: integer("version_number").notNull(),
+  status: lineItemProofVersionStatusEnum("status").notNull().default('draft'),
+  internalNotes: text("internal_notes"),
+  customerMessage: text("customer_message"),
+  sentToName: varchar("sent_to_name", { length: 255 }),
+  sentToEmail: varchar("sent_to_email", { length: 255 }),
+  sentByUserId: varchar("sent_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+  createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("line_item_proof_versions_org_idx").on(table.organizationId),
+  index("line_item_proof_versions_order_idx").on(table.orderId),
+  index("line_item_proof_versions_line_item_idx").on(table.lineItemId),
+  index("line_item_proof_versions_status_idx").on(table.status),
+  index("line_item_proof_versions_proof_file_idx").on(table.proofFileId),
+  uniqueIndex("line_item_proof_versions_line_item_version_uidx").on(table.lineItemId, table.versionNumber),
+]);
+
+export const lineItemProofApprovals = pgTable("line_item_proof_approvals", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  proofVersionId: varchar("proof_version_id").notNull().references(() => lineItemProofVersions.id, { onDelete: 'cascade' }),
+  decision: lineItemProofResponseDecisionEnum("decision").notNull(),
+  responseNotes: text("response_notes"),
+  responderUserId: varchar("responder_user_id").references(() => users.id, { onDelete: 'set null' }),
+  responderName: varchar("responder_name", { length: 255 }),
+  responderEmail: varchar("responder_email", { length: 255 }),
+  responderSource: varchar("responder_source", { length: 50 }).notNull().default('internal'),
+  respondedAt: timestamp("responded_at", { withTimezone: true }).defaultNow().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("line_item_proof_approvals_org_idx").on(table.organizationId),
+  index("line_item_proof_approvals_order_idx").on(table.orderId),
+  index("line_item_proof_approvals_line_item_idx").on(table.lineItemId),
+  index("line_item_proof_approvals_decision_idx").on(table.decision),
+  uniqueIndex("line_item_proof_approvals_version_uidx").on(table.proofVersionId),
+]);
+
 // Zod schemas
 export const insertPrepressSessionSchema = createInsertSchema(prepressSessions).omit({
   id: true,
@@ -4903,6 +4973,28 @@ export const updateLineItemFileSchema = insertLineItemFileSchema.partial().exten
   id: z.string(),
 });
 
+export const insertLineItemProofVersionSchema = createInsertSchema(lineItemProofVersions).omit({
+  id: true,
+  versionNumber: true,
+  sentAt: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateLineItemProofVersionSchema = insertLineItemProofVersionSchema.partial().extend({
+  id: z.string(),
+});
+
+export const insertLineItemProofApprovalSchema = createInsertSchema(lineItemProofApprovals).omit({
+  id: true,
+  respondedAt: true,
+  createdAt: true,
+});
+
+export const updateLineItemProofApprovalSchema = insertLineItemProofApprovalSchema.partial().extend({
+  id: z.string(),
+});
+
 // Types
 export type PrepressSession = typeof prepressSessions.$inferSelect;
 export type InsertPrepressSession = z.infer<typeof insertPrepressSessionSchema>;
@@ -4911,6 +5003,14 @@ export type UpdatePrepressSession = z.infer<typeof updatePrepressSessionSchema>;
 export type LineItemFile = typeof lineItemFiles.$inferSelect;
 export type InsertLineItemFile = z.infer<typeof insertLineItemFileSchema>;
 export type UpdateLineItemFile = z.infer<typeof updateLineItemFileSchema>;
+
+export type LineItemProofVersion = typeof lineItemProofVersions.$inferSelect;
+export type InsertLineItemProofVersion = z.infer<typeof insertLineItemProofVersionSchema>;
+export type UpdateLineItemProofVersion = z.infer<typeof updateLineItemProofVersionSchema>;
+
+export type LineItemProofApproval = typeof lineItemProofApprovals.$inferSelect;
+export type InsertLineItemProofApproval = z.infer<typeof insertLineItemProofApprovalSchema>;
+export type UpdateLineItemProofApproval = z.infer<typeof updateLineItemProofApprovalSchema>;
 
 // ============================================================
 // REPRINT REQUESTS
