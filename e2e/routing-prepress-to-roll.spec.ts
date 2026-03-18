@@ -18,7 +18,7 @@
  *   - Exist in the DEV environment and not be canceled or completed
  *   - Have requiresPrepress=true on at least one line item
  *   - Have an active prepress production job (stationKey='flatbed', stepKey='prepress')
- *   - Have at least one COMPLETED prepress session (prepressStage = 'prepress_complete')
+ *   - Have canonical workflowState='in_prepress' with at least one completed prepress session
  *   - Have at least one active "final" file uploaded to the line item
  *   - NOT have an existing active downstream production job
  *   - Have a product type whose defaultStationKey='roll' OR whose name contains "roll"
@@ -89,7 +89,8 @@ test("routing: Prepress → Roll", async ({ page }) => {
     );
   }
 
-  const prepressStage: string = targetItem.prepressStage ?? "unknown";
+  const workflowState: string = targetItem.workflowState ?? "unknown";
+  const hasCompletedSession = targetItem.hasCompletedSession === true;
 
   // ── Step 2: Open the prepress queue page ───────────────────────────────
   await page.goto("/production/prepress");
@@ -140,12 +141,12 @@ test("routing: Prepress → Roll", async ({ page }) => {
       path: `test-results/routing-send-btn-disabled-${ON}.png`,
     });
     throw new Error(
-      `"Send to Production" button is disabled for order ${ON} (prepressStage=${prepressStage}).\n` +
+      `"Send to Production" button is disabled for order ${ON} (workflowState=${workflowState}, hasCompletedSession=${String(hasCompletedSession)}).\n` +
         "All three conditions must be true before the button enables:\n" +
-        "  (1) prepressStage must be 'prepress_complete' — a prepress session must be marked complete\n" +
+        "  (1) workflowState must still be 'in_prepress' and at least one completed prepress session must exist\n" +
         "  (2) At least one final file must be uploaded to the line item\n" +
         "  (3) No active downstream production job may exist\n" +
-        `Current prepressStage from API: ${prepressStage}`
+        `Current API truth: workflowState=${workflowState}, hasCompletedSession=${String(hasCompletedSession)}`
     );
   }
 
@@ -174,7 +175,7 @@ test("routing: Prepress → Roll", async ({ page }) => {
     });
     throw new Error(
       `Order ${ON} is STILL in the prepress queue after Send to Production.\n` +
-        `API says prepressStage=${stillInPrepress.prepressStage}, ` +
+        `API says workflowState=${stillInPrepress.workflowState}, hasCompletedSession=${String(stillInPrepress.hasCompletedSession)}, ` +
         `hasDownstreamActiveJob=${stillInPrepress.hasDownstreamActiveJob}.\n` +
         "The routing transition may not have persisted — check production_jobs table."
     );
