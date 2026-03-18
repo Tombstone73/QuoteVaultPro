@@ -14809,7 +14809,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           userAgent: req.headers["user-agent"] || null,
         } as any);
 
-        return proofVersion;
+        const proofing = await resolveLineItemProofingTruth(tx, {
+          organizationId,
+          lineItemId,
+        });
+
+        return { proofVersion, proofing };
       });
 
       return res.json({ success: true, data: created });
@@ -14871,7 +14876,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
           userAgent: req.headers["user-agent"] || null,
         } as any);
 
-        return sendResult;
+        const proofing = await resolveLineItemProofingTruth(tx, {
+          organizationId,
+          lineItemId: sendResult.proofVersion.lineItemId,
+        });
+
+        return {
+          ...sendResult,
+          proofing,
+        };
       });
 
       return res.json({ success: true, data: result });
@@ -14933,7 +14946,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
           userAgent: req.headers["user-agent"] || null,
         } as any);
 
-        return responseResult;
+        const proofing = await resolveLineItemProofingTruth(tx, {
+          organizationId,
+          lineItemId: responseResult.approval.lineItemId,
+        });
+
+        return {
+          ...responseResult,
+          proofing,
+        };
       });
 
       return res.json({ success: true, data: result });
