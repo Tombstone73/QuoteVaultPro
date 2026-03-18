@@ -1,15 +1,15 @@
 import "dotenv/config";
 import bcrypt from "bcryptjs";
 import { and, eq } from "drizzle-orm";
-import { db } from "../server/db";
-import { authIdentities, userOrganizations, users } from "../shared/schema";
+import { db } from "../../server/db";
+import { authIdentities, userOrganizations, users } from "../../shared/schema";
 
 const DEFAULT_ORG_ID = "org_titan_001";
 
 async function main() {
   const [emailArg, passwordArg] = process.argv.slice(2);
   if (!emailArg || !passwordArg) {
-    throw new Error("Usage: npx tsx tmp/provisionDevWorkflowUser.ts <email> <password>");
+    throw new Error("Usage: npx tsx scripts/workflow/provisionDevWorkflowUser.ts <email> <password>");
   }
 
   const email = emailArg.trim().toLowerCase();
