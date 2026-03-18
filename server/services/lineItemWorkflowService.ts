@@ -9,6 +9,7 @@ export const NON_TERMINAL_WORKFLOW_STATES: LineItemWorkflowState[] = [
   "new",
   "needs_design",
   "in_design",
+  "awaiting_proof_approval",
   "ready_for_prepress",
   "in_prepress",
   "ready_for_production",
@@ -29,6 +30,7 @@ export const OWNERSHIP_REQUIRED_WORKFLOW_STATES: LineItemWorkflowState[] = [
 
 export const OWNERLESS_WORKFLOW_STATES: LineItemWorkflowState[] = [
   "new",
+  "awaiting_proof_approval",
   "on_hold",
   "completed",
   "canceled",
@@ -37,8 +39,9 @@ export const OWNERLESS_WORKFLOW_STATES: LineItemWorkflowState[] = [
 const VALID_TRANSITIONS: Record<LineItemWorkflowState, LineItemWorkflowState[]> = {
   new: ["needs_design", "ready_for_prepress", "ready_for_production", "on_hold", "canceled"],
   needs_design: ["in_design", "on_hold", "canceled"],
-  in_design: ["needs_design", "ready_for_prepress", "on_hold", "canceled"],
-  ready_for_prepress: ["in_prepress", "ready_for_production", "on_hold", "canceled"],
+  in_design: ["needs_design", "awaiting_proof_approval", "ready_for_prepress", "on_hold", "canceled"],
+  awaiting_proof_approval: ["needs_design", "ready_for_prepress", "ready_for_production", "on_hold", "canceled"],
+  ready_for_prepress: ["awaiting_proof_approval", "in_prepress", "ready_for_production", "on_hold", "canceled"],
   in_prepress: ["ready_for_production", "in_design", "needs_design", "on_hold", "canceled"],
   ready_for_production: ["in_production", "in_prepress", "on_hold", "canceled"],
   in_production: ["completed", "on_hold", "canceled"],
@@ -54,7 +57,9 @@ type LoadedLineItem = {
   status: string;
   workflowState: string;
   requiresDesign: boolean;
+  requiresProofApproval: boolean;
   requiresPrepress: boolean;
+  approvedProofVersionId: string | null;
   productType: string;
   productTypeId: string | null;
 };
@@ -89,6 +94,7 @@ function normalizeWorkflowState(value: unknown): LineItemWorkflowState | null {
     "new",
     "needs_design",
     "in_design",
+    "awaiting_proof_approval",
     "ready_for_prepress",
     "in_prepress",
     "ready_for_production",
@@ -120,7 +126,13 @@ function deriveLifecycleStatusForState(args: {
 }): string {
   if (args.toState === "completed") return "complete";
   if (args.toState === "canceled") return "canceled";
-  if (args.toState === "in_design" || args.toState === "in_prepress" || args.toState === "ready_for_production" || args.toState === "in_production") {
+  if (
+    args.toState === "in_design" ||
+    args.toState === "awaiting_proof_approval" ||
+    args.toState === "in_prepress" ||
+    args.toState === "ready_for_production" ||
+    args.toState === "in_production"
+  ) {
     return "in_production";
   }
   if (args.toState === "on_hold") {
@@ -166,7 +178,9 @@ async function loadLineItemForWorkflow(tx: any, args: { organizationId: string; 
       status: orderLineItems.status,
       workflowState: orderLineItems.workflowState,
       requiresDesign: orderLineItems.requiresDesign,
+      requiresProofApproval: orderLineItems.requiresProofApproval,
       requiresPrepress: orderLineItems.requiresPrepress,
+      approvedProofVersionId: orderLineItems.approvedProofVersionId,
       productType: orderLineItems.productType,
       productTypeId: products.productTypeId,
     })
@@ -183,6 +197,7 @@ async function loadLineItemForWorkflow(tx: any, args: { organizationId: string; 
   return {
     ...lineItem,
     requiresDesign: Boolean(lineItem.requiresDesign),
+    requiresProofApproval: Boolean(lineItem.requiresProofApproval),
     requiresPrepress: Boolean(lineItem.requiresPrepress),
   };
 }
@@ -212,6 +227,10 @@ async function findPriorActiveState(tx: any, args: { organizationId: string; lin
 async function resolveOwnershipRouteForState(tx: any, lineItem: LoadedLineItem, toState: LineItemWorkflowState): Promise<OwnershipRoute | null> {
   if (toState === "needs_design" || toState === "in_design") {
     return { stationKey: "design", stepKey: "design", reason: "workflow_design_stage" };
+  }
+
+  if (toState === "awaiting_proof_approval") {
+    return null;
   }
 
   if (toState === "ready_for_prepress" || toState === "in_prepress") {
@@ -400,6 +419,11 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
     lineItemId: args.lineItemId,
   });
 
+  const requiresApprovedProofForTarget = ["ready_for_prepress", "in_prepress", "ready_for_production", "in_production"].includes(args.toState);
+  if (requiresApprovedProofForTarget && lineItem.requiresProofApproval && !lineItem.approvedProofVersionId) {
+    throw Object.assign(new Error(`Approved proof is required before transitioning to ${args.toState}`), { statusCode: 409 });
+  }
+
   const activeJob = await findActiveJobForLineItem(tx, {
     organizationId: args.organizationId,
     lineItemId: args.lineItemId,
@@ -471,6 +495,10 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
           args.toState === "needs_design" || args.toState === "in_design"
             ? true
             : lineItem.requiresDesign,
+        requiresProofApproval:
+          args.toState === "awaiting_proof_approval"
+            ? true
+            : lineItem.requiresProofApproval,
         requiresPrepress:
           args.toState === "ready_for_prepress" || args.toState === "in_prepress"
             ? true
@@ -551,6 +579,10 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
         args.toState === "needs_design" || args.toState === "in_design"
           ? true
           : lineItem.requiresDesign,
+      requiresProofApproval:
+        args.toState === "awaiting_proof_approval"
+          ? true
+          : lineItem.requiresProofApproval,
       requiresPrepress:
         args.toState === "ready_for_prepress" || args.toState === "in_prepress"
           ? true
