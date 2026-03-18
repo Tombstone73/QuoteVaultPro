@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import type { DesignQueueItem, DesignQueueWorkflowState } from "@/hooks/useOrders";
 import { useDesignQueue } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
 
@@ -17,7 +18,7 @@ const WORKFLOW_LABELS: Record<string, string> = {
   canceled: "Canceled",
 };
 
-function getDesignActions(state: string | undefined) {
+function getDesignActions(state: DesignQueueWorkflowState | undefined) {
   switch (state) {
     case "needs_design":
       return [
@@ -31,13 +32,21 @@ function getDesignActions(state: string | undefined) {
         { label: "Send to Prepress", action: "send-to-prepress" },
         { label: "Hold", toState: "on_hold" },
       ];
-    case "new":
-      return [
-        { label: "Send to Design", action: "send" },
-      ];
     default:
       return [];
   }
+}
+
+function formatOwnerLabel(item: DesignQueueItem) {
+  if (item.activeOwnerStepKey) {
+    return item.activeOwnerStepKey.replace(/_/g, " ");
+  }
+
+  if (item.activeOwnerStationKey) {
+    return item.activeOwnerStationKey.replace(/_/g, " ");
+  }
+
+  return null;
 }
 
 export default function DesignProductionPage() {
@@ -47,15 +56,28 @@ export default function DesignProductionPage() {
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!selectedLineItemId && queue[0]?.lineItemId) {
+    if (queue.length === 0) {
+      if (selectedLineItemId !== null) {
+        setSelectedLineItemId(null);
+      }
+      return;
+    }
+
+    const selectionStillExists = selectedLineItemId
+      ? queue.some((item) => item.lineItemId === selectedLineItemId)
+      : false;
+
+    if (!selectionStillExists) {
       setSelectedLineItemId(queue[0].lineItemId);
     }
   }, [queue, selectedLineItemId]);
 
   const selectedItem = useMemo(
-    () => queue.find((item: any) => item.lineItemId === selectedLineItemId) ?? queue[0] ?? null,
+    () => queue.find((item) => item.lineItemId === selectedLineItemId) ?? queue[0] ?? null,
     [queue, selectedLineItemId],
   );
+
+  const selectedOwnerLabel = selectedItem ? formatOwnerLabel(selectedItem) : null;
 
   const transitionWorkflow = useMutation({
     mutationFn: async ({ lineItemId, toState, action }: { lineItemId: string; toState?: string; action?: string }) => {
@@ -106,7 +128,7 @@ export default function DesignProductionPage() {
               ) : queue.length === 0 ? (
                 <div className="p-4 text-sm text-muted-foreground">No line items are currently assigned to Design.</div>
               ) : (
-                queue.map((item: any) => (
+                queue.map((item) => (
                   <button
                     key={item.lineItemId}
                     type="button"
@@ -148,9 +170,9 @@ export default function DesignProductionPage() {
                 <Badge variant={selectedItem.workflowState === "in_design" ? "default" : "outline"}>
                   {WORKFLOW_LABELS[selectedItem.workflowState] || selectedItem.workflowState}
                 </Badge>
-                {(selectedItem.activeOwnerStepKey || selectedItem.activeOwnerStationKey) && (
+                {selectedOwnerLabel && (
                   <Badge variant="secondary">
-                    Owner: {selectedItem.activeOwnerStepKey || selectedItem.activeOwnerStationKey}
+                    Owner: {selectedOwnerLabel}
                   </Badge>
                 )}
                 {selectedItem.requiresPrepress && <Badge variant="outline">Requires Prepress</Badge>}

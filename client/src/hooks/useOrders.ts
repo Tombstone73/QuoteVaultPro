@@ -131,6 +131,36 @@ export type LineItemWorkflowTransitionResult = {
   ownershipAction: "created" | "reused" | "transitioned" | "completed" | "none";
 };
 
+export type DesignQueueWorkflowState = Extract<LineItemWorkflowState, "needs_design" | "in_design">;
+
+export type DesignQueueItem = {
+  lineItemId: string;
+  orderId: string;
+  jobNumber: string;
+  customerName: string;
+  productName: string;
+  printType: string | null;
+  media: string | null;
+  dueDate: string | null;
+  status: string;
+  workflowState: DesignQueueWorkflowState;
+  designStage: DesignQueueWorkflowState;
+  rush: boolean;
+  quantity: number;
+  width: number | null;
+  height: number | null;
+  sqFootage: number | null;
+  requiresDesign: boolean | null;
+  requiresPrepress: boolean | null;
+  activeOwnerJobId: string | null;
+  activeOwnerStationKey: string | null;
+  activeOwnerStepKey: string | null;
+  fileCounts: {
+    originals: number;
+    proofs: number;
+  };
+};
+
 export type OrderWithRelations = Order & {
   customer: any;
   contact?: any;
@@ -828,7 +858,7 @@ export function useTransitionLineItemWorkflow(orderId: string) {
 }
 
 export function useDesignQueue() {
-  return useQuery<any[]>({
+  return useQuery<DesignQueueItem[]>({
     queryKey: ["/api/design/queue"],
     queryFn: async () => {
       const response = await fetch("/api/design/queue", { credentials: "include" });
@@ -837,7 +867,7 @@ export function useDesignQueue() {
         throw new Error(data.error || "Failed to fetch design queue");
       }
       const data = await response.json();
-      return data.data || [];
+      return (data.data || []) as DesignQueueItem[];
     },
     staleTime: 15_000,
     refetchOnWindowFocus: false,
