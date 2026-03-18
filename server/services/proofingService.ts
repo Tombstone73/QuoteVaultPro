@@ -1,13 +1,22 @@
-import { and, desc, eq, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, ne, notInArray, or, sql } from "drizzle-orm";
 
 import type {
+  ManualApprovalOverrideHistoryEntry,
+  ProofApprovalSource,
   ProofDecisionHistoryEntry,
+  ProofQueueSlice,
+  ProofQueueStatus,
   ProofVersionHistoryEntry,
+  ProofingQueueCounts,
+  ProofingQueueResponse,
+  ProofingQueueRow,
   ProofingReadModel,
 } from "@shared/proofing";
 
 import {
+  customers,
   lineItemProofApprovals,
+  lineItemProofManualApprovalOverrides,
   lineItemProofVersions,
   orderAttachments,
   orderLineItems,
@@ -22,6 +31,10 @@ type ProofVersionStatus = "draft" | "awaiting_response" | "approved" | "rejected
 
 function throwProofingConflict(message: string) {
   throw Object.assign(new Error(message), { statusCode: 409 });
+}
+
+function throwProofingBadRequest(message: string) {
+  throw Object.assign(new Error(message), { statusCode: 400 });
 }
 
 function normalizeProofingWriteError(error: any): never {
@@ -40,6 +53,10 @@ function normalizeProofingWriteError(error: any): never {
 
     if (error?.constraint === "line_item_proof_approvals_version_uidx") {
       throwProofingConflict("A response has already been recorded for this proof version");
+    }
+
+    if (error?.constraint === "line_item_proof_manual_approval_overrides_version_uidx") {
+      throwProofingConflict("A manual approval override has already been recorded for this proof version");
     }
   }
 
@@ -116,6 +133,14 @@ type LoadedProofLineItem = {
   requiresPrepress: boolean;
   requiresProofApproval: boolean;
   approvedProofVersionId: string | null;
+  updatedAt: Date;
+};
+
+type LoadedProofQueueLineItem = LoadedProofLineItem & {
+  orderNumber: string | null;
+  customerDisplayName: string | null;
+  lineItemLabel: string;
+  packageLabel: string;
 };
 
 async function loadProofLineItem(tx: any, args: { organizationId: string; lineItemId: string }): Promise<LoadedProofLineItem> {
@@ -128,6 +153,7 @@ async function loadProofLineItem(tx: any, args: { organizationId: string; lineIt
       requiresPrepress: orderLineItems.requiresPrepress,
       requiresProofApproval: orderLineItems.requiresProofApproval,
       approvedProofVersionId: orderLineItems.approvedProofVersionId,
+      updatedAt: orderLineItems.updatedAt,
     })
     .from(orderLineItems)
     .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
@@ -143,6 +169,108 @@ async function loadProofLineItem(tx: any, args: { organizationId: string; lineIt
     requiresPrepress: Boolean(row.requiresPrepress),
     requiresProofApproval: Boolean(row.requiresProofApproval),
   };
+}
+
+function trimNullable(value: string | null | undefined): string | null {
+  const trimmed = String(value ?? "").trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function toIsoString(value: string | Date | null | undefined): string | null {
+  if (!value) return null;
+  return new Date(value).toISOString();
+}
+
+function maxIsoTimestamp(values: Array<string | null | undefined>): string {
+  let maxTimestamp = Number.NEGATIVE_INFINITY;
+
+  for (const value of values) {
+    if (!value) continue;
+    const timestamp = new Date(value).getTime();
+    if (Number.isFinite(timestamp) && timestamp > maxTimestamp) {
+      maxTimestamp = timestamp;
+    }
+  }
+
+  return Number.isFinite(maxTimestamp) ? new Date(maxTimestamp).toISOString() : new Date(0).toISOString();
+}
+
+function formatProofVersionLabel(versionNumber: number): string {
+  return `Proof v${versionNumber}`;
+}
+
+function normalizeProofingQueueSlice(value: unknown): ProofQueueSlice {
+  const normalized = String(value ?? "all").trim().toLowerCase();
+  if (
+    normalized === "awaiting_send" ||
+    normalized === "awaiting_approval" ||
+    normalized === "revision_requested" ||
+    normalized === "approved"
+  ) {
+    return normalized;
+  }
+
+  return "all";
+}
+
+function deriveProofingQueueStatus(truth: ProofingReadModel): ProofQueueStatus {
+  if (truth.approvedByOverride) return "approved_by_override";
+  if (truth.approvedProofVersionId) return "approved";
+
+  if (truth.currentActionableProofVersion?.status === "awaiting_response") {
+    return "awaiting_approval";
+  }
+
+  if (truth.currentActionableProofVersion?.status === "draft") {
+    return "awaiting_send";
+  }
+
+  const latestDecision = truth.proofDecisionHistory[0]?.decision ?? null;
+  if (latestDecision === "revision_requested") {
+    return "revision_requested";
+  }
+
+  if (latestDecision === "rejected") {
+    return "rejected";
+  }
+
+  return "no_active_proof";
+}
+
+function deriveProofingQueueBadge(status: ProofQueueStatus): string {
+  switch (status) {
+    case "awaiting_send":
+      return "Awaiting Send";
+    case "awaiting_approval":
+      return "Awaiting Approval";
+    case "revision_requested":
+      return "Revision Requested";
+    case "approved":
+      return "Approved";
+    case "approved_by_override":
+      return "Approved by Override";
+    case "rejected":
+      return "Rejected";
+    default:
+      return "No Active Proof";
+  }
+}
+
+function matchesProofingQueueSlice(status: ProofQueueStatus, slice: ProofQueueSlice): boolean {
+  if (slice === "all") return true;
+  if (slice === "approved") return status === "approved" || status === "approved_by_override";
+  return status === slice;
+}
+
+function isProofRelevantTruth(truth: ProofingReadModel): boolean {
+  return (
+    truth.requiresProofApproval ||
+    truth.approvedProofVersionId !== null ||
+    truth.proofVersionHistory.length > 0 ||
+    truth.proofDecisionHistory.length > 0 ||
+    truth.manualApprovalOverrideHistory.length > 0 ||
+    truth.workflowState === "awaiting_proof_approval"
+  );
 }
 
 async function appendProofingEvent(tx: any, args: {
@@ -200,6 +328,313 @@ async function loadProofVersion(tx: any, args: { organizationId: string; proofVe
   }
 
   return row;
+}
+
+async function resolveProofingTruthMap(tx: any, args: {
+  organizationId: string;
+  lineItems: LoadedProofLineItem[];
+}): Promise<Map<string, ProofingReadModel>> {
+  const truthMap = new Map<string, ProofingReadModel>();
+  const lineItemIds = args.lineItems.map((lineItem) => lineItem.lineItemId);
+
+  if (lineItemIds.length === 0) {
+    return truthMap;
+  }
+
+  const rawVersions = await tx
+    .select({
+      id: lineItemProofVersions.id,
+      lineItemId: lineItemProofVersions.lineItemId,
+      proofFileId: lineItemProofVersions.proofFileId,
+      versionNumber: lineItemProofVersions.versionNumber,
+      status: lineItemProofVersions.status,
+      sentAt: lineItemProofVersions.sentAt,
+      createdAt: lineItemProofVersions.createdAt,
+      updatedAt: lineItemProofVersions.updatedAt,
+      sentToName: lineItemProofVersions.sentToName,
+      sentToEmail: lineItemProofVersions.sentToEmail,
+    })
+    .from(lineItemProofVersions)
+    .where(and(eq(lineItemProofVersions.organizationId, args.organizationId), inArray(lineItemProofVersions.lineItemId, lineItemIds)))
+    .orderBy(desc(lineItemProofVersions.versionNumber), desc(lineItemProofVersions.createdAt));
+
+  const rawApprovals = await tx
+    .select({
+      id: lineItemProofApprovals.id,
+      lineItemId: lineItemProofApprovals.lineItemId,
+      proofVersionId: lineItemProofApprovals.proofVersionId,
+      decision: lineItemProofApprovals.decision,
+      responseNotes: lineItemProofApprovals.responseNotes,
+      responderName: lineItemProofApprovals.responderName,
+      responderEmail: lineItemProofApprovals.responderEmail,
+      responderSource: lineItemProofApprovals.responderSource,
+      respondedAt: lineItemProofApprovals.respondedAt,
+      createdAt: lineItemProofApprovals.createdAt,
+    })
+    .from(lineItemProofApprovals)
+    .where(and(eq(lineItemProofApprovals.organizationId, args.organizationId), inArray(lineItemProofApprovals.lineItemId, lineItemIds)))
+    .orderBy(desc(lineItemProofApprovals.respondedAt), desc(lineItemProofApprovals.createdAt));
+
+  const rawManualOverrides = await tx
+    .select({
+      id: lineItemProofManualApprovalOverrides.id,
+      orderId: lineItemProofManualApprovalOverrides.orderId,
+      lineItemId: lineItemProofManualApprovalOverrides.lineItemId,
+      proofVersionId: lineItemProofManualApprovalOverrides.proofVersionId,
+      source: lineItemProofManualApprovalOverrides.source,
+      overrideReason: lineItemProofManualApprovalOverrides.overrideReason,
+      internalNote: lineItemProofManualApprovalOverrides.internalNote,
+      actorUserId: lineItemProofManualApprovalOverrides.actorUserId,
+      actorName: lineItemProofManualApprovalOverrides.actorName,
+      actorEmail: lineItemProofManualApprovalOverrides.actorEmail,
+      overriddenAt: lineItemProofManualApprovalOverrides.overriddenAt,
+      createdAt: lineItemProofManualApprovalOverrides.createdAt,
+    })
+    .from(lineItemProofManualApprovalOverrides)
+    .where(
+      and(
+        eq(lineItemProofManualApprovalOverrides.organizationId, args.organizationId),
+        inArray(lineItemProofManualApprovalOverrides.lineItemId, lineItemIds),
+      ),
+    )
+    .orderBy(desc(lineItemProofManualApprovalOverrides.overriddenAt), desc(lineItemProofManualApprovalOverrides.createdAt));
+
+  const versionsByLineItem = new Map<string, ProofVersionHistoryEntry[]>();
+  for (const version of rawVersions) {
+    const bucket = versionsByLineItem.get(version.lineItemId) ?? [];
+    bucket.push({
+      id: version.id,
+      proofFileId: version.proofFileId,
+      versionNumber: version.versionNumber,
+      status: version.status,
+      sentAt: toIsoString(version.sentAt),
+      createdAt: toIsoString(version.createdAt)!,
+      updatedAt: toIsoString(version.updatedAt)!,
+      sentToName: version.sentToName ?? null,
+      sentToEmail: version.sentToEmail ?? null,
+    });
+    versionsByLineItem.set(version.lineItemId, bucket);
+  }
+
+  const approvalsByLineItem = new Map<string, ProofDecisionHistoryEntry[]>();
+  for (const approval of rawApprovals) {
+    const bucket = approvalsByLineItem.get(approval.lineItemId) ?? [];
+    bucket.push({
+      id: approval.id,
+      proofVersionId: approval.proofVersionId,
+      decision: approval.decision,
+      responseNotes: approval.responseNotes ?? null,
+      responderName: approval.responderName ?? null,
+      responderEmail: approval.responderEmail ?? null,
+      responderSource: approval.responderSource ?? null,
+      respondedAt: toIsoString(approval.respondedAt)!,
+    });
+    approvalsByLineItem.set(approval.lineItemId, bucket);
+  }
+
+  const manualOverridesByLineItem = new Map<string, ManualApprovalOverrideHistoryEntry[]>();
+  for (const override of rawManualOverrides) {
+    const bucket = manualOverridesByLineItem.get(override.lineItemId) ?? [];
+    bucket.push({
+      id: override.id,
+      orderId: override.orderId,
+      lineItemId: override.lineItemId,
+      proofVersionId: override.proofVersionId,
+      source: "manual_override",
+      overrideReason: override.overrideReason,
+      internalNote: override.internalNote ?? null,
+      actorUserId: override.actorUserId ?? null,
+      actorName: override.actorName ?? null,
+      actorEmail: override.actorEmail ?? null,
+      overriddenAt: toIsoString(override.overriddenAt)!,
+    });
+    manualOverridesByLineItem.set(override.lineItemId, bucket);
+  }
+
+  for (const lineItem of args.lineItems) {
+    const versions = versionsByLineItem.get(lineItem.lineItemId) ?? [];
+    const approvals = approvalsByLineItem.get(lineItem.lineItemId) ?? [];
+    const manualOverrides = manualOverridesByLineItem.get(lineItem.lineItemId) ?? [];
+    const currentActionableProofVersion = versions.find((version) => isActionableProofStatus(version.status)) ?? null;
+    const approvedProofVersion = lineItem.approvedProofVersionId
+      ? versions.find((version) => version.id === lineItem.approvedProofVersionId) ?? null
+      : null;
+    const approvedNormalDecision = lineItem.approvedProofVersionId
+      ? approvals.find(
+          (approval) => approval.proofVersionId === lineItem.approvedProofVersionId && approval.decision === "approved",
+        ) ?? null
+      : null;
+    const approvedManualOverride = lineItem.approvedProofVersionId
+      ? manualOverrides.find((override) => override.proofVersionId === lineItem.approvedProofVersionId) ?? null
+      : null;
+    const approvedProofSource: ProofApprovalSource | null = approvedManualOverride
+      ? "manual_override"
+      : approvedNormalDecision
+        ? "normal"
+        : null;
+    const approvalIdsByVersionId = new Map(approvals.map((approval) => [approval.proofVersionId, approval.id]));
+    const currentActionableProofVersionId = currentActionableProofVersion?.id ?? null;
+    const currentActionableProofDecisionId = currentActionableProofVersionId
+      ? approvalIdsByVersionId.get(currentActionableProofVersionId) ?? null
+      : null;
+
+    truthMap.set(lineItem.lineItemId, {
+      lineItemId: lineItem.lineItemId,
+      orderId: lineItem.orderId,
+      workflowState: normalizeProofingWorkflowState(lineItem.workflowState),
+      requiresProofApproval: lineItem.requiresProofApproval,
+      approvedProofVersionId: lineItem.approvedProofVersionId,
+      approvedProofDecisionId: approvedNormalDecision?.id ?? null,
+      approvedProofSource,
+      approvedNormally: approvedProofSource === "normal",
+      approvedByOverride: approvedProofSource === "manual_override",
+      currentActionableProofVersionId,
+      currentActionableProofDecisionId,
+      currentActionableProofVersion,
+      approvedProofVersion,
+      proofVersionHistory: versions,
+      proofDecisionHistory: approvals,
+      manualApprovalOverrideHistory: manualOverrides,
+      blockedPendingProofApproval: isBlockedPendingProofApproval({
+        workflowState: lineItem.workflowState,
+        requiresProofApproval: lineItem.requiresProofApproval,
+        approvedProofVersionId: lineItem.approvedProofVersionId,
+        currentActionableProofVersion,
+      }),
+    });
+  }
+
+  return truthMap;
+}
+
+function buildProofingQueueRow(base: LoadedProofQueueLineItem, truth: ProofingReadModel): ProofingQueueRow {
+  const currentQueueStatus = deriveProofingQueueStatus(truth);
+  const currentDisplayedProofVersion = truth.currentActionableProofVersion ?? truth.approvedProofVersion ?? truth.proofVersionHistory[0] ?? null;
+
+  return {
+    lineItemId: base.lineItemId,
+    orderId: base.orderId,
+    orderNumber: base.orderNumber,
+    customerDisplayName: base.customerDisplayName,
+    lineItemLabel: base.lineItemLabel,
+    packageLabel: base.packageLabel,
+    workflowState: truth.workflowState,
+    currentQueueStatus,
+    currentQueueBadge: deriveProofingQueueBadge(currentQueueStatus),
+    currentDisplayedProofVersionId: currentDisplayedProofVersion?.id ?? null,
+    currentDisplayedProofVersionLabel: currentDisplayedProofVersion ? formatProofVersionLabel(currentDisplayedProofVersion.versionNumber) : null,
+    currentDisplayedProofVersionStatus: currentDisplayedProofVersion?.status ?? null,
+    approvedProofVersionId: truth.approvedProofVersionId,
+    approvedProofSource: truth.approvedProofSource,
+    approvedNormally: truth.approvedNormally,
+    approvedByOverride: truth.approvedByOverride,
+    lastDecision: truth.proofDecisionHistory[0]?.decision ?? null,
+    lastActivityAt: maxIsoTimestamp([
+      toIsoString(base.updatedAt),
+      truth.proofVersionHistory[0]?.updatedAt ?? null,
+      truth.proofDecisionHistory[0]?.respondedAt ?? null,
+      truth.manualApprovalOverrideHistory[0]?.overriddenAt ?? null,
+    ]),
+    blockedPendingProofApproval: truth.blockedPendingProofApproval,
+    hasApprovedProof: truth.approvedProofVersionId !== null,
+    requiresProofApproval: truth.requiresProofApproval,
+    requiresPrepress: base.requiresPrepress,
+    proofCount: truth.proofVersionHistory.length,
+  };
+}
+
+export async function listProofingQueue(tx: any, args: {
+  organizationId: string;
+  slice?: ProofQueueSlice | null;
+}): Promise<ProofingQueueResponse> {
+  const slice = normalizeProofingQueueSlice(args.slice);
+
+  const queueBaseRows: LoadedProofQueueLineItem[] = await tx
+    .select({
+      lineItemId: orderLineItems.id,
+      orderId: orderLineItems.orderId,
+      organizationId: orders.organizationId,
+      orderNumber: orders.orderNumber,
+      customerDisplayName: customers.companyName,
+      lineItemLabel: orderLineItems.description,
+      packageLabel: orderLineItems.description,
+      workflowState: orderLineItems.workflowState,
+      requiresPrepress: orderLineItems.requiresPrepress,
+      requiresProofApproval: orderLineItems.requiresProofApproval,
+      approvedProofVersionId: orderLineItems.approvedProofVersionId,
+      updatedAt: orderLineItems.updatedAt,
+    })
+    .from(orderLineItems)
+    .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+    .leftJoin(customers, eq(orders.customerId, customers.id))
+    .where(
+      and(
+        eq(orders.organizationId, args.organizationId),
+        notInArray(orders.state, ["closed", "canceled", "production_complete"]),
+        or(
+          eq(orderLineItems.requiresProofApproval, true),
+          isNotNull(orderLineItems.approvedProofVersionId),
+          eq(orderLineItems.workflowState, "awaiting_proof_approval"),
+          sql`exists (
+            select 1
+            from line_item_proof_versions proof_versions
+            where proof_versions.organization_id = ${args.organizationId}
+              and proof_versions.line_item_id = ${orderLineItems.id}
+          )`,
+          sql`exists (
+            select 1
+            from line_item_proof_approvals proof_approvals
+            where proof_approvals.organization_id = ${args.organizationId}
+              and proof_approvals.line_item_id = ${orderLineItems.id}
+          )`,
+          sql`exists (
+            select 1
+            from line_item_proof_manual_approval_overrides proof_overrides
+            where proof_overrides.organization_id = ${args.organizationId}
+              and proof_overrides.line_item_id = ${orderLineItems.id}
+          )`,
+        ),
+      ),
+    )
+    .orderBy(desc(orderLineItems.updatedAt), desc(orders.updatedAt));
+
+  const truthMap = await resolveProofingTruthMap(tx, {
+    organizationId: args.organizationId,
+    lineItems: queueBaseRows,
+  });
+
+  const allRows = queueBaseRows
+    .map((base) => {
+      const truth = truthMap.get(base.lineItemId);
+      if (!truth || !isProofRelevantTruth(truth)) {
+        return null;
+      }
+
+      return buildProofingQueueRow(base, truth);
+    })
+    .filter((row): row is ProofingQueueRow => row !== null)
+    .sort((left, right) => {
+      const delta = new Date(right.lastActivityAt).getTime() - new Date(left.lastActivityAt).getTime();
+      if (delta !== 0) return delta;
+      return String(left.orderNumber ?? left.lineItemId).localeCompare(String(right.orderNumber ?? right.lineItemId), undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+    });
+
+  const counts: ProofingQueueCounts = {
+    all: allRows.length,
+    awaitingSend: allRows.filter((row) => row.currentQueueStatus === "awaiting_send").length,
+    awaitingApproval: allRows.filter((row) => row.currentQueueStatus === "awaiting_approval").length,
+    revisionRequested: allRows.filter((row) => row.currentQueueStatus === "revision_requested").length,
+    approved: allRows.filter((row) => row.currentQueueStatus === "approved" || row.currentQueueStatus === "approved_by_override").length,
+  };
+
+  return {
+    slice,
+    counts,
+    rows: allRows.filter((row) => matchesProofingQueueSlice(row.currentQueueStatus, slice)),
+  };
 }
 
 export async function createLineItemProofVersion(tx: any, args: {
@@ -499,6 +934,165 @@ export async function recordProofResponse(tx: any, args: {
   }
 }
 
+export async function recordManualProofApprovalOverride(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  proofVersionId?: string | null;
+  actorUserId: string;
+  actorName?: string | null;
+  actorEmail?: string | null;
+  overrideReason: string;
+  internalNote?: string | null;
+}) {
+  try {
+    const overrideReason = trimNullable(args.overrideReason);
+    if (!overrideReason) {
+      throwProofingBadRequest("Manual approval override reason is required");
+    }
+
+    const lineItem = await loadProofLineItem(tx, {
+      organizationId: args.organizationId,
+      lineItemId: args.lineItemId,
+    });
+
+    if (!lineItem.requiresProofApproval || lineItem.workflowState !== "awaiting_proof_approval") {
+      throwProofingConflict("Line item is not eligible for manual approval override");
+    }
+
+    if (lineItem.approvedProofVersionId) {
+      throwProofingConflict("This line item already has an approved proof");
+    }
+
+    const requestedProofVersionId = trimNullable(args.proofVersionId);
+    let proofVersion = null as Awaited<ReturnType<typeof loadProofVersion>> | null;
+
+    if (requestedProofVersionId) {
+      proofVersion = await loadProofVersion(tx, {
+        organizationId: args.organizationId,
+        proofVersionId: requestedProofVersionId,
+      });
+
+      if (proofVersion.lineItemId !== lineItem.lineItemId || proofVersion.orderId !== lineItem.orderId) {
+        throwProofingConflict("Proof version does not belong to the target line item");
+      }
+    } else {
+      const candidateVersions = await tx
+        .select({ id: lineItemProofVersions.id })
+        .from(lineItemProofVersions)
+        .where(
+          and(
+            eq(lineItemProofVersions.organizationId, args.organizationId),
+            eq(lineItemProofVersions.lineItemId, lineItem.lineItemId),
+            eq(lineItemProofVersions.status, "awaiting_response"),
+          ),
+        )
+        .orderBy(desc(lineItemProofVersions.versionNumber), desc(lineItemProofVersions.createdAt));
+
+      if (candidateVersions.length !== 1) {
+        throwProofingConflict("Proof context is ambiguous or unavailable for manual approval override");
+      }
+
+      proofVersion = await loadProofVersion(tx, {
+        organizationId: args.organizationId,
+        proofVersionId: candidateVersions[0].id,
+      });
+    }
+
+    if (!proofVersion || proofVersion.status !== "awaiting_response") {
+      throwProofingConflict("Only proof versions awaiting response are eligible for manual approval override");
+    }
+
+    const [existingResponse] = await tx
+      .select({ id: lineItemProofApprovals.id })
+      .from(lineItemProofApprovals)
+      .where(eq(lineItemProofApprovals.proofVersionId, proofVersion.id))
+      .limit(1);
+
+    if (existingResponse) {
+      throwProofingConflict("A normal proof response already exists for this proof version");
+    }
+
+    const [existingOverride] = await tx
+      .select({ id: lineItemProofManualApprovalOverrides.id })
+      .from(lineItemProofManualApprovalOverrides)
+      .where(eq(lineItemProofManualApprovalOverrides.proofVersionId, proofVersion.id))
+      .limit(1);
+
+    if (existingOverride) {
+      throwProofingConflict("A manual approval override already exists for this proof version");
+    }
+
+    const [manualApprovalOverride] = await tx
+      .insert(lineItemProofManualApprovalOverrides)
+      .values({
+        organizationId: args.organizationId,
+        orderId: lineItem.orderId,
+        lineItemId: lineItem.lineItemId,
+        proofVersionId: proofVersion.id,
+        source: "manual_override",
+        overrideReason,
+        internalNote: trimNullable(args.internalNote),
+        actorUserId: args.actorUserId,
+        actorName: trimNullable(args.actorName),
+        actorEmail: trimNullable(args.actorEmail),
+      })
+      .returning();
+
+    await tx
+      .update(lineItemProofVersions)
+      .set({
+        status: "approved",
+        updatedAt: new Date(),
+      })
+      .where(eq(lineItemProofVersions.id, proofVersion.id));
+
+    await tx
+      .update(orderLineItems)
+      .set({
+        approvedProofVersionId: proofVersion.id,
+        updatedAt: new Date(),
+      })
+      .where(eq(orderLineItems.id, lineItem.lineItemId));
+
+    const workflowTransition = await transitionLineItemWorkflowState(tx, {
+      organizationId: args.organizationId,
+      lineItemId: lineItem.lineItemId,
+      toState: deriveProofResponseWorkflowState({
+        decision: "approved",
+        requiresPrepress: lineItem.requiresPrepress,
+      }),
+      actorUserId: args.actorUserId,
+      metadata: {
+        source: "proofing_manual_approval_override",
+        proofVersionId: proofVersion.id,
+        manualApprovalOverrideId: manualApprovalOverride.id,
+        overrideReason,
+      },
+    });
+
+    await appendProofingEvent(tx, {
+      organizationId: args.organizationId,
+      lineItemId: lineItem.lineItemId,
+      eventType: "proof_manual_approval_override",
+      actorUserId: args.actorUserId,
+      payload: {
+        manualApprovalOverrideId: manualApprovalOverride.id,
+        proofVersionId: proofVersion.id,
+        overrideReason,
+        workflowToState: workflowTransition.toState,
+      },
+    });
+
+    return {
+      manualApprovalOverride,
+      workflowTransition,
+      proofVersionId: proofVersion.id,
+    };
+  } catch (error: any) {
+    normalizeProofingWriteError(error);
+  }
+}
+
 export async function resolveLineItemProofingTruth(tx: any, args: {
   organizationId: string;
   lineItemId: string;
@@ -508,88 +1102,15 @@ export async function resolveLineItemProofingTruth(tx: any, args: {
     lineItemId: args.lineItemId,
   });
 
-  const rawVersions = await tx
-    .select({
-      id: lineItemProofVersions.id,
-      proofFileId: lineItemProofVersions.proofFileId,
-      versionNumber: lineItemProofVersions.versionNumber,
-      status: lineItemProofVersions.status,
-      sentAt: lineItemProofVersions.sentAt,
-      createdAt: lineItemProofVersions.createdAt,
-      sentToName: lineItemProofVersions.sentToName,
-      sentToEmail: lineItemProofVersions.sentToEmail,
-    })
-    .from(lineItemProofVersions)
-    .where(and(eq(lineItemProofVersions.organizationId, args.organizationId), eq(lineItemProofVersions.lineItemId, args.lineItemId)))
-    .orderBy(desc(lineItemProofVersions.versionNumber), desc(lineItemProofVersions.createdAt));
-
-  const rawApprovals = await tx
-    .select({
-      id: lineItemProofApprovals.id,
-      proofVersionId: lineItemProofApprovals.proofVersionId,
-      decision: lineItemProofApprovals.decision,
-      responseNotes: lineItemProofApprovals.responseNotes,
-      responderName: lineItemProofApprovals.responderName,
-      responderEmail: lineItemProofApprovals.responderEmail,
-      responderSource: lineItemProofApprovals.responderSource,
-      respondedAt: lineItemProofApprovals.respondedAt,
-    })
-    .from(lineItemProofApprovals)
-    .where(and(eq(lineItemProofApprovals.organizationId, args.organizationId), eq(lineItemProofApprovals.lineItemId, args.lineItemId)))
-    .orderBy(desc(lineItemProofApprovals.respondedAt), desc(lineItemProofApprovals.createdAt));
-
-  const versions: ProofVersionHistoryEntry[] = rawVersions.map((version: (typeof rawVersions)[number]) => ({
-    id: version.id,
-    proofFileId: version.proofFileId,
-    versionNumber: version.versionNumber,
-    status: version.status,
-    sentAt: version.sentAt ? new Date(version.sentAt).toISOString() : null,
-    createdAt: new Date(version.createdAt).toISOString(),
-    sentToName: version.sentToName ?? null,
-    sentToEmail: version.sentToEmail ?? null,
-  }));
-
-  const approvals: ProofDecisionHistoryEntry[] = rawApprovals.map((approval: (typeof rawApprovals)[number]) => ({
-    id: approval.id,
-    proofVersionId: approval.proofVersionId,
-    decision: approval.decision,
-    responseNotes: approval.responseNotes ?? null,
-    responderName: approval.responderName ?? null,
-    responderEmail: approval.responderEmail ?? null,
-    responderSource: approval.responderSource ?? null,
-    respondedAt: new Date(approval.respondedAt).toISOString(),
-  }));
-
-  const currentActionableProofVersion = versions.find((version) => isActionableProofStatus(version.status)) ?? null;
-  const approvedVersion = lineItem.approvedProofVersionId
-    ? versions.find((version) => version.id === lineItem.approvedProofVersionId) ?? null
-    : null;
-  const approvalIdsByVersionId = new Map(approvals.map((approval) => [approval.proofVersionId, approval.id]));
-
-  const currentActionableProofVersionId = currentActionableProofVersion?.id ?? null;
-  const currentActionableProofDecisionId = currentActionableProofVersionId
-    ? approvalIdsByVersionId.get(currentActionableProofVersionId) ?? null
-    : null;
-
-  const blockedPendingProofApproval = isBlockedPendingProofApproval({
-    workflowState: lineItem.workflowState,
-    requiresProofApproval: lineItem.requiresProofApproval,
-    approvedProofVersionId: lineItem.approvedProofVersionId,
-    currentActionableProofVersion,
+  const truthMap = await resolveProofingTruthMap(tx, {
+    organizationId: args.organizationId,
+    lineItems: [lineItem],
   });
 
-  return {
-    lineItemId: lineItem.lineItemId,
-    orderId: lineItem.orderId,
-    workflowState: normalizeProofingWorkflowState(lineItem.workflowState),
-    requiresProofApproval: lineItem.requiresProofApproval,
-    approvedProofVersionId: lineItem.approvedProofVersionId,
-    currentActionableProofVersionId,
-    currentActionableProofDecisionId,
-    currentActionableProofVersion,
-    approvedProofVersion: approvedVersion,
-    proofVersionHistory: versions,
-    proofDecisionHistory: approvals,
-    blockedPendingProofApproval,
-  };
+  const truth = truthMap.get(args.lineItemId);
+  if (!truth) {
+    throw Object.assign(new Error("Failed to resolve proofing truth"), { statusCode: 500 });
+  }
+
+  return truth;
 }
