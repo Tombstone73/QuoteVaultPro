@@ -14,7 +14,8 @@ type PrepressQueueItem = {
   productName?: string;
   media?: string | null;
   status: string;
-  prepressStage?: "pending_prepress" | "in_prepress" | "prepress_complete";
+  workflowState: "ready_for_prepress" | "in_prepress";
+  hasCompletedSession?: boolean;
   sessionId: string | null;
   sessionStartedAt?: string | null;
   hasDownstreamActiveJob?: boolean;
@@ -109,7 +110,7 @@ test.describe.serial("prepress page DEV validation", () => {
 
         const startedItem = await pollForPrepressQueueItem(page, candidate.lineItemId, {
           timeoutMs: 20_000,
-          matcher: (item) => item.prepressStage === "in_prepress" && !!item.sessionId && !!item.sessionStartedAt,
+          matcher: (item) => item.workflowState === "in_prepress" && !!item.sessionId && !!item.sessionStartedAt,
         });
 
         candidate = {
@@ -198,7 +199,7 @@ test.describe.serial("prepress page DEV validation", () => {
 
       const completedItem = await pollForPrepressQueueItem(page, candidate!.lineItemId, {
         timeoutMs: 20_000,
-        matcher: (item) => item.prepressStage === "prepress_complete" && item.sessionId === null,
+        matcher: (item) => item.workflowState === "in_prepress" && item.hasCompletedSession === true && item.sessionId === null,
       });
 
       candidate = {
@@ -208,7 +209,8 @@ test.describe.serial("prepress page DEV validation", () => {
 
       await expect(prepressCandidateCardLocator(page, candidate!)).toBeVisible();
       await expect(page.locator("main h2")).toContainText(candidate!.jobNumber);
-      await expect(page.locator("main header").getByText("Complete", { exact: true })).toBeVisible();
+      await expect(page.locator("main header").getByText("In Prepress", { exact: true })).toBeVisible();
+      await expect(page.getByText("Session complete", { exact: true })).toBeVisible();
       await expect(page.getByRole("button", { name: /^Send to Production$/ })).toBeEnabled();
     });
   });
@@ -267,7 +269,8 @@ async function findPrepressCompleteCandidate(page: Page): Promise<ValidationCand
   const queueItems = await getPrepressQueue(page);
   const candidate = queueItems.find((item) => {
     return (
-      item.prepressStage === "prepress_complete" &&
+      item.workflowState === "in_prepress" &&
+      item.hasCompletedSession === true &&
       item.isActivelyOwnedByPrepress === true &&
       !item.hasDownstreamActiveJob &&
       (item.fileCounts?.finals ?? 0) > 0
@@ -367,7 +370,7 @@ async function findPendingPrepressCandidate(page: Page): Promise<ValidationCandi
   const queueItems = await getPrepressQueue(page);
   const pendingCandidate = queueItems.find((item) => {
     return (
-      item.prepressStage === "pending_prepress" &&
+      item.workflowState === "ready_for_prepress" &&
       item.sessionId === null &&
       item.isActivelyOwnedByPrepress === true &&
       !item.hasDownstreamActiveJob
@@ -388,7 +391,7 @@ async function findActivePrepressCandidate(page: Page): Promise<ValidationCandid
   const queueItems = await getPrepressQueue(page);
   const activeCandidate = queueItems.find((item) => {
     return (
-      item.prepressStage === "in_prepress" &&
+      item.workflowState === "in_prepress" &&
       item.sessionId !== null &&
       !!item.sessionStartedAt &&
       item.isActivelyOwnedByPrepress === true &&
