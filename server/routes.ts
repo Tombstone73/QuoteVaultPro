@@ -60,6 +60,7 @@ import { stationResolver } from "./services/stations/stationResolver";
 import { routeLineItemToProduction } from "./services/productionRoutingService";
 import { resolveInitialProductionRoute, resolvePostPrepressProductionRoute } from "./services/productionRoutingResolver";
 import { getInitialWorkflowState, transitionLineItemWorkflowState } from "./services/lineItemWorkflowService";
+import { createLineItemProofVersion, markProofVersionSent, recordProofResponse, resolveLineItemProofingTruth } from "./services/proofingService";
 import {
   findActiveJobForLineItem,
   isDesignOwnershipJob,
@@ -14672,6 +14673,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           "new",
           "needs_design",
           "in_design",
+          "awaiting_proof_approval",
           "ready_for_prepress",
           "in_prepress",
           "ready_for_production",
@@ -14739,6 +14741,206 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const status = error?.statusCode || 500;
       console.error("[Workflow] Error transitioning line item workflow:", error);
       return res.status(status).json({ error: error?.message || "Failed to transition workflow" });
+    }
+  });
+
+  app.get("/api/proofing/line-item/:lineItemId", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const truth = await resolveLineItemProofingTruth(db, {
+        organizationId,
+        lineItemId: String(req.params.lineItemId),
+      });
+
+      return res.json({ success: true, data: truth });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error resolving line-item proofing truth:", error);
+      return res.status(status).json({ error: error?.message || "Failed to resolve proofing truth" });
+    }
+  });
+
+  app.post("/api/proofing/line-item/:lineItemId/versions", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.object({
+        proofFileId: z.string().min(1),
+        internalNotes: z.string().optional().nullable(),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const lineItemId = String(req.params.lineItemId);
+      const created = await db.transaction(async (tx) => {
+        const proofVersion = await createLineItemProofVersion(tx, {
+          organizationId,
+          lineItemId,
+          proofFileId: parsed.data.proofFileId,
+          createdByUserId: userId,
+          internalNotes: parsed.data.internalNotes ?? null,
+        });
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "CREATE",
+          entityType: "line_item_proof_version",
+          entityId: proofVersion.id,
+          entityName: `Proof v${proofVersion.versionNumber}`,
+          description: `Created proof version ${proofVersion.versionNumber} for line item ${lineItemId}`,
+          newValues: {
+            lineItemId,
+            proofFileId: proofVersion.proofFileId,
+            versionNumber: proofVersion.versionNumber,
+            status: proofVersion.status,
+          },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        return proofVersion;
+      });
+
+      return res.json({ success: true, data: created });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error creating proof version:", error);
+      return res.status(status).json({ error: error?.message || "Failed to create proof version" });
+    }
+  });
+
+  app.post("/api/proofing/versions/:proofVersionId/send", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.object({
+        sentToName: z.string().optional().nullable(),
+        sentToEmail: z.string().optional().nullable(),
+        customerMessage: z.string().optional().nullable(),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const result = await db.transaction(async (tx) => {
+        const sendResult = await markProofVersionSent(tx, {
+          organizationId,
+          proofVersionId: String(req.params.proofVersionId),
+          actorUserId: userId,
+          sentToName: parsed.data.sentToName ?? null,
+          sentToEmail: parsed.data.sentToEmail ?? null,
+          customerMessage: parsed.data.customerMessage ?? null,
+        });
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "UPDATE",
+          entityType: "line_item_proof_version",
+          entityId: sendResult.proofVersion.id,
+          entityName: `Proof v${sendResult.proofVersion.versionNumber}`,
+          description: `Sent proof version ${sendResult.proofVersion.versionNumber} for review`,
+          oldValues: {
+            status: "draft",
+            workflowState: sendResult.workflowTransition.fromState,
+          },
+          newValues: {
+            status: sendResult.proofVersion.status,
+            lineItemId: sendResult.proofVersion.lineItemId,
+            workflowState: sendResult.workflowTransition.toState,
+            sentToEmail: sendResult.proofVersion.sentToEmail,
+          },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        return sendResult;
+      });
+
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error sending proof version for review:", error);
+      return res.status(status).json({ error: error?.message || "Failed to send proof version for review" });
+    }
+  });
+
+  app.post("/api/proofing/versions/:proofVersionId/respond", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.object({
+        decision: z.enum(["approved", "rejected", "revision_requested"]),
+        responseNotes: z.string().optional().nullable(),
+        responderName: z.string().optional().nullable(),
+        responderEmail: z.string().optional().nullable(),
+        responderSource: z.string().optional().nullable(),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const result = await db.transaction(async (tx) => {
+        const responseResult = await recordProofResponse(tx, {
+          organizationId,
+          proofVersionId: String(req.params.proofVersionId),
+          actorUserId: userId,
+          responderName: parsed.data.responderName ?? null,
+          responderEmail: parsed.data.responderEmail ?? null,
+          responderSource: parsed.data.responderSource ?? null,
+          decision: parsed.data.decision,
+          responseNotes: parsed.data.responseNotes ?? null,
+        });
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "CREATE",
+          entityType: "line_item_proof_approval",
+          entityId: responseResult.approval.id,
+          entityName: `Proof response ${responseResult.approval.id}`,
+          description: `Recorded ${responseResult.approval.decision} response for proof version ${responseResult.approval.proofVersionId}`,
+          newValues: {
+            lineItemId: responseResult.approval.lineItemId,
+            proofVersionId: responseResult.approval.proofVersionId,
+            decision: responseResult.approval.decision,
+            workflowState: responseResult.workflowTransition.toState,
+          },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        return responseResult;
+      });
+
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error recording proof response:", error);
+      return res.status(status).json({ error: error?.message || "Failed to record proof response" });
     }
   });
 

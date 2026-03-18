@@ -112,6 +112,7 @@ export type LineItemWorkflowState =
   | "new"
   | "needs_design"
   | "in_design"
+  | "awaiting_proof_approval"
   | "ready_for_prepress"
   | "in_prepress"
   | "ready_for_production"

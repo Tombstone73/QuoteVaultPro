@@ -75,7 +75,8 @@ const ORDER_ATTACHMENT_SAFE_SELECT = {
     updatedAt: orderAttachments.updatedAt,
 } as const;
 
-type CreateOrderLineItemInput = Omit<InsertOrderLineItem, 'orderId'> & {
+type CreateOrderLineItemInput = Omit<InsertOrderLineItem, 'orderId' | 'requiresProofApproval'> & {
+    requiresProofApproval?: boolean;
     variantId?: string | null;
     productName?: string | null;
     unit_price?: number | string | null;
@@ -878,6 +879,7 @@ export class OrdersRepository {
                 status: initialStatus,
                 workflowState,
                 requiresDesign, // From quote line item routing truth (migration 0015)
+                requiresProofApproval: false,
                 requiresPrepress, // Snapshot prepress requirement (TEMP→PERMANENT)
                 specsJson: ql.specsJson,
                 selectedOptions: ql.selectedOptions,

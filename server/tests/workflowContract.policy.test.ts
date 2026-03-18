@@ -27,6 +27,7 @@ describe("workflow contract policy", () => {
   test("ownerless states match the stable contract", () => {
     expect(OWNERLESS_WORKFLOW_STATES).toEqual([
       "new",
+      "awaiting_proof_approval",
       "on_hold",
       "completed",
       "canceled",
@@ -70,7 +71,7 @@ describe("routing edit guard", () => {
     expect(canEditLineItemRouting({ workflowState: state, hasActiveJob: false })).toBe(true);
   });
 
-  test.each(["in_design", "in_prepress", "in_production", "on_hold", "completed", "canceled"])(
+  test.each(["in_design", "awaiting_proof_approval", "in_prepress", "in_production", "on_hold", "completed", "canceled"])(
     "blocks reroute edits for non-intake-safe state %s",
     (state) => {
       expect(canEditLineItemRouting({ workflowState: state, hasActiveJob: false })).toBe(false);
@@ -83,4 +84,10 @@ describe("routing edit guard", () => {
       expect(canEditLineItemRouting({ workflowState: state, hasActiveJob: true })).toBe(false);
     },
   );
+
+  test("awaiting proof approval remains ownerless and blocks reroute edits", () => {
+    expect(workflowStateIsIntentionallyOwnerless("awaiting_proof_approval")).toBe(true);
+    expect(workflowStateRequiresActiveOwner("awaiting_proof_approval")).toBe(false);
+    expect(canEditLineItemRouting({ workflowState: "awaiting_proof_approval", hasActiveJob: false })).toBe(false);
+  });
 });
