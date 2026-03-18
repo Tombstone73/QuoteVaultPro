@@ -133,6 +133,8 @@ export type LineItemWorkflowTransitionResult = {
 
 export type DesignQueueWorkflowState = Extract<LineItemWorkflowState, "needs_design" | "in_design">;
 
+export type PrepressQueueWorkflowState = Extract<LineItemWorkflowState, "ready_for_prepress" | "in_prepress">;
+
 export type DesignQueueItem = {
   lineItemId: string;
   orderId: string;
@@ -159,6 +161,55 @@ export type DesignQueueItem = {
     originals: number;
     proofs: number;
   };
+};
+
+export type PrepressQueueItem = {
+  lineItemId: string;
+  orderId: string;
+  jobNumber: string;
+  customerName: string;
+  productName: string;
+  printType: string | null;
+  media: string | null;
+  dueDate: string | null;
+  status: string;
+  workflowState: PrepressQueueWorkflowState;
+  hasCompletedSession: boolean;
+  rush: boolean;
+  assignedTo: string | null;
+  sessionId: string | null;
+  sessionStartedAt: string | null;
+  sessionStartedByUserId: string | null;
+  prepressNotes: string | null;
+  issueFlag: boolean;
+  issueType: string | null;
+  hasDownstreamActiveJob: boolean;
+  hasAnyProductionJob: boolean;
+  activeOwnerJobId: string | null;
+  activeOwnerStationKey: string | null;
+  activeOwnerStepKey: string | null;
+  isActivelyOwnedByPrepress: boolean;
+  thumbFileId: string | null;
+  thumbSelectionReason: "thumbFileId" | "original_fallback" | "final_fallback" | "none" | null;
+  thumbCandidateMimeType: string | null;
+  thumbnailUrl: string | null;
+  fileCounts: {
+    originals: number;
+    finals: number;
+  };
+  quantity: number;
+  width: number | null;
+  height: number | null;
+  sqFootage: number | null;
+  bleed: string | null;
+  finishing: string | null;
+  finishingBullets?: string[];
+  optionsRows?: Array<{
+    groupLabel?: string | null;
+    optionLabel: string;
+    selectedLabel: string;
+    isDefault?: boolean;
+  }>;
 };
 
 export type OrderWithRelations = Order & {

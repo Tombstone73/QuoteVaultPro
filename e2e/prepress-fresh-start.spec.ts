@@ -14,7 +14,8 @@ type PrepressQueueItem = {
   customerName?: string;
   productName?: string;
   status: string;
-  prepressStage?: "pending_prepress" | "in_prepress" | "prepress_complete";
+  workflowState: "ready_for_prepress" | "in_prepress";
+  hasCompletedSession?: boolean;
   sessionId: string | null;
   sessionStartedAt?: string | null;
   isActivelyOwnedByPrepress?: boolean;
@@ -30,7 +31,7 @@ type PendingFixtureRow = {
 const ORG_ID = "org_titan_001";
 
 test.describe.serial("prepress fresh start validation", () => {
-  test("pending_prepress UI start path transitions cleanly to in_prepress", async ({ page }) => {
+  test("ready_for_prepress UI start path transitions cleanly to in_prepress", async ({ page }) => {
     test.setTimeout(180_000);
     await ensureAuthenticated(page);
 
@@ -56,7 +57,7 @@ test.describe.serial("prepress fresh start validation", () => {
 
     const startedItem = await pollForPrepressQueueItem(page, pendingFixture.lineItemId, {
       matcher: (item) =>
-        item.prepressStage === "in_prepress" &&
+        item.workflowState === "in_prepress" &&
         item.isActivelyOwnedByPrepress === true &&
         !!item.sessionId &&
         !!item.sessionStartedAt,
@@ -115,7 +116,7 @@ async function provisionPendingPrepressFixture(page: Page): Promise<PrepressQueu
     try {
       const queueItem = await pollForPrepressQueueItem(page, candidate.line_item_id, {
         matcher: (item) =>
-          item.prepressStage === "pending_prepress" &&
+          item.workflowState === "ready_for_prepress" &&
           item.isActivelyOwnedByPrepress === true &&
           !item.sessionId &&
           !item.hasDownstreamActiveJob,

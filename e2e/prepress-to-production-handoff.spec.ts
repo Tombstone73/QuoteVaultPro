@@ -12,7 +12,8 @@ type PrepressQueueItem = {
   lineItemId: string;
   productName?: string;
   status: string;
-  prepressStage?: "pending_prepress" | "in_prepress" | "prepress_complete";
+  workflowState: "ready_for_prepress" | "in_prepress";
+  hasCompletedSession?: boolean;
   sessionId: string | null;
   hasDownstreamActiveJob?: boolean;
   isActivelyOwnedByPrepress?: boolean;
@@ -163,9 +164,9 @@ async function getReadyCandidate(page: Page, orderNumber: string): Promise<Prepr
     throw new Error(`Order ${orderNumber} is not actively owned by prepress yet.`);
   }
 
-  if (candidate.prepressStage !== "prepress_complete") {
+  if (candidate.workflowState !== "in_prepress" || candidate.hasCompletedSession !== true) {
     throw new Error(
-      `Order ${orderNumber} is not ready for send. Expected prepress_complete but found ${candidate.prepressStage ?? "unknown"}.`
+      `Order ${orderNumber} is not ready for send. Expected workflowState=in_prepress with hasCompletedSession=true but found workflowState=${candidate.workflowState ?? "unknown"}, hasCompletedSession=${String(candidate.hasCompletedSession)}.`
     );
   }
 

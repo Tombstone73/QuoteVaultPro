@@ -15,57 +15,7 @@ import { useToast } from "@/hooks/use-toast";
 import { formatDistanceToNow } from "date-fns";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
-
-// API Types
-type QueueItem = {
-  lineItemId: string;
-  orderId?: string;
-  jobNumber: string;
-  customerName: string;
-  productName: string;
-  printType: string | null;
-  media: string | null;
-  dueDate: string | null;
-  status: string;
-  workflowState?: "ready_for_prepress" | "in_prepress" | "ready_for_production" | "in_production" | "completed" | "on_hold" | "canceled" | string;
-  hasCompletedSession?: boolean;
-  rush: boolean;
-  assignedTo: string | null;
-  sessionId: string | null;
-  sessionStartedAt?: string | null;
-  sessionStartedByUserId?: string | null;
-  prepressNotes?: string | null;
-  issueFlag?: boolean;
-  issueType?: string | null;
-  hasDownstreamActiveJob?: boolean;
-  hasAnyProductionJob?: boolean;
-  activeOwnerJobId?: string | null;
-  activeOwnerStationKey?: string | null;
-  activeOwnerStepKey?: string | null;
-  isActivelyOwnedByPrepress?: boolean;
-  thumbFileId?: string | null;
-  thumbSelectionReason?: "thumbFileId" | "original_fallback" | "final_fallback" | "none" | null;
-  thumbCandidateMimeType?: string | null;
-  thumbnailUrl?: string | null;
-  fileCounts: {
-    originals: number;
-    finals: number;
-  };
-  // Job specs for detail view
-  quantity: number;
-  width: number | null;
-  height: number | null;
-  sqFootage: number | null;
-  bleed: string | null;
-  finishing: string | null;
-  finishingBullets?: string[];
-  optionsRows?: Array<{
-    groupLabel?: string | null;
-    optionLabel: string;
-    selectedLabel: string;
-    isDefault?: boolean;
-  }>;
-};
+import type { PrepressQueueItem, PrepressQueueWorkflowState } from "@/hooks/useOrders";
 
 type LineItemFile = {
   id: string;
@@ -119,12 +69,17 @@ type PendingViewerRequest = {
   preferredFileId?: string | null;
 };
 
-function getPrepressWorkflowDisplay(item: Pick<QueueItem, "workflowState" | "hasCompletedSession"> | null | undefined) {
-  const workflowState = String(item?.workflowState || "ready_for_prepress").toLowerCase();
+function formatOwnerLabel(item: Pick<PrepressQueueItem, "activeOwnerStepKey" | "activeOwnerStationKey"> | null | undefined) {
+  const rawValue = item?.activeOwnerStepKey || item?.activeOwnerStationKey;
+  return rawValue ? rawValue.replace(/_/g, " ") : null;
+}
+
+function getPrepressWorkflowDisplay(item: Pick<PrepressQueueItem, "workflowState" | "hasCompletedSession"> | null | undefined) {
+  const workflowState = String(item?.workflowState || "ready_for_prepress").toLowerCase() as PrepressQueueWorkflowState;
 
   if (workflowState === "in_prepress") {
     return {
-      label: "IN PREPRESS",
+      label: "In Prepress",
       bgClass: "bg-[#1773cf]/20",
       textClass: "text-[#1773cf]",
       borderClass: "border-[#1773cf]/30",
@@ -133,7 +88,7 @@ function getPrepressWorkflowDisplay(item: Pick<QueueItem, "workflowState" | "has
   }
 
   return {
-    label: "READY FOR PREPRESS",
+    label: "Ready for Prepress",
     bgClass: "bg-slate-700",
     textClass: "text-slate-300",
     borderClass: "border-[#2d3748]",
@@ -343,7 +298,7 @@ export default function PrepressProductionPageV2() {
       if (import.meta.env.DEV) {
         console.log("[Prepress Queue]", data.data?.length || 0, "items");
       }
-      return data.data as QueueItem[];
+      return data.data as PrepressQueueItem[];
     },
     staleTime: 0,
     refetchInterval: 10000,
@@ -663,6 +618,7 @@ export default function PrepressProductionPageV2() {
   const queue = queueData || [];
   const filteredQueue = queue;
   const selectedItem = queue.find(q => q.lineItemId === selectedLineItemId) ?? null;
+  const selectedOwnerLabel = formatOwnerLabel(selectedItem);
   const originalFiles = filesData?.originals || [];
   const finalFiles = filesData?.finals || [];
   const bridgedOriginalFiles = filesData?.bridgedOriginals || [];
@@ -742,7 +698,7 @@ export default function PrepressProductionPageV2() {
   const plannedMaterialsMessage = materialsEffectiveData?.message;
   const materialsAvailability = materialsAvailabilityData?.items || [];
   const materialsAllAvailable = materialsAvailabilityData?.allAvailable ?? true;
-  const isOwnedByPrepress = !!selectedItem?.isActivelyOwnedByPrepress;
+  const isOwnedByPrepress = selectedItem?.isActivelyOwnedByPrepress === true;
   const selectedWorkflowState = String(selectedItem?.workflowState || "").toLowerCase();
   const selectedWorkflowDisplay = getPrepressWorkflowDisplay(selectedItem);
   const canStartPrepress =
@@ -942,7 +898,7 @@ export default function PrepressProductionPageV2() {
     openSharedViewer(selectedLineItemId, fileId);
   };
 
-  const handleOpenQueuePreview = (item: QueueItem) => {
+  const handleOpenQueuePreview = (item: PrepressQueueItem) => {
     openSharedViewer(item.lineItemId, item.thumbFileId || null);
   };
 
@@ -1195,9 +1151,9 @@ export default function PrepressProductionPageV2() {
                   {selectedItem.assignedTo && (
                     <span className="text-slate-400 text-xs">Assigned to: {selectedItem.assignedTo}</span>
                   )}
-                  {(selectedItem.activeOwnerStepKey || selectedItem.activeOwnerStationKey) && (
+                  {selectedOwnerLabel && (
                     <span className="text-slate-400 text-xs">
-                      Owner: {selectedItem.activeOwnerStepKey || selectedItem.activeOwnerStationKey}
+                      Owner: {selectedOwnerLabel}
                     </span>
                   )}
                   {selectedWorkflowState === "in_prepress" && selectedItem.sessionStartedAt && (
@@ -1313,14 +1269,14 @@ export default function PrepressProductionPageV2() {
                         if (!acc[key]) acc[key] = [];
                         acc[key].push(row);
                         return acc;
-                      }, {} as Record<string, NonNullable<QueueItem["optionsRows"]>>)
+                      }, {} as Record<string, NonNullable<PrepressQueueItem["optionsRows"]>>)
                     ).map(([groupLabel, rows]) => (
                       <div key={groupLabel}>
                         {groupLabel !== "Options" && (
                           <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-0.5">{groupLabel}</p>
                         )}
                         <ul className="text-sm font-medium list-disc pl-4 space-y-0.5">
-                          {rows.map((row, index) => (
+                          {rows.map((row: NonNullable<PrepressQueueItem["optionsRows"]>[number], index: number) => (
                             <li key={`${groupLabel}-${row.optionLabel}-${row.selectedLabel}-${index}`} className="flex items-center gap-2 flex-wrap">
                               <span>{row.optionLabel}: {row.selectedLabel}</span>
                               {typeof row.isDefault === "boolean" ? (
@@ -2111,8 +2067,9 @@ export default function PrepressProductionPageV2() {
   );
 }
 
-function JobCard({ item, isSelected, onClick, onPreviewClick }: { item: QueueItem; isSelected: boolean; onClick: () => void; onPreviewClick: () => void }) {
+function JobCard({ item, isSelected, onClick, onPreviewClick }: { item: PrepressQueueItem; isSelected: boolean; onClick: () => void; onPreviewClick: () => void }) {
   const config = getPrepressWorkflowDisplay(item);
+  const ownerLabel = formatOwnerLabel(item);
 
   React.useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -2165,7 +2122,7 @@ function JobCard({ item, isSelected, onClick, onPreviewClick }: { item: QueueIte
             {item.jobNumber}
           </span>
           <div className="flex flex-col items-end gap-1">
-            <span className={cn("text-[8px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider", config.bgClass, config.textClass, config.borderClass)}>
+            <span className={cn("text-[8px] font-bold px-1.5 py-0.5 rounded border tracking-wider", config.bgClass, config.textClass, config.borderClass)}>
               {config.label}
             </span>
             {config.note && <span className="text-[8px] font-semibold text-emerald-300">{config.note}</span>}
@@ -2174,10 +2131,10 @@ function JobCard({ item, isSelected, onClick, onPreviewClick }: { item: QueueIte
         <p className="text-xs font-semibold truncate text-slate-200">{item.customerName}</p>
         <p className="text-[10px] truncate text-slate-400">{item.productName}</p>
         <div className="flex items-center justify-between mt-1 text-[9px]">
-          {item.assignedTo ? (
-            <span className="text-slate-500">Assigned: {item.assignedTo}</span>
+          {ownerLabel ? (
+            <span className="text-slate-500">Owner: {ownerLabel}</span>
           ) : (
-            <span className="text-slate-500">Unassigned</span>
+            <span className="text-slate-500">Owner: none</span>
           )}
           {item.rush && <span className="text-[#e53e3e] font-bold">RUSH</span>}
           {item.dueDate && !item.rush && <span className="text-slate-400">{new Date(item.dueDate).toLocaleDateString()}</span>}
