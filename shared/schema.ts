@@ -4955,6 +4955,28 @@ export const lineItemProofApprovals = pgTable("line_item_proof_approvals", {
   uniqueIndex("line_item_proof_approvals_version_uidx").on(table.proofVersionId),
 ]);
 
+export const lineItemProofManualApprovalOverrides = pgTable("line_item_proof_manual_approval_overrides", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  proofVersionId: varchar("proof_version_id").notNull().references(() => lineItemProofVersions.id, { onDelete: 'cascade' }),
+  source: varchar("source", { length: 50 }).notNull().default('manual_override'),
+  overrideReason: text("override_reason").notNull(),
+  internalNote: text("internal_note"),
+  actorUserId: varchar("actor_user_id").references(() => users.id, { onDelete: 'set null' }),
+  actorName: varchar("actor_name", { length: 255 }),
+  actorEmail: varchar("actor_email", { length: 255 }),
+  overriddenAt: timestamp("overridden_at", { withTimezone: true }).defaultNow().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("line_item_proof_manual_approval_overrides_org_idx").on(table.organizationId),
+  index("line_item_proof_manual_approval_overrides_order_idx").on(table.orderId),
+  index("line_item_proof_manual_approval_overrides_line_item_idx").on(table.lineItemId),
+  index("line_item_proof_manual_approval_overrides_created_at_idx").on(table.createdAt),
+  uniqueIndex("line_item_proof_manual_approval_overrides_version_uidx").on(table.proofVersionId),
+]);
+
 // Zod schemas
 export const insertPrepressSessionSchema = createInsertSchema(prepressSessions).omit({
   id: true,
@@ -4995,6 +5017,17 @@ export const updateLineItemProofApprovalSchema = insertLineItemProofApprovalSche
   id: z.string(),
 });
 
+export const insertLineItemProofManualApprovalOverrideSchema = createInsertSchema(lineItemProofManualApprovalOverrides).omit({
+  id: true,
+  source: true,
+  overriddenAt: true,
+  createdAt: true,
+});
+
+export const updateLineItemProofManualApprovalOverrideSchema = insertLineItemProofManualApprovalOverrideSchema.partial().extend({
+  id: z.string(),
+});
+
 // Types
 export type PrepressSession = typeof prepressSessions.$inferSelect;
 export type InsertPrepressSession = z.infer<typeof insertPrepressSessionSchema>;
@@ -5011,6 +5044,10 @@ export type UpdateLineItemProofVersion = z.infer<typeof updateLineItemProofVersi
 export type LineItemProofApproval = typeof lineItemProofApprovals.$inferSelect;
 export type InsertLineItemProofApproval = z.infer<typeof insertLineItemProofApprovalSchema>;
 export type UpdateLineItemProofApproval = z.infer<typeof updateLineItemProofApprovalSchema>;
+
+export type LineItemProofManualApprovalOverride = typeof lineItemProofManualApprovalOverrides.$inferSelect;
+export type InsertLineItemProofManualApprovalOverride = z.infer<typeof insertLineItemProofManualApprovalOverrideSchema>;
+export type UpdateLineItemProofManualApprovalOverride = z.infer<typeof updateLineItemProofManualApprovalOverrideSchema>;
 
 // ============================================================
 // REPRINT REQUESTS

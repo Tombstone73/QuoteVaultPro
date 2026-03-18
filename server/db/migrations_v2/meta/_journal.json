@@ -120,6 +120,13 @@
       "when": 1773842340043,
       "tag": "0016_line_item_proofing_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1773872609328,
+      "tag": "0017_line_item_proof_manual_approval_overrides",
+      "breakpoints": true
     }
   ]
 }
