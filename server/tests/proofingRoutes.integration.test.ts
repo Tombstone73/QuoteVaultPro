@@ -1,0 +1,735 @@
+import { afterAll, afterEach, beforeAll, describe, expect, jest, test } from "@jest/globals";
+import express, { NextFunction, Response } from "express";
+import request from "supertest";
+import { sql } from "drizzle-orm";
+import { z } from "zod";
+import { fromZodError } from "zod-validation-error";
+
+jest.mock("../services/productionRoutingService", () => {
+  const { productionJobs } = require("../../shared/schema");
+  return {
+    routeLineItemToProduction: jest.fn(async ({ tx, organizationId, orderId, lineItemId, stationKey, stepKey }: any) => {
+      const [created] = await tx
+        .insert(productionJobs)
+        .values({
+          organizationId,
+          orderId,
+          lineItemId,
+          stationKey,
+          stepKey,
+          status: "queued",
+        })
+        .returning({ id: productionJobs.id });
+
+      return {
+        outcome: "created",
+        jobId: created.id,
+        stationKey,
+        stepKey,
+      };
+    }),
+  };
+});
+
+import { db } from "../db";
+import { tenantContext, getRequestOrganizationId } from "../tenantContext";
+import { auditLogs } from "../../shared/schema";
+import { proofingReadModelSchema, type ProofVersionHistoryEntry } from "../../shared/proofing";
+import { createLineItemProofVersion, markProofVersionSent, recordProofResponse, resolveLineItemProofingTruth } from "../services/proofingService";
+import { transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
+
+async function ensureProofingSchemaReady() {
+  await db.execute(sql`alter table order_line_items add column if not exists requires_proof_approval boolean not null default false`);
+  await db.execute(sql`alter table order_line_items add column if not exists approved_proof_version_id varchar`);
+
+  await db.execute(sql`
+    do $$
+    begin
+      create type line_item_proof_version_status as enum (
+        'draft',
+        'awaiting_response',
+        'approved',
+        'rejected',
+        'revision_requested',
+        'superseded'
+      );
+    exception
+      when duplicate_object then null;
+    end $$;
+  `);
+
+  await db.execute(sql`
+    do $$
+    begin
+      create type line_item_proof_response_decision as enum (
+        'approved',
+        'rejected',
+        'revision_requested'
+      );
+    exception
+      when duplicate_object then null;
+    end $$;
+  `);
+
+  await db.execute(sql`
+    create table if not exists line_item_proof_versions (
+      id varchar primary key default gen_random_uuid()::text,
+      organization_id varchar not null references organizations(id) on delete cascade,
+      order_id varchar not null references orders(id) on delete cascade,
+      line_item_id varchar not null references order_line_items(id) on delete cascade,
+      proof_file_id varchar not null references order_attachments(id) on delete restrict,
+      version_number integer not null,
+      status line_item_proof_version_status not null default 'draft',
+      internal_notes text,
+      customer_message text,
+      sent_to_name varchar(255),
+      sent_to_email varchar(255),
+      sent_by_user_id varchar references users(id) on delete set null,
+      sent_at timestamp with time zone,
+      created_by_user_id varchar not null references users(id) on delete restrict,
+      created_at timestamp with time zone not null default now(),
+      updated_at timestamp with time zone not null default now()
+    )
+  `);
+
+  await db.execute(sql`create index if not exists line_item_proof_versions_org_idx on line_item_proof_versions (organization_id)`);
+  await db.execute(sql`create index if not exists line_item_proof_versions_order_idx on line_item_proof_versions (order_id)`);
+  await db.execute(sql`create index if not exists line_item_proof_versions_line_item_idx on line_item_proof_versions (line_item_id)`);
+  await db.execute(sql`create index if not exists line_item_proof_versions_status_idx on line_item_proof_versions (status)`);
+  await db.execute(sql`create index if not exists line_item_proof_versions_proof_file_idx on line_item_proof_versions (proof_file_id)`);
+  await db.execute(sql`create unique index if not exists line_item_proof_versions_line_item_version_uidx on line_item_proof_versions (line_item_id, version_number)`);
+  await db.execute(sql`create unique index if not exists line_item_proof_versions_active_review_uidx on line_item_proof_versions (line_item_id) where status = 'awaiting_response'`);
+
+  await db.execute(sql`
+    create table if not exists line_item_proof_approvals (
+      id varchar primary key default gen_random_uuid()::text,
+      organization_id varchar not null references organizations(id) on delete cascade,
+      order_id varchar not null references orders(id) on delete cascade,
+      line_item_id varchar not null references order_line_items(id) on delete cascade,
+      proof_version_id varchar not null references line_item_proof_versions(id) on delete cascade,
+      decision line_item_proof_response_decision not null,
+      response_notes text,
+      responder_user_id varchar references users(id) on delete set null,
+      responder_name varchar(255),
+      responder_email varchar(255),
+      responder_source varchar(50) not null default 'internal',
+      responded_at timestamp with time zone not null default now(),
+      created_at timestamp with time zone not null default now()
+    )
+  `);
+
+  await db.execute(sql`create index if not exists line_item_proof_approvals_org_idx on line_item_proof_approvals (organization_id)`);
+  await db.execute(sql`create index if not exists line_item_proof_approvals_order_idx on line_item_proof_approvals (order_id)`);
+  await db.execute(sql`create index if not exists line_item_proof_approvals_line_item_idx on line_item_proof_approvals (line_item_id)`);
+  await db.execute(sql`create index if not exists line_item_proof_approvals_decision_idx on line_item_proof_approvals (decision)`);
+  await db.execute(sql`create unique index if not exists line_item_proof_approvals_version_uidx on line_item_proof_approvals (proof_version_id)`);
+
+  await db.execute(sql`
+    do $$
+    begin
+      if not exists (
+        select 1
+        from pg_constraint
+        where conname = 'order_line_items_approved_proof_version_id_fkey'
+      ) then
+        alter table order_line_items
+        add constraint order_line_items_approved_proof_version_id_fkey
+        foreign key (approved_proof_version_id)
+        references line_item_proof_versions(id)
+        on delete set null;
+      end if;
+    end $$;
+  `);
+}
+
+function getUserId(user: any): string | undefined {
+  return user?.claims?.sub || user?.id;
+}
+
+function assertInternalUser(req: any, res: Response) {
+  const role = String(req.user?.role ?? "").toLowerCase();
+  if (role === "customer") {
+    res.status(403).json({ error: "Access denied" });
+    return false;
+  }
+  return true;
+}
+
+function createTestApp() {
+  const app = express();
+  app.use(express.json());
+
+  app.use((req: any, _res: Response, next: NextFunction) => {
+    const userId = req.headers["x-test-user-id"];
+    const role = req.headers["x-test-user-role"] || "employee";
+    const orgId = req.headers["x-test-org-id"];
+
+    if (orgId) {
+      req.headers["x-organization-id"] = orgId;
+    }
+
+    if (userId) {
+      req.user = { id: userId, role };
+      req.isAuthenticated = () => true;
+    } else {
+      req.isAuthenticated = () => false;
+    }
+
+    next();
+  });
+
+  const isAuthenticated = (req: any, res: Response, next: NextFunction) => {
+    if (req.isAuthenticated && req.isAuthenticated()) return next();
+    return res.status(401).json({ error: "Unauthorized" });
+  };
+
+  app.get("/api/proofing/line-item/:lineItemId", isAuthenticated, tenantContext, async (req: any, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const truth = await resolveLineItemProofingTruth(db, {
+        organizationId,
+        lineItemId: String(req.params.lineItemId),
+      });
+
+      return res.json({ success: true, data: truth });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to resolve proofing truth" });
+    }
+  });
+
+  app.post("/api/proofing/line-item/:lineItemId/versions", isAuthenticated, tenantContext, async (req: any, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.object({
+        proofFileId: z.string().min(1),
+        internalNotes: z.string().optional().nullable(),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const lineItemId = String(req.params.lineItemId);
+      const created = await db.transaction(async (tx) => {
+        const proofVersion = await createLineItemProofVersion(tx, {
+          organizationId,
+          lineItemId,
+          proofFileId: parsed.data.proofFileId,
+          createdByUserId: userId,
+          internalNotes: parsed.data.internalNotes ?? null,
+        });
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "CREATE",
+          entityType: "line_item_proof_version",
+          entityId: proofVersion.id,
+          entityName: `Proof v${proofVersion.versionNumber}`,
+          description: `Created proof version ${proofVersion.versionNumber} for line item ${lineItemId}`,
+          newValues: {
+            lineItemId,
+            proofFileId: proofVersion.proofFileId,
+            versionNumber: proofVersion.versionNumber,
+            status: proofVersion.status,
+          },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        const proofing = await resolveLineItemProofingTruth(tx, {
+          organizationId,
+          lineItemId,
+        });
+
+        return { proofVersion, proofing };
+      });
+
+      return res.json({ success: true, data: created });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to create proof version" });
+    }
+  });
+
+  app.post("/api/proofing/versions/:proofVersionId/send", isAuthenticated, tenantContext, async (req: any, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.object({
+        sentToName: z.string().optional().nullable(),
+        sentToEmail: z.string().optional().nullable(),
+        customerMessage: z.string().optional().nullable(),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const result = await db.transaction(async (tx) => {
+        const sendResult = await markProofVersionSent(tx, {
+          organizationId,
+          proofVersionId: String(req.params.proofVersionId),
+          actorUserId: userId,
+          sentToName: parsed.data.sentToName ?? null,
+          sentToEmail: parsed.data.sentToEmail ?? null,
+          customerMessage: parsed.data.customerMessage ?? null,
+        });
+
+        const proofing = await resolveLineItemProofingTruth(tx, {
+          organizationId,
+          lineItemId: sendResult.proofVersion.lineItemId,
+        });
+
+        return {
+          ...sendResult,
+          proofing,
+        };
+      });
+
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to send proof version for review" });
+    }
+  });
+
+  app.post("/api/proofing/versions/:proofVersionId/respond", isAuthenticated, tenantContext, async (req: any, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.object({
+        decision: z.enum(["approved", "rejected", "revision_requested"]),
+        responseNotes: z.string().optional().nullable(),
+        responderName: z.string().optional().nullable(),
+        responderEmail: z.string().optional().nullable(),
+        responderSource: z.string().optional().nullable(),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const result = await db.transaction(async (tx) => {
+        const responseResult = await recordProofResponse(tx, {
+          organizationId,
+          proofVersionId: String(req.params.proofVersionId),
+          actorUserId: userId,
+          responderName: parsed.data.responderName ?? null,
+          responderEmail: parsed.data.responderEmail ?? null,
+          responderSource: parsed.data.responderSource ?? null,
+          decision: parsed.data.decision,
+          responseNotes: parsed.data.responseNotes ?? null,
+        });
+
+        const proofing = await resolveLineItemProofingTruth(tx, {
+          organizationId,
+          lineItemId: responseResult.approval.lineItemId,
+        });
+
+        return {
+          ...responseResult,
+          proofing,
+        };
+      });
+
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to record proof response" });
+    }
+  });
+
+  app.post("/api/line-items/:lineItemId/workflow-transition", isAuthenticated, tenantContext, async (req: any, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.object({
+        toState: z.enum([
+          "new",
+          "needs_design",
+          "in_design",
+          "awaiting_proof_approval",
+          "ready_for_prepress",
+          "in_prepress",
+          "ready_for_production",
+          "in_production",
+          "completed",
+          "on_hold",
+          "canceled",
+        ]),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const result = await db.transaction((tx) =>
+        transitionLineItemWorkflowState(tx, {
+          organizationId,
+          lineItemId: String(req.params.lineItemId),
+          toState: parsed.data.toState,
+          actorUserId: userId,
+        }),
+      );
+
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to transition workflow" });
+    }
+  });
+
+  return app;
+}
+
+describe("proofing route integration", () => {
+  const suffix = `${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+  const orgId = `org_proof_${suffix}`;
+  const userId = `user_proof_${suffix}`;
+  const customerId = `cust_proof_${suffix}`;
+  const productId = `prod_proof_${suffix}`;
+  const orderId = `order_proof_${suffix}`;
+  const app = createTestApp();
+
+  beforeAll(async () => {
+    await ensureProofingSchemaReady();
+
+    await db.execute(sql`
+      insert into organizations (id, name, slug)
+      values (${orgId}, ${`Proof Org ${suffix}`}, ${`proof-org-${suffix}`})
+      on conflict (id) do nothing
+    `);
+
+    await db.execute(sql`
+      insert into stations (organization_id, key, name, sort, active)
+      values
+        (${orgId}, ${"design"}, ${"Design"}, ${10}, ${true}),
+        (${orgId}, ${"prepress"}, ${"Prepress"}, ${20}, ${true})
+      on conflict (organization_id, key) do update
+      set name = excluded.name,
+          sort = excluded.sort,
+          active = excluded.active
+    `);
+
+    await db.execute(sql`
+      insert into production_station_steps (organization_id, station_key, key, label, sort_order, active, triggers)
+      values
+        (${orgId}, ${"design"}, ${"design"}, ${"Design"}, ${10}, ${true}, '[]'::jsonb),
+        (${orgId}, ${"prepress"}, ${"prepress"}, ${"Prepress"}, ${20}, ${true}, '[]'::jsonb)
+      on conflict (organization_id, station_key, key) do update
+      set label = excluded.label,
+          sort_order = excluded.sort_order,
+          active = excluded.active,
+          triggers = excluded.triggers
+    `);
+
+    await db.execute(sql`
+      insert into users (id, email, role, is_admin, is_platform_admin)
+      values (${userId}, ${`proof-${suffix}@example.com`}, ${"employee"}, ${false}, ${false})
+      on conflict (id) do nothing
+    `);
+
+    await db.execute(sql`
+      insert into user_organizations (user_id, organization_id, role, is_default)
+      values (${userId}, ${orgId}, ${"admin"}, ${true})
+      on conflict (user_id, organization_id) do nothing
+    `);
+
+    await db.execute(sql`
+      insert into customers (id, organization_id, company_name, status)
+      values (${customerId}, ${orgId}, ${"Proof Customer"}, ${"active"})
+      on conflict (id) do nothing
+    `);
+
+    await db.execute(sql`
+      insert into products (id, organization_id, name, description, requires_production_job)
+      values (${productId}, ${orgId}, ${"Proof Product"}, ${"desc"}, ${true})
+      on conflict (id) do nothing
+    `);
+
+    await db.execute(sql`
+      insert into orders (
+        id,
+        organization_id,
+        order_number,
+        customer_id,
+        created_by_user_id,
+        subtotal,
+        tax,
+        total,
+        discount,
+        status,
+        state,
+        priority,
+        fulfillment_status,
+        billing_status,
+        billing_ready_override
+      )
+      values (
+        ${orderId}, ${orgId}, ${`SO-PROOF-${suffix}`}, ${customerId}, ${userId}, ${0}, ${0}, ${0}, ${0}, ${"new"}, ${"open"}, ${"normal"}, ${"pending"}, ${"not_ready"}, ${false}
+      )
+      on conflict (id) do nothing
+    `);
+  });
+
+  afterEach(async () => {
+    await db.execute(sql`delete from audit_logs where organization_id = ${orgId} and entity_type in ('line_item_proof_version', 'line_item_proof_approval')`);
+    await db.execute(sql`delete from production_events where organization_id = ${orgId}`);
+    await db.execute(sql`delete from production_jobs where organization_id = ${orgId}`);
+    await db.execute(sql`delete from line_item_proof_approvals where organization_id = ${orgId}`);
+    await db.execute(sql`delete from line_item_proof_versions where organization_id = ${orgId}`);
+    await db.execute(sql`delete from order_attachments where order_id = ${orderId}`);
+    await db.execute(sql`delete from order_line_items where order_id = ${orderId}`);
+  });
+
+  afterAll(async () => {
+    await db.execute(sql`delete from orders where id = ${orderId}`);
+    await db.execute(sql`delete from production_station_steps where organization_id = ${orgId}`);
+    await db.execute(sql`delete from stations where organization_id = ${orgId}`);
+    await db.execute(sql`delete from products where id = ${productId}`);
+    await db.execute(sql`delete from customers where id = ${customerId}`);
+    await db.execute(sql`delete from user_organizations where user_id = ${userId}`);
+    await db.execute(sql`delete from users where id = ${userId}`);
+    await db.execute(sql`delete from organizations where id = ${orgId}`);
+  });
+
+  async function createLineItemFixture(name: string) {
+    const lineItemId = `line_${name}_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+    const proofFileA = `proof_a_${name}_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+    const proofFileB = `proof_b_${name}_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+
+    await db.execute(sql`
+      insert into order_line_items (
+        id,
+        order_id,
+        product_id,
+        description,
+        quantity,
+        unit_price,
+        total_price,
+        sort_order,
+        requires_prepress,
+        workflow_state,
+        status
+      )
+      values (
+        ${lineItemId}, ${orderId}, ${productId}, ${`Line ${name}`}, ${1}, ${10}, ${10}, ${0}, ${true}, ${"ready_for_prepress"}, ${"new"}
+      )
+    `);
+
+    await db.execute(sql`
+      insert into order_attachments (
+        id,
+        order_id,
+        order_line_item_id,
+        uploaded_by_user_id,
+        uploaded_by_name,
+        file_name,
+        role
+      )
+      values
+        (${proofFileA}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-proof-a.pdf`}, ${"proof"}),
+        (${proofFileB}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-proof-b.pdf`}, ${"proof"})
+    `);
+
+    return { lineItemId, proofFileA, proofFileB };
+  }
+
+  async function createAndSendProof(lineItemId: string, proofFileId: string) {
+    const createRes = await request(app)
+      .post(`/api/proofing/line-item/${lineItemId}/versions`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ proofFileId })
+      .expect(200);
+
+    const proofVersionId = createRes.body?.data?.proofVersion?.id as string;
+
+    const sendRes = await request(app)
+      .post(`/api/proofing/versions/${proofVersionId}/send`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ sentToEmail: "customer@example.com" })
+      .expect(200);
+
+    return {
+      proofVersionId,
+      createRes,
+      sendRes,
+    };
+  }
+
+  test("creates a proof version and exposes the canonical read model", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("create");
+
+    const res = await request(app)
+      .post(`/api/proofing/line-item/${lineItemId}/versions`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ proofFileId: proofFileA, internalNotes: "draft ready" })
+      .expect(200);
+
+    expect(res.body?.data?.proofVersion?.status).toBe("draft");
+    const proofing = proofingReadModelSchema.parse(res.body?.data?.proofing);
+    expect(proofing.currentActionableProofVersion?.status).toBe("draft");
+    expect(proofing.currentActionableProofVersion?.proofFileId).toBe(proofFileA);
+    expect(proofing.blockedPendingProofApproval).toBe(false);
+  });
+
+  test("sends a proof for review and blocks the line item pending approval", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("send");
+    const { sendRes } = await createAndSendProof(lineItemId, proofFileA);
+
+    expect(sendRes.body?.data?.proofVersion?.status).toBe("awaiting_response");
+    const proofing = proofingReadModelSchema.parse(sendRes.body?.data?.proofing);
+    expect(proofing.workflowState).toBe("awaiting_proof_approval");
+    expect(proofing.requiresProofApproval).toBe(true);
+    expect(proofing.blockedPendingProofApproval).toBe(true);
+    expect(proofing.currentActionableProofVersion?.status).toBe("awaiting_response");
+  });
+
+  test("approves a proof, advances workflow, and rejects repeated approvals safely", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("approve");
+    const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
+
+    const approveRes = await request(app)
+      .post(`/api/proofing/versions/${proofVersionId}/respond`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ decision: "approved", responseNotes: "looks good" })
+      .expect(200);
+
+    expect(approveRes.body?.data?.approval?.decision).toBe("approved");
+    expect(approveRes.body?.data?.workflowTransition?.toState).toBe("ready_for_prepress");
+    const proofing = proofingReadModelSchema.parse(approveRes.body?.data?.proofing);
+    expect(proofing.approvedProofVersionId).toBe(proofVersionId);
+    expect(proofing.blockedPendingProofApproval).toBe(false);
+
+    const repeatRes = await request(app)
+      .post(`/api/proofing/versions/${proofVersionId}/respond`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ decision: "approved" })
+      .expect(409);
+
+    expect(repeatRes.body?.error).toBe("Only proof versions awaiting response can be decided");
+  });
+
+  test("rejects a proof and returns the line item to design", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("reject");
+    const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
+
+    const rejectRes = await request(app)
+      .post(`/api/proofing/versions/${proofVersionId}/respond`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ decision: "rejected", responseNotes: "wrong phone number" })
+      .expect(200);
+
+    expect(rejectRes.body?.data?.workflowTransition?.toState).toBe("needs_design");
+    const proofing = proofingReadModelSchema.parse(rejectRes.body?.data?.proofing);
+    expect(proofing.approvedProofVersionId).toBeNull();
+    expect(proofing.proofDecisionHistory[0]?.decision).toBe("rejected");
+  });
+
+  test("records revision requests and returns the line item to design", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("revision");
+    const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
+
+    const revisionRes = await request(app)
+      .post(`/api/proofing/versions/${proofVersionId}/respond`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ decision: "revision_requested", responseNotes: "update crop marks" })
+      .expect(200);
+
+    expect(revisionRes.body?.data?.workflowTransition?.toState).toBe("needs_design");
+    const proofing = proofingReadModelSchema.parse(revisionRes.body?.data?.proofing);
+    expect(proofing.proofDecisionHistory[0]?.decision).toBe("revision_requested");
+    expect(proofing.currentActionableProofVersion).toBeNull();
+  });
+
+  test("blocks workflow progression when proof approval is required but still missing", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("guard");
+    await createAndSendProof(lineItemId, proofFileA);
+
+    const res = await request(app)
+      .post(`/api/line-items/${lineItemId}/workflow-transition`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ toState: "ready_for_prepress" })
+      .expect(409);
+
+    expect(res.body?.error).toBe("Approved proof is required before transitioning to ready_for_prepress");
+  });
+
+  test("rejects stale actions against a superseded proof version", async () => {
+    const { lineItemId, proofFileA, proofFileB } = await createLineItemFixture("stale");
+
+    const firstCreate = await request(app)
+      .post(`/api/proofing/line-item/${lineItemId}/versions`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ proofFileId: proofFileA })
+      .expect(200);
+
+    const staleProofVersionId = firstCreate.body?.data?.proofVersion?.id as string;
+
+    const secondCreate = await request(app)
+      .post(`/api/proofing/line-item/${lineItemId}/versions`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ proofFileId: proofFileB })
+      .expect(200);
+
+    const readRes = await request(app)
+      .get(`/api/proofing/line-item/${lineItemId}`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .expect(200);
+
+    const proofing = proofingReadModelSchema.parse(readRes.body?.data);
+    const superseded = proofing.proofVersionHistory.find((entry: ProofVersionHistoryEntry) => entry.id === staleProofVersionId);
+    expect(superseded?.status).toBe("superseded");
+    expect(proofing.currentActionableProofVersion?.id).toBe(secondCreate.body?.data?.proofVersion?.id);
+
+    const sendStaleRes = await request(app)
+      .post(`/api/proofing/versions/${staleProofVersionId}/send`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ sentToEmail: "customer@example.com" })
+      .expect(409);
+
+    expect(sendStaleRes.body?.error).toBe("Only draft proof versions can be sent for review");
+  });
+});
