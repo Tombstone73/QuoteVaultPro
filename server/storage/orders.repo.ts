@@ -40,7 +40,7 @@ import {
 } from "@shared/schema";
 import { eq, and, or, ilike, gte, lte, desc, sql, isNull, inArray } from "drizzle-orm";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
-import { getInitialWorkflowState } from "../services/lineItemWorkflowService";
+import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
 import { resolveActiveProductionOwners } from "../services/productionOwnership";
 
 const ORDER_ATTACHMENT_SAFE_SELECT = {
@@ -939,6 +939,28 @@ export class OrdersRepository {
                 convertedToOrderId: createdOrder.id
             })
             .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)));
+
+        if ((createdOrder.lineItems?.length ?? 0) > 0) {
+            await this.dbInstance.transaction(async (tx) => {
+                for (const lineItem of createdOrder.lineItems || []) {
+                    const targetWorkflowState = (lineItem.workflowState ?? getInitialWorkflowState({
+                        requiresDesign: Boolean(lineItem.requiresDesign),
+                        requiresPrepress: typeof lineItem.requiresPrepress === 'boolean' ? lineItem.requiresPrepress : true,
+                    })) as any;
+
+                    await transitionLineItemWorkflowState(tx, {
+                        organizationId,
+                        lineItemId: lineItem.id,
+                        toState: targetWorkflowState,
+                        actorUserId: createdByUserId,
+                        metadata: {
+                            source: 'quote_to_order_conversion',
+                            quoteId,
+                        },
+                    });
+                }
+            });
+        }
 
         // PHASE 2: Copy asset_links from quote line items to order line items (fail-soft)
         try {
