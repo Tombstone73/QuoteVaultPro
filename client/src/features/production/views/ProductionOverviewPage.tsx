@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -48,10 +48,12 @@ import {
   type ProductionJobListItem,
   type ProductionOrderArtworkSummary 
 } from "@/hooks/useProduction";
+import { useDesignQueue } from "@/hooks/useOrders";
 import { format, isPast, parseISO } from "date-fns";
 import { cn } from "@/lib/utils";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { ROUTES } from "@/config/routes";
+import type { ProofingQueueResponse } from "@shared/proofing";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { productionCardTheme, computeUrgency, statusColors } from "../theme/productionCardTheme";
 import {
@@ -182,6 +184,15 @@ type GlobalSearchResults = {
   jobs: SearchResult[];
 };
 
+type OperationalAreaCard = {
+  id: string;
+  label: string;
+  count: number | null;
+  detail: string;
+  href?: string;
+  kind: "queue" | "jobs";
+};
+
 /**
  * Get the best available image source for artwork
  * Priority: thumbnailUrl > fileUrl (if image) > null
@@ -278,6 +289,25 @@ export default function ProductionOverviewPage() {
   // Fetch ALL production jobs (no station/status filter for overview)
   // This shows jobs across all production modules (flatbed, roll, apparel)
   const { data: allJobs, isLoading, error } = useProductionJobs({});
+  const { data: designQueue = [], isLoading: isDesignQueueLoading, error: designQueueError } = useDesignQueue();
+  const {
+    data: proofingQueueData,
+    isLoading: isProofingQueueLoading,
+    error: proofingQueueError,
+  } = useQuery<ProofingQueueResponse>({
+    queryKey: ["/api/proofing/queue", "all"],
+    queryFn: async () => {
+      const res = await fetch("/api/proofing/queue?slice=all", { credentials: "include" });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.error || "Failed to fetch proofing queue");
+      }
+      const json = await res.json();
+      return json.data as ProofingQueueResponse;
+    },
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
   
   // View mode toggle (persist in localStorage)
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
@@ -807,6 +837,40 @@ export default function ProductionOverviewPage() {
 
   const jobs = useMemo(() => allJobs ?? [], [allJobs]);
 
+  const groupJobsByColumn = (inputJobs: ProductionJobListItem[]) => {
+    const grouped = new Map<string, ProductionJobListItem[]>();
+    KANBAN_COLUMNS.forEach((col) => grouped.set(col.id, []));
+
+    inputJobs.forEach((job) => {
+      const columnId = getJobColumn(job);
+      const column = grouped.get(columnId);
+      if (column) {
+        column.push(job);
+      }
+    });
+
+    grouped.forEach((columnJobs, columnId) => {
+      grouped.set(columnId, sortBoardJobs(columnJobs));
+    });
+
+    return grouped;
+  };
+
+  const designCounts = useMemo(() => {
+    let needsDesign = 0;
+    let inDesign = 0;
+
+    designQueue.forEach((item) => {
+      if (item.designStatus === "in_design") {
+        inDesign += 1;
+      } else {
+        needsDesign += 1;
+      }
+    });
+
+    return { needsDesign, inDesign, total: designQueue.length };
+  }, [designQueue]);
+
   // DEV-only: log sample preview URLs once
   const devLoggedSample = useRef(false);
   useEffect(() => {
@@ -892,29 +956,15 @@ export default function ProductionOverviewPage() {
     return "printing";
   };
 
+  const allJobsByStatus = useMemo(() => groupJobsByColumn(jobs), [jobs, boardSort]);
+
   // Group jobs by column (using stepKey-based routing)
   const jobsByStatus = useMemo(() => {
-    const grouped = new Map<string, ProductionJobListItem[]>();
-    KANBAN_COLUMNS.forEach(col => grouped.set(col.id, []));
-    
     // Apply search filter if production-only mode
     const filteredJobs = searchOnlyProduction && searchQuery 
       ? jobs.filter(job => matchesSearchQuery(job, searchQuery))
       : jobs;
-    
-    filteredJobs.forEach(job => {
-      const columnId = getJobColumn(job);
-      const column = grouped.get(columnId);
-      if (column) {
-        column.push(job);
-      }
-    });
-    
-    // Apply sorting within each column
-    grouped.forEach((columnJobs, columnId) => {
-      const sorted = sortBoardJobs(columnJobs);
-      grouped.set(columnId, sorted);
-    });
+    const grouped = groupJobsByColumn(filteredJobs);
     
     // Dev logging
     if (import.meta.env.DEV) {
@@ -931,6 +981,77 @@ export default function ProductionOverviewPage() {
     
     return grouped;
   }, [jobs, searchQuery, searchOnlyProduction, boardSort]);
+
+  const operationalAreaCards = useMemo<OperationalAreaCard[]>(() => {
+    const proofingCounts = proofingQueueData?.counts;
+
+    return [
+      {
+        id: "design",
+        label: "Design",
+        count: isDesignQueueLoading ? null : designCounts.total,
+        detail: designQueueError
+          ? "Unable to load design queue"
+          : `${designCounts.needsDesign} needs design • ${designCounts.inDesign} in design`,
+        href: ROUTES.production.design,
+        kind: "queue",
+      },
+      {
+        id: "proofing",
+        label: "Proofing",
+        count: isProofingQueueLoading ? null : (proofingCounts?.all ?? 0),
+        detail: proofingQueueError
+          ? "Unable to load proofing queue"
+          : `${proofingCounts?.awaitingApproval ?? 0} awaiting approval • ${proofingCounts?.revisionRequested ?? 0} revisions • ${proofingCounts?.awaitingSend ?? 0} awaiting send`,
+        href: ROUTES.production.proofing,
+        kind: "queue",
+      },
+      {
+        id: "prepress",
+        label: "Prepress",
+        count: allJobsByStatus.get("prepress")?.length ?? 0,
+        detail: "Active production jobs",
+        href: ROUTES.production.prepress,
+        kind: "jobs",
+      },
+      {
+        id: "printing",
+        label: "Printing",
+        count: allJobsByStatus.get("printing")?.length ?? 0,
+        detail: "Active production jobs",
+        kind: "jobs",
+      },
+      {
+        id: "finishing",
+        label: "Finishing",
+        count: allJobsByStatus.get("finishing")?.length ?? 0,
+        detail: "Active production jobs",
+        kind: "jobs",
+      },
+      {
+        id: "fulfillment",
+        label: "Fulfillment",
+        count: allJobsByStatus.get("fulfillment")?.length ?? 0,
+        detail: "Active production jobs",
+        kind: "jobs",
+      },
+      {
+        id: "production_complete",
+        label: "Production Complete",
+        count: allJobsByStatus.get("production_complete")?.length ?? 0,
+        detail: "Completed jobs",
+        kind: "jobs",
+      },
+    ];
+  }, [
+    allJobsByStatus,
+    designCounts,
+    designQueueError,
+    isDesignQueueLoading,
+    isProofingQueueLoading,
+    proofingQueueData,
+    proofingQueueError,
+  ]);
 
   const activeJob = activeJobId ? jobs.find(j => j.id === activeJobId) : null;
 
@@ -1270,6 +1391,32 @@ export default function ProductionOverviewPage() {
             </Popover>
           )}
         </div>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-7">
+        {operationalAreaCards.map((area) => (
+          <Card key={area.id} className="border-border bg-card">
+            <CardContent className="p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{area.label}</p>
+                    <Badge variant="outline" className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      {area.kind}
+                    </Badge>
+                  </div>
+                  <p className="mt-2 text-2xl font-semibold text-foreground">{area.count == null ? "—" : area.count}</p>
+                  <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{area.detail}</p>
+                </div>
+                {area.href ? (
+                  <Button asChild variant="ghost" size="sm" className="h-8 shrink-0 px-2 text-xs">
+                    <Link to={area.href}>Open</Link>
+                  </Button>
+                ) : null}
+              </div>
+            </CardContent>
+          </Card>
+        ))}
       </div>
 
       {/* Board view with drag and drop */}
