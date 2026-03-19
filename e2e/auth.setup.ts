@@ -42,8 +42,30 @@ setup("authenticate", async ({ page }) => {
   await page.locator("#password").fill(password);
   await page.locator('button[type="submit"]').click();
 
-  // The login handler calls window.location.assign('/dashboard') on success.
-  await page.waitForURL("**/dashboard", { timeout: 25_000 });
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(async () => {
+          try {
+            const response = await fetch("/api/auth/session", {
+              credentials: "include",
+            });
+
+            if (!response.ok) {
+              return false;
+            }
+
+            const json = await response.json().catch(() => ({}));
+            return json?.authenticated === true;
+          } catch {
+            return false;
+          }
+        }),
+      { timeout: 25_000 }
+    )
+    .toBe(true);
+
+  await page.goto("/dashboard", { waitUntil: "networkidle" });
 
   // Verify the app shell rendered (not bounced back to login).
   await expect(page).not.toHaveURL(/\/login/, { timeout: 5_000 });
