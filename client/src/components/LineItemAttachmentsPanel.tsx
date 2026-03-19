@@ -1,25 +1,23 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Paperclip, Upload, Download, X, Loader2, Image, FileText, File, ChevronDown, ChevronUp, Sparkles } from "lucide-react";
+import { Paperclip, Upload, Download, X, Loader2, Image, FileText, File, ChevronDown, ChevronUp, Sparkles, Eye } from "lucide-react";
 import { cn, isValidHttpUrl } from "@/lib/utils";
 import { getAttachmentDisplayName, isPdfAttachment, getPdfPageCount } from "@/lib/attachments";
-import { hasAnyUnsettledAttachment } from "@/lib/attachments/attachmentStatus";
-import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
+import { getAttachmentPollingInterval, isAttachmentSettled } from "@/lib/attachments/attachmentStatus";
+import { mergeQuoteLineItemRows } from "@/lib/attachments/quoteLineItemRows";
+import { normalizeOrderFileRows } from "@/lib/attachments/orderFileRows";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
+import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { objectsUrl } from "@/lib/apiConfig";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { setPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
-import { SUPABASE_MAX_UPLOAD_BYTES } from "@/lib/config/storage";
-import { fileToBase64 } from "@/lib/uploads/fileToBase64";
-import { LargeFileLocalDevWarningDialog } from "@/components/LargeFileLocalDevWarningDialog";
+import { uploadAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-
-type StorageTarget = "supabase" | "local_dev";
 
 const LOCAL_ORIGINAL_NOT_PRESENT = "local_original_not_present";
 
@@ -114,9 +112,7 @@ export function LineItemAttachmentsPanel({
   const [userClosed, setUserClosed] = useState(false); // Track if user explicitly closed the panel
   const [isCreatingQuote, setIsCreatingQuote] = useState(false);
   const [isPersistingLineItem, setIsPersistingLineItem] = useState(false);
-  const [previewFile, setPreviewFile] = useState<LineItemAttachment | null>(null);
-  const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
-  const [largeFileDialogOpen, setLargeFileDialogOpen] = useState(false);
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   // Store ensured IDs to use during upload (props may not have updated yet)
   const ensuredIdsRef = useRef<{ quoteId: string | null; lineItemId: string | null }>({
     quoteId: null,
@@ -166,51 +162,44 @@ export function LineItemAttachmentsPanel({
         const attachments = Array.isArray(json?.data) ? json.data : [];
         const assets = Array.isArray(json?.assets) ? json.assets : [];
 
-        const mappedAttachments = attachments.map((a: any) => ({
-          ...a,
-          source: 'attachment' as const,
-        })) as LineItemAttachment[];
-
-        const mappedAssets = assets.map((a: any) => ({
-          id: a.id,
-          source: 'asset' as const,
-          fileName: a.fileName || a.originalFilename || "file",
-          originalFilename: a.originalFilename || a.fileName || null,
-          fileUrl: a.fileUrl || a.fileKey || a.key || "",
-          fileSize: a.fileSize ?? a.sizeBytes ?? null,
-          mimeType: a.mimeType ?? null,
-          createdAt: a.createdAt || new Date().toISOString(),
-          originalUrl: a.originalUrl ?? null,
-          downloadUrl: a.downloadUrl ?? null,
-          thumbUrl: a.thumbUrl ?? a.thumbnailUrl ?? null,
-          previewUrl: a.previewUrl ?? null,
-          // Contract aliases (server-side applyThumbnailContract)
-          thumbnailUrl: a.thumbnailUrl ?? null,
-          previewThumbnailUrl: a.previewThumbnailUrl ?? null,
-
-          // Map canonical asset preview pipeline state into existing attachment-style fields
-          // so the existing polling logic continues to work for order assets.
-          thumbStatus:
-            a.previewStatus === "ready"
-              ? ("thumb_ready" as const)
-              : a.previewStatus === "pending"
-              ? ("thumb_pending" as const)
-              : a.previewStatus === "failed"
-              ? ("thumb_failed" as const)
-              : undefined,
-          thumbError: a.previewError ?? a.thumbError,
-
-          // Preserve optional fields if present
-          thumbKey: a.thumbKey,
-          previewKey: a.previewKey,
-          pageCount: a.pageCount,
-          pages: a.pages,
-        } as LineItemAttachment));
-
-        return [...mappedAttachments, ...mappedAssets] as LineItemAttachment[];
+        return normalizeOrderFileRows(
+          attachments,
+          assets.map((a: any) => ({
+            id: a.id,
+            fileRecordId: a.fileRecordId ?? null,
+            fileName: a.fileName || a.originalFilename || "file",
+            originalFilename: a.originalFilename || a.fileName || null,
+            fileUrl: a.fileUrl || a.fileKey || a.key || "",
+            fileSize: a.fileSize ?? a.sizeBytes ?? null,
+            sizeBytes: a.sizeBytes ?? a.fileSize ?? null,
+            mimeType: a.mimeType ?? null,
+            createdAt: a.createdAt || new Date().toISOString(),
+            originalUrl: a.originalUrl ?? null,
+            downloadUrl: a.downloadUrl ?? null,
+            thumbUrl: a.thumbUrl ?? a.thumbnailUrl ?? null,
+            previewUrl: a.previewUrl ?? null,
+            thumbnailUrl: a.thumbnailUrl ?? null,
+            previewThumbnailUrl: a.previewThumbnailUrl ?? null,
+            thumbStatus:
+              a.previewStatus === "ready"
+                ? ("thumb_ready" as const)
+                : a.previewStatus === "pending"
+                ? ("thumb_pending" as const)
+                : a.previewStatus === "failed"
+                ? ("thumb_failed" as const)
+                : undefined,
+            thumbError: a.previewError ?? a.thumbError,
+            thumbKey: a.thumbKey,
+            previewKey: a.previewKey,
+            pageCount: a.pageCount,
+            pages: a.pages,
+          })),
+        ) as LineItemAttachment[];
       }
 
-      return json.data || [];
+      const attachments = Array.isArray(json?.data) ? json.data : [];
+      const assets = Array.isArray(json?.assets) ? json.assets : [];
+      return mergeQuoteLineItemRows(attachments, assets);
     },
     enabled: !!filesApiPath,
     refetchInterval: (query) => {
@@ -220,47 +209,19 @@ export function LineItemAttachmentsPanel({
       const POLL_INTERVAL_MS = 1500; // 1.5 seconds
 
       const data = query.state.data as LineItemAttachment[] | undefined;
-      if (!data || data.length === 0) {
-        // No attachments: reset guard and stop polling
-        pollingGuardRef.current = { startAt: null, attempts: 0 };
-        return false;
-      }
-
-      const needsPolling = hasAnyUnsettledAttachment(data);
-
-      if (!needsPolling) {
-        // All attachments settled: reset guard and stop polling
-        pollingGuardRef.current = { startAt: null, attempts: 0 };
-        return false;
-      }
-
-      // Has unsettled attachments: initialize guard if needed
-      if (pollingGuardRef.current.startAt === null) {
-        pollingGuardRef.current.startAt = Date.now();
-        pollingGuardRef.current.attempts = 0;
-      }
-
-      // Increment attempts
-      pollingGuardRef.current.attempts++;
-
-      // Check guards
-      const elapsed = Date.now() - pollingGuardRef.current.startAt;
-      if (elapsed > MAX_POLL_MS || pollingGuardRef.current.attempts > MAX_ATTEMPTS) {
-        // Guard tripped: stop polling silently (fail-soft)
-        console.warn(
-          `[LineItemAttachments] Polling guard tripped for ${filesApiPath}: ` +
-          `elapsed=${elapsed}ms, attempts=${pollingGuardRef.current.attempts}`
-        );
-        pollingGuardRef.current = { startAt: null, attempts: 0 };
-        return false;
-      }
-
-      // Continue polling
-      return POLL_INTERVAL_MS;
+      return getAttachmentPollingInterval({
+        attachments: data,
+        guard: pollingGuardRef.current,
+        maxPollMs: MAX_POLL_MS,
+        maxAttempts: MAX_ATTEMPTS,
+        intervalMs: POLL_INTERVAL_MS,
+        logLabel: filesApiPath ?? undefined,
+      });
     },
   });
 
   const fileCount = attachments.length;
+  const viewerAttachments = useMemo(() => toAttachmentViewerAttachments(attachments as any[]), [attachments]);
 
   // Format file size for display
   const formatFileSize = (bytes: number | null | undefined): string => {
@@ -368,108 +329,39 @@ export function LineItemAttachmentsPanel({
 
     try {
       for (const file of filesToUpload) {
-        const requestedStorageTarget: StorageTarget = file.size > SUPABASE_MAX_UPLOAD_BYTES ? "local_dev" : "supabase";
-
         try {
-          const urlResponse = await fetch("/api/objects/upload", {
-            method: "POST",
-            credentials: "include",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              fileName: file.name,
-              fileSizeBytes: file.size,
-              requestedStorageTarget,
-            }),
-          });
-
-          if (!urlResponse.ok) {
-            throw new Error("Failed to get upload URL");
-          }
-
-          const preflight = await urlResponse.json().catch(() => ({}));
-          const decidedTarget: StorageTarget =
-            (preflight?.storageTarget === "local_dev" || preflight?.storageTarget === "supabase")
-              ? preflight.storageTarget
-              : requestedStorageTarget;
-
-          if (preflight?.method === "ATOMIC" || decidedTarget === "local_dev" || !preflight?.url) {
-            const fileBufferBase64 = await fileToBase64(file);
-
-            const payload: Record<string, any> = {
-              originalFilename: file.name,
-              fileName: file.name,
-              fileSize: file.size,
-              mimeType: file.type,
-              fileBuffer: fileBufferBase64,
-              requestedStorageTarget,
-            };
-
-            if (parentType === "order") {
-              payload.orderLineItemId = targetLineItemId;
-              payload.role = "other";
-              payload.side = "na";
-            }
-
-            const attachResponse = await fetch(uploadApiPath, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              credentials: "include",
-              body: JSON.stringify(payload),
-            });
-
-            if (!attachResponse.ok) {
-              const json = await attachResponse.json().catch(() => ({}));
-              throw new Error(json?.error || `Failed to attach ${file.name}`);
-            }
-
-            successCount++;
-            continue;
-          }
-
-          const { url, method, path } = preflight;
-
-          const uploadResponse = await fetch(url, {
-            method: method || "PUT",
-            body: file,
-            headers: {
-              "Content-Type": file.type || "application/octet-stream",
-            },
-          });
-
-          if (!uploadResponse.ok) {
-            throw new Error(`Failed to upload ${file.name}`);
-          }
-
-          const fileUrl = typeof path === "string" && path ? path : url.split("?")[0];
-
-          const payload: Record<string, any> = {
-            fileName: file.name,
-            fileUrl,
-            fileSize: file.size,
-            mimeType: file.type,
-            requestedStorageTarget,
-          };
-
           if (parentType === "order") {
-            payload.orderLineItemId = targetLineItemId;
-            payload.role = "other";
-            payload.side = "na";
-          }
+            if (!orderId) {
+              throw new Error("Order ID is required for order line item uploads.");
+            }
 
-          const attachResponse = await fetch(uploadApiPath, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify(payload),
-          });
+            await uploadAttachmentViaChunked({
+              file,
+              purpose: "order-attachment",
+              parentId: orderId,
+              linkUrl: uploadApiPath,
+              linkBody: {
+                orderLineItemId: targetLineItemId,
+                role: "other",
+                side: "na",
+              },
+            });
+          } else {
+            if (!targetQuoteId) {
+              throw new Error("Quote ID is required for quote line item uploads.");
+            }
 
-          if (!attachResponse.ok) {
-            throw new Error(`Failed to attach ${file.name}`);
+            await uploadAttachmentViaChunked({
+              file,
+              purpose: "quote-attachment",
+              parentId: targetQuoteId,
+              linkUrl: uploadApiPath,
+            });
           }
 
           successCount++;
         } catch (fileError: any) {
-          console.error(`Error uploading ${file.name}:`, fileError);
+          console.error(`[LineItemAttachmentsPanel] Error uploading ${file.name}:`, fileError);
           errorCount++;
         }
       }
@@ -536,34 +428,11 @@ export function LineItemAttachmentsPanel({
     }
   };
 
-  const handleLargeFileContinue = async () => {
-    setLargeFileDialogOpen(false);
-    const files = pendingFiles;
-    setPendingFiles(null);
-    if (!files || files.length === 0) {
-      clearFileInput();
-      return;
-    }
-    await performUpload(files);
-  };
-
-  const handleLargeFileCancel = () => {
-    setLargeFileDialogOpen(false);
-    setPendingFiles(null);
-    clearFileInput();
-  };
-
   // Handle file upload
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
 
     const filesToUpload = Array.from(e.target.files);
-    const hasOversized = filesToUpload.some((f) => f.size > SUPABASE_MAX_UPLOAD_BYTES);
-    if (hasOversized) {
-      setPendingFiles(filesToUpload);
-      setLargeFileDialogOpen(true);
-      return;
-    }
 
     await performUpload(filesToUpload);
   };
@@ -575,14 +444,14 @@ export function LineItemAttachmentsPanel({
     try {
       let deleteUrl: string | null = `${filesApiPath}/${file.id}`;
 
-      // Order line-items can contain either:
-      // - DB-backed order_attachments (json.data) -> delete via /api/orders/:orderId/files/:fileId
-      // - Asset pipeline links (json.assets) -> unlink via /api/orders/:orderId/line-items/:lineItemId/files/:assetId
+      // Order line-item surfaces must always delete through the line-item endpoint.
+      // That backend route correctly handles both:
+      // - DB-backed order_attachments rows for this line item
+      // - asset-link rows for this line item
       if (parentType === 'order') {
-        if (!orderId) return;
-        if (file.source === 'attachment') {
-          deleteUrl = `/api/orders/${orderId}/files/${file.id}`;
-        }
+        const targetLineItemId = lineItemId ?? ensuredIdsRef.current.lineItemId;
+        if (!orderId || !targetLineItemId) return;
+        deleteUrl = `/api/orders/${orderId}/line-items/${targetLineItemId}/files/${file.id}`;
       }
 
       const response = await fetch(deleteUrl, {
@@ -852,7 +721,7 @@ export function LineItemAttachmentsPanel({
             <p className="text-xs text-muted-foreground text-center py-2">Loading...</p>
           ) : attachments.length > 0 ? (
             <div className="space-y-1">
-              {attachments.map((file) => {
+              {attachments.map((file, fileIndex) => {
                 const FileIcon = getFileIcon(file.mimeType);
                 const isPdf = isPdfAttachment(file);
                 const isImage = file.mimeType?.startsWith("image/") ?? false;
@@ -871,9 +740,11 @@ export function LineItemAttachmentsPanel({
                 const thumbnailUrl = getThumbSrc(file);
 
                 const hasAnyThumbnail = !!thumbnailUrl;
+                const isPending = !isAttachmentSettled(file as any);
                 const fileName = getAttachmentDisplayName(file);
                 const pageCount = getPdfPageCount(file);
                 const showPageCount = isPdf && pageCount !== null && pageCount > 1;
+                const openPreview = () => setPreviewIndex(fileIndex);
                 
                 return (
                   <div key={file.id} className="space-y-1">
@@ -887,7 +758,7 @@ export function LineItemAttachmentsPanel({
                         }
                         e.stopPropagation();
                         console.log("[PreviewClick]", file.id);
-                        setPreviewFile(file);
+                        openPreview();
                       }}
                       onPointerDownCapture={(e) => {
                         const target = e.target as HTMLElement;
@@ -924,7 +795,14 @@ export function LineItemAttachmentsPanel({
                             </div>
                           </>
                         ) : (
-                          <FileIcon className="w-5 h-5 text-muted-foreground pointer-events-none select-none" />
+                          <>
+                            <FileIcon className="w-5 h-5 text-muted-foreground pointer-events-none select-none" />
+                            {isPending && (
+                              <div className="absolute -top-0.5 -right-0.5 rounded-full bg-amber-500/90 p-0.5" title="Generating thumbnail...">
+                                <Loader2 className="h-2.5 w-2.5 animate-spin text-white" />
+                              </div>
+                            )}
+                          </>
                         )}
                       </div>
                       
@@ -959,7 +837,7 @@ export function LineItemAttachmentsPanel({
                             {file.pages && file.pages.length > 0 && ` • ${file.pages.length} thumbnail${file.pages.length === 1 ? '' : 's'}`}
                           </span>
                         )}
-                        {file.thumbStatus && file.thumbStatus !== 'uploaded' && !isPdf && (() => {
+                        {file.thumbStatus && file.thumbStatus !== 'uploaded' && !hasAnyThumbnail && (() => {
                           const isUnavailable = file.thumbStatus === 'thumb_failed' && isThumbsUnavailableError(file.thumbError);
                           const isLocalMissing = file.thumbStatus === 'thumb_failed' && isLocalPreviewUnavailableError(file.thumbError);
                           return (
@@ -972,7 +850,7 @@ export function LineItemAttachmentsPanel({
                             )}
                             title={isLocalMissing ? "Preview unavailable (Local dev file not on this machine)" : undefined}>
                               {file.thumbStatus === 'thumb_ready' && '✓ Thumbs ready'}
-                              {file.thumbStatus === 'thumb_pending' && '⏳ Generating...'}
+                              {file.thumbStatus === 'thumb_pending' && (isPdf ? '⏳ PDF thumbnail processing...' : '⏳ Generating...')}
                               {file.thumbStatus === 'thumb_failed' && isLocalMissing && 'Preview unavailable (Local dev file not on this machine)'}
                               {file.thumbStatus === 'thumb_failed' && isUnavailable && 'Thumbnails temporarily unavailable'}
                               {file.thumbStatus === 'thumb_failed' && !isUnavailable && !isLocalMissing && '✗ Generation failed'}
@@ -981,6 +859,20 @@ export function LineItemAttachmentsPanel({
                         })()}
                       </div>
                       <div className="flex gap-0.5 shrink-0">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 w-6 p-0"
+                          aria-label={`Preview ${fileName}`}
+                          title="Open preview"
+                          onPointerDownCapture={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openPreview();
+                          }}
+                        >
+                          <Eye className="w-3 h-3" />
+                        </Button>
                         {(() => {
                           if (parentType === "order") return null;
 
@@ -1086,20 +978,16 @@ export function LineItemAttachmentsPanel({
       )}
 
       <AttachmentViewerDialog
-        attachment={previewFile as any}
-        open={!!previewFile}
+        attachments={viewerAttachments}
+        initialIndex={previewIndex ?? 0}
+        open={previewIndex !== null}
+        hideFilmstrip={false}
+        showMetaPanel={true}
         onOpenChange={(open) => {
-          if (!open) setPreviewFile(null);
+          if (!open) setPreviewIndex(null);
         }}
       />
 
-      <LargeFileLocalDevWarningDialog
-        open={largeFileDialogOpen}
-        onContinue={() => {
-          void handleLargeFileContinue();
-        }}
-        onCancel={handleLargeFileCancel}
-      />
     </div>
   );
 }

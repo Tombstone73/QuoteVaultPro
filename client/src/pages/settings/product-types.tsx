@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { useProductTypes, useCreateProductType, useUpdateProductType, useDeleteProductType } from "@/hooks/useProductTypes";
+import { useProductionStations, useProductionStationSteps } from "@/hooks/useProductionSettings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,6 +16,18 @@ import { TitanCard } from "@/components/ui/TitanCard";
 
 export default function ProductTypesSettings() {
   const { data: productTypes, isLoading } = useProductTypes();
+  const {
+    data: stations,
+    isLoading: isStationsLoading,
+    isError: isStationsError,
+    error: stationsError,
+  } = useProductionStations();
+  const {
+    data: stationSteps,
+    isLoading: isStepsLoading,
+    isError: isStepsError,
+    error: stepsError,
+  } = useProductionStationSteps();
   const createMutation = useCreateProductType();
   const updateMutation = useUpdateProductType();
   const deleteMutation = useDeleteProductType();
@@ -39,6 +53,29 @@ export default function ProductTypesSettings() {
   });
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
 
+  const stationOptions = (stations ?? [])
+    .map((station) => ({ value: String(station.key ?? "").trim(), label: String(station.name ?? station.key ?? "").trim() }))
+    .filter((station) => station.value.length > 0);
+
+  const stationLoadError = isStationsError
+    ? ((stationsError as any)?.message || "Unable to load stations")
+    : null;
+
+  const stepLoadError = isStepsError
+    ? ((stepsError as any)?.message || "Unable to load steps")
+    : null;
+
+  const selectedStationKey = String(formData.defaultStationKey ?? "").trim();
+  const allStepsForSelectedStation = selectedStationKey ? stationSteps?.[selectedStationKey] ?? [] : [];
+  const activeStepsForSelectedStation = allStepsForSelectedStation.filter((step) => step.active !== false);
+  const selectedStepKey = String(formData.defaultStepKey ?? "").trim();
+  const selectedStepMeta = selectedStepKey
+    ? allStepsForSelectedStation.find((step) => step.key === selectedStepKey) ?? null
+    : null;
+  const hasMissingSelectedStep = !!selectedStepKey && !selectedStepMeta;
+  const hasInactiveSelectedStep = !!selectedStepMeta && selectedStepMeta.active === false;
+  const hasInvalidSelectedStep = !isStepsLoading && !isStepsError && (hasMissingSelectedStep || hasInactiveSelectedStep);
+
   const handleCreate = async () => {
     await createMutation.mutateAsync({
       name: formData.name,
@@ -47,6 +84,7 @@ export default function ProductTypesSettings() {
       defaultStationKey: formData.defaultStationKey || null,
       defaultStepKey: formData.defaultStepKey || null,
       sendToProductionDefault: formData.sendToProductionDefault,
+      requiresPrepressOverride: formData.requiresPrepressOverride,
     });
     setIsCreateOpen(false);
     setFormData({ name: "", description: "", sortOrder: 0, defaultStationKey: null, defaultStepKey: null, sendToProductionDefault: false, requiresPrepressOverride: null });
@@ -63,6 +101,7 @@ export default function ProductTypesSettings() {
         defaultStationKey: formData.defaultStationKey || null,
         defaultStepKey: formData.defaultStepKey || null,
         sendToProductionDefault: formData.sendToProductionDefault,
+        requiresPrepressOverride: formData.requiresPrepressOverride,
       },
     });
     setEditingType(null);
@@ -182,36 +221,59 @@ export default function ProductTypesSettings() {
                     <Label>Default Station</Label>
                     <Select
                       value={formData.defaultStationKey || "__none__"}
-                      onValueChange={(v) => setFormData({ ...formData, defaultStationKey: v === "__none__" ? null : v, defaultStepKey: null })}
+                      onValueChange={(v) => setFormData({ ...formData, defaultStationKey: v === "__none__" ? null : v })}
+                      disabled={isStationsLoading || !!stationLoadError}
                     >
                       <SelectTrigger>
                         <SelectValue placeholder="— None —" />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="__none__">— None —</SelectItem>
-                        <SelectItem value="flatbed">Flatbed</SelectItem>
-                        <SelectItem value="roll">Roll</SelectItem>
+                        {stationOptions.map((station) => (
+                          <SelectItem key={station.value} value={station.value}>
+                            {station.label}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
+                    {stationLoadError ? (
+                      <p className="text-xs text-red-600 mt-1">Unable to load stations: {stationLoadError}</p>
+                    ) : null}
                   </div>
                   <div>
                     <Label>Default Step</Label>
-                    <Select
-                      value={formData.defaultStepKey || "__none__"}
-                      onValueChange={(v) => setFormData({ ...formData, defaultStepKey: v === "__none__" ? null : v })}
-                      disabled={!formData.defaultStationKey}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="— None —" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="__none__">— None —</SelectItem>
-                        <SelectItem value="prepress">Prepress</SelectItem>
-                        <SelectItem value="print">Print</SelectItem>
-                        <SelectItem value="laminate">Laminate</SelectItem>
-                        <SelectItem value="finishing">Finishing</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <div className="space-y-2">
+                      <Select
+                        value={selectedStepKey || "__none__"}
+                        onValueChange={(v) => setFormData({ ...formData, defaultStepKey: v === "__none__" ? null : v })}
+                        disabled={isStepsLoading || !selectedStationKey}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="queued (fallback)" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__none__">queued (fallback)</SelectItem>
+                          {activeStepsForSelectedStation.map((step) => (
+                            <SelectItem key={step.key} value={step.key}>
+                              {step.label}
+                            </SelectItem>
+                          ))}
+                          {hasInvalidSelectedStep && selectedStepKey ? (
+                            <SelectItem value={selectedStepKey}>
+                              {hasInactiveSelectedStep ? `${selectedStepMeta?.label ?? selectedStepKey} (inactive)` : `${selectedStepKey} (missing)`}
+                            </SelectItem>
+                          ) : null}
+                        </SelectContent>
+                      </Select>
+                      {hasInvalidSelectedStep ? (
+                        <Badge variant="destructive" className="text-[11px]">
+                          {hasInactiveSelectedStep ? "Selected step is inactive" : "Selected step is missing"}
+                        </Badge>
+                      ) : null}
+                      <p className="text-[11px] text-muted-foreground">
+                        Manage station steps from Settings → Production & Operations.
+                      </p>
+                    </div>
                   </div>
                   <div className="flex items-center justify-between py-1">
                     <Label htmlFor="create-sendToProduction" className="font-normal">
@@ -248,7 +310,9 @@ export default function ProductTypesSettings() {
                 </div>
               </div>
 
-              <Button onClick={handleCreate} disabled={!formData.name || createMutation.isPending}>
+              {stepLoadError ? <p className="text-xs text-red-600">Unable to load steps: {stepLoadError}</p> : null}
+
+              <Button onClick={handleCreate} disabled={!formData.name || createMutation.isPending || hasInvalidSelectedStep}>
                 {createMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Create
               </Button>
@@ -350,36 +414,59 @@ export default function ProductTypesSettings() {
                   <Label>Default Station</Label>
                   <Select
                     value={formData.defaultStationKey || "__none__"}
-                    onValueChange={(v) => setFormData({ ...formData, defaultStationKey: v === "__none__" ? null : v, defaultStepKey: null })}
+                    onValueChange={(v) => setFormData({ ...formData, defaultStationKey: v === "__none__" ? null : v })}
+                    disabled={isStationsLoading || !!stationLoadError}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="— None —" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="__none__">— None —</SelectItem>
-                      <SelectItem value="flatbed">Flatbed</SelectItem>
-                      <SelectItem value="roll">Roll</SelectItem>
+                      {stationOptions.map((station) => (
+                        <SelectItem key={station.value} value={station.value}>
+                          {station.label}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
+                  {stationLoadError ? (
+                    <p className="text-xs text-red-600 mt-1">Unable to load stations: {stationLoadError}</p>
+                  ) : null}
                 </div>
                 <div>
                   <Label>Default Step</Label>
-                  <Select
-                    value={formData.defaultStepKey || "__none__"}
-                    onValueChange={(v) => setFormData({ ...formData, defaultStepKey: v === "__none__" ? null : v })}
-                    disabled={!formData.defaultStationKey}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="— None —" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__none__">— None —</SelectItem>
-                      <SelectItem value="prepress">Prepress</SelectItem>
-                      <SelectItem value="print">Print</SelectItem>
-                      <SelectItem value="laminate">Laminate</SelectItem>
-                      <SelectItem value="finishing">Finishing</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <div className="space-y-2">
+                    <Select
+                      value={selectedStepKey || "__none__"}
+                      onValueChange={(v) => setFormData({ ...formData, defaultStepKey: v === "__none__" ? null : v })}
+                      disabled={isStepsLoading || !selectedStationKey}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="queued (fallback)" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">queued (fallback)</SelectItem>
+                        {activeStepsForSelectedStation.map((step) => (
+                          <SelectItem key={step.key} value={step.key}>
+                            {step.label}
+                          </SelectItem>
+                        ))}
+                        {hasInvalidSelectedStep && selectedStepKey ? (
+                          <SelectItem value={selectedStepKey}>
+                            {hasInactiveSelectedStep ? `${selectedStepMeta?.label ?? selectedStepKey} (inactive)` : `${selectedStepKey} (missing)`}
+                          </SelectItem>
+                        ) : null}
+                      </SelectContent>
+                    </Select>
+                    {hasInvalidSelectedStep ? (
+                      <Badge variant="destructive" className="text-[11px]">
+                        {hasInactiveSelectedStep ? "Selected step is inactive" : "Selected step is missing"}
+                      </Badge>
+                    ) : null}
+                    <p className="text-[11px] text-muted-foreground">
+                      Manage station steps from Settings → Production & Operations.
+                    </p>
+                  </div>
                 </div>
                 <div className="flex items-center justify-between py-1">
                   <Label htmlFor="edit-sendToProduction" className="font-normal">
@@ -416,7 +503,9 @@ export default function ProductTypesSettings() {
               </div>
             </div>
 
-            <Button onClick={handleUpdate} disabled={!formData.name || updateMutation.isPending}>
+            {stepLoadError ? <p className="text-xs text-red-600">Unable to load steps: {stepLoadError}</p> : null}
+
+            <Button onClick={handleUpdate} disabled={!formData.name || updateMutation.isPending || hasInvalidSelectedStep}>
               {updateMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Save Changes
             </Button>

@@ -9,9 +9,9 @@ import Papa from "papaparse";
 import busboy from "busboy";
 import { storage } from "./storage";
 import * as prepressFileService from "./prepressFileService";
-import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, inventoryReservations, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, authIdentities, bugReports, prepressSessions, lineItemFiles, reprintRequests } from "@shared/schema";
-import { eq, desc, and, isNull, isNotNull, asc, inArray, or, sql } from "drizzle-orm";
+import { db, hasQuoteAttachmentPagesTable } from "./db";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, inventoryReservations, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, assetVariants, authIdentities, bugReports, prepressSessions, lineItemFiles, reprintRequests } from "@shared/schema";
+import { eq, desc, and, isNull, isNotNull, asc, inArray, notInArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
 // @ts-ignore - NestingCalculator.js is a plain JS file without types
@@ -39,6 +39,7 @@ import {
   APPROVED_LOCK_MESSAGE,
   CONVERTED_LOCK_MESSAGE,
 } from "@shared/quoteWorkflow";
+import { proofQueueSliceSchema } from "@shared/proofing";
 import { registerAttachmentRoutes } from "./routes/attachments.routes";
 import { registerOrderRoutes } from "./routes/orders.routes";
 import { registerPrepressRoutes } from "./prepress/routes";
@@ -53,8 +54,29 @@ import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBoo
 import { resolveMaterialsOverrideModeFromOrgPreferences } from "@shared/materialsOverrideMode";
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2OverrideConfig";
 import { createLineItemFileRecord } from "./services/lineItemFileRecordService";
+import { canonicalFileReadResolver } from "./services/storage/CanonicalFileReadResolver";
+import { deleteStoredObjectKeys } from "./services/storage/deleteStoredObjectKeys";
+import { organizationStorageSettingsService } from "./services/storage/OrganizationStorageSettingsService";
 import { stationResolver } from "./services/stations/stationResolver";
 import { routeLineItemToProduction } from "./services/productionRoutingService";
+import { resolveInitialProductionRoute, resolvePostPrepressProductionRoute } from "./services/productionRoutingResolver";
+import { getInitialWorkflowState, transitionLineItemWorkflowState } from "./services/lineItemWorkflowService";
+import {
+  createLineItemProofVersion,
+  listProofingQueue,
+  markProofVersionSent,
+  recordManualProofApprovalOverride,
+  recordProofResponse,
+  resolveLineItemProofingTruth,
+} from "./services/proofingService";
+import {
+  findActiveJobForLineItem,
+  isDesignOwnershipJob,
+  isPrepressOwnershipJob,
+  resolveActiveProductionOwners,
+  transitionToStation,
+  type StationTransitionResult,
+} from "./services/productionOwnership";
 import { getDashboardSummary } from "./services/dashboardSummaryService";
 import { resolveVisibleNodes } from "@shared/optionTreeV2Runtime";
 import { computePlannedMaterialsForLineItem } from "./services/prepressPlannedMaterials";
@@ -66,6 +88,8 @@ import {
   withServerDefaultsForOverride,
 } from "./services/prepressMaterialOverrides";
 import { getAppEnv, getCookieDomain, getPublicWebOrigin } from "./lib/appRuntimeConfig";
+import { fileDerivativeRepository } from "./storage/fileDerivative.repo";
+import { fileRecordRepository } from "./storage/fileRecord.repo";
 
 // Auth provider selection logic
 // Priority: AUTH_PROVIDER env var > detection logic
@@ -78,6 +102,13 @@ const isProduction = nodeEnv === 'production';
 
 let authProvider: string;
 let auth: typeof localAuth | typeof replitAuth;
+
+function toLegacyStorageProvider(provider: string | null | undefined): "local" | "s3" | "gcs" | "supabase" | null {
+  if (provider === "local" || provider === "s3" || provider === "gcs" || provider === "supabase") {
+    return provider;
+  }
+  return null;
+}
 
 if (authProviderEnv) {
   // Explicit AUTH_PROVIDER env var takes precedence
@@ -261,6 +292,7 @@ import {
   insertCustomerSchema,
   insertCustomerSchemaRefined,
   updateCustomerSchema,
+  updateCustomerProductionFolderReferenceSchema,
   insertCustomerContactSchema,
   updateCustomerContactSchema,
   insertCustomerNoteSchema,
@@ -296,11 +328,15 @@ import {
   getStorageAuthMode,
 } from "./objectStorage";
 import { ObjectPermission } from "./objectAcl";
+import { customerProductionFolderReferenceRepository } from "./storage/customerProductionFolderReference.repo";
 import { SupabaseStorageService, isSupabaseConfigured } from "./supabaseStorage";
+import { storageApplicationService } from "./services/storage/StorageApplicationService";
 import {
   createRequestLogOnce,
   enrichAttachmentWithUrls,
   normalizeObjectKeyForDb,
+  resolveDerivativeFileAccess,
+  resolveOriginalFileAccess,
   scheduleSupabaseObjectSelfCheck,
   tryExtractSupabaseObjectKeyFromUrl
 } from "./lib/supabaseObjectHelpers";
@@ -1414,7 +1450,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const [org] = await db
-        .select({ settings: organizations.settings })
+        .select({
+          settings: organizations.settings,
+          prepressDefaultEnabled: organizations.prepressDefaultEnabled,
+        })
         .from(organizations)
         .where(eq(organizations.id, organizationId))
         .limit(1);
@@ -1440,6 +1479,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json({
         ...(preferences as any),
+        prepressDefaultEnabled: org.prepressDefaultEnabled,
         production: {
           ...(((preferences as any)?.production && typeof (preferences as any).production === "object") ? (preferences as any).production : {}),
           materialsOverrideMode,
@@ -1471,11 +1511,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const newPreferences = req.body;
 
       // Extract emailTemplates if present (will be stored at settings.emailTemplates)
-      const { emailTemplates, ...otherPreferences } = newPreferences;
+      const { emailTemplates, prepressDefaultEnabled, ...otherPreferences } = newPreferences;
 
       // Get current settings
       const [org] = await db
-        .select({ settings: organizations.settings })
+        .select({
+          settings: organizations.settings,
+          prepressDefaultEnabled: organizations.prepressDefaultEnabled,
+        })
         .from(organizations)
         .where(eq(organizations.id, organizationId))
         .limit(1);
@@ -1497,11 +1540,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .update(organizations)
         .set({
           settings: updatedSettings as any,
+          ...(typeof prepressDefaultEnabled === "boolean" ? { prepressDefaultEnabled } : {}),
           updatedAt: new Date(),
         })
         .where(eq(organizations.id, organizationId));
 
-      res.json({ success: true, preferences: otherPreferences, emailTemplates });
+      res.json({
+        success: true,
+        preferences: otherPreferences,
+        emailTemplates,
+        prepressDefaultEnabled:
+          typeof prepressDefaultEnabled === "boolean"
+            ? prepressDefaultEnabled
+            : org.prepressDefaultEnabled,
+      });
     } catch (error) {
       console.error("Error updating organization preferences:", error);
       res.status(500).json({ message: "Failed to update preferences" });
@@ -1605,6 +1657,80 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error patching inventory policy:", error);
       return res.status(500).json({ success: false, message: "Failed to update inventory policy" });
+    }
+  });
+
+  app.get('/api/admin/storage-settings', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(403).json({ success: false, error: 'No organization context' });
+      }
+
+      const settings = await organizationStorageSettingsService.getSettings(organizationId);
+      return res.json({ success: true, data: settings });
+    } catch (error: any) {
+      console.error('[StorageSettings:GET] Error:', error);
+      return res.status(500).json({ success: false, error: error?.message || 'Failed to fetch storage settings' });
+    }
+  });
+
+  app.post('/api/admin/storage-settings/validate', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(403).json({ success: false, error: 'No organization context' });
+      }
+
+      const validation = await organizationStorageSettingsService.validateRequest(organizationId, req.body ?? {});
+      return res.json({ success: true, data: validation });
+    } catch (error: any) {
+      console.error('[StorageSettings:VALIDATE] Error:', error);
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ success: false, error: fromZodError(error).message });
+      }
+      return res.status(500).json({ success: false, error: error?.message || 'Failed to validate storage settings' });
+    }
+  });
+
+  app.put('/api/admin/storage-settings', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(403).json({ success: false, error: 'No organization context' });
+      }
+
+      const settings = await organizationStorageSettingsService.saveRequest(organizationId, req.body ?? {});
+      return res.json({ success: true, data: settings });
+    } catch (error: any) {
+      console.error('[StorageSettings:PUT] Error:', error);
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ success: false, error: fromZodError(error).message });
+      }
+      return res.status(500).json({ success: false, error: error?.message || 'Failed to save storage settings' });
+    }
+  });
+
+  app.post('/api/admin/storage-settings/activate', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(403).json({ success: false, error: 'No organization context' });
+      }
+
+      const providerConfigId = typeof req.body?.providerConfigId === 'string' ? req.body.providerConfigId : '';
+      if (!providerConfigId) {
+        return res.status(400).json({ success: false, error: 'providerConfigId is required' });
+      }
+
+      const settings = await organizationStorageSettingsService.activateProvider(organizationId, providerConfigId);
+      return res.json({ success: true, data: settings });
+    } catch (error: any) {
+      console.error('[StorageSettings:ACTIVATE] Error:', error);
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ success: false, error: fromZodError(error).message });
+      }
+      return res.status(500).json({ success: false, error: error?.message || 'Failed to activate storage provider' });
     }
   });
 
@@ -1722,8 +1848,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const activeOnly = String(req.query.activeOnly ?? "").trim().toLowerCase();
       const products = await storage.getAllProducts(organizationId);
-      res.json(products);
+      res.json(
+        activeOnly === "true" || activeOnly === "1"
+          ? products.filter((product) => product.isActive)
+          : products,
+      );
     } catch (error) {
       console.error("Error fetching products:", error);
       res.status(500).json({ message: "Failed to fetch products" });
@@ -3391,6 +3522,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const product = await storage.updateProduct(organizationId, productId, productData as UpdateProduct);
+      if (!product) {
+        return res.status(404).json({ success: false, message: "Product not found" });
+      }
       
       // DEV-ONLY: Verify what was actually written to DB
       if (process.env.NODE_ENV !== 'production' && 'optionTreeJson' in productData) {
@@ -4096,6 +4230,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           basePrice: pricingResult.breakdown.baseCents / 100,
           optionsPrice: pricingResult.breakdown.optionsCents / 100,
           total: pricingResult.lineTotalCents / 100,
+          pricingMethod: pricingResult.breakdown.pricingMethod,
         },
         // PBV2 snapshot fields (for storage in quote/order line items)
         pbv2TreeVersionId: pricingResult.pbv2TreeVersionId,
@@ -4115,6 +4250,117 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error("Request body:", JSON.stringify(req.body, null, 2));
       console.error("Stack:", (error as Error).stack);
       res.status(500).json({ message: "Failed to calculate price", error: (error as Error).message });
+    }
+  });
+
+  app.get("/api/pbv2/pricing-preview/variables", isAuthenticated, tenantContext, async (_req: any, res) => {
+    try {
+      const { getPbv2PricingVariableDefinitions } = await import("./services/pricing/PricingService");
+      return res.json({
+        success: true,
+        data: getPbv2PricingVariableDefinitions(),
+      });
+    } catch {
+      return res.status(500).json({ message: "Failed to load pricing variables" });
+    }
+  });
+
+  app.get("/api/pbv2/pricing-preview/reference", isAuthenticated, tenantContext, async (_req: any, res) => {
+    try {
+      const { getPbv2PricingVariableDefinitions } = await import("./services/pricing/PricingService");
+      const { PBV2_PRICING_FUNCTIONS } = await import("../shared/pbv2/pricingFunctionCatalog");
+      return res.json({
+        success: true,
+        data: {
+          supportedVariables: getPbv2PricingVariableDefinitions(),
+          supportedFunctions: PBV2_PRICING_FUNCTIONS,
+        },
+      });
+    } catch {
+      return res.status(500).json({ message: "Failed to load formula reference" });
+    }
+  });
+
+  app.get("/api/pbv2/pricing-preview", isAuthenticated, tenantContext, async (_req: any, res) => {
+    return res.status(405).json({
+      message: "Method Not Allowed",
+      allowedMethods: ["POST"],
+    });
+  });
+
+  app.post("/api/pbv2/pricing-preview", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const {
+        treeJson,
+        width,
+        height,
+        quantity,
+        optionSelectionsJson,
+        pricingFormulaOverride,
+        pricingProfileKey,
+        pricingProfileConfig,
+        debug,
+      } = req.body ?? {};
+
+      if (!treeJson || typeof treeJson !== "object") {
+        return res.status(400).json({ message: "treeJson is required" });
+      }
+
+      const widthNum = Number(width);
+      const heightNum = Number(height);
+      const quantityNum = Number(quantity);
+
+      if (!Number.isFinite(widthNum) || widthNum <= 0) {
+        return res.status(400).json({ message: "width must be a positive number" });
+      }
+      if (!Number.isFinite(heightNum) || heightNum <= 0) {
+        return res.status(400).json({ message: "height must be a positive number" });
+      }
+      if (!Number.isFinite(quantityNum) || quantityNum <= 0) {
+        return res.status(400).json({ message: "quantity must be a positive number" });
+      }
+
+      let pbv2ExplicitSelections: Record<string, any> = {};
+      if (optionSelectionsJson != null) {
+        pbv2ExplicitSelections = typeof optionSelectionsJson === "string"
+          ? JSON.parse(optionSelectionsJson)
+          : optionSelectionsJson;
+      }
+
+      const { evaluatePricingPreviewFromTree } = await import("./services/pricing/PricingService");
+      const result = evaluatePricingPreviewFromTree({
+        treeJson,
+        widthIn: widthNum,
+        heightIn: heightNum,
+        quantity: quantityNum,
+        pbv2ExplicitSelections,
+        pricingFormulaOverride: typeof pricingFormulaOverride === "string" ? pricingFormulaOverride : undefined,
+        pricingProfileKey: typeof pricingProfileKey === "string" ? pricingProfileKey : undefined,
+        pricingProfileConfig: pricingProfileConfig ?? undefined,
+        debug: Boolean(debug),
+      });
+
+      return res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error: any) {
+      if (error?.name === "ZodError") {
+        return res.status(400).json({ message: "Invalid preview payload" });
+      }
+      if (error?.code === "PBV2_FORMULA_ERROR" && Array.isArray(error?.details)) {
+        return res.json({
+          success: false,
+          message: "Formula evaluation failed",
+          errors: error.details,
+          debug: error?.debug,
+        });
+      }
+      const message = typeof error?.message === "string" ? error.message : "Failed to evaluate pricing preview";
+      return res.status(400).json({ message });
     }
   });
 
@@ -4291,6 +4537,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // Line item enhancements (migration 0039, 0040)
           description: item.description || null,
           productionNotes: item.productionNotes || null,
+          // Canonical routing intent (migration 0015)
+          requiresDesign: item.requiresDesign === true,
+          requiresPrepress: typeof item.requiresPrepress === 'boolean' ? item.requiresPrepress : null,
           // Tax fields (convert to string for storage)
           taxAmount: taxData.taxAmount.toString(),
           isTaxableSnapshot: taxData.isTaxableSnapshot,
@@ -4375,31 +4624,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      let finalizedLineItems: any[] = [];
-      try {
-        finalizedLineItems = await storage.finalizeTemporaryLineItemsForUser(
-          organizationId,
-          userId,
-          quote.id
-        );
-        console.log(
-          `[Quotes:POST] Finalized ${finalizedLineItems.length} temporary line items for quote ${quote.id}`
-        );
-      } catch (err) {
-        console.error(
-          "[Quotes:POST] Failed to finalize temporary line items for user",
-          err
-        );
-        // Do not block quote creation if finalization fails
-      }
-
-      const allLineItems = [...(quote.lineItems || []), ...finalizedLineItems];
-
       res.json({
         success: true,
         data: {
           ...quote,
-          lineItems: allLineItems,
         },
       });
     } catch (error) {
@@ -5354,6 +5582,379 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  const cloneQuoteToDraft = async (args: {
+    tx: any;
+    organizationId: string;
+    userId: string;
+    userName: string;
+    sourceQuoteId: string;
+    isInternalUser: boolean;
+    operation: 'duplicate' | 'revise';
+    includeArtwork: boolean;
+  }) => {
+    const {
+      tx,
+      organizationId,
+      userId,
+      userName,
+      sourceQuoteId,
+      isInternalUser,
+      operation,
+      includeArtwork,
+    } = args;
+
+    const whereParts = [
+      eq(quotes.id, sourceQuoteId),
+      eq(quotes.organizationId, organizationId),
+    ];
+
+    if (!isInternalUser) {
+      whereParts.push(eq(quotes.userId, userId));
+    }
+
+    const sourceQuote = await tx
+      .select()
+      .from(quotes)
+      .where(and(...whereParts))
+      .limit(1)
+      .then((rows: any[]) => rows[0]);
+
+    if (!sourceQuote) {
+      throw Object.assign(new Error('Quote not found'), { statusCode: 404 });
+    }
+
+    if (operation === 'revise') {
+      const isApproved = String((sourceQuote as any).status) === 'active';
+      const isConverted = !!(sourceQuote as any).convertedToOrderId;
+
+      if (!isApproved && !isConverted) {
+        throw Object.assign(new Error('Only approved or converted quotes can be revised.'), { statusCode: 409 });
+      }
+    }
+
+    let quoteNumberVar = await tx
+      .select()
+      .from(globalVariables)
+      .where(and(
+        eq(globalVariables.name, 'next_quote_number'),
+        eq(globalVariables.organizationId, organizationId)
+      ))
+      .limit(1)
+      .then((rows: any[]) => rows[0]);
+
+    if (!quoteNumberVar) {
+      const [createdVar] = await tx
+        .insert(globalVariables)
+        .values({
+          organizationId,
+          name: 'next_quote_number',
+          value: '1000',
+          description: 'Next quote number sequence (auto-initialized)',
+          category: 'numbering',
+          isActive: true,
+        })
+        .returning();
+      quoteNumberVar = createdVar;
+    }
+
+    const parsed = parseInt(String(quoteNumberVar.value), 10);
+    const nextQuoteNumber = Number.isFinite(parsed) ? parsed : 1000;
+
+    const [newQuote] = await tx
+      .insert(quotes)
+      .values({
+        organizationId,
+        quoteNumber: nextQuoteNumber,
+        label: operation === 'duplicate' ? null : sourceQuote.label,
+        userId: sourceQuote.userId,
+        status: 'draft' as any,
+        customerId: sourceQuote.customerId,
+        contactId: sourceQuote.contactId,
+        customerName: sourceQuote.customerName,
+        source: sourceQuote.source,
+        subtotal: sourceQuote.subtotal,
+        taxRate: sourceQuote.taxRate,
+        taxAmount: sourceQuote.taxAmount,
+        taxableSubtotal: sourceQuote.taxableSubtotal,
+        marginPercentage: sourceQuote.marginPercentage,
+        discountAmount: sourceQuote.discountAmount,
+        totalPrice: sourceQuote.totalPrice,
+
+        billToName: sourceQuote.billToName,
+        billToCompany: sourceQuote.billToCompany,
+        billToAddress1: sourceQuote.billToAddress1,
+        billToAddress2: sourceQuote.billToAddress2,
+        billToCity: sourceQuote.billToCity,
+        billToState: sourceQuote.billToState,
+        billToPostalCode: sourceQuote.billToPostalCode,
+        billToCountry: sourceQuote.billToCountry,
+        billToPhone: sourceQuote.billToPhone,
+        billToEmail: sourceQuote.billToEmail,
+
+        shippingMethod: sourceQuote.shippingMethod,
+        shippingMode: sourceQuote.shippingMode,
+        shipToName: sourceQuote.shipToName,
+        shipToCompany: sourceQuote.shipToCompany,
+        shipToAddress1: sourceQuote.shipToAddress1,
+        shipToAddress2: sourceQuote.shipToAddress2,
+        shipToCity: sourceQuote.shipToCity,
+        shipToState: sourceQuote.shipToState,
+        shipToPostalCode: sourceQuote.shipToPostalCode,
+        shipToCountry: sourceQuote.shipToCountry,
+        shipToPhone: sourceQuote.shipToPhone,
+        shipToEmail: sourceQuote.shipToEmail,
+        carrier: sourceQuote.carrier,
+        carrierAccountNumber: sourceQuote.carrierAccountNumber,
+        shippingInstructions: sourceQuote.shippingInstructions,
+
+        requestedDueDate: sourceQuote.requestedDueDate,
+        validUntil: sourceQuote.validUntil,
+
+        convertedToOrderId: null,
+      } as any)
+      .returning();
+
+    await tx
+      .update(globalVariables)
+      .set({
+        value: String(nextQuoteNumber + 1),
+        updatedAt: new Date(),
+      })
+      .where(eq(globalVariables.id, quoteNumberVar.id));
+
+    const sourceLineItems = await tx
+      .select()
+      .from(quoteLineItems)
+      .where(eq(quoteLineItems.quoteId, sourceQuoteId))
+      .orderBy(asc(quoteLineItems.displayOrder), asc(quoteLineItems.createdAt));
+
+    const lineItemIdMap = new Map<string, string>();
+
+    for (const li of sourceLineItems) {
+      const [createdLi] = await tx
+        .insert(quoteLineItems)
+        .values({
+          quoteId: newQuote.id,
+          status: (li.status as any) ?? 'active',
+          productId: li.productId,
+          productName: li.productName,
+          variantId: li.variantId,
+          variantName: li.variantName,
+          productType: li.productType,
+          width: li.width,
+          height: li.height,
+          quantity: li.quantity,
+          specsJson: li.specsJson,
+          selectedOptions: li.selectedOptions as any,
+          linePrice: li.linePrice,
+          formulaLinePrice: (li as any).formulaLinePrice ?? null,
+          priceOverride: (li as any).priceOverride ?? null,
+          priceBreakdown: li.priceBreakdown as any,
+          materialUsages: (li as any).materialUsages ?? [],
+          taxAmount: (li as any).taxAmount ?? '0',
+          isTaxableSnapshot: (li as any).isTaxableSnapshot ?? true,
+          displayOrder: li.displayOrder,
+          isTemporary: false,
+          createdByUserId: li.createdByUserId ?? null,
+          // Canonical routing intent (migration 0015) — preserved through clone/revise
+          requiresDesign: (li as any).requiresDesign ?? false,
+          requiresPrepress: (li as any).requiresPrepress ?? null,
+        } as any)
+        .returning();
+
+      lineItemIdMap.set(li.id, createdLi.id);
+    }
+
+    if (includeArtwork) {
+      const sourceAttachments = await tx
+        .select()
+        .from(quoteAttachments)
+        .where(and(
+          eq(quoteAttachments.quoteId, sourceQuoteId),
+          eq(quoteAttachments.organizationId, organizationId),
+        ))
+        .orderBy(asc(quoteAttachments.createdAt));
+
+      for (const att of sourceAttachments) {
+        const mappedLineItemId = att.quoteLineItemId
+          ? (lineItemIdMap.get(att.quoteLineItemId) ?? null)
+          : null;
+
+        if (att.quoteLineItemId && !mappedLineItemId) {
+          throw Object.assign(new Error('Attachment references a line item that could not be mapped.'), { statusCode: 500 });
+        }
+
+        const [createdAtt] = await tx
+          .insert(quoteAttachments)
+          .values({
+            quoteId: newQuote.id,
+            quoteLineItemId: mappedLineItemId,
+            organizationId,
+            fileRecordId: att.fileRecordId,
+            uploadedByUserId: att.uploadedByUserId,
+            uploadedByName: att.uploadedByName,
+
+            fileName: att.fileName,
+            fileUrl: att.fileUrl ?? null,
+            fileSize: att.fileSize,
+            mimeType: att.mimeType,
+            description: att.description,
+
+            originalFilename: att.originalFilename,
+            storedFilename: att.storedFilename,
+            relativePath: att.relativePath,
+            storageProvider: att.storageProvider,
+            extension: att.extension,
+            sizeBytes: att.sizeBytes,
+            checksum: att.checksum,
+
+            thumbnailRelativePath: att.thumbnailRelativePath,
+            thumbnailGeneratedAt: att.thumbnailGeneratedAt,
+            thumbStatus: att.thumbStatus,
+            thumbKey: att.thumbKey,
+            previewKey: att.previewKey,
+            thumbError: att.thumbError,
+
+            pageCount: att.pageCount,
+            pageCountStatus: att.pageCountStatus,
+            pageCountError: att.pageCountError,
+            pageCountUpdatedAt: att.pageCountUpdatedAt,
+
+            bucket: att.bucket,
+            updatedAt: new Date(),
+          } as any)
+          .returning();
+
+        const { hasQuoteAttachmentPagesTable } = await import('./db');
+        const pagesTableExists = hasQuoteAttachmentPagesTable();
+
+        if (pagesTableExists === true) {
+          try {
+            const sourcePages = await tx
+              .select()
+              .from(quoteAttachmentPages)
+              .where(and(
+                eq(quoteAttachmentPages.attachmentId, att.id),
+                eq(quoteAttachmentPages.organizationId, organizationId),
+              ))
+              .orderBy(asc(quoteAttachmentPages.pageIndex));
+
+            for (const p of sourcePages) {
+              await tx
+                .insert(quoteAttachmentPages)
+                .values({
+                  organizationId,
+                  attachmentId: createdAtt.id,
+                  pageIndex: p.pageIndex,
+                  thumbStatus: p.thumbStatus,
+                  thumbFileRecordId: p.thumbFileRecordId,
+                  thumbKey: null,
+                  previewFileRecordId: p.previewFileRecordId,
+                  previewKey: null,
+                  thumbError: p.thumbError,
+                  updatedAt: new Date(),
+                } as any);
+            }
+          } catch (error: any) {
+            const pgCode = error?.code;
+            const logPrefix = operation === 'revise' ? '[ReviseQuote]' : '[DuplicateQuote]';
+            if (pgCode === '42P01') {
+              console.warn(`${logPrefix} Skipping attachment page copy: quote_attachment_pages missing (42P01)`);
+            } else {
+              console.error(`${logPrefix} Error copying attachment pages (non-fatal):`, error);
+            }
+          }
+        } else {
+          const logPrefix = operation === 'revise' ? '[ReviseQuote]' : '[DuplicateQuote]';
+          console.log(`${logPrefix} Skipping attachment page copy: quote_attachment_pages table not available`);
+        }
+      }
+    }
+
+    const actionSuffix = operation === 'revise'
+      ? ''
+      : includeArtwork
+        ? ' with artwork'
+        : '';
+
+    await tx.insert(auditLogs).values({
+      organizationId,
+      userId,
+      userName,
+      actionType: 'CREATE',
+      entityType: 'quote',
+      entityId: newQuote.id,
+      entityName: newQuote.quoteNumber != null ? String(newQuote.quoteNumber) : undefined,
+      description: operation === 'revise'
+        ? `Created as revision of quote ${sourceQuote.quoteNumber ?? ''}`.trim()
+        : `Created as duplicate of quote ${sourceQuote.quoteNumber ?? ''}${actionSuffix}`.trim(),
+      newValues: operation === 'revise'
+        ? { sourceQuoteId: sourceQuote.id, sourceQuoteNumber: sourceQuote.quoteNumber }
+        : { sourceQuoteId: sourceQuote.id, sourceQuoteNumber: sourceQuote.quoteNumber, includeArtwork },
+    } as any);
+
+    await tx.insert(auditLogs).values({
+      organizationId,
+      userId,
+      userName,
+      actionType: 'UPDATE',
+      entityType: 'quote',
+      entityId: sourceQuote.id,
+      entityName: sourceQuote.quoteNumber != null ? String(sourceQuote.quoteNumber) : undefined,
+      description: operation === 'revise'
+        ? `Revised to quote ${newQuote.quoteNumber ?? ''}`.trim()
+        : `Duplicated to quote ${newQuote.quoteNumber ?? ''}${actionSuffix}`.trim(),
+      newValues: operation === 'revise'
+        ? { revisedQuoteId: newQuote.id, revisedQuoteNumber: newQuote.quoteNumber }
+        : { duplicatedQuoteId: newQuote.id, duplicatedQuoteNumber: newQuote.quoteNumber, includeArtwork },
+    } as any);
+
+    return {
+      id: newQuote.id,
+      quoteNumber: newQuote.quoteNumber,
+      includeArtwork,
+    };
+  };
+
+  app.post("/api/quotes/:id/duplicate", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ message: "Not authenticated" });
+
+      const userRole = req.user?.role || 'customer';
+      const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
+      const sourceQuoteId = req.params.id;
+      const mode = req.body?.mode;
+
+      if (mode !== 'quote_only' && mode !== 'quote_with_artwork') {
+        return res.status(400).json({ message: 'Invalid duplicate mode. Expected quote_only or quote_with_artwork.' });
+      }
+
+      const userName = `${req.user?.firstName || ''} ${req.user?.lastName || ''}`.trim() || req.user?.email || 'Unknown';
+
+      const result = await db.transaction(async (tx) => cloneQuoteToDraft({
+        tx,
+        organizationId,
+        userId,
+        userName,
+        sourceQuoteId,
+        isInternalUser,
+        operation: 'duplicate',
+        includeArtwork: mode === 'quote_with_artwork',
+      }));
+
+      return res.json(result);
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      const message = error?.message || 'Failed to duplicate quote';
+      console.error('[Quote:Duplicate] Error:', error);
+      return res.status(status).json({ message });
+    }
+  });
+
   // Revise an approved quote: clone into a new editable draft
   app.post("/api/quotes/:id/revise", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -5369,307 +5970,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const userName = `${req.user?.firstName || ''} ${req.user?.lastName || ''}`.trim() || req.user?.email || 'Unknown';
 
-      const result = await db.transaction(async (tx) => {
-        const whereParts = [
-          eq(quotes.id, sourceQuoteId),
-          eq(quotes.organizationId, organizationId),
-        ];
-        if (!isInternalUser) {
-          whereParts.push(eq(quotes.userId, userId));
-        }
-
-        const sourceQuote = await tx
-          .select()
-          .from(quotes)
-          .where(and(...whereParts))
-          .limit(1)
-          .then((rows) => rows[0]);
-
-        if (!sourceQuote) {
-          throw Object.assign(new Error('Quote not found'), { statusCode: 404 });
-        }
-
-        // Allow revising approved quotes (status='active') OR converted quotes (has convertedToOrderId)
-        // This enables creating new drafts from terminal states that warrant revision
-        const isApproved = String((sourceQuote as any).status) === 'active';
-        const isConverted = !!(sourceQuote as any).convertedToOrderId;
-
-        if (!isApproved && !isConverted) {
-          throw Object.assign(new Error('Only approved or converted quotes can be revised.'), { statusCode: 409 });
-        }
-
-        // Get or auto-initialize next quote number (same logic as createQuote)
-        let quoteNumberVar = await tx
-          .select()
-          .from(globalVariables)
-          .where(and(
-            eq(globalVariables.name, 'next_quote_number'),
-            eq(globalVariables.organizationId, organizationId)
-          ))
-          .limit(1)
-          .then((rows) => rows[0]);
-
-        if (!quoteNumberVar) {
-          const [createdVar] = await tx
-            .insert(globalVariables)
-            .values({
-              organizationId,
-              name: 'next_quote_number',
-              value: '1000',
-              description: 'Next quote number sequence (auto-initialized)',
-              category: 'numbering',
-              isActive: true,
-            })
-            .returning();
-          quoteNumberVar = createdVar;
-        }
-
-        const parsed = parseInt(String(quoteNumberVar.value), 10);
-        const nextQuoteNumber = Number.isFinite(parsed) ? parsed : 1000;
-
-        const [newQuote] = await tx
-          .insert(quotes)
-          .values({
-            organizationId,
-            quoteNumber: nextQuoteNumber,
-            label: sourceQuote.label,
-            userId: sourceQuote.userId,
-            status: 'draft' as any,
-            customerId: sourceQuote.customerId,
-            contactId: sourceQuote.contactId,
-            customerName: sourceQuote.customerName,
-            source: sourceQuote.source,
-            subtotal: sourceQuote.subtotal,
-            taxRate: sourceQuote.taxRate,
-            taxAmount: sourceQuote.taxAmount,
-            taxableSubtotal: sourceQuote.taxableSubtotal,
-            marginPercentage: sourceQuote.marginPercentage,
-            discountAmount: sourceQuote.discountAmount,
-            totalPrice: sourceQuote.totalPrice,
-
-            billToName: sourceQuote.billToName,
-            billToCompany: sourceQuote.billToCompany,
-            billToAddress1: sourceQuote.billToAddress1,
-            billToAddress2: sourceQuote.billToAddress2,
-            billToCity: sourceQuote.billToCity,
-            billToState: sourceQuote.billToState,
-            billToPostalCode: sourceQuote.billToPostalCode,
-            billToCountry: sourceQuote.billToCountry,
-            billToPhone: sourceQuote.billToPhone,
-            billToEmail: sourceQuote.billToEmail,
-
-            shippingMethod: sourceQuote.shippingMethod,
-            shippingMode: sourceQuote.shippingMode,
-            shipToName: sourceQuote.shipToName,
-            shipToCompany: sourceQuote.shipToCompany,
-            shipToAddress1: sourceQuote.shipToAddress1,
-            shipToAddress2: sourceQuote.shipToAddress2,
-            shipToCity: sourceQuote.shipToCity,
-            shipToState: sourceQuote.shipToState,
-            shipToPostalCode: sourceQuote.shipToPostalCode,
-            shipToCountry: sourceQuote.shipToCountry,
-            shipToPhone: sourceQuote.shipToPhone,
-            shipToEmail: sourceQuote.shipToEmail,
-            carrier: sourceQuote.carrier,
-            carrierAccountNumber: sourceQuote.carrierAccountNumber,
-            shippingInstructions: sourceQuote.shippingInstructions,
-
-            requestedDueDate: sourceQuote.requestedDueDate,
-            validUntil: sourceQuote.validUntil,
-
-            convertedToOrderId: null,
-          } as any)
-          .returning();
-
-        await tx
-          .update(globalVariables)
-          .set({
-            value: String(nextQuoteNumber + 1),
-            updatedAt: new Date(),
-          })
-          .where(eq(globalVariables.id, quoteNumberVar.id));
-
-        // Copy line items (preserve ordering)
-        const sourceLineItems = await tx
-          .select()
-          .from(quoteLineItems)
-          .where(and(
-            eq(quoteLineItems.quoteId, sourceQuoteId),
-          ))
-          .orderBy(asc(quoteLineItems.displayOrder), asc(quoteLineItems.createdAt));
-
-        const lineItemIdMap = new Map<string, string>();
-
-        for (const li of sourceLineItems) {
-          const [createdLi] = await tx
-            .insert(quoteLineItems)
-            .values({
-              quoteId: newQuote.id,
-              status: (li.status as any) ?? 'active',
-              productId: li.productId,
-              productName: li.productName,
-              variantId: li.variantId,
-              variantName: li.variantName,
-              productType: li.productType,
-              width: li.width,
-              height: li.height,
-              quantity: li.quantity,
-              specsJson: li.specsJson,
-              selectedOptions: li.selectedOptions as any,
-              linePrice: li.linePrice,
-              formulaLinePrice: (li as any).formulaLinePrice ?? null,
-              priceOverride: (li as any).priceOverride ?? null,
-              priceBreakdown: li.priceBreakdown as any,
-              materialUsages: (li as any).materialUsages ?? [],
-              taxAmount: (li as any).taxAmount ?? '0',
-              isTaxableSnapshot: (li as any).isTaxableSnapshot ?? true,
-              displayOrder: li.displayOrder,
-              isTemporary: false,
-              createdByUserId: li.createdByUserId ?? null,
-            } as any)
-            .returning();
-
-          lineItemIdMap.set(li.id, createdLi.id);
-        }
-
-        // Copy attachments (quote-level + line-item). Also copy attachment pages for PDF thumbnails.
-        const sourceAttachments = await tx
-          .select()
-          .from(quoteAttachments)
-          .where(and(
-            eq(quoteAttachments.quoteId, sourceQuoteId),
-            eq(quoteAttachments.organizationId, organizationId),
-          ))
-          .orderBy(asc(quoteAttachments.createdAt));
-
-        const attachmentIdMap = new Map<string, string>();
-
-        for (const att of sourceAttachments) {
-          const mappedLineItemId = att.quoteLineItemId
-            ? (lineItemIdMap.get(att.quoteLineItemId) ?? null)
-            : null;
-
-          if (att.quoteLineItemId && !mappedLineItemId) {
-            throw Object.assign(new Error('Attachment references a line item that could not be mapped.'), { statusCode: 500 });
-          }
-
-          const [createdAtt] = await tx
-            .insert(quoteAttachments)
-            .values({
-              quoteId: newQuote.id,
-              quoteLineItemId: mappedLineItemId,
-              organizationId,
-              uploadedByUserId: att.uploadedByUserId,
-              uploadedByName: att.uploadedByName,
-
-              fileName: att.fileName,
-              fileUrl: att.fileUrl,
-              fileSize: att.fileSize,
-              mimeType: att.mimeType,
-              description: att.description,
-
-              originalFilename: att.originalFilename,
-              storedFilename: att.storedFilename,
-              relativePath: att.relativePath,
-              storageProvider: att.storageProvider,
-              extension: att.extension,
-              sizeBytes: att.sizeBytes,
-              checksum: att.checksum,
-
-              thumbnailRelativePath: att.thumbnailRelativePath,
-              thumbnailGeneratedAt: att.thumbnailGeneratedAt,
-              thumbStatus: att.thumbStatus,
-              thumbKey: att.thumbKey,
-              previewKey: att.previewKey,
-              thumbError: att.thumbError,
-
-              pageCount: att.pageCount,
-              pageCountStatus: att.pageCountStatus,
-              pageCountError: att.pageCountError,
-              pageCountUpdatedAt: att.pageCountUpdatedAt,
-
-              bucket: att.bucket,
-              updatedAt: new Date(),
-            } as any)
-            .returning();
-
-          attachmentIdMap.set(att.id, createdAtt.id);
-
-          // Copy PDF thumbnail pages if present (only if table exists)
-          const { hasQuoteAttachmentPagesTable } = await import('./db');
-          const pagesTableExists = hasQuoteAttachmentPagesTable();
-
-          if (pagesTableExists === true) {
-            try {
-              const sourcePages = await tx
-                .select()
-                .from(quoteAttachmentPages)
-                .where(and(
-                  eq(quoteAttachmentPages.attachmentId, att.id),
-                  eq(quoteAttachmentPages.organizationId, organizationId),
-                ))
-                .orderBy(asc(quoteAttachmentPages.pageIndex));
-
-              for (const p of sourcePages) {
-                await tx
-                  .insert(quoteAttachmentPages)
-                  .values({
-                    organizationId,
-                    attachmentId: createdAtt.id,
-                    pageIndex: p.pageIndex,
-                    thumbStatus: p.thumbStatus,
-                    thumbKey: p.thumbKey,
-                    previewKey: p.previewKey,
-                    thumbError: p.thumbError,
-                    updatedAt: new Date(),
-                  } as any);
-              }
-            } catch (error: any) {
-              // If table was dropped mid-transaction or other DB error, log and continue
-              // Don't fail the entire revise operation for missing page metadata
-              const pgCode = error?.code;
-              if (pgCode === '42P01') {
-                console.warn('[ReviseQuote] Skipping attachment page copy: quote_attachment_pages missing (42P01)');
-              } else {
-                console.error('[ReviseQuote] Error copying attachment pages (non-fatal):', error);
-              }
-              // Continue with revise operation - page metadata is not critical
-            }
-          } else {
-            console.log('[ReviseQuote] Skipping attachment page copy: quote_attachment_pages table not available');
-          }
-        }
-
-        // Provenance via audit logs (both quotes)
-        await tx.insert(auditLogs).values({
-          organizationId,
-          userId,
-          userName,
-          actionType: 'CREATE',
-          entityType: 'quote',
-          entityId: newQuote.id,
-          entityName: newQuote.quoteNumber != null ? String(newQuote.quoteNumber) : undefined,
-          description: `Created as revision of quote ${sourceQuote.quoteNumber ?? ''}`.trim(),
-          newValues: { sourceQuoteId: sourceQuote.id, sourceQuoteNumber: sourceQuote.quoteNumber },
-        } as any);
-
-        await tx.insert(auditLogs).values({
-          organizationId,
-          userId,
-          userName,
-          actionType: 'UPDATE',
-          entityType: 'quote',
-          entityId: sourceQuote.id,
-          entityName: sourceQuote.quoteNumber != null ? String(sourceQuote.quoteNumber) : undefined,
-          description: `Revised to quote ${newQuote.quoteNumber ?? ''}`.trim(),
-          newValues: { revisedQuoteId: newQuote.id, revisedQuoteNumber: newQuote.quoteNumber },
-        } as any);
-
-        return {
-          id: newQuote.id,
-          quoteNumber: newQuote.quoteNumber,
-        };
-      });
+      const result = await db.transaction(async (tx) => cloneQuoteToDraft({
+        tx,
+        organizationId,
+        userId,
+        userName,
+        sourceQuoteId,
+        isInternalUser,
+        operation: 'revise',
+        includeArtwork: true,
+      }));
 
       return res.json(result);
     } catch (error: any) {
@@ -5748,9 +6058,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           optionsPrice: pricingResult.breakdown.optionsCents / 100,
           total: pricingResult.lineTotalCents / 100,
           formula: "",
+          nestingDetails: pricingResult.breakdown.nestingDetails ?? null,
+          pricingMethod: pricingResult.breakdown.pricingMethod,
         },
         displayOrder: lineItem.displayOrder || 0,
         isTemporary: false,
+        // Canonical routing intent (migration 0015)
+        requiresDesign: lineItem.requiresDesign === true,
+        requiresPrepress: typeof lineItem.requiresPrepress === 'boolean' ? lineItem.requiresPrepress : null,
       };
 
       const createdLineItem = await storage.addLineItem(id, validatedLineItem);
@@ -5840,6 +6155,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           optionsPrice: pricingResult.breakdown.optionsCents / 100,
           total: pricingResult.lineTotalCents / 100,
           formula: "",
+          nestingDetails: pricingResult.breakdown.nestingDetails ?? null,
+          pricingMethod: pricingResult.breakdown.pricingMethod,
         },
         displayOrder: typeof displayOrder === "number" ? displayOrder : 0,
       };
@@ -5919,6 +6236,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           optionsPrice: pricingResult.breakdown.optionsCents / 100,
           total: pricingResult.lineTotalCents / 100,
           formula: "",
+          nestingDetails: pricingResult.breakdown.nestingDetails ?? null,
+          pricingMethod: pricingResult.breakdown.pricingMethod,
         };
         updateData.formulaLinePrice = null;
         updateData.priceOverride = null;
@@ -5944,6 +6263,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Line item enhancements (migrations 0039, 0040)
       if (lineItem.description !== undefined) updateData.description = lineItem.description;
       if (lineItem.productionNotes !== undefined) updateData.productionNotes = lineItem.productionNotes;
+      // Canonical routing intent (migration 0015)
+      if (lineItem.requiresDesign !== undefined) updateData.requiresDesign = lineItem.requiresDesign === true;
+      if (lineItem.requiresPrepress !== undefined) updateData.requiresPrepress = typeof lineItem.requiresPrepress === 'boolean' ? lineItem.requiresPrepress : null;
 
       const updatedLineItem = await storage.updateLineItem(lineItemId, updateData);
       res.json(updatedLineItem);
@@ -6042,7 +6364,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { assetRepository } = await import('./services/assets/AssetRepository');
       const { enrichAssetsWithRoles } = await import('./services/assets/enrichAssetWithUrls');
       const linkedAssets = await assetRepository.listAssetsForParent(organizationId, 'quote_line_item', lineItemId);
-      const enrichedAssets = enrichAssetsWithRoles(linkedAssets);
+      const enrichedAssets = await enrichAssetsWithRoles(linkedAssets);
 
       console.log(`[LineItemFiles:GET] Found ${files.length} files + ${linkedAssets.length} assets for line item ${lineItemId}`);
       res.json({ success: true, data: enrichedFiles, assets: enrichedAssets });
@@ -6101,43 +6423,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (!assertQuoteEditable(res, quote)) return;
 
-      const { fileName, fileUrl, fileSize, mimeType, description, fileBuffer, originalFilename, storageTarget, requestedStorageTarget } = req.body;
+      const { uploadId, fileName, fileUrl, fileSize, mimeType, description, fileBuffer, originalFilename, storageTarget, requestedStorageTarget } = req.body;
 
       console.log(`[LineItemFiles:POST] quoteId=${quoteId}, lineItemId=${lineItemId}, fileName=${fileName}`);
-
-      if (!fileName && !originalFilename) {
-        return res.status(400).json({ error: "fileName or originalFilename is required" });
-      }
 
       const requestedTarget =
         (typeof requestedStorageTarget === 'string' ? requestedStorageTarget : null) ||
         (typeof storageTarget === 'string' ? storageTarget : null);
 
-      const bufferForDecision = fileBuffer ? Buffer.from(fileBuffer, 'base64') : null;
-      const sizeForDecision = bufferForDecision ? bufferForDecision.length : (fileSize != null ? Number(fileSize) : 0);
-
-      const { decideStorageTarget, getMaxCloudUploadBytes } = await import('./services/storageTarget');
-      const maxCloudBytes = getMaxCloudUploadBytes();
-      const decidedTarget = decideStorageTarget({
-        fileName: (originalFilename || fileName || null) as any,
-        fileSizeBytes: sizeForDecision,
-        requestedTarget,
-        organizationId,
-        context: 'POST /api/quotes/:quoteId/line-items/:lineItemId/files',
-      });
-
-      // Explicit local_dev selection requires atomic upload payload.
-      // But server enforcement wins: even if client asked for local_dev, we may decide supabase.
-      if (decidedTarget === 'local_dev' && (!fileBuffer || !originalFilename)) {
-        return res.status(400).json({
-          error: "local_dev uploads require fileBuffer + originalFilename",
-          maxCloudBytes,
-          decidedTarget,
-        });
+      if (!uploadId && !fileName && !originalFilename) {
+        return res.status(400).json({ error: "fileName or originalFilename is required" });
       }
 
       // Legacy flow requires fileUrl.
-      if (!fileBuffer && !fileUrl) {
+      if (!uploadId && !fileBuffer && !fileUrl) {
         return res.status(400).json({ error: "fileUrl is required for legacy uploads" });
       }
 
@@ -6167,7 +6466,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.warn(`[LineItemFiles:POST] PDF detected but page_count_status column missing; PDF processing disabled for ${fileName}`);
       }
 
-      let attachmentData: any = {
+      const baseAttachmentData = {
         quoteId,
         quoteLineItemId: lineItemId,
         organizationId,
@@ -6175,120 +6474,167 @@ export async function registerRoutes(app: Express): Promise<Server> {
         uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
         description: description || null,
         bucket: 'titan-private',
-      };
+      } as const;
 
-      // Atomic upload path (server decides provider)
-      if (fileBuffer && originalFilename) {
-        const buffer = bufferForDecision || Buffer.from(fileBuffer, 'base64');
-        const contentType = (mimeType || 'application/octet-stream') as string;
+      const defaultThumbStatus = isPdfEarly ? ('thumb_pending' as const) : ('uploaded' as const);
+      const defaultPageCountStatus = pdfColumnsExist ? (isPdfEarly ? ('detecting' as const) : ('unknown' as const)) : null;
+      const isExternalUrl = typeof fileUrl === 'string' && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'));
 
-        if (decidedTarget === 'supabase' && isSupabaseConfigured()) {
-          const { SupabaseStorageService } = await import('./supabaseStorage');
-          const {
-            generateStoredFilename,
-            generateRelativePath,
-            computeChecksum,
-            getFileExtension,
-          } = await import('./utils/fileStorage');
+      let canonicalUpload: Awaited<ReturnType<typeof storageApplicationService.finalizeUpload<any>>> | null = null;
 
-          const storedFilename = generateStoredFilename(originalFilename);
-          const relativePath = generateRelativePath({
+      if (uploadId && typeof uploadId === 'string') {
+        canonicalUpload = await storageApplicationService.finalizeUpload({
+          organizationId,
+          createdByUserId: userId ?? null,
+          requestedTarget,
+          resource: {
             organizationId,
             resourceType: 'quote',
             resourceId: quoteId,
-            storedFilename,
-          });
-          const checksum = computeChecksum(buffer);
-          const extension = getFileExtension(originalFilename);
+            lineItemId,
+          },
+          source: {
+            kind: 'upload-session',
+            uploadId,
+            expectedPurpose: 'quote-attachment',
+            expectedParentId: quoteId,
+          },
+          persistLink: async (tx, stored) => {
+            const [created] = await tx.insert(quoteAttachments).values({
+              ...baseAttachmentData,
+              fileRecordId: stored.fileRecord.id,
+              fileName: stored.storedObject.originalFilename,
+              fileUrl: null,
+              fileSize: stored.storedObject.sizeBytes,
+              mimeType: stored.storedObject.mimeType,
+              originalFilename: stored.storedObject.originalFilename,
+              storedFilename: stored.storedObject.storedFilename,
+              relativePath: null,
+              storageProvider: null,
+              extension: stored.storedObject.extension,
+              sizeBytes: stored.storedObject.sizeBytes,
+              checksum: stored.storedObject.checksum,
+              thumbStatus: defaultThumbStatus,
+              pageCountStatus: defaultPageCountStatus,
+            }).returning();
 
-          const supabase = new SupabaseStorageService();
-          const uploaded = await supabase.uploadFile(relativePath, buffer, contentType);
-
-          attachmentData = {
-            ...attachmentData,
-            fileName: originalFilename,
-            originalFilename,
-            fileUrl: normalizeObjectKeyForDb(uploaded.path),
-            fileSize: buffer.length,
-            mimeType: contentType,
-            storedFilename,
-            relativePath: normalizeObjectKeyForDb(uploaded.path),
-            storageProvider: 'supabase',
-            extension,
-            sizeBytes: buffer.length,
-            checksum,
-            thumbStatus: isPdfEarly ? ('thumb_pending' as const) : ('uploaded' as const),
-          };
-        } else {
-          const { processUploadedFile } = await import('./utils/fileStorage');
-
-          const fileMetadata = await processUploadedFile({
-            originalFilename,
-            buffer,
-            mimeType: contentType,
+            if (!created) throw new Error('Failed to create quote line item attachment link');
+            return created;
+          },
+        });
+      } else if (fileBuffer && resolvedUploadName) {
+        canonicalUpload = await storageApplicationService.finalizeUpload({
+          organizationId,
+          createdByUserId: userId ?? null,
+          requestedTarget,
+          resource: {
             organizationId,
             resourceType: 'quote',
             resourceId: quoteId,
-          });
+            lineItemId,
+          },
+          source: {
+            kind: 'buffer',
+            buffer: Buffer.from(fileBuffer, 'base64'),
+            originalFilename: resolvedUploadName,
+            mimeType: (mimeType || 'application/octet-stream') as string,
+          },
+          persistLink: async (tx, stored) => {
+            const [created] = await tx.insert(quoteAttachments).values({
+              ...baseAttachmentData,
+              fileRecordId: stored.fileRecord.id,
+              fileName: stored.storedObject.originalFilename,
+              fileUrl: null,
+              fileSize: stored.storedObject.sizeBytes,
+              mimeType: stored.storedObject.mimeType,
+              originalFilename: stored.storedObject.originalFilename,
+              storedFilename: stored.storedObject.storedFilename,
+              relativePath: null,
+              storageProvider: null,
+              extension: stored.storedObject.extension,
+              sizeBytes: stored.storedObject.sizeBytes,
+              checksum: stored.storedObject.checksum,
+              thumbStatus: defaultThumbStatus,
+              pageCountStatus: defaultPageCountStatus,
+            }).returning();
 
-          attachmentData = {
-            ...attachmentData,
-            fileName: originalFilename,
-            originalFilename: fileMetadata.originalFilename,
-            fileUrl: fileMetadata.relativePath,
-            fileSize: fileMetadata.sizeBytes,
-            mimeType: contentType,
-            storedFilename: fileMetadata.storedFilename,
-            relativePath: fileMetadata.relativePath,
-            storageProvider: 'local',
-            extension: fileMetadata.extension,
-            sizeBytes: fileMetadata.sizeBytes,
-            checksum: fileMetadata.checksum,
-            thumbStatus: isPdfEarly ? ('thumb_pending' as const) : ('uploaded' as const),
-          };
-        }
-      } else {
-        // Legacy/signed-URL path
-        const storageKey = fileUrl as string;
-        let storageProvider: string | undefined;
+            if (!created) throw new Error('Failed to create quote line item attachment link');
+            return created;
+          },
+        });
+      } else if (fileUrl && !isExternalUrl) {
+        canonicalUpload = await storageApplicationService.finalizeUpload({
+          organizationId,
+          createdByUserId: userId ?? null,
+          requestedTarget,
+          resource: {
+            organizationId,
+            resourceType: 'quote',
+            resourceId: quoteId,
+            lineItemId,
+          },
+          source: {
+            kind: 'existing-key',
+            fileUrl: normalizeObjectKeyForDb(fileUrl),
+            originalFilename: resolvedUploadName,
+            mimeType: mimeType || null,
+            fileSize: fileSize || null,
+          },
+          persistLink: async (tx, stored) => {
+            const [created] = await tx.insert(quoteAttachments).values({
+              ...baseAttachmentData,
+              fileRecordId: stored.fileRecord.id,
+              fileName: stored.storedObject.originalFilename,
+              fileUrl: null,
+              fileSize: stored.storedObject.sizeBytes,
+              mimeType: stored.storedObject.mimeType,
+              originalFilename: stored.storedObject.originalFilename,
+              storedFilename: stored.storedObject.storedFilename,
+              relativePath: null,
+              storageProvider: null,
+              extension: stored.storedObject.extension,
+              sizeBytes: stored.storedObject.sizeBytes,
+              checksum: stored.storedObject.checksum,
+              thumbStatus: defaultThumbStatus,
+              pageCountStatus: defaultPageCountStatus,
+            }).returning();
 
-        if (storageKey && (storageKey.startsWith('http://') || storageKey.startsWith('https://'))) {
-          storageProvider = undefined;
-        } else if (decidedTarget === 'supabase') {
-          storageProvider = 'supabase';
-        } else {
-          storageProvider = 'local';
-        }
-
-        attachmentData = {
-          ...attachmentData,
-          fileName: (fileName || originalFilename) as string,
-          originalFilename: (originalFilename || fileName) as string,
-          fileUrl:
-            storageProvider === 'supabase' && storageKey && !storageKey.startsWith('http://') && !storageKey.startsWith('https://')
-              ? normalizeObjectKeyForDb(storageKey)
-              : storageKey,
-          fileSize: fileSize || null,
-          mimeType: mimeType || null,
-          storageProvider,
-          thumbStatus: isPdfEarly ? ('thumb_pending' as const) : ('uploaded' as const),
-        };
-      }
-
-      // Only include PDF-specific fields if columns exist
-      if (pdfColumnsExist) {
-        attachmentData.pageCountStatus = isPdfEarly ? ('detecting' as const) : ('unknown' as const);
+            if (!created) throw new Error('Failed to create quote line item attachment link');
+            return created;
+          },
+        });
       }
 
       console.log(`[LineItemFiles:POST] Inserting attachment with quoteLineItemId=${lineItemId}`);
-      const [attachment] = await db.insert(quoteAttachments).values(attachmentData).returning();
+      const attachment = canonicalUpload
+        ? canonicalUpload.linkedRecord
+        : (await db.insert(quoteAttachments).values({
+            ...baseAttachmentData,
+            fileRecordId: null,
+            fileName: resolvedUploadName,
+            originalFilename: resolvedUploadName,
+            fileUrl,
+            relativePath: null,
+            fileSize: fileSize || null,
+            mimeType: mimeType || null,
+            storageProvider: undefined,
+            thumbStatus: defaultThumbStatus,
+            pageCountStatus: defaultPageCountStatus,
+          }).returning())[0];
+
+      const canonicalOriginal = attachment.fileRecordId
+        ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
+        : null;
+      const canonicalStorageKey = canonicalOriginal?.objectKey ?? canonicalOriginal?.localPathRef ?? null;
+      const canonicalStorageProvider = canonicalOriginal?.providerType
+        ?? (canonicalOriginal?.localPathRef ? 'local_filesystem' : canonicalOriginal?.objectKey ? 'supabase' : null);
 
       // Best-effort self-check for Supabase-backed keys (non-blocking)
-      if (attachment.storageProvider === 'supabase' && attachment.fileUrl) {
+      if (canonicalStorageProvider === 'supabase' && canonicalStorageKey) {
         res.on('finish', () => {
           scheduleSupabaseObjectSelfCheck({
             bucket: 'titan-private',
-            path: attachment.fileUrl,
+            path: canonicalStorageKey,
             context: { attachmentType: 'quote', quoteId, lineItemId, attachmentId: attachment.id },
           });
         });
@@ -6302,7 +6648,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const { assetRepository } = await import('./services/assets/AssetRepository');
         const { assetPreviewGenerator } = await import('./services/assets/AssetPreviewGenerator');
         const asset = await assetRepository.createAsset(organizationId, {
-          fileKey: attachment.fileUrl, // Storage key
+          fileRecordId: attachment.fileRecordId ?? null,
+          fileKey: attachment.fileRecordId ? null : attachment.fileUrl,
           fileName: attachment.fileName,
           mimeType: attachment.mimeType || undefined,
           sizeBytes: attachment.fileSize || undefined,
@@ -6334,18 +6681,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const isAiByMime = /illustrator/i.test(lowerMimeType) || (/postscript/i.test(lowerMimeType) && isAiByName);
       const isAi = isAiByName || isAiByMime;
 
-      const hasStorageProvider = !!attachment.storageProvider;
-      const isNotHttpUrl =
-        !!attachment.fileUrl &&
-        !attachment.fileUrl.startsWith('http://') &&
-        !attachment.fileUrl.startsWith('https://');
+      const hasStorageProvider = !!canonicalStorageProvider;
+      const isNotHttpUrl = !!canonicalStorageKey;
 
       console.log('[LineItemFiles:POST][Detect]', {
         attachmentId: attachment.id,
         fileName: attachmentFileName,
         mimeType: attachment.mimeType ?? null,
-        storageProvider: attachment.storageProvider ?? null,
-        fileUrl: attachment.fileUrl ?? null,
+        storageProvider: canonicalStorageProvider ?? attachment.storageProvider ?? null,
+        fileUrl: canonicalStorageKey ?? attachment.fileUrl ?? null,
         isPdfByMime,
         isPdfByName,
         isPdf,
@@ -6363,15 +6707,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const attachmentFileNameForThumb = attachment.originalFilename || attachment.fileName || null;
       const isSupportedImage = isSupportedImageType(attachment.mimeType, attachmentFileNameForThumb);
 
-      if (isSupportedImage && hasStorageProvider && isNotHttpUrl && attachment.fileUrl) {
+      if (isSupportedImage && hasStorageProvider && isNotHttpUrl && canonicalStorageKey && canonicalStorageProvider) {
         const { generateImageDerivatives, isThumbnailGenerationEnabled } = await import('./services/thumbnailGenerator');
         if (isThumbnailGenerationEnabled()) {
           void generateImageDerivatives(
             attachment.id,
             'quote',
-            attachment.fileUrl,
+            canonicalStorageKey,
             attachment.mimeType || null,
-            attachment.storageProvider!,
+            canonicalStorageProvider,
             organizationId,
             attachmentFileNameForThumb
           ).catch((error) => {
@@ -6383,17 +6727,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           console.log(`[LineItemFiles:POST] Thumbnail generation disabled, skipping for ${attachment.id}`);
         }
       } else if (isSupportedImage && (!hasStorageProvider || !isNotHttpUrl)) {
-        console.log(`[LineItemFiles:POST] Skipping thumbnail generation for ${attachment.id}: storageProvider=${attachment.storageProvider}, fileUrl starts with http=${attachment.fileUrl?.startsWith('http')}`);
+        console.log(`[LineItemFiles:POST] Skipping thumbnail generation for ${attachment.id}: canonicalStorageProvider=${canonicalStorageProvider}, canonicalStorageKey=${canonicalStorageKey}`);
       }
 
       // Fire-and-forget PDF processing for PDFs (non-blocking)
       // Trigger AFTER response finishes to ensure upload completes successfully first
       // Normalize storageProvider: if missing but Supabase is configured and fileUrl starts with "uploads/", treat as supabase
-      const normalizedStorageProvider =
-        attachment.storageProvider ??
-        (isSupabaseConfigured() && attachment.fileUrl?.startsWith("uploads/")
-          ? "supabase"
-          : null);
+      const normalizedStorageProvider = canonicalStorageProvider;
 
       if (isPdf || isAi) {
         if (!pdfColumnsExist) {
@@ -6402,10 +6742,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           console.warn(`[LineItemFiles:POST] PDF/AI detected but storageProvider missing; skipping processing for attachmentId=${attachment.id}`);
         } else if (!isNotHttpUrl) {
           console.warn(`[LineItemFiles:POST] PDF/AI detected but fileUrl is http(s); skipping processing for attachmentId=${attachment.id}`);
-        } else if (!attachment.fileUrl) {
+        } else if (!canonicalStorageKey) {
           console.warn(`[LineItemFiles:POST] PDF/AI detected but fileUrl missing; skipping processing for attachmentId=${attachment.id}`);
         } else {
           console.log(`[LineItemFiles:POST] PDF/AI detected; queued processing for attachmentId=${attachment.id}, fileName=${attachmentFileName}`);
+          const attachmentStorageKey = canonicalStorageKey;
 
           res.on("finish", () => {
             setImmediate(() => {
@@ -6416,7 +6757,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   await processPdfAttachmentDerivedData({
                     orgId: organizationId,
                     attachmentId: attachment.id,
-                    storageKey: attachment.fileUrl,
+                    storageKey: attachmentStorageKey,
                     storageProvider: normalizedStorageProvider,
                     mimeType: attachment.mimeType || null,
                   });
@@ -6431,7 +6772,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      res.json({ success: true, data: attachment });
+      const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+      res.json({ success: true, data: enrichedAttachment });
     } catch (error: any) {
       console.error("[LineItemFiles:POST] Error:", error);
       // Provide useful error message without leaking sensitive details
@@ -6482,19 +6824,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Attachment not found" });
       }
 
-      // Generate signed download URL (valid for 1 hour)
-      let signedUrl: string;
-      if (isSupabaseConfigured()) {
-        const supabaseService = new SupabaseStorageService();
-        signedUrl = await supabaseService.getSignedDownloadUrl(attachment.fileUrl, 3600);
-      } else {
-        // For Replit Object Storage or other providers, return the stored URL directly
-        // Note: This assumes the stored URL is publicly accessible or pre-signed
-        signedUrl = attachment.fileUrl;
+      const resolved = await resolveOriginalFileAccess(attachment, { logOnce: createRequestLogOnce() });
+      if (!resolved.downloadUrl) {
+        return res.status(404).json({ success: false, error: "File unavailable", availabilityStatus: resolved.availabilityStatus });
       }
 
-      // Use originalFilename for download, fallback to fileName
-      const fileName = attachment.originalFilename || attachment.fileName;
+      const signedUrl = resolved.downloadUrl;
+      const fileName = resolved.displayFilename;
 
       console.log(`[LineItemFiles:DOWNLOAD] Generated signed URL for file ${fileId}, fileName: ${fileName}`);
 
@@ -6537,28 +6873,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Attachment not found" });
       }
 
-      // Download from Supabase and stream to client
-      if (isSupabaseConfigured()) {
-        const supabaseService = new SupabaseStorageService();
-        const signedUrl = await supabaseService.getSignedDownloadUrl(attachment.fileUrl, 3600);
-
-        // Fetch file from Supabase
-        const fileResponse = await fetch(signedUrl);
-        if (!fileResponse.ok) {
-          throw new Error("Failed to fetch file from storage");
-        }
-
-        // Set Content-Disposition header with original filename
-        const fileName = attachment.originalFilename || attachment.fileName;
-        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-        res.setHeader('Content-Type', attachment.mimeType || 'application/octet-stream');
-
-        // Stream file to client
-        const buffer = await fileResponse.arrayBuffer();
-        res.send(Buffer.from(buffer));
-      } else {
-        return res.status(501).json({ error: "Proxy download not supported for this storage provider" });
+      const resolved = await resolveOriginalFileAccess(attachment, { logOnce: createRequestLogOnce() });
+      if (!resolved.downloadUrl) {
+        return res.status(404).json({ error: "File unavailable", availabilityStatus: resolved.availabilityStatus });
       }
+
+      return res.redirect(resolved.downloadUrl);
     } catch (error: any) {
       console.error("[LineItemFiles:DOWNLOAD:PROXY] Error:", error);
       return res.status(500).json({ error: error.message || "Failed to download file" });
@@ -6601,27 +6921,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Attachment not found" });
       }
 
-      // Generate signed URLs for derived assets if they exist
-      let thumbUrl: string | null = null;
-      let previewUrl: string | null = null;
-
-      if (attachment.thumbKey && isSupabaseConfigured()) {
-        const supabaseService = new SupabaseStorageService();
-        thumbUrl = await supabaseService.getSignedDownloadUrl(attachment.thumbKey, 3600);
-      }
-
-      if (attachment.previewKey && isSupabaseConfigured()) {
-        const supabaseService = new SupabaseStorageService();
-        previewUrl = await supabaseService.getSignedDownloadUrl(attachment.previewKey, 3600);
-      }
+      const derivativeLogOnce = createRequestLogOnce();
+      const [thumbAccess, previewAccess] = await Promise.all([
+        resolveDerivativeFileAccess(attachment, "thumbnail", { logOnce: derivativeLogOnce }),
+        resolveDerivativeFileAccess(attachment, "preview", { logOnce: derivativeLogOnce }),
+      ]);
 
       console.log(`[LineItemFiles:ASSETS] Returning assets for file ${fileId}, thumbStatus=${attachment.thumbStatus}`);
 
       return res.json({
         success: true,
         data: {
-          thumbUrl,
-          previewUrl,
+          thumbUrl: thumbAccess.url,
+          previewUrl: previewAccess.url,
           thumbStatus: attachment.thumbStatus || 'uploaded',
         },
       });
@@ -6717,8 +7029,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log(`[LineItemFiles:GENERATE_THUMBS] Supported image type detected: mimeType=${attachment.mimeType}, fileName=${fileName}`);
 
+      const resolvedOriginal = attachment.fileRecordId
+        ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
+        : null;
+      const attachmentStorageKey = resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? attachment.fileUrl ?? null;
+      const attachmentStorageProvider = resolvedOriginal?.providerType === 'local_filesystem'
+        ? 'local'
+        : resolvedOriginal?.providerType === 's3'
+          ? 's3'
+          : resolvedOriginal?.providerType === 'gcs'
+            ? 'gcs'
+            : resolvedOriginal?.providerType === 'azure_blob'
+              ? 'azure_blob'
+              : resolvedOriginal?.providerType === 'titan_managed'
+                ? 'titan_managed'
+                : resolvedOriginal?.providerType === 'supabase'
+                  ? 'supabase'
+                  : attachment.storageProvider ?? null;
+
       // Validate required fields for image generation
-      if (!attachment.fileUrl || !attachment.storageProvider) {
+      if (!attachmentStorageKey || !attachmentStorageProvider) {
         return res.status(400).json({
           success: false,
           message: "Attachment missing required storage information"
@@ -6741,9 +7071,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       void generateImageDerivatives(
         fileId,
         'quote',
-        attachment.fileUrl,
+        attachmentStorageKey,
         attachment.mimeType,
-        attachment.storageProvider,
+        attachmentStorageProvider,
         organizationId,
         attachmentFileName
       ).catch((error) => {
@@ -6833,20 +7163,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Attachment not found" });
       }
 
-      // Generate signed download URL (valid for 1 hour)
-      let signedUrl: string;
-      if (isSupabaseConfigured()) {
-        const supabaseService = new SupabaseStorageService();
-        signedUrl = await supabaseService.getSignedDownloadUrl(attachment.fileUrl, 3600);
-      } else {
-        // For Replit Object Storage or other providers, return the stored URL directly
-        // Note: This assumes the stored URL is publicly accessible or pre-signed
-        signedUrl = attachment.fileUrl;
+      const resolved = await resolveOriginalFileAccess(attachment, { logOnce: createRequestLogOnce() });
+      if (!resolved.downloadUrl) {
+        return res.status(404).json({ success: false, error: "File unavailable", availabilityStatus: resolved.availabilityStatus });
       }
+
+      const signedUrl = resolved.downloadUrl;
 
       console.log(`[LineItemFiles:DOWNLOAD:TEMP] Generated signed URL for file ${fileId}`);
 
-      return res.json({ success: true, data: { signedUrl } });
+      return res.json({ success: true, data: { signedUrl, fileName: resolved.displayFilename, availabilityStatus: resolved.availabilityStatus } });
     } catch (error: any) {
       console.error("[LineItemFiles:DOWNLOAD:TEMP] Error:", error);
       return res.status(500).json({ success: false, error: error.message || "Failed to generate download URL" });
@@ -6897,6 +7223,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Attachment not found" });
       }
 
+      const pagePagesTableState = hasQuoteAttachmentPagesTable();
+      const pageDerivativeRows = pagePagesTableState === true
+        ? await db
+            .select({
+              thumbFileRecordId: quoteAttachmentPages.thumbFileRecordId,
+              thumbKey: quoteAttachmentPages.thumbKey,
+              previewFileRecordId: quoteAttachmentPages.previewFileRecordId,
+              previewKey: quoteAttachmentPages.previewKey,
+            })
+            .from(quoteAttachmentPages)
+            .where(and(
+              eq(quoteAttachmentPages.attachmentId, existingAttachment.id),
+              eq(quoteAttachmentPages.organizationId, organizationId),
+            ))
+        : [];
+
+      console.log('[LineItemFiles:DELETE] page derivative preload', {
+        quoteId,
+        lineItemId,
+        attachmentId: existingAttachment.id,
+        fileRecordId: existingAttachment.fileRecordId ?? null,
+        pagesTableState: pagePagesTableState,
+        pageDerivativeRowCount: pageDerivativeRows.length,
+        pageDerivativeRows: pageDerivativeRows.map((row) => ({
+          thumbFileRecordId: row.thumbFileRecordId ?? null,
+          thumbKey: row.thumbKey ?? null,
+          previewFileRecordId: row.previewFileRecordId ?? null,
+          previewKey: row.previewKey ?? null,
+        })),
+      });
+
       // Delete from database (and validate it actually deleted)
       const deleted = await db.delete(quoteAttachments)
         .where(and(
@@ -6912,34 +7269,239 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log(`[LineItemFiles:DELETE] Deleted attachment id=${fileId}`);
 
-      // Best-effort cleanup of stored objects (do not fail request if cleanup fails)
+      // Best-effort cleanup of stored objects and linked assets (do not fail request if cleanup fails)
       try {
-        const keys = [
-          existingAttachment.relativePath,
-          existingAttachment.fileUrl,
-          existingAttachment.thumbnailRelativePath,
-          existingAttachment.thumbKey,
-          existingAttachment.previewKey,
-        ].filter((k): k is string => typeof k === 'string' && k.length > 0);
+        const resolvedOriginal = existingAttachment.fileRecordId
+          ? await canonicalFileReadResolver.resolveOriginal(String(existingAttachment.fileRecordId))
+          : null;
+        const storageKey = String(resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? existingAttachment.fileUrl ?? '');
+        const storageProvider = resolvedOriginal?.providerType === 'local_filesystem'
+          ? 'local'
+          : resolvedOriginal?.providerType === 's3'
+            ? 's3'
+            : resolvedOriginal?.providerType === 'gcs'
+              ? 'gcs'
+              : resolvedOriginal?.providerType === 'azure_blob'
+                ? 'azure_blob'
+                : resolvedOriginal?.providerType === 'titan_managed'
+                  ? 'titan_managed'
+                  : resolvedOriginal?.providerType === 'supabase'
+                    ? 'supabase'
+                    : ((existingAttachment.storageProvider as 'local' | 's3' | 'gcs' | 'supabase' | 'azure_blob' | 'titan_managed' | null | undefined) ?? null);
 
-        if (existingAttachment.storageProvider === 'supabase') {
-          const supabaseStorage = new SupabaseStorageService();
-          await Promise.all(keys.map(async (k) => {
-            try {
-              await supabaseStorage.deleteFile(k);
-            } catch {
-              // ignore
+        if (storageKey) {
+          const [{ quoteRefs = 0 } = {}] = existingAttachment.fileRecordId
+            ? await db
+                .select({ quoteRefs: sql<number>`count(*)` })
+                .from(quoteAttachments)
+                .where(
+                  and(
+                    eq(quoteAttachments.organizationId, organizationId),
+                    eq(quoteAttachments.fileRecordId, String(existingAttachment.fileRecordId))
+                  )
+                )
+            : !storageProvider
+              ? [{ quoteRefs: 0 }]
+              : await db
+                  .select({ quoteRefs: sql<number>`count(*)` })
+                  .from(quoteAttachments)
+                  .where(
+                    and(
+                      eq(quoteAttachments.organizationId, organizationId),
+                      eq(quoteAttachments.fileUrl, storageKey),
+                      eq(quoteAttachments.storageProvider, toLegacyStorageProvider(storageProvider) ?? 'supabase')
+                    )
+                  );
+
+          const [{ orderRefs = 0 } = {}] = existingAttachment.fileRecordId
+            ? await db
+                .select({ orderRefs: sql<number>`count(*)` })
+                .from(orderAttachments)
+                .where(eq(orderAttachments.fileRecordId, String(existingAttachment.fileRecordId)))
+            : !storageProvider
+              ? [{ orderRefs: 0 }]
+              : await db
+                  .select({ orderRefs: sql<number>`count(*)` })
+                  .from(orderAttachments)
+                  .where(
+                    and(
+                      eq(orderAttachments.fileUrl, storageKey),
+                      eq(orderAttachments.storageProvider, toLegacyStorageProvider(storageProvider) ?? 'supabase')
+                    )
+                  );
+
+          let hasRemainingAssetLinksForFile = false;
+          const normalizedFileKey = normalizeObjectKeyForDb(storageKey);
+
+          try {
+            const matchingAssets = existingAttachment.fileRecordId
+              ? await db
+                  .select({ id: assets.id })
+                  .from(assets)
+                  .where(and(eq(assets.organizationId, organizationId), eq(assets.fileRecordId, String(existingAttachment.fileRecordId))))
+              : await db
+                  .select({ id: assets.id })
+                  .from(assets)
+                  .where(and(eq(assets.organizationId, organizationId), eq(assets.fileKey, normalizedFileKey)));
+
+            if (matchingAssets.length > 0) {
+              await Promise.all(
+                matchingAssets.map((asset) =>
+                  db
+                    .delete(assetLinks)
+                    .where(
+                      and(
+                        eq(assetLinks.organizationId, organizationId),
+                        eq(assetLinks.assetId, asset.id),
+                        eq(assetLinks.parentType, 'quote_line_item'),
+                        eq(assetLinks.parentId, lineItemId)
+                      )
+                    )
+                )
+              );
+
+          console.log('[LineItemFiles:DELETE] final cleanup gate', {
+            quoteId,
+            lineItemId,
+            attachmentId: existingAttachment.id,
+            fileRecordId: existingAttachment.fileRecordId ?? null,
+            storageKey,
+            storageProvider,
+            quoteRefs: Number(quoteRefs),
+            orderRefs: Number(orderRefs),
+          });
+
+              const linkCounts = await Promise.all(
+                matchingAssets.map(async (asset) => {
+                  const [{ cnt = 0 } = {}] = await db
+                    .select({ cnt: sql<number>`count(*)` })
+                    .from(assetLinks)
+                    .where(and(eq(assetLinks.organizationId, organizationId), eq(assetLinks.assetId, asset.id)));
+                  return Number(cnt);
+                })
+              );
+
+              hasRemainingAssetLinksForFile = linkCounts.some((count) => count > 0);
+
+              if (!hasRemainingAssetLinksForFile && Number(quoteRefs) + Number(orderRefs) === 0) {
+                for (const asset of matchingAssets) {
+                  const variants = await db
+                    .select({ key: assetVariants.key })
+                    .from(assetVariants)
+                    .where(and(eq(assetVariants.organizationId, organizationId), eq(assetVariants.assetId, asset.id)));
+
+                  await deleteStoredObjectKeys({
+                    fileRecordId: existingAttachment.fileRecordId ? String(existingAttachment.fileRecordId) : null,
+                    legacyStorageProvider: toLegacyStorageProvider(storageProvider),
+                    keys: [...variants.map((variant) => variant.key || ''), normalizedFileKey],
+                  });
+
+                  await db.delete(assets).where(and(eq(assets.organizationId, organizationId), eq(assets.id, asset.id)));
+                }
+              }
             }
-          }));
-        } else {
-          const { deleteFile: deleteLocalFile } = await import('./utils/fileStorage');
-          await Promise.all(keys.map(async (k) => {
-            try {
-              await deleteLocalFile(k);
-            } catch {
-              // ignore
+          } catch (assetCleanupError) {
+            console.error('[LineItemFiles:DELETE] Asset cleanup failed (non-blocking):', assetCleanupError);
+          }
+
+          if (Number(quoteRefs) + Number(orderRefs) === 0 && !hasRemainingAssetLinksForFile && storageProvider) {
+            const derivativeRows = existingAttachment.fileRecordId
+              ? await fileDerivativeRepository.listByFileRecordId(String(existingAttachment.fileRecordId))
+              : [];
+            const derivativeKeys = existingAttachment.fileRecordId
+              ? derivativeRows.map((row) => row.objectKey ?? null)
+              : [existingAttachment.thumbnailRelativePath ?? existingAttachment.thumbKey ?? null, existingAttachment.previewKey ?? null];
+
+            const derivativeDeletion = await deleteStoredObjectKeys({
+              fileRecordId: existingAttachment.fileRecordId ? String(existingAttachment.fileRecordId) : null,
+              legacyStorageProvider: toLegacyStorageProvider(storageProvider),
+              keys: [storageKey, ...derivativeKeys],
+            });
+
+            console.log('[LineItemFiles:DELETE] top-level derivative cleanup result', {
+              quoteId,
+              lineItemId,
+              attachmentId: existingAttachment.id,
+              keys: [storageKey, ...derivativeKeys],
+              deletedKeys: derivativeDeletion.deletedKeys,
+              failedKeys: derivativeDeletion.failedKeys,
+            });
+
+            for (const pageDerivativeRow of pageDerivativeRows) {
+              const pageDerivativeCandidates = [
+                {
+                  fileRecordId: pageDerivativeRow.thumbFileRecordId,
+                  fallbackKey: pageDerivativeRow.thumbKey,
+                },
+                {
+                  fileRecordId: pageDerivativeRow.previewFileRecordId,
+                  fallbackKey: pageDerivativeRow.previewKey,
+                },
+              ];
+
+              for (const candidate of pageDerivativeCandidates) {
+                const fileRecordId = candidate.fileRecordId ? String(candidate.fileRecordId) : null;
+                const resolvedPageOriginal = fileRecordId
+                  ? await canonicalFileReadResolver.resolveOriginal(fileRecordId)
+                  : null;
+                const pageStorageKey = resolvedPageOriginal?.objectKey ?? resolvedPageOriginal?.localPathRef ?? candidate.fallbackKey ?? null;
+                console.log('[LineItemFiles:DELETE] page derivative candidate', {
+                  quoteId,
+                  lineItemId,
+                  attachmentId: existingAttachment.id,
+                  fileRecordId,
+                  fallbackKey: candidate.fallbackKey ?? null,
+                  resolvedPageStorageKey: pageStorageKey,
+                  resolvedProviderType: resolvedPageOriginal?.providerType ?? null,
+                  resolvedStatus: resolvedPageOriginal?.status ?? null,
+                });
+                if (!pageStorageKey) {
+                  console.warn('[LineItemFiles:DELETE] page derivative key missing; skipping physical delete', {
+                    quoteId,
+                    lineItemId,
+                    attachmentId: existingAttachment.id,
+                    fileRecordId,
+                    fallbackKey: candidate.fallbackKey ?? null,
+                  });
+                  continue;
+                }
+
+                const pageDeletion = await deleteStoredObjectKeys({
+                  fileRecordId,
+                  legacyStorageProvider: toLegacyStorageProvider(storageProvider),
+                  keys: [pageStorageKey],
+                });
+
+                console.log('[LineItemFiles:DELETE] page derivative delete result', {
+                  quoteId,
+                  lineItemId,
+                  attachmentId: existingAttachment.id,
+                  fileRecordId,
+                  pageStorageKey,
+                  deletedKeys: pageDeletion.deletedKeys,
+                  failedKeys: pageDeletion.failedKeys,
+                });
+
+                if (fileRecordId && pageDeletion.failedKeys.length === 0) {
+                  await fileRecordRepository.deleteById(fileRecordId);
+                } else if (fileRecordId && pageDeletion.failedKeys.length > 0) {
+                  console.warn('[LineItemFiles:DELETE] Skipped page derivative fileRecord cleanup due to storage delete failures', {
+                    fileRecordId,
+                    failedKeys: pageDeletion.failedKeys,
+                  });
+                }
+              }
             }
-          }));
+
+            if (existingAttachment.fileRecordId && derivativeDeletion.failedKeys.length === 0) {
+              await fileDerivativeRepository.deleteByFileRecordId(String(existingAttachment.fileRecordId));
+            } else if (existingAttachment.fileRecordId && derivativeDeletion.failedKeys.length > 0) {
+              console.warn('[LineItemFiles:DELETE] Skipped derivative row cleanup due to storage delete failures', {
+                fileRecordId: String(existingAttachment.fileRecordId),
+                failedKeys: derivativeDeletion.failedKeys,
+              });
+            }
+          }
         }
       } catch {
         // ignore
@@ -7491,6 +8053,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  const resolveProductionFolderReferenceDraft = (rawPath: string | null | undefined) => {
+    const trimmed = typeof rawPath === "string" ? rawPath.trim() : "";
+
+    if (!trimmed) {
+      return {
+        pathOrUri: "",
+        status: "disabled" as const,
+        validationError: null,
+      };
+    }
+
+    if (/[\u0000-\u001f]/.test(trimmed)) {
+      return {
+        pathOrUri: trimmed,
+        status: "invalid" as const,
+        validationError: "Folder reference contains unsupported control characters.",
+      };
+    }
+
+    const looksValid =
+      /^\\\\[^\\]+\\[^\\]+/.test(trimmed) ||
+      /^[A-Za-z]:\\/.test(trimmed) ||
+      /^\//.test(trimmed) ||
+      /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed);
+
+    return {
+      pathOrUri: trimmed,
+      status: looksValid ? ("configured" as const) : ("invalid" as const),
+      validationError: looksValid
+        ? null
+        : "Enter a valid UNC path, drive path, absolute path, or URI.",
+    };
+  };
+
+  const saveCustomerProductionFolderReference = async (args: {
+    organizationId: string;
+    customerId: string;
+    companyName: string;
+    pathOrUri: string | null | undefined;
+  }) => {
+    const draft = resolveProductionFolderReferenceDraft(args.pathOrUri);
+    return customerProductionFolderReferenceRepository.upsertForCustomer(args.organizationId, args.customerId, {
+      label: `${args.companyName} Production Folder`,
+      folderType: "production_destination",
+      pathOrUri: draft.pathOrUri,
+      status: draft.status,
+      validationError: draft.validationError,
+    });
+  };
+
   app.post("/api/customers", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
@@ -7531,9 +8143,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const customerData = updateCustomerSchema.parse(req.body);
-      const customer = await storage.updateCustomer(organizationId, req.params.id, customerData);
-      res.json(customer);
+      const payload = { ...(req.body || {}) };
+      const localCompanyFolderPath =
+        payload.localCompanyFolderPath === null || typeof payload.localCompanyFolderPath === "string"
+          ? payload.localCompanyFolderPath
+          : undefined;
+
+      delete payload.localCompanyFolderPath;
+      delete payload.customerProductionFolderReference;
+
+      const customerData = updateCustomerSchema.parse(payload);
+      const currentCustomer = await storage.getCustomerById(organizationId, req.params.id);
+      if (!currentCustomer) {
+        return res.status(404).json({ message: "Customer not found" });
+      }
+
+      if (Object.keys(customerData).length > 0) {
+        await storage.updateCustomer(organizationId, req.params.id, customerData);
+      }
+
+      if (localCompanyFolderPath !== undefined) {
+        await saveCustomerProductionFolderReference({
+          organizationId,
+          customerId: req.params.id,
+          companyName: currentCustomer.companyName,
+          pathOrUri: localCompanyFolderPath,
+        });
+      }
+
+      const hydratedCustomer = await storage.getCustomerById(organizationId, req.params.id);
+      res.json(hydratedCustomer ?? currentCustomer);
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
@@ -7673,6 +8312,69 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching customer:", error);
       res.status(500).json({ message: "Failed to fetch customer" });
+    }
+  });
+
+  app.get("/api/customers/:id/production-folder-reference", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const customer = await storage.getCustomerById(organizationId, req.params.id);
+      if (!customer) {
+        return res.status(404).json({ error: "Customer not found" });
+      }
+
+      const reference = await customerProductionFolderReferenceRepository.getForCustomer(organizationId, req.params.id);
+      return res.json({
+        success: true,
+        data:
+          reference ?? {
+            customerId: req.params.id,
+            folderType: "production_destination",
+            pathOrUri: null,
+            status: "missing",
+            validationError: null,
+          },
+      });
+    } catch (error) {
+      console.error("Error fetching customer production folder reference:", error);
+      return res.status(500).json({ error: "Failed to fetch customer production folder reference" });
+    }
+  });
+
+  app.patch("/api/customers/:id/production-folder-reference", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const customer = await storage.getCustomerById(organizationId, req.params.id);
+      if (!customer) {
+        return res.status(404).json({ error: "Customer not found" });
+      }
+
+      const input = updateCustomerProductionFolderReferenceSchema
+        .extend({
+          pathOrUri: z.string().max(2048).nullable().optional(),
+          disable: z.boolean().optional(),
+        })
+        .parse(req.body || {});
+
+      const nextPath = input.disable ? "" : input.pathOrUri;
+      const saved = await saveCustomerProductionFolderReference({
+        organizationId,
+        customerId: req.params.id,
+        companyName: customer.companyName,
+        pathOrUri: nextPath,
+      });
+
+      return res.json({ success: true, data: saved });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: fromZodError(error).message });
+      }
+      console.error("Error updating customer production folder reference:", error);
+      return res.status(500).json({ error: "Failed to update customer production folder reference" });
     }
   });
 
@@ -9062,6 +9764,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .strict();
 
   const productionLineItemStatusRulesSchema = z.array(productionLineItemStatusRuleSchema);
+  const productionManagedStepTriggerSchema = z
+    .object({
+      type: z.string().min(1),
+      config: z.record(z.unknown()).optional().default({}),
+    })
+    .strict();
+  const productionManagedStepSchema = z
+    .object({
+      key: z.string().min(1),
+      label: z.string().min(1),
+      sortOrder: z.number().int().optional().default(0),
+      active: z.boolean().optional().default(true),
+      triggers: z.array(productionManagedStepTriggerSchema).optional().default([]),
+    })
+    .strict();
+
+  const normalizeProductionStepKey = (value: unknown) =>
+    String(value ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9_-]/g, "")
+      .replace(/-+/g, "-");
+
+  const normalizeProductionStepLabel = (value: unknown) => String(value ?? "").trim();
+
+  const normalizeProductionStepTriggers = (value: unknown) => {
+    const parsed = z.array(productionManagedStepTriggerSchema).safeParse(value);
+    return parsed.success ? parsed.data : [];
+  };
 
   const getProductionConfigForOrganization = async (organizationId: string) => {
     const rows = await db
@@ -9187,6 +9919,280 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return loaded.rules;
   };
 
+  const DEFAULT_PRODUCTION_MANAGED_STEP = {
+    key: "queued",
+    label: "Queued",
+    sortOrder: 10,
+    active: true,
+    triggers: [],
+  } as const;
+
+  const getProductionStationStepsForOrganization = async (organizationId: string) => {
+    await db.execute(sql`
+      insert into production_station_steps (
+        organization_id,
+        station_key,
+        key,
+        label,
+        sort_order,
+        active,
+        triggers
+      )
+      select
+        s.organization_id,
+        s.key,
+        ${DEFAULT_PRODUCTION_MANAGED_STEP.key},
+        ${DEFAULT_PRODUCTION_MANAGED_STEP.label},
+        ${DEFAULT_PRODUCTION_MANAGED_STEP.sortOrder},
+        ${DEFAULT_PRODUCTION_MANAGED_STEP.active},
+        '[]'::jsonb
+      from stations s
+      left join production_station_steps p
+        on p.organization_id = s.organization_id
+       and p.station_key = s.key
+      where s.organization_id = ${organizationId}
+        and s.active = true
+        and p.id is null
+      on conflict (organization_id, station_key, key) do nothing
+    `);
+
+    const result = await db.execute(sql`
+      select
+        station_key as "stationKey",
+        key as "key",
+        label as "label",
+        sort_order as "sortOrder",
+        active as "active",
+        triggers as "triggers"
+      from production_station_steps
+      where organization_id = ${organizationId}
+      order by station_key asc, sort_order asc, created_at asc, label asc
+    `);
+
+    const grouped: Record<string, Array<{ key: string; label: string; sortOrder: number; active: boolean; triggers: Array<{ type: string; config: Record<string, unknown> }> }>> = {};
+    for (const row of result.rows ?? []) {
+      const stationKey = String((row as any).stationKey ?? "").trim();
+      const key = normalizeProductionStepKey((row as any).key);
+      const label = normalizeProductionStepLabel((row as any).label);
+      if (!stationKey || !key || !label) continue;
+      if (!grouped[stationKey]) grouped[stationKey] = [];
+      grouped[stationKey].push({
+        key,
+        label,
+        sortOrder: Number((row as any).sortOrder ?? 0),
+        active: (row as any).active !== false,
+        triggers: normalizeProductionStepTriggers((row as any).triggers),
+      });
+    }
+
+    const activeStations = await getActiveProductionStationsForOrganization(organizationId);
+    const stationsMissingUsableSteps = activeStations
+      .map((station) => station.key)
+      .filter((stationKey) => !Array.isArray(grouped[stationKey]) || grouped[stationKey].length === 0);
+
+    for (const stationKey of stationsMissingUsableSteps) {
+      await db.execute(sql`
+        insert into production_station_steps (
+          organization_id,
+          station_key,
+          key,
+          label,
+          sort_order,
+          active,
+          triggers
+        )
+        values (
+          ${organizationId},
+          ${stationKey},
+          ${DEFAULT_PRODUCTION_MANAGED_STEP.key},
+          ${DEFAULT_PRODUCTION_MANAGED_STEP.label},
+          ${DEFAULT_PRODUCTION_MANAGED_STEP.sortOrder},
+          ${DEFAULT_PRODUCTION_MANAGED_STEP.active},
+          '[]'::jsonb
+        )
+        on conflict (organization_id, station_key, key) do nothing
+      `);
+
+      grouped[stationKey] = [
+        {
+          key: DEFAULT_PRODUCTION_MANAGED_STEP.key,
+          label: DEFAULT_PRODUCTION_MANAGED_STEP.label,
+          sortOrder: DEFAULT_PRODUCTION_MANAGED_STEP.sortOrder,
+          active: DEFAULT_PRODUCTION_MANAGED_STEP.active,
+          triggers: [],
+        },
+      ];
+    }
+
+    return grouped;
+  };
+
+  const getActiveProductionStationsForOrganization = async (organizationId: string) => {
+    const result = await db.execute(sql`
+      select
+        key as "key",
+        name as "name",
+        sort as "sort"
+      from stations
+      where organization_id = ${organizationId}
+        and active = true
+      order by sort asc, name asc
+    `);
+
+    return (result.rows ?? [])
+      .map((row: any) => ({
+        key: String(row.key ?? "").trim(),
+        name: String(row.name ?? row.key ?? "").trim(),
+        sort: Number(row.sort ?? 0),
+      }))
+      .filter((row: any) => row.key.length > 0);
+  };
+
+  const ensureActiveStationExists = async (organizationId: string, stationKey: string) => {
+    const result = await db.execute(sql`
+      select 1
+      from stations
+      where organization_id = ${organizationId}
+        and key = ${stationKey}
+        and active = true
+      limit 1
+    `);
+
+    return (result.rows ?? []).length > 0;
+  };
+
+  const getProductionStationStepKeysForStation = async (organizationId: string, stationKey: string) => {
+    const result = await db.execute(sql`
+      select key
+      from production_station_steps
+      where organization_id = ${organizationId}
+        and station_key = ${stationKey}
+      order by sort_order asc, created_at asc, label asc
+    `);
+
+    return (result.rows ?? []).map((row: any) => normalizeProductionStepKey(row.key)).filter(Boolean);
+  };
+
+  const getProductionStationStepState = async (organizationId: string, stationKey: string, stepKey: string) => {
+    const normalizedStationKey = String(stationKey ?? "").trim();
+    const normalizedStepKey = normalizeProductionStepKey(stepKey);
+    if (!normalizedStationKey || !normalizedStepKey) return "missing" as const;
+
+    const result = await db.execute(sql`
+      select active
+      from production_station_steps
+      where organization_id = ${organizationId}
+        and station_key = ${normalizedStationKey}
+        and key = ${normalizedStepKey}
+      limit 1
+    `);
+
+    const row = result.rows?.[0] as { active?: boolean } | undefined;
+    if (!row) {
+      return normalizedStepKey === DEFAULT_PRODUCTION_MANAGED_STEP.key ? "fallback" as const : "missing" as const;
+    }
+
+    return row.active === false ? "inactive" as const : "active" as const;
+  };
+
+  const createProductionStationStep = async (args: {
+    organizationId: string;
+    stationKey: string;
+    key: string;
+    label: string;
+  }) => {
+    const maxSortResult = await db.execute(sql`
+      select coalesce(max(sort_order), 0) as "maxSortOrder"
+      from production_station_steps
+      where organization_id = ${args.organizationId}
+        and station_key = ${args.stationKey}
+    `);
+    const nextSortOrder = Number((maxSortResult.rows?.[0] as any)?.maxSortOrder ?? 0) + 10;
+
+    await db.execute(sql`
+      insert into production_station_steps (
+        organization_id,
+        station_key,
+        key,
+        label,
+        sort_order,
+        active,
+        triggers
+      )
+      values (
+        ${args.organizationId},
+        ${args.stationKey},
+        ${args.key},
+        ${args.label},
+        ${nextSortOrder},
+        true,
+        '[]'::jsonb
+      )
+    `);
+  };
+
+  const updateProductionStationStep = async (args: {
+    organizationId: string;
+    stationKey: string;
+    key: string;
+    label?: string;
+    active?: boolean;
+    triggers?: Array<{ type: string; config: Record<string, unknown> }>;
+  }) => {
+    const updates = [] as Array<ReturnType<typeof sql>>;
+    if (typeof args.label !== "undefined") updates.push(sql`label = ${args.label}`);
+    if (typeof args.active === "boolean") updates.push(sql`active = ${args.active}`);
+    if (typeof args.triggers !== "undefined") updates.push(sql`triggers = ${JSON.stringify(args.triggers)}::jsonb`);
+    updates.push(sql`updated_at = now()`);
+
+    await db.execute(sql`
+      update production_station_steps
+      set ${sql.join(updates, sql`, `)}
+      where organization_id = ${args.organizationId}
+        and station_key = ${args.stationKey}
+        and key = ${args.key}
+    `);
+  };
+
+  const reorderProductionStationSteps = async (args: {
+    organizationId: string;
+    stationKey: string;
+    keys: string[];
+  }) => {
+    await db.transaction(async (tx) => {
+      const existingResult = await tx.execute(sql`
+        select key
+        from production_station_steps
+        where organization_id = ${args.organizationId}
+          and station_key = ${args.stationKey}
+        order by sort_order asc, created_at asc, label asc
+      `);
+      const existingKeys = (existingResult.rows ?? []).map((row: any) => normalizeProductionStepKey(row.key)).filter(Boolean);
+      const requestedKeys = args.keys.map((key) => normalizeProductionStepKey(key)).filter(Boolean);
+
+      if (requestedKeys.length === 0 || requestedKeys.length !== existingKeys.length) {
+        throw new Error("Reorder payload must include every step key for the station");
+      }
+
+      const requestedSet = new Set(requestedKeys);
+      if (existingKeys.some((key) => !requestedSet.has(key)) || requestedSet.size !== existingKeys.length) {
+        throw new Error("Reorder payload does not match current station steps");
+      }
+
+      for (let index = 0; index < requestedKeys.length; index += 1) {
+        const key = requestedKeys[index];
+        await tx.execute(sql`
+          update production_station_steps
+          set sort_order = ${(index + 1) * 10},
+              updated_at = now()
+          where organization_id = ${args.organizationId}
+            and station_key = ${args.stationKey}
+            and key = ${key}
+        `);
+      }
+    });
+  };
+
   const setProductionLineItemStatusRulesForOrganization = async (
     organizationId: string,
     rules: z.infer<typeof productionLineItemStatusRulesSchema>,
@@ -9283,6 +10289,167 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/production/stations", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const data = await getActiveProductionStationsForOrganization(organizationId);
+
+      res.json({ success: true, data });
+    } catch (error) {
+      console.error("Error fetching production stations:", error);
+      res.status(500).json({ error: "Failed to fetch production stations" });
+    }
+  });
+
+  app.get("/api/production/steps", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const stationSteps = await getProductionStationStepsForOrganization(organizationId);
+      res.json({ success: true, data: stationSteps });
+    } catch (error) {
+      console.error("Error fetching production steps:", error);
+      res.status(500).json({ error: "Failed to fetch production steps" });
+    }
+  });
+
+  app.post("/api/production/steps", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const parsed = z
+        .object({
+          stationKey: z.string().min(1),
+          key: z.string().optional().nullable(),
+          label: z.string().min(1),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: "Invalid step payload" });
+
+      const stationKey = String(parsed.data.stationKey).trim();
+      const label = normalizeProductionStepLabel(parsed.data.label);
+      const key = normalizeProductionStepKey(parsed.data.key ?? label);
+      if (!stationKey || !label || !key) return res.status(400).json({ error: "Invalid step payload" });
+
+      if (!(await ensureActiveStationExists(organizationId, stationKey))) {
+        return res.status(400).json({ error: `Station '${stationKey}' is not active` });
+      }
+
+      const existingKeys = await getProductionStationStepKeysForStation(organizationId, stationKey);
+      if (existingKeys.includes(key)) {
+        return res.status(409).json({ error: `Step '${key}' already exists for station '${stationKey}'` });
+      }
+
+      await createProductionStationStep({ organizationId, stationKey, key, label });
+      const stationSteps = await getProductionStationStepsForOrganization(organizationId);
+      res.json({ success: true, data: stationSteps });
+    } catch (error) {
+      console.error("Error creating production step:", error);
+      res.status(500).json({ error: "Failed to create production step" });
+    }
+  });
+
+  app.patch(
+    "/api/production/steps/:stationKey/:key",
+    isAuthenticated,
+    tenantContext,
+    isAdminOrOwner,
+    async (req: any, res) => {
+      try {
+        if (!assertInternalUser(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+        const stationKey = String(req.params.stationKey ?? "").trim();
+        const key = normalizeProductionStepKey(req.params.key);
+        if (!stationKey || !key) return res.status(400).json({ error: "Invalid step path" });
+
+        const parsed = z
+          .object({
+            label: z.string().min(1).optional(),
+            active: z.boolean().optional(),
+            triggers: z.array(productionManagedStepTriggerSchema).optional(),
+          })
+          .refine((v) => typeof v.label !== "undefined" || typeof v.active !== "undefined" || typeof v.triggers !== "undefined", {
+            message: "No step fields to update",
+          })
+          .safeParse(req.body ?? {});
+
+        if (!parsed.success) {
+          return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid step payload" });
+        }
+
+        const existingKeys = await getProductionStationStepKeysForStation(organizationId, stationKey);
+        if (!existingKeys.includes(key)) return res.status(404).json({ error: "Step not found" });
+
+        await updateProductionStationStep({
+          organizationId,
+          stationKey,
+          key,
+          label: parsed.data.label ? normalizeProductionStepLabel(parsed.data.label) : undefined,
+          active: typeof parsed.data.active === "boolean" ? parsed.data.active : undefined,
+          triggers: typeof parsed.data.triggers !== "undefined" ? parsed.data.triggers : undefined,
+        });
+
+        const stationSteps = await getProductionStationStepsForOrganization(organizationId);
+        res.json({ success: true, data: stationSteps });
+      } catch (error) {
+        console.error("Error updating production step:", error);
+        res.status(500).json({ error: "Failed to update production step" });
+      }
+    },
+  );
+
+  app.put(
+    "/api/production/steps/:stationKey/reorder",
+    isAuthenticated,
+    tenantContext,
+    isAdminOrOwner,
+    async (req: any, res) => {
+      try {
+        if (!assertInternalUser(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+        const stationKey = String(req.params.stationKey ?? "").trim();
+        if (!stationKey) return res.status(400).json({ error: "Invalid station path" });
+
+        const parsed = z
+          .object({
+            keys: z.array(z.string().min(1)).min(1),
+          })
+          .safeParse(req.body ?? {});
+
+        if (!parsed.success) {
+          return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid reorder payload" });
+        }
+
+        await reorderProductionStationSteps({
+          organizationId,
+          stationKey,
+          keys: parsed.data.keys,
+        });
+
+        const stationSteps = await getProductionStationStepsForOrganization(organizationId);
+        res.json({ success: true, data: stationSteps });
+      } catch (error) {
+        const message = String((error as any)?.message || "Failed to reorder production steps");
+        if (message.includes("Reorder payload")) {
+          return res.status(400).json({ error: message });
+        }
+        console.error("Error reordering production steps:", error);
+        res.status(500).json({ error: "Failed to reorder production steps" });
+      }
+    },
+  );
+
   // 10) Settings: Line item status routing rules
   app.get(
     "/api/production/settings/line-item-statuses",
@@ -9325,6 +10492,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
           if (!id) return res.status(400).json({ error: "Invalid id" });
           if (keys.has(id)) return res.status(400).json({ error: `Duplicate id: ${id}` });
           keys.add(id);
+
+          if ((r as any).sendToProduction === true) {
+            const stationKey = String((r as any).stationKey ?? "").trim();
+            if (!stationKey) {
+              return res.status(400).json({ error: `Status '${id}' routes to production but has no station.` });
+            }
+
+            if (!(await ensureActiveStationExists(organizationId, stationKey))) {
+              return res.status(400).json({ error: `Status '${id}' references inactive or missing station '${stationKey}'.` });
+            }
+
+            const stepKey = String((r as any).stepKey ?? (r as any).defaultStepKey ?? "").trim();
+            if (stepKey) {
+              const stepState = await getProductionStationStepState(organizationId, stationKey, stepKey);
+              if (stepState === "missing") {
+                return res.status(400).json({ error: `Status '${id}' references missing step '${stepKey}' for station '${stationKey}'.` });
+              }
+              if (stepState === "inactive") {
+                return res.status(400).json({ error: `Status '${id}' references inactive step '${stepKey}' for station '${stationKey}'.` });
+              }
+            }
+          }
         }
 
         await setProductionLineItemStatusRulesForOrganization(organizationId, rules);
@@ -9354,79 +10543,62 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .select({
             id: orderLineItems.id,
             orderId: orderLineItems.orderId,
+            productTypeId: products.productTypeId,
             status: orderLineItems.status,
+            requiresDesign: orderLineItems.requiresDesign,
             requiresPrepress: orderLineItems.requiresPrepress,
           })
           .from(orderLineItems)
+          .leftJoin(products, eq(orderLineItems.productId, products.id))
           .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
           .where(and(eq(orders.organizationId, organizationId), eq(orderLineItems.id, lineItemId)))
           .limit(1);
 
         if (!li) return res.status(404).json({ error: "Order line item not found" });
 
-        const routing = await loadProductionLineItemStatusRulesForOrganization(organizationId);
-        if (routing.source !== "org") {
-          console.warn(
-            `[ProductionIntake] No org routing config (source=${routing.source}); skipping production job creation for lineItemId=${li.id}`,
-          );
-          return res.json({
-            success: true,
-            data: null,
-            warnings: ["Production routing config missing/invalid; no job created."],
-          });
-        }
+        const resolvedRoute = await resolveInitialProductionRoute({
+          organizationId,
+          productTypeId: li.productTypeId,
+          lineItemRequiresDesignSnapshot:
+            typeof li.requiresDesign === "boolean" ? li.requiresDesign : undefined,
+          lineItemRequiresPrepressSnapshot:
+            typeof li.requiresPrepress === "boolean" ? li.requiresPrepress : undefined,
+        });
 
-        const rule = routing.rules.find((r) => r.id === li.status);
-        if (!rule || rule.sendToProduction !== true) {
-          return res.json({
-            success: true,
-            data: null,
-            warnings: ["Line item status is not routed to production; no job created."],
-          });
-        }
-
-        const stationKey = String(rule.stationKey ?? "").trim();
-        const stepKey = String((rule as any).stepKey ?? "").trim();
+        const stationKey = String(resolvedRoute.stationKey ?? "").trim();
+        const stepKey = String(resolvedRoute.stepKey ?? "").trim();
         if (!stationKey || !stepKey) {
           console.warn(
-            `[ProductionIntake] Routing rule missing station/step; skipping job creation for lineItemId=${li.id} status=${li.status}`,
+            `[ProductionIntake] Resolver returned missing station/step; skipping job creation for lineItemId=${li.id} status=${li.status}`,
           );
           return res.json({
             success: true,
             data: null,
-            warnings: ["Routing rule missing station/step; no job created."],
+            warnings: ["Routing resolver missing station/step; no job created."],
           });
         }
 
         const job = await db.transaction(async (tx) => {
-          const routingResult = await routeLineItemToProduction({
-            tx,
-            organizationId,
-            orderId: li.orderId,
-            lineItemId: li.id,
-            stationKey,
-            stepKey,
-            trigger: "intake",
-            extraEventPayload: { fromStatus: null, toStatus: li.status },
+          const targetState = getInitialWorkflowState({
+            requiresDesign: Boolean(li.requiresDesign),
+            requiresPrepress: Boolean(li.requiresPrepress),
           });
 
-          // Set line item status based on requiresPrepress only for newly created jobs.
-          //   requiresPrepress=true  → pending_prepress
-          //   requiresPrepress=false → print_ready
-          // Only applies when item is in a neutral/initial state.
-          if (routingResult.outcome === "created") {
-            const neutralStatuses = ['queued', 'new', ''];
-            if (neutralStatuses.includes(li.status || '')) {
-              const targetStatus = li.requiresPrepress ? 'pending_prepress' : 'print_ready';
-              await tx
-                .update(orderLineItems)
-                .set({ status: targetStatus, updatedAt: new Date() })
-                .where(eq(orderLineItems.id, li.id));
+          const transition = await transitionLineItemWorkflowState(tx, {
+            organizationId,
+            lineItemId: li.id,
+            toState: targetState,
+            actorUserId: getUserId(req.user) ?? null,
+            metadata: {
+              source: "production_intake",
+              routingReason: resolvedRoute.reason,
+              resolvedStationKey: stationKey,
+              resolvedStepKey: stepKey,
+            },
+          });
 
-              if (process.env.NODE_ENV !== "production") {
-                console.log(`[ProductionIntake] Set lineItem ${li.id} status: ${li.status} → ${targetStatus} (requiresPrepress=${li.requiresPrepress})`);
-              }
-            }
+          if (!transition.activeOwnerJobId) {
+            return null;
           }
 
           const [out] = await tx
@@ -9439,7 +10611,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               status: productionJobs.status,
             })
             .from(productionJobs)
-            .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, routingResult.jobId)))
+            .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, transition.activeOwnerJobId)))
             .limit(1);
           return out;
         });
@@ -9465,6 +10637,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     isAuthenticated,
     tenantContext,
     async (req: any, res) => {
+      const traceId = crypto.randomUUID();
       try {
         if (!assertInternalUser(req, res)) return;
         const organizationId = getRequestOrganizationId(req);
@@ -9475,20 +10648,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
           ? req.body.lineItemIds.filter((id: any) => typeof id === "string" && id.length > 0)
           : undefined;
 
+        if (Array.isArray(req.body.lineItemIds) && lineItemIds && lineItemIds.length === 0) {
+          return res.status(400).json({
+            success: false,
+            message: "No line items to schedule",
+            traceId,
+          });
+        }
+
         const result = await scheduleOrderLineItemsForProduction({
           organizationId,
           orderId,
           lineItemIds,
           loadRoutingRules: loadProductionLineItemStatusRulesForOrganization,
           appendEvent,
+          traceId,
         });
 
         res.json(result);
       } catch (error: any) {
-        console.error("Error scheduling line items for production:", error);
+        const formatError = (input: any) => {
+          if (!input || typeof input !== "object") return null;
+          return {
+            code: input.code,
+            constraint: input.constraint,
+            table: input.table,
+            detail: input.detail,
+            message: input.message,
+          };
+        };
+
+        console.error("Error scheduling line items for production:", {
+          traceId,
+          error: formatError(error),
+          cause: formatError(error?.cause),
+        });
         res.status(500).json({
           success: false,
-          error: error?.message || "Failed to schedule line items for production",
+          error: "Scheduling failed",
+          traceId,
         });
       }
     },
@@ -9722,18 +10920,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         orderIdRaw ? eq(productionJobs.orderId, orderIdRaw) : undefined,
       );
 
-      // PROMPT A (revised): Prepress Gate Enforcement — DENY-LIST approach
-      // Block items that are ACTIVELY in prepress workflow states.
-      // Items with status "queued" (legacy/unprocessed) are ALLOWED so existing roll/flatbed jobs
-      // are not accidentally hidden. New items will be set to "pending_prepress" at intake time.
-      //
-      // EXCLUDED from boards: requiresPrepress=true AND status IN (pending_prepress, in_prepress, prepress_complete)
-      // ALLOWED: requiresPrepress=false, OR status is anything else (queued, print_ready, printing, done, complete, etc.)
-      //
-      // NULL handling:
-      //   - requiresPrepress NULL → treat as true (hide until corrected)
-      //   - status NULL → hide and log so we can spot bad data
       const prepressGateApplies = station && (station === 'flatbed' || station === 'roll');
+      const activeBoardQuery = !status || !["done", "void", "canceled", "cancelled"].includes(String(status).toLowerCase());
 
       const baseRows = await db
         .select({
@@ -9766,38 +10954,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .where(whereClause)
         .orderBy(desc(productionJobs.updatedAt));
 
-      // Deny-list gate: only exclude jobs that are explicitly mid-prepress
-      const PREPRESS_BLOCKED_STATUSES = ['pending_prepress', 'in_prepress', 'prepress_complete'] as const;
-      const filteredRows = prepressGateApplies
-        ? baseRows.filter(row => {
-            // No line item linked → allow (intake/unlinked jobs)
-            if (!row.lineItemId) return true;
+      const lineItemIdsForOwnership = Array.from(
+        new Set(
+          baseRows
+            .map((row) => row.lineItemId)
+            .filter((id): id is string => typeof id === 'string' && id.length > 0),
+        ),
+      );
 
-            // requiresPrepress NULL → treat as true (hide until data corrected)
-            const reqPrepress = row.lineItemRequiresPrepress ?? true;
-
-            // If doesn't require prepress → always allow
-            if (!reqPrepress) return true;
-
-            // Status NULL → hide and log
-            if (row.lineItemStatus === null) {
-              if (process.env.NODE_ENV !== "production") {
-                console.warn(`[Prepress Gate] Job ${row.id}: lineItemId ${row.lineItemId} has NULL status — hiding from board`);
-              }
-              return false;
-            }
-
-            // Requires prepress: BLOCK only if in a prepress workflow state
-            // "queued", "print_ready", "printing", "done", "complete" → ALLOW
-            return !PREPRESS_BLOCKED_STATUSES.includes(row.lineItemStatus as any);
+      const activeOwnerByLineItem = lineItemIdsForOwnership.length > 0
+        ? await resolveActiveProductionOwners(db, {
+            organizationId,
+            lineItemIds: lineItemIdsForOwnership,
+            debugLabel: "GET /api/production/jobs",
           })
-        : baseRows;
+        : new Map<string, any>();
+
+      const filteredRows = baseRows.filter((row) => {
+        if (!row.lineItemId) {
+          return activeBoardQuery ? !["done", "void", "canceled", "cancelled"].includes(String(row.status || "").toLowerCase()) : true;
+        }
+
+        if (!activeBoardQuery) {
+          return true;
+        }
+
+        const activeOwner = activeOwnerByLineItem.get(row.lineItemId);
+        if (!activeOwner) {
+          return false;
+        }
+
+        if (activeOwner.id !== row.id) {
+          return false;
+        }
+
+        if (prepressGateApplies && isPrepressOwnershipJob(activeOwner)) {
+          return false;
+        }
+
+        return true;
+      });
 
       // DEV-only logging: show how many items were gated
-      if (process.env.NODE_ENV !== "production" && prepressGateApplies) {
+      if (process.env.NODE_ENV !== "production") {
         const gatedCount = baseRows.length - filteredRows.length;
         if (gatedCount > 0) {
-          console.log(`[Prepress Gate] ${station} board: Excluded ${gatedCount} of ${baseRows.length} jobs requiring prepress`);
+          console.log(`[DEV][GET /api/production/jobs] owner filter excluded ${gatedCount} of ${baseRows.length} rows`, {
+            station: station ?? null,
+            prepressGateApplies,
+            activeBoardQuery,
+          });
         }
       }
 
@@ -9876,6 +11082,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (!text.trim()) continue;
         list.push({ id: row.id, text, createdAt: new Date(row.createdAt as any).toISOString() });
         notesByJobId.set(row.productionJobId, list);
+      }
+
+      const routingEventRows = await db
+        .select({
+          productionJobId: productionEvents.productionJobId,
+          type: productionEvents.type,
+          payload: productionEvents.payload,
+          createdAt: productionEvents.createdAt,
+        })
+        .from(productionEvents)
+        .where(
+          and(
+            eq(productionEvents.organizationId, organizationId),
+            inArray(productionEvents.productionJobId, jobIds),
+            inArray(productionEvents.type, ["intake", "routing_override"]),
+          ),
+        )
+        .orderBy(desc(productionEvents.createdAt));
+
+      const latestRoutingEventByJobId = new Map<string, { payload: any; type: string }>();
+      for (const row of routingEventRows) {
+        if (!latestRoutingEventByJobId.has(row.productionJobId)) {
+          latestRoutingEventByJobId.set(row.productionJobId, {
+            payload: row.payload ?? {},
+            type: row.type,
+          });
+        }
       }
 
       // Batched order enrichment for cockpit UI (no schema changes, no N+1)
@@ -10004,6 +11237,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           id: orderAttachments.id,
           orderId: orderAttachments.orderId,
           orderLineItemId: orderAttachments.orderLineItemId,
+          fileRecordId: orderAttachments.fileRecordId,
           fileName: orderAttachments.fileName,
           fileUrl: orderAttachments.fileUrl,
           thumbKey: orderAttachments.thumbKey,
@@ -10035,7 +11269,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           parentId: assetLinks.parentId,
           role: assetLinks.role,
           fileName: assets.fileName,
-          fileKey: assets.fileKey,
+          fileRecordId: assets.fileRecordId,
           thumbKey: assets.thumbKey,
           previewKey: assets.previewKey,
           previewStatus: assets.previewStatus,
@@ -10070,7 +11304,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           id: string;
           orderLineItemId: string | null;
           fileName: string;
-          fileUrl: string;
+          fileUrl: string | null;
+          availabilityStatus?: 'available' | 'archived' | 'restoring' | 'missing';
           thumbKey: string | null;
           previewKey: string | null;
           thumbnailUrl: string | null;
@@ -10086,7 +11321,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           id: string;
           orderLineItemId: string | null;
           fileName: string;
-          fileUrl: string;
+          fileUrl: string | null;
+          availabilityStatus?: 'available' | 'archived' | 'restoring' | 'missing';
           thumbKey: string | null;
           previewKey: string | null;
           thumbnailUrl: string | null;
@@ -10096,45 +11332,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }>
       >();
 
-      for (const a of attachmentRows) {
-        // Convert legacy external URLs to authenticated /objects/ proxy
-        let fileUrl = a.fileUrl;
-        let thumbnailUrl = a.thumbnailUrl ?? null;
-        
-        // If thumbnailUrl is null but thumbKey exists, construct URL from thumbKey
-        if (!thumbnailUrl && a.thumbKey && a.thumbStatus === 'thumb_ready') {
-          thumbnailUrl = `/objects/${a.thumbKey}`;
-        }
-        
-        // If fileUrl doesn't start with http/https or /objects/, prepend /objects/
-        if (fileUrl && !fileUrl.startsWith('http') && !fileUrl.startsWith('/objects/')) {
-          fileUrl = `/objects/${fileUrl}`;
-        }
-        
-        // If fileUrl contains /objects/ path, convert to proxy URL
-        if (fileUrl && fileUrl.includes('/objects/')) {
-          const match = fileUrl.match(/\/objects\/(.+?)(?:\?|$)/);
-          if (match) {
-            fileUrl = `/objects/${match[1]}`;
-          }
-        }
-        
-        // If thumbnailUrl contains /objects/ path, convert to proxy URL
-        if (thumbnailUrl && thumbnailUrl.includes('/objects/')) {
-          const match = thumbnailUrl.match(/\/objects\/(.+?)(?:\?|$)/);
-          if (match) {
-            thumbnailUrl = `/objects/${match[1]}`;
-          }
-        }
-        
+      const attachmentLogOnce = createRequestLogOnce();
+      const enrichedAttachmentRows = await Promise.all(
+        attachmentRows.map((row) => enrichAttachmentWithUrls(row, { logOnce: attachmentLogOnce })),
+      );
+
+      for (const a of enrichedAttachmentRows) {
         const mapped = {
           id: a.id,
           orderLineItemId: a.orderLineItemId ?? null,
           fileName: a.fileName,
-          fileUrl,
+          fileUrl: a.originalUrl ?? null,
+          availabilityStatus: a.availabilityStatus,
           thumbKey: a.thumbKey ?? null,
           previewKey: a.previewKey ?? null,
-          thumbnailUrl,
+          thumbnailUrl: a.thumbnailUrl ?? null,
           side: a.side ?? "na",
           isPrimary: !!a.isPrimary,
           thumbStatus: a.thumbStatus ?? null,
@@ -10158,22 +11370,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Process new assets/assetLinks data and merge into artwork maps
+      const assetLogOnce = createRequestLogOnce();
+      const { enrichAssetPreviewUrls } = await import('./services/assets/enrichAssetWithUrls');
       for (const link of assetLinkRows) {
-        const normalizedAssetFileUrl = link.fileKey
-          ? `/objects/${String(link.fileKey).replace(/^\/+/, "")}`
-          : `/api/assets/${link.id}/download`;
-        const normalizedAssetThumbUrl =
-          link.thumbKey && link.previewStatus === "ready"
-            ? `/objects/${String(link.thumbKey).replace(/^\/+/, "")}`
-            : null;
+        const [originalAccess, enrichedAsset] = await Promise.all([
+          resolveOriginalFileAccess(link, { logOnce: assetLogOnce }),
+          enrichAssetPreviewUrls(link as any),
+        ]);
         const mapped = {
           id: link.id,
           orderLineItemId: link.parentType === "order_line_item" ? link.parentId : null,
           fileName: link.fileName,
-          fileUrl: normalizedAssetFileUrl,
+          fileUrl: originalAccess.originalUrl,
+          availabilityStatus: originalAccess.availabilityStatus,
           thumbKey: link.thumbKey ?? null,
           previewKey: link.previewKey ?? null,
-          thumbnailUrl: normalizedAssetThumbUrl,
+          thumbnailUrl:
+            (enrichedAsset as any).previewThumbnailUrl ??
+            (enrichedAsset as any).thumbnailUrl ??
+            (enrichedAsset as any).thumbUrl ??
+            null,
           side: "na", // New assets system doesn't track side yet, could enhance later
           isPrimary: false, // New assets system doesn't track isPrimary yet
           thumbStatus: link.previewStatus ?? null,
@@ -10219,16 +11435,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const computePreviewUrl = (art: any): string | undefined => {
         const thumbUrl = normalizeObjectsUrl(art?.thumbnailUrl);
         if (thumbUrl) return thumbUrl;
-
-        const thumbKey = typeof art?.thumbKey === "string" ? art.thumbKey : null;
-        const thumbStatus = String(art?.thumbStatus || "").toLowerCase();
-        if (thumbKey && (thumbStatus === "thumb_ready" || thumbStatus === "ready")) {
-          return normalizeObjectsUrl(thumbKey) ?? `/objects/${String(thumbKey).replace(/^\/+/, "")}`;
-        }
-
-        const ext = getFileExt(art?.fileName) || getFileExt(art?.fileUrl);
-        const fileUrl = normalizeObjectsUrl(art?.fileUrl);
-        if (fileUrl && isImageExt(ext)) return fileUrl;
         return undefined;
       };
 
@@ -10346,6 +11552,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const backPreviewUrl = backArt ? computePreviewUrl(backArt) : undefined;
 
         const notes = notesByJobId.get(row.id) ?? [];
+        const routingMeta = latestRoutingEventByJobId.get(row.id);
+        const routingPayload = routingMeta?.payload ?? {};
+        const routingReasonRaw = routingPayload?.routingReason;
+        const routingSourceRaw = routingPayload?.source ?? routingPayload?.trigger ?? routingMeta?.type;
+        const idempotencyNoteRaw = routingPayload?.idempotencyNote;
 
         return {
           id: row.id,
@@ -10359,6 +11570,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           dueDate: row.dueDate ?? null,
           stationKey: String(row.stationKey ?? ""),
           stepKey: String(row.stepKey ?? ""),
+          routingReason: typeof routingReasonRaw === "string" && routingReasonRaw.trim() ? String(routingReasonRaw) : null,
+          routingSource: typeof routingSourceRaw === "string" && String(routingSourceRaw).trim() ? String(routingSourceRaw) : null,
+          idempotencyNote:
+            typeof idempotencyNoteRaw === "string" && String(idempotencyNoteRaw).trim()
+              ? String(idempotencyNoteRaw)
+              : null,
           // LIVE LINE ITEM FIELDS (top-level for easy frontend access)
           qty,                // LIVE: from line item, updates when qty changed
           jobDescription,     // LIVE: from line item description
@@ -10508,6 +11725,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .orderBy(desc(productionEvents.createdAt))
         .limit(250);
 
+      const latestRoutingEvent = events.find((event) => event.type === "routing_override" || event.type === "intake") ?? null;
+      const latestRoutingPayload = (latestRoutingEvent?.payload as any) ?? {};
+      const routingReason =
+        typeof latestRoutingPayload?.routingReason === "string" && latestRoutingPayload.routingReason.trim()
+          ? String(latestRoutingPayload.routingReason)
+          : null;
+      const routingSource =
+        typeof latestRoutingPayload?.source === "string" && latestRoutingPayload.source.trim()
+          ? String(latestRoutingPayload.source)
+          : typeof latestRoutingPayload?.trigger === "string" && latestRoutingPayload.trigger.trim()
+            ? String(latestRoutingPayload.trigger)
+            : latestRoutingEvent?.type ?? null;
+      const idempotencyNote =
+        typeof latestRoutingPayload?.idempotencyNote === "string" && latestRoutingPayload.idempotencyNote.trim()
+          ? String(latestRoutingPayload.idempotencyNote)
+          : null;
+
       const timerState = await getTimerStateForJob(organizationId, jobId);
       const now = Date.now();
       const currentSeconds =
@@ -10572,6 +11806,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           id: orderAttachments.id,
           orderId: orderAttachments.orderId,
           orderLineItemId: orderAttachments.orderLineItemId,
+          fileRecordId: orderAttachments.fileRecordId,
           fileName: orderAttachments.fileName,
           fileUrl: orderAttachments.fileUrl,
           thumbKey: orderAttachments.thumbKey,
@@ -10597,45 +11832,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const byOrder: Array<any> = [];
       const byLineItem = new Map<string, Array<any>>();
-      for (const a of attachmentRows) {
-        // Convert legacy relative URLs to authenticated /objects/ proxy
-        let fileUrl = a.fileUrl;
-        let thumbnailUrl = a.thumbnailUrl ?? null;
+      const orderAttachmentLogOnce = createRequestLogOnce();
+      const enrichedOrderAttachments = await Promise.all(
+        attachmentRows.map((row) => enrichAttachmentWithUrls(row, { logOnce: orderAttachmentLogOnce })),
+      );
 
-        // If thumbnailUrl is null but thumbKey exists, construct URL from thumbKey (only when ready)
-        if (!thumbnailUrl && a.thumbKey && a.thumbStatus === "thumb_ready") {
-          thumbnailUrl = `/objects/${a.thumbKey}`;
-        }
-
-        // If fileUrl doesn't start with http/https or /objects/, prepend /objects/
-        if (fileUrl && !fileUrl.startsWith("http") && !fileUrl.startsWith("/objects/")) {
-          fileUrl = `/objects/${fileUrl}`;
-        }
-
-        // If fileUrl contains /objects/ path, normalize to proxy URL
-        if (fileUrl && fileUrl.includes("/objects/")) {
-          const match = fileUrl.match(/\/objects\/(.+?)(?:\?|$)/);
-          if (match) {
-            fileUrl = `/objects/${match[1]}`;
-          }
-        }
-
-        // If thumbnailUrl contains /objects/ path, normalize to proxy URL
-        if (thumbnailUrl && thumbnailUrl.includes("/objects/")) {
-          const match = thumbnailUrl.match(/\/objects\/(.+?)(?:\?|$)/);
-          if (match) {
-            thumbnailUrl = `/objects/${match[1]}`;
-          }
-        }
-
+      for (const a of enrichedOrderAttachments) {
         const mapped = {
           id: a.id,
           orderLineItemId: a.orderLineItemId ?? null,
           fileName: a.fileName,
-          fileUrl,
+          fileUrl: a.originalUrl ?? null,
+          availabilityStatus: a.availabilityStatus,
           thumbKey: a.thumbKey ?? null,
           previewKey: a.previewKey ?? null,
-          thumbnailUrl,
+          thumbnailUrl: a.thumbnailUrl ?? null,
           side: a.side ?? "na",
           isPrimary: !!a.isPrimary,
           thumbStatus: a.thumbStatus ?? null,
@@ -10659,7 +11870,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             parentType: assetLinks.parentType,
             parentId: assetLinks.parentId,
             fileName: assets.fileName,
-            fileKey: assets.fileKey,
+            fileRecordId: assets.fileRecordId,
             thumbKey: assets.thumbKey,
             previewKey: assets.previewKey,
             previewStatus: assets.previewStatus,
@@ -10680,18 +11891,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
           )
           .orderBy(desc(assetLinks.createdAt));
 
+        const assetLogOnce = createRequestLogOnce();
+        const { enrichAssetPreviewUrls } = await import('./services/assets/enrichAssetWithUrls');
         for (const link of assetLinkRows) {
+          const [originalAccess, enrichedAsset] = await Promise.all([
+            resolveOriginalFileAccess(link, { logOnce: assetLogOnce }),
+            enrichAssetPreviewUrls(link as any),
+          ]);
           const mapped = {
             id: link.id,
             orderLineItemId: link.parentType === "order_line_item" ? link.parentId : null,
             fileName: link.fileName,
-            fileUrl: link.fileKey ? `/objects/${String(link.fileKey).replace(/^\/+/, "")}` : `/api/assets/${link.id}/download`,
+            fileUrl: originalAccess.originalUrl,
+            availabilityStatus: originalAccess.availabilityStatus,
             thumbKey: link.thumbKey ?? null,
             previewKey: link.previewKey ?? null,
             thumbnailUrl:
-              link.thumbKey && link.previewStatus === "ready"
-                ? `/objects/${String(link.thumbKey).replace(/^\/+/, "")}`
-                : null,
+              (enrichedAsset as any).previewThumbnailUrl ??
+              (enrichedAsset as any).thumbnailUrl ??
+              (enrichedAsset as any).thumbUrl ??
+              null,
             side: "na",
             isPrimary: false,
             thumbStatus: link.previewStatus ?? null,
@@ -10855,6 +12074,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           id: job.id,
           stationKey: job.stationKey,
           stepKey: job.stepKey,
+          routingReason,
+          routingSource,
+          idempotencyNote,
           lineItemId: job.lineItemId,
           orderId,
           status: job.status,
@@ -10986,8 +12208,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const rows = await tx
             .select({
               id: productionJobs.id,
+              orderId: productionJobs.orderId,
+              lineItemId: productionJobs.lineItemId,
               stationKey: productionJobs.stationKey,
               stepKey: productionJobs.stepKey,
+              status: productionJobs.status,
             })
             .from(productionJobs)
             .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
@@ -10996,6 +12221,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const job = rows[0];
           if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
 
+          // If station is changing and line item is linked, use canonical close/create
+          const stationChanging = job.stationKey !== nextStationKey;
+          if (stationChanging && job.lineItemId) {
+            const { transitionToStation } = await import("./services/productionOwnership");
+            const transition = await transitionToStation(tx, {
+              organizationId,
+              orderId: job.orderId,
+              lineItemId: job.lineItemId,
+              targetStationKey: nextStationKey,
+              targetStepKey: nextStepKey,
+              reason: parsed.data.reason ?? "admin_routing_override",
+              actorUserId: getUserId(req.user) ?? null,
+            });
+
+            // Return the newly created job
+            const newRows = await tx
+              .select({
+                id: productionJobs.id,
+                orderId: productionJobs.orderId,
+                lineItemId: productionJobs.lineItemId,
+                stationKey: productionJobs.stationKey,
+                stepKey: productionJobs.stepKey,
+                status: productionJobs.status,
+                updatedAt: productionJobs.updatedAt,
+              })
+              .from(productionJobs)
+              .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, transition.createdJobId)))
+              .limit(1);
+
+            return newRows[0];
+          }
+
+          // Same station, step change only — update in place
           await tx
             .update(productionJobs)
             .set({
@@ -11238,6 +12496,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
             productionJobId: jobId,
             userId,
           });
+
+          const [lineItem] = await tx
+            .select({
+              workflowState: orderLineItems.workflowState,
+              status: orderLineItems.status,
+            })
+            .from(orderLineItems)
+            .where(and(eq(orderLineItems.orderId, job.orderId), eq(orderLineItems.id, job.lineItemId)))
+            .limit(1);
+
+          if (lineItem && lineItem.workflowState !== "completed" && lineItem.workflowState !== "canceled") {
+            await tx
+              .update(orderLineItems)
+              .set({ workflowState: "completed", status: "complete", updatedAt: now })
+              .where(eq(orderLineItems.id, job.lineItemId));
+
+            await appendEvent({
+              tx,
+              organizationId,
+              productionJobId: jobId,
+              type: "note",
+              payload: {
+                eventType: "workflow_transition",
+                fromState: lineItem.workflowState,
+                toState: "completed",
+                lifecycleStatus: "complete",
+                ownerAction: "completed",
+                actorUserId: userId,
+                metadata: {
+                  source: "production_job_complete",
+                  skipProduction,
+                  previousLifecycleStatus: lineItem.status,
+                },
+              },
+            });
+          }
         }
 
         await tx.insert(auditLogs).values({
@@ -12007,11 +13301,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   };
 
   const PREPRESS_OVERRIDE_ALLOWED_STATUSES = new Set([
-    "queued",
     "new",
-    "pending_prepress",
-    "in_prepress",
-    "prepress_complete",
+    "in_production",
   ]);
 
   const PRODUCTION_TERMINAL_STATUSES = new Set(["produced", "done", "complete", "canceled"]);
@@ -12222,16 +13513,126 @@ export async function registerRoutes(app: Express): Promise<Server> {
     );
   };
 
-  const ensureProductionJobForLineItem = async (tx: any, args: { organizationId: string; orderId: string; lineItemId: string }) => {
+  const ensureProductionJobForLineItem = async (
+    tx: any,
+    args: {
+      organizationId: string;
+      orderId: string;
+      lineItemId: string;
+      mode?: "prepress" | "downstream";
+      productTypeId?: string | null;
+      productTypeName?: string | null;
+    }
+  ) => {
+    if ((args.mode || "prepress") === "prepress") {
+      // Check if there's already an active prepress job
+      const activeJob = await findActiveJobForLineItem(tx, {
+        organizationId: args.organizationId,
+        lineItemId: args.lineItemId,
+      });
+
+      const activeJobIsPrepress = isPrepressOwnershipJob(activeJob);
+
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[DEV][ensureProductionJobForLineItem]", {
+          mode: "prepress",
+          organizationId: args.organizationId,
+          lineItemId: args.lineItemId,
+          activeJobId: activeJob?.id ?? null,
+          activeStationKey: activeJob?.stationKey ?? null,
+          activeStepKey: activeJob?.stepKey ?? null,
+        });
+      }
+
+      if (activeJob && activeJobIsPrepress) {
+        // Already at prepress — idempotent
+        return activeJob.id;
+      }
+
+      if (activeJob && !activeJobIsPrepress) {
+        // Active downstream job exists — transition to prepress (close downstream, create prepress)
+        const transition = await transitionToStation(tx, {
+          organizationId: args.organizationId,
+          orderId: args.orderId,
+          lineItemId: args.lineItemId,
+          targetStationKey: "flatbed",
+          targetStepKey: "prepress",
+          reason: "return_to_prepress",
+          actorUserId: null,
+        });
+        return transition.createdJobId;
+      }
+
+      // No active job — create first prepress job
+      const result = await routeLineItemToProduction({
+        tx,
+        organizationId: args.organizationId,
+        orderId: args.orderId,
+        lineItemId: args.lineItemId,
+        stationKey: "flatbed",
+        stepKey: "prepress",
+        trigger: "prepress",
+      });
+      return result.jobId;
+    }
+
+    // DOWNSTREAM mode: route from prepress to production station
+    const downstreamRoute = await resolvePostPrepressProductionRoute({
+      organizationId: args.organizationId,
+      productTypeId: args.productTypeId ?? null,
+      productTypeNameSnapshot: args.productTypeName ?? null,
+    });
+
+    const activeJob = await findActiveJobForLineItem(tx, {
+      organizationId: args.organizationId,
+      lineItemId: args.lineItemId,
+    });
+
+    const activeJobAtPrepress = isPrepressOwnershipJob(activeJob);
+
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[DEV][ensureProductionJobForLineItem]", {
+        mode: "downstream",
+        organizationId: args.organizationId,
+        lineItemId: args.lineItemId,
+        targetStationKey: downstreamRoute.stationKey,
+        targetStepKey: downstreamRoute.stepKey,
+        activeJobId: activeJob?.id ?? null,
+        activeStationKey: activeJob?.stationKey ?? null,
+        activeStepKey: activeJob?.stepKey ?? null,
+      });
+    }
+
+    // Already at a non-prepress station — idempotent success
+    if (activeJob && !activeJobAtPrepress) {
+      return activeJob.id;
+    }
+
+    // Active prepress job — do canonical close/create transition
+    if (activeJob && activeJobAtPrepress) {
+      const transition = await transitionToStation(tx, {
+        organizationId: args.organizationId,
+        orderId: args.orderId,
+        lineItemId: args.lineItemId,
+        targetStationKey: downstreamRoute.stationKey,
+        targetStepKey: downstreamRoute.stepKey,
+        reason: "post_prepress_handoff",
+        actorUserId: null,
+      });
+      return transition.createdJobId;
+    }
+
+    // No active job at all — create new downstream job
     const result = await routeLineItemToProduction({
       tx,
       organizationId: args.organizationId,
       orderId: args.orderId,
       lineItemId: args.lineItemId,
-      stationKey: "flatbed",
-      stepKey: "prepress",
-      trigger: "prepress",
+      stationKey: downstreamRoute.stationKey,
+      stepKey: downstreamRoute.stepKey,
+      trigger: "prepress_handoff",
     });
+
     return result.jobId;
   };
 
@@ -12495,17 +13896,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const statusFilter = req.query.status ? String(req.query.status).split(",") : [];
       const printTypeFilter = req.query.printType as string | undefined;
       const searchQuery = req.query.search as string | undefined;
+      const sortBy = typeof req.query.sortBy === "string" ? req.query.sortBy : "due_date";
+      const sortOrder = String(req.query.sortOrder || "asc").toLowerCase() === "desc" ? "desc" : "asc";
 
-      // Build WHERE conditions.
-      // Prepress queue shows ONLY items that require prepress (requiresPrepress=true).
-      // Default (no status filter) shows all active prepress states; caller can override.
-      const defaultStatuses = ['pending_prepress', 'in_prepress', 'prepress_complete'];
-      const activeStatusFilter = statusFilter.length > 0 ? statusFilter : defaultStatuses;
-
+      // Build base WHERE conditions.
+      // Operational truth is workflow_state + active ownership, not line_item.status or routing snapshots.
+      // The status filter param is kept for UI compatibility and maps to derived prepress stage.
       const conditions: any[] = [
         eq(orders.organizationId, organizationId),           // Always filter by org
-        eq(orderLineItems.requiresPrepress, true),           // Prepress queue = prepress items only
-        inArray(orderLineItems.status, activeStatusFilter),  // Status filter (default: prepress states)
+        inArray(orderLineItems.workflowState, ["ready_for_prepress", "in_prepress"] as any),
+        notInArray(orders.status, ['completed', 'canceled']), // Exclude orders by legacy status field
+        // Also filter on the canonical TitanOS state column (deprecated `status` field alone misses
+        // orders that were closed via the newer state system).
+        notInArray(orders.state, ['closed', 'canceled', 'production_complete']),
       ];
 
       if (printTypeFilter && printTypeFilter !== 'all') {
@@ -12518,6 +13921,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           lineItemId: orderLineItems.id,
           orderId: orders.id,
           status: orderLineItems.status,
+          workflowState: orderLineItems.workflowState,
           description: orderLineItems.description,
           productType: orderLineItems.productType,
           pbv2TreeVersionId: orderLineItems.pbv2TreeVersionId,
@@ -12541,9 +13945,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .where(and(...conditions))
         .orderBy(asc(orders.dueDate), desc(orders.priority));
 
-      // Get file counts for each line item
       const lineItemIds = items.map((i) => i.lineItemId);
-      const fileCounts = lineItemIds.length > 0
+      const activeOwnerByLineItem = lineItemIds.length > 0
+        ? await resolveActiveProductionOwners(db, {
+            organizationId,
+            lineItemIds,
+            debugLabel: "GET /api/prepress/queue",
+          })
+        : new Map<string, any>();
+
+      const queueItems = items.filter((item) => isPrepressOwnershipJob(activeOwnerByLineItem.get(item.lineItemId)));
+
+      // Get file counts for each line item
+      const lineItemIdsForQueue = queueItems.map((i) => i.lineItemId);
+      const fileCounts = lineItemIdsForQueue.length > 0
         ? await db
             .select({
               lineItemId: lineItemFiles.lineItemId,
@@ -12553,18 +13968,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .from(lineItemFiles)
             .where(
               and(
-                inArray(lineItemFiles.lineItemId, lineItemIds),
+                inArray(lineItemFiles.lineItemId, lineItemIdsForQueue),
                 eq(lineItemFiles.status, "active")
               )
             )
             .groupBy(lineItemFiles.lineItemId, lineItemFiles.role)
         : [];
 
-      const previewFiles = lineItemIds.length > 0
+      // Bridge counts from order_attachments so the badge reflects artwork uploaded
+      // before the order entered prepress (e.g. customer checkout uploads).
+      const bridgedCounts: { lineItemId: string | null; count: number }[] =
+        lineItemIdsForQueue.length > 0
+          ? await db
+              .select({
+                lineItemId: orderAttachments.orderLineItemId,
+                count: sql<number>`count(*)::int`,
+              })
+              .from(orderAttachments)
+              .where(inArray(orderAttachments.orderLineItemId as any, lineItemIdsForQueue))
+              .groupBy(orderAttachments.orderLineItemId)
+          : [];
+
+      const previewFiles = lineItemIdsForQueue.length > 0
         ? await db
             .select({
               id: lineItemFiles.id,
               lineItemId: lineItemFiles.lineItemId,
+              fileRecordId: lineItemFiles.fileRecordId,
               role: lineItemFiles.role,
               mimeType: lineItemFiles.mimeType,
               createdAt: lineItemFiles.createdAt,
@@ -12572,7 +14002,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .from(lineItemFiles)
             .where(
               and(
-                inArray(lineItemFiles.lineItemId, lineItemIds),
+                inArray(lineItemFiles.lineItemId, lineItemIdsForQueue),
                 eq(lineItemFiles.status, "active")
               )
             )
@@ -12610,7 +14040,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }>();
       const previewCandidatesByLineItem = new Map<string, {
         originalImageId: string | null;
+        originalImageFileRecordId: string | null;
         finalImageId: string | null;
+        finalImageFileRecordId: string | null;
         firstOriginalMimeType: string | null;
         firstFinalMimeType: string | null;
       }>();
@@ -12618,23 +14050,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const isImage = !!pf.mimeType?.startsWith("image/");
         const bucket = previewCandidatesByLineItem.get(pf.lineItemId) || {
           originalImageId: null,
+          originalImageFileRecordId: null,
           finalImageId: null,
+          finalImageFileRecordId: null,
           firstOriginalMimeType: null,
           firstFinalMimeType: null,
         };
 
         if (pf.role === "original") {
           if (!bucket.firstOriginalMimeType) bucket.firstOriginalMimeType = pf.mimeType || null;
-          if (isImage && !bucket.originalImageId) bucket.originalImageId = pf.id;
+          if (isImage && !bucket.originalImageId) {
+            bucket.originalImageId = pf.id;
+            bucket.originalImageFileRecordId = pf.fileRecordId ?? null;
+          }
         } else if (pf.role === "final") {
           if (!bucket.firstFinalMimeType) bucket.firstFinalMimeType = pf.mimeType || null;
-          if (isImage && !bucket.finalImageId) bucket.finalImageId = pf.id;
+          if (isImage && !bucket.finalImageId) {
+            bucket.finalImageId = pf.id;
+            bucket.finalImageFileRecordId = pf.fileRecordId ?? null;
+          }
         }
         previewCandidatesByLineItem.set(pf.lineItemId, bucket);
       }
 
       for (const [lineItemId, candidate] of Array.from(previewCandidatesByLineItem.entries())) {
         const thumbFileId = candidate.originalImageId || candidate.finalImageId || null;
+        const thumbFileRecordId = candidate.originalImageFileRecordId || candidate.finalImageFileRecordId || null;
         const thumbSelectionReason: 'original_fallback' | 'final_fallback' | 'none' =
           candidate.originalImageId ? 'original_fallback' :
           candidate.finalImageId ? 'final_fallback' :
@@ -12644,20 +14085,105 @@ export async function registerRoutes(app: Express): Promise<Server> {
           candidate.finalImageId ? candidate.firstFinalMimeType :
           (candidate.firstOriginalMimeType || candidate.firstFinalMimeType || null);
 
+        const thumbnailAccess = thumbFileRecordId
+          ? await resolveDerivativeFileAccess({ id: thumbFileId, fileRecordId: thumbFileRecordId }, "thumbnail")
+          : { url: null };
+
         firstPreviewByLineItem.set(lineItemId, {
           thumbFileId,
-          thumbnailUrl: thumbFileId ? `/api/prepress/files/${thumbFileId}/download?inline=1` : null,
+          thumbnailUrl: thumbnailAccess.url ?? null,
           thumbSelectionReason,
           thumbCandidateMimeType,
         });
       }
 
+      // Thumbnail fallback: if lineItemFiles had no image for a line item, try orderAttachments
+      // (some artwork is uploaded via orderAttachments, not lineItemFiles).
+      const lineItemIdsNeedingThumbFallback = lineItemIdsForQueue.filter(
+        (id) => !firstPreviewByLineItem.has(id) || firstPreviewByLineItem.get(id)?.thumbFileId === null
+      );
+      if (lineItemIdsNeedingThumbFallback.length > 0) {
+        const orderIdsForThumbFallback = Array.from(new Set(
+          queueItems
+            .filter((i) => lineItemIdsNeedingThumbFallback.includes(i.lineItemId))
+            .map((i) => i.orderId)
+        ));
+        if (orderIdsForThumbFallback.length > 0) {
+          const fallbackAttachments = await db
+            .select({
+              id: orderAttachments.id,
+              fileRecordId: orderAttachments.fileRecordId,
+              orderLineItemId: orderAttachments.orderLineItemId,
+              orderId: orderAttachments.orderId,
+              fileName: orderAttachments.fileName,
+              thumbKey: orderAttachments.thumbKey,
+              thumbnailUrl: orderAttachments.thumbnailUrl,
+              fileUrl: orderAttachments.fileUrl,
+              thumbStatus: orderAttachments.thumbStatus,
+              isPrimary: orderAttachments.isPrimary,
+              mimeType: sql<string | null>`null`, // orderAttachments has no mimeType column
+            })
+            .from(orderAttachments)
+            .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
+            .where(
+              and(
+                eq(orders.organizationId, organizationId),
+                inArray(orderAttachments.orderId, orderIdsForThumbFallback),
+                eq(orderAttachments.role, "artwork"),
+              ),
+            )
+            .orderBy(desc(orderAttachments.isPrimary), asc(orderAttachments.createdAt));
+
+          // Map by line item (prefer) or by order id (fallback)
+          const fallbackByLineItem = new Map<string, string>();
+          const fallbackByOrder = new Map<string, string>();
+          const fallbackLogOnce = createRequestLogOnce();
+          const enrichedFallbackAttachments = await Promise.all(
+            fallbackAttachments.map((att) => enrichAttachmentWithUrls(att, { logOnce: fallbackLogOnce })),
+          );
+
+          for (const att of enrichedFallbackAttachments) {
+            const thumbUrl =
+              (att.thumbnailUrl as string | null) ??
+              (att.previewThumbnailUrl as string | null) ??
+              (att.thumbUrl as string | null) ??
+              null;
+            if (!thumbUrl) continue;
+
+            if (att.orderLineItemId && lineItemIdsNeedingThumbFallback.includes(att.orderLineItemId)) {
+              if (!fallbackByLineItem.has(att.orderLineItemId)) {
+                fallbackByLineItem.set(att.orderLineItemId, thumbUrl);
+              }
+            } else if (!fallbackByOrder.has(att.orderId)) {
+              fallbackByOrder.set(att.orderId, thumbUrl);
+            }
+          }
+
+          for (const item of queueItems) {
+            if (firstPreviewByLineItem.has(item.lineItemId) && firstPreviewByLineItem.get(item.lineItemId)?.thumbFileId !== null) continue;
+            const thumbUrl =
+              fallbackByLineItem.get(item.lineItemId) ??
+              fallbackByOrder.get(item.orderId) ??
+              null;
+            if (thumbUrl) {
+              firstPreviewByLineItem.set(item.lineItemId, {
+                thumbFileId: null,
+                thumbnailUrl: thumbUrl,
+                thumbSelectionReason: 'original_fallback',
+                thumbCandidateMimeType: null,
+              });
+            }
+          }
+        }
+      }
+
       // Resolve latest active session per line item (non-exclusive sessions supported)
-      const activeSessions = lineItemIds.length > 0
+      const activeSessions = lineItemIdsForQueue.length > 0
         ? await db
             .select({
               id: prepressSessions.id,
               lineItemId: prepressSessions.lineItemId,
+              startedByUserId: prepressSessions.startedByUserId,
               notesText: prepressSessions.notesText,
               issueFlag: prepressSessions.issueFlag,
               issueType: prepressSessions.issueType,
@@ -12667,7 +14193,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .from(prepressSessions)
             .where(
               and(
-                inArray(prepressSessions.lineItemId, lineItemIds),
+                inArray(prepressSessions.lineItemId, lineItemIdsForQueue),
                 eq(prepressSessions.organizationId, organizationId),
                 eq(prepressSessions.status, "active")
               )
@@ -12682,10 +14208,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
+      // Query completed prepress sessions for handoff/readiness context only
+      const completedSessionLineItemIds = lineItemIdsForQueue.length > 0
+        ? await db
+            .select({ lineItemId: prepressSessions.lineItemId })
+            .from(prepressSessions)
+            .where(
+              and(
+                inArray(prepressSessions.lineItemId, lineItemIdsForQueue),
+                eq(prepressSessions.organizationId, organizationId),
+                eq(prepressSessions.status, "complete"),
+              ),
+            )
+        : [];
+      const completedSessionLineItems = new Set<string>(
+        completedSessionLineItemIds.map((r) => r.lineItemId)
+      );
+
       // Map to flat QueueItem shape the frontend expects
-      const queue = items.map((item, index) => {
+      const queue = queueItems.map((item, index) => {
         const counts = fileCounts.filter((fc) => fc.lineItemId === item.lineItemId);
-        const originals = counts.find((c) => c.role === "original")?.count || 0;
+        const originals = (counts.find((c) => c.role === "original")?.count || 0)
+          + (bridgedCounts.find((bc) => bc.lineItemId === item.lineItemId)?.count || 0);
         const finals = counts.find((c) => c.role === "final")?.count || 0;
         const latestSession = latestSessionByLineItem.get(item.lineItemId);
         const computedSqFt = computeTotalSqFt({
@@ -12696,6 +14240,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
         const finishingBullets = extractFinishingBullets(item);
         const optionsRows = buildPrepressOptionRows(item, item.pbv2TreeVersionId ? treeByVersionId.get(item.pbv2TreeVersionId) : undefined);
+        const activeOwner = activeOwnerByLineItem.get(item.lineItemId) ?? null;
+        const activeOwnerIsPrepress = isPrepressOwnershipJob(activeOwner);
+        const computedWorkflowState = String(item.workflowState || '').toLowerCase();
 
         if (process.env.NODE_ENV !== "production" && index === 0) {
           const selectedCount = (() => {
@@ -12722,12 +14269,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
           media: item.materialName ?? null,
           dueDate: item.dueDate ?? null,
           status: item.status,
+          workflowState: item.workflowState,
+          hasCompletedSession: completedSessionLineItems.has(item.lineItemId),
           rush: item.priority === "rush",
           assignedTo: null,
           sessionId: latestSession?.id ?? null,
+          sessionStartedAt: latestSession?.startedAt ? new Date(latestSession.startedAt as any).toISOString() : null,
+          sessionStartedByUserId: latestSession?.startedByUserId ?? null,
           prepressNotes: latestSession?.notesText ?? null,
           issueFlag: latestSession?.issueFlag ?? false,
           issueType: latestSession?.issueType ?? null,
+          hasDownstreamActiveJob: !!activeOwner && !activeOwnerIsPrepress,
+          hasAnyProductionJob: !!activeOwner,
+          activeOwnerJobId: activeOwner?.id ?? null,
+          activeOwnerStationKey: activeOwner?.stationKey ?? null,
+          activeOwnerStepKey: activeOwner?.stepKey ?? null,
+          isActivelyOwnedByPrepress: activeOwnerIsPrepress,
           thumbFileId: firstPreviewByLineItem.get(item.lineItemId)?.thumbFileId ?? null,
           thumbnailUrl: firstPreviewByLineItem.get(item.lineItemId)?.thumbnailUrl ?? null,
           thumbSelectionReason: firstPreviewByLineItem.get(item.lineItemId)?.thumbSelectionReason ?? 'none',
@@ -12744,14 +14301,770 @@ export async function registerRoutes(app: Express): Promise<Server> {
         };
       });
 
+      const matchesPrepressStatusFilter = (item: any, filterValue: string) => {
+        const normalizedFilter = String(filterValue || '').trim().toLowerCase();
+        const workflowState = String(item.workflowState || '').trim().toLowerCase();
+
+        if (!normalizedFilter || normalizedFilter === 'all') {
+          return true;
+        }
+
+        if (normalizedFilter === 'ready_for_prepress') {
+          return workflowState === 'ready_for_prepress';
+        }
+
+        if (normalizedFilter === 'in_prepress') {
+          return workflowState === 'in_prepress';
+        }
+
+        return false;
+      };
+
+      const filteredQueue = statusFilter.length > 0
+        ? queue.filter((q: any) => statusFilter.some((filterValue) => matchesPrepressStatusFilter(q, filterValue)))
+        : queue;
+
+      const normalizedSearchQuery = searchQuery?.trim().toLowerCase() || "";
+      const searchedQueue = normalizedSearchQuery
+        ? filteredQueue.filter((item: any) => {
+            const searchFields = [
+              item.jobNumber,
+              item.orderId,
+              item.customerName,
+              item.productName,
+              item.printType,
+              item.media,
+              item.lineItemId,
+            ];
+
+            return searchFields.some((value) => String(value || "").toLowerCase().includes(normalizedSearchQuery));
+          })
+        : filteredQueue;
+
+      const compareStrings = (left: string | null | undefined, right: string | null | undefined) =>
+        String(left || "").localeCompare(String(right || ""), undefined, { numeric: true, sensitivity: "base" });
+
+      const compareDates = (left: string | null | undefined, right: string | null | undefined) => {
+        const leftValue = left ? new Date(left).getTime() : Number.POSITIVE_INFINITY;
+        const rightValue = right ? new Date(right).getTime() : Number.POSITIVE_INFINITY;
+
+        if (leftValue === rightValue) return 0;
+        return leftValue < rightValue ? -1 : 1;
+      };
+
+      const sortedQueue = [...searchedQueue].sort((left: any, right: any) => {
+        let comparison = 0;
+
+        switch (sortBy) {
+          case "job_number":
+            comparison = compareStrings(left.jobNumber, right.jobNumber);
+            break;
+          case "client":
+            comparison = compareStrings(left.customerName, right.customerName);
+            break;
+          case "type":
+            comparison = compareStrings(left.printType, right.printType);
+            break;
+          case "material":
+            comparison = compareStrings(left.media, right.media);
+            break;
+          case "due_date":
+          default:
+            comparison = compareDates(left.dueDate, right.dueDate);
+            break;
+        }
+
+        if (comparison === 0) {
+          comparison = compareStrings(left.jobNumber, right.jobNumber);
+        }
+
+        return sortOrder === "desc" ? comparison * -1 : comparison;
+      });
+
       if (process.env.NODE_ENV !== "production") {
-        console.log(`[Prepress Queue] org=${organizationId} statuses=${activeStatusFilter.join(",")} → ${queue.length} items`);
+        console.log(`[Prepress Queue] org=${organizationId} ownerDrivenQueue=${sortedQueue.length}`);
       }
 
-      res.json({ success: true, data: queue });
+      res.json({ success: true, data: sortedQueue });
     } catch (error: any) {
       console.error("[Prepress] Error fetching queue:", error);
       res.status(500).json({ error: error?.message || "Failed to fetch prepress queue" });
+    }
+  });
+
+  app.get("/api/design/queue", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const items = await db
+        .select({
+          lineItemId: orderLineItems.id,
+          orderId: orders.id,
+          status: orderLineItems.status,
+          workflowState: orderLineItems.workflowState,
+          requiresDesign: orderLineItems.requiresDesign,
+          requiresPrepress: orderLineItems.requiresPrepress,
+          description: orderLineItems.description,
+          productType: orderLineItems.productType,
+          quantity: orderLineItems.quantity,
+          width: orderLineItems.width,
+          height: orderLineItems.height,
+          sqft: orderLineItems.sqft,
+          orderNumber: orders.orderNumber,
+          dueDate: orders.dueDate,
+          priority: orders.priority,
+          customerName: customers.companyName,
+          materialName: materials.name,
+        })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .innerJoin(customers, eq(orders.customerId, customers.id))
+        .leftJoin(materials, eq(orderLineItems.materialId, materials.id))
+        .where(
+          and(
+            eq(orders.organizationId, organizationId),
+            inArray(orderLineItems.workflowState, ["needs_design", "in_design"] as any),
+            notInArray(orders.state, ["closed", "canceled", "production_complete"]),
+          ),
+        )
+        .orderBy(asc(orders.dueDate), desc(orders.priority));
+
+      const lineItemIds = items.map((item) => item.lineItemId);
+      const activeOwnerByLineItem = lineItemIds.length > 0
+        ? await resolveActiveProductionOwners(db, {
+            organizationId,
+            lineItemIds,
+            debugLabel: "GET /api/design/queue",
+          })
+        : new Map<string, any>();
+
+      const fileCounts = lineItemIds.length > 0
+        ? await db
+            .select({
+              lineItemId: lineItemFiles.lineItemId,
+              role: lineItemFiles.role,
+              count: sql<number>`count(*)::int`,
+            })
+            .from(lineItemFiles)
+            .where(and(inArray(lineItemFiles.lineItemId, lineItemIds), eq(lineItemFiles.status, "active")))
+            .groupBy(lineItemFiles.lineItemId, lineItemFiles.role)
+        : [];
+
+      const bridgedArtworkCounts = lineItemIds.length > 0
+        ? await db
+            .select({
+              lineItemId: orderAttachments.orderLineItemId,
+              role: orderAttachments.role,
+              count: sql<number>`count(*)::int`,
+            })
+            .from(orderAttachments)
+            .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
+            .where(
+              and(
+                eq(orders.organizationId, organizationId),
+                inArray(orderAttachments.orderLineItemId as any, lineItemIds),
+                inArray(orderAttachments.role, ["artwork", "proof"] as any),
+              ),
+            )
+            .groupBy(orderAttachments.orderLineItemId, orderAttachments.role)
+        : [];
+
+      const queue = items
+        .filter((item) => {
+          const activeOwner = activeOwnerByLineItem.get(item.lineItemId);
+          return isDesignOwnershipJob(activeOwner) || ["needs_design", "in_design"].includes(String(item.workflowState || ""));
+        })
+        .map((item) => {
+          const activeOwner = activeOwnerByLineItem.get(item.lineItemId) ?? null;
+          const originals =
+            (fileCounts.find((row) => row.lineItemId === item.lineItemId && row.role === "original")?.count || 0) +
+            (bridgedArtworkCounts.find((row) => row.lineItemId === item.lineItemId && row.role === "artwork")?.count || 0);
+          const proofs = bridgedArtworkCounts.find((row) => row.lineItemId === item.lineItemId && row.role === "proof")?.count || 0;
+
+          return {
+            lineItemId: item.lineItemId,
+            orderId: item.orderId,
+            jobNumber: item.orderNumber,
+            customerName: item.customerName ?? "—",
+            productName: item.description,
+            printType: item.productType ?? null,
+            media: item.materialName ?? null,
+            dueDate: item.dueDate ?? null,
+            status: item.status,
+            workflowState: item.workflowState,
+            designStage: item.workflowState,
+            rush: item.priority === "rush",
+            quantity: Number(item.quantity) || 0,
+            width: item.width != null ? Number(item.width) : null,
+            height: item.height != null ? Number(item.height) : null,
+            sqFootage: item.sqft != null ? Number(item.sqft) : null,
+            requiresDesign: item.requiresDesign,
+            requiresPrepress: item.requiresPrepress,
+            activeOwnerJobId: activeOwner?.id ?? null,
+            activeOwnerStationKey: activeOwner?.stationKey ?? null,
+            activeOwnerStepKey: activeOwner?.stepKey ?? null,
+            fileCounts: {
+              originals,
+              proofs,
+            },
+          };
+        });
+
+      return res.json({ success: true, data: queue });
+    } catch (error: any) {
+      console.error("[Design] Error fetching queue:", error);
+      return res.status(500).json({ error: error?.message || "Failed to fetch design queue" });
+    }
+  });
+
+  const executeExplicitLineItemWorkflowAction = async (args: {
+    req: any;
+    res: any;
+    lineItemId: string;
+    toState: "needs_design" | "in_design" | "ready_for_prepress";
+    source: string;
+    description: string;
+    note?: string | null;
+  }) => {
+    const organizationId = getRequestOrganizationId(args.req);
+    if (!organizationId) {
+      args.res.status(500).json({ error: "Missing organization context" });
+      return;
+    }
+
+    const userId = getUserId(args.req.user);
+    if (!userId) {
+      args.res.status(401).json({ error: "User ID not found" });
+      return;
+    }
+
+    const [currentLineItem] = await db
+      .select({
+        id: orderLineItems.id,
+        status: orderLineItems.status,
+        workflowState: orderLineItems.workflowState,
+      })
+      .from(orderLineItems)
+      .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+      .where(and(eq(orderLineItems.id, args.lineItemId), eq(orders.organizationId, organizationId)))
+      .limit(1);
+
+    if (!currentLineItem) {
+      args.res.status(404).json({ error: "Line item not found" });
+      return;
+    }
+
+    const result = await db.transaction(async (tx) => {
+      return transitionLineItemWorkflowState(tx, {
+        organizationId,
+        lineItemId: args.lineItemId,
+        toState: args.toState,
+        actorUserId: userId,
+        note: args.note ?? null,
+        metadata: { source: args.source },
+      });
+    });
+
+    await db.insert(auditLogs).values({
+      organizationId,
+      userId,
+      userName: args.req.user?.email || args.req.user?.name || null,
+      actionType: "UPDATE",
+      entityType: "order_line_item",
+      entityId: args.lineItemId,
+      entityName: `Line item ${args.lineItemId}`,
+      description: args.description,
+      oldValues: { workflowState: currentLineItem.workflowState, status: currentLineItem.status },
+      newValues: {
+        workflowState: result.toState,
+        status: result.lifecycleStatus,
+        ownerJobId: result.activeOwnerJobId,
+        ownerStationKey: result.activeOwnerStationKey,
+        ownerStepKey: result.activeOwnerStepKey,
+      },
+      ipAddress: args.req.ip || null,
+      userAgent: args.req.headers["user-agent"] || null,
+    } as any);
+
+    args.res.json({ success: true, data: result });
+  };
+
+  app.post("/api/design/line-item/:lineItemId/send", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      await executeExplicitLineItemWorkflowAction({
+        req,
+        res,
+        lineItemId: String(req.params.lineItemId),
+        toState: "needs_design",
+        source: "api_design_send",
+        description: "Sent line item to Design",
+        note: typeof req.body?.note === "string" ? req.body.note : null,
+      });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Design] Error sending line item to design:", error);
+      res.status(status).json({ error: error?.message || "Failed to send line item to design" });
+    }
+  });
+
+  app.post("/api/design/line-item/:lineItemId/start", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      await executeExplicitLineItemWorkflowAction({
+        req,
+        res,
+        lineItemId: String(req.params.lineItemId),
+        toState: "in_design",
+        source: "api_design_start",
+        description: "Started Design work on line item",
+        note: typeof req.body?.note === "string" ? req.body.note : null,
+      });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Design] Error starting design:", error);
+      res.status(status).json({ error: error?.message || "Failed to start design" });
+    }
+  });
+
+  app.post("/api/design/line-item/:lineItemId/return-to-needs-design", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      await executeExplicitLineItemWorkflowAction({
+        req,
+        res,
+        lineItemId: String(req.params.lineItemId),
+        toState: "needs_design",
+        source: "api_design_return_to_needs_design",
+        description: "Returned line item to Needs Design",
+        note: typeof req.body?.note === "string" ? req.body.note : null,
+      });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Design] Error returning line item to needs design:", error);
+      res.status(status).json({ error: error?.message || "Failed to return line item to needs design" });
+    }
+  });
+
+  app.post("/api/design/line-item/:lineItemId/send-to-prepress", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      await executeExplicitLineItemWorkflowAction({
+        req,
+        res,
+        lineItemId: String(req.params.lineItemId),
+        toState: "ready_for_prepress",
+        source: "api_design_send_to_prepress",
+        description: "Handed off line item from Design to Prepress",
+        note: typeof req.body?.note === "string" ? req.body.note : null,
+      });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Design] Error sending line item to prepress:", error);
+      res.status(status).json({ error: error?.message || "Failed to send line item to prepress" });
+    }
+  });
+
+  app.post("/api/line-items/:lineItemId/workflow-transition", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const lineItemId = String(req.params.lineItemId);
+      const parsed = z.object({
+        toState: z.enum([
+          "new",
+          "needs_design",
+          "in_design",
+          "awaiting_proof_approval",
+          "ready_for_prepress",
+          "in_prepress",
+          "ready_for_production",
+          "in_production",
+          "completed",
+          "on_hold",
+          "canceled",
+        ]),
+        note: z.string().optional().nullable(),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const [currentLineItem] = await db
+        .select({
+          id: orderLineItems.id,
+          status: orderLineItems.status,
+          workflowState: orderLineItems.workflowState,
+        })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+
+      if (!currentLineItem) {
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      const result = await db.transaction(async (tx) => {
+        return transitionLineItemWorkflowState(tx, {
+          organizationId,
+          lineItemId,
+          toState: parsed.data.toState,
+          actorUserId: userId,
+          note: parsed.data.note ?? null,
+          metadata: { source: "api_line_item_workflow_transition" },
+        });
+      });
+
+      await db.insert(auditLogs).values({
+        organizationId,
+        userId,
+        userName: req.user?.email || req.user?.name || null,
+        actionType: "UPDATE",
+        entityType: "order_line_item",
+        entityId: lineItemId,
+        entityName: `Line item ${lineItemId}`,
+        description: `Workflow transition ${result.fromState} -> ${result.toState}`,
+        oldValues: { workflowState: currentLineItem.workflowState, status: currentLineItem.status },
+        newValues: {
+          workflowState: result.toState,
+          status: result.lifecycleStatus,
+          ownerJobId: result.activeOwnerJobId,
+          ownerStationKey: result.activeOwnerStationKey,
+          ownerStepKey: result.activeOwnerStepKey,
+        },
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+      } as any);
+
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Workflow] Error transitioning line item workflow:", error);
+      return res.status(status).json({ error: error?.message || "Failed to transition workflow" });
+    }
+  });
+
+  app.get("/api/proofing/queue", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const parsedSlice = proofQueueSliceSchema.safeParse(req.query?.slice ?? "all");
+      if (!parsedSlice.success) {
+        return res.status(400).json({ error: fromZodError(parsedSlice.error).message });
+      }
+
+      const queue = await listProofingQueue(db, {
+        organizationId,
+        slice: parsedSlice.data,
+      });
+
+      return res.json({ success: true, data: queue });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error fetching proofing queue:", error);
+      return res.status(status).json({ error: error?.message || "Failed to fetch proofing queue" });
+    }
+  });
+
+  app.get("/api/proofing/line-item/:lineItemId", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const truth = await resolveLineItemProofingTruth(db, {
+        organizationId,
+        lineItemId: String(req.params.lineItemId),
+      });
+
+      return res.json({ success: true, data: truth });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error resolving line-item proofing truth:", error);
+      return res.status(status).json({ error: error?.message || "Failed to resolve proofing truth" });
+    }
+  });
+
+  app.post("/api/proofing/line-item/:lineItemId/versions", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.object({
+        proofFileId: z.string().min(1),
+        internalNotes: z.string().optional().nullable(),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const lineItemId = String(req.params.lineItemId);
+      const created = await db.transaction(async (tx) => {
+        const proofVersion = await createLineItemProofVersion(tx, {
+          organizationId,
+          lineItemId,
+          proofFileId: parsed.data.proofFileId,
+          createdByUserId: userId,
+          internalNotes: parsed.data.internalNotes ?? null,
+        });
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "CREATE",
+          entityType: "line_item_proof_version",
+          entityId: proofVersion.id,
+          entityName: `Proof v${proofVersion.versionNumber}`,
+          description: `Created proof version ${proofVersion.versionNumber} for line item ${lineItemId}`,
+          newValues: {
+            lineItemId,
+            proofFileId: proofVersion.proofFileId,
+            versionNumber: proofVersion.versionNumber,
+            status: proofVersion.status,
+          },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        const proofing = await resolveLineItemProofingTruth(tx, {
+          organizationId,
+          lineItemId,
+        });
+
+        return { proofVersion, proofing };
+      });
+
+      return res.json({ success: true, data: created });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error creating proof version:", error);
+      return res.status(status).json({ error: error?.message || "Failed to create proof version" });
+    }
+  });
+
+  app.post("/api/proofing/versions/:proofVersionId/send", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.object({
+        sentToName: z.string().optional().nullable(),
+        sentToEmail: z.string().optional().nullable(),
+        customerMessage: z.string().optional().nullable(),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const result = await db.transaction(async (tx) => {
+        const sendResult = await markProofVersionSent(tx, {
+          organizationId,
+          proofVersionId: String(req.params.proofVersionId),
+          actorUserId: userId,
+          sentToName: parsed.data.sentToName ?? null,
+          sentToEmail: parsed.data.sentToEmail ?? null,
+          customerMessage: parsed.data.customerMessage ?? null,
+        });
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "UPDATE",
+          entityType: "line_item_proof_version",
+          entityId: sendResult.proofVersion.id,
+          entityName: `Proof v${sendResult.proofVersion.versionNumber}`,
+          description: `Sent proof version ${sendResult.proofVersion.versionNumber} for review`,
+          oldValues: {
+            status: "draft",
+            workflowState: sendResult.workflowTransition.fromState,
+          },
+          newValues: {
+            status: sendResult.proofVersion.status,
+            lineItemId: sendResult.proofVersion.lineItemId,
+            workflowState: sendResult.workflowTransition.toState,
+            sentToEmail: sendResult.proofVersion.sentToEmail,
+          },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        const proofing = await resolveLineItemProofingTruth(tx, {
+          organizationId,
+          lineItemId: sendResult.proofVersion.lineItemId,
+        });
+
+        return {
+          ...sendResult,
+          proofing,
+        };
+      });
+
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error sending proof version for review:", error);
+      return res.status(status).json({ error: error?.message || "Failed to send proof version for review" });
+    }
+  });
+
+  app.post("/api/proofing/versions/:proofVersionId/respond", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.object({
+        decision: z.enum(["approved", "rejected", "revision_requested"]),
+        responseNotes: z.string().optional().nullable(),
+        responderName: z.string().optional().nullable(),
+        responderEmail: z.string().optional().nullable(),
+        responderSource: z.string().optional().nullable(),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const result = await db.transaction(async (tx) => {
+        const responseResult = await recordProofResponse(tx, {
+          organizationId,
+          proofVersionId: String(req.params.proofVersionId),
+          actorUserId: userId,
+          responderName: parsed.data.responderName ?? null,
+          responderEmail: parsed.data.responderEmail ?? null,
+          responderSource: parsed.data.responderSource ?? null,
+          decision: parsed.data.decision,
+          responseNotes: parsed.data.responseNotes ?? null,
+        });
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "CREATE",
+          entityType: "line_item_proof_approval",
+          entityId: responseResult.approval.id,
+          entityName: `Proof response ${responseResult.approval.id}`,
+          description: `Recorded ${responseResult.approval.decision} response for proof version ${responseResult.approval.proofVersionId}`,
+          newValues: {
+            lineItemId: responseResult.approval.lineItemId,
+            proofVersionId: responseResult.approval.proofVersionId,
+            decision: responseResult.approval.decision,
+            workflowState: responseResult.workflowTransition.toState,
+          },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        const proofing = await resolveLineItemProofingTruth(tx, {
+          organizationId,
+          lineItemId: responseResult.approval.lineItemId,
+        });
+
+        return {
+          ...responseResult,
+          proofing,
+        };
+      });
+
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error recording proof response:", error);
+      return res.status(status).json({ error: error?.message || "Failed to record proof response" });
+    }
+  });
+
+  app.post("/api/proofing/line-item/:lineItemId/manual-approval-override", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.object({
+        proofVersionId: z.string().min(1).optional().nullable(),
+        overrideReason: z.string().trim().min(1, "Override reason is required"),
+        internalNote: z.string().optional().nullable(),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const lineItemId = String(req.params.lineItemId);
+      const result = await db.transaction(async (tx) => {
+        const overrideResult = await recordManualProofApprovalOverride(tx, {
+          organizationId,
+          lineItemId,
+          proofVersionId: parsed.data.proofVersionId ?? null,
+          actorUserId: userId,
+          actorName: req.user?.name ?? null,
+          actorEmail: req.user?.email ?? null,
+          overrideReason: parsed.data.overrideReason,
+          internalNote: parsed.data.internalNote ?? null,
+        });
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "CREATE",
+          entityType: "line_item_proof_manual_approval_override",
+          entityId: overrideResult.manualApprovalOverride.id,
+          entityName: `Manual proof override ${overrideResult.manualApprovalOverride.id}`,
+          description: `Manual approval override recorded for proof version ${overrideResult.manualApprovalOverride.proofVersionId}`,
+          newValues: {
+            source: "manual_override",
+            lineItemId,
+            proofVersionId: overrideResult.manualApprovalOverride.proofVersionId,
+            overrideReason: overrideResult.manualApprovalOverride.overrideReason,
+            internalNote: overrideResult.manualApprovalOverride.internalNote,
+            workflowState: overrideResult.workflowTransition.toState,
+          },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        const proofing = await resolveLineItemProofingTruth(tx, {
+          organizationId,
+          lineItemId,
+        });
+
+        return {
+          ...overrideResult,
+          proofing,
+        };
+      });
+
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error recording manual approval override:", error);
+      return res.status(status).json({ error: error?.message || "Failed to record manual approval override" });
     }
   });
 
@@ -13119,6 +15432,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .where(and(eq(auditLogs.organizationId, organizationId), auditFilter!))
         .orderBy(desc(auditLogs.createdAt));
 
+      const describeProductionEvent = (type: string, payload: any) => {
+        const eventType = String(payload?.eventType || "").trim().toLowerCase();
+        const formatState = (value: unknown) => String(value || "").replace(/_/g, " ").trim();
+
+        if (eventType === "workflow_transition") {
+          const fromState = formatState(payload?.fromState);
+          const toState = formatState(payload?.toState);
+          if (fromState && toState) {
+            return `Workflow transitioned from ${fromState} to ${toState}`;
+          }
+        }
+
+        if (eventType === "workflow_reconciled") {
+          const toState = formatState(payload?.toState);
+          return toState
+            ? `Workflow reconciled to ${toState}`
+            : "Workflow reconciled";
+        }
+
+        if (eventType === "materials_reserved") {
+          return "Materials reserved for production";
+        }
+
+        if (eventType === "materials_rebalanced") {
+          return "Material reservations rebalanced";
+        }
+
+        if (eventType === "material_override") {
+          return "Material override applied";
+        }
+
+        if (type === "routing_override") {
+          const fromStation = String(payload?.from?.stationKey || payload?.previousStationKey || "").trim();
+          const toStation = String(payload?.to?.stationKey || payload?.stationKey || "").trim();
+          if (fromStation && toStation) {
+            return `Ownership moved from ${fromStation} to ${toStation}`;
+          }
+        }
+
+        if (typeof payload?.text === "string" && payload.text.trim().length > 0) {
+          return payload.text;
+        }
+
+        if (eventType) {
+          return eventType.replace(/_/g, " ");
+        }
+
+        return `${type}`;
+      };
+
       const timeline = [
         ...sessions.map((s) => ({
           at: s.updatedAt || s.startedAt,
@@ -13134,9 +15497,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           at: e.createdAt,
           source: "production_event",
           type: e.type,
-          description: typeof e.payload?.text === "string" && e.payload.text.trim().length > 0
-            ? e.payload.text
-            : `${e.type}`,
+          description: describeProductionEvent(String(e.type || "note"), e.payload),
         })),
         ...audits.map((a) => ({
           at: a.createdAt,
@@ -13296,10 +15657,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // POST /api/prepress/session/start - Start prepress session
   app.post("/api/prepress/session/start", isAuthenticated, tenantContext, async (req: any, res) => {
+    let organizationId: string | null = null;
+    let lineItemId = "";
+    let startFailureStage = "request_validation";
+
     try {
       if (!assertInternalUser(req, res)) return;
-      const organizationId = getRequestOrganizationId(req);
+      organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const orgId = organizationId;
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ error: "User ID not found" });
 
@@ -13309,9 +15675,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: fromZodError(parsed.error).message });
       }
 
-      const { lineItemId } = parsed.data;
+      lineItemId = parsed.data.lineItemId;
 
       const result = await db.transaction(async (tx) => {
+        startFailureStage = "load_line_item";
         // Get line item
         const lineItems = await tx
           .select({
@@ -13323,7 +15690,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .where(
             and(
               eq(orderLineItems.id, lineItemId),
-              eq(orders.organizationId, organizationId)
+              eq(orders.organizationId, orgId)
             )
           )
           .limit(1);
@@ -13335,11 +15702,91 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const lineItem = lineItems[0].lineItem;
         const order = lineItems[0].order;
 
+        startFailureStage = "resolve_active_owner";
+        const activeOwner = await findActiveJobForLineItem(tx, {
+          organizationId: orgId,
+          lineItemId,
+        });
+
+        if (!activeOwner || !isPrepressOwnershipJob(activeOwner)) {
+          console.warn("[Prepress] Start session blocked: line item not actively owned by prepress", {
+            organizationId,
+            lineItemId,
+            activeOwnerJobId: activeOwner?.id ?? null,
+            activeOwnerStationKey: activeOwner?.stationKey ?? null,
+            activeOwnerStepKey: activeOwner?.stepKey ?? null,
+          });
+          throw Object.assign(new Error("Line item is not actively owned by prepress"), { statusCode: 409 });
+        }
+
+        startFailureStage = "load_active_sessions";
+        const activeSessions = await tx
+          .select({
+            id: prepressSessions.id,
+            orderId: prepressSessions.orderId,
+            lineItemId: prepressSessions.lineItemId,
+            status: prepressSessions.status,
+            startedAt: prepressSessions.startedAt,
+            startedByUserId: prepressSessions.startedByUserId,
+            notesText: prepressSessions.notesText,
+            issueFlag: prepressSessions.issueFlag,
+            issueType: prepressSessions.issueType,
+          })
+          .from(prepressSessions)
+          .where(
+            and(
+              eq(prepressSessions.organizationId, orgId),
+              eq(prepressSessions.lineItemId, lineItemId),
+              eq(prepressSessions.status, "active"),
+            ),
+          )
+          .orderBy(desc(prepressSessions.startedAt))
+          .limit(1);
+
+        startFailureStage = "load_completed_sessions";
+        const completedSessions = await tx
+          .select({ id: prepressSessions.id })
+          .from(prepressSessions)
+          .where(
+            and(
+              eq(prepressSessions.organizationId, orgId),
+              eq(prepressSessions.lineItemId, lineItemId),
+              eq(prepressSessions.status, "complete"),
+            ),
+          )
+          .limit(1);
+
+        const existingActiveSession = activeSessions[0] ?? null;
+
+        if (existingActiveSession) {
+          startFailureStage = "resume_existing_session";
+          await transitionLineItemWorkflowState(tx, {
+            organizationId: orgId,
+            lineItemId,
+            toState: "in_prepress",
+            actorUserId: userId,
+            metadata: { source: "prepress_session_resume" },
+          });
+
+          return {
+            ...existingActiveSession,
+            lineItemId,
+            lineItemStatus: "in_production",
+            lineItemWorkflowState: "in_prepress",
+            resumed: true,
+          };
+        }
+
+        if (String(lineItem.workflowState || "").toLowerCase() !== "ready_for_prepress") {
+          throw Object.assign(new Error("Line item must be ready_for_prepress before starting prepress"), { statusCode: 400 });
+        }
+
+        startFailureStage = "create_session";
         // Create new session
         const [session] = await tx
           .insert(prepressSessions)
           .values({
-            organizationId,
+            organizationId: orgId,
             orderId: order.id,
             lineItemId,
             status: "active",
@@ -13349,17 +15796,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
           })
           .returning();
 
-        // Transition to IN_PREPRESS only if currently pending (idempotent — never downgrade)
-        if (lineItem.status === "pending_prepress") {
-          await tx
-            .update(orderLineItems)
-            .set({ status: "in_prepress" })
-            .where(eq(orderLineItems.id, lineItemId));
-        }
+        await transitionLineItemWorkflowState(tx, {
+          organizationId: orgId,
+          lineItemId,
+          toState: "in_prepress",
+          actorUserId: userId,
+          metadata: { source: "prepress_session_start" },
+        });
 
+        startFailureStage = "write_audit_log";
         // Audit log
         await tx.insert(auditLogs).values({
-          organizationId,
+          organizationId: orgId,
           userId,
           userName: req.user?.email || req.user?.name || null,
           actionType: "CREATE",
@@ -13372,13 +15820,74 @@ export async function registerRoutes(app: Express): Promise<Server> {
           userAgent: req.headers["user-agent"] || null,
         } as any);
 
-        return session;
+        return {
+          ...session,
+          lineItemId,
+          lineItemStatus: "in_production",
+          lineItemWorkflowState: "in_prepress",
+          resumed: false,
+        };
       });
 
       res.json({ success: true, data: result });
     } catch (error: any) {
+      if (
+        error?.code === "23505" &&
+        error?.constraint === "uq_prepress_active_session_per_line_item"
+      ) {
+        try {
+          if (!organizationId) {
+            throw new Error("Missing organization context");
+          }
+          const existingActiveSession = await db
+            .select({
+              id: prepressSessions.id,
+              orderId: prepressSessions.orderId,
+              lineItemId: prepressSessions.lineItemId,
+              status: prepressSessions.status,
+              startedAt: prepressSessions.startedAt,
+              startedByUserId: prepressSessions.startedByUserId,
+              notesText: prepressSessions.notesText,
+              issueFlag: prepressSessions.issueFlag,
+              issueType: prepressSessions.issueType,
+            })
+            .from(prepressSessions)
+            .where(
+              and(
+                eq(prepressSessions.organizationId, organizationId),
+                eq(prepressSessions.lineItemId, lineItemId),
+                eq(prepressSessions.status, "active"),
+              ),
+            )
+            .orderBy(desc(prepressSessions.startedAt))
+            .limit(1);
+
+          if (existingActiveSession[0]) {
+            const recoveryOrganizationId = organizationId;
+            await db.transaction(async (tx) => {
+              await transitionLineItemWorkflowState(tx, {
+                organizationId: recoveryOrganizationId,
+                lineItemId,
+                toState: "in_prepress",
+                actorUserId: getUserId(req.user) ?? null,
+                metadata: { source: "prepress_session_collision_recovery" },
+              });
+            });
+
+            return res.json({ success: true, data: existingActiveSession[0] });
+          }
+        } catch (collisionRecoveryError) {
+          console.error("[Prepress] Error recovering from active-session uniqueness collision:", collisionRecoveryError);
+        }
+      }
+
       const status = error?.statusCode || 500;
-      console.error("[Prepress] Error starting session:", error);
+      console.error("[Prepress] Error starting session:", {
+        stage: startFailureStage,
+        organizationId,
+        lineItemId,
+        message: error?.message || "Unknown error",
+      });
       res.status(status).json({ error: error?.message || "Failed to start session" });
     }
   });
@@ -13454,16 +15963,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // POST /api/prepress/session/:id/complete - Mark prepress complete
   app.post("/api/prepress/session/:id/complete", isAuthenticated, tenantContext, async (req: any, res) => {
+    let completeFailureStage = "request_validation";
+    let sessionLineItemId: string | null = null;
+
     try {
       if (!assertInternalUser(req, res)) return;
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const orgId = organizationId;
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ error: "User ID not found" });
 
       const sessionId = req.params.id;
 
       const result = await db.transaction(async (tx) => {
+        completeFailureStage = "load_session";
         // Get session
         const sessions = await tx
           .select()
@@ -13471,7 +15985,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .where(
             and(
               eq(prepressSessions.id, sessionId),
-              eq(prepressSessions.organizationId, organizationId)
+              eq(prepressSessions.organizationId, orgId)
             )
           )
           .limit(1);
@@ -13481,32 +15995,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
 
         const session = sessions[0];
+        sessionLineItemId = session.lineItemId;
+
+        completeFailureStage = "resolve_active_owner";
+        const activeOwner = await findActiveJobForLineItem(tx, {
+          organizationId: orgId,
+          lineItemId: session.lineItemId,
+        });
+
+        if (!activeOwner || !isPrepressOwnershipJob(activeOwner)) {
+          console.warn("[Prepress] Complete session blocked: line item not actively owned by prepress", {
+            organizationId,
+            sessionId,
+            lineItemId: session.lineItemId,
+            activeOwnerJobId: activeOwner?.id ?? null,
+            activeOwnerStationKey: activeOwner?.stationKey ?? null,
+            activeOwnerStepKey: activeOwner?.stepKey ?? null,
+          });
+          throw Object.assign(new Error("Line item is not actively owned by prepress"), { statusCode: 409 });
+        }
 
         if (session.status === "complete") {
           // Already complete — idempotent success, no error
           return { id: session.id, lineItemId: session.lineItemId, status: "complete" };
         }
 
-        // Validate at least one FINAL file exists for this line item (any session, any uploader)
-        const finalFiles = await tx
-          .select()
-          .from(lineItemFiles)
-          .where(
-            and(
-              eq(lineItemFiles.lineItemId, session.lineItemId),
-              eq(lineItemFiles.role, "final"),
-              eq(lineItemFiles.status, "active")
-            )
-          )
-          .limit(1);
+        completeFailureStage = "ensure_final_artwork";
+        const finalArtwork = await prepressFileService.ensureFinalArtworkForLineItem({
+          organizationId: orgId,
+          orderId: session.orderId,
+          lineItemId: session.lineItemId,
+          prepressSessionId: session.id,
+          createdByUserId: userId,
+        });
 
-        if (!finalFiles[0]) {
+        if (!finalArtwork) {
           throw Object.assign(
-            new Error("Cannot complete prepress without at least one final file"),
+            new Error("Cannot complete prepress without usable artwork. Upload a replacement file or keep an existing linked artwork file."),
             { statusCode: 400 }
           );
         }
 
+        completeFailureStage = "mark_session_complete";
         // Mark session complete
         await tx
           .update(prepressSessions)
@@ -13517,15 +16047,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           })
           .where(eq(prepressSessions.id, sessionId));
 
-        // Update line item status to PREPRESS_COMPLETE
-        await tx
-          .update(orderLineItems)
-          .set({ status: "prepress_complete" })
-          .where(eq(orderLineItems.id, session.lineItemId));
-
+        completeFailureStage = "write_audit_log";
         // Audit log
         await tx.insert(auditLogs).values({
-          organizationId,
+          organizationId: orgId,
           userId,
           userName: req.user?.email || req.user?.name || null,
           actionType: "UPDATE",
@@ -13539,19 +16064,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
           userAgent: req.headers["user-agent"] || null,
         } as any);
 
-        return session;
+        return {
+          ...session,
+          lineItemId: session.lineItemId,
+          status: "complete",
+          completedAt: new Date(),
+          finalArtworkSource: finalArtwork.source,
+          finalFileId: finalArtwork.file.id,
+          createdFinalFile: finalArtwork.created,
+        };
       });
 
       res.json({ success: true, data: result });
     } catch (error: any) {
       const status = error?.statusCode || 500;
-      console.error("[Prepress] Error completing session:", error);
+      console.error("[Prepress] Error completing session:", {
+        stage: completeFailureStage,
+        sessionId: req.params.id,
+        lineItemId: sessionLineItemId,
+        message: error?.message || "Unknown error",
+      });
       res.status(status).json({ error: error?.message || "Failed to complete session" });
     }
   });
 
   // PROMPT B: POST /api/prepress/line-item/:lineItemId/send-to-print
-  // Transitions prepress_complete → print_ready (explicit handoff to production boards)
+  // Hands off from prepress to downstream production (board ownership via production_jobs)
   app.post("/api/prepress/line-item/:lineItemId/send-to-print", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -13565,10 +16103,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // 1. Verify line item exists and belongs to org
       const [lineItem] = await db.select({
           id: orderLineItems.id,
+          orderId: orderLineItems.orderId,
           status: orderLineItems.status,
+          workflowState: orderLineItems.workflowState,
+          productId: orderLineItems.productId,
+          productType: orderLineItems.productType,
           requiresPrepress: orderLineItems.requiresPrepress,
+          productTypeId: products.productTypeId,
         })
         .from(orderLineItems)
+        .leftJoin(products, eq(orderLineItems.productId, products.id))
         .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
         .where(and(
           eq(orderLineItems.id, lineItemId),
@@ -13582,12 +16126,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const item = lineItem;
 
-      // 2. Verify prepress requirement and status
-      if (item.requiresPrepress && item.status !== 'prepress_complete') {
-        return res.status(400).json({ 
-          error: "Line item must complete prepress first",
-          currentStatus: item.status
+      // 2. Canonical prepress gate: active owner must currently be prepress.
+      const activeJob = await findActiveJobForLineItem(db, {
+        organizationId,
+        lineItemId,
+      });
+
+      if (!activeJob) {
+        return res.status(409).json({ error: "No active production owner found for this line item" });
+      }
+
+      if (!isPrepressOwnershipJob(activeJob)) {
+        return res.status(409).json({
+          error: "Active owner is not prepress",
+          activeJobId: activeJob.id,
+          stationKey: activeJob.stationKey,
+          stepKey: activeJob.stepKey,
         });
+      }
+
+      if (String(item.workflowState || '').toLowerCase() !== 'in_prepress') {
+        return res.status(400).json({ error: "Line item must be in_prepress before send to production" });
       }
 
       // 3. Verify at least one FINAL file exists
@@ -13604,14 +16163,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "At least one final file is required before sending to print" });
       }
 
-      // 4. Already at or past print_ready → idempotent success (no-op)
-      const ineligibleStatuses = ['print_ready', 'printing', 'done', 'complete'];
-      if (ineligibleStatuses.includes(item.status)) {
-        return res.json({
-          success: true,
-          message: "Line item is already in production queue",
-          newStatus: item.status,
-        });
+      const downstreamRoute = await resolvePostPrepressProductionRoute({
+        organizationId,
+        productTypeId: item.productTypeId ?? null,
+        productTypeNameSnapshot: item.productType,
+      });
+
+      const completedSessions = await db
+        .select({ id: prepressSessions.id })
+        .from(prepressSessions)
+        .where(
+          and(
+            eq(prepressSessions.organizationId, organizationId),
+            eq(prepressSessions.lineItemId, lineItemId),
+            eq(prepressSessions.status, "complete"),
+          ),
+        )
+        .limit(1);
+
+      if (item.requiresPrepress && completedSessions.length === 0) {
+        return res.status(400).json({ error: "Line item must complete prepress first" });
       }
 
       const materialContext = await getPrepressMaterialContext(organizationId, lineItemId);
@@ -13626,20 +16197,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const effectiveMaterials = effectivePayload?.effectiveMaterials || [];
       const effectiveFingerprint = effectivePayload?.effectiveFingerprint || buildEffectiveMaterialsFingerprint([]);
 
-      // 5. Transition to PRINT_READY
-      await db.transaction(async (tx) => {
-        await tx.update(orderLineItems)
-          .set({
-            status: 'print_ready',
-            updatedAt: new Date()
-          })
-          .where(eq(orderLineItems.id, lineItemId));
-
-        const productionJobId = await ensureProductionJobForLineItem(tx, {
+      // 5. Close prepress owner and create the downstream owner in one transaction.
+      const handoffResult = await db.transaction(async (tx) => {
+        const workflowTransition = await transitionLineItemWorkflowState(tx, {
           organizationId,
-          orderId: materialContext?.lineItem.orderId || (item as any).orderId,
           lineItemId,
+          toState: "ready_for_production",
+          actorUserId: userId,
+          metadata: {
+            source: "prepress_send_to_print",
+            routingReason: downstreamRoute.reason,
+            targetStationKey: downstreamRoute.stationKey,
+            targetStepKey: downstreamRoute.stepKey,
+          },
         });
+
+        const productionJobId = workflowTransition.activeOwnerJobId;
+        if (!productionJobId) {
+          throw new Error("Workflow transition did not create downstream production ownership");
+        }
 
         if (materialContext?.lineItem?.orderId) {
           const alreadyReserved = await wasMaterialsLifecycleEventProcessed(tx, {
@@ -13685,32 +16261,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
           entityId: lineItemId,
           entityName: `Line item ${lineItemId}`,
           description: "Sent to print queue from prepress",
-          oldValues: { status: item.status },
-          newValues: { status: 'print_ready', materialFingerprint: effectiveFingerprint },
+          oldValues: { workflowState: item.workflowState, status: item.status },
+          newValues: {
+            workflowState: 'ready_for_production',
+            status: workflowTransition.lifecycleStatus,
+            materialFingerprint: effectiveFingerprint,
+            productionJobId,
+            stationKey: workflowTransition.activeOwnerStationKey,
+            stepKey: workflowTransition.activeOwnerStepKey,
+          },
           ipAddress: req.ip || null,
           userAgent: req.headers["user-agent"] || null,
         } as any);
+
+        return workflowTransition;
       });
 
       if (process.env.NODE_ENV !== "production") {
-        console.log(`[Send to Print] Line item ${lineItemId} sent to print queue by user ${userId}`);
+        console.log(`[DEV][Send to Print] lineItemId=${lineItemId} productionJobId=${handoffResult.activeOwnerJobId} station=${handoffResult.activeOwnerStationKey} step=${handoffResult.activeOwnerStepKey}`);
       }
 
       res.json({ 
         success: true, 
         message: "Sent to print queue successfully",
-        newStatus: 'print_ready',
+        workflowState: 'ready_for_production',
+        productionJobId: handoffResult.activeOwnerJobId,
         materialFingerprint: effectiveFingerprint,
       });
 
-    } catch (error) {
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
       console.error("[Send to Print] Error:", error);
-      res.status(500).json({ error: "Failed to send to print queue" });
+      res.status(status).json({ error: error?.message || "Failed to send to print queue" });
     }
   });
 
   // PROMPT D: POST /api/production/line-item/:lineItemId/send-to-prepress
   // Kickback from production board to prepress with a required edit-request note.
+  // Canonical: completes active downstream job, creates new prepress job, all in one transaction.
   app.post("/api/production/line-item/:lineItemId/send-to-prepress", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -13731,6 +16319,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const [lineItem] = await db.select({
           id: orderLineItems.id,
           status: orderLineItems.status,
+          workflowState: orderLineItems.workflowState,
           orderId: orderLineItems.orderId,
         })
         .from(orderLineItems)
@@ -13745,50 +16334,124 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Line item not found" });
       }
 
-      // Create new prepress session as edit request
-      const editNote = `[EDIT REQUEST FROM PRODUCTION]\n${note.trim()}`;
-      const [session] = await db.insert(prepressSessions).values({
-        organizationId,
-        orderId: lineItem.orderId,
-        lineItemId,
-        status: "active",
-        startedByUserId: userId,
-        lockOwnerUserId: userId,
-        issueFlag: true,
-        issueType: "production_edit_request",
-        notesText: editNote,
-      }).returning({ id: prepressSessions.id });
+      const result = await db.transaction(async (tx) => {
+        // 1. Check for active downstream job and complete it, creating prepress job
+        const activeJob = await findActiveJobForLineItem(tx, {
+          organizationId,
+          lineItemId,
+        });
 
-      // Update line item status back to pending_prepress
-      await db.update(orderLineItems)
-        .set({ status: 'pending_prepress', updatedAt: new Date() })
-        .where(eq(orderLineItems.id, lineItemId));
+        const workflowTransition = await transitionLineItemWorkflowState(tx, {
+          organizationId,
+          lineItemId,
+          toState: "in_prepress",
+          actorUserId: userId,
+          note: note.trim(),
+          metadata: {
+            source: "production_send_to_prepress",
+            noPrintsCompletedYet: noPrintsCompletedYet || false,
+          },
+        });
 
-      // Audit log
-      await db.insert(auditLogs).values({
-        organizationId,
-        userId,
-        userName: req.user?.email || req.user?.name || null,
-        actionType: "UPDATE",
-        entityType: "order_line_item",
-        entityId: lineItemId,
-        entityName: `Line item ${lineItemId}`,
-        description: "Sent to prepress for editing from production board",
-        oldValues: { status: lineItem.status },
-        newValues: { status: 'pending_prepress', note: note.trim(), noPrintsCompletedYet: noPrintsCompletedYet || false },
-        ipAddress: req.ip || null,
-        userAgent: req.headers["user-agent"] || null,
-      } as any);
+        const prepressJobId = workflowTransition.activeOwnerJobId;
+        if (!prepressJobId) {
+          throw new Error("Workflow transition did not create prepress ownership");
+        }
+
+        // 2. Create or reuse the active prepress session for this edit request.
+        //    DB uniqueness now guarantees one active session per org + line item,
+        //    so returning to prepress must not blindly insert a second active row.
+        const editNote = `[EDIT REQUEST FROM PRODUCTION]\n${note.trim()}`;
+        const existingActiveSessions = await tx
+          .select({
+            id: prepressSessions.id,
+            notesText: prepressSessions.notesText,
+          })
+          .from(prepressSessions)
+          .where(
+            and(
+              eq(prepressSessions.organizationId, organizationId),
+              eq(prepressSessions.lineItemId, lineItemId),
+              eq(prepressSessions.status, "active"),
+            ),
+          )
+          .orderBy(desc(prepressSessions.updatedAt), desc(prepressSessions.startedAt))
+          .limit(1);
+
+        let sessionId: string;
+
+        if (existingActiveSessions[0]) {
+          const existingSession = existingActiveSessions[0];
+          const nextNotesText = (() => {
+            const current = String(existingSession.notesText || "").trim();
+            if (!current) return editNote;
+            if (current.includes(editNote)) return current;
+            return `${current}\n\n${editNote}`;
+          })();
+
+          await tx
+            .update(prepressSessions)
+            .set({
+              lockOwnerUserId: userId,
+              issueFlag: true,
+              issueType: "production_edit_request",
+              notesText: nextNotesText,
+              updatedAt: new Date(),
+            })
+            .where(eq(prepressSessions.id, existingSession.id));
+
+          sessionId = existingSession.id;
+        } else {
+          const [session] = await tx.insert(prepressSessions).values({
+            organizationId,
+            orderId: lineItem.orderId,
+            lineItemId,
+            status: "active",
+            startedByUserId: userId,
+            lockOwnerUserId: userId,
+            issueFlag: true,
+            issueType: "production_edit_request",
+            notesText: editNote,
+          }).returning({ id: prepressSessions.id });
+
+          sessionId = session.id;
+        }
+
+        // 3. Audit log
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "UPDATE",
+          entityType: "order_line_item",
+          entityId: lineItemId,
+          entityName: `Line item ${lineItemId}`,
+          description: "Sent to prepress for editing from production board",
+          oldValues: { status: lineItem.status, workflowState: lineItem.workflowState },
+          newValues: {
+            note: note.trim(),
+            noPrintsCompletedYet: noPrintsCompletedYet || false,
+            prepressJobId,
+            workflowState: "in_prepress",
+            status: workflowTransition.lifecycleStatus,
+          },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        return { sessionId, prepressJobId };
+      });
 
       if (process.env.NODE_ENV !== "production") {
-        console.log(`[Send to Prepress] Line item ${lineItemId} sent back to prepress by user ${userId}`);
+        console.log(`[DEV][Send to Prepress] lineItemId=${lineItemId} prepressJobId=${result.prepressJobId} userId=${userId}`);
       }
 
-      res.json({ success: true, message: "Sent to prepress for editing", sessionId: session?.id });
+      res.json({ success: true, message: "Sent to prepress for editing", sessionId: result.sessionId, prepressJobId: result.prepressJobId });
 
-    } catch (error) {
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
       console.error("[Send to Prepress] Error:", error);
-      res.status(500).json({ error: "Failed to send to prepress" });
+      res.status(status).json({ error: error?.message || "Failed to send to prepress" });
     }
   });
 
@@ -13953,6 +16616,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           id: lineItemFiles.id,
           orderId: lineItemFiles.orderId,
           lineItemId: lineItemFiles.lineItemId,
+          fileRecordId: lineItemFiles.fileRecordId,
           storageBucket: lineItemFiles.storageBucket,
           storagePath: lineItemFiles.storagePath,
           storageKey: lineItemFiles.storageKey,
@@ -13972,40 +16636,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "File not found" });
       }
 
+      res.set("X-Served-As", "thumbnail");
+
       const isImage = !!fileRow.mimeType?.startsWith("image/");
-      const key = (fileRow.storageKey || fileRow.storagePath || "").trim();
-      if (!isImage || !key) {
+      if (!isImage) {
         return res.json({ success: true, data: { thumbnailUrl: null }, message: "File is not an image" });
       }
 
-      if (fileRow.storageBucket) {
+      if (!fileRow.fileRecordId) {
         return res.json({
           success: true,
-          data: { thumbnailUrl: `/api/prepress/files/${fileRow.id}/download?inline=1` },
+          data: { thumbnailUrl: null },
+          message: "Thumbnail derivative unavailable",
         });
       }
 
-      const [attachment] = await db
-        .select({
-          storageProvider: orderAttachments.storageProvider,
-        })
-        .from(orderAttachments)
-        .where(
-          and(
-            eq(orderAttachments.orderId, fileRow.orderId),
-            eq(orderAttachments.orderLineItemId, fileRow.lineItemId),
-            eq(orderAttachments.fileUrl, key),
-          )
-        )
-        .limit(1);
+      const resolved = await resolveDerivativeFileAccess(
+        { id: fileRow.id, fileRecordId: fileRow.fileRecordId },
+        "thumbnail"
+      );
 
-      if (attachment?.storageProvider === "supabase" && isSupabaseConfigured()) {
-        const supabase = new SupabaseStorageService();
-        const signedUrl = await supabase.getSignedDownloadUrl(key, 3600);
-        return res.json({ success: true, data: { thumbnailUrl: signedUrl } });
+      if (resolved.url) {
+        return res.json({ success: true, data: { thumbnailUrl: resolved.url } });
       }
 
-      return res.json({ success: true, data: { thumbnailUrl: `/objects/${key}` } });
+      return res.json({
+        success: true,
+        data: { thumbnailUrl: null },
+        message: "Thumbnail derivative unavailable",
+      });
     } catch (error: any) {
       console.error("[Prepress] Thumbnail URL error:", error);
       res.status(500).json({ error: error?.message || "Failed to resolve thumbnail URL" });
@@ -14036,22 +16695,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
       const files = await prepressFileService.getLineItemFiles(req.params.lineItemId, organizationId);
-      const enhance = (f: any) => ({
-        ...f,
-        computedDisplayFilename: prepressFileService.buildComputedDisplayFilename({
-          role: f.role,
-          originalFilename: f.originalFilename,
-          tag: f.tag,
-        }),
-        thumbnailUrl: f.mimeType?.startsWith("image/")
-          ? `/api/prepress/files/${f.id}/download?inline=1`
-          : null,
-      });
+      const enhance = async (f: any) => {
+        const [thumbnailAccess, previewAccess] = f.fileRecordId
+          ? await Promise.all([
+              resolveDerivativeFileAccess({ id: f.id, fileRecordId: f.fileRecordId }, "thumbnail"),
+              resolveDerivativeFileAccess({ id: f.id, fileRecordId: f.fileRecordId }, "preview"),
+            ])
+          : [{ url: null }, { url: null }];
+
+        return {
+          ...f,
+          computedDisplayFilename: prepressFileService.buildComputedDisplayFilename({
+            role: f.role,
+            originalFilename: f.originalFilename,
+            tag: f.tag,
+          }),
+          originalUrl: `/api/prepress/files/${f.id}/download`,
+          downloadUrl: `/api/prepress/files/${f.id}/download`,
+          previewUrl: previewAccess.url ?? null,
+          thumbnailUrl: thumbnailAccess.url ?? null,
+        };
+      };
+
+      const [originals, finals, references] = await Promise.all([
+        Promise.all(files.originals.map(enhance)),
+        Promise.all(files.finals.map(enhance)),
+        Promise.all(files.references.map(enhance)),
+      ]);
 
       const data = {
-        originals: files.originals.map(enhance),
-        finals: files.finals.map(enhance),
-        references: files.references.map(enhance),
+        originals,
+        finals,
+        references,
+        bridgedOriginals: files.bridgedOriginals,
       };
 
       res.json({ success: true, data, files: [...data.originals, ...data.finals, ...data.references] });
@@ -14286,6 +16962,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const data = await fulfillmentServiceV2.listQueue(organizationId, {
         type: parsed.type,
         status: parsed.status,
+        showArchived: parsed.showArchived,
         overdueOnly: parsed.overdueOnly,
         search: parsed.search,
         page: parsed.page,
@@ -14431,9 +17108,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const organizationId = getRequestOrganizationId(req);
       const actorUserId = getUserId(req.user) || null;
+      const actorUserRole = String(req.user?.role || '').trim().toLowerCase() || null;
       const parsed = pickupReadySchema.parse(req.body || {});
 
-      const result = await fulfillmentServiceV2.markPickupReady(organizationId, req.params.ticketId, parsed, actorUserId);
+      const result = await fulfillmentServiceV2.markPickupReady(organizationId, req.params.ticketId, parsed, actorUserId, actorUserRole);
       return res.json({
         success: true,
         data: {
@@ -14470,9 +17148,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get all shipments for an order
-  app.get('/api/orders/:id/shipments', isAuthenticated, async (req: any, res) => {
+  app.get('/api/orders/:id/shipments', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const shipmentList = await storage.getShipmentsByOrder(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      const shipmentList = await storage.getShipmentsByOrder(organizationId, req.params.id);
       res.json({ success: true, data: shipmentList });
     } catch (error) {
       console.error('Error fetching shipments:', error);
@@ -14480,73 +17159,72 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Create a new shipment (auto-updates order status to "shipped")
-  app.post('/api/orders/:id/shipments', isAuthenticated, async (req: any, res) => {
-    try {
-      const shipmentData = insertShipmentSchema.parse({
-        ...req.body,
-        orderId: req.params.id,
-        createdByUserId: req.user.id,
-      });
-
-      const newShipment = await storage.createShipment(shipmentData);
-
-      // Optionally send shipment notification email
-      if (req.body.sendEmail) {
-        await sendShipmentEmail(req.params.id, newShipment.id.toString(), req.body.emailSubject, req.body.emailMessage);
-      }
-
-      res.json({ success: true, data: newShipment });
-    } catch (error: any) {
-      if (error.name === 'ZodError') {
-        return res.status(400).json({ error: 'Invalid shipment data', details: error.errors });
-      }
-      console.error('Error creating shipment:', error);
-      res.status(500).json({ error: 'Failed to create shipment' });
-    }
+  // Legacy shipment mutation path is intentionally blocked during fulfillment contract tightening.
+  app.post('/api/orders/:id/shipments', isAuthenticated, tenantContext, async (_req: any, res) => {
+    return res.status(409).json({
+      success: false,
+      code: 'FULFILLMENT_V2_REQUIRED',
+      message: 'Legacy shipment creation is disabled. Use the Fulfillment workspace shipment flow.',
+    });
   });
 
-  // Update a shipment (auto-updates order status to "delivered" if deliveredAt is set)
-  app.patch('/api/shipments/:id', isAuthenticated, async (req: any, res) => {
-    try {
-      const shipmentId = req.params.id;
-      const updates = updateShipmentSchema.parse(req.body);
-
-      const updated = await storage.updateShipment(shipmentId, updates);
-      if (!updated) return res.status(404).json({ error: 'Shipment not found' });
-
-      res.json({ success: true, data: updated });
-    } catch (error: any) {
-      if (error.name === 'ZodError') {
-        return res.status(400).json({ error: 'Invalid shipment data', details: error.errors });
-      }
-      console.error('Error updating shipment:', error);
-      res.status(500).json({ error: 'Failed to update shipment' });
-    }
+  app.patch('/api/shipments/:id', isAuthenticated, tenantContext, async (_req: any, res) => {
+    return res.status(409).json({
+      success: false,
+      code: 'FULFILLMENT_V2_REQUIRED',
+      message: 'Legacy shipment editing is disabled. Use the Fulfillment workspace shipment flow.',
+    });
   });
 
-  // Delete a shipment (admin/owner only)
-  app.delete('/api/shipments/:id', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
-    try {
-      const shipmentId = req.params.id;
-      await storage.deleteShipment(shipmentId);
+  app.delete('/api/shipments/:id', isAuthenticated, tenantContext, async (_req: any, res) => {
+    return res.status(409).json({
+      success: false,
+      code: 'FULFILLMENT_V2_REQUIRED',
+      message: 'Legacy shipment deletion is disabled. Use the Fulfillment workspace shipment flow.',
+    });
+  });
 
-      res.json({ success: true, message: 'Shipment deleted successfully' });
+  // Manually update order fulfillment status (override auto-status - manager+ only)
+  app.patch('/api/orders/:id/fulfillment-status', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+
+      if (!['owner', 'admin', 'manager'].includes(req.user?.role)) {
+        return res.status(403).json({ error: 'Manager, Admin, or Owner role required' });
+      }
+
+      const [order] = await db
+        .select({
+          id: orders.id,
+          state: orders.state,
+        })
+        .from(orders)
+        .where(and(eq(orders.id, req.params.id), eq(orders.organizationId, organizationId)))
+        .limit(1);
+
+      if (!order) {
+        return res.status(404).json({ error: 'Order not found' });
+      }
+
+      if (order.state === 'production_complete') {
+        return res.status(409).json({
+          error: 'Manual fulfillment status overrides are disabled for fulfillment-managed orders. Use shipment or pickup actions.',
+          code: 'FULFILLMENT_ARTIFACT_SYNC_REQUIRED',
+        });
+      }
+
+      const { status } = req.body;
+
+      if (!['pending', 'packed', 'shipped', 'delivered'].includes(status)) {
+        return res.status(400).json({ error: 'Invalid fulfillment status' });
+      }
+
+      await updateOrderFulfillmentStatus(req.params.id, status);
+
+      res.json({ success: true, message: 'Fulfillment status updated successfully' });
     } catch (error) {
-      console.error('Error deleting shipment:', error);
-      res.status(500).json({ error: 'Failed to delete shipment' });
-    }
-  });
-
-  // Generate packing slip HTML for an order
-  app.post('/api/orders/:id/packing-slip', isAuthenticated, async (req: any, res) => {
-    try {
-      const orderId = req.params.id;
-      const html = await generatePackingSlipHTML(orderId);
-      res.json({ success: true, data: { html } });
-    } catch (error) {
-      console.error('Error generating packing slip:', error);
-      res.status(500).json({ error: 'Failed to generate packing slip' });
+      console.error('Error updating fulfillment status:', error);
+      res.status(500).json({ error: 'Failed to update fulfillment status' });
     }
   });
 
@@ -14565,30 +17243,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('Error sending shipment email:', error);
       res.status(500).json({ error: 'Failed to send shipment email' });
-    }
-  });
-
-  // Manually update order fulfillment status (override auto-status - manager+ only)
-  app.patch('/api/orders/:id/fulfillment-status', isAuthenticated, async (req: any, res) => {
-    try {
-      // Check role
-      if (!['owner', 'admin', 'manager'].includes(req.user?.role)) {
-        return res.status(403).json({ error: 'Manager, Admin, or Owner role required' });
-      }
-
-      const orderId = req.params.id;
-      const { status } = req.body;
-
-      if (!['pending', 'packed', 'shipped', 'delivered'].includes(status)) {
-        return res.status(400).json({ error: 'Invalid fulfillment status' });
-      }
-
-      await updateOrderFulfillmentStatus(orderId, status);
-
-      res.json({ success: true, message: 'Fulfillment status updated successfully' });
-    } catch (error) {
-      console.error('Error updating fulfillment status:', error);
-      res.status(500).json({ error: 'Failed to update fulfillment status' });
     }
   });
 
@@ -14639,7 +17293,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { assetRepository } = await import('./services/assets/AssetRepository');
       const { enrichAssetsWithRoles } = await import('./services/assets/enrichAssetWithUrls');
       const linkedAssets = await assetRepository.listAssetsForParent(organizationId, 'order_line_item', lineItemId);
-      const enrichedAssets = enrichAssetsWithRoles(linkedAssets);
+      const enrichedAssets = await enrichAssetsWithRoles(linkedAssets);
 
       console.log(`[OrderLineItemFiles:GET] Found ${files.length} files + ${linkedAssets.length} assets for line item ${lineItemId}`);
       res.json({ success: true, data: enrichedFiles, assets: enrichedAssets });
@@ -14714,13 +17368,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return normalizeObjectKeyForDb(keyFromObjectsPrefix);
       };
 
-      type AttachCandidate = {
-        fileKey: string;
-        fileName?: string;
-        mimeType?: string;
-        sizeBytes?: number;
-        role?: string;
-      };
+      type AttachCandidate =
+        | {
+            kind: 'existing-file-record';
+            dedupeKey: string;
+            fileKey: string;
+            fileRecordId: string;
+            fileName?: string;
+            mimeType?: string;
+            sizeBytes?: number;
+            role?: string;
+          }
+        | {
+            kind: 'existing-key';
+            dedupeKey: string;
+            fileKey: string;
+            fileRecordId?: null;
+            fileName?: string;
+            mimeType?: string;
+            sizeBytes?: number;
+            role?: string;
+          }
+        | {
+            kind: 'upload-session';
+            dedupeKey: string;
+            uploadId: string;
+            fileName?: string;
+            mimeType?: string;
+            sizeBytes?: number;
+            role?: string;
+          };
 
       const body = req.body ?? {};
       const requestedTarget =
@@ -14731,8 +17408,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // 1) Preferred (current UI): fileName + fileUrl + optional metadata
       const singleKey = normalizeStorageKeyFromAny(body.fileUrl ?? body.fileKey ?? body.path ?? body.objectId);
       if (singleKey) {
+        const singleFileRecordId = typeof body.fileRecordId === 'string' ? body.fileRecordId : null;
         candidates.push({
+          kind: singleFileRecordId ? 'existing-file-record' : 'existing-key',
+          dedupeKey: singleFileRecordId ? `file-record:${singleFileRecordId}` : `key:${singleKey}`,
           fileKey: singleKey,
+          fileRecordId: singleFileRecordId,
           fileName: typeof body.fileName === 'string' ? body.fileName : undefined,
           mimeType: typeof body.mimeType === 'string' ? body.mimeType : undefined,
           sizeBytes: body.fileSize != null ? Number(body.fileSize) : (body.sizeBytes != null ? Number(body.sizeBytes) : undefined),
@@ -14745,8 +17426,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         for (const f of body.files) {
           const k = normalizeStorageKeyFromAny(f?.fileUrl ?? f?.fileKey ?? f?.path ?? f?.objectId);
           if (!k) continue;
+          const candidateFileRecordId = typeof f?.fileRecordId === 'string' ? f.fileRecordId : null;
           candidates.push({
+            kind: candidateFileRecordId ? 'existing-file-record' : 'existing-key',
+            dedupeKey: candidateFileRecordId ? `file-record:${candidateFileRecordId}` : `key:${k}`,
             fileKey: k,
+            fileRecordId: candidateFileRecordId,
             fileName: typeof f?.fileName === 'string' ? f.fileName : (typeof f?.originalFilename === 'string' ? f.originalFilename : undefined),
             mimeType: typeof f?.mimeType === 'string' ? f.mimeType : undefined,
             sizeBytes: f?.fileSize != null ? Number(f.fileSize) : (f?.sizeBytes != null ? Number(f.sizeBytes) : undefined),
@@ -14763,6 +17448,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const k = normalizeStorageKeyFromAny(rawKey);
           if (!k) continue;
           candidates.push({
+            kind: 'existing-key',
+            dedupeKey: `key:${k}`,
             fileKey: k,
             role: normalizeRole(body.role),
           });
@@ -14778,57 +17465,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
       if (uploadIds.length > 0) {
-        const { loadUploadSessionMeta, saveUploadSessionMeta } = await import('./services/chunkedUploads');
-        const { decideStorageTarget } = await import('./services/storageTarget');
         for (const uploadId of uploadIds) {
-          const meta = await loadUploadSessionMeta(uploadId);
-          if (meta.organizationId !== organizationId) continue;
-          if (meta.status !== 'finalized' || !meta.relativePath) continue;
-
-          let storageKey = meta.relativePath;
-
-          const decidedTarget = decideStorageTarget({
-            fileName: meta.originalFilename,
-            fileSizeBytes: meta.sizeBytes || 0,
-            requestedTarget,
-            organizationId,
-            context: 'POST /api/orders/:orderId/line-items/:lineItemId/files (uploadId)',
-          });
-
-          // If the file is small enough for cloud, migrate staged local file to Supabase and attach the cloud key.
-          if (decidedTarget === 'supabase' && isSupabaseConfigured() && meta.relativePath) {
-            try {
-              const { SupabaseStorageService } = await import('./supabaseStorage');
-              const { getAbsolutePath, deleteFile: deleteLocalFile } = await import('./utils/fileStorage');
-              const fsPromises = await import('fs/promises');
-
-              const abs = getAbsolutePath(meta.relativePath);
-              const buffer = await fsPromises.readFile(abs);
-
-              const supabase = new SupabaseStorageService();
-              const uploaded = await supabase.uploadFile(meta.relativePath, buffer, meta.mimeType || 'application/octet-stream');
-              const newKey = normalizeObjectKeyForDb(uploaded.path);
-
-              const oldKey = meta.relativePath;
-              meta.relativePath = newKey;
-              await saveUploadSessionMeta(uploadId, meta).catch(() => false);
-              await deleteLocalFile(oldKey).catch(() => false);
-              storageKey = newKey;
-            } catch {
-              // fall back to attaching the staged local key
-            }
-          }
-
-          // NOTE: chunked uploads currently only support quote-attachment/order-attachment.
-          // We allow both here, but always attach as an order_line_item asset.
-          const k = normalizeStorageKeyFromAny(storageKey);
-          if (!k) continue;
-
           candidates.push({
-            fileKey: k,
-            fileName: meta.originalFilename || meta.storedFilename || undefined,
-            mimeType: meta.mimeType || undefined,
-            sizeBytes: meta.sizeBytes || undefined,
+            kind: 'upload-session',
+            dedupeKey: `upload:${uploadId}`,
+            uploadId,
             role: normalizeRole(body.role),
           });
         }
@@ -14836,7 +17477,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // De-dupe by fileKey
       const uniqueCandidates = Array.from(
-        new Map(candidates.map((c) => [c.fileKey, c])).values()
+        new Map(candidates.map((c) => [c.dedupeKey, c])).values()
       );
 
       if (uniqueCandidates.length === 0) {
@@ -14858,27 +17499,103 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const createdAssets: any[] = [];
       for (const c of uniqueCandidates) {
-        const asset = await assetRepository.createAsset(organizationId, {
-          fileKey: c.fileKey,
-          fileName: c.fileName || guessFileNameFromKey(c.fileKey),
-          mimeType: c.mimeType,
-          sizeBytes: c.sizeBytes,
-        } as any);
+        const finalized: Awaited<ReturnType<typeof storageApplicationService.finalizeUpload<any>>> | null = c.kind === 'upload-session'
+          ? await storageApplicationService.finalizeUpload({
+              organizationId,
+              createdByUserId: userId ?? null,
+              requestedTarget,
+              resource: {
+                organizationId,
+                resourceType: 'order',
+                resourceId: orderId,
+                lineItemId,
+              },
+              source: {
+                kind: 'upload-session',
+                uploadId: c.uploadId,
+                expectedPurpose: 'order-attachment',
+                expectedParentId: orderId,
+              },
+              persistLink: async (tx, stored) => {
+                const [created] = await tx.insert(assets).values({
+                  organizationId,
+                  fileRecordId: stored.fileRecord.id,
+                  fileKey: null,
+                  fileName: stored.storedObject.originalFilename,
+                  mimeType: stored.storedObject.mimeType,
+                  sizeBytes: stored.storedObject.sizeBytes,
+                }).returning();
+                if (!created) throw new Error('Failed to create order line item asset');
+                return created;
+              },
+            })
+          : c.kind === 'existing-key'
+            ? await storageApplicationService.finalizeUpload({
+                organizationId,
+              createdByUserId: userId ?? null,
+                requestedTarget,
+                resource: {
+                  organizationId,
+                  resourceType: 'order',
+                  resourceId: orderId,
+                  lineItemId,
+                },
+                source: {
+                  kind: 'existing-key',
+                  fileUrl: c.fileKey,
+                  originalFilename: c.fileName || guessFileNameFromKey(c.fileKey),
+                  mimeType: c.mimeType || null,
+                  fileSize: c.sizeBytes || null,
+                },
+                persistLink: async (tx, stored) => {
+                  const [created] = await tx.insert(assets).values({
+                    organizationId,
+                    fileRecordId: stored.fileRecord.id,
+                    fileKey: null,
+                    fileName: stored.storedObject.originalFilename,
+                    mimeType: stored.storedObject.mimeType,
+                    sizeBytes: stored.storedObject.sizeBytes,
+                  }).returning();
+                  if (!created) throw new Error('Failed to create order line item asset');
+                  return created;
+                },
+              })
+            : null;
+
+          const candidateFileRecordId = c.kind === 'existing-file-record' ? c.fileRecordId : null;
+          const candidateFileKey = c.kind === 'upload-session' ? null : c.fileKey;
+          const candidateFileName = c.kind === 'upload-session'
+            ? (c.fileName || 'upload')
+            : (c.fileName || guessFileNameFromKey(c.fileKey));
+
+          const asset: any = finalized?.linkedRecord ?? await assetRepository.createAsset(organizationId, {
+            fileRecordId: candidateFileRecordId,
+            fileKey: c.kind === 'existing-file-record' ? null : candidateFileKey,
+            fileName: candidateFileName,
+            mimeType: c.mimeType,
+            sizeBytes: c.sizeBytes,
+          } as any);
 
         await assetRepository.linkAsset(organizationId, asset.id, 'order_line_item', lineItemId, normalizeRole(c.role) as any);
 
-        if (userId) {
+        const resolvedOriginal = asset.fileRecordId
+          ? await canonicalFileReadResolver.resolveOriginal(String(asset.fileRecordId))
+          : null;
+        const storagePath = resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? candidateFileKey;
+
+        if (userId && storagePath) {
           await createLineItemFileRecord({
             organizationId,
             orderId,
             lineItemId,
             role: 'original',
-            storagePath: c.fileKey,
-            storageKey: c.fileKey,
+            storagePath,
+            storageKey: storagePath,
             storageBucket: null,
-            originalFilename: c.fileName || guessFileNameFromKey(c.fileKey),
-            mimeType: c.mimeType || null,
-            sizeBytes: c.sizeBytes || null,
+            originalFilename: asset.fileName || candidateFileName,
+            mimeType: asset.mimeType || c.mimeType || null,
+            sizeBytes: asset.sizeBytes ?? c.sizeBytes ?? null,
+            fileRecordId: asset.fileRecordId ?? candidateFileRecordId,
             uploadedByUserId: userId,
           });
         }
@@ -14888,7 +17605,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             console.error('[AssetPreviewGenerator] async generatePreviews failed', err);
           });
         });
-        createdAssets.push({ ...enrichAssetWithUrls(asset), role: normalizeRole(c.role) });
+        createdAssets.push({ ...(await enrichAssetWithUrls(asset)), role: normalizeRole(c.role) });
 
         try {
           await storage.createOrderAuditLog({
@@ -14918,7 +17635,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   fileSizeBytes: asset.sizeBytes ?? c.sizeBytes ?? null,
                   mimeType: asset.mimeType ?? c.mimeType ?? null,
                   storageProvider: requestedTarget ?? null,
-                  fileKey: asset.fileKey,
+                  fileKey: resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? asset.fileKey ?? null,
                   role: normalizeRole(c.role),
                 },
               },
@@ -14968,6 +17685,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ))
         .returning({
           id: orderAttachments.id,
+          fileRecordId: orderAttachments.fileRecordId,
           storageProvider: orderAttachments.storageProvider,
           fileUrl: orderAttachments.fileUrl,
           relativePath: orderAttachments.relativePath,
@@ -14979,32 +17697,160 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (deletedAttachment.length) {
         const record = deletedAttachment[0];
         try {
-          const keys = [
-            record.relativePath,
-            record.fileUrl,
-            record.thumbnailRelativePath,
-            record.thumbKey,
-            record.previewKey,
-          ].filter((k): k is string => typeof k === 'string' && k.length > 0);
+          const resolvedOriginal = record.fileRecordId
+            ? await canonicalFileReadResolver.resolveOriginal(String(record.fileRecordId))
+            : null;
+          const storageKey = String(resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? record.relativePath ?? record.fileUrl ?? '');
+          const effectiveStorageProvider = resolvedOriginal?.localPathRef
+            ? 'local'
+            : resolvedOriginal?.objectKey
+              ? 'supabase'
+              : record.storageProvider;
 
-          if (record.storageProvider === 'supabase') {
-            const supabaseStorage = new SupabaseStorageService();
-            await Promise.all(keys.map(async (k) => {
-              try {
-                await supabaseStorage.deleteFile(k);
-              } catch {
-                // ignore
+          if (storageKey) {
+            const [{ orderRefs = 0 } = {}] = record.fileRecordId
+              ? await db
+                  .select({ orderRefs: sql<number>`count(*)` })
+                  .from(orderAttachments)
+                  .where(eq(orderAttachments.fileRecordId, String(record.fileRecordId)))
+              : !effectiveStorageProvider
+                ? [{ orderRefs: 0 }]
+                : await db
+                    .select({ orderRefs: sql<number>`count(*)` })
+                    .from(orderAttachments)
+                    .where(
+                      and(
+                        eq(orderAttachments.fileUrl, storageKey),
+                        eq(orderAttachments.storageProvider, toLegacyStorageProvider(effectiveStorageProvider) ?? 'supabase')
+                      )
+                    );
+
+            const [{ quoteRefs = 0 } = {}] = record.fileRecordId
+              ? await db
+                  .select({ quoteRefs: sql<number>`count(*)` })
+                  .from(quoteAttachments)
+                  .where(
+                    and(
+                      eq(quoteAttachments.organizationId, organizationId),
+                      eq(quoteAttachments.fileRecordId, String(record.fileRecordId))
+                    )
+                  )
+              : !effectiveStorageProvider
+                ? [{ quoteRefs: 0 }]
+                : await db
+                    .select({ quoteRefs: sql<number>`count(*)` })
+                    .from(quoteAttachments)
+                    .where(
+                      and(
+                        eq(quoteAttachments.organizationId, organizationId),
+                        eq(quoteAttachments.fileUrl, storageKey),
+                        eq(quoteAttachments.storageProvider, toLegacyStorageProvider(effectiveStorageProvider) ?? 'supabase')
+                      )
+                    );
+
+            let hasRemainingAssetLinksForFile = false;
+            const normalizedFileKey = normalizeObjectKeyForDb(storageKey);
+
+            try {
+              const matchingAssets = record.fileRecordId
+                ? await db
+                    .select({ id: assets.id })
+                    .from(assets)
+                    .where(and(eq(assets.organizationId, organizationId), eq(assets.fileRecordId, String(record.fileRecordId))))
+                : await db
+                    .select({ id: assets.id })
+                    .from(assets)
+                    .where(and(eq(assets.organizationId, organizationId), eq(assets.fileKey, normalizedFileKey)));
+
+              if (matchingAssets.length > 0) {
+                await Promise.all(
+                  matchingAssets.map((asset) =>
+                    db
+                      .delete(assetLinks)
+                      .where(
+                        and(
+                          eq(assetLinks.organizationId, organizationId),
+                          eq(assetLinks.assetId, asset.id),
+                          eq(assetLinks.parentType, 'order_line_item'),
+                          eq(assetLinks.parentId, String(lineItemId))
+                        )
+                      )
+                  )
+                );
+
+                const linkCounts = await Promise.all(
+                  matchingAssets.map(async (asset) => {
+                    const [{ cnt = 0 } = {}] = await db
+                      .select({ cnt: sql<number>`count(*)` })
+                      .from(assetLinks)
+                      .where(and(eq(assetLinks.organizationId, organizationId), eq(assetLinks.assetId, asset.id)));
+                    return Number(cnt);
+                  })
+                );
+
+                hasRemainingAssetLinksForFile = linkCounts.some((count) => count > 0);
+
+                if (!hasRemainingAssetLinksForFile && Number(orderRefs) + Number(quoteRefs) === 0) {
+                  for (const asset of matchingAssets) {
+                    const variants = await db
+                      .select({ key: assetVariants.key })
+                      .from(assetVariants)
+                      .where(and(eq(assetVariants.organizationId, organizationId), eq(assetVariants.assetId, asset.id)));
+
+                    await deleteStoredObjectKeys({
+                      fileRecordId: record.fileRecordId ? String(record.fileRecordId) : null,
+                      legacyStorageProvider: toLegacyStorageProvider(effectiveStorageProvider),
+                      keys: [...variants.map((variant) => variant.key || ''), normalizedFileKey],
+                    });
+
+                    await db.delete(assets).where(and(eq(assets.organizationId, organizationId), eq(assets.id, asset.id)));
+                  }
+                }
               }
-            }));
-          } else {
-            const { deleteFile: deleteLocalFile } = await import('./utils/fileStorage');
-            await Promise.all(keys.map(async (k) => {
-              try {
-                await deleteLocalFile(k);
-              } catch {
-                // ignore
+            } catch (assetCleanupError) {
+              console.error('[OrderLineItemFiles:DELETE] Asset cleanup failed (non-blocking):', assetCleanupError);
+            }
+
+            if (record.fileRecordId || storageKey) {
+              await db
+                .update(lineItemFiles)
+                .set({ status: 'superseded' })
+                .where(
+                  and(
+                    eq(lineItemFiles.organizationId, organizationId),
+                    eq(lineItemFiles.orderId, orderId),
+                    eq(lineItemFiles.lineItemId, lineItemId),
+                    eq(lineItemFiles.status, 'active'),
+                    record.fileRecordId
+                      ? eq(lineItemFiles.fileRecordId, String(record.fileRecordId))
+                      : or(eq(lineItemFiles.storagePath, storageKey), eq(lineItemFiles.storageKey, storageKey))!
+                  )
+                );
+            }
+
+            if (Number(orderRefs) + Number(quoteRefs) === 0 && !hasRemainingAssetLinksForFile && effectiveStorageProvider) {
+              const derivativeRows = record.fileRecordId
+                ? await fileDerivativeRepository.listByFileRecordId(String(record.fileRecordId))
+                : [];
+              const derivativeKeys = record.fileRecordId
+                ? derivativeRows.map((row) => row.objectKey ?? null)
+                : [record.thumbnailRelativePath ?? record.thumbKey ?? null, record.previewKey ?? null];
+
+              const derivativeDeletion = await deleteStoredObjectKeys({
+                fileRecordId: record.fileRecordId ? String(record.fileRecordId) : null,
+                legacyStorageProvider: effectiveStorageProvider,
+                keys: [storageKey, ...derivativeKeys],
+              });
+
+              if (record.fileRecordId && derivativeDeletion.failedKeys.length === 0) {
+                await fileDerivativeRepository.deleteByFileRecordId(String(record.fileRecordId));
+              } else if (record.fileRecordId && derivativeDeletion.failedKeys.length > 0) {
+                console.warn('[OrderLineItemFiles:DELETE] Skipped derivative row cleanup due to storage delete failures', {
+                  fileRecordId: String(record.fileRecordId),
+                  failedKeys: derivativeDeletion.failedKeys,
+                });
               }
-            }));
+            }
           }
         } catch {
           // ignore
@@ -15028,7 +17874,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 entityId: String(lineItemId),
                 displayLabel: `Line item ${lineItemId}`,
                 fieldKey: 'file',
-                fromValue: record.fileUrl || record.relativePath || record.thumbKey || record.previewKey || null,
+                fromValue: record.fileUrl || record.relativePath || null,
                 toValue: null,
                 actorUserId: userId ?? null,
                 createdAt: new Date().toISOString(),
@@ -15038,7 +17884,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   attachmentId: record.id,
                   storageProvider: record.storageProvider || null,
                   fileKey:
-                    record.relativePath || record.fileUrl || record.thumbnailRelativePath || record.thumbKey || record.previewKey || null,
+                    record.relativePath || record.fileUrl || null,
                 },
               },
             },
@@ -15051,13 +17897,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Second try: asset pipeline link unlink (validate link existed first)
-      const { assetLinks, assets } = await import('@shared/schema');
-      const existingLink = await db.select({ id: assetLinks.id }).from(assetLinks)
+      const { assetLinks: importedAssetLinks, assets: importedAssets } = await import('@shared/schema');
+      const existingLink = await db.select({ id: importedAssetLinks.id }).from(importedAssetLinks)
         .where(and(
-          eq(assetLinks.organizationId, organizationId),
-          eq(assetLinks.assetId, fileId),
-          eq(assetLinks.parentType, 'order_line_item'),
-          eq(assetLinks.parentId, String(lineItemId))
+          eq(importedAssetLinks.organizationId, organizationId),
+          eq(importedAssetLinks.assetId, fileId),
+          eq(importedAssetLinks.parentType, 'order_line_item'),
+          eq(importedAssetLinks.parentId, String(lineItemId))
         ))
         .limit(1);
 
@@ -15071,14 +17917,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       try {
         removedAsset = await db
           .select({
-            id: assets.id,
-            fileName: assets.fileName,
-            fileKey: assets.fileKey,
-            mimeType: assets.mimeType,
-            sizeBytes: assets.sizeBytes,
+            id: importedAssets.id,
+            fileRecordId: importedAssets.fileRecordId,
+            fileName: importedAssets.fileName,
+            fileKey: importedAssets.fileKey,
+            mimeType: importedAssets.mimeType,
+            sizeBytes: importedAssets.sizeBytes,
           })
-          .from(assets)
-          .where(and(eq(assets.organizationId, organizationId), eq(assets.id, fileId)))
+          .from(importedAssets)
+          .where(and(eq(importedAssets.organizationId, organizationId), eq(importedAssets.id, fileId)))
           .limit(1)
           .then((rows) => rows[0]);
       } catch {
@@ -15086,6 +17933,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       await assetRepository.unlinkAsset(organizationId, fileId, 'order_line_item', lineItemId);
+
+      try {
+        const resolvedOriginal = removedAsset?.fileRecordId
+          ? await canonicalFileReadResolver.resolveOriginal(String(removedAsset.fileRecordId))
+          : null;
+        const storageKey = resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? removedAsset?.fileKey ?? null;
+
+        if (removedAsset?.fileRecordId || storageKey) {
+          await db
+            .update(lineItemFiles)
+            .set({ status: 'superseded' })
+            .where(
+              and(
+                eq(lineItemFiles.organizationId, organizationId),
+                eq(lineItemFiles.orderId, orderId),
+                eq(lineItemFiles.lineItemId, lineItemId),
+                eq(lineItemFiles.status, 'active'),
+                removedAsset?.fileRecordId
+                  ? eq(lineItemFiles.fileRecordId, String(removedAsset.fileRecordId))
+                  : or(eq(lineItemFiles.storagePath, String(storageKey)), eq(lineItemFiles.storageKey, String(storageKey)))!
+              )
+            );
+        }
+      } catch (lineItemFileCleanupError) {
+        console.warn('[OrderLineItemFiles:DELETE] line_item_files cleanup failed', lineItemFileCleanupError);
+      }
 
       try {
         const userId = getUserId(req.user);

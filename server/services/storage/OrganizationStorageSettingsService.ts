@@ -1,0 +1,845 @@
+import { randomUUID } from "crypto";
+import { eq, sql } from "drizzle-orm";
+import { HeadBucketCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  customerProductionFolderReferences,
+  customers,
+  type OrganizationStorageProfile,
+  type StorageProviderConfig,
+} from "@shared/schema";
+import {
+  normalizeLocalFilesystemStorageProviderConfig,
+  normalizeS3CompatibleStorageProviderConfig,
+  normalizeSupabaseStorageProviderConfig,
+  normalizeTitanManagedStorageConfig,
+  storageProviderDraftSaveSchema,
+  storageSettingsSaveSchema,
+  storageSettingsValidateRequestSchema,
+  type CustomerProductionDestinationViewStatus,
+  type OrganizationStorageProfileViewStatus,
+  type StorageProviderDraftSaveInput,
+  type StorageProviderViewStatus,
+  type StorageSettingsSaveInput,
+} from "@shared/storageSettings";
+import { db } from "../../db";
+import { organizationStorageProfileRepository } from "../../storage/organizationStorageProfile.repo";
+import { storageProviderConfigRepository } from "../../storage/storageProviderConfig.repo";
+import { isSupabaseConfigured, SupabaseStorageService } from "../../supabaseStorage";
+import { getEffectiveMaxCloudUploadBytes } from "../storageTarget";
+
+const SAMPLE_SMALL_FILE_BYTES = 10 * 1024 * 1024;
+const SAMPLE_LARGE_FILE_BYTES = 100 * 1024 * 1024;
+const ORCHESTRATION_DISPLAY_NAME_CANONICAL = "Titan Managed Orchestration";
+const ORCHESTRATION_DISPLAY_NAME_INTAKE = "Titan Managed Intake Orchestration";
+
+type StorageOrchestrationValidationSummary = {
+  kind: "orchestration";
+  valid: boolean;
+  error: string | null;
+  warnings: string[];
+  validatedAt: string;
+  preview: {
+    routingMode: "auto" | "supabase" | "local_dev";
+    maxCloudUploadBytes: number;
+    smallFileTarget: "supabase" | "local_dev";
+    largeFileTarget: "supabase" | "local_dev";
+    supabaseConfigured: boolean;
+  };
+};
+
+type StorageProviderValidationSummary = {
+  kind: "provider";
+  valid: boolean;
+  error: string | null;
+  warnings: string[];
+  validatedAt: string;
+  runtimeSupported: boolean;
+  canActivate: boolean;
+  providerType: "supabase" | "local_filesystem" | "s3";
+  fieldErrors?: Partial<Record<"displayName" | "bucketName" | "pathPrefix" | "subfolderPrefix" | "region" | "endpoint" | "accessKeyId" | "secretAccessKey" | "forcePathStyle" | "providerLabel", string>>;
+};
+
+type ProductionDestinationSummary = {
+  status: CustomerProductionDestinationViewStatus;
+  totalCustomers: number;
+  setCount: number;
+  invalidCount: number;
+  disabledCount: number;
+};
+
+type PublicProviderConfig =
+  | {
+      providerType: "supabase";
+      bucketName: string;
+      pathPrefix: string | null;
+    }
+  | {
+      providerType: "local_filesystem";
+      subfolderPrefix: string | null;
+    }
+  | {
+      providerType: "s3";
+      bucketName: string;
+      region: string;
+      endpoint: string;
+      accessKeyId: string;
+      secretAccessKeyConfigured: boolean;
+      pathPrefix: string | null;
+      forcePathStyle: boolean;
+      providerLabel: string | null;
+    };
+
+function deriveRuntimeModeForProviderType(providerType: StorageProviderConfig["providerType"]): OrganizationStorageProfile["mode"] {
+  switch (providerType) {
+    case "local_filesystem":
+      return "byos_local";
+    case "supabase":
+    case "s3":
+      return "byos_cloud";
+    case "titan_managed":
+    default:
+      return "titan_managed";
+  }
+}
+
+function firstNonEmptyString(...values: Array<unknown>): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function buildS3ValidationFailure(
+  normalized: ReturnType<typeof normalizeS3CompatibleStorageProviderConfig>,
+  error: any,
+): Pick<StorageProviderValidationSummary, "error" | "fieldErrors"> {
+  const name = firstNonEmptyString(error?.name, error?.Code, error?.code);
+  const message = firstNonEmptyString(error?.message);
+  const statusCode = typeof error?.$metadata?.httpStatusCode === "number" ? error.$metadata.httpStatusCode : null;
+  const rawText = [name, message, statusCode ? `HTTP ${statusCode}` : null].filter(Boolean).join(" | ");
+  const lower = rawText.toLowerCase();
+
+  if (lower.includes("enotfound") || lower.includes("econnrefused") || lower.includes("invalid endpoint") || lower.includes("endpoint") && lower.includes("could not connect")) {
+    return {
+      error: `Could not reach the S3 endpoint ${normalized.endpoint}.`,
+      fieldErrors: {
+        endpoint: "Check the endpoint URL, protocol, and network reachability.",
+      },
+    };
+  }
+
+  if (lower.includes("nosuchbucket") || statusCode === 404) {
+    return {
+      error: `Bucket ${normalized.bucketName} was not found or is not reachable with the current endpoint settings.`,
+      fieldErrors: {
+        bucketName: "Check that the bucket name exists for this provider.",
+        endpoint: "Confirm the endpoint points to the correct S3-compatible service and region.",
+      },
+    };
+  }
+
+  if (lower.includes("authorizationheadermalformed") || lower.includes("permanentredirect") || lower.includes("incorrect region")) {
+    return {
+      error: "The bucket is reachable, but the region or endpoint settings do not match the provider response.",
+      fieldErrors: {
+        region: "Check the exact bucket region required by the provider.",
+        endpoint: "Confirm the endpoint matches the provider's region-specific endpoint.",
+      },
+    };
+  }
+
+  if (statusCode === 403 || lower.includes("accessdenied") || lower.includes("invalidaccesskeyid") || lower.includes("signaturedoesnotmatch") || lower.includes("invalid signature")) {
+    return {
+      error: "The S3-compatible provider rejected the credentials or signing details for this bucket.",
+      fieldErrors: {
+        accessKeyId: "Check that the access key ID is correct for this provider.",
+        secretAccessKey: "Check that the secret access key is correct and complete.",
+        region: "Verify the region matches the bucket's configured region.",
+        endpoint: "Verify the endpoint matches the provider and bucket region.",
+      },
+    };
+  }
+
+  return {
+    error: message || name || "Failed to validate S3-compatible provider.",
+    fieldErrors: {},
+  };
+}
+
+export type StorageProviderView = {
+  id: string;
+  providerType: "supabase" | "local_filesystem" | "s3";
+  displayName: string;
+  status: StorageProviderViewStatus;
+  persistedStatus: StorageProviderConfig["status"];
+  role: StorageProviderConfig["role"];
+  config: PublicProviderConfig;
+  lastValidatedAt: string | null;
+  validationError: string | null;
+  runtimeSupported: boolean;
+  canActivate: boolean;
+  isActive: boolean;
+};
+
+export type OrganizationStorageSettingsView = {
+  profile: {
+    id: string | null;
+    mode: OrganizationStorageProfile["mode"];
+    status: OrganizationStorageProfileViewStatus;
+    persistedStatus: OrganizationStorageProfile["status"] | null;
+    updatedAt: string | null;
+    activeProviderConfigId: string | null;
+  };
+  orchestration: {
+    id: string | null;
+    displayName: string;
+    config: ReturnType<typeof normalizeTitanManagedStorageConfig>;
+    lastValidatedAt: string | null;
+    validationError: string | null;
+    validation: StorageOrchestrationValidationSummary | null;
+  };
+  providers: StorageProviderView[];
+  activeProvider: StorageProviderView | null;
+  productionDestinations: ProductionDestinationSummary;
+};
+
+function getProviderGroupKey(config: StorageProviderConfig | null | undefined): string | null {
+  const raw = (config?.configJson as Record<string, unknown> | null | undefined)?.providerGroupKey;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : null;
+}
+
+function withProviderGroupKey(config: Record<string, unknown>, providerGroupKey: string) {
+  return {
+    ...config,
+    providerGroupKey,
+  };
+}
+
+function deriveProfileViewStatus(profile: OrganizationStorageProfile | null): OrganizationStorageProfileViewStatus {
+  if (!profile) return "missing";
+  if (profile.mode === "disabled" || profile.status === "disabled") return "disabled";
+  if (profile.status === "active") return "active";
+  return "draft";
+}
+
+function deriveProviderViewStatus(args: {
+  persistedStatus: StorageProviderConfig["status"];
+  isActive: boolean;
+  profile: OrganizationStorageProfile | null;
+}): StorageProviderViewStatus {
+  if (args.profile?.mode === "disabled" || args.profile?.status === "disabled" || args.persistedStatus === "disabled") {
+    return "disabled";
+  }
+  if (args.isActive) return "active";
+  if (args.persistedStatus === "invalid") return "invalid";
+  if (args.persistedStatus === "validated") return "valid";
+  if (args.persistedStatus === "missing") return "missing";
+  return "draft";
+}
+
+export class OrganizationStorageSettingsService {
+  async getSettings(organizationId: string): Promise<OrganizationStorageSettingsView> {
+    const profile = await organizationStorageProfileRepository.getByOrganizationId(organizationId);
+    const canonicalRows = await storageProviderConfigRepository.listByOrganizationAndRole(organizationId, "canonical");
+    const orchestrationRow = canonicalRows.find((row) => row.providerType === "titan_managed") ?? null;
+    const providerRows = canonicalRows.filter((row) => row.providerType !== "titan_managed");
+    const productionDestinations = await this.getProductionDestinationSummary(organizationId);
+    const orchestrationValidation = orchestrationRow ? this.validateOrchestrationConfig(orchestrationRow.configJson) : null;
+
+    const providers = await Promise.all(providerRows.map(async (row) => this.toProviderView(profile, row)));
+    const activeProvider = providers.find((provider) => provider.isActive) ?? null;
+
+    return {
+      profile: {
+        id: profile?.id ?? null,
+        mode: profile?.mode ?? "titan_managed",
+        status: deriveProfileViewStatus(profile),
+        persistedStatus: profile?.status ?? null,
+        updatedAt: profile?.updatedAt ? new Date(profile.updatedAt).toISOString() : null,
+        activeProviderConfigId: activeProvider?.id ?? null,
+      },
+      orchestration: {
+        id: orchestrationRow?.id ?? null,
+        displayName: orchestrationRow?.displayName ?? ORCHESTRATION_DISPLAY_NAME_CANONICAL,
+        config: normalizeTitanManagedStorageConfig(orchestrationRow?.configJson),
+        lastValidatedAt: orchestrationRow?.lastValidatedAt ? new Date(orchestrationRow.lastValidatedAt).toISOString() : null,
+        validationError: orchestrationRow?.validationError ?? null,
+        validation: orchestrationValidation,
+      },
+      providers,
+      activeProvider,
+      productionDestinations,
+    };
+  }
+
+  async validateRequest(
+    organizationId: string,
+    rawInput: unknown,
+  ): Promise<StorageOrchestrationValidationSummary | StorageProviderValidationSummary> {
+    const parsed = storageSettingsValidateRequestSchema.parse(rawInput);
+    if (parsed.kind === "orchestration") {
+      return this.validateOrchestrationDraft(parsed.data);
+    }
+    return this.validateProviderDraft(organizationId, parsed.data);
+  }
+
+  async saveRequest(organizationId: string, rawInput: unknown): Promise<OrganizationStorageSettingsView> {
+    const parsed = storageSettingsValidateRequestSchema.parse(rawInput);
+    if (parsed.kind === "orchestration") {
+      await this.saveOrchestrationSettings(organizationId, parsed.data);
+    } else {
+      await this.saveProviderDraft(organizationId, parsed.data);
+    }
+    return this.getSettings(organizationId);
+  }
+
+  async activateProvider(organizationId: string, providerConfigId: string): Promise<OrganizationStorageSettingsView> {
+    const provider = await storageProviderConfigRepository.getByIdForOrganization(organizationId, providerConfigId);
+    if (!provider || provider.providerType === "titan_managed") {
+      throw new Error("Provider configuration not found.");
+    }
+
+    const validation = await this.validateSavedProvider(provider);
+    if (!validation.canActivate) {
+      throw new Error(validation.error || "This provider cannot be activated yet.");
+    }
+
+    const intakeProvider = await this.ensureIntakeProviderForCanonical(organizationId, provider);
+    const existingProfile = await organizationStorageProfileRepository.getByOrganizationId(organizationId);
+    const profileValues = {
+      organizationId,
+      mode: deriveRuntimeModeForProviderType(provider.providerType),
+      status: validation.valid ? "active" as const : "invalid" as const,
+      primaryProviderConfigId: provider.id,
+      intakeProviderConfigId: intakeProvider.id,
+      archiveProviderConfigId: existingProfile?.archiveProviderConfigId ?? null,
+    };
+
+    if (existingProfile) {
+      await organizationStorageProfileRepository.update(existingProfile.id, profileValues);
+    } else {
+      await organizationStorageProfileRepository.create({
+        ...profileValues,
+        productionFolderReferenceId: null,
+      });
+    }
+
+    return this.getSettings(organizationId);
+  }
+
+  private validateOrchestrationDraft(input: StorageSettingsSaveInput): StorageOrchestrationValidationSummary {
+    storageSettingsSaveSchema.parse(input);
+    return this.validateOrchestrationConfig(input.config);
+  }
+
+  private validateOrchestrationConfig(rawConfig: unknown): StorageOrchestrationValidationSummary {
+    const normalizedConfig = normalizeTitanManagedStorageConfig(rawConfig);
+    const warnings: string[] = [];
+    if (normalizedConfig.routingMode === "auto" && !isSupabaseConfigured()) {
+      warnings.push("Supabase is not configured. Auto routing will send files to local storage until cloud storage is available.");
+    }
+
+    const maxCloudUploadBytes = getEffectiveMaxCloudUploadBytes(normalizedConfig);
+    const smallFileTarget = normalizedConfig.routingMode === "local_dev"
+      ? "local_dev"
+      : normalizedConfig.routingMode === "supabase"
+        ? "supabase"
+        : isSupabaseConfigured() && SAMPLE_SMALL_FILE_BYTES <= maxCloudUploadBytes
+          ? "supabase"
+          : "local_dev";
+    const largeFileTarget = normalizedConfig.routingMode === "local_dev"
+      ? "local_dev"
+      : normalizedConfig.routingMode === "supabase"
+        ? "supabase"
+        : isSupabaseConfigured() && SAMPLE_LARGE_FILE_BYTES <= maxCloudUploadBytes
+          ? "supabase"
+          : "local_dev";
+
+    return {
+      kind: "orchestration",
+      valid: maxCloudUploadBytes > 0,
+      error: maxCloudUploadBytes > 0 ? null : "Max cloud upload threshold must be greater than zero.",
+      warnings,
+      validatedAt: new Date().toISOString(),
+      preview: {
+        routingMode: normalizedConfig.routingMode,
+        maxCloudUploadBytes,
+        smallFileTarget,
+        largeFileTarget,
+        supabaseConfigured: isSupabaseConfigured(),
+      },
+    };
+  }
+
+  private async saveOrchestrationSettings(organizationId: string, input: StorageSettingsSaveInput): Promise<void> {
+    const validation = this.validateOrchestrationDraft(input);
+    const existingCanonical = await this.findOrchestrationConfig(organizationId, "canonical");
+    const existingIntake = await this.findOrchestrationConfig(organizationId, "intake");
+
+    const canonicalValues = {
+      organizationId,
+      providerType: "titan_managed" as const,
+      role: "canonical" as const,
+      status: input.mode === "disabled" ? "disabled" as const : validation.valid ? "validated" as const : "invalid" as const,
+      displayName: input.displayName,
+      configJson: input.config,
+      validationError: validation.valid ? null : validation.error,
+      lastValidatedAt: new Date(validation.validatedAt),
+    };
+    const intakeValues = {
+      ...canonicalValues,
+      role: "intake" as const,
+      displayName: ORCHESTRATION_DISPLAY_NAME_INTAKE,
+    };
+
+    const canonical = existingCanonical
+      ? await storageProviderConfigRepository.update(existingCanonical.id, canonicalValues)
+      : await storageProviderConfigRepository.create(canonicalValues);
+    const intake = existingIntake
+      ? await storageProviderConfigRepository.update(existingIntake.id, intakeValues)
+      : await storageProviderConfigRepository.create(intakeValues);
+
+    const existingProfile = await organizationStorageProfileRepository.getByOrganizationId(organizationId);
+    const existingPrimaryProvider = existingProfile?.primaryProviderConfigId
+      ? await storageProviderConfigRepository.getByIdForOrganization(organizationId, existingProfile.primaryProviderConfigId)
+      : null;
+    const activeByosProvider = existingPrimaryProvider && existingPrimaryProvider.providerType !== "titan_managed"
+      ? existingPrimaryProvider
+      : null;
+    const activePointersNeedDefaults = !existingProfile?.primaryProviderConfigId || !existingProfile?.intakeProviderConfigId;
+    const nextMode: OrganizationStorageProfile["mode"] = input.mode === "disabled"
+      ? "disabled"
+      : activeByosProvider
+        ? deriveRuntimeModeForProviderType(activeByosProvider.providerType)
+        : input.mode;
+    const nextStatus: OrganizationStorageProfile["status"] = input.mode === "disabled"
+      ? "disabled"
+      : activeByosProvider
+        ? existingProfile?.status ?? "active"
+        : validation.valid
+          ? "active"
+          : "invalid";
+
+    const profileValues = {
+      organizationId,
+      mode: nextMode,
+      status: nextStatus,
+      primaryProviderConfigId: input.mode === "disabled"
+        ? existingProfile?.primaryProviderConfigId ?? canonical.id
+        : activeByosProvider
+          ? activeByosProvider.id
+          : activePointersNeedDefaults
+            ? canonical.id
+            : existingProfile?.primaryProviderConfigId ?? canonical.id,
+      intakeProviderConfigId: input.mode === "disabled"
+        ? existingProfile?.intakeProviderConfigId ?? intake.id
+        : activeByosProvider
+          ? existingProfile?.intakeProviderConfigId ?? intake.id
+          : activePointersNeedDefaults
+            ? intake.id
+            : existingProfile?.intakeProviderConfigId ?? intake.id,
+      archiveProviderConfigId: existingProfile?.archiveProviderConfigId ?? null,
+    };
+
+    if (existingProfile) {
+      await organizationStorageProfileRepository.update(existingProfile.id, profileValues);
+    } else {
+      await organizationStorageProfileRepository.create({
+        ...profileValues,
+        productionFolderReferenceId: null,
+      });
+    }
+  }
+
+  private async validateProviderDraft(
+    organizationId: string,
+    input: StorageProviderDraftSaveInput,
+  ): Promise<StorageProviderValidationSummary> {
+    const parsed = storageProviderDraftSaveSchema.parse(input);
+    const existing = parsed.providerConfigId
+      ? await storageProviderConfigRepository.getByIdForOrganization(organizationId, parsed.providerConfigId)
+      : null;
+    const draft = this.buildDraftProviderRecord(organizationId, parsed, existing);
+    return this.validateSavedProvider(draft);
+  }
+
+  private async saveProviderDraft(organizationId: string, input: StorageProviderDraftSaveInput): Promise<void> {
+    const parsed = storageProviderDraftSaveSchema.parse(input);
+    const existingCanonical = parsed.providerConfigId
+      ? await storageProviderConfigRepository.getByIdForOrganization(organizationId, parsed.providerConfigId)
+      : null;
+    const providerGroupKey = getProviderGroupKey(existingCanonical) ?? randomUUID();
+    const existingIntake = existingCanonical
+      ? await this.findProviderPairByGroupKey(organizationId, providerGroupKey, "intake")
+      : null;
+    const validation = await this.validateProviderDraft(organizationId, parsed);
+
+    const canonicalValues = {
+      organizationId,
+      providerType: parsed.providerType,
+      role: "canonical" as const,
+      status: validation.valid ? "validated" as const : "invalid" as const,
+      displayName: parsed.displayName,
+      configJson: this.buildPersistedProviderConfig(parsed, providerGroupKey, existingCanonical),
+      validationError: validation.valid ? null : validation.error,
+      lastValidatedAt: new Date(validation.validatedAt),
+    };
+    const intakeValues = {
+      ...canonicalValues,
+      role: "intake" as const,
+    };
+
+    await (existingCanonical
+      ? storageProviderConfigRepository.update(existingCanonical.id, canonicalValues)
+      : storageProviderConfigRepository.create(canonicalValues));
+    await (existingIntake
+      ? storageProviderConfigRepository.update(existingIntake.id, intakeValues)
+      : storageProviderConfigRepository.create(intakeValues));
+  }
+
+  private buildDraftProviderRecord(
+    organizationId: string,
+    input: StorageProviderDraftSaveInput,
+    existing: StorageProviderConfig | null,
+  ): StorageProviderConfig {
+    return {
+      id: existing?.id ?? "draft",
+      organizationId,
+      providerType: input.providerType,
+      role: "canonical",
+      status: "configured",
+      displayName: input.displayName,
+      configJson: this.buildPersistedProviderConfig(input, getProviderGroupKey(existing) ?? "draft", existing),
+      validationError: null,
+      lastValidatedAt: null,
+      createdAt: existing?.createdAt ?? new Date(),
+      updatedAt: new Date(),
+    };
+  }
+
+  private buildPersistedProviderConfig(
+    input: StorageProviderDraftSaveInput,
+    providerGroupKey: string,
+    existing: StorageProviderConfig | null,
+  ): Record<string, unknown> {
+    if (input.providerType === "supabase") {
+      return withProviderGroupKey(normalizeSupabaseStorageProviderConfig(input.config), providerGroupKey);
+    }
+    if (input.providerType === "local_filesystem") {
+      return withProviderGroupKey(normalizeLocalFilesystemStorageProviderConfig(input.config), providerGroupKey);
+    }
+
+    const normalized = normalizeS3CompatibleStorageProviderConfig(input.config);
+    const existingConfig = existing ? normalizeS3CompatibleStorageProviderConfig(existing.configJson) : null;
+    const secretAccessKey = normalized.secretAccessKey || existingConfig?.secretAccessKey || null;
+
+    return withProviderGroupKey({
+      ...normalized,
+      secretAccessKey,
+      secretAccessKeyConfigured: !!secretAccessKey,
+    }, providerGroupKey);
+  }
+
+  private async validateSavedProvider(provider: StorageProviderConfig): Promise<StorageProviderValidationSummary> {
+    if (provider.providerType === "supabase") {
+      return this.validateSupabaseProvider(provider);
+    }
+    if (provider.providerType === "local_filesystem") {
+      return this.validateLocalFilesystemProvider(provider);
+    }
+    if (provider.providerType === "s3") {
+      return this.validateS3CompatibleProvider(provider);
+    }
+    return {
+      kind: "provider",
+      valid: false,
+      error: "Titan-managed orchestration rows are not direct provider configs.",
+      warnings: [],
+      validatedAt: new Date().toISOString(),
+      runtimeSupported: false,
+      canActivate: false,
+      providerType: "supabase",
+      fieldErrors: {},
+    };
+  }
+
+  private async validateSupabaseProvider(provider: StorageProviderConfig): Promise<StorageProviderValidationSummary> {
+    const normalized = normalizeSupabaseStorageProviderConfig(provider.configJson);
+    if (!isSupabaseConfigured()) {
+      return {
+        kind: "provider",
+        valid: false,
+        error: "Supabase server credentials are not configured in the current environment.",
+        warnings: [],
+        validatedAt: new Date().toISOString(),
+        runtimeSupported: true,
+        canActivate: false,
+        providerType: "supabase",
+        fieldErrors: {},
+      };
+    }
+
+    try {
+      const service = new SupabaseStorageService(normalized.bucketName.trim());
+      await service.listFiles(normalized.pathPrefix || "");
+      return {
+        kind: "provider",
+        valid: true,
+        error: null,
+        warnings: [],
+        validatedAt: new Date().toISOString(),
+        runtimeSupported: true,
+        canActivate: true,
+        providerType: "supabase",
+        fieldErrors: {},
+      };
+    } catch (error: any) {
+      return {
+        kind: "provider",
+        valid: false,
+        error: error?.message || "Failed to validate Supabase provider.",
+        warnings: [],
+        validatedAt: new Date().toISOString(),
+        runtimeSupported: true,
+        canActivate: false,
+        providerType: "supabase",
+        fieldErrors: {
+          bucketName: "Check the bucket name and server-side Supabase access for this bucket.",
+        },
+      };
+    }
+  }
+
+  private async validateLocalFilesystemProvider(provider: StorageProviderConfig): Promise<StorageProviderValidationSummary> {
+    try {
+      const normalized = normalizeLocalFilesystemStorageProviderConfig(provider.configJson);
+      const subfolder = (normalized.subfolderPrefix || "").trim().replace(/\\/g, "/");
+      if (subfolder.split("/").some((segment) => segment === "..")) {
+        throw new Error("Subfolder prefix cannot contain path traversal segments.");
+      }
+      const warnings = [
+        "Local filesystem providers write to the application server disk under FILE_STORAGE_ROOT, not to the browser user's personal computer.",
+      ];
+      return {
+        kind: "provider",
+        valid: true,
+        error: null,
+        warnings,
+        validatedAt: new Date().toISOString(),
+        runtimeSupported: true,
+        canActivate: true,
+        providerType: "local_filesystem",
+        fieldErrors: {},
+      };
+    } catch (error: any) {
+      const warnings = [
+        "Local filesystem providers write to the application server disk under FILE_STORAGE_ROOT, not to the browser user's personal computer.",
+      ];
+      return {
+        kind: "provider",
+        valid: false,
+        error: error?.message || "Failed to validate local filesystem provider.",
+        warnings,
+        validatedAt: new Date().toISOString(),
+        runtimeSupported: true,
+        canActivate: false,
+        providerType: "local_filesystem",
+        fieldErrors: {
+          subfolderPrefix: "Use a relative subfolder path without .. segments.",
+        },
+      };
+    }
+  }
+
+  private async validateS3CompatibleProvider(provider: StorageProviderConfig): Promise<StorageProviderValidationSummary> {
+    const normalized = normalizeS3CompatibleStorageProviderConfig(provider.configJson);
+    if (!normalized.secretAccessKeyConfigured || !normalized.secretAccessKey) {
+      return {
+        kind: "provider",
+        valid: false,
+        error: "Secret access key is required to validate an S3-compatible provider.",
+        warnings: [],
+        validatedAt: new Date().toISOString(),
+        runtimeSupported: false,
+        canActivate: false,
+        providerType: "s3",
+        fieldErrors: {
+          secretAccessKey: "Enter the secret access key before validating this provider.",
+        },
+      };
+    }
+
+    try {
+      const client = new S3Client({
+        region: normalized.region,
+        endpoint: normalized.endpoint,
+        forcePathStyle: normalized.forcePathStyle,
+        credentials: {
+          accessKeyId: normalized.accessKeyId,
+          secretAccessKey: normalized.secretAccessKey,
+        },
+      });
+      await client.send(new HeadBucketCommand({ Bucket: normalized.bucketName }));
+      return {
+        kind: "provider",
+        valid: true,
+        error: null,
+        warnings: [],
+        validatedAt: new Date().toISOString(),
+        runtimeSupported: true,
+        canActivate: true,
+        providerType: "s3",
+        fieldErrors: {},
+      };
+    } catch (error: any) {
+      const failure = buildS3ValidationFailure(normalized, error);
+      return {
+        kind: "provider",
+        valid: false,
+        error: failure.error,
+        warnings: [],
+        validatedAt: new Date().toISOString(),
+        runtimeSupported: true,
+        canActivate: false,
+        providerType: "s3",
+        fieldErrors: failure.fieldErrors,
+      };
+    }
+  }
+
+  private async toProviderView(
+    profile: OrganizationStorageProfile | null,
+    provider: StorageProviderConfig,
+  ): Promise<StorageProviderView> {
+    const validation = await this.validateSavedProvider(provider);
+    const isActive = profile?.primaryProviderConfigId === provider.id && profile?.status === "active";
+
+    return {
+      id: provider.id,
+      providerType: provider.providerType as "supabase" | "local_filesystem" | "s3",
+      displayName: provider.displayName,
+      status: deriveProviderViewStatus({
+        persistedStatus: provider.status,
+        isActive,
+        profile,
+      }),
+      persistedStatus: provider.status,
+      role: provider.role,
+      config: this.toPublicProviderConfig(provider),
+      lastValidatedAt: provider.lastValidatedAt ? new Date(provider.lastValidatedAt).toISOString() : null,
+      validationError: provider.validationError ?? validation.error,
+      runtimeSupported: validation.runtimeSupported,
+      canActivate: validation.canActivate,
+      isActive,
+    };
+  }
+
+  private toPublicProviderConfig(provider: StorageProviderConfig): PublicProviderConfig {
+    if (provider.providerType === "supabase") {
+      const normalized = normalizeSupabaseStorageProviderConfig(provider.configJson);
+      return {
+        providerType: "supabase",
+        bucketName: normalized.bucketName,
+        pathPrefix: normalized.pathPrefix ?? null,
+      };
+    }
+    if (provider.providerType === "local_filesystem") {
+      const normalized = normalizeLocalFilesystemStorageProviderConfig(provider.configJson);
+      return {
+        providerType: "local_filesystem",
+        subfolderPrefix: normalized.subfolderPrefix ?? null,
+      };
+    }
+
+    const normalized = normalizeS3CompatibleStorageProviderConfig(provider.configJson);
+    return {
+      providerType: "s3",
+      bucketName: normalized.bucketName,
+      region: normalized.region,
+      endpoint: normalized.endpoint,
+      accessKeyId: normalized.accessKeyId,
+      secretAccessKeyConfigured: normalized.secretAccessKeyConfigured ?? false,
+      pathPrefix: normalized.pathPrefix ?? null,
+      forcePathStyle: normalized.forcePathStyle ?? true,
+      providerLabel: normalized.providerLabel ?? null,
+    };
+  }
+
+  private async ensureIntakeProviderForCanonical(
+    organizationId: string,
+    canonicalProvider: StorageProviderConfig,
+  ): Promise<StorageProviderConfig> {
+    const providerGroupKey = getProviderGroupKey(canonicalProvider) ?? randomUUID();
+    const existing = await this.findProviderPairByGroupKey(organizationId, providerGroupKey, "intake");
+    if (existing) {
+      return existing;
+    }
+
+    return storageProviderConfigRepository.create({
+      organizationId,
+      providerType: canonicalProvider.providerType,
+      role: "intake",
+      status: canonicalProvider.status,
+      displayName: canonicalProvider.displayName,
+      configJson: withProviderGroupKey(canonicalProvider.configJson as Record<string, unknown>, providerGroupKey),
+      validationError: canonicalProvider.validationError,
+      lastValidatedAt: canonicalProvider.lastValidatedAt,
+    });
+  }
+
+  private async findProviderPairByGroupKey(
+    organizationId: string,
+    providerGroupKey: string,
+    role: StorageProviderConfig["role"],
+  ): Promise<StorageProviderConfig | null> {
+    const rows = await storageProviderConfigRepository.listByOrganizationAndRole(organizationId, role);
+    return rows.find((row) => getProviderGroupKey(row) === providerGroupKey) ?? null;
+  }
+
+  private async findOrchestrationConfig(
+    organizationId: string,
+    role: StorageProviderConfig["role"],
+  ): Promise<StorageProviderConfig | null> {
+    const rows = await storageProviderConfigRepository.listByOrganizationAndRole(organizationId, role);
+    return rows.find((row) => row.providerType === "titan_managed") ?? null;
+  }
+
+  private async getProductionDestinationSummary(organizationId: string): Promise<ProductionDestinationSummary> {
+    const [{ totalCustomers = 0 } = {}] = await db
+      .select({ totalCustomers: sql<number>`count(*)` })
+      .from(customers)
+      .where(eq(customers.organizationId, organizationId));
+
+    const [{ setCount = 0, invalidCount = 0, disabledCount = 0 } = {}] = await db
+      .select({
+        setCount: sql<number>`count(*) filter (where ${customerProductionFolderReferences.status} in ('configured', 'validated'))`,
+        invalidCount: sql<number>`count(*) filter (where ${customerProductionFolderReferences.status} = 'invalid')`,
+        disabledCount: sql<number>`count(*) filter (where ${customerProductionFolderReferences.status} = 'disabled')`,
+      })
+      .from(customerProductionFolderReferences)
+      .where(eq(customerProductionFolderReferences.organizationId, organizationId));
+
+    const normalizedSetCount = Number(setCount);
+    const normalizedInvalidCount = Number(invalidCount);
+    const normalizedDisabledCount = Number(disabledCount);
+    const status: CustomerProductionDestinationViewStatus = normalizedInvalidCount > 0
+      ? "invalid"
+      : normalizedSetCount > 0
+        ? "set"
+        : normalizedDisabledCount > 0
+          ? "disabled"
+          : "missing";
+
+    return {
+      status,
+      totalCustomers: Number(totalCustomers),
+      setCount: normalizedSetCount,
+      invalidCount: normalizedInvalidCount,
+      disabledCount: normalizedDisabledCount,
+    };
+  }
+}
+
+export const organizationStorageSettingsService = new OrganizationStorageSettingsService();

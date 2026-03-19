@@ -33,17 +33,14 @@ import { ProductOptionsPanel } from "@/features/quotes/editor/components/Product
 import { ProductOptionsPanelV2 } from "@/features/quotes/editor/components/ProductOptionsPanelV2";
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import { isPbv2Product, getPbv2Tree } from "@/lib/pbv2Utils";
-import { cn, isValidHttpUrl } from "@/lib/utils";
-import { apiFetch, apiRequest } from "@/lib/queryClient";
-import { objectsUrl } from "@/lib/apiConfig";
-import { getAttachmentDisplayName, getPdfPageCount, isPdfAttachment } from "@/lib/attachments";
+import { cn } from "@/lib/utils";
+import { apiRequest } from "@/lib/queryClient";
 import { getThumbSrc } from "@/lib/getThumbSrc";
-import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
 import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
 import { useToast } from "@/hooks/use-toast";
-import { useCreateOrderLineItem, useDeleteOrderLineItem, useUpdateOrderLineItem } from "@/hooks/useOrders";
+import { useCreateOrderLineItem, useDeleteOrderLineItem, useTransitionLineItemWorkflow, useUpdateOrderLineItem } from "@/hooks/useOrders";
 import { useOrderFiles } from "@/hooks/useOrderFiles";
 import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
 import { useOrderLineItemPreviews } from "@/hooks/useOrderLineItemPreviews";
@@ -260,24 +257,81 @@ function stableStringify(value: unknown): string {
   return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`).join(",")}}`;
 }
 
-type AttachmentForPreview = {
-  id: string;
-  fileName: string;
-  originalFilename?: string | null;
-  mimeType?: string | null;
-  originalUrl?: string | null;
-  previewUrl?: string | null;
-  thumbUrl?: string | null;
-  thumbnailUrl?: string | null;
-  previewThumbnailUrl?: string | null;
-  pages?: any[];
-  pageCount?: number | null;
+const WORKFLOW_LABELS: Record<string, string> = {
+  new: "New",
+  needs_design: "Needs Design",
+  in_design: "In Design",
+  ready_for_prepress: "Ready for Prepress",
+  in_prepress: "In Prepress",
+  ready_for_production: "Ready for Production",
+  in_production: "In Production",
+  completed: "Completed",
+  on_hold: "On Hold",
+  canceled: "Canceled",
 };
 
-function getPdfThumbUrl(attachment: AttachmentForPreview | null): string | null {
-  if (!attachment) return null;
-  const src = getThumbSrc(attachment as any);
-  return typeof src === 'string' && src.length ? src : null;
+function workflowBadgeVariant(state: string | undefined): "default" | "secondary" | "outline" | "destructive" {
+  if (state === "completed") return "default";
+  if (state === "canceled") return "destructive";
+  if (state === "on_hold") return "secondary";
+  if (state === "in_design" || state === "in_prepress" || state === "in_production") return "default";
+  return "outline";
+}
+
+function getInitialWorkflowStateForFlags(requiresDesign: boolean, requiresPrepress: boolean): string {
+  if (requiresDesign) return "needs_design";
+  if (requiresPrepress) return "ready_for_prepress";
+  return "ready_for_production";
+}
+
+function getWorkflowActions(state: string | undefined) {
+  switch (state) {
+    case "new":
+      return [
+        { label: "Send to Design", toState: "needs_design" as const },
+        { label: "Send to Prepress", toState: "ready_for_prepress" as const },
+      ];
+    case "needs_design":
+      return [
+        { label: "Start Design", toState: "in_design" as const },
+        { label: "Hold", toState: "on_hold" as const },
+        { label: "Cancel", toState: "canceled" as const },
+      ];
+    case "in_design":
+      return [
+        { label: "Back to Needs Design", toState: "needs_design" as const },
+        { label: "Send to Prepress", toState: "ready_for_prepress" as const },
+        { label: "Hold", toState: "on_hold" as const },
+      ];
+    case "ready_for_prepress":
+      return [
+        { label: "Start Prepress", toState: "in_prepress" as const },
+        { label: "Send to Production", toState: "ready_for_production" as const },
+        { label: "Hold", toState: "on_hold" as const },
+      ];
+    case "in_prepress":
+      return [
+        { label: "Send to Production", toState: "ready_for_production" as const },
+        { label: "Back to Design", toState: "in_design" as const },
+        { label: "Back to Needs Design", toState: "needs_design" as const },
+      ];
+    case "ready_for_production":
+      return [
+        { label: "Start Production", toState: "in_production" as const },
+        { label: "Return to Prepress", toState: "in_prepress" as const },
+        { label: "Hold", toState: "on_hold" as const },
+      ];
+    case "in_production":
+      return [
+        { label: "Complete", toState: "completed" as const },
+        { label: "Return to Prepress", toState: "in_prepress" as const },
+        { label: "Hold", toState: "on_hold" as const },
+      ];
+    case "on_hold":
+      return [];
+    default:
+      return [];
+  }
 }
 
 function buildOneLineOptionsSummary(selectedOptions: any[] | undefined | null): string {
@@ -348,6 +402,7 @@ export function OrderLineItemsSection({
   // Production scheduling state
   const [selectedForProduction, setSelectedForProduction] = useState<Set<string>>(new Set());
   const scheduleProduction = useScheduleOrderLineItemsForProduction(orderId);;
+  const transitionWorkflow = useTransitionLineItemWorkflow(orderId);
 
   const acceptPbv2Components = useMutation({
     mutationFn: async (lineItemId: string) => {
@@ -624,6 +679,8 @@ export function OrderLineItemsSection({
   const [heightText, setHeightText] = useState("");
   const [qty, setQty] = useState<number>(1);
   const [notes, setNotes] = useState<string>("");
+  const [requiresDesignInput, setRequiresDesignInput] = useState(false);
+  const [requiresPrepressInput, setRequiresPrepressInput] = useState(true);
   const [optionSelections, setOptionSelections] = useState<Record<string, OptionSelection>>({});
   const [optionSelectionsV2, setOptionSelectionsV2] = useState<LineItemOptionSelectionsV2>({ schemaVersion: 2, selected: {} });
   const [optionsV2Valid, setOptionsV2Valid] = useState(true);
@@ -633,7 +690,6 @@ export function OrderLineItemsSection({
 
   const [savingItemId, setSavingItemId] = useState<string | null>(null);
   const [savedItemId, setSavedItemId] = useState<string | null>(null);
-  const [pdfEmbedError, setPdfEmbedError] = useState(false);
 
   const savedSnapshotRef = useRef<
     Record<
@@ -644,6 +700,8 @@ export function OrderLineItemsSection({
         quantity: number;
         notes: string;
         productionNotes: string;
+        requiresDesign: boolean;
+        requiresPrepress: boolean;
         optionSelections: Record<string, OptionSelection>;
         totalPrice: number;
       }
@@ -654,11 +712,6 @@ export function OrderLineItemsSection({
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Preview modal state (shared with artwork panel)
-  const [previewFile, setPreviewFile] = useState<AttachmentForPreview | null>(null);
-  const [authenticatedPreviewImageUrl, setAuthenticatedPreviewImageUrl] = useState<string | null>(null);
-  const authenticatedPreviewImageUrlRef = useRef<string | null>(null);
-
   const [artworkModalLineItemId, setArtworkModalLineItemId] = useState<string | null>(null);
 
   const [missingArtworkSuppressReason, setMissingArtworkSuppressReason] = useState<string>("");
@@ -667,67 +720,6 @@ export function OrderLineItemsSection({
   useEffect(() => {
     setMissingArtworkSuppressReason("");
   }, [expandedId]);
-
-  // Reset PDF embed error when preview file changes
-  useEffect(() => {
-    setPdfEmbedError(false);
-  }, [previewFile?.id]);
-
-  useEffect(() => {
-    const revokePreviewUrl = () => {
-      if (!authenticatedPreviewImageUrlRef.current) return;
-      URL.revokeObjectURL(authenticatedPreviewImageUrlRef.current);
-      authenticatedPreviewImageUrlRef.current = null;
-    };
-
-    revokePreviewUrl();
-    setAuthenticatedPreviewImageUrl(null);
-
-    if (!previewFile) return () => {
-      revokePreviewUrl();
-    };
-
-    const fileName = previewFile.originalFilename || previewFile.fileName || "";
-    const previewUrl = previewFile.previewUrl ?? previewFile.originalUrl ?? null;
-    const mimeType = (previewFile.mimeType || "").toLowerCase();
-    const isImagePreview = mimeType.startsWith("image/") || /\.(png|jpe?g)$/i.test(fileName);
-
-    if (!previewUrl || !isImagePreview) {
-      return () => {
-        revokePreviewUrl();
-      };
-    }
-
-    let cancelled = false;
-
-    void (async () => {
-      try {
-        const response = await apiFetch(previewUrl, { credentials: "include" });
-        if (!response.ok) {
-          if (import.meta.env.DEV) {
-            console.log(`[OrderLineItemsSection] preview fetch failed status=${response.status} url=${previewUrl}`);
-          }
-          return;
-        }
-
-        const blob = await response.blob();
-        if (cancelled) return;
-
-        const objectUrl = URL.createObjectURL(blob);
-        authenticatedPreviewImageUrlRef.current = objectUrl;
-        setAuthenticatedPreviewImageUrl(objectUrl);
-      } catch {
-        if (import.meta.env.DEV) {
-          console.log(`[OrderLineItemsSection] preview fetch failed status=network url=${previewUrl}`);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      revokePreviewUrl();
-    };
-  }, [previewFile]);
 
   const artworkModalLineItem = useMemo(
     () => lineItems.find((li) => li.id === artworkModalLineItemId) ?? null,
@@ -773,6 +765,8 @@ export function OrderLineItemsSection({
       (((expandedItem.specsJson as any)?.lineItemNotes as any)?.descLong as string | undefined) ||
       "";
     setNotesDraftById((prev) => ({ ...prev, [itemId]: nextProductionNotes }));
+    setRequiresDesignInput(Boolean((expandedItem as any).requiresDesign));
+    setRequiresPrepressInput(Boolean((expandedItem as any).requiresPrepress));
 
     const selections: Record<string, OptionSelection> = {};
     const savedSelectedOptions = (expandedItem.specsJson as any)?.selectedOptions;
@@ -822,6 +816,8 @@ export function OrderLineItemsSection({
       quantity: expandedItem.quantity || 1,
       notes: nextNotes,
       productionNotes: nextProductionNotes,
+      requiresDesign: Boolean((expandedItem as any).requiresDesign),
+      requiresPrepress: Boolean((expandedItem as any).requiresPrepress),
       optionSelections: selections,
       totalPrice: currentTotal,
     };
@@ -877,9 +873,11 @@ export function OrderLineItemsSection({
       qtyNum !== saved.quantity ||
       currentNotes !== savedNotes ||
       currentProductionNotes !== savedProductionNotes ||
+      requiresDesignInput !== saved.requiresDesign ||
+      requiresPrepressInput !== saved.requiresPrepress ||
       currentOptions !== savedOptions
     );
-  }, [expandedItem, widthNum, heightNum, qtyNum, notes, notesDraftById, optionSelections]);
+  }, [expandedItem, widthNum, heightNum, qtyNum, notes, notesDraftById, optionSelections, requiresDesignInput, requiresPrepressInput]);
 
   // Debounced price calculation for expanded item
   useDebouncedEffect(
@@ -1008,6 +1006,8 @@ export function OrderLineItemsSection({
           height: dimsRequired ? heightNum : null,
           quantity: qtyNum,
           description: notes || "",
+          requiresDesign: requiresDesignInput,
+          requiresPrepress: requiresPrepressInput,
           unitPrice: unitPrice.toFixed(2),
           totalPrice: totalPrice.toFixed(2),
           selectedOptions: selectedOptionsArray,
@@ -1024,6 +1024,8 @@ export function OrderLineItemsSection({
         quantity: qtyNum,
         notes: notes || "",
         productionNotes: productionNotesDraft,
+        requiresDesign: requiresDesignInput,
+        requiresPrepress: requiresPrepressInput,
         optionSelections,
         totalPrice,
       };
@@ -1129,7 +1131,9 @@ export function OrderLineItemsSection({
         quantity: item.quantity,
         unitPrice: item.unitPrice,
         totalPrice: item.totalPrice,
-        status: item.status || "queued",
+        status: item.status || "new",
+        requiresDesign: Boolean((item as any).requiresDesign),
+        requiresPrepress: Boolean((item as any).requiresPrepress),
         specsJson: item.specsJson || null,
       };
 
@@ -1304,7 +1308,7 @@ export function OrderLineItemsSection({
                   const priceEditText = priceEditTextById[String(item.id)] ?? displayPrice.toFixed(2);
                   const isEditingPrice = editingPriceItemId === String(item.id);
 
-                  const statusValue = item.status || "queued";
+                  const statusValue = item.status || "new";
 
                   const attachmentsForThumb = (allOrderFiles as any[]).filter((f) => f?.orderLineItemId === item.id) as OrderFileWithUser[];
                   const lineItemAttachmentsAssociationKnown =
@@ -1415,7 +1419,7 @@ export function OrderLineItemsSection({
                                 unitPriceLabel={`${formatMoney(perEa)}/ea`}
                                 totalLabel={formatMoney(total)}
                                 badges={{
-                                  queued: statusValue === "queued",
+                                  isNew: statusValue === "new",
                                   override: isOverride,
                                   internal: hasProductionNotes,
                                 }}
@@ -1821,6 +1825,80 @@ export function OrderLineItemsSection({
                                 onRemove={readOnly ? undefined : () => void handleRemoveItem(item.id)}
                                 readOnly={readOnly}
                               />
+
+                              <div className="mt-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-xs font-medium text-muted-foreground">Workflow</span>
+                                  <Badge variant={workflowBadgeVariant((item as any).workflowState)}>
+                                    {WORKFLOW_LABELS[String((item as any).workflowState || "new")] || String((item as any).workflowState || "new")}
+                                  </Badge>
+                                  {(item as any).activeOwnerStepKey && (
+                                    <Badge variant="secondary">
+                                      Owner: {String((item as any).activeOwnerStepKey || (item as any).activeOwnerStationKey || "unassigned")}
+                                    </Badge>
+                                  )}
+                                  {Boolean((item as any).requiresDesign) && (
+                                    <Badge variant="outline">Design</Badge>
+                                  )}
+                                  {Boolean((item as any).requiresPrepress) && (
+                                    <Badge variant="outline">Prepress</Badge>
+                                  )}
+                                </div>
+
+                                {!readOnly && isExpanded && expandedItem && expandedItem.id === item.id && (
+                                  <div className="mt-3 rounded-md border border-border/40 bg-background/70 p-3">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <div>
+                                        <div className="text-sm font-medium">Intake routing</div>
+                                        <div className="text-xs text-muted-foreground">
+                                          Changes reseed workflow only before ownership or downstream work starts.
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-2 text-xs">
+                                        <span className="text-muted-foreground">Initial stage</span>
+                                        <Badge variant="outline">
+                                          {WORKFLOW_LABELS[getInitialWorkflowStateForFlags(requiresDesignInput, requiresPrepressInput)]}
+                                        </Badge>
+                                      </div>
+                                    </div>
+
+                                    <div className="mt-3 flex flex-wrap gap-4">
+                                      <label className="flex items-center gap-2 text-sm text-foreground">
+                                        <Checkbox
+                                          checked={requiresDesignInput}
+                                          onCheckedChange={(checked) => setRequiresDesignInput(checked === true)}
+                                        />
+                                        Requires Design
+                                      </label>
+                                      <label className="flex items-center gap-2 text-sm text-foreground">
+                                        <Checkbox
+                                          checked={requiresPrepressInput}
+                                          onCheckedChange={(checked) => setRequiresPrepressInput(checked === true)}
+                                        />
+                                        Requires Prepress
+                                      </label>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {!readOnly && getWorkflowActions(String((item as any).workflowState || "new")).length > 0 && (
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    {getWorkflowActions(String((item as any).workflowState || "new")).map((action) => (
+                                      <Button
+                                        key={`${item.id}-${action.toState}`}
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-8"
+                                        disabled={transitionWorkflow.isPending}
+                                        onClick={() => transitionWorkflow.mutate({ lineItemId: String(item.id), toState: action.toState })}
+                                      >
+                                        {action.label}
+                                      </Button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           </div>
                         </div>
@@ -1870,7 +1948,6 @@ export function OrderLineItemsSection({
                                 quantity: 1,
                                 unitPrice: "0.00",
                                 totalPrice: "0.00",
-                                status: "queued",
                                 specsJson: { notes: "", selectedOptions: [] },
                               });
                               const nextId = created?.data?.id ?? created?.id ?? null;
@@ -1908,175 +1985,6 @@ export function OrderLineItemsSection({
           </div>
         )}
       </CardContent>
-
-      <Dialog open={!!previewFile} onOpenChange={(open) => { if (!open) setPreviewFile(null); }}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>{previewFile ? getAttachmentDisplayName(previewFile as any) : ""}</DialogTitle>
-            <DialogDescription>
-              <div className="space-y-1">
-                {previewFile?.mimeType ? (
-                  <div>
-                    <span>File type: </span>
-                    <span>{previewFile.mimeType}</span>
-                  </div>
-                ) : (
-                  <div>Preview attachment</div>
-                )}
-                <AttachmentPreviewMeta attachment={previewFile as any} />
-              </div>
-            </DialogDescription>
-          </DialogHeader>
-
-          {previewFile && (() => {
-            const isPdf = isPdfAttachment(previewFile as any);
-            const fileName = previewFile.originalFilename || previewFile.fileName;
-            
-            // Construct same-origin view URL for iframe (PDFs must use /objects proxy)
-            const objectPath = (previewFile as any).objectPath as string | null | undefined;
-            let iframeViewUrl: string | null = null;
-            
-            if (isPdf && typeof objectPath === "string" && objectPath.length) {
-              iframeViewUrl = objectsUrl(`/objects/${objectPath}?filename=${encodeURIComponent(fileName)}`);
-            } else if (isPdf && previewFile.originalUrl && previewFile.originalUrl.startsWith('/objects/')) {
-              iframeViewUrl = previewFile.originalUrl;
-            }
-            
-            // Non-PDF preview URL
-            const previewUrl = authenticatedPreviewImageUrl ?? previewFile.previewUrl ?? previewFile.originalUrl;
-            const hasValidPreview =
-              !isPdf &&
-              !!previewUrl &&
-              (previewUrl.startsWith("blob:") || previewUrl.startsWith("/") || isValidHttpUrl(previewUrl));
-            
-            // Construct download URL
-            let downloadUrl: string | null = null;
-            if (typeof objectPath === "string" && objectPath.length) {
-              downloadUrl = objectsUrl(`/objects/${objectPath}?download=1&filename=${encodeURIComponent(fileName)}`);
-            } else if (previewFile.originalUrl) {
-              downloadUrl = previewFile.originalUrl;
-            }
-
-            return (
-              <div className="space-y-4">
-                {isPdf && iframeViewUrl ? (
-                  <div className="bg-muted/30 rounded-lg p-2 space-y-2">
-                    {!pdfEmbedError ? (
-                      <iframe
-                        title={fileName}
-                        src={String(iframeViewUrl) + "#toolbar=1&navpanes=0"}
-                        className="w-full h-[60vh] rounded-md border border-border bg-background"
-                        style={{ width: '100%', height: '60vh', border: 0 }}
-                        allow="fullscreen"
-                        onLoad={() => {
-                          console.log('[OrderLineItemsSection] PDF iframe loaded:', iframeViewUrl);
-                        }}
-                        onError={(e) => {
-                          setPdfEmbedError(true);
-                          console.error("[OrderLineItemsSection] PDF iframe failed to load", {
-                            src: iframeViewUrl,
-                            fileName,
-                          });
-                        }}
-                      />
-                    ) : (
-                      <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                        <FileText className="w-16 h-16 mb-4 opacity-50" />
-                        <p className="text-sm mb-2">PDF failed to render inline</p>
-                        {downloadUrl && (
-                          <Button
-                            onClick={() => {
-                              const anchor = document.createElement("a");
-                              anchor.href = downloadUrl!;
-                              anchor.download = fileName;
-                              anchor.style.display = "none";
-                              document.body.appendChild(anchor);
-                              anchor.click();
-                              document.body.removeChild(anchor);
-                            }}
-                            variant="outline"
-                          >
-                            <Download className="w-4 h-4 mr-2" />
-                            Download
-                          </Button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ) : isPdf && !iframeViewUrl ? (
-                  <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                    <FileText className="w-16 h-16 mb-4 opacity-50" />
-                    <p className="text-sm mb-2">PDF preview unavailable</p>
-                    <p className="text-xs mb-4">No same-origin URL available</p>
-                    {downloadUrl && (
-                      <Button
-                        onClick={() => {
-                          const anchor = document.createElement("a");
-                          anchor.href = downloadUrl!;
-                          anchor.download = fileName;
-                          anchor.style.display = "none";
-                          document.body.appendChild(anchor);
-                          anchor.click();
-                          document.body.removeChild(anchor);
-                        }}
-                        variant="outline"
-                      >
-                        <Download className="w-4 h-4 mr-2" />
-                        Download
-                      </Button>
-                    )}
-                  </div>
-                ) : hasValidPreview ? (
-                  <div className="flex justify-center bg-muted/30 rounded-lg p-4">
-                    <img src={previewUrl} alt={fileName} className="max-w-full max-h-[60vh] object-contain" />
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                    <FileText className="w-16 h-16 mb-4 opacity-50" />
-                    <p className="text-sm">Preview not available for this file</p>
-                  </div>
-                )}
-
-                <div className="flex items-center justify-between text-sm">
-                  <div className="space-y-1">
-                    <div>
-                      <span className="font-medium">Filename: </span>
-                      <span className="text-muted-foreground">{fileName}</span>
-                    </div>
-                    {previewFile.mimeType && (
-                      <div>
-                        <span className="font-medium">Type: </span>
-                        <span className="text-muted-foreground">{previewFile.mimeType}</span>
-                      </div>
-                    )}
-                  </div>
-
-                  {downloadUrl && (
-                    <div className="flex flex-col items-end gap-1">
-                      <Button
-                        onClick={() => {
-                          const anchor = document.createElement("a");
-                          anchor.href = downloadUrl!;
-                          anchor.download = fileName;
-                          anchor.style.display = "none";
-                          document.body.appendChild(anchor);
-                          anchor.click();
-                          document.body.removeChild(anchor);
-                        }}
-                        variant="outline"
-                      >
-                        <Download className="w-4 h-4 mr-2" />
-                        Download original
-                      </Button>
-                      <span className="text-xs text-muted-foreground">Downloads original file</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })()}
-        </DialogContent>
-      </Dialog>
 
       <Dialog
         open={!!artworkModalLineItemId}

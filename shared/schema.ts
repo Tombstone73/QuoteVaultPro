@@ -38,6 +38,23 @@ export type DownloadIntent = "original" | "print" | "proof" | "preferred";
 
 export const downloadIntentSchema = z.enum(["original", "print", "proof", "preferred"]).default("original");
 
+export const lineItemWorkflowStateValues = [
+  "new",
+  "needs_design",
+  "in_design",
+  "awaiting_proof_approval",
+  "ready_for_prepress",
+  "in_prepress",
+  "ready_for_production",
+  "in_production",
+  "completed",
+  "on_hold",
+  "canceled",
+] as const;
+
+export const lineItemWorkflowStateSchema = z.enum(lineItemWorkflowStateValues);
+export type LineItemWorkflowState = (typeof lineItemWorkflowStateValues)[number];
+
 // ============================================================
 // MULTI-TENANT ORGANIZATION SYSTEM
 // ============================================================
@@ -1276,6 +1293,15 @@ export const quoteLineItems = pgTable("quote_line_items", {
   productionNotes: text("production_notes"),
   createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  // Canonical routing intent (migration 0015).
+  // These fields carry explicit routing truth so quote-to-order conversion
+  // preserves mixed routing without heuristic inference.
+  //   requiresDesign   = true  → needs_design on conversion
+  //   requiresPrepress = true  → ready_for_prepress (after design, if any)
+  //   requiresPrepress = false → ready_for_production (skip prepress)
+  //   requiresPrepress = null  → fall back to productType / org default at conversion time
+  requiresDesign: boolean("requires_design").notNull().default(false),
+  requiresPrepress: boolean("requires_prepress"),
 }, (table) => [
   index("quote_line_items_quote_id_idx").on(table.quoteId),
   index("quote_line_items_product_id_idx").on(table.productId),
@@ -1347,11 +1373,12 @@ export const quoteAttachments = pgTable("quote_attachments", {
   quoteId: varchar("quote_id").notNull().references(() => quotes.id, { onDelete: 'cascade' }),
   quoteLineItemId: varchar("quote_line_item_id").references(() => quoteLineItems.id, { onDelete: 'cascade' }), // NEW: Per-line-item attachment
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  fileRecordId: varchar("file_record_id").references((): AnyPgColumn => fileRecords.id, { onDelete: 'set null' }),
   uploadedByUserId: varchar("uploaded_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   uploadedByName: varchar("uploaded_by_name", { length: 255 }),
-  // Legacy fields (keep for backward compatibility)
+  // Legacy mirror fields (nullable; canonical source of truth is fileRecordId)
   fileName: varchar("file_name", { length: 500 }).notNull(),
-  fileUrl: text("file_url").notNull(),
+  fileUrl: text("file_url"),
   fileSize: integer("file_size"),
   mimeType: varchar("mime_type", { length: 100 }),
   description: text("description"),
@@ -1383,6 +1410,7 @@ export const quoteAttachments = pgTable("quote_attachments", {
   index("quote_attachments_quote_id_idx").on(table.quoteId),
   index("quote_attachments_quote_line_item_id_idx").on(table.quoteLineItemId),
   index("quote_attachments_organization_id_idx").on(table.organizationId),
+  index("quote_attachments_file_record_id_idx").on(table.fileRecordId),
   index("quote_attachments_thumb_status_idx").on(table.thumbStatus),
   index("quote_attachments_page_count_status_idx").on(table.pageCountStatus),
 ]);
@@ -1404,7 +1432,9 @@ export const quoteAttachmentPages = pgTable("quote_attachment_pages", {
   attachmentId: varchar("attachment_id").notNull().references(() => quoteAttachments.id, { onDelete: 'cascade' }),
   pageIndex: integer("page_index").notNull(), // 0-based page index
   thumbStatus: thumbStatusEnum("thumb_status").notNull().default('uploaded'),
+  thumbFileRecordId: varchar("thumb_file_record_id").references(() => fileRecords.id, { onDelete: 'set null' }),
   thumbKey: text("thumb_key"), // Storage key for page thumbnail
+  previewFileRecordId: varchar("preview_file_record_id").references(() => fileRecords.id, { onDelete: 'set null' }),
   previewKey: text("preview_key"), // Storage key for page preview
   thumbError: text("thumb_error"), // Error message if page thumbnail generation failed
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -1412,6 +1442,8 @@ export const quoteAttachmentPages = pgTable("quote_attachment_pages", {
 }, (table) => [
   index("quote_attachment_pages_attachment_id_idx").on(table.attachmentId),
   index("quote_attachment_pages_organization_id_idx").on(table.organizationId),
+  index("quote_attachment_pages_thumb_file_idx").on(table.thumbFileRecordId),
+  index("quote_attachment_pages_preview_file_idx").on(table.previewFileRecordId),
   // Enforce uniqueness: one row per page per attachment
   uniqueIndex("quote_attachment_pages_attachment_page_idx").on(table.attachmentId, table.pageIndex),
 ]);
@@ -2042,7 +2074,285 @@ export type CustomerWithRelations = Customer & {
   creditTransactions: (CustomerCreditTransaction & { user: User })[];
   quotes?: Quote[];
   assignedUser?: User | null;
+  customerProductionFolderReference?: CustomerProductionFolderReference | null;
+  localCompanyFolderPath?: string | null;
 };
+
+// ============================================================
+// STORAGE FOUNDATION (TitanOS BYOS / Titan-managed Phase 1)
+// ============================================================
+
+export const organizationStorageModeEnum = pgEnum("organization_storage_mode", [
+  "titan_managed",
+  "byos_cloud",
+  "byos_local",
+  "hybrid",
+  "disabled",
+]);
+
+export const organizationStorageProfileStatusEnum = pgEnum("organization_storage_profile_status", [
+  "unconfigured",
+  "active",
+  "invalid",
+  "disabled",
+]);
+
+export const storageProviderTypeEnum = pgEnum("storage_provider_type", [
+  "titan_managed",
+  "supabase",
+  "local_filesystem",
+  "gcs",
+  "s3",
+  "azure_blob",
+]);
+
+export const storageProviderRoleEnum = pgEnum("storage_provider_role", [
+  "intake",
+  "canonical",
+  "archive",
+]);
+
+export const storageProviderConfigStatusEnum = pgEnum("storage_provider_config_status", [
+  "missing",
+  "configured",
+  "validated",
+  "invalid",
+  "disabled",
+]);
+
+export const fileStorageClassEnum = pgEnum("file_storage_class", ["hot", "warm", "cold", "archive"]);
+
+export const fileLifecycleStateEnum = pgEnum("file_lifecycle_state", [
+  "upload_pending",
+  "stored_hot",
+  "stored_warm",
+  "stored_cold",
+  "archived",
+  "restore_pending",
+  "deleted",
+]);
+
+export const storagePlacementRoleEnum = pgEnum("storage_placement_role", [
+  "intake",
+  "canonical",
+  "archive",
+  "restore_source",
+]);
+
+export const storagePlacementStateEnum = pgEnum("storage_placement_state", [
+  "active",
+  "superseded",
+  "restore_source",
+  "missing",
+  "deleted",
+]);
+
+export const fileDerivativeTypeEnum = pgEnum("file_derivative_type", [
+  "thumbnail",
+  "preview",
+  "proof",
+  "print_ready",
+  "other",
+]);
+
+export const fileDerivativeStateEnum = pgEnum("file_derivative_state", [
+  "pending",
+  "ready",
+  "failed",
+  "replaced",
+  "deleted",
+]);
+
+export const customerProductionFolderTypeEnum = pgEnum("customer_production_folder_type", [
+  "production_destination",
+]);
+
+export const customerProductionFolderStatusEnum = pgEnum("customer_production_folder_status", [
+  "missing",
+  "configured",
+  "validated",
+  "invalid",
+  "disabled",
+]);
+
+export const storageJobTypeEnum = pgEnum("storage_job_type", [
+  "finalize_upload",
+  "verify_object",
+  "validate_provider",
+  "generate_derivative",
+  "migrate_placement",
+]);
+
+export const storageJobStateEnum = pgEnum("storage_job_state", [
+  "queued",
+  "running",
+  "succeeded",
+  "retryable_failed",
+  "failed",
+  "cancelled",
+]);
+
+export const customerProductionFolderReferences = pgTable("customer_production_folder_references", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  customerId: varchar("customer_id").references(() => customers.id, { onDelete: "set null" }),
+  label: varchar("label", { length: 255 }).notNull(),
+  folderType: customerProductionFolderTypeEnum("folder_type").notNull().default("production_destination"),
+  pathOrUri: text("path_or_uri").notNull(),
+  status: customerProductionFolderStatusEnum("status").notNull().default("configured"),
+  validationError: text("validation_error"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("customer_prod_folder_refs_org_customer_idx").on(table.organizationId, table.customerId),
+  index("customer_prod_folder_refs_org_status_idx").on(table.organizationId, table.status),
+]);
+
+export const insertCustomerProductionFolderReferenceSchema = createInsertSchema(customerProductionFolderReferences).omit({
+  id: true,
+  organizationId: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  label: z.string().min(1).max(255),
+  pathOrUri: z.string().max(2048),
+  folderType: z.enum(["production_destination"]).default("production_destination"),
+  status: z.enum(["missing", "configured", "validated", "invalid", "disabled"]).default("configured"),
+  validationError: z.string().max(2048).optional().nullable(),
+});
+
+export const updateCustomerProductionFolderReferenceSchema = insertCustomerProductionFolderReferenceSchema.partial();
+
+export type InsertCustomerProductionFolderReference = z.infer<typeof insertCustomerProductionFolderReferenceSchema>;
+export type UpdateCustomerProductionFolderReference = z.infer<typeof updateCustomerProductionFolderReferenceSchema>;
+export type CustomerProductionFolderReference = typeof customerProductionFolderReferences.$inferSelect;
+
+export const storageProviderConfigs = pgTable("storage_provider_configs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  providerType: storageProviderTypeEnum("provider_type").notNull(),
+  role: storageProviderRoleEnum("role").notNull(),
+  status: storageProviderConfigStatusEnum("status").notNull().default("configured"),
+  displayName: varchar("display_name", { length: 255 }).notNull(),
+  configJson: jsonb("config_json").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`).notNull(),
+  validationError: text("validation_error"),
+  lastValidatedAt: timestamp("last_validated_at", { withTimezone: true }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("storage_provider_configs_org_idx").on(table.organizationId),
+  index("storage_provider_configs_org_role_idx").on(table.organizationId, table.role),
+  index("storage_provider_configs_org_status_idx").on(table.organizationId, table.status),
+]);
+
+export type StorageProviderConfig = typeof storageProviderConfigs.$inferSelect;
+export type InsertStorageProviderConfig = typeof storageProviderConfigs.$inferInsert;
+
+export const organizationStorageProfiles = pgTable("organization_storage_profiles", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  mode: organizationStorageModeEnum("mode").notNull().default("titan_managed"),
+  status: organizationStorageProfileStatusEnum("status").notNull().default("unconfigured"),
+  primaryProviderConfigId: varchar("primary_provider_config_id").references((): AnyPgColumn => storageProviderConfigs.id, { onDelete: "set null" }),
+  intakeProviderConfigId: varchar("intake_provider_config_id").references((): AnyPgColumn => storageProviderConfigs.id, { onDelete: "set null" }),
+  archiveProviderConfigId: varchar("archive_provider_config_id").references((): AnyPgColumn => storageProviderConfigs.id, { onDelete: "set null" }),
+  productionFolderReferenceId: varchar("production_folder_reference_id").references((): AnyPgColumn => customerProductionFolderReferences.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("organization_storage_profiles_org_uidx").on(table.organizationId),
+  index("organization_storage_profiles_status_idx").on(table.status),
+]);
+
+export type OrganizationStorageProfile = typeof organizationStorageProfiles.$inferSelect;
+export type InsertOrganizationStorageProfile = typeof organizationStorageProfiles.$inferInsert;
+
+export const fileRecords = pgTable("file_records", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  storageClass: fileStorageClassEnum("storage_class").notNull().default("hot"),
+  lifecycleState: fileLifecycleStateEnum("lifecycle_state").notNull().default("upload_pending"),
+  originalFilename: varchar("original_filename", { length: 512 }).notNull(),
+  mimeType: varchar("mime_type", { length: 255 }).notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  checksum: varchar("checksum", { length: 128 }),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("file_records_org_created_idx").on(table.organizationId, table.createdAt),
+  index("file_records_org_state_idx").on(table.organizationId, table.lifecycleState),
+]);
+
+export type FileRecord = typeof fileRecords.$inferSelect;
+export type InsertFileRecord = typeof fileRecords.$inferInsert;
+
+export const storagePlacements = pgTable("storage_placements", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  fileRecordId: varchar("file_record_id").notNull().references(() => fileRecords.id, { onDelete: "cascade" }),
+  providerConfigId: varchar("provider_config_id").notNull().references(() => storageProviderConfigs.id, { onDelete: "restrict" }),
+  placementRole: storagePlacementRoleEnum("placement_role").notNull().default("canonical"),
+  placementState: storagePlacementStateEnum("placement_state").notNull().default("active"),
+  bucket: varchar("bucket", { length: 255 }),
+  objectKey: text("object_key"),
+  localPathRef: text("local_path_ref"),
+  checksum: varchar("checksum", { length: 128 }),
+  sizeBytes: integer("size_bytes"),
+  lastVerifiedAt: timestamp("last_verified_at", { withTimezone: true }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("storage_placements_file_idx").on(table.fileRecordId),
+  index("storage_placements_provider_idx").on(table.providerConfigId),
+  index("storage_placements_state_idx").on(table.placementState),
+]);
+
+export type StoragePlacement = typeof storagePlacements.$inferSelect;
+export type InsertStoragePlacement = typeof storagePlacements.$inferInsert;
+
+export const fileDerivatives = pgTable("file_derivatives", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  fileRecordId: varchar("file_record_id").notNull().references(() => fileRecords.id, { onDelete: "cascade" }),
+  derivativeType: fileDerivativeTypeEnum("derivative_type").notNull().default("preview"),
+  state: fileDerivativeStateEnum("state").notNull().default("pending"),
+  sourcePlacementId: varchar("source_placement_id").references(() => storagePlacements.id, { onDelete: "set null" }),
+  bucket: varchar("bucket", { length: 255 }),
+  objectKey: text("object_key"),
+  mimeType: varchar("mime_type", { length: 255 }),
+  sizeBytes: integer("size_bytes"),
+  errorText: text("error_text"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("file_derivatives_file_idx").on(table.fileRecordId),
+  index("file_derivatives_state_idx").on(table.state),
+]);
+
+export type FileDerivative = typeof fileDerivatives.$inferSelect;
+export type InsertFileDerivative = typeof fileDerivatives.$inferInsert;
+
+export const storageJobs = pgTable("storage_jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  jobType: storageJobTypeEnum("job_type").notNull(),
+  state: storageJobStateEnum("state").notNull().default("queued"),
+  fileRecordId: varchar("file_record_id").references(() => fileRecords.id, { onDelete: "set null" }),
+  sourcePlacementId: varchar("source_placement_id").references(() => storagePlacements.id, { onDelete: "set null" }),
+  targetProviderConfigId: varchar("target_provider_config_id").references(() => storageProviderConfigs.id, { onDelete: "set null" }),
+  payloadJson: jsonb("payload_json").$type<Record<string, unknown> | null>(),
+  errorText: text("error_text"),
+  attempts: integer("attempts").notNull().default(0),
+  scheduledAt: timestamp("scheduled_at", { withTimezone: true }),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("storage_jobs_org_state_idx").on(table.organizationId, table.state),
+  index("storage_jobs_org_created_idx").on(table.organizationId, table.createdAt),
+  index("storage_jobs_file_idx").on(table.fileRecordId),
+]);
+
+export type StorageJob = typeof storageJobs.$inferSelect;
+export type InsertStorageJob = typeof storageJobs.$inferInsert;
 
 // Orders table (Job Management - derived from quotes or standalone)
 export const orders = pgTable("orders", {
@@ -2244,7 +2554,7 @@ export const orderLineItems = pgTable("order_line_items", {
   sqft: decimal("sqft", { precision: 10, scale: 2 }),
   unitPrice: decimal("unit_price", { precision: 10, scale: 2 }).notNull(),
   totalPrice: decimal("total_price", { precision: 10, scale: 2 }).notNull(),
-  status: varchar("status", { length: 50 }).notNull().default("queued"), // queued, printing, finishing, done, canceled
+  status: varchar("status", { length: 50 }).notNull().default("new"), // new, in_production, complete, canceled
   specsJson: jsonb("specs_json").$type<Record<string, any>>(),
   // NEW: v2 canonical option selections (additive)
   optionSelectionsJson: jsonb("option_selections_json").$type<any>(),
@@ -2274,8 +2584,12 @@ export const orderLineItems = pgTable("order_line_items", {
   materialUsages: jsonb("material_usages").$type<LineItemMaterialUsage[]>().default(sql`'[]'::jsonb`).notNull(), // structured material usage tracking
   requiresInventory: boolean("requires_inventory").notNull().default(true), // flag if inventory tracking is needed
   sortOrder: integer("sort_order").notNull().default(0), // Display order in UI (for drag-and-drop reordering)
+  workflowState: varchar("workflow_state", { length: 50 }).notNull().default("new"),
+  requiresDesign: boolean("requires_design").notNull().default(false),
+  requiresProofApproval: boolean("requires_proof_approval").notNull().default(false),
   // Prepress requirement snapshot (migration 0051 - TEMP→PERMANENT contract)
   requiresPrepress: boolean("requires_prepress").notNull().default(true),
+  approvedProofVersionId: varchar("approved_proof_version_id"),
   // Tax system fields
   taxAmount: decimal("tax_amount", { precision: 10, scale: 2 }).default("0").notNull(),
   isTaxableSnapshot: boolean("is_taxable_snapshot").default(true).notNull(),
@@ -2292,7 +2606,11 @@ export const orderLineItems = pgTable("order_line_items", {
   index("order_line_items_order_id_idx").on(table.orderId),
   index("order_line_items_product_id_idx").on(table.productId),
   index("order_line_items_status_idx").on(table.status),
+  index("order_line_items_workflow_state_idx").on(table.workflowState),
+  index("order_line_items_requires_design_idx").on(table.requiresDesign),
+  index("order_line_items_requires_proof_approval_idx").on(table.requiresProofApproval),
   index("order_line_items_requires_prepress_idx").on(table.requiresPrepress),
+  index("order_line_items_approved_proof_version_idx").on(table.approvedProofVersionId),
   index("order_line_items_product_type_idx").on(table.productType),
   index("order_line_items_pbv2_tree_version_id_idx").on(table.pbv2TreeVersionId),
 ]);
@@ -2335,6 +2653,7 @@ export const insertOrderLineItemSchema = createInsertSchema(orderLineItems).omit
   id: true,
   createdAt: true,
   updatedAt: true,
+  approvedProofVersionId: true,
 }).extend({
   productType: z.string().default('wide_roll'),
   quantity: z.coerce.number().int().positive(),
@@ -2343,7 +2662,10 @@ export const insertOrderLineItemSchema = createInsertSchema(orderLineItems).omit
   width: z.coerce.number().positive().optional().nullable(),
   height: z.coerce.number().positive().optional().nullable(),
   sqft: z.coerce.number().positive().optional().nullable(),
-  status: z.enum(["queued", "printing", "finishing", "done", "canceled"]).default("queued"),
+  status: z.enum(["new", "in_production", "complete", "canceled"]).default("new"),
+  workflowState: lineItemWorkflowStateSchema.default("new"),
+  requiresDesign: z.boolean().default(false),
+  requiresProofApproval: z.boolean().default(false),
   specsJson: z.record(z.any()).optional().nullable(),
   // PBV2 request-only fields (not persisted directly; snapshots are persisted).
   // Keep validation permissive enough for future option expansions, but still JSON-safe.
@@ -2610,6 +2932,15 @@ export type ProductionEventType =
   | "reprint_incremented"
   | "media_used_set";
 
+export const productionStationStepTriggerSchema = z.object({
+  type: z.string().min(1),
+  config: z.record(z.unknown()).optional().default({}),
+});
+
+export const productionStationStepTriggersSchema = z.array(productionStationStepTriggerSchema).default([]);
+
+export type ProductionStationStepTrigger = z.infer<typeof productionStationStepTriggerSchema>;
+
 export const productionJobs = pgTable("production_jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()::text`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
@@ -2642,10 +2973,36 @@ export const productionEvents = pgTable("production_events", {
   index("production_events_org_type_created_idx").on(table.organizationId, table.type, table.createdAt),
 ]);
 
+export const productionStationSteps = pgTable("production_station_steps", {
+  id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()::text`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  stationKey: varchar("station_key", { length: 50 }).notNull(),
+  key: varchar("key", { length: 80 }).notNull(),
+  label: varchar("label", { length: 200 }).notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+  active: boolean("active").notNull().default(true),
+  triggers: jsonb("triggers").$type<ProductionStationStepTrigger[]>().notNull().default(sql`'[]'::jsonb`),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("production_station_steps_org_station_key_uidx").on(table.organizationId, table.stationKey, table.key),
+  index("production_station_steps_org_station_sort_idx").on(table.organizationId, table.stationKey, table.sortOrder),
+]);
+
+export const insertProductionStationStepSchema = createInsertSchema(productionStationSteps).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  triggers: productionStationStepTriggersSchema.optional().default([]),
+});
+
 export type ProductionJob = typeof productionJobs.$inferSelect;
 export type InsertProductionJob = typeof productionJobs.$inferInsert;
 export type ProductionEvent = typeof productionEvents.$inferSelect;
 export type InsertProductionEvent = typeof productionEvents.$inferInsert;
+export type ProductionStationStep = typeof productionStationSteps.$inferSelect;
+export type InsertProductionStationStep = z.infer<typeof insertProductionStationStepSchema>;
 
 // -------------------- Invoicing & Payments (Future QuickBooks Sync Ready) --------------------
 
@@ -3272,11 +3629,12 @@ export const orderAttachments = pgTable("order_attachments", {
   orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
   orderLineItemId: varchar("order_line_item_id").references(() => orderLineItems.id, { onDelete: 'cascade' }), // NEW: Per-line-item attachment
   quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: 'set null' }), // Track if uploaded during quote checkout
+  fileRecordId: varchar("file_record_id").references((): AnyPgColumn => fileRecords.id, { onDelete: 'set null' }),
   uploadedByUserId: varchar("uploaded_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   uploadedByName: varchar("uploaded_by_name", { length: 255 }), // Snapshot
-  // Legacy fields (keep for backward compatibility)
+  // Legacy mirror fields (nullable; canonical source of truth is fileRecordId)
   fileName: varchar("file_name", { length: 500 }).notNull(),
-  fileUrl: text("file_url").notNull(), // GCS path or legacy URL
+  fileUrl: text("file_url"), // legacy storage key or external URL
   fileSize: integer("file_size"), // bytes
   mimeType: varchar("mime_type", { length: 100 }),
   description: text("description"),
@@ -3307,6 +3665,7 @@ export const orderAttachments = pgTable("order_attachments", {
   index("order_attachments_order_id_idx").on(table.orderId),
   index("order_attachments_order_line_item_id_idx").on(table.orderLineItemId),
   index("order_attachments_quote_id_idx").on(table.quoteId),
+  index("order_attachments_file_record_id_idx").on(table.fileRecordId),
   index("order_attachments_role_idx").on(table.role),
   index("order_attachments_thumb_status_idx").on(table.thumbStatus),
 ]);
@@ -4272,7 +4631,8 @@ export const assetLinkRoleEnum = pgEnum('asset_link_role', ['primary', 'attachme
 export const assets = pgTable('assets', {
   id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
-  fileKey: text('file_key').notNull(), // uploads/org_<orgId>/asset/<assetId>/<filename>
+  fileRecordId: varchar('file_record_id').references((): AnyPgColumn => fileRecords.id, { onDelete: 'set null' }),
+  fileKey: text('file_key'), // legacy original locator; canonical source of truth is fileRecordId
   fileName: text('file_name').notNull(),
   mimeType: text('mime_type'),
   sizeBytes: integer('size_bytes'),
@@ -4287,6 +4647,7 @@ export const assets = pgTable('assets', {
 }, (table) => [
   index('assets_org_id_idx').on(table.organizationId),
   index('assets_org_asset_idx').on(table.organizationId, table.id),
+  index('assets_file_record_id_idx').on(table.fileRecordId),
   index('assets_file_key_idx').on(table.fileKey),
   index('assets_preview_status_idx').on(table.organizationId, table.previewStatus),
 ]);
@@ -4500,6 +4861,7 @@ export const lineItemFiles = pgTable("line_item_files", {
   orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
   lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
   prepressSessionId: varchar("prepress_session_id").references(() => prepressSessions.id, { onDelete: 'set null' }),
+  fileRecordId: varchar("file_record_id").references((): AnyPgColumn => fileRecords.id, { onDelete: 'set null' }),
   
   // File metadata
   role: lineItemFileRoleEnum("role").notNull(), // original | final | reference
@@ -4524,9 +4886,95 @@ export const lineItemFiles = pgTable("line_item_files", {
   index("line_item_files_org_idx").on(table.organizationId),
   index("line_item_files_order_idx").on(table.orderId),
   index("line_item_files_line_item_idx").on(table.lineItemId),
+  index("line_item_files_file_record_idx").on(table.fileRecordId),
   index("line_item_files_session_idx").on(table.prepressSessionId),
   index("line_item_files_role_status_idx").on(table.role, table.status),
   index("line_item_files_supersedes_idx").on(table.supersedesFileId),
+]);
+
+export const lineItemProofVersionStatusEnum = pgEnum('line_item_proof_version_status', [
+  'draft',
+  'awaiting_response',
+  'approved',
+  'rejected',
+  'revision_requested',
+  'superseded',
+]);
+
+export const lineItemProofResponseDecisionEnum = pgEnum('line_item_proof_response_decision', [
+  'approved',
+  'rejected',
+  'revision_requested',
+]);
+
+export const lineItemProofVersions = pgTable("line_item_proof_versions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  proofFileId: varchar("proof_file_id").notNull().references(() => orderAttachments.id, { onDelete: 'restrict' }),
+  versionNumber: integer("version_number").notNull(),
+  status: lineItemProofVersionStatusEnum("status").notNull().default('draft'),
+  internalNotes: text("internal_notes"),
+  customerMessage: text("customer_message"),
+  sentToName: varchar("sent_to_name", { length: 255 }),
+  sentToEmail: varchar("sent_to_email", { length: 255 }),
+  sentByUserId: varchar("sent_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+  createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("line_item_proof_versions_org_idx").on(table.organizationId),
+  index("line_item_proof_versions_order_idx").on(table.orderId),
+  index("line_item_proof_versions_line_item_idx").on(table.lineItemId),
+  index("line_item_proof_versions_status_idx").on(table.status),
+  index("line_item_proof_versions_proof_file_idx").on(table.proofFileId),
+  uniqueIndex("line_item_proof_versions_line_item_version_uidx").on(table.lineItemId, table.versionNumber),
+]);
+
+export const lineItemProofApprovals = pgTable("line_item_proof_approvals", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  proofVersionId: varchar("proof_version_id").notNull().references(() => lineItemProofVersions.id, { onDelete: 'cascade' }),
+  decision: lineItemProofResponseDecisionEnum("decision").notNull(),
+  responseNotes: text("response_notes"),
+  responderUserId: varchar("responder_user_id").references(() => users.id, { onDelete: 'set null' }),
+  responderName: varchar("responder_name", { length: 255 }),
+  responderEmail: varchar("responder_email", { length: 255 }),
+  responderSource: varchar("responder_source", { length: 50 }).notNull().default('internal'),
+  respondedAt: timestamp("responded_at", { withTimezone: true }).defaultNow().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("line_item_proof_approvals_org_idx").on(table.organizationId),
+  index("line_item_proof_approvals_order_idx").on(table.orderId),
+  index("line_item_proof_approvals_line_item_idx").on(table.lineItemId),
+  index("line_item_proof_approvals_decision_idx").on(table.decision),
+  uniqueIndex("line_item_proof_approvals_version_uidx").on(table.proofVersionId),
+]);
+
+export const lineItemProofManualApprovalOverrides = pgTable("line_item_proof_manual_approval_overrides", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  proofVersionId: varchar("proof_version_id").notNull().references(() => lineItemProofVersions.id, { onDelete: 'cascade' }),
+  source: varchar("source", { length: 50 }).notNull().default('manual_override'),
+  overrideReason: text("override_reason").notNull(),
+  internalNote: text("internal_note"),
+  actorUserId: varchar("actor_user_id").references(() => users.id, { onDelete: 'set null' }),
+  actorName: varchar("actor_name", { length: 255 }),
+  actorEmail: varchar("actor_email", { length: 255 }),
+  overriddenAt: timestamp("overridden_at", { withTimezone: true }).defaultNow().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("line_item_proof_manual_approval_overrides_org_idx").on(table.organizationId),
+  index("line_item_proof_manual_approval_overrides_order_idx").on(table.orderId),
+  index("line_item_proof_manual_approval_overrides_line_item_idx").on(table.lineItemId),
+  index("line_item_proof_manual_approval_overrides_created_at_idx").on(table.createdAt),
+  uniqueIndex("line_item_proof_manual_approval_overrides_version_uidx").on(table.proofVersionId),
 ]);
 
 // Zod schemas
@@ -4547,6 +4995,39 @@ export const updateLineItemFileSchema = insertLineItemFileSchema.partial().exten
   id: z.string(),
 });
 
+export const insertLineItemProofVersionSchema = createInsertSchema(lineItemProofVersions).omit({
+  id: true,
+  versionNumber: true,
+  sentAt: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateLineItemProofVersionSchema = insertLineItemProofVersionSchema.partial().extend({
+  id: z.string(),
+});
+
+export const insertLineItemProofApprovalSchema = createInsertSchema(lineItemProofApprovals).omit({
+  id: true,
+  respondedAt: true,
+  createdAt: true,
+});
+
+export const updateLineItemProofApprovalSchema = insertLineItemProofApprovalSchema.partial().extend({
+  id: z.string(),
+});
+
+export const insertLineItemProofManualApprovalOverrideSchema = createInsertSchema(lineItemProofManualApprovalOverrides).omit({
+  id: true,
+  source: true,
+  overriddenAt: true,
+  createdAt: true,
+});
+
+export const updateLineItemProofManualApprovalOverrideSchema = insertLineItemProofManualApprovalOverrideSchema.partial().extend({
+  id: z.string(),
+});
+
 // Types
 export type PrepressSession = typeof prepressSessions.$inferSelect;
 export type InsertPrepressSession = z.infer<typeof insertPrepressSessionSchema>;
@@ -4555,6 +5036,18 @@ export type UpdatePrepressSession = z.infer<typeof updatePrepressSessionSchema>;
 export type LineItemFile = typeof lineItemFiles.$inferSelect;
 export type InsertLineItemFile = z.infer<typeof insertLineItemFileSchema>;
 export type UpdateLineItemFile = z.infer<typeof updateLineItemFileSchema>;
+
+export type LineItemProofVersion = typeof lineItemProofVersions.$inferSelect;
+export type InsertLineItemProofVersion = z.infer<typeof insertLineItemProofVersionSchema>;
+export type UpdateLineItemProofVersion = z.infer<typeof updateLineItemProofVersionSchema>;
+
+export type LineItemProofApproval = typeof lineItemProofApprovals.$inferSelect;
+export type InsertLineItemProofApproval = z.infer<typeof insertLineItemProofApprovalSchema>;
+export type UpdateLineItemProofApproval = z.infer<typeof updateLineItemProofApprovalSchema>;
+
+export type LineItemProofManualApprovalOverride = typeof lineItemProofManualApprovalOverrides.$inferSelect;
+export type InsertLineItemProofManualApprovalOverride = z.infer<typeof insertLineItemProofManualApprovalOverrideSchema>;
+export type UpdateLineItemProofManualApprovalOverride = z.infer<typeof updateLineItemProofManualApprovalOverrideSchema>;
 
 // ============================================================
 // REPRINT REQUESTS

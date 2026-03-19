@@ -25,7 +25,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { FileIcon, Edit2, Trash2, Upload, Image as ImageIcon, Star, FileText, Loader2 } from "lucide-react";
-import { useOrderFiles, useAttachFileToOrder, useUpdateOrderFile, useDetachOrderFile } from "@/hooks/useOrderFiles";
+import { useOrderFiles, useUpdateOrderFile, useDetachOrderFile } from "@/hooks/useOrderFiles";
 import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
@@ -33,12 +33,8 @@ import { isValidHttpUrl } from "@/lib/utils";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
-import { SUPABASE_MAX_UPLOAD_BYTES } from "@/lib/config/storage";
-import { fileToBase64 } from "@/lib/uploads/fileToBase64";
-import { LargeFileLocalDevWarningDialog } from "@/components/LargeFileLocalDevWarningDialog";
+import { uploadAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-
-type StorageTarget = "supabase" | "local_dev";
 
 const FILE_ROLES = [
   { value: 'artwork', label: 'Artwork', icon: ImageIcon },
@@ -65,7 +61,6 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { data: files = [], isLoading } = useOrderFiles(orderId);
-  const attachFile = useAttachFileToOrder(orderId);
   const updateFile = useUpdateOrderFile(orderId);
   const detachFile = useDetachOrderFile(orderId);
 
@@ -98,9 +93,6 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
   // Upload state
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
-  const [largeFileDialogOpen, setLargeFileDialogOpen] = useState(false);
-
   // Edit dialog form state
   const [editRole, setEditRole] = useState<string>('other');
   const [editSide, setEditSide] = useState<string>('na');
@@ -118,87 +110,17 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
 
     try {
       for (const file of filesToUpload) {
-        const requestedStorageTarget: StorageTarget = file.size > SUPABASE_MAX_UPLOAD_BYTES ? "local_dev" : "supabase";
-
         try {
-          const urlResponse = await fetch("/api/objects/upload", {
-            method: "POST",
-            credentials: "include",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              fileName: file.name,
-              fileSizeBytes: file.size,
-              requestedStorageTarget,
-            }),
+          await uploadAttachmentViaChunked({
+            file,
+            purpose: "order-attachment",
+            parentId: orderId,
+            linkUrl: `/api/orders/${orderId}/files`,
+            linkBody: { role: "other", side: "na" },
           });
-
-          if (!urlResponse.ok) {
-            const errorData = await urlResponse.json().catch(() => ({}));
-            throw new Error(errorData.message || "Failed to get upload URL");
-          }
-
-          const preflight = await urlResponse.json().catch(() => ({}));
-          const decidedTarget: StorageTarget =
-            (preflight?.storageTarget === "local_dev" || preflight?.storageTarget === "supabase")
-              ? preflight.storageTarget
-              : requestedStorageTarget;
-
-          if (preflight?.method === "ATOMIC" || decidedTarget === "local_dev" || !preflight?.url) {
-            const fileBufferBase64 = await fileToBase64(file);
-            const res = await fetch(`/api/orders/${orderId}/files`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              credentials: "include",
-              body: JSON.stringify({
-                originalFilename: file.name,
-                fileName: file.name,
-                fileSize: file.size,
-                mimeType: file.type,
-                fileBuffer: fileBufferBase64,
-                role: "other",
-                side: "na",
-                requestedStorageTarget,
-              }),
-            });
-
-            if (!res.ok) {
-              const json = await res.json().catch(() => ({}));
-              throw new Error(json?.error || `Failed to attach ${file.name}`);
-            }
-
-            successCount++;
-            continue;
-          }
-
-          const { url, method, path } = preflight;
-
-          const uploadResponse = await fetch(url, {
-            method: method || "PUT",
-            body: file,
-            headers: {
-              "Content-Type": file.type || "application/octet-stream",
-            },
-          });
-
-          if (!uploadResponse.ok) {
-            throw new Error(`Failed to upload ${file.name}`);
-          }
-
-          const fileUrl = typeof path === "string" && path ? path : url.split("?")[0];
-
-          await attachFile.mutateAsync({
-            fileName: file.name,
-            fileUrl,
-            fileSize: file.size,
-            mimeType: file.type,
-            role: "other",
-            side: "na",
-            requestedStorageTarget,
-          } as any);
-
           successCount++;
         } catch (fileError: any) {
-          console.error(`Error uploading ${file.name}:`, fileError);
+          console.error(`[OrderArtworkPanel] Error uploading ${file.name}:`, fileError);
           errorCount++;
         }
       }
@@ -240,12 +162,6 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
     if (!e.target.files || e.target.files.length === 0) return;
 
     const filesToUpload = Array.from(e.target.files);
-    const hasOversized = filesToUpload.some((f) => f.size > SUPABASE_MAX_UPLOAD_BYTES);
-    if (hasOversized) {
-      setPendingFiles(filesToUpload);
-      setLargeFileDialogOpen(true);
-      return;
-    }
 
     await uploadFiles(filesToUpload);
   };
@@ -333,20 +249,6 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
 
   return (
     <>
-      <LargeFileLocalDevWarningDialog
-        open={largeFileDialogOpen}
-        onCancel={() => {
-          setLargeFileDialogOpen(false);
-          setPendingFiles(null);
-          clearFileInput();
-        }}
-        onContinue={async () => {
-          const filesToUpload = pendingFiles || [];
-          setLargeFileDialogOpen(false);
-          setPendingFiles(null);
-          await uploadFiles(filesToUpload);
-        }}
-      />
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">

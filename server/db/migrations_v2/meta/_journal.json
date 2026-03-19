@@ -22,6 +22,111 @@
       "when": 1771953200001,
       "tag": "0002_production_jobs_station_uniqueness",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 0,
+      "tag": "0003_active_job_uniqueness",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 0,
+      "tag": "0004_line_item_status_cleanup",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1773187200000,
+      "tag": "0005_production_station_steps",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1773273600000,
+      "tag": "0006_prepress_active_session_uniqueness",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1773446400000,
+      "tag": "0007_storage_foundation_phase1",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1773532800000,
+      "tag": "0008_storage_foundation_phase1_repair",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1773619200000,
+      "tag": "0009_canonical_file_record_links",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1773705600000,
+      "tag": "0010_assets_file_record_link",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1773792000000,
+      "tag": "0011_quote_attachment_page_file_records",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1773878400000,
+      "tag": "0012_relax_legacy_file_key_constraints",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1773964800000,
+      "tag": "0013_line_item_workflow_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1774047600000,
+      "tag": "0014_line_item_workflow_truth_cleanup",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1742169600000,
+      "tag": "0015_quote_line_item_routing",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1773842340043,
+      "tag": "0016_line_item_proofing_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1773872609328,
+      "tag": "0017_line_item_proof_manual_approval_overrides",
+      "breakpoints": true
     }
   ]
 }

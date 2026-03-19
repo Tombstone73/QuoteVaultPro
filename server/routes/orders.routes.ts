@@ -47,6 +47,8 @@ import { ensureCustomerForUser } from "../db/syncUsersToCustomers";
 import { updateOrderFulfillmentStatus } from "../fulfillmentService";
 import { portalContext, tenantContext, getPortalCustomer } from "../tenantContext";
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
+import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
+import { findActiveJobForLineItem } from "../services/productionOwnership";
 import { pbv2ToChildItemProposals, pbv2ToMaterialEffects, pbv2ToPricingAddons } from "@shared/pbv2/pricingAdapter";
 import { computePbv2InputSignature } from "@shared/pbv2/pbv2InputSignature";
 import { pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
@@ -70,6 +72,7 @@ import {
     createRequestLogOnce,
     enrichAttachmentWithUrls,
     normalizeObjectKeyForDb,
+    resolveOriginalFileAccess,
     scheduleSupabaseObjectSelfCheck,
     tryExtractSupabaseObjectKeyFromUrl
 } from "../lib/supabaseObjectHelpers";
@@ -87,6 +90,10 @@ import {
     upsertOrderWorkflowDraft,
     updateOrderWorkflowStatus,
 } from "../services/orderWorkflowService";
+import { storageApplicationService } from "../services/storage/StorageApplicationService";
+import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
+import { deleteStoredObjectKeys } from "../services/storage/deleteStoredObjectKeys";
+import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -113,6 +120,56 @@ const productionLineItemStatusRuleSchema = z
         sortOrder: z.number().int().optional().nullable(),
     })
     .strict();
+
+async function resolveEffectiveLineItemRouting(args: {
+    organizationId: string;
+    productId: string;
+    requestedRequiresDesign?: boolean | null;
+    requestedRequiresPrepress?: boolean | null;
+}) {
+    const [org] = await db
+        .select({ prepressDefaultEnabled: organizations.prepressDefaultEnabled })
+        .from(organizations)
+        .where(eq(organizations.id, args.organizationId))
+        .limit(1);
+
+    const [productRow] = await db
+        .select({ requiresPrepressOverride: productTypes.requiresPrepressOverride })
+        .from(products)
+        .leftJoin(productTypes, eq(products.productTypeId, productTypes.id))
+        .where(eq(products.id, args.productId))
+        .limit(1);
+
+    const requiresDesign = args.requestedRequiresDesign === true;
+    const requiresPrepress = typeof args.requestedRequiresPrepress === "boolean"
+        ? args.requestedRequiresPrepress
+        : productRow?.requiresPrepressOverride ?? org?.prepressDefaultEnabled ?? true;
+
+    return {
+        requiresDesign,
+        requiresPrepress,
+        workflowState: getInitialWorkflowState({ requiresDesign, requiresPrepress }),
+    };
+}
+
+export const ROUTING_EDIT_INTAKE_SAFE_STATES = [
+    "new",
+    "needs_design",
+    "ready_for_prepress",
+    "ready_for_production",
+] as const;
+
+export function canEditLineItemRouting(args: {
+    workflowState?: string | null;
+    hasActiveJob: boolean;
+}): boolean {
+    if (args.hasActiveJob) {
+        return false;
+    }
+
+    const currentWorkflowState = String(args.workflowState || "new").trim().toLowerCase();
+    return ROUTING_EDIT_INTAKE_SAFE_STATES.includes(currentWorkflowState as (typeof ROUTING_EDIT_INTAKE_SAFE_STATES)[number]);
+}
 
 const productionLineItemStatusRulesSchema = z.array(productionLineItemStatusRuleSchema);
 
@@ -550,6 +607,155 @@ export async function registerOrderRoutes(
 ) {
     const { isAuthenticated, tenantContext, isAdmin, isAdminOrOwner } = deps;
 
+    const persistOrderAttachment = async (args: {
+        orderId: string;
+        orderLineItemId?: string | null;
+        quoteId?: string | null;
+        organizationId: string;
+        userId: string | null;
+        userName: string;
+        description?: string | null;
+        requestedTarget?: string | null;
+        orderNumber?: string | null;
+        role?: FileRole;
+        side?: FileSide;
+        isPrimary?: boolean;
+        source:
+            | {
+                kind: "buffer";
+                buffer: Buffer;
+                originalFilename: string;
+                mimeType: string;
+            }
+            | {
+                kind: "upload-session";
+                uploadId: string;
+                expectedPurpose: "order-attachment";
+                expectedParentId: string;
+            }
+            | {
+                kind: "existing-key";
+                fileUrl: string;
+                originalFilename: string;
+                mimeType?: string | null;
+                fileSize?: number | null;
+                checksum?: string | null;
+                storedFilename?: string | null;
+                extension?: string | null;
+            };
+    }) => {
+        const sourceMimeType = (
+            args.source.kind === 'buffer'
+                ? args.source.mimeType
+                : 'mimeType' in args.source
+                    ? args.source.mimeType ?? null
+                    : null
+        )?.toLowerCase() ?? '';
+        const sourceFilename = (
+            args.source.kind === 'upload-session'
+                ? ''
+                : args.source.originalFilename
+        ).toLowerCase();
+        const isPdfSource = sourceMimeType.includes('pdf') || sourceFilename.endsWith('.pdf');
+
+        const finalized = await storageApplicationService.finalizeUpload({
+            organizationId: args.organizationId,
+            createdByUserId: args.userId,
+            requestedTarget: args.requestedTarget,
+            resource: {
+                organizationId: args.organizationId,
+                resourceType: "order",
+                resourceId: args.orderId,
+                orderNumber: args.orderNumber ?? undefined,
+                lineItemId: args.orderLineItemId ?? undefined,
+            },
+            source: args.source,
+            persistLink: async (tx, stored) => {
+                const [created] = await tx.insert(orderAttachments).values({
+                    orderId: args.orderId,
+                    orderLineItemId: args.orderLineItemId ?? null,
+                    quoteId: args.quoteId || null,
+                    fileRecordId: stored.fileRecord.id,
+                    uploadedByUserId: args.userId,
+                    uploadedByName: args.userName,
+                    description: args.description || null,
+                    fileName: stored.storedObject.originalFilename,
+                    fileUrl: null,
+                    fileSize: stored.storedObject.sizeBytes,
+                    mimeType: stored.storedObject.mimeType,
+                    originalFilename: stored.storedObject.originalFilename,
+                    storedFilename: stored.storedObject.storedFilename,
+                    relativePath: null,
+                    storageProvider: null,
+                    extension: stored.storedObject.extension,
+                    checksum: stored.storedObject.checksum,
+                    sizeBytes: stored.storedObject.sizeBytes,
+                    thumbStatus: isPdfSource ? 'thumb_pending' : 'uploaded',
+                    role: args.role ?? 'other',
+                    side: args.side ?? 'na',
+                    isPrimary: args.isPrimary ?? false,
+                }).returning();
+
+                if (!created) {
+                    throw new Error("Failed to create order attachment link");
+                }
+
+                return created;
+            },
+        });
+
+        return finalized.linkedRecord;
+    };
+
+    const kickoffOrderPdfThumbnailProcessing = async (args: {
+        organizationId: string;
+        attachment: any;
+        logLabel: string;
+    }) => {
+        const attachmentFileName = String(args.attachment?.originalFilename ?? args.attachment?.fileName ?? '').toLowerCase();
+        const attachmentMimeType = String(args.attachment?.mimeType ?? '').toLowerCase();
+        const isPdf = attachmentMimeType.includes('pdf') || attachmentFileName.endsWith('.pdf');
+
+        if (!isPdf) {
+            return;
+        }
+
+        const resolvedOriginal = args.attachment.fileRecordId
+            ? await canonicalFileReadResolver.resolveOriginal(String(args.attachment.fileRecordId))
+            : null;
+        const canonicalStorageKey = resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? args.attachment.fileUrl ?? null;
+        const canonicalStorageProvider = resolvedOriginal?.providerType === 'local_filesystem'
+            ? 'local'
+            : resolvedOriginal?.providerType === 's3'
+                ? 's3'
+                : resolvedOriginal?.objectKey
+                    ? 'supabase'
+                    : ((args.attachment.storageProvider as 'local' | 's3' | 'gcs' | 'supabase' | null | undefined) ?? null);
+        const isNotHttpUrl = typeof canonicalStorageKey === 'string' && canonicalStorageKey.length > 0 && !/^https?:\/\//i.test(canonicalStorageKey);
+
+        if (!canonicalStorageProvider || !canonicalStorageKey || !isNotHttpUrl) {
+            return;
+        }
+
+        setImmediate(() => {
+            void (async () => {
+                try {
+                    const { processPdfAttachmentDerivedData } = await import('../services/pdfProcessing');
+                    await processPdfAttachmentDerivedData({
+                        orgId: args.organizationId,
+                        attachmentId: String(args.attachment.id),
+                        storageKey: canonicalStorageKey,
+                        storageProvider: canonicalStorageProvider,
+                        mimeType: args.attachment.mimeType || null,
+                        attachmentType: 'order',
+                    });
+                } catch (error: any) {
+                    console.error(`[${args.logLabel}] PDF kickoff failed for ${args.attachment.id}:`, error);
+                }
+            })();
+        });
+    };
+
     app.get("/api/workflow/order", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
@@ -721,43 +927,6 @@ export async function registerOrderRoutes(
                     try {
                         const orderIds = result.items.map((o: any) => o.id).filter(Boolean);
                         if (orderIds.length) {
-                            const attachmentRows = await db
-                                .select({
-                                    orderId: orderAttachments.orderId,
-                                    id: orderAttachments.id,
-                                    fileUrl: orderAttachments.fileUrl,
-                                    storageProvider: orderAttachments.storageProvider,
-                                    thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
-                                    thumbKey: orderAttachments.thumbKey,
-                                    previewKey: orderAttachments.previewKey,
-                                    mimeType: orderAttachments.mimeType,
-                                    fileName: orderAttachments.fileName,
-                                    originalFilename: orderAttachments.originalFilename,
-                                    createdAt: orderAttachments.createdAt,
-                                })
-                                .from(orderAttachments)
-                                .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
-                                .where(
-                                    and(
-                                        inArray(orderAttachments.orderId, orderIds),
-                                        eq(orders.organizationId, organizationId),
-                                    )
-                                )
-                                .orderBy(desc(orderAttachments.createdAt));
-
-                            const logOnce = createRequestLogOnce();
-                            const countsByOrderId: Record<string, number> = {};
-                            const previewsByOrderId: Record<string, any[]> = {};
-
-                            for (const row of attachmentRows) {
-                                const orderId = row.orderId as string;
-                                countsByOrderId[orderId] = (countsByOrderId[orderId] ?? 0) + 1;
-                                if (!previewsByOrderId[orderId]) previewsByOrderId[orderId] = [];
-                                if (previewsByOrderId[orderId].length < 3) {
-                                    previewsByOrderId[orderId].push(row);
-                                }
-                            }
-
                             const attachmentsSummaryByOrderId: Record<
                                 string,
                                 { totalCount: number; previews: Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }> }
@@ -768,33 +937,10 @@ export async function registerOrderRoutes(
                             const previewCountByOrderId: Record<string, number> = {};
 
                             for (const orderId of orderIds) {
-                                const totalCount = countsByOrderId[orderId] ?? 0;
-                                const previewRows = previewsByOrderId[orderId] ?? [];
-
-                                const previews: Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }> = [];
-                                for (const att of previewRows) {
-                                    // Canonical thumbnail doctrine (READS must match WRITES):
-                                    // - Do not attempt to render legacy `thumbnailRelativePath` as a URL.
-                                    //   That field has historically carried mismatched keys (causing /objects/* -> Supabase 404 spam).
-                                    // - Prefer `thumbKey`/`previewKey` via `enrichAttachmentWithUrls`, which is aligned
-                                    //   with the current thumbnail writers (see server/workers/thumbnailWorker.ts).
-                                    // NOTE: We intentionally do NOT fall back to originalUrl here (could be a PDF).
-                                    const enriched = await enrichAttachmentWithUrls(att, { logOnce });
-                                    const thumbnailUrl =
-                                        (enriched?.thumbnailUrl as string | null) ??
-                                        (enriched?.previewThumbnailUrl as string | null) ??
-                                        (enriched?.thumbUrl as string | null) ??
-                                        (enriched?.previewUrl as string | null) ??
-                                        (enriched?.pages?.[0]?.thumbUrl as string | null) ??
-                                        null;
-
-                                    previews.push({
-                                        id: String(att.id),
-                                        filename: String(att.originalFilename ?? att.fileName ?? 'Attachment'),
-                                        mimeType: (att.mimeType ?? null) as string | null,
-                                        thumbnailUrl,
-                                    });
-                                }
+                                const item = result.items.find((entry: any) => entry.id === orderId);
+                                const attachmentsSummary = item?.attachmentsSummary ?? { totalCount: 0, previews: [] };
+                                const previews = attachmentsSummary.previews ?? [];
+                                const totalCount = attachmentsSummary.totalCount ?? 0;
 
                                 attachmentsSummaryByOrderId[orderId] = {
                                     totalCount,
@@ -894,13 +1040,13 @@ export async function registerOrderRoutes(
                                                 });
                                             }
 
-                                            const { enrichAssetWithUrls } = await import('../services/assets/enrichAssetWithUrls');
+                                            const { enrichAssetPreviewUrls } = await import('../services/assets/enrichAssetWithUrls');
 
                                             const thumbByAssetId = new Map<string, string | null>();
                                             for (const assetId of assetIds) {
                                                 const asset = assetsById.get(assetId);
                                                 if (!asset) continue;
-                                                const enriched = enrichAssetWithUrls(asset);
+                                                const enriched = await enrichAssetPreviewUrls(asset);
                                                 const thumb =
                                                     (enriched as any).previewThumbnailUrl ??
                                                     (enriched as any).thumbnailUrl ??
@@ -1537,7 +1683,7 @@ export async function registerOrderRoutes(
                 return res.status(400).json({ message: "status is required" });
             }
 
-            const validStatuses = ['queued', 'printing', 'finishing', 'done', 'canceled'];
+            const validStatuses = ['complete', 'canceled'];
             if (!validStatuses.includes(status)) {
                 return res.status(400).json({ message: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
             }
@@ -1554,24 +1700,28 @@ export async function registerOrderRoutes(
             if (lineItemIds && Array.isArray(lineItemIds) && lineItemIds.length > 0) {
                 itemsToUpdate = allLineItems.filter(li => lineItemIds.includes(li.id));
             } else {
-                itemsToUpdate = allLineItems.filter(li => li.status !== 'done' && li.status !== 'canceled');
+                itemsToUpdate = allLineItems.filter(li => li.status !== 'complete' && li.status !== 'canceled');
             }
 
             if (itemsToUpdate.length === 0) {
                 return res.json({ success: true, message: "No line items to update", updatedCount: 0 });
             }
 
-            const updatePromises = itemsToUpdate.map(li =>
-                db
-                    .update(orderLineItems)
-                    .set({
-                        status: status as any,
-                        updatedAt: sql`now()`
-                    })
-                    .where(eq(orderLineItems.id, li.id))
-            );
-
-            await Promise.all(updatePromises);
+            const targetState = status === 'complete' ? 'completed' : 'canceled';
+            await db.transaction(async (tx) => {
+                for (const lineItem of itemsToUpdate) {
+                    await transitionLineItemWorkflowState(tx, {
+                        organizationId,
+                        lineItemId: lineItem.id,
+                        toState: targetState,
+                        actorUserId: userId,
+                        metadata: {
+                            source: 'bulk_line_item_status_patch',
+                            requestedStatus: status,
+                        },
+                    });
+                }
+            });
 
             const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
             await storage.createOrderAuditLog({
@@ -1589,38 +1739,6 @@ export async function registerOrderRoutes(
                 },
             });
             
-            // Trigger: Auto-schedule production when line items move into in_production
-            if (status === 'in_production') {
-                if (process.env.NODE_ENV === 'development') {
-                    console.log(`[BulkLineItemStatus:TRIGGER] Detected ${itemsToUpdate.length} items moving to in_production for orderId=${orderId}`);
-                }
-                
-                try {
-                    const { scheduleOrderLineItemsForProduction } = await import('../services/productionScheduling');
-                    const { loadProductionLineItemStatusRulesForOrganization, appendEvent } = await import('../productionHelpers');
-                    
-                    // Only schedule items that weren't already in production
-                    const itemsMovingIntoProduction = itemsToUpdate.filter(li => li.status !== 'in_production');
-                    
-                    if (itemsMovingIntoProduction.length > 0) {
-                        const scheduleResult = await scheduleOrderLineItemsForProduction({
-                            organizationId,
-                            orderId,
-                            lineItemIds: itemsMovingIntoProduction.map(li => li.id),
-                            loadRoutingRules: loadProductionLineItemStatusRulesForOrganization,
-                            appendEvent,
-                        });
-                        
-                        if (process.env.NODE_ENV === 'development') {
-                            console.log(`[BulkLineItemStatus:TRIGGER] Auto-scheduled production for ${itemsMovingIntoProduction.length} items:`, scheduleResult.data);
-                        }
-                    }
-                } catch (productionErr: any) {
-                    console.error('[BulkLineItemStatus:TRIGGER] Production auto-scheduling failed:', productionErr);
-                    // Fail soft - don't break the status update
-                }
-            }
-
             // Billing readiness recompute (fail-soft)
             try {
                 const recompute = await recomputeOrderBillingStatus({ organizationId, orderId });
@@ -1697,7 +1815,7 @@ export async function registerOrderRoutes(
             if (toStatus === 'completed') {
                 const requireLineItemsDone = orgPreferences?.orders?.requireLineItemsDoneToComplete ?? true;
                 if (requireLineItemsDone) {
-                    const incompleteLi = lineItems.filter(li => li.status !== 'done' && li.status !== 'canceled');
+                    const incompleteLi = lineItems.filter(li => li.status !== 'complete' && li.status !== 'canceled');
                     if (incompleteLi.length > 0) {
                         return res.status(400).json({
                             success: false,
@@ -1838,7 +1956,7 @@ export async function registerOrderRoutes(
             }
 
             const lineItems = await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
-            const remainingLineItems = lineItems.filter((li: any) => li.status !== 'done' && li.status !== 'canceled');
+            const remainingLineItems = lineItems.filter((li: any) => li.status !== 'complete' && li.status !== 'canceled');
             const remainingCount = remainingLineItems.length;
             const remainingIds = remainingLineItems.map((li: any) => li.id);
 
@@ -1862,7 +1980,18 @@ export async function registerOrderRoutes(
                 if (remainingCount > 0 && shouldAutoMark) {
                     didAutoMark = true;
                     autoMarkedCount = remainingCount;
-                    await tx.update(orderLineItems).set({ status: 'done', updatedAt: sql`now()` as any }).where(and(eq(orderLineItems.orderId, orderId), inArray(orderLineItems.id, remainingIds)));
+                    for (const lineItemId of remainingIds) {
+                        await transitionLineItemWorkflowState(tx, {
+                            organizationId,
+                            lineItemId,
+                            toState: 'completed',
+                            actorUserId: userId,
+                            metadata: {
+                                source: 'order_complete_production_auto_mark',
+                                orderId,
+                            },
+                        });
+                    }
                 }
 
                 const routingTarget = determineRoutingTarget(order as any);
@@ -2079,200 +2208,110 @@ export async function registerOrderRoutes(
             const whereConditions: any[] = [eq(orderAttachments.orderId, orderId)];
             if (includeLineItems !== 'true') whereConditions.push(isNull(orderAttachments.orderLineItemId));
             const files = await db.select().from(orderAttachments).where(and(...whereConditions)).orderBy(desc(orderAttachments.createdAt));
-            
-            // Debug logging - check what DB returned BEFORE enrichment
+
             if (files.length > 0 && process.env.DEBUG_THUMBNAILS) {
                 console.log('[OrderAttachments:GET] 📊 Raw DB record (before enrichment):');
                 console.log('  - attachmentId:', files[0].id);
-                console.log('  - fileName:', files[0].fileName);
+                console.log('  - fileUrl:', files[0].fileUrl);
+                console.log('  - fileRecordId:', files[0].fileRecordId ?? null);
+                console.log('  - thumbnailUrl:', files[0].thumbnailUrl);
                 console.log('  - thumbKey:', files[0].thumbKey);
                 console.log('  - previewKey:', files[0].previewKey);
-                console.log('  - thumbStatus:', files[0].thumbStatus);
             }
-            
-            const logOnce = createRequestLogOnce();
-            const enrichedFiles = await Promise.all(files.map((f) => enrichAttachmentWithUrls(f, { logOnce })));
-            
-            // Debug logging for thumbnail troubleshooting
-            if (enrichedFiles.length > 0 && process.env.DEBUG_THUMBNAILS) {
-                console.log('[OrderAttachments:GET] 🔍 Enriched attachment (after enrichment):');
-                console.log('  - attachmentId:', enrichedFiles[0].id);
-                console.log('  - thumbUrl:', enrichedFiles[0].thumbUrl);
-                console.log('  - previewUrl:', enrichedFiles[0].previewUrl);
-                console.log('  - thumbKey:', enrichedFiles[0].thumbKey);
-                console.log('  - previewKey:', enrichedFiles[0].previewKey);
-            }
-            
-            return res.json({ success: true, data: enrichedFiles });
-        } catch (error) {
-            console.error("[OrderAttachments:GET] Error:", error);
-            return res.status(500).json({ error: "Failed to fetch order attachments" });
-        }
-    });
-
-    // Unified attachments for Orders list modal: order-level attachments + line-item artwork assets
-    app.get('/api/orders/:orderId/attachments-unified', isAuthenticated, tenantContext, async (req: any, res) => {
-        try {
-            const { orderId } = req.params;
-            const organizationId = getRequestOrganizationId(req);
-            if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
-
-            const [orderRow] = await db
-                .select({ id: orders.id })
-                .from(orders)
-                .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
-                .limit(1);
-
-            if (!orderRow) return res.status(404).json({ error: 'Order not found' });
 
             const logOnce = createRequestLogOnce();
-
-            // 1) Order-level attachments (legacy order_attachments rows)
-            const attachmentRows = await db
-                .select({
-                    id: orderAttachments.id,
-                    fileName: orderAttachments.fileName,
-                    originalFilename: orderAttachments.originalFilename,
-                    fileUrl: orderAttachments.fileUrl,
-                    storageProvider: orderAttachments.storageProvider,
-                    thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
-                    thumbKey: orderAttachments.thumbKey,
-                    previewKey: orderAttachments.previewKey,
-                    mimeType: orderAttachments.mimeType,
-                    createdAt: orderAttachments.createdAt,
-                    orderLineItemId: orderAttachments.orderLineItemId,
-                })
-                .from(orderAttachments)
-                .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
-                .where(and(eq(orderAttachments.orderId, orderId), eq(orders.organizationId, organizationId)))
-                .orderBy(desc(orderAttachments.createdAt));
-
-            const enrichedAttachments = await Promise.all(
-                attachmentRows.map((a) => enrichAttachmentWithUrls(a as any, { logOnce }))
-            );
-
-            const attachmentItems = (enrichedAttachments as any[]).map((att) => {
-                const filename = String(att?.originalFilename ?? att?.fileName ?? 'Attachment');
-                const objectPath = (att?.objectPath as string | null) ?? null;
-                const objectsUrl = typeof objectPath === 'string' && objectPath.length
-                    ? `/objects/${objectPath}?filename=${encodeURIComponent(filename)}`
-                    : null;
-                const previewThumbnailUrl =
-                    (att?.previewThumbnailUrl as string | null) ??
-                    (att?.thumbnailUrl as string | null) ??
-                    (att?.thumbUrl as string | null) ??
-                    (att?.previewUrl as string | null) ??
-                    null;
-
-                return {
-                    id: String(att?.id),
-                    filename,
-                    mimeType: (att?.mimeType as string | null) ?? null,
-                    fileSize: (att?.fileSize as number | null) ?? null,
-                    originalUrl: objectsUrl ?? ((att?.originalUrl as string | null) ?? null),
-                    objectPath,
-                    downloadUrl:
-                        (att?.downloadUrl as string | null) ??
-                        (objectPath ? `/objects/${objectPath}?download=1&filename=${encodeURIComponent(filename)}` : null),
-                    previewThumbnailUrl,
-                    createdAt: att?.createdAt ?? null,
-                    source: 'order' as const,
-                };
-            });
-
-            // 2) Line-item assets linked via asset_links (PHASE 2 pipeline)
-            const lineItemRows = await db
-                .select({ id: orderLineItems.id })
-                .from(orderLineItems)
-                .where(eq(orderLineItems.orderId, orderId));
-
-            const lineItemIds = lineItemRows.map((r) => r.id).filter(Boolean) as string[];
-
+            const attachmentItems = await Promise.all(files.map((file) => enrichAttachmentWithUrls(file, { logOnce })));
             let lineItemAssetItems: any[] = [];
-            if (lineItemIds.length) {
-                const linkRows = await db
-                    .select({
-                        lineItemId: assetLinks.parentId,
-                        assetId: assetLinks.assetId,
-                        role: assetLinks.role,
-                        createdAt: assetLinks.createdAt,
-                    })
-                    .from(assetLinks)
-                    .where(
-                        and(
-                            eq(assetLinks.organizationId, organizationId),
-                            eq(assetLinks.parentType, 'order_line_item'),
-                            inArray(assetLinks.parentId, lineItemIds)
-                        )
-                    )
-                    .orderBy(desc(assetLinks.createdAt));
 
-                const assetIds = Array.from(new Set(linkRows.map((r) => r.assetId).filter(Boolean) as string[]));
+            if (includeLineItems === 'true') {
+                const lineItemRows = await db
+                    .select({ id: orderLineItems.id })
+                    .from(orderLineItems)
+                    .where(eq(orderLineItems.orderId, orderId));
 
-                if (assetIds.length) {
-                    const [assetRows, variantRows] = await Promise.all([
-                        db
-                            .select()
-                            .from(assets)
-                            .where(and(eq(assets.organizationId, organizationId), inArray(assets.id, assetIds))),
-                        db
-                            .select()
-                            .from(assetVariants)
-                            .where(and(eq(assetVariants.organizationId, organizationId), inArray(assetVariants.assetId, assetIds))),
-                    ]);
+                const lineItemIds = lineItemRows.map((row) => row.id).filter(Boolean) as string[];
 
-                    const variantsByAssetId = new Map<string, any[]>();
-                    for (const v of variantRows as any[]) {
-                        const key = String(v.assetId);
-                        const list = variantsByAssetId.get(key) ?? [];
-                        list.push(v);
-                        variantsByAssetId.set(key, list);
-                    }
-
-                    const assetsById = new Map<string, any>();
-                    for (const a of assetRows as any[]) {
-                        assetsById.set(String(a.id), {
-                            ...a,
-                            variants: variantsByAssetId.get(String(a.id)) ?? [],
-                        });
-                    }
-
-                    const { enrichAssetWithUrls } = await import('../services/assets/enrichAssetWithUrls');
-
-                    lineItemAssetItems = (linkRows as any[])
-                        .map((link) => {
-                            const asset = assetsById.get(String(link.assetId));
-                            if (!asset) return null;
-                            const enriched = enrichAssetWithUrls(asset);
-                            const filename = String((enriched as any).fileName ?? 'Artwork');
-                            const previewThumbnailUrl =
-                                (enriched as any).previewThumbnailUrl ??
-                                (enriched as any).thumbnailUrl ??
-                                (enriched as any).thumbUrl ??
-                                null;
-
-                            return {
-                                id: String(link.assetId),
-                                filename,
-                                mimeType: (enriched as any).mimeType ?? (asset as any)?.mimeType ?? null,
-                                fileSize: (enriched as any).fileSize ?? (asset as any)?.fileSize ?? null,
-                                objectPath: typeof (asset as any)?.fileKey === 'string' ? String((asset as any).fileKey) : null,
-                                originalUrl:
-                                    typeof (asset as any)?.fileKey === 'string'
-                                        ? `/objects/${String((asset as any).fileKey)}?filename=${encodeURIComponent(filename)}`
-                                        : ((enriched as any).originalUrl ?? (enriched as any).fileUrl ?? null),
-                                downloadUrl:
-                                    typeof (asset as any)?.fileKey === 'string'
-                                        ? `/objects/${String((asset as any).fileKey)}?download=1&filename=${encodeURIComponent(filename)}`
-                                        : null,
-                                previewThumbnailUrl,
-                                createdAt: link.createdAt ?? (enriched as any).createdAt ?? null,
-                                source: 'line_item' as const,
-                                parentLineItemId: String(link.lineItemId),
-                                role: String(link.role ?? 'other'),
-                            };
+                if (lineItemIds.length) {
+                    const linkRows = await db
+                        .select({
+                            lineItemId: assetLinks.parentId,
+                            assetId: assetLinks.assetId,
+                            role: assetLinks.role,
+                            createdAt: assetLinks.createdAt,
                         })
-                        .filter(Boolean);
+                        .from(assetLinks)
+                        .where(
+                            and(
+                                eq(assetLinks.organizationId, organizationId),
+                                eq(assetLinks.parentType, 'order_line_item'),
+                                inArray(assetLinks.parentId, lineItemIds)
+                            )
+                        )
+                        .orderBy(desc(assetLinks.createdAt));
+
+                    const assetIds = Array.from(new Set(linkRows.map((r) => r.assetId).filter(Boolean) as string[]));
+
+                    if (assetIds.length) {
+                        const [assetRows, variantRows] = await Promise.all([
+                            db
+                                .select()
+                                .from(assets)
+                                .where(and(eq(assets.organizationId, organizationId), inArray(assets.id, assetIds))),
+                            db
+                                .select()
+                                .from(assetVariants)
+                                .where(and(eq(assetVariants.organizationId, organizationId), inArray(assetVariants.assetId, assetIds))),
+                        ]);
+
+                        const variantsByAssetId = new Map<string, any[]>();
+                        for (const v of variantRows as any[]) {
+                            const key = String(v.assetId);
+                            const list = variantsByAssetId.get(key) ?? [];
+                            list.push(v);
+                            variantsByAssetId.set(key, list);
+                        }
+
+                        const assetsById = new Map<string, any>();
+                        for (const a of assetRows as any[]) {
+                            assetsById.set(String(a.id), {
+                                ...a,
+                                variants: variantsByAssetId.get(String(a.id)) ?? [],
+                            });
+                        }
+
+                        const { enrichAssetPreviewUrls } = await import('../services/assets/enrichAssetWithUrls');
+                        const logOnce = createRequestLogOnce();
+
+                        lineItemAssetItems = (await Promise.all((linkRows as any[])
+                            .map(async (link) => {
+                                const asset = assetsById.get(String(link.assetId));
+                                if (!asset) return null;
+                                const enriched = await enrichAssetPreviewUrls(asset);
+                                const originalAccess = await resolveOriginalFileAccess(asset, { logOnce });
+                                const filename = String((enriched as any).fileName ?? 'Artwork');
+                                const previewThumbnailUrl =
+                                    (enriched as any).previewThumbnailUrl ??
+                                    (enriched as any).thumbnailUrl ??
+                                    (enriched as any).thumbUrl ??
+                                    null;
+
+                                return {
+                                    id: String(link.assetId),
+                                    filename,
+                                    mimeType: (enriched as any).mimeType ?? (asset as any)?.mimeType ?? null,
+                                    fileSize: (enriched as any).fileSize ?? (asset as any)?.fileSize ?? null,
+                                    objectPath: originalAccess.objectPath,
+                                    originalUrl: originalAccess.originalUrl,
+                                    downloadUrl: originalAccess.downloadUrl,
+                                    availabilityStatus: originalAccess.availabilityStatus,
+                                    previewThumbnailUrl,
+                                    createdAt: link.createdAt ?? (enriched as any).createdAt ?? null,
+                                    source: 'line_item' as const,
+                                    parentLineItemId: String(link.lineItemId),
+                                    role: String(link.role ?? 'other'),
+                                };
+                            }))).filter(Boolean);
+                    }
                 }
             }
 
@@ -2371,7 +2410,7 @@ export async function registerOrderRoutes(
             }
 
             // 4) Enrich URLs for thumb resolution (same helper used elsewhere)
-            const { enrichAssetWithUrls } = await import('../services/assets/enrichAssetWithUrls');
+            const { enrichAssetPreviewUrls } = await import('../services/assets/enrichAssetWithUrls');
 
             // 5) Aggregate per lineItemId
             const assetIdsByLineItem = new Map<string, Set<string>>();
@@ -2393,7 +2432,7 @@ export async function registerOrderRoutes(
 
                 const raw = assetsById.get(assetId);
                 if (!raw) continue;
-                const enriched = enrichAssetWithUrls(raw);
+                const enriched = await enrichAssetPreviewUrls(raw);
 
                 // Use the same priority as client getThumbSrc (previewThumbnailUrl, thumbnailUrl, thumbUrl, previewUrl, pages[0].thumbUrl)
                 const url =
@@ -2442,186 +2481,115 @@ export async function registerOrderRoutes(
             if (!order) return res.status(404).json({ error: "Order not found" });
 
             if (uploadId) {
-                const { loadUploadSessionMeta, saveUploadSessionMeta, deleteUploadSession } = await import('../services/chunkedUploads');
-                const meta = await loadUploadSessionMeta(uploadId);
-                if (meta.organizationId !== organizationId) return res.status(404).json({ error: 'Upload not found' });
-                if (!meta.relativePath) return res.status(400).json({ error: 'Upload not finalized' });
-
-                const { decideStorageTarget } = await import('../services/storageTarget');
-                const decidedTarget = decideStorageTarget({
-                    fileName: meta.originalFilename,
-                    fileSizeBytes: meta.sizeBytes || 0,
-                    requestedTarget,
-                    organizationId,
-                    context: 'POST /api/orders/:orderId/attachments (uploadId)',
-                });
-
-                let fileKey = meta.relativePath!;
-                let storageProvider: 'local' | 'supabase' | undefined = 'local';
-                if (decidedTarget === 'supabase' && isSupabaseConfigured() && meta.relativePath) {
-                    const { SupabaseStorageService } = await import('../supabaseStorage');
-                    const { getAbsolutePath, deleteFile: deleteLocalFile } = await import('../utils/fileStorage.js');
-                    const fsPromises = await import('fs/promises');
-
-                    const abs = getAbsolutePath(meta.relativePath);
-                    const buffer = await fsPromises.readFile(abs);
-
-                    const supabase = new SupabaseStorageService();
-                    const uploaded = await supabase.uploadFile(meta.relativePath, buffer, meta.mimeType || 'application/octet-stream');
-                    fileKey = normalizeObjectKeyForDb(uploaded.path);
-                    storageProvider = 'supabase';
-
-                    await deleteLocalFile(meta.relativePath).catch(() => false);
-                }
-
-                const [created] = await db.insert(orderAttachments).values({
+                const created = await persistOrderAttachment({
                     orderId,
                     quoteId: order.quoteId || null,
-                    uploadedByUserId: userId,
-                    uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
-                    description: description || null,
-                    fileName: meta.originalFilename,
-                    fileUrl: fileKey,
-                    fileSize: meta.sizeBytes,
-                    mimeType: meta.mimeType,
-                    originalFilename: meta.originalFilename,
-                    relativePath: fileKey,
-                    storageProvider,
-                    sizeBytes: meta.sizeBytes,
-                }).returning();
-                await deleteUploadSession(uploadId);
+                    organizationId,
+                    userId,
+                    userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                    description,
+                    requestedTarget,
+                    orderNumber: order.orderNumber,
+                    source: {
+                        kind: "upload-session",
+                        uploadId,
+                        expectedPurpose: "order-attachment",
+                        expectedParentId: orderId,
+                    },
+                });
+                await kickoffOrderPdfThumbnailProcessing({
+                    organizationId,
+                    attachment: created,
+                    logLabel: 'OrderAttachments:POST',
+                });
                 const enriched = await enrichAttachmentWithUrls(created);
                 return res.json({ success: true, data: [enriched] });
             }
 
             if (Array.isArray(files) && files.length > 0) {
-                const { processUploadedFile, generateStoredFilename, generateRelativePath, computeChecksum, getFileExtension } = await import('../utils/fileStorage.js');
-                const { decideStorageTarget } = await import('../services/storageTarget');
-                const inserted = await db.transaction(async (tx) => {
-                    const results = [];
-                    for (const f of files) {
-                        const buffer = Buffer.from(f.fileBufferBase64, 'base64');
-                        const decidedTarget = decideStorageTarget({
-                            fileName: f.fileName,
-                            fileSizeBytes: buffer.length,
-                            requestedTarget,
-                            organizationId,
-                            context: 'POST /api/orders/:orderId/attachments (atomic)',
-                        });
-
-                        let storageProvider: 'local' | 'supabase' | undefined = 'local';
-                        let fileKey: string;
-                        let sizeBytes: number;
-                        let checksum: string | null = null;
-                        let extension: string | null = null;
-                        let storedFilename: string | null = null;
-                        let originalFilename: string;
-
-                        if (decidedTarget === 'supabase' && isSupabaseConfigured()) {
-                            const { SupabaseStorageService } = await import('../supabaseStorage');
-                            storedFilename = generateStoredFilename(f.fileName);
-                            const relativePath = generateRelativePath({
-                                organizationId,
-                                orderNumber: order?.orderNumber ? String(order.orderNumber) : undefined,
-                                storedFilename,
-                                resourceType: 'order',
-                                resourceId: orderId,
-                            });
-                            checksum = computeChecksum(buffer);
-                            extension = getFileExtension(f.fileName);
-                            sizeBytes = buffer.length;
-
-                            const supabase = new SupabaseStorageService();
-                            const uploaded = await supabase.uploadFile(relativePath, buffer, f.mimeType || 'application/octet-stream');
-                            fileKey = normalizeObjectKeyForDb(uploaded.path);
-                            storageProvider = 'supabase';
-                            originalFilename = f.fileName;
-                        } else {
-                            const fileMetadata = await processUploadedFile({
-                                originalFilename: f.fileName,
-                                buffer,
-                                mimeType: f.mimeType,
-                                organizationId,
-                                resourceType: 'order',
-                                resourceId: orderId,
-                                orderNumber: order?.orderNumber ? String(order.orderNumber) : undefined,
-                            });
-                            fileKey = fileMetadata.relativePath;
-                            sizeBytes = fileMetadata.sizeBytes;
-                            checksum = fileMetadata.checksum || null;
-                            extension = fileMetadata.extension || null;
-                            storedFilename = fileMetadata.storedFilename || null;
-                            originalFilename = fileMetadata.originalFilename;
-                        }
-
-                        const [created] = await tx.insert(orderAttachments).values({
-                            orderId,
-                            quoteId: order.quoteId || null,
-                            uploadedByUserId: userId,
-                            uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
-                            description: description || null,
-                            fileName: f.fileName,
-                            fileUrl: fileKey,
-                            fileSize: sizeBytes,
-                            mimeType: f.mimeType,
-                            originalFilename,
-                            storedFilename,
-                            relativePath: fileKey,
-                            storageProvider,
-                            extension,
-                            checksum,
-                            sizeBytes,
-                        }).returning();
-                        results.push(created);
-                    }
-                    return results;
-                });
-                return res.json({ success: true, data: inserted });
+                const inserted = [];
+                for (const f of files) {
+                    const created = await persistOrderAttachment({
+                        orderId,
+                        quoteId: order.quoteId || null,
+                        organizationId,
+                        userId,
+                        userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                        description,
+                        requestedTarget,
+                        orderNumber: order.orderNumber,
+                        source: {
+                            kind: "buffer",
+                            buffer: Buffer.from(f.fileBufferBase64, 'base64'),
+                            originalFilename: f.fileName,
+                            mimeType: f.mimeType || 'application/octet-stream',
+                        },
+                    });
+                    inserted.push(created);
+                    await kickoffOrderPdfThumbnailProcessing({
+                        organizationId,
+                        attachment: created,
+                        logLabel: 'OrderAttachments:POST',
+                    });
+                }
+                const enrichedInserted = await Promise.all(inserted.map((file) => enrichAttachmentWithUrls(file)));
+                return res.json({ success: true, data: enrichedInserted });
             }
 
             if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
             if (!fileName) return res.status(400).json({ error: "fileName is required" });
 
-            const { decideStorageTarget } = await import('../services/storageTarget');
-            const sizeForDecision = fileSize != null ? Number(fileSize) : 0;
-            const decidedTarget = decideStorageTarget({
-                fileName,
-                fileSizeBytes: Number.isFinite(sizeForDecision) ? sizeForDecision : 0,
-                requestedTarget,
-                organizationId,
-                context: 'POST /api/orders/:orderId/attachments (legacy)',
-            });
-
             const isHttp = typeof fileUrl === 'string' && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'));
-            const storageProvider: 'local' | 'supabase' | undefined = isHttp
-                ? undefined
-                : (decidedTarget === 'supabase' ? 'supabase' : 'local');
-            const normalizedKey =
-                storageProvider === 'supabase' && typeof fileUrl === 'string' && !isHttp
-                    ? normalizeObjectKeyForDb(fileUrl)
-                    : fileUrl;
+            const attachment = isHttp
+                ? (await db.insert(orderAttachments).values({
+                    orderId,
+                    quoteId: order.quoteId || null,
+                    uploadedByUserId: userId,
+                    uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                    fileName,
+                    originalFilename: fileName,
+                    fileUrl,
+                    relativePath: null,
+                    fileSize: fileSize || null,
+                    mimeType: mimeType || null,
+                    description: description || null,
+                    storageProvider: undefined,
+                }).returning())[0]
+                : await persistOrderAttachment({
+                    orderId,
+                    quoteId: order.quoteId || null,
+                    organizationId,
+                    userId,
+                    userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                    description,
+                    requestedTarget,
+                    orderNumber: order.orderNumber,
+                    source: {
+                        kind: "existing-key",
+                        fileUrl: normalizeObjectKeyForDb(fileUrl),
+                        originalFilename: fileName,
+                        mimeType: mimeType || null,
+                        fileSize: fileSize || null,
+                    },
+                });
 
-            const [attachment] = await db.insert(orderAttachments).values({
-                orderId,
-                quoteId: order.quoteId || null,
-                uploadedByUserId: userId,
-                uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
-                fileName,
-                originalFilename: fileName,
-                fileUrl: normalizedKey,
-                relativePath: storageProvider ? normalizedKey : null,
-                fileSize: fileSize || null,
-                mimeType: mimeType || null,
-                description: description || null,
-                storageProvider,
-            }).returning();
+            await kickoffOrderPdfThumbnailProcessing({
+                organizationId,
+                attachment,
+                logLabel: 'OrderAttachments:POST',
+            });
 
             // PHASE 2: Create asset + link to order (fail-soft)
             try {
                 const { assetRepository } = await import('../services/assets/AssetRepository');
                 const { assetPreviewGenerator } = await import('../services/assets/AssetPreviewGenerator');
+                const resolvedOriginal = attachment.fileRecordId
+                    ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
+                    : null;
+                const assetFileKey = resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? attachment.fileUrl;
                 const asset = await assetRepository.createAsset(organizationId, {
-                    fileKey: normalizedKey,
+                    fileRecordId: attachment.fileRecordId ?? null,
+                    fileKey: attachment.fileRecordId ? null : assetFileKey,
                     fileName: fileName,
                     mimeType: mimeType || undefined,
                     sizeBytes: fileSize || undefined,
@@ -2638,7 +2606,8 @@ export async function registerOrderRoutes(
                 console.error(`[OrderAttachments:POST] Asset creation failed (non-blocking):`, assetError);
             }
 
-            return res.json({ success: true, data: attachment });
+            const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+            return res.json({ success: true, data: enrichedAttachment });
         } catch (error) {
             console.error("[OrderAttachments:POST] Error:", error);
             return res.status(500).json({ error: "Failed to attach file to order" });
@@ -2651,11 +2620,9 @@ export async function registerOrderRoutes(
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
 
-            // Validate order belongs to tenant
             const order = await storage.getOrderById(organizationId, orderId);
             if (!order) return res.status(404).json({ error: "Order not found" });
 
-            // Only delete order-level (non-line-item) attachments from this endpoint
             const [attachment] = await db
                 .select()
                 .from(orderAttachments)
@@ -2670,7 +2637,6 @@ export async function registerOrderRoutes(
 
             if (!attachment) return res.status(404).json({ error: "Attachment not found" });
 
-            // Remove DB link
             await db
                 .delete(orderAttachments)
                 .where(
@@ -2681,72 +2647,85 @@ export async function registerOrderRoutes(
                     )
                 );
 
-            // Best-effort cleanup: delete storage objects only when safe
-            // Safe means: no other attachment rows reference the same storage key, and no remaining Asset links reference that file.
             try {
-                const storageKeyRaw = (attachment as any).fileUrl as string | null | undefined;
-                const storageProviderRaw = (attachment as any).storageProvider as
-                    | "local"
-                    | "s3"
-                    | "gcs"
-                    | "supabase"
-                    | null
-                    | undefined;
+                const resolvedOriginal = attachment.fileRecordId
+                    ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
+                    : null;
+                const storageKey = String(resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? attachment.fileUrl ?? "");
+                const storageProvider = resolvedOriginal?.providerType === "local_filesystem"
+                    ? "local"
+                    : resolvedOriginal?.providerType === "s3"
+                        ? "s3"
+                        : resolvedOriginal?.objectKey
+                            ? "supabase"
+                            : ((attachment.storageProvider as "local" | "s3" | "gcs" | "supabase" | null | undefined) ?? null);
 
-                const storageKey = storageKeyRaw ? String(storageKeyRaw) : "";
-                const storageProvider = storageProviderRaw ?? null;
-
-                if (
-                    storageKey &&
-                    !storageKey.startsWith("http://") &&
-                    !storageKey.startsWith("https://")
-                ) {
-                    if (!storageProvider) {
-                        // No known storage provider -> nothing safe to delete
-                    } else {
-                        const storageProviderForQuery: "local" | "s3" | "gcs" | "supabase" = storageProvider;
-
-                        const [{ orderRefs = 0 } = {}] = await db
+                if (storageKey) {
+                    const [{ orderRefs = 0 } = {}] = attachment.fileRecordId
+                        ? await db
                             .select({ orderRefs: sql<number>`count(*)` })
                             .from(orderAttachments)
-                            .where(and(eq(orderAttachments.fileUrl, storageKey), eq(orderAttachments.storageProvider, storageProviderForQuery)));
+                            .where(eq(orderAttachments.fileRecordId, String(attachment.fileRecordId)))
+                        : !storageProvider
+                            ? [{ orderRefs: 0 }]
+                        : await db
+                            .select({ orderRefs: sql<number>`count(*)` })
+                            .from(orderAttachments)
+                            .where(
+                                and(
+                                    eq(orderAttachments.fileUrl, storageKey),
+                                    eq(orderAttachments.storageProvider, storageProvider)
+                                )
+                            );
 
-                        const [{ quoteRefs = 0 } = {}] = await db
+                    const [{ quoteRefs = 0 } = {}] = attachment.fileRecordId
+                        ? await db
+                            .select({ quoteRefs: sql<number>`count(*)` })
+                            .from(quoteAttachments)
+                            .where(
+                                and(
+                                    eq(quoteAttachments.organizationId, organizationId),
+                                    eq(quoteAttachments.fileRecordId, String(attachment.fileRecordId))
+                                )
+                            )
+                        : !storageProvider
+                            ? [{ quoteRefs: 0 }]
+                        : await db
                             .select({ quoteRefs: sql<number>`count(*)` })
                             .from(quoteAttachments)
                             .where(
                                 and(
                                     eq(quoteAttachments.organizationId, organizationId),
                                     eq(quoteAttachments.fileUrl, storageKey),
-                                    eq(quoteAttachments.storageProvider, storageProviderForQuery)
+                                    eq(quoteAttachments.storageProvider, storageProvider)
                                 )
                             );
 
-                        const remainingAttachmentRefs = Number(orderRefs) + Number(quoteRefs);
+                    const remainingAttachmentRefs = Number(orderRefs) + Number(quoteRefs);
+                    let hasRemainingAssetLinksForFile = false;
+                    const normalizedFileKey = normalizeObjectKeyForDb(storageKey);
 
-                    // Asset cleanup (PHASE 2 pipeline): unlink matching assets from this order,
-                    // and delete the asset+variants only if the asset is no longer linked anywhere.
-                        let hasRemainingAssetLinksForFile = false;
-                        const normalizedFileKey = normalizeObjectKeyForDb(storageKey);
-
-                        try {
-                            const { assets, assetLinks, assetVariants } = await import("@shared/schema");
-
-                        const matchingAssets = await db
-                            .select({ id: assets.id, fileKey: assets.fileKey })
-                            .from(assets)
-                            .where(and(eq(assets.organizationId, organizationId), eq(assets.fileKey, normalizedFileKey)));
+                    try {
+                        const { assets, assetLinks, assetVariants } = await import("@shared/schema");
+                        const matchingAssets = attachment.fileRecordId
+                            ? await db
+                                .select({ id: assets.id, fileKey: assets.fileKey })
+                                .from(assets)
+                                .where(and(eq(assets.organizationId, organizationId), eq(assets.fileRecordId, String(attachment.fileRecordId))))
+                            : await db
+                                .select({ id: assets.id, fileKey: assets.fileKey })
+                                .from(assets)
+                                .where(and(eq(assets.organizationId, organizationId), eq(assets.fileKey, normalizedFileKey)));
 
                         if (matchingAssets.length > 0) {
-                            // Unlink all matching assets from this order
                             await Promise.all(
-                                matchingAssets.map((a) =>
+                                matchingAssets.map((asset) =>
                                     db
                                         .delete(assetLinks)
                                         .where(
                                             and(
                                                 eq(assetLinks.organizationId, organizationId),
-                                                eq(assetLinks.assetId, a.id),
+                                                eq(assetLinks.assetId, asset.id),
                                                 eq(assetLinks.parentType, "order"),
                                                 eq(assetLinks.parentId, orderId)
                                             )
@@ -2754,76 +2733,60 @@ export async function registerOrderRoutes(
                                 )
                             );
 
-                            // Determine whether any of these assets remain linked elsewhere
                             const linkCounts = await Promise.all(
-                                matchingAssets.map(async (a) => {
+                                matchingAssets.map(async (asset) => {
                                     const [{ cnt = 0 } = {}] = await db
                                         .select({ cnt: sql<number>`count(*)` })
                                         .from(assetLinks)
-                                        .where(and(eq(assetLinks.organizationId, organizationId), eq(assetLinks.assetId, a.id)));
-                                    return { assetId: a.id, count: Number(cnt) };
+                                        .where(and(eq(assetLinks.organizationId, organizationId), eq(assetLinks.assetId, asset.id)));
+                                    return Number(cnt);
                                 })
                             );
 
-                            hasRemainingAssetLinksForFile = linkCounts.some((c) => c.count > 0);
+                            hasRemainingAssetLinksForFile = linkCounts.some((count) => count > 0);
 
-                            // If assets are now unlinked everywhere AND no other attachment rows reference the file,
-                            // delete asset variants objects + asset rows.
                             if (!hasRemainingAssetLinksForFile && remainingAttachmentRefs === 0) {
-                                const { deleteFile: deleteLocalFile } = await import("../utils/fileStorage.js");
-
-                                const deleteKeys = async (keys: string[]) => {
-                                    const uniqueKeys = Array.from(new Set(keys.filter(Boolean)));
-                                    if (uniqueKeys.length === 0) return;
-
-                                    if (storageProvider === "supabase" && isSupabaseConfigured()) {
-                                        const supabase = new SupabaseStorageService();
-                                        await Promise.all(uniqueKeys.map((k) => supabase.deleteFile(normalizeObjectKeyForDb(k)).catch(() => false)));
-                                    } else if (storageProvider === "local") {
-                                        await Promise.all(uniqueKeys.map((k) => deleteLocalFile(k).catch(() => false)));
-                                    }
-                                };
-
-                                for (const a of matchingAssets) {
+                                for (const asset of matchingAssets) {
                                     const variants = await db
                                         .select({ key: assetVariants.key })
                                         .from(assetVariants)
-                                        .where(and(eq(assetVariants.organizationId, organizationId), eq(assetVariants.assetId, a.id)));
+                                        .where(and(eq(assetVariants.organizationId, organizationId), eq(assetVariants.assetId, asset.id)));
 
-                                    await deleteKeys([
-                                        ...(variants.map((v) => v.key || "")),
-                                        normalizedFileKey,
-                                    ]);
+                                    await deleteStoredObjectKeys({
+                                        fileRecordId: attachment.fileRecordId ? String(attachment.fileRecordId) : null,
+                                        legacyStorageProvider: storageProvider,
+                                        keys: [...variants.map((variant) => variant.key || ""), normalizedFileKey],
+                                    });
 
-                                    await db.delete(assets).where(and(eq(assets.organizationId, organizationId), eq(assets.id, a.id)));
+                                    await db.delete(assets).where(and(eq(assets.organizationId, organizationId), eq(assets.id, asset.id)));
                                 }
                             }
                         }
-                        } catch (assetCleanupError) {
-                            // fail-soft: asset pipeline is optional and should not block attachment deletion
-                            console.error("[OrderAttachments:DELETE] Asset cleanup failed (non-blocking):", assetCleanupError);
-                        }
+                    } catch (assetCleanupError) {
+                        console.error("[OrderAttachments:DELETE] Asset cleanup failed (non-blocking):", assetCleanupError);
+                    }
 
-                    // If the file is still referenced anywhere, do not delete storage blobs.
-                    // Also avoid deleting blobs if any asset still links to the file.
-                        if (remainingAttachmentRefs === 0 && !hasRemainingAssetLinksForFile) {
-                            const { deleteFile: deleteLocalFile } = await import("../utils/fileStorage.js");
+                    if (remainingAttachmentRefs === 0 && !hasRemainingAssetLinksForFile && storageProvider) {
+                        const derivativeRows = attachment.fileRecordId
+                            ? await fileDerivativeRepository.listByFileRecordId(String(attachment.fileRecordId))
+                            : [];
+                        const derivativeKeys = attachment.fileRecordId
+                            ? derivativeRows.map((row) => row.objectKey ?? null)
+                            : [(attachment as any).thumbKey ?? null, (attachment as any).previewKey ?? null];
 
-                        const keysToDelete: string[] = [];
-                        keysToDelete.push(storageKey);
-                        const thumbKey = (attachment as any).thumbKey as string | null | undefined;
-                        const previewKey = (attachment as any).previewKey as string | null | undefined;
-                        if (thumbKey) keysToDelete.push(thumbKey);
-                        if (previewKey) keysToDelete.push(previewKey);
+                        const derivativeDeletion = await deleteStoredObjectKeys({
+                            fileRecordId: attachment.fileRecordId ? String(attachment.fileRecordId) : null,
+                            legacyStorageProvider: storageProvider,
+                            keys: [storageKey, ...derivativeKeys],
+                        });
 
-                        const uniqueKeys = Array.from(new Set(keysToDelete.map((k) => String(k)).filter(Boolean)));
-
-                            if (storageProviderForQuery === "supabase" && isSupabaseConfigured()) {
-                                const supabase = new SupabaseStorageService();
-                                await Promise.all(uniqueKeys.map((k) => supabase.deleteFile(normalizeObjectKeyForDb(k)).catch(() => false)));
-                            } else if (storageProviderForQuery === "local") {
-                                await Promise.all(uniqueKeys.map((k) => deleteLocalFile(k).catch(() => false)));
-                            }
+                        if (attachment.fileRecordId && derivativeDeletion.failedKeys.length === 0) {
+                            await fileDerivativeRepository.deleteByFileRecordId(String(attachment.fileRecordId));
+                        } else if (attachment.fileRecordId && derivativeDeletion.failedKeys.length > 0) {
+                            console.warn("[OrderAttachments:DELETE] Skipped derivative row cleanup due to storage delete failures", {
+                                fileRecordId: String(attachment.fileRecordId),
+                                failedKeys: derivativeDeletion.failedKeys,
+                            });
                         }
                     }
                 }
@@ -3458,11 +3421,35 @@ export async function registerOrderRoutes(
         }
     });
 
-    app.patch('/api/orders/:id/fulfillment-status', isAuthenticated, async (req: any, res) => {
+    app.patch('/api/orders/:id/fulfillment-status', isAuthenticated, tenantContext, async (req: any, res) => {
         try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
             if (!['owner', 'admin', 'manager'].includes(req.user?.role)) {
                 return res.status(403).json({ error: 'Manager, Admin, or Owner role required' });
             }
+
+            const [order] = await db
+                .select({
+                    id: orders.id,
+                    state: orders.state,
+                })
+                .from(orders)
+                .where(and(eq(orders.id, req.params.id), eq(orders.organizationId, organizationId)))
+                .limit(1);
+
+            if (!order) {
+                return res.status(404).json({ error: 'Order not found' });
+            }
+
+            if (order.state === 'production_complete') {
+                return res.status(409).json({
+                    error: 'Manual fulfillment status overrides are disabled for fulfillment-managed orders. Use shipment or pickup actions.',
+                    code: 'FULFILLMENT_ARTIFACT_SYNC_REQUIRED',
+                });
+            }
+
             const { status } = req.body;
             if (!['pending', 'packed', 'shipped', 'delivered'].includes(status)) {
                 return res.status(400).json({ error: 'Invalid fulfillment status' });
@@ -3601,7 +3588,7 @@ export async function registerOrderRoutes(
                     const { assetRepository } = await import('../services/assets/AssetRepository');
                     const { enrichAssetsWithRoles } = await import('../services/assets/enrichAssetWithUrls');
                     const linkedAssets = await assetRepository.listAssetsForParent(organizationId, 'order', req.params.id);
-                    enrichedAssets = enrichAssetsWithRoles(linkedAssets);
+                    enrichedAssets = await enrichAssetsWithRoles(linkedAssets);
                 } catch (assetError) {
                     console.error('[OrderFiles:GET] Asset enrichment failed:', assetError);
                 }
@@ -3695,14 +3682,18 @@ export async function registerOrderRoutes(
     });
 
     app.post('/api/orders/:id/files', isAuthenticated, tenantContext, async (req: any, res) => {
+        let uploadStep = 'load_request';
         try {
+            uploadStep = 'resolve_organization';
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            uploadStep = 'resolve_user';
             const userId = getUserId(req.user);
             if (!userId) return res.status(401).json({ error: 'Unauthorized' });
             const orderId = String(req.params.id);
 
             const {
+                uploadId,
                 fileName,
                 fileUrl,
                 fileSize,
@@ -3721,6 +3712,7 @@ export async function registerOrderRoutes(
                 storageTarget
             } = req.body;
 
+            uploadStep = 'load_order';
             const [order] = await db
                 .select({ id: orders.id, orderNumber: orders.orderNumber })
                 .from(orders)
@@ -3734,6 +3726,44 @@ export async function registerOrderRoutes(
             const requestedTarget =
                 (typeof requestedStorageTarget === 'string' ? requestedStorageTarget : null) ||
                 (typeof storageTarget === 'string' ? storageTarget : null);
+
+            if (uploadId && typeof uploadId === 'string') {
+                const attachment = await persistOrderAttachment({
+                    orderId,
+                    quoteId: quoteId || null,
+                    organizationId,
+                    userId,
+                    userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                    description,
+                    requestedTarget,
+                    orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
+                    orderLineItemId: orderLineItemId ? String(orderLineItemId) : null,
+                    role: (role || 'other') as FileRole,
+                    side: (side || 'na') as FileSide,
+                    isPrimary: isPrimary || false,
+                    source: {
+                        kind: 'upload-session',
+                        uploadId,
+                        expectedPurpose: 'order-attachment',
+                        expectedParentId: orderId,
+                    },
+                });
+
+                await kickoffOrderPdfThumbnailProcessing({
+                    organizationId,
+                    attachment,
+                    logLabel: 'OrderFiles:POST',
+                });
+
+            await kickoffOrderPdfThumbnailProcessing({
+                organizationId,
+                attachment,
+                logLabel: 'OrderFiles:POST',
+            });
+
+                const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+                return res.json({ success: true, data: enrichedAttachment });
+            }
 
             if (!fileName && !originalFilename) {
                 return res.status(400).json({ error: 'fileName or originalFilename is required' });
@@ -3750,6 +3780,7 @@ export async function registerOrderRoutes(
                 return res.status(400).json({ error: `Invalid side. Must be one of: ${validSides.join(', ')}` });
             }
 
+            uploadStep = 'resolve_line_item';
             let resolvedLineItemId: string | null = orderLineItemId ? String(orderLineItemId) : null;
             if (resolvedLineItemId) {
                 const [lineItem] = await db
@@ -3766,21 +3797,10 @@ export async function registerOrderRoutes(
                 if (!lineItem) {
                     return res.status(404).json({ error: 'Line item not found' });
                 }
-            } else {
-                const candidateLineItems = await db
-                    .select({ id: orderLineItems.id })
-                    .from(orderLineItems)
-                    .where(eq(orderLineItems.orderId, orderId))
-                    .limit(2);
-
-                if (candidateLineItems.length === 1) {
-                    resolvedLineItemId = candidateLineItems[0].id;
-                } else if (candidateLineItems.length > 1) {
-                    return res.status(400).json({ error: 'lineItemId is required when an order has multiple line items' });
-                }
             }
 
-            let attachmentData: any = {
+            uploadStep = 'prepare_attachment_payload';
+            const baseAttachmentData: any = {
                 orderId,
                 orderLineItemId: resolvedLineItemId,
                 quoteId: quoteId || null,
@@ -3791,130 +3811,121 @@ export async function registerOrderRoutes(
                 side: (side || 'na') as FileSide,
                 isPrimary: isPrimary || false,
             };
+            uploadStep = fileBuffer && originalFilename
+                ? 'canonical_finalize_buffer'
+                : !fileUrl
+                    ? 'validate_legacy_payload'
+                    : (typeof fileUrl === 'string' && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://')))
+                        ? 'insert_http_attachment'
+                        : 'canonical_finalize_existing_key';
+
+            let canonicalUpload: Awaited<ReturnType<typeof storageApplicationService.finalizeUpload<any>>> | null = null;
 
             if (fileBuffer && originalFilename) {
-                const { decideStorageTarget } = await import('../services/storageTarget');
-                const { processUploadedFile, generateStoredFilename, generateRelativePath, computeChecksum, getFileExtension } = await import('../utils/fileStorage.js');
-                const buffer = Buffer.from(fileBuffer, 'base64');
-
-                const decidedTarget = decideStorageTarget({
-                    fileName: originalFilename,
-                    fileSizeBytes: buffer.length,
-                    requestedTarget,
+                canonicalUpload = await storageApplicationService.finalizeUpload({
                     organizationId,
-                    context: 'POST /api/orders/:id/files (atomic)',
-                });
-
-                if (decidedTarget === 'supabase' && isSupabaseConfigured()) {
-                    const { SupabaseStorageService } = await import('../supabaseStorage');
-                    const storedFilename = generateStoredFilename(originalFilename);
-                    const relativePath = generateRelativePath({
+                    createdByUserId: userId,
+                    requestedTarget,
+                    resource: {
                         organizationId,
-                        orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
-                        lineItemId: resolvedLineItemId || undefined,
-                        storedFilename,
                         resourceType: 'order',
                         resourceId: orderId,
-                    });
-                    const checksum = computeChecksum(buffer);
-                    const extension = getFileExtension(originalFilename);
-                    const sizeBytes = buffer.length;
-
-                    const supabase = new SupabaseStorageService();
-                    const uploaded = await supabase.uploadFile(relativePath, buffer, mimeType || 'application/octet-stream');
-                    const fileKey = normalizeObjectKeyForDb(uploaded.path);
-
-                    attachmentData = {
-                        ...attachmentData,
-                        fileName: originalFilename,
-                        fileUrl: fileKey,
-                        fileSize: sizeBytes,
-                        mimeType: mimeType || 'application/octet-stream',
-                        thumbnailUrl: thumbnailUrl || null,
-                        originalFilename,
-                        storedFilename,
-                        relativePath: fileKey,
-                        storageProvider: 'supabase',
-                        extension,
-                        sizeBytes,
-                        checksum,
-                    };
-                } else {
-                    const fileMetadata = await processUploadedFile({
-                        originalFilename,
-                        buffer,
-                        mimeType: mimeType || 'application/octet-stream',
-                        organizationId,
                         orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
                         lineItemId: resolvedLineItemId || undefined,
-                    });
-
-                    attachmentData = {
-                        ...attachmentData,
-                        fileName: originalFilename,
-                        fileUrl: fileMetadata.relativePath,
-                        fileSize: fileMetadata.sizeBytes,
+                    },
+                    source: {
+                        kind: 'buffer',
+                        buffer: Buffer.from(fileBuffer, 'base64'),
+                        originalFilename,
                         mimeType: mimeType || 'application/octet-stream',
-                        thumbnailUrl: thumbnailUrl || null,
-                        originalFilename: fileMetadata.originalFilename,
-                        storedFilename: fileMetadata.storedFilename,
-                        relativePath: fileMetadata.relativePath,
-                        storageProvider: 'local',
-                        extension: fileMetadata.extension,
-                        sizeBytes: fileMetadata.sizeBytes,
-                        checksum: fileMetadata.checksum,
-                    };
-                }
-            }
-            else {
-                if (!fileUrl) {
-                    return res.status(400).json({ error: 'fileUrl is required for legacy uploads' });
-                }
-                const resolvedFileName = (fileName || originalFilename) as string;
-                const bucketName = 'titan-private';
-
-                const { decideStorageTarget } = await import('../services/storageTarget');
-                const sizeForDecision = fileSize != null ? Number(fileSize) : 0;
-                const decidedTarget = decideStorageTarget({
-                    fileName: resolvedFileName,
-                    fileSizeBytes: Number.isFinite(sizeForDecision) ? sizeForDecision : 0,
-                    requestedTarget,
-                    organizationId,
-                    context: 'POST /api/orders/:id/files (legacy)',
+                    },
+                    persistLink: async (tx, stored) => {
+                        const [created] = await tx.insert(orderAttachments).values({
+                            ...baseAttachmentData,
+                            fileRecordId: stored.fileRecord.id,
+                            fileName: stored.storedObject.originalFilename,
+                            fileUrl: null,
+                            fileSize: stored.storedObject.sizeBytes,
+                            mimeType: stored.storedObject.mimeType,
+                            thumbnailUrl: thumbnailUrl || null,
+                            originalFilename: stored.storedObject.originalFilename,
+                            storedFilename: stored.storedObject.storedFilename,
+                            relativePath: null,
+                            storageProvider: null,
+                            extension: stored.storedObject.extension,
+                            sizeBytes: stored.storedObject.sizeBytes,
+                            checksum: stored.storedObject.checksum,
+                        }).returning();
+                        if (!created) throw new Error('Failed to create order file link');
+                        return created;
+                    },
                 });
+            } else if (!fileUrl) {
+                throw new Error('fileUrl is required for legacy uploads');
+            } else if (!(typeof fileUrl === 'string' && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://')))) {
+                canonicalUpload = await storageApplicationService.finalizeUpload({
+                    organizationId,
+                    createdByUserId: userId,
+                    requestedTarget,
+                    resource: {
+                        organizationId,
+                        resourceType: 'order',
+                        resourceId: orderId,
+                        orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
+                        lineItemId: resolvedLineItemId || undefined,
+                    },
+                    source: {
+                        kind: 'existing-key',
+                        fileUrl: normalizeObjectKeyForDb(fileUrl),
+                        originalFilename: (fileName || originalFilename) as string,
+                        mimeType: mimeType || null,
+                        fileSize: fileSize || null,
+                    },
+                    persistLink: async (tx, stored) => {
+                        const [created] = await tx.insert(orderAttachments).values({
+                            ...baseAttachmentData,
+                            fileRecordId: stored.fileRecord.id,
+                            fileName: stored.storedObject.originalFilename,
+                            fileUrl: null,
+                            relativePath: null,
+                            fileSize: stored.storedObject.sizeBytes,
+                            mimeType: stored.storedObject.mimeType,
+                            thumbnailUrl: null,
+                            originalFilename: stored.storedObject.originalFilename,
+                            storedFilename: stored.storedObject.storedFilename,
+                            storageProvider: null,
+                            extension: stored.storedObject.extension,
+                            sizeBytes: stored.storedObject.sizeBytes,
+                            checksum: stored.storedObject.checksum,
+                        }).returning();
+                        if (!created) throw new Error('Failed to create order file link');
+                        return created;
+                    },
+                });
+            }
 
-                const isHttp = typeof fileUrl === 'string' && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'));
-
-                let storageProvider: 'local' | 'supabase' | undefined;
-                if (isHttp) {
-                    storageProvider = undefined;
-                } else {
-                    storageProvider = decidedTarget === 'supabase' ? 'supabase' : 'local';
-                }
-
-                const normalizedKey =
-                    storageProvider === 'supabase' && typeof fileUrl === 'string' && !isHttp
-                        ? normalizeObjectKeyForDb(fileUrl)
-                        : fileUrl;
-
-                attachmentData = {
-                    ...attachmentData,
-                    fileName: resolvedFileName,
-                    fileUrl: normalizedKey,
-                    relativePath: storageProvider ? normalizedKey : null,
+            const attachment = canonicalUpload
+                ? canonicalUpload.linkedRecord
+                : (await db.insert(orderAttachments).values({
+                    ...baseAttachmentData,
+                    fileName: (fileName || originalFilename) as string,
+                    fileUrl,
+                    relativePath: null,
                     fileSize: fileSize || null,
                     mimeType: mimeType || null,
-                    thumbnailUrl: storageProvider ? null : (thumbnailUrl || null),
-                    storageProvider,
-                    bucket: bucketName,
-                };
-            }
-
-            const [attachment] = await db.insert(orderAttachments).values(attachmentData).returning();
+                    thumbnailUrl: thumbnailUrl || null,
+                    storageProvider: undefined,
+                    bucket: 'titan-private',
+                }).returning())[0];
 
             if (resolvedLineItemId) {
+                uploadStep = 'create_line_item_file_record';
+                const resolvedOriginal = attachment.fileRecordId
+                    ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
+                    : null;
                 const storagePath =
-                    (attachment.relativePath as string | null) ||
+                    resolvedOriginal?.objectKey ||
+                    resolvedOriginal?.localPathRef ||
                     (attachment.fileUrl as string | null) ||
                     null;
 
@@ -3930,11 +3941,13 @@ export async function registerOrderRoutes(
                         originalFilename: (attachment.originalFilename as string | null) || (attachment.fileName as string),
                         mimeType: attachment.mimeType,
                         sizeBytes: attachment.sizeBytes ?? attachment.fileSize,
+                        fileRecordId: attachment.fileRecordId ?? canonicalUpload?.fileRecord.id ?? null,
                         uploadedByUserId: userId,
                     });
                 }
             }
 
+            uploadStep = 'write_order_audit_log';
             await storage.createOrderAuditLog({
                 orderId: req.params.id,
                 userId,
@@ -3946,10 +3959,23 @@ export async function registerOrderRoutes(
                 metadata: { fileId: attachment.id, fileName: originalFilename || fileName, role, side } as any,
             });
 
-            res.json({ success: true, data: attachment });
-        } catch (error) {
-            console.error('Error attaching file to order:', error);
-            res.status(500).json({ error: 'Failed to attach file to order' });
+            uploadStep = 'respond_success';
+            const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+            res.json({ success: true, data: enrichedAttachment });
+        } catch (error: any) {
+            console.error('[POST /api/orders/:id/files] Failed', {
+                step: uploadStep,
+                orderId: req.params.id,
+                organizationId: getRequestOrganizationId(req) ?? null,
+                storageJobId: error?.storageJobId ?? null,
+                error: error?.message || String(error),
+                code: error?.code ?? null,
+            });
+            res.status(500).json({
+                error: error?.message || 'Failed to attach file to order',
+                step: uploadStep,
+                storageJobId: error?.storageJobId ?? null,
+            });
         }
     });
 
@@ -3998,7 +4024,7 @@ export async function registerOrderRoutes(
             if (!order) return res.status(404).json({ error: 'Order not found' });
 
             const userId = getUserId(req.user);
-            const files = await storage.getOrderAttachments(req.params.orderId);
+            const files = await storage.listOrderFiles(req.params.orderId);
             const file = files.find(f => f.id === req.params.fileId);
 
             if (!file) {
@@ -4012,20 +4038,111 @@ export async function registerOrderRoutes(
 
             // Best-effort cleanup of stored objects
             try {
-                const keys = [
-                    file.relativePath,
-                    file.fileUrl,
-                    file.thumbnailRelativePath,
-                    (file as any).thumbKey,
-                    (file as any).previewKey,
-                ].filter((k): k is string => typeof k === 'string' && k.length > 0);
+                const resolvedOriginal = file.fileRecordId
+                    ? await canonicalFileReadResolver.resolveOriginal(String(file.fileRecordId))
+                    : null;
+                const storageKey = String(resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? file.fileUrl ?? '');
+                const storageProvider = resolvedOriginal?.providerType === 'local_filesystem'
+                    ? 'local'
+                    : resolvedOriginal?.providerType === 's3'
+                        ? 's3'
+                        : resolvedOriginal?.objectKey
+                            ? 'supabase'
+                            : ((file.storageProvider as 'local' | 's3' | 'gcs' | 'supabase' | null | undefined) ?? null);
 
-                if (file.storageProvider === 'supabase' && isSupabaseConfigured()) {
-                    const supabase = new SupabaseStorageService();
-                    await Promise.all(keys.map((k) => supabase.deleteFile(normalizeObjectKeyForDb(k)).catch(() => false)));
-                } else {
-                    const { deleteFile: deleteLocalFile } = await import('../utils/fileStorage');
-                    await Promise.all(keys.map((k) => deleteLocalFile(k).catch(() => false)));
+                if (storageKey) {
+                    const [{ orderRefs = 0 } = {}] = file.fileRecordId
+                        ? await db
+                            .select({ orderRefs: sql<number>`count(*)` })
+                            .from(orderAttachments)
+                            .where(eq(orderAttachments.fileRecordId, String(file.fileRecordId)))
+                        : !storageProvider
+                            ? [{ orderRefs: 0 }]
+                            : await db
+                                .select({ orderRefs: sql<number>`count(*)` })
+                                .from(orderAttachments)
+                                .where(
+                                    and(
+                                        eq(orderAttachments.fileUrl, storageKey),
+                                        eq(orderAttachments.storageProvider, storageProvider)
+                                    )
+                                );
+
+                    const [{ quoteRefs = 0 } = {}] = file.fileRecordId
+                        ? await db
+                            .select({ quoteRefs: sql<number>`count(*)` })
+                            .from(quoteAttachments)
+                            .where(
+                                and(
+                                    eq(quoteAttachments.organizationId, organizationId),
+                                    eq(quoteAttachments.fileRecordId, String(file.fileRecordId))
+                                )
+                            )
+                        : !storageProvider
+                            ? [{ quoteRefs: 0 }]
+                            : await db
+                                .select({ quoteRefs: sql<number>`count(*)` })
+                                .from(quoteAttachments)
+                                .where(
+                                    and(
+                                        eq(quoteAttachments.organizationId, organizationId),
+                                        eq(quoteAttachments.fileUrl, storageKey),
+                                        eq(quoteAttachments.storageProvider, storageProvider)
+                                    )
+                                );
+
+                    let hasRemainingAssetLinksForFile = false;
+                    try {
+                        const matchingAssets = file.fileRecordId
+                            ? await db
+                                .select({ id: assets.id })
+                                .from(assets)
+                                .where(and(eq(assets.organizationId, organizationId), eq(assets.fileRecordId, String(file.fileRecordId))))
+                            : await db
+                                .select({ id: assets.id })
+                                .from(assets)
+                                .where(and(eq(assets.organizationId, organizationId), eq(assets.fileKey, normalizeObjectKeyForDb(storageKey))));
+
+                        if (matchingAssets.length > 0) {
+                            const linkCounts = await Promise.all(
+                                matchingAssets.map(async (asset) => {
+                                    const [{ cnt = 0 } = {}] = await db
+                                        .select({ cnt: sql<number>`count(*)` })
+                                        .from(assetLinks)
+                                        .where(and(eq(assetLinks.organizationId, organizationId), eq(assetLinks.assetId, asset.id)));
+                                    return Number(cnt);
+                                })
+                            );
+
+                            hasRemainingAssetLinksForFile = linkCounts.some((count) => count > 0);
+                        }
+                    } catch (assetRefError) {
+                        console.error('[OrderFiles:DELETE] Asset reference check failed (non-blocking):', assetRefError);
+                    }
+
+                    if (Number(orderRefs) + Number(quoteRefs) === 0 && !hasRemainingAssetLinksForFile && storageProvider) {
+                        const derivativeRows = file.fileRecordId
+                            ? await fileDerivativeRepository.listByFileRecordId(String(file.fileRecordId))
+                            : [];
+                        const derivativeKeys = file.fileRecordId
+                            ? derivativeRows.map((row) => row.objectKey ?? null)
+                            : [file.thumbnailRelativePath ?? (file as any).thumbKey ?? null, (file as any).previewKey ?? null];
+
+                        const derivativeDeletion = await deleteStoredObjectKeys({
+                            fileRecordId: file.fileRecordId ? String(file.fileRecordId) : null,
+                            legacyStorageProvider: storageProvider,
+                            keys: [storageKey, ...derivativeKeys],
+                        });
+
+                        if (file.fileRecordId && derivativeDeletion.failedKeys.length === 0) {
+                            await fileDerivativeRepository.deleteByFileRecordId(String(file.fileRecordId));
+                        } else if (file.fileRecordId && derivativeDeletion.failedKeys.length > 0) {
+                            console.warn("[OrderFiles:DELETE] Skipped derivative row cleanup due to storage delete failures", {
+                                fileRecordId: String(file.fileRecordId),
+                                failedKeys: derivativeDeletion.failedKeys,
+                            });
+                        }
+                    }
                 }
             } catch {
                 // ignore
@@ -4159,15 +4276,17 @@ export async function registerOrderRoutes(
             const parsed = insertOrderLineItemSchema.parse(req.body);
             
             // Server-authoritative: ignore any client-supplied pbv2 or price fields
-            const { 
-                pbv2ExplicitSelections, 
-                pbv2Env, 
+            const {
+                pbv2ExplicitSelections,
+                pbv2Env,
                 pbv2TreeVersionId: _ignoredTreeVersionId,
                 pbv2SnapshotJson: _ignoredSnapshot,
                 pricedAt: _ignoredPricedAt,
                 unitPrice: _ignoredUnitPrice,
                 totalPrice: _ignoredTotalPrice,
-                ...lineItemData 
+                workflowState: _ignoredWorkflowState,
+                status: _ignoredStatus,
+                ...lineItemData
             } = parsed as any;
 
             // Log warning if client tried to send forbidden fields
@@ -4204,9 +4323,20 @@ export async function registerOrderRoutes(
             // Structured logging for PBV2 pricing persistence
             console.log(`[PBV2_PRICE_PERSIST] orderId=${lineItemData.orderId} treeVersionId=${pricingResult.pbv2TreeVersionId} totalCents=${pricingResult.lineTotalCents} pricedAt=${new Date().toISOString()}`);
 
+            const routing = await resolveEffectiveLineItemRouting({
+                organizationId,
+                productId: String(lineItemData.productId),
+                requestedRequiresDesign: lineItemData.requiresDesign,
+                requestedRequiresPrepress: lineItemData.requiresPrepress,
+            });
+
             // Create line item with server-computed pricing
             const created = await storage.createOrderLineItem({
                 ...lineItemData,
+                status: "new",
+                workflowState: routing.workflowState,
+                requiresDesign: routing.requiresDesign,
+                requiresPrepress: routing.requiresPrepress,
                 pbv2TreeVersionId: pricingResult.pbv2TreeVersionId,
                 pbv2SnapshotJson: pricingResult.pbv2SnapshotJson as any,
                 pricedAt: new Date(),
@@ -4224,7 +4354,7 @@ export async function registerOrderRoutes(
                     .where(eq(products.id, String(created.productId)))
                     .limit(1);
 
-                if (ptRow?.sendToProductionDefault === true) {
+                if (ptRow?.sendToProductionDefault === true && created.workflowState === "ready_for_production") {
                     const { scheduleOrderLineItemsForProduction } = await import('../services/productionScheduling');
                     const { loadProductionLineItemStatusRulesForOrganization, appendEvent } = await import('../productionHelpers');
                     const scheduleResult = await scheduleOrderLineItemsForProduction({
@@ -4259,7 +4389,11 @@ export async function registerOrderRoutes(
             const userId = getUserId(req.user);
             const parsed = updateOrderLineItemSchema.parse({ ...(req.body as any), id: req.params.id });
             const { pbv2ExplicitSelections, pbv2Env, ...lineItemData } = parsed as any;
-            const { id, ...updateData } = lineItemData;
+            const {
+                id,
+                workflowState: _ignoredWorkflowState,
+                ...updateData
+            } = lineItemData;
 
             void pbv2ExplicitSelections;
             void pbv2Env;
@@ -4275,6 +4409,40 @@ export async function registerOrderRoutes(
 
             const oldLineItem = await storage.getOrderLineItemById(lineItemId);
             if (!oldLineItem) return res.status(404).json({ message: "Order line item not found" });
+
+            const requestedRequiresDesign = updateData.requiresDesign;
+            const requestedRequiresPrepress = updateData.requiresPrepress;
+            const hasRoutingChange =
+                (typeof requestedRequiresDesign === "boolean" && requestedRequiresDesign !== Boolean((oldLineItem as any).requiresDesign)) ||
+                (typeof requestedRequiresPrepress === "boolean" && requestedRequiresPrepress !== Boolean((oldLineItem as any).requiresPrepress));
+
+            if (hasRoutingChange) {
+                const activeJob = await findActiveJobForLineItem(db, {
+                    organizationId,
+                    lineItemId,
+                });
+                if (!canEditLineItemRouting({
+                    workflowState: (oldLineItem as any).workflowState,
+                    hasActiveJob: Boolean(activeJob),
+                })) {
+                    throw Object.assign(
+                        new Error("Cannot change Design/Prepress routing after active workflow has started. Use workflow transitions instead."),
+                        { statusCode: 409 },
+                    );
+                }
+
+                const routing = await resolveEffectiveLineItemRouting({
+                    organizationId,
+                    productId: String(updateData.productId ?? oldLineItem.productId),
+                    requestedRequiresDesign: typeof requestedRequiresDesign === "boolean" ? requestedRequiresDesign : Boolean((oldLineItem as any).requiresDesign),
+                    requestedRequiresPrepress: typeof requestedRequiresPrepress === "boolean" ? requestedRequiresPrepress : Boolean((oldLineItem as any).requiresPrepress),
+                });
+
+                updateData.requiresDesign = routing.requiresDesign;
+                updateData.requiresPrepress = routing.requiresPrepress;
+                updateData.workflowState = routing.workflowState;
+                updateData.status = "new";
+            }
 
             // Server-authoritative: detect pricing-relevant changes
             const pricingFieldsChanged =
@@ -4533,7 +4701,7 @@ export async function registerOrderRoutes(
                         .where(eq(products.id, newProductId))
                         .limit(1);
 
-                    if (ptRow?.sendToProductionDefault === true) {
+                    if (ptRow?.sendToProductionDefault === true && String((finalLineItem ?? lineItem).workflowState || "") === "ready_for_production") {
                         const { scheduleOrderLineItemsForProduction } = await import('../services/productionScheduling');
                         const { loadProductionLineItemStatusRulesForOrganization, appendEvent } = await import('../productionHelpers');
                         const scheduleResult = await scheduleOrderLineItemsForProduction({
@@ -5225,17 +5393,16 @@ export async function registerOrderRoutes(
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
             const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ error: "Unauthorized" });
             const { orderId, lineItemId } = req.params;
             const { status } = req.body;
 
-            const routing = await loadProductionLineItemStatusRulesForOrganization(organizationId);
-            const routingRules = routing.rules;
-            const fallbackValidStatuses = ['queued', 'printing', 'finishing', 'done', 'canceled'];
-            const rule = routingRules.find((r) => r.id === status);
+            const fallbackValidStatuses = ['complete', 'canceled'];
 
             if (!status) return res.status(400).json({ message: "Invalid status" });
-            // Allow org-configured statuses; also allow legacy statuses for back-compat.
-            if (!rule && !fallbackValidStatuses.includes(status)) return res.status(400).json({ message: "Invalid status" });
+            if (!fallbackValidStatuses.includes(status)) {
+                return res.status(400).json({ message: "Direct line item status edits only support complete or canceled. Use workflow transitions for operational moves." });
+            }
 
             const order = await storage.getOrderById(organizationId, orderId);
             if (!order) return res.status(404).json({ message: "Order not found" });
@@ -5243,7 +5410,21 @@ export async function registerOrderRoutes(
             const oldLineItem = await storage.getOrderLineItemById(lineItemId);
             if (!oldLineItem || oldLineItem.orderId !== orderId) return res.status(404).json({ message: "Line item not found" });
 
-            const updatedLineItem = await storage.updateOrderLineItem(lineItemId, { status });
+            const targetState = status === 'complete' ? 'completed' : 'canceled';
+            const transition = await db.transaction(async (tx) => {
+                return transitionLineItemWorkflowState(tx, {
+                    organizationId,
+                    lineItemId,
+                    toState: targetState,
+                    actorUserId: userId,
+                    metadata: {
+                        source: 'legacy_line_item_status_patch',
+                        requestedStatus: status,
+                    },
+                });
+            });
+            const updatedLineItem = await storage.getOrderLineItemById(lineItemId);
+            if (!updatedLineItem) return res.status(404).json({ message: "Line item not found after update" });
             if (userId && oldLineItem.status !== status) {
                 const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
                 try {
@@ -5263,74 +5444,7 @@ export async function registerOrderRoutes(
             }
 
             await recomputeOrderBillingStatus({ organizationId, orderId });
-            let productionJobHandledByTrigger = false;
-            // Trigger: Auto-schedule production when single line item moves into in_production
-            if (status === 'in_production' && oldLineItem.status !== 'in_production') {
-                if (process.env.NODE_ENV === 'development') {
-                    console.log(`[SingleLineItemStatus:TRIGGER] Detected line item ${lineItemId} moving to in_production for orderId=${orderId}`);
-                }
-                
-                try {
-                    const { scheduleOrderLineItemsForProduction } = await import('../services/productionScheduling');
-                    const { loadProductionLineItemStatusRulesForOrganization, appendEvent } = await import('../productionHelpers');
-                    
-                    const scheduleResult = await scheduleOrderLineItemsForProduction({
-                        organizationId,
-                        orderId,
-                        lineItemIds: [lineItemId],
-                        loadRoutingRules: loadProductionLineItemStatusRulesForOrganization,
-                        appendEvent,
-                    });
-                    productionJobHandledByTrigger = true;
-                    if (process.env.NODE_ENV === 'development') {
-                        console.log(`[SingleLineItemStatus:TRIGGER] Auto-scheduled production for item ${lineItemId}:`, scheduleResult.data);
-                    }
-                } catch (productionErr: any) {
-                    console.error('[SingleLineItemStatus:TRIGGER] Production auto-scheduling failed:', productionErr);
-                    // Fail soft - don't break the status update
-                }
-            }
-
-            const warnings: string[] = [];
-            if (routing.source !== 'org') {
-                console.warn(`[OrderLineItemStatus] No org routing config (source=${routing.source}); skipping production intake.`);
-                warnings.push('Production routing config missing/invalid; no job created.');
-            } else if (!rule) {
-                warnings.push('Status saved. No production routing rule found for this status.');
-            } else if (rule.sendToProduction && !productionJobHandledByTrigger) {
-                const stationKey = String(rule.stationKey ?? '').trim();
-                const stepKey = String((rule as any).stepKey ?? '').trim();
-
-                if (!stationKey || !stepKey) {
-                    console.warn('[OrderLineItemStatus] Routing rule missing station/step; skipping intake.');
-                    warnings.push('Routing rule missing station/step; no job created.');
-                } else {
-                    try {
-                        const { routeLineItemToProduction: _routeLineItem } = await import('../services/productionRoutingService');
-                        await db.transaction(async (tx) => {
-                            await _routeLineItem({
-                                tx,
-                                organizationId,
-                                orderId,
-                                lineItemId,
-                                stationKey,
-                                stepKey,
-                                trigger: "line_item_status",
-                                extraEventPayload: {
-                                    fromStatus: oldLineItem.status,
-                                    toStatus: status,
-                                    requested: { stationKey, stepKey },
-                                },
-                            });
-                        });
-                    } catch (e: any) {
-                        console.warn('[OrderLineItemStatus] production intake failed:', e);
-                        warnings.push('Production intake failed (status saved).');
-                    }
-                }
-            }
-
-            res.json({ success: true, data: updatedLineItem, warnings: warnings.length ? warnings : undefined });
+            res.json({ success: true, data: updatedLineItem, workflow: transition });
         } catch (error) {
             const err: any = error;
             console.error({
@@ -5916,10 +6030,9 @@ export async function registerOrderRoutes(
             const attachmentRows = await db
                 .select({
                     id: orderAttachments.id,
+                    fileRecordId: orderAttachments.fileRecordId,
                     fileName: orderAttachments.fileName,
                     originalFilename: orderAttachments.originalFilename,
-                    fileUrl: orderAttachments.fileUrl,
-                    relativePath: orderAttachments.relativePath,
                 })
                 .from(orderAttachments)
                 .where(eq(orderAttachments.orderId, orderId))
@@ -5952,8 +6065,8 @@ export async function registerOrderRoutes(
                     lineItemAssetRows = await db
                         .select({
                             id: assets.id,
+                            fileRecordId: assets.fileRecordId,
                             fileName: assets.fileName,
-                            fileKey: assets.fileKey,
                         })
                         .from(assets)
                         .where(and(eq(assets.organizationId, organizationId), inArray(assets.id, assetIds)));
@@ -5964,21 +6077,14 @@ export async function registerOrderRoutes(
             const files: Array<{ filename: string; objectPath: string }> = [];
 
             for (const att of attachmentRows) {
-                const filename = String(att.originalFilename || att.fileName || `attachment-${att.id}`);
-                // Extract objectPath from fileUrl (if it starts with /objects/) or use relativePath
-                let objectPath: string | null = null;
-                if (att.fileUrl && att.fileUrl.startsWith('/objects/')) {
-                    objectPath = att.fileUrl.replace('/objects/', '').split('?')[0];
-                } else if (att.relativePath) {
-                    objectPath = att.relativePath;
-                }
-                if (objectPath) files.push({ filename, objectPath });
+                const resolved = await resolveOriginalFileAccess(att, { logOnce: createRequestLogOnce() });
+                if (resolved.objectPath) files.push({ filename: resolved.displayFilename, objectPath: resolved.objectPath });
             }
 
+            const logOnce = createRequestLogOnce();
             for (const asset of lineItemAssetRows) {
-                const filename = String(asset.fileName || `asset-${asset.id}`);
-                const objectPath = asset.fileKey as string | null;
-                if (objectPath) files.push({ filename, objectPath });
+                const resolved = await resolveOriginalFileAccess(asset, { logOnce });
+                if (resolved.objectPath) files.push({ filename: resolved.displayFilename, objectPath: resolved.objectPath });
             }
 
             if (files.length === 0) {

@@ -22,9 +22,18 @@ import {
 } from "@shared/schema";
 import { and, eq, isNull, like, gte, lte, desc, asc, sql, inArray } from "drizzle-orm";
 import { DB_TO_WORKFLOW, getEffectiveWorkflowState, type QuoteWorkflowState as WorkflowState } from "@shared/quoteWorkflow";
+import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 
 export class QuotesRepository {
     constructor(private readonly dbInstance = db) { }
+
+    private async resolvePreviewThumbnailUrl(att: { fileRecordId?: string | null; thumbKey?: string | null; previewKey?: string | null }) {
+        const previewAccess = await resolveDerivativeFileAccess(att, "preview");
+        if (previewAccess.url) return previewAccess.url;
+
+        const thumbAccess = await resolveDerivativeFileAccess(att, "thumbnail");
+        return thumbAccess.url ?? null;
+    }
 
     private buildUserQuotesConditions(
         organizationId: string,
@@ -175,57 +184,44 @@ export class QuotesRepository {
 
         const attachmentsQuery = await this.dbInstance
             .select({
+                id: quoteAttachments.id,
                 quoteId: quoteAttachments.quoteId,
-                thumbKey: quoteAttachments.thumbKey,
-                previewKey: quoteAttachments.previewKey,
-                fileName: quoteAttachments.fileName,
+                fileRecordId: quoteAttachments.fileRecordId,
             })
             .from(quoteAttachments)
             .where(
                 and(
                     inArray(quoteAttachments.quoteId, quoteIds),
-                    eq(quoteAttachments.organizationId, organizationId),
-                    sql`${quoteAttachments.thumbStatus} = 'thumb_ready'`
+                    eq(quoteAttachments.organizationId, organizationId)
                 )
             )
             .orderBy(quoteAttachments.createdAt);
 
-        const groupedAttachments = new Map<string, Array<{ thumbKey: string | null; previewKey: string | null; fileName: string }>>();
-        for (const att of attachmentsQuery) {
+        const groupedAttachments = new Map<string, string[]>();
+        const countMap = new Map<string, number>();
+
+        const resolvedRows = await Promise.all(attachmentsQuery.map(async (att) => {
+            return {
+                quoteId: att.quoteId,
+                thumbnailUrl: await this.resolvePreviewThumbnailUrl(att),
+            };
+        }));
+
+        for (const att of resolvedRows) {
+            if (!att.thumbnailUrl) continue;
+
+            countMap.set(att.quoteId, (countMap.get(att.quoteId) || 0) + 1);
             if (!groupedAttachments.has(att.quoteId)) {
                 groupedAttachments.set(att.quoteId, []);
             }
             const group = groupedAttachments.get(att.quoteId)!;
             if (group.length < 3) {
-                group.push({ thumbKey: att.thumbKey, previewKey: att.previewKey, fileName: att.fileName });
+                group.push(att.thumbnailUrl);
             }
         }
 
-        const countQuery = await this.dbInstance
-            .select({
-                quoteId: quoteAttachments.quoteId,
-                count: sql<number>`count(*)::int`,
-            })
-            .from(quoteAttachments)
-            .where(
-                and(
-                    inArray(quoteAttachments.quoteId, quoteIds),
-                    eq(quoteAttachments.organizationId, organizationId),
-                    sql`${quoteAttachments.thumbStatus} = 'thumb_ready'`
-                )
-            )
-            .groupBy(quoteAttachments.quoteId);
-
-        const countMap = new Map<string, number>();
-        for (const row of countQuery) {
-            countMap.set(row.quoteId, row.count);
-        }
-
         for (const quoteIdKey of Array.from(groupedAttachments.keys())) {
-            const attachments = groupedAttachments.get(quoteIdKey)!;
-            const thumbnails = attachments
-                .map((att) => att.previewKey || att.thumbKey)
-                .filter((key: string | null): key is string => !!key);
+            const thumbnails = groupedAttachments.get(quoteIdKey)!;
             previewData.set(quoteIdKey, {
                 thumbnails,
                 totalCount: countMap.get(quoteIdKey) || 0,
@@ -562,6 +558,9 @@ export class QuotesRepository {
             pbv2TreeVersionId: (item as any).pbv2TreeVersionId || null,
             pbv2SnapshotJson: (item as any).pbv2SnapshotJson || {},
             pricedAt: (item as any).pricedAt || new Date(),
+            // Canonical routing intent (migration 0015)
+            requiresDesign: (item as any).requiresDesign === true,
+            requiresPrepress: typeof (item as any).requiresPrepress === 'boolean' ? (item as any).requiresPrepress : null,
         }));
 
         const createdLineItems = lineItemsData.length
@@ -797,6 +796,9 @@ export class QuotesRepository {
             pbv2TreeVersionId: (lineItem as any).pbv2TreeVersionId || null,
             pbv2SnapshotJson: (lineItem as any).pbv2SnapshotJson || {},
             pricedAt: (lineItem as any).pricedAt || new Date(),
+            // Canonical routing intent (migration 0015)
+            requiresDesign: (lineItem as any).requiresDesign === true,
+            requiresPrepress: typeof (lineItem as any).requiresPrepress === 'boolean' ? (lineItem as any).requiresPrepress : null,
         };
 
         const [created] = await this.dbInstance.insert(quoteLineItems).values(lineItemData).returning();
@@ -819,6 +821,9 @@ export class QuotesRepository {
         if (lineItem.linePrice !== undefined) updateData.linePrice = lineItem.linePrice.toString();
         if (lineItem.priceBreakdown !== undefined) updateData.priceBreakdown = lineItem.priceBreakdown;
         if (lineItem.displayOrder !== undefined) updateData.displayOrder = lineItem.displayOrder;
+        // Canonical routing intent (migration 0015)
+        if ((lineItem as any).requiresDesign !== undefined) updateData.requiresDesign = (lineItem as any).requiresDesign === true;
+        if ((lineItem as any).requiresPrepress !== undefined) updateData.requiresPrepress = typeof (lineItem as any).requiresPrepress === 'boolean' ? (lineItem as any).requiresPrepress : null;
 
         const [updated] = await this.dbInstance
             .update(quoteLineItems)
@@ -1064,60 +1069,47 @@ export class QuotesRepository {
                 // Query for up to 3 thumbnails per quote
                 const attachmentsQuery = await this.dbInstance
                     .select({
+                        id: quoteAttachments.id,
                         quoteId: quoteAttachments.quoteId,
-                        thumbKey: quoteAttachments.thumbKey,
-                        previewKey: quoteAttachments.previewKey,
-                        fileName: quoteAttachments.fileName,
+                        fileRecordId: quoteAttachments.fileRecordId,
                     })
                     .from(quoteAttachments)
                     .where(
                         and(
                             inArray(quoteAttachments.quoteId, quoteIds),
-                            eq(quoteAttachments.organizationId, organizationId),
-                            sql`${quoteAttachments.thumbStatus} = 'thumb_ready'`
+                            eq(quoteAttachments.organizationId, organizationId)
                         )
                     )
                     .orderBy(quoteAttachments.createdAt);
-                
-                // Group attachments by quoteId and take max 3 per quote
-                const groupedAttachments = new Map<string, Array<{ thumbKey: string | null; previewKey: string | null; fileName: string }>>();
-                for (const att of attachmentsQuery) {
+
+                const groupedAttachments = new Map<string, string[]>();
+                const countMap = new Map<string, number>();
+                const resolvedRows = await Promise.all(attachmentsQuery.map(async (att) => {
+                    const [previewAccess, thumbAccess] = await Promise.all([
+                        resolveDerivativeFileAccess(att, "preview"),
+                        resolveDerivativeFileAccess(att, "thumbnail"),
+                    ]);
+
+                    return {
+                        quoteId: att.quoteId,
+                        thumbnailUrl: previewAccess.url ?? thumbAccess.url ?? null,
+                    };
+                }));
+
+                for (const att of resolvedRows) {
+                    if (!att.thumbnailUrl) continue;
+                    countMap.set(att.quoteId, (countMap.get(att.quoteId) || 0) + 1);
                     if (!groupedAttachments.has(att.quoteId)) {
                         groupedAttachments.set(att.quoteId, []);
                     }
                     const group = groupedAttachments.get(att.quoteId)!;
                     if (group.length < 3) {
-                        group.push({ thumbKey: att.thumbKey, previewKey: att.previewKey, fileName: att.fileName });
+                        group.push(att.thumbnailUrl);
                     }
                 }
-                
-                // Count total attachments per quote
-                const countQuery = await this.dbInstance
-                    .select({
-                        quoteId: quoteAttachments.quoteId,
-                        count: sql<number>`count(*)::int`,
-                    })
-                    .from(quoteAttachments)
-                    .where(
-                        and(
-                            inArray(quoteAttachments.quoteId, quoteIds),
-                            eq(quoteAttachments.organizationId, organizationId),
-                            sql`${quoteAttachments.thumbStatus} = 'thumb_ready'`
-                        )
-                    )
-                    .groupBy(quoteAttachments.quoteId);
-                
-                const countMap = new Map<string, number>();
-                for (const row of countQuery) {
-                    countMap.set(row.quoteId, row.count);
-                }
-                
-                // Build preview data map
+
                 for (const quoteIdKey of Array.from(groupedAttachments.keys())) {
-                    const attachments = groupedAttachments.get(quoteIdKey)!;
-                    const thumbnails = attachments
-                        .map((att: { thumbKey: string | null; previewKey: string | null; fileName: string }) => att.previewKey || att.thumbKey)
-                        .filter((key: string | null): key is string => !!key);
+                    const thumbnails = groupedAttachments.get(quoteIdKey)!;
                     previewData.set(quoteIdKey, {
                         thumbnails,
                         totalCount: countMap.get(quoteIdKey) || 0,

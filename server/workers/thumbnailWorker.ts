@@ -2,6 +2,8 @@ import { db } from "../db";
 import { orderAttachments, orders, quoteAttachments } from "@shared/schema";
 import { and, eq, inArray, isNotNull, isNull, not, or, sql } from "drizzle-orm";
 import { fileExists } from "../utils/fileStorage";
+import { canonicalDerivativeReadResolver } from "../services/storage/CanonicalDerivativeReadResolver";
+import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
 import { getWorkerIntervalOverride, logWorkerTick } from "./workerGates";
 
 type AttachmentType = "quote" | "order";
@@ -10,14 +12,11 @@ type PendingAttachmentRow = {
   attachmentType: AttachmentType;
   id: string;
   organizationId: string;
-  fileUrl: string;
+  fileRecordId: string;
   mimeType: string | null;
   fileName: string | null;
   originalFilename: string | null;
-  storageProvider: string | null;
   thumbStatus: "uploaded" | "thumb_pending" | "thumb_ready" | "thumb_failed" | null;
-  thumbKey: string | null;
-  previewKey: string | null;
   thumbError: string | null;
 };
 
@@ -106,21 +105,54 @@ async function claimForProcessing(row: PendingAttachmentRow): Promise<void> {
     );
 }
 
+async function getCanonicalOriginalWorkInput(row: PendingAttachmentRow): Promise<{ storageProvider: "local" | "supabase" | "s3" | "gcs" | "azure_blob" | "titan_managed"; storageKey: string } | null> {
+  const originalAccess = await canonicalFileReadResolver.resolveOriginal(row.fileRecordId);
+  if (originalAccess.status !== "available") return null;
+
+  const storageKey = originalAccess.localPathRef ?? originalAccess.objectKey ?? null;
+  if (!storageKey) return null;
+
+  return {
+    storageProvider: originalAccess.providerType === "local_filesystem"
+      ? "local"
+      : originalAccess.providerType === "s3"
+        ? "s3"
+        : originalAccess.providerType === "gcs"
+          ? "gcs"
+          : originalAccess.providerType === "azure_blob"
+            ? "azure_blob"
+            : originalAccess.providerType === "titan_managed"
+              ? "titan_managed"
+              : "supabase",
+    storageKey,
+  };
+}
+
 async function resetCorruptLocalDerivatives(row: PendingAttachmentRow): Promise<boolean> {
-  const storageProvider = row.storageProvider || "local";
-  if (storageProvider !== "local") return false;
   if (row.thumbStatus !== "thumb_ready") return false;
-  if (!row.thumbKey) return false;
   // If we already know the local original isn't available on this machine, don't try to self-heal.
   if (isLocalOriginalMissingMarker(row.thumbError)) return false;
 
+  const originalInput = await getCanonicalOriginalWorkInput(row);
+  if (!originalInput || originalInput.storageProvider !== "local") return false;
+
+  const [thumbAccess, previewAccess] = await Promise.all([
+    canonicalDerivativeReadResolver.resolveDerivative(row.fileRecordId, "thumbnail"),
+    canonicalDerivativeReadResolver.resolveDerivative(row.fileRecordId, "preview"),
+  ]);
+
+  const thumbKey = thumbAccess.objectKey;
+  const previewKey = previewAccess.objectKey;
+  if (!thumbKey) return false;
+
   // For local storage, `thumbKey`/`previewKey` are relative paths under FILE_STORAGE_ROOT/uploads.
   // If the DB says thumb_ready but the file doesn't exist, treat it as corrupt and re-generate.
-  const thumbExists = await fileExists(row.thumbKey);
-  const previewExists = row.previewKey ? await fileExists(row.previewKey) : true;
+  const thumbExists = await fileExists(thumbKey);
+  const previewRequired = !isPdfLike(row.mimeType, row.originalFilename ?? row.fileName);
+  const previewExists = previewRequired && previewKey ? await fileExists(previewKey) : true;
   if (thumbExists && previewExists) return false;
 
-  const originalExists = await fileExists(row.fileUrl);
+  const originalExists = await fileExists(originalInput.storageKey);
   const baseTable = row.attachmentType === "quote" ? quoteAttachments : orderAttachments;
   const debug = isDebugEnabled();
 
@@ -139,17 +171,16 @@ async function resetCorruptLocalDerivatives(row: PendingAttachmentRow): Promise<
 
     if (debug) {
       console.warn(`[Thumbnail Worker] Local original missing; skipping regeneration for ${row.attachmentType} attachment ${row.id}`, {
-        fileUrl: row.fileUrl,
-        thumbKey: row.thumbKey,
-        previewKey: row.previewKey,
+        fileRecordId: row.fileRecordId,
+        originalKey: originalInput.storageKey,
+        thumbKey,
+        previewKey,
         thumbExists,
         previewExists,
       });
     }
 
     row.thumbStatus = "thumb_failed";
-    row.thumbKey = null;
-    row.previewKey = null;
     row.thumbError = LOCAL_ORIGINAL_NOT_PRESENT;
     return true;
   }
@@ -166,8 +197,8 @@ async function resetCorruptLocalDerivatives(row: PendingAttachmentRow): Promise<
 
   if (debug) {
     console.warn(`[Thumbnail Worker] Reset missing local derivatives for ${row.attachmentType} attachment ${row.id}`, {
-      thumbKey: row.thumbKey,
-      previewKey: row.previewKey,
+      thumbKey,
+      previewKey,
       thumbExists,
       previewExists,
     });
@@ -175,8 +206,6 @@ async function resetCorruptLocalDerivatives(row: PendingAttachmentRow): Promise<
 
   // Update the in-memory row too so this poll iteration can regenerate immediately.
   row.thumbStatus = "uploaded";
-  row.thumbKey = null;
-  row.previewKey = null;
   return true;
 }
 
@@ -197,16 +226,13 @@ async function pollOnce(): Promise<void> {
 
     const commonWhere = (table: typeof quoteAttachments | typeof orderAttachments) =>
       and(
-        // Only process internal storage keys (Supabase/local), not external URLs.
-        isNotNull(table.fileUrl),
-        not(sql`${table.fileUrl} LIKE 'http%'`),
-        // Include null storageProvider (legacy attachments) - treat as local
-        sql`(${table.storageProvider} IN ('supabase', 'local') OR ${table.storageProvider} IS NULL)`,
+        isNotNull(table.fileRecordId),
         // Work queue includes:
-        // - Pending items: thumbKey is null
-        // - Self-heal local items: thumb_ready but derivative file missing on disk (checked at runtime)
+        // - Pending items: status is uploaded/pending
+        // - Self-heal local items: thumb_ready but canonical derivative file missing on disk (checked at runtime)
         or(
-          isNull(table.thumbKey),
+          isNull(table.thumbStatus),
+          inArray(table.thumbStatus, ["uploaded", "thumb_pending"]),
           and(
             eq(table.thumbStatus, "thumb_ready"),
             sql`(${table.storageProvider} = 'local' OR ${table.storageProvider} IS NULL)`
@@ -221,20 +247,16 @@ async function pollOnce(): Promise<void> {
         attachmentType: sql<AttachmentType>`'quote'`,
         id: quoteAttachments.id,
         organizationId: quoteAttachments.organizationId,
-        fileUrl: quoteAttachments.fileUrl,
+        fileRecordId: quoteAttachments.fileRecordId,
         mimeType: quoteAttachments.mimeType,
         fileName: quoteAttachments.fileName,
         originalFilename: quoteAttachments.originalFilename,
-        storageProvider: quoteAttachments.storageProvider,
         thumbStatus: quoteAttachments.thumbStatus,
-        thumbKey: quoteAttachments.thumbKey,
-        previewKey: quoteAttachments.previewKey,
         thumbError: quoteAttachments.thumbError,
       })
       .from(quoteAttachments)
       .where(commonWhere(quoteAttachments))
-      // Prioritize truly-pending rows (thumbKey IS NULL) so self-heal checks don't starve work
-      .orderBy(sql`CASE WHEN ${quoteAttachments.thumbKey} IS NULL THEN 0 ELSE 1 END`, quoteAttachments.createdAt)
+      .orderBy(sql`CASE WHEN ${quoteAttachments.thumbStatus} IN ('uploaded', 'thumb_pending') OR ${quoteAttachments.thumbStatus} IS NULL THEN 0 ELSE 1 END`, quoteAttachments.createdAt)
       .limit(batchSize);
 
     const orderRows = await db
@@ -242,21 +264,17 @@ async function pollOnce(): Promise<void> {
         attachmentType: sql<AttachmentType>`'order'`,
         id: orderAttachments.id,
         organizationId: orders.organizationId,
-        fileUrl: orderAttachments.fileUrl,
+        fileRecordId: orderAttachments.fileRecordId,
         mimeType: orderAttachments.mimeType,
         fileName: orderAttachments.fileName,
         originalFilename: orderAttachments.originalFilename,
-        storageProvider: orderAttachments.storageProvider,
         thumbStatus: orderAttachments.thumbStatus,
-        thumbKey: orderAttachments.thumbKey,
-        previewKey: orderAttachments.previewKey,
         thumbError: orderAttachments.thumbError,
       })
       .from(orderAttachments)
       .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
       .where(commonWhere(orderAttachments))
-      // Prioritize truly-pending rows (thumbKey IS NULL) so self-heal checks don't starve work
-      .orderBy(sql`CASE WHEN ${orderAttachments.thumbKey} IS NULL THEN 0 ELSE 1 END`, orderAttachments.createdAt)
+      .orderBy(sql`CASE WHEN ${orderAttachments.thumbStatus} IN ('uploaded', 'thumb_pending') OR ${orderAttachments.thumbStatus} IS NULL THEN 0 ELSE 1 END`, orderAttachments.createdAt)
       .limit(batchSize);
 
     const rows: PendingAttachmentRow[] = [...quoteRows, ...orderRows].map((r: any) => ({
@@ -274,31 +292,13 @@ async function pollOnce(): Promise<void> {
 
     for (const row of rows) {
       try {
-        if (!row.fileUrl || isHttpUrl(row.fileUrl)) {
-          if (debug) console.log(`[Thumbnail Worker] Skipping ${row.id}: external URL or missing fileUrl`);
+        const originalInput = await getCanonicalOriginalWorkInput(row);
+        if (!originalInput) {
+          if (debug) console.log(`[Thumbnail Worker] Skipping ${row.id}: canonical original unavailable`);
           continue;
         }
         const fileName = (row.originalFilename ?? row.fileName ?? null) as string | null;
-        // Normalize null/empty storageProvider to 'local' (legacy attachments)
-        const storageProvider = row.storageProvider || 'local';
-
-        // Invariant: thumb_ready must never exist without a thumbKey.
-        if (row.thumbStatus === 'thumb_ready' && !row.thumbKey) {
-          const baseTable = row.attachmentType === "quote" ? quoteAttachments : orderAttachments;
-          await db
-            .update(baseTable)
-            .set({
-              thumbStatus: 'uploaded',
-              thumbError: null,
-              updatedAt: new Date(),
-            })
-            .where(eq(baseTable.id, row.id));
-
-          if (debug) {
-            console.warn(`[Thumbnail Worker] Corrected invalid thumb_ready state (missing thumbKey) for ${row.id}`);
-          }
-          continue;
-        }
+        const storageProvider = originalInput.storageProvider;
 
         // Self-heal check for local thumb_ready rows: if derivatives exist, skip quietly.
         if (storageProvider === 'local' && row.thumbStatus === 'thumb_ready') {
@@ -315,7 +315,8 @@ async function pollOnce(): Promise<void> {
           console.log(`[Thumbnail Worker] Processing ${row.attachmentType} attachment ${row.id}:`, {
             fileName,
             mimeType: row.mimeType,
-            fileUrl: row.fileUrl,
+            fileRecordId: row.fileRecordId,
+            storageKey: originalInput.storageKey,
             storageProvider,
             thumbStatus: row.thumbStatus,
           });
@@ -323,7 +324,7 @@ async function pollOnce(): Promise<void> {
 
         // If the original is missing locally, mark and stop (do not retry-loop).
         if (storageProvider === 'local') {
-          const originalExists = await fileExists(row.fileUrl);
+          const originalExists = await fileExists(originalInput.storageKey);
           if (!originalExists) {
             const baseTable = row.attachmentType === "quote" ? quoteAttachments : orderAttachments;
             await db
@@ -339,7 +340,8 @@ async function pollOnce(): Promise<void> {
 
             if (debug) {
               console.warn(`[Thumbnail Worker] Skipping generation: local original missing for ${row.id}`, {
-                fileUrl: row.fileUrl,
+                fileRecordId: row.fileRecordId,
+                storageKey: originalInput.storageKey,
               });
             }
             continue;
@@ -355,7 +357,7 @@ async function pollOnce(): Promise<void> {
           await processPdfAttachmentDerivedData({
             orgId: row.organizationId || "",
             attachmentId: row.id,
-            storageKey: row.fileUrl,
+            storageKey: originalInput.storageKey,
             storageProvider,
             mimeType: row.mimeType,
             attachmentType: row.attachmentType,
@@ -392,7 +394,7 @@ async function pollOnce(): Promise<void> {
         await generateImageDerivatives(
           row.id,
           row.attachmentType,
-          row.fileUrl,
+          originalInput.storageKey,
           row.mimeType,
           storageProvider,
           row.organizationId || "",
