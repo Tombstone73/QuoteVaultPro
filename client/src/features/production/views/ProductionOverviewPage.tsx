@@ -427,6 +427,10 @@ export default function ProductionOverviewPage() {
     const saved = localStorage.getItem("titan.production.board.fitColumns");
     return saved === "true";
   });
+  const [showThumbnails, setShowThumbnails] = useState<boolean>(() => {
+    const saved = localStorage.getItem("titan.production.overview.showThumbnails");
+    return saved !== "false";
+  });
   const [boardViewportWidth, setBoardViewportWidth] = useState<number>(0);
   const boardViewportRef = useRef<HTMLDivElement>(null);
 
@@ -434,6 +438,12 @@ export default function ProductionOverviewPage() {
     const newValue = !fitColumns;
     setFitColumns(newValue);
     localStorage.setItem("titan.production.board.fitColumns", String(newValue));
+  };
+
+  const toggleShowThumbnails = () => {
+    const nextValue = !showThumbnails;
+    setShowThumbnails(nextValue);
+    localStorage.setItem("titan.production.overview.showThumbnails", String(nextValue));
   };
 
   // Measure the visible board viewport width so fit-columns uses the actual
@@ -1285,6 +1295,16 @@ export default function ProductionOverviewPage() {
                 </Tooltip>
               </TooltipProvider>
 
+              <Button
+                variant={showThumbnails ? "secondary" : "outline"}
+                size="sm"
+                onClick={toggleShowThumbnails}
+                className="gap-2 h-9"
+              >
+                {showThumbnails ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                Thumbnails
+              </Button>
+
               {/* Board settings dropdown */}
               <Popover>
               <PopoverTrigger asChild>
@@ -1349,6 +1369,25 @@ export default function ProductionOverviewPage() {
                           />
                         </div>
                       ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-3 pt-3 border-t">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-medium">Artwork</h4>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="production-show-thumbnails" className="text-sm cursor-pointer">
+                        Show thumbnails
+                      </Label>
+                      <Switch
+                        id="production-show-thumbnails"
+                        checked={showThumbnails}
+                        onCheckedChange={(checked) => {
+                          setShowThumbnails(checked);
+                          localStorage.setItem("titan.production.overview.showThumbnails", String(checked));
+                        }}
+                      />
                     </div>
                   </div>
                 </div>
@@ -1492,6 +1531,7 @@ export default function ProductionOverviewPage() {
                       jobs={columnJobs}
                       boardCardConfig={boardCardConfig}
                       onArtworkClick={openArtworkModal}
+                      showThumbnails={showThumbnails}
                       isCardExpanded={isCardExpanded}
                       toggleCardExpanded={toggleCardExpanded}
                       width={fitColumns ? calculatedColumnWidth : DEFAULT_COLUMN_WIDTH}
@@ -1506,6 +1546,7 @@ export default function ProductionOverviewPage() {
                   job={activeJob}
                   boardCardConfig={boardCardConfig}
                   onArtworkClick={openArtworkModal}
+                  showThumbnails={showThumbnails}
                   isDragOverlay
                 />
               )}
@@ -1545,6 +1586,7 @@ export default function ProductionOverviewPage() {
                       key={job.id} 
                       job={job} 
                       visibleColumns={visibleColumns}
+                      showThumbnails={showThumbnails}
                       onArtworkClick={openArtworkModal}
                     />
                   ))
@@ -1682,6 +1724,7 @@ function KanbanColumn({
   jobs,
   boardCardConfig,
   onArtworkClick,
+  showThumbnails,
   isCardExpanded,
   toggleCardExpanded,
   width = DEFAULT_COLUMN_WIDTH,
@@ -1690,6 +1733,7 @@ function KanbanColumn({
   jobs: ProductionJobListItem[];
   boardCardConfig: BoardCardConfig;
   onArtworkClick: (job: ProductionJobListItem) => void;
+  showThumbnails: boolean;
   isCardExpanded: (jobId: string) => boolean;
   toggleCardExpanded: (jobId: string) => void;
   width?: number;
@@ -1721,6 +1765,7 @@ function KanbanColumn({
               job={job}
               boardCardConfig={boardCardConfig}
               onArtworkClick={onArtworkClick}
+              showThumbnails={showThumbnails}
               isExpanded={isCardExpanded(job.id)}
               toggleExpanded={() => toggleCardExpanded(job.id)}
             />
@@ -1969,6 +2014,7 @@ function JobCard({
   job, 
   boardCardConfig,
   onArtworkClick,
+  showThumbnails,
   isDragOverlay = false,
   isExpanded = true,
   toggleExpanded,
@@ -1976,6 +2022,7 @@ function JobCard({
   job: ProductionJobListItem; 
   boardCardConfig: BoardCardConfig;
   onArtworkClick: (job: ProductionJobListItem) => void;
+  showThumbnails: boolean;
   isDragOverlay?: boolean;
   isExpanded?: boolean;
   toggleExpanded?: () => void;
@@ -2201,20 +2248,21 @@ function JobCard({
 
         {/* Thumbnail + Badges Row */}
         <div className="flex items-center gap-2">
-          {/* Thumbnail */}
-          <button
-            type="button"
-            data-no-dnd="true"
-            onClick={(e) => {
-              e.stopPropagation();
-              onArtworkClick(job);
-            }}
-            onPointerDownCapture={(e) => e.stopPropagation()}
-            onMouseDownCapture={(e) => e.stopPropagation()}
-            className="shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
-          >
-            <ThumbnailGroup job={job} sides={sides} />
-          </button>
+          {showThumbnails ? (
+            <button
+              type="button"
+              data-no-dnd="true"
+              onClick={(e) => {
+                e.stopPropagation();
+                onArtworkClick(job);
+              }}
+              onPointerDownCapture={(e) => e.stopPropagation()}
+              onMouseDownCapture={(e) => e.stopPropagation()}
+              className="shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
+            >
+              <ThumbnailGroup job={job} sides={sides} />
+            </button>
+          ) : null}
 
           {/* Badges */}
           <div className="flex items-center flex-wrap gap-1.5">
@@ -2247,7 +2295,7 @@ function JobCard({
 }
 
 // Job row component for list view
-function JobRow({ job, visibleColumns, onArtworkClick }: { job: ProductionJobListItem; visibleColumns: ColumnConfig[]; onArtworkClick: (job: ProductionJobListItem) => void }) {
+function JobRow({ job, visibleColumns, showThumbnails, onArtworkClick }: { job: ProductionJobListItem; visibleColumns: ColumnConfig[]; showThumbnails: boolean; onArtworkClick: (job: ProductionJobListItem) => void }) {
   const navigate = useNavigate();
   const updateStatus = useUpdateProductionJobStatus(job.id);
   const sides = job.sides || "single";
@@ -2262,6 +2310,10 @@ function JobRow({ job, visibleColumns, onArtworkClick }: { job: ProductionJobLis
   const getCellContent = (colId: ColumnId) => {
     switch (colId) {
       case "artwork":
+        if (!showThumbnails) {
+          return <span className="text-xs text-muted-foreground">Hidden</span>;
+        }
+
         return (
           <div 
             onClick={(e) => {
