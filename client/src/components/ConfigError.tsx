@@ -38,7 +38,7 @@ export function ConfigError({ error }: ConfigErrorProps) {
               <div className="bg-muted/50 rounded-lg p-4 space-y-2">
                 <p className="text-xs font-semibold text-muted-foreground">Optional Override Examples:</p>
                 <code className="block text-xs bg-background p-2 rounded border">
-                  VITE_API_BASE_URL=https://api.printershero.com
+                  VITE_API_BASE_URL=https://dev.printershero.com
                   <br />
                   VITE_OBJECTS_BASE_URL=https://objects.printershero.com
                 </code>
