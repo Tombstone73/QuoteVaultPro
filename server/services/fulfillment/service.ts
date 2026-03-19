@@ -10,9 +10,9 @@ export class FulfillmentService {
   private readonly pickupRepo = new PickupRepo(db);
   private readonly dashboardRepo = new FulfillmentDashboardRepo(db);
 
-  private canOverridePickupReady(): boolean {
-    // TODO: wire permission gate (Owner/Admin + org setting) when policy is finalized.
-    return true;
+  private canOverridePickupReady(actorRole?: string | null): boolean {
+    const normalizedRole = String(actorRole || '').trim().toLowerCase();
+    return normalizedRole === 'owner' || normalizedRole === 'admin';
   }
 
   private isOrderProductionComplete(order: {
@@ -26,6 +26,7 @@ export class FulfillmentService {
   async listQueue(orgId: string, filters: {
     type: 'all' | 'ship' | 'pickup';
     status: string;
+    showArchived: boolean;
     overdueOnly: boolean;
     search?: string;
     page: number;
@@ -52,6 +53,10 @@ export class FulfillmentService {
     for (const order of ordersForValidation) {
       if (order.state === 'canceled') {
         throw new FulfillmentHttpError(400, `Order ${order.id} is canceled and not ship-eligible`, 'ORDER_NOT_SHIP_ELIGIBLE');
+      }
+
+      if (order.state !== 'production_complete' || order.routingTarget !== 'fulfillment') {
+        throw new FulfillmentHttpError(400, `Order ${order.id} is not yet eligible for fulfillment`, 'ORDER_NOT_FULFILLMENT_ELIGIBLE');
       }
 
       if (order.shippingMethod === 'pickup') {
@@ -222,7 +227,7 @@ export class FulfillmentService {
     contactEmail?: string | null;
     contactPhone?: string | null;
     overrideProductionComplete?: boolean;
-  }, actorUserId?: string | null) {
+  }, actorUserId?: string | null, actorUserRole?: string | null) {
     const [ticketWithOrder] = await db
       .select({
         ticketId: pickupTickets.id,
@@ -248,8 +253,15 @@ export class FulfillmentService {
       completedProductionAt: ticketWithOrder.completedProductionAt,
     });
 
-    if (!productionComplete && !payload.overrideProductionComplete && !this.canOverridePickupReady()) {
+    const overrideRequested = payload.overrideProductionComplete === true;
+    const overrideAllowed = this.canOverridePickupReady(actorUserRole);
+
+    if (!productionComplete && !overrideRequested) {
       throw new FulfillmentHttpError(400, 'Order production must be complete before pickup-ready', 'PRODUCTION_NOT_COMPLETE');
+    }
+
+    if (!productionComplete && overrideRequested && !overrideAllowed) {
+      throw new FulfillmentHttpError(403, 'Only Owner/Admin may override production-complete for pickup-ready', 'PICKUP_READY_OVERRIDE_FORBIDDEN');
     }
 
     const markResult = await this.pickupRepo.markReady(orgId, ticketId, {
@@ -258,6 +270,8 @@ export class FulfillmentService {
       contactName: payload.contactName,
       contactEmail: payload.contactEmail,
       contactPhone: payload.contactPhone,
+      overrideProductionCompleteUsed: !productionComplete && overrideRequested,
+      overrideActorRole: actorUserRole || null,
     }, actorUserId);
 
     if (!markResult.ok) {

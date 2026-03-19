@@ -16,7 +16,7 @@ import type { Express } from "express";
 import path from "path";
 import { Readable } from "stream";
 import { promises as fsPromises } from "fs";
-import { db } from "../db";
+import { db, hasQuoteAttachmentPagesTable } from "../db";
 import {
   quotes,
   quoteAttachments,
@@ -26,6 +26,7 @@ import {
   orders,
   orderLineItems,
   assets,
+  assetLinks,
 } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray, sql } from "drizzle-orm";
 import { storage } from "../storage";
@@ -44,6 +45,8 @@ import {
   createRequestLogOnce,
   enrichAttachmentWithUrls,
   normalizeObjectKeyForDb,
+  resolveDerivativeFileAccess,
+  resolveOriginalFileAccess,
   scheduleSupabaseObjectSelfCheck,
   tryExtractSupabaseObjectKeyFromUrl
 } from "../lib/supabaseObjectHelpers";
@@ -51,6 +54,13 @@ import type { FileRole, FileSide } from "../lib/supabaseObjectHelpers";
 import { ObjectStorageService, ObjectNotFoundError } from "../objectStorage";
 import { ObjectPermission } from "../objectAcl";
 import { resolveLocalStoragePath } from "../services/localStoragePath";
+import { storageApplicationService } from "../services/storage/StorageApplicationService";
+import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
+import { deleteStoredObjectKeys } from "../services/storage/deleteStoredObjectKeys";
+import { storageRegistry } from "../services/storage/StorageRegistry";
+import { storageProviderConfigRepository } from "../storage/storageProviderConfig.repo";
+import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
+import { fileRecordRepository } from "../storage/fileRecord.repo";
 import { extractNormalizedOrgIdFromKey, getTenantObjectKeyCandidates, normalizeTenantObjectKey } from "../utils/orgKeys";
 import type { DownloadIntent } from "@shared/schema";
 
@@ -139,53 +149,22 @@ function getFrameAncestors(req: any): string[] {
   return inferred ? uniq(["'self'", inferred]) : ["'self'"];
 }
 
-/**
- * Resolves which file to download for an attachment based on download intent.
- * 
- * @param attachment - Attachment record with fileUrl, relativePath, etc.
- * @param intent - Download intent (original/print/proof/preferred)
- * @returns Object with displayFilename and objectPath (storage key)
- * 
- * TODO: When file variants are implemented in the database:
- * - For "print": Check attachment.printReadyKey, fall back to original
- * - For "proof": Check attachment.proofKey, fall back to original  
- * - For "preferred": Try print > proof > original in that order
- * - For "original": Always use original file
- * 
- * CURRENT BEHAVIOR: All intents resolve to original file (no variants yet).
- */
-function resolveAttachmentDownloadTarget(
+async function resolveAttachmentDownloadTarget(
   attachment: {
     id: string;
     fileName: string;
+    fileRecordId?: string | null;
     originalFilename?: string | null;
-    fileUrl?: string | null;
-    relativePath?: string | null;
   },
   intent: DownloadIntent
-): { displayFilename: string; objectPath: string | null } {
-  // TODO: Add variant resolution logic when database schema supports it
-  // For now, ignore intent and always return original file
-  
-  const displayFilename = String(attachment.originalFilename || attachment.fileName || `attachment-${attachment.id}`);
-  
-  // Extract objectPath from fileUrl or use relativePath
-  let objectPath: string | null = null;
-  
-  // Priority 1: /objects/ URLs (Supabase)
-  if (attachment.fileUrl && attachment.fileUrl.startsWith('/objects/')) {
-    objectPath = attachment.fileUrl.replace('/objects/', '').split('?')[0];
-  } 
-  // Priority 2: relativePath field (local storage)
-  else if (attachment.relativePath) {
-    objectPath = attachment.relativePath;
-  }
-  // Priority 3: fileUrl as direct path (for uploads/* paths stored directly)
-  else if (attachment.fileUrl && !attachment.fileUrl.startsWith('http')) {
-    objectPath = attachment.fileUrl;
-  }
-  
-  return { displayFilename, objectPath };
+): Promise<{ displayFilename: string; objectPath: string | null; availabilityStatus: string }> {
+  void intent;
+  const resolved = await resolveOriginalFileAccess(attachment);
+  return {
+    displayFilename: resolved.displayFilename,
+    objectPath: resolved.objectPath,
+    availabilityStatus: resolved.availabilityStatus,
+  };
 }
 
 // Type alias for authentication
@@ -255,7 +234,362 @@ export async function registerAttachmentRoutes(
     isAdmin: any;
   }
 ) {
-  const { isAuthenticated, isAdmin } = middleware;
+  const { isAuthenticated, isAdmin, tenantContext: tenantContextMiddleware } = middleware;
+
+  const tryResolveProviderHandle = async (args: {
+    organizationId: string;
+    providerConfigId: string | null;
+    key: string;
+  }): Promise<{ kind: "signed_url" | "local_path"; value: string } | null> => {
+    if (!args.providerConfigId) {
+      return null;
+    }
+
+    const providerConfig = await storageProviderConfigRepository.getByIdForOrganization(args.organizationId, args.providerConfigId);
+    if (!providerConfig) {
+      return null;
+    }
+
+    const adapter = storageRegistry.getAdapter(providerConfig.providerType);
+    return adapter.getDownloadHandle({
+      providerConfig,
+      objectKey: providerConfig.providerType === "local_filesystem" ? null : args.key,
+      localPathRef: providerConfig.providerType === "local_filesystem" ? args.key : null,
+    });
+  };
+
+  const deleteQuoteAttachmentWithCleanup = async (args: {
+    organizationId: string;
+    quoteId: string;
+    attachmentId: string;
+    quoteLineItemId: string | null;
+  }) => {
+    const predicates = [
+      eq(quoteAttachments.id, args.attachmentId),
+      eq(quoteAttachments.quoteId, args.quoteId),
+      eq(quoteAttachments.organizationId, args.organizationId),
+      args.quoteLineItemId === null
+        ? isNull(quoteAttachments.quoteLineItemId)
+        : eq(quoteAttachments.quoteLineItemId, args.quoteLineItemId),
+    ];
+
+    const [attachment] = await db
+      .select()
+      .from(quoteAttachments)
+      .where(and(...predicates))
+      .limit(1);
+
+    if (!attachment) {
+      return false;
+    }
+
+    const pagePagesTableState = hasQuoteAttachmentPagesTable();
+    const pageDerivativeRows = pagePagesTableState === true
+      ? await db
+          .select({
+            thumbFileRecordId: quoteAttachmentPages.thumbFileRecordId,
+            thumbKey: quoteAttachmentPages.thumbKey,
+            previewFileRecordId: quoteAttachmentPages.previewFileRecordId,
+            previewKey: quoteAttachmentPages.previewKey,
+          })
+          .from(quoteAttachmentPages)
+          .where(and(
+            eq(quoteAttachmentPages.attachmentId, attachment.id),
+            eq(quoteAttachmentPages.organizationId, args.organizationId),
+          ))
+      : [];
+
+    console.log('[QuoteAttachments:DELETE] page derivative preload', {
+      quoteId: args.quoteId,
+      attachmentId: attachment.id,
+      fileRecordId: attachment.fileRecordId ?? null,
+      pagesTableState: pagePagesTableState,
+      pageDerivativeRowCount: pageDerivativeRows.length,
+      pageDerivativeRows: pageDerivativeRows.map((row) => ({
+        thumbFileRecordId: row.thumbFileRecordId ?? null,
+        thumbKey: row.thumbKey ?? null,
+        previewFileRecordId: row.previewFileRecordId ?? null,
+        previewKey: row.previewKey ?? null,
+      })),
+    });
+
+    await db.delete(quoteAttachments).where(and(...predicates));
+
+    try {
+      const resolvedOriginal = attachment.fileRecordId
+        ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
+        : null;
+      const storageKey = String(resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? attachment.fileUrl ?? "");
+      const storageProvider = resolvedOriginal?.providerType === "local_filesystem"
+        ? "local"
+        : resolvedOriginal?.providerType === "s3"
+          ? "s3"
+          : resolvedOriginal?.objectKey
+            ? "supabase"
+            : ((attachment.storageProvider as "local" | "s3" | "gcs" | "supabase" | null | undefined) ?? null);
+
+      if (!storageKey) {
+        return true;
+      }
+
+      const [{ quoteRefs = 0 } = {}] = attachment.fileRecordId
+        ? await db
+            .select({ quoteRefs: sql<number>`count(*)` })
+            .from(quoteAttachments)
+            .where(
+              and(
+                eq(quoteAttachments.organizationId, args.organizationId),
+                eq(quoteAttachments.fileRecordId, String(attachment.fileRecordId))
+              )
+            )
+        : !storageProvider
+          ? [{ quoteRefs: 0 }]
+          : await db
+              .select({ quoteRefs: sql<number>`count(*)` })
+              .from(quoteAttachments)
+              .where(
+                and(
+                  eq(quoteAttachments.organizationId, args.organizationId),
+                  eq(quoteAttachments.fileUrl, storageKey),
+                  eq(quoteAttachments.storageProvider, storageProvider)
+                )
+              );
+
+      const [{ orderRefs = 0 } = {}] = attachment.fileRecordId
+        ? await db
+            .select({ orderRefs: sql<number>`count(*)` })
+            .from(orderAttachments)
+            .where(eq(orderAttachments.fileRecordId, String(attachment.fileRecordId)))
+        : !storageProvider
+          ? [{ orderRefs: 0 }]
+          : await db
+              .select({ orderRefs: sql<number>`count(*)` })
+              .from(orderAttachments)
+              .where(
+                and(
+                  eq(orderAttachments.fileUrl, storageKey),
+                  eq(orderAttachments.storageProvider, storageProvider)
+                )
+              );
+
+      console.log('[QuoteAttachments:DELETE] final cleanup gate', {
+        quoteId: args.quoteId,
+        attachmentId: attachment.id,
+        fileRecordId: attachment.fileRecordId ?? null,
+        storageKey,
+        storageProvider,
+        quoteRefs: Number(quoteRefs),
+        orderRefs: Number(orderRefs),
+      });
+
+      let hasRemainingAssetLinksForFile = false;
+      try {
+        const matchingAssets = attachment.fileRecordId
+          ? await db
+              .select({ id: assets.id })
+              .from(assets)
+              .where(and(eq(assets.organizationId, args.organizationId), eq(assets.fileRecordId, String(attachment.fileRecordId))))
+          : await db
+              .select({ id: assets.id })
+              .from(assets)
+              .where(and(eq(assets.organizationId, args.organizationId), eq(assets.fileKey, normalizeObjectKeyForDb(storageKey))));
+
+        if (matchingAssets.length > 0) {
+          const linkCounts = await Promise.all(
+            matchingAssets.map(async (asset) => {
+              const [{ cnt = 0 } = {}] = await db
+                .select({ cnt: sql<number>`count(*)` })
+                .from(assetLinks)
+                .where(and(eq(assetLinks.organizationId, args.organizationId), eq(assetLinks.assetId, asset.id)));
+              return Number(cnt);
+            })
+          );
+
+          hasRemainingAssetLinksForFile = linkCounts.some((count) => count > 0);
+        }
+      } catch (assetRefError) {
+        console.error("[QuoteAttachments:DELETE] Asset reference check failed (non-blocking):", assetRefError);
+      }
+
+      if (Number(quoteRefs) + Number(orderRefs) === 0 && !hasRemainingAssetLinksForFile && storageProvider) {
+        const derivativeRows = attachment.fileRecordId
+          ? await fileDerivativeRepository.listByFileRecordId(String(attachment.fileRecordId))
+          : [];
+        const derivativeKeys = attachment.fileRecordId
+          ? derivativeRows.map((row) => row.objectKey ?? null)
+          : [(attachment as any).thumbKey ?? null, (attachment as any).previewKey ?? null];
+
+        const derivativeDeletion = await deleteStoredObjectKeys({
+          fileRecordId: attachment.fileRecordId ? String(attachment.fileRecordId) : null,
+          legacyStorageProvider: storageProvider,
+          keys: [storageKey, ...derivativeKeys],
+        });
+
+        console.log('[QuoteAttachments:DELETE] top-level derivative cleanup result', {
+          quoteId: args.quoteId,
+          attachmentId: attachment.id,
+          keys: [storageKey, ...derivativeKeys],
+          deletedKeys: derivativeDeletion.deletedKeys,
+          failedKeys: derivativeDeletion.failedKeys,
+        });
+
+        for (const pageDerivativeRow of pageDerivativeRows) {
+          const pageDerivativeCandidates = [
+            {
+              fileRecordId: pageDerivativeRow.thumbFileRecordId,
+              fallbackKey: pageDerivativeRow.thumbKey,
+            },
+            {
+              fileRecordId: pageDerivativeRow.previewFileRecordId,
+              fallbackKey: pageDerivativeRow.previewKey,
+            },
+          ];
+
+          for (const candidate of pageDerivativeCandidates) {
+            const fileRecordId = candidate.fileRecordId ? String(candidate.fileRecordId) : null;
+            const resolvedPageOriginal = fileRecordId
+              ? await canonicalFileReadResolver.resolveOriginal(fileRecordId)
+              : null;
+            const pageStorageKey = resolvedPageOriginal?.objectKey ?? resolvedPageOriginal?.localPathRef ?? candidate.fallbackKey ?? null;
+            console.log('[QuoteAttachments:DELETE] page derivative candidate', {
+              quoteId: args.quoteId,
+              attachmentId: attachment.id,
+              fileRecordId,
+              fallbackKey: candidate.fallbackKey ?? null,
+              resolvedPageStorageKey: pageStorageKey,
+              resolvedProviderType: resolvedPageOriginal?.providerType ?? null,
+              resolvedStatus: resolvedPageOriginal?.status ?? null,
+            });
+            if (!pageStorageKey) {
+              console.warn('[QuoteAttachments:DELETE] page derivative key missing; skipping physical delete', {
+                quoteId: args.quoteId,
+                attachmentId: attachment.id,
+                fileRecordId,
+                fallbackKey: candidate.fallbackKey ?? null,
+              });
+              continue;
+            }
+
+            const pageDeletion = await deleteStoredObjectKeys({
+              fileRecordId,
+              legacyStorageProvider: storageProvider,
+              keys: [pageStorageKey],
+            });
+
+            console.log('[QuoteAttachments:DELETE] page derivative delete result', {
+              quoteId: args.quoteId,
+              attachmentId: attachment.id,
+              fileRecordId,
+              pageStorageKey,
+              deletedKeys: pageDeletion.deletedKeys,
+              failedKeys: pageDeletion.failedKeys,
+            });
+
+            if (fileRecordId && pageDeletion.failedKeys.length === 0) {
+              await fileRecordRepository.deleteById(fileRecordId);
+            } else if (fileRecordId && pageDeletion.failedKeys.length > 0) {
+              console.warn("[QuoteAttachments:DELETE] Skipped page derivative fileRecord cleanup due to storage delete failures", {
+                fileRecordId,
+                failedKeys: pageDeletion.failedKeys,
+              });
+            }
+          }
+        }
+
+        if (attachment.fileRecordId && derivativeDeletion.failedKeys.length === 0) {
+          await fileDerivativeRepository.deleteByFileRecordId(String(attachment.fileRecordId));
+        } else if (attachment.fileRecordId && derivativeDeletion.failedKeys.length > 0) {
+          console.warn("[QuoteAttachments:DELETE] Skipped derivative row cleanup due to storage delete failures", {
+            fileRecordId: String(attachment.fileRecordId),
+            failedKeys: derivativeDeletion.failedKeys,
+          });
+        }
+      }
+    } catch (cleanupError) {
+      console.error("[QuoteAttachments:DELETE] Storage cleanup failed (non-blocking):", cleanupError);
+    }
+
+    return true;
+  };
+
+  const persistQuoteAttachment = async (args: {
+    quoteId: string;
+    organizationId: string;
+    userId: string | null;
+    userName: string;
+    description?: string | null;
+    requestedTarget?: string | null;
+    thumbStatus?: string;
+    pageCountStatus?: string;
+    source:
+      | {
+          kind: "buffer";
+          buffer: Buffer;
+          originalFilename: string;
+          mimeType: string;
+        }
+      | {
+          kind: "upload-session";
+          uploadId: string;
+          expectedPurpose: "quote-attachment";
+          expectedParentId: string;
+        }
+      | {
+          kind: "existing-key";
+          fileUrl: string;
+          originalFilename: string;
+          mimeType?: string | null;
+          fileSize?: number | null;
+          checksum?: string | null;
+          storedFilename?: string | null;
+          extension?: string | null;
+        };
+  }) => {
+    const finalized = await storageApplicationService.finalizeUpload({
+      organizationId: args.organizationId,
+      createdByUserId: args.userId,
+      requestedTarget: args.requestedTarget,
+      resource: {
+        organizationId: args.organizationId,
+        resourceType: "quote",
+        resourceId: args.quoteId,
+      },
+      source: args.source,
+      persistLink: async (tx, stored) => {
+        const [created] = await tx.insert(quoteAttachments).values({
+          quoteId: args.quoteId,
+          quoteLineItemId: null,
+          organizationId: args.organizationId,
+          fileRecordId: stored.fileRecord.id,
+          uploadedByUserId: args.userId,
+          uploadedByName: args.userName,
+          description: args.description || null,
+          bucket: stored.storedObject.bucket ?? "titan-private",
+          fileName: stored.storedObject.originalFilename,
+          fileUrl: null,
+          fileSize: stored.storedObject.sizeBytes,
+          mimeType: stored.storedObject.mimeType,
+          originalFilename: stored.storedObject.originalFilename,
+          storedFilename: stored.storedObject.storedFilename,
+          relativePath: null,
+          storageProvider: null,
+          extension: stored.storedObject.extension,
+          sizeBytes: stored.storedObject.sizeBytes,
+          checksum: stored.storedObject.checksum,
+          thumbStatus: (args.thumbStatus as any) ?? "uploaded",
+          pageCountStatus: (args.pageCountStatus as any) ?? undefined,
+        }).returning();
+
+        if (!created) {
+          throw new Error("Failed to create quote attachment link");
+        }
+
+        return created;
+      },
+    });
+
+    return finalized.linkedRecord;
+  };
 
   app.get("/objects/health", (req: any, res) => {
     return res.json({
@@ -314,6 +648,53 @@ export async function registerAttachmentRoutes(
 
       const bucketParamRaw = (req.query.bucket ?? "").toString().trim();
       const bucketParam = /^[a-z0-9._-]+$/i.test(bucketParamRaw) ? bucketParamRaw : "";
+      const providerConfigId = typeof req.query.providerConfigId === "string" ? req.query.providerConfigId : null;
+
+      if (providerConfigId) {
+        for (const keyToTry of candidateKeys) {
+          try {
+            const handle = await tryResolveProviderHandle({
+              organizationId,
+              providerConfigId,
+              key: keyToTry,
+            });
+
+            if (!handle) {
+              break;
+            }
+
+            if (handle.kind === "local_path") {
+              await fsPromises.access(handle.value, fsPromises.constants.R_OK);
+              return res.download(path.resolve(handle.value), resolvedName);
+            }
+
+            const upstream = await fetch(handle.value);
+            if (!upstream.ok) {
+              throw new Error(`Upstream fetch failed: ${upstream.status} ${upstream.statusText}`);
+            }
+
+            res.setHeader("Content-Disposition", `attachment; filename="${resolvedName}"`);
+            res.setHeader("Content-Type", upstream.headers.get("content-type") || "application/octet-stream");
+            res.setHeader("Cache-Control", "private, max-age=0, must-revalidate");
+
+            const body: any = (upstream as any).body;
+            if (body && typeof Readable.fromWeb === "function") {
+              const nodeStream = Readable.fromWeb(body);
+              nodeStream.on("error", (err) => {
+                console.error("[objects:download] Stream error:", err);
+                if (!res.headersSent) res.status(500).end();
+              });
+              return nodeStream.pipe(res);
+            }
+
+            return res.send(Buffer.from(await upstream.arrayBuffer()));
+          } catch (providerError: any) {
+            if (process.env.NODE_ENV === "development") {
+              console.log(`[objects:download] provider miss key="${keyToTry}":`, providerError?.message || providerError);
+            }
+          }
+        }
+      }
 
       // 1) Supabase: fetch bytes server-side and stream with attachment headers.
       if (isSupabaseConfigured()) {
@@ -469,6 +850,7 @@ export async function registerAttachmentRoutes(
 
     const bucketParamRaw = (req.query.bucket ?? "").toString().trim();
     const bucketParam = /^[a-z0-9._-]+$/i.test(bucketParamRaw) ? bucketParamRaw : "";
+    const providerConfigId = typeof req.query.providerConfigId === "string" ? req.query.providerConfigId : null;
 
     // Optional DB lookup: map object key -> original uploaded filename/mimeType (scoped to org).
     // This allows /objects/uploads/<uuid> to still download as the original filename.
@@ -498,6 +880,102 @@ export async function registerAttachmentRoutes(
     try {
       // Try Supabase then local filesystem for each candidate key.
       for (const keyToTry of candidateKeys) {
+        if (providerConfigId) {
+          try {
+            const handle = await tryResolveProviderHandle({
+              organizationId,
+              providerConfigId,
+              key: keyToTry,
+            });
+
+            if (handle) {
+              const ext = path.extname(keyToTry).toLowerCase();
+              const contentTypes: { [key: string]: string } = {
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".png": "image/png",
+                ".gif": "image/gif",
+                ".webp": "image/webp",
+                ".pdf": "application/pdf",
+              };
+              const dbMimeLower = (assetMeta?.mimeType ?? "").toLowerCase();
+              const safeLower = safeName.toLowerCase();
+              const isPdf = ext === ".pdf" || safeLower.endsWith(".pdf") || dbMimeLower.includes("pdf");
+              const isImage =
+                [".jpg", ".jpeg", ".png", ".gif", ".webp"].includes(ext) ||
+                safeLower.endsWith(".jpg") ||
+                safeLower.endsWith(".jpeg") ||
+                safeLower.endsWith(".png") ||
+                safeLower.endsWith(".gif") ||
+                safeLower.endsWith(".webp") ||
+                dbMimeLower.startsWith("image/");
+
+              if (handle.kind === "local_path") {
+                await fsPromises.access(handle.value, fsPromises.constants.R_OK);
+                const contentType = isPdf
+                  ? (!wantsDownload ? contentTypes[".pdf"] : (assetMeta?.mimeType || contentTypes[".pdf"]))
+                  : (contentTypes[ext] || assetMeta?.mimeType || "application/octet-stream");
+
+                res.setHeader("Content-Type", contentType);
+                res.setHeader(
+                  "Content-Disposition",
+                  `${wantsDownload ? "attachment" : "inline"}; filename="${safeName}"`
+                );
+                res.setHeader("Cache-Control", wantsDownload ? "private, max-age=0, must-revalidate" : "public, max-age=86400");
+                res.removeHeader("X-Frame-Options");
+                const ancestors = getFrameAncestors(req);
+                res.setHeader("Content-Security-Policy", `frame-ancestors ${ancestors.join(" ")};`);
+                return res.sendFile(path.resolve(handle.value));
+              }
+
+              const upstream = await fetch(handle.value);
+              if (!upstream.ok) {
+                const e: any = new Error(`Upstream fetch failed: ${upstream.status} ${upstream.statusText}`);
+                e.status = upstream.status;
+                throw e;
+              }
+
+              const upstreamType = upstream.headers.get("content-type") || "";
+              const inferredType = contentTypes[ext] || "";
+              const contentType = isPdf
+                ? (!wantsDownload ? "application/pdf" : (upstreamType || assetMeta?.mimeType || "application/pdf"))
+                : isImage
+                  ? (upstreamType || assetMeta?.mimeType || inferredType || "image/*")
+                  : (upstreamType || assetMeta?.mimeType || inferredType || "application/octet-stream");
+
+              res.setHeader("Content-Type", contentType);
+              res.setHeader(
+                "Content-Disposition",
+                `${wantsDownload ? "attachment" : "inline"}; filename="${safeName}"`
+              );
+              res.setHeader("Cache-Control", wantsDownload ? "private, max-age=0, must-revalidate" : "public, max-age=86400");
+              res.removeHeader("X-Frame-Options");
+              const ancestors = getFrameAncestors(req);
+              res.setHeader("Content-Security-Policy", `frame-ancestors ${ancestors.join(" ")};`);
+
+              const body: any = (upstream as any).body;
+              if (body && typeof Readable.fromWeb === "function") {
+                const nodeStream = Readable.fromWeb(body);
+                nodeStream.on("error", (err) => {
+                  console.error("[objects] upstream stream error:", err);
+                  if (!res.headersSent) res.status(500).end();
+                });
+                return nodeStream.pipe(res);
+              }
+
+              return res.send(Buffer.from(await upstream.arrayBuffer()));
+            }
+          } catch (providerError: any) {
+            if (isNotFoundError(providerError)) {
+              logExpectedNotFoundOnce("provider", keyToTry);
+            } else if (isDev) {
+              console.warn(`[objects] provider error key="${keyToTry}":`, providerError?.message || providerError);
+            } else {
+              console.error("[objects] provider error:", providerError);
+            }
+          }
+        }
+
         // 1) Supabase
         if (isSupabaseConfigured()) {
           const supabaseService = new SupabaseStorageService(bucketParam || undefined);
@@ -800,6 +1278,7 @@ export async function registerAttachmentRoutes(
       // Lookup asset
       const [asset] = await db
         .select({
+          fileRecordId: assets.fileRecordId,
           fileKey: assets.fileKey,
           fileName: assets.fileName,
           mimeType: assets.mimeType,
@@ -811,16 +1290,16 @@ export async function registerAttachmentRoutes(
         ))
         .limit(1);
 
-      if (!asset || !asset.fileKey) {
+      if (!asset) {
         return res.status(404).json({ error: "Asset not found" });
       }
 
-      // Redirect to authenticated /objects/ proxy
-      const objectPath = asset.fileKey;
-      const filename = asset.fileName || 'download';
-      const redirectUrl = `/objects/${objectPath}?filename=${encodeURIComponent(filename)}`;
-      
-      return res.redirect(302, redirectUrl);
+      const resolved = await resolveOriginalFileAccess(asset);
+      if (!resolved.downloadUrl) {
+        return res.status(404).json({ error: "Asset unavailable", availabilityStatus: resolved.availabilityStatus });
+      }
+
+      return res.redirect(302, resolved.downloadUrl);
     } catch (error) {
       console.error("[/api/assets/:id/download] Error:", error);
       return res.status(500).json({ error: "Failed to download asset" });
@@ -844,7 +1323,8 @@ export async function registerAttachmentRoutes(
       // Lookup asset
       const [asset] = await db
         .select({
-          thumbKey: assets.thumbKey,
+          id: assets.id,
+          fileRecordId: assets.fileRecordId,
           fileName: assets.fileName,
         })
         .from(assets)
@@ -854,13 +1334,21 @@ export async function registerAttachmentRoutes(
         ))
         .limit(1);
 
-      if (!asset || !asset.thumbKey) {
+      if (!asset) {
         // No thumbnail available, return 404
         return res.status(404).json({ error: "Thumbnail not found" });
       }
 
+      const thumbAccess = await resolveDerivativeFileAccess(asset, "thumbnail", {
+        logOnce: createRequestLogOnce(),
+      });
+
+      if (!thumbAccess.url || !thumbAccess.objectPath) {
+        return res.status(404).json({ error: "Thumbnail not found" });
+      }
+
       // Redirect to authenticated /objects/ proxy
-      const objectPath = asset.thumbKey;
+      const objectPath = thumbAccess.objectPath;
       const filename = asset.fileName ? `thumb_${asset.fileName}` : 'thumbnail';
       const redirectUrl = `/objects/${objectPath}?filename=${encodeURIComponent(filename)}`;
       
@@ -876,9 +1364,10 @@ export async function registerAttachmentRoutes(
    * Get signed upload URL for direct file upload to storage
    * Admin-only endpoint
    */
-  app.post("/api/objects/upload", isAuthenticated, isAdmin, async (req, res) => {
+  app.post("/api/objects/upload", isAuthenticated, tenantContextMiddleware, isAdmin, async (req: any, res) => {
     try {
-      const { decideStorageTarget, getMaxCloudUploadBytes } = await import("../services/storageTarget");
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
 
       const body = (req.body ?? {}) as any;
       const fileName = typeof body.fileName === "string" ? body.fileName : null;
@@ -895,50 +1384,14 @@ export async function registerAttachmentRoutes(
             ? body.storageTarget
             : null;
 
-      const maxCloudBytes = getMaxCloudUploadBytes();
-      const decidedTarget = decideStorageTarget({
+      const initiated = await storageApplicationService.initiateUpload({
+        organizationId,
         fileName,
-        fileSizeBytes,
+        fileSizeBytes: Number.isFinite(fileSizeBytes) ? fileSizeBytes : 0,
         requestedTarget: requestedStorageTarget,
-        context: "/api/objects/upload",
       });
 
-      // Use Supabase storage if configured and within limit
-      if (decidedTarget === "supabase" && isSupabaseConfigured()) {
-        const supabaseService = new SupabaseStorageService();
-        const result = await supabaseService.getSignedUploadUrl({
-          folder: "uploads",
-        });
-        return res.json({
-          storageTarget: "supabase",
-          maxCloudBytes,
-          method: "PUT",
-          url: result.url,
-          path: result.path,
-          token: result.token,
-        });
-      }
-
-      // Local-dev atomic upload path (client must send file bytes to the final attach endpoint)
-      if (decidedTarget === "local_dev") {
-        return res.json({
-          storageTarget: "local_dev",
-          maxCloudBytes,
-          method: "ATOMIC",
-          message: "File exceeds cloud upload limit; use atomic upload.",
-        });
-      }
-
-      // Fall back to Replit ObjectStorage (only works on Replit platform)
-      const objectStorageService = new ObjectStorageService();
-      const { url, path } = await objectStorageService.getObjectEntityUploadURL();
-      res.json({
-        storageTarget: "supabase",
-        maxCloudBytes,
-        method: "PUT",
-        url,
-        path,
-      });
+      res.json(initiated);
     } catch (error) {
       console.error("Error getting upload URL:", error);
       res.status(500).json({ message: "Failed to get upload URL" });
@@ -1031,32 +1484,23 @@ export async function registerAttachmentRoutes(
 
       if (!assertQuoteEditable(res, quote)) return;
 
-      const { fileName, fileUrl, fileSize, mimeType, description, fileBuffer, originalFilename, storageTarget, requestedStorageTarget } = req.body;
+      const { uploadId, fileName, fileUrl, fileSize, mimeType, description, fileBuffer, originalFilename, storageTarget, requestedStorageTarget } = req.body;
 
       const requestedTarget =
         (typeof requestedStorageTarget === 'string' ? requestedStorageTarget : null) ||
         (typeof storageTarget === 'string' ? storageTarget : null);
+      const { hasPageCountStatusColumn } = await import("../db");
+      const pdfColumnsExist = hasPageCountStatusColumn() === true;
 
       const bufferForDecision = fileBuffer ? Buffer.from(fileBuffer, 'base64') : null;
-      const sizeForDecision = bufferForDecision ? bufferForDecision.length : (fileSize != null ? Number(fileSize) : 0);
-
-      const { decideStorageTarget } = await import('../services/storageTarget');
-      const decidedTarget = decideStorageTarget({
-        fileName: (originalFilename || fileName || null) as any,
-        fileSizeBytes: sizeForDecision,
-        requestedTarget,
-        organizationId,
-        context: 'POST /api/quotes/:id/files',
-      });
 
       // Detect if this is a PDF (by mimeType or filename)
       const resolvedUploadName = (originalFilename || fileName || "") as string;
       const lowerMime = (mimeType || "").toString().toLowerCase();
       const isPdfEarly = lowerMime.includes("pdf") || resolvedUploadName.toLowerCase().endsWith(".pdf");
 
-      // Check if PDF processing columns exist (from startup probe)
-      const { hasPageCountStatusColumn } = await import("../db");
-      const pdfColumnsExist = hasPageCountStatusColumn() === true;
+      const thumbStatus = isPdfEarly && pdfColumnsExist ? ("thumb_pending" as const) : ("uploaded" as const);
+      const pageCountStatus = pdfColumnsExist ? (isPdfEarly ? ("detecting" as const) : ("unknown" as const)) : undefined;
 
       if (isPdfEarly && !pdfColumnsExist) {
         console.warn(
@@ -1064,138 +1508,103 @@ export async function registerAttachmentRoutes(
         );
       }
 
+      if (uploadId && typeof uploadId === "string") {
+        const attachment = await persistQuoteAttachment({
+          quoteId: req.params.id,
+          organizationId,
+          userId,
+          userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+          description,
+          requestedTarget,
+          thumbStatus,
+          pageCountStatus,
+          source: {
+            kind: "upload-session",
+            uploadId,
+            expectedPurpose: "quote-attachment",
+            expectedParentId: req.params.id,
+          },
+        });
+
+        const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+        return res.json({ success: true, data: enrichedAttachment });
+      }
+
       // Support both legacy and new upload methods
       if (!fileName && !originalFilename) {
         return res.status(400).json({ error: "fileName or originalFilename is required" });
       }
-
-      let attachmentData: any = {
-        quoteId: req.params.id,
-        organizationId,
-        uploadedByUserId: userId,
-        uploadedByName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
-        description: description || null,
-      };
-
-      // Atomic upload path (server decides provider)
-      if (fileBuffer && originalFilename) {
-        const buffer = bufferForDecision || Buffer.from(fileBuffer, 'base64');
-        const contentType = (mimeType || 'application/octet-stream') as string;
-
-        if (decidedTarget === 'supabase' && isSupabaseConfigured()) {
-          const { SupabaseStorageService } = await import('../supabaseStorage');
-          const { generateStoredFilename, generateRelativePath, computeChecksum, getFileExtension } = await import('../utils/fileStorage.js');
-
-          const storedFilename = generateStoredFilename(originalFilename);
-          const relativePath = generateRelativePath({
-            organizationId,
-            resourceType: 'quote',
-            resourceId: req.params.id,
-            storedFilename,
-          });
-          const checksum = computeChecksum(buffer);
-          const extension = getFileExtension(originalFilename);
-
-          const supabase = new SupabaseStorageService();
-          const uploaded = await supabase.uploadFile(relativePath, buffer, contentType);
-
-          attachmentData = {
-            ...attachmentData,
-            fileName: originalFilename,
-            fileUrl: normalizeObjectKeyForDb(uploaded.path),
-            fileSize: buffer.length,
-            mimeType: contentType,
-            originalFilename,
-            storedFilename,
-            relativePath: normalizeObjectKeyForDb(uploaded.path),
-            storageProvider: 'supabase',
-            extension,
-            sizeBytes: buffer.length,
-            checksum,
-            thumbStatus: isPdfEarly && pdfColumnsExist ? ('thumb_pending' as const) : ('uploaded' as const),
-          };
-        } else {
-          const { processUploadedFile } = await import('../utils/fileStorage.js');
-          const fileMetadata = await processUploadedFile({
-            originalFilename,
-            buffer,
-            mimeType: contentType,
-            organizationId,
-            resourceType: 'quote',
-            resourceId: req.params.id,
-          });
-
-          attachmentData = {
-            ...attachmentData,
-            fileName: originalFilename,
-            fileUrl: fileMetadata.relativePath,
-            fileSize: fileMetadata.sizeBytes,
-            mimeType: contentType,
-            originalFilename: fileMetadata.originalFilename,
-            storedFilename: fileMetadata.storedFilename,
-            relativePath: fileMetadata.relativePath,
-            storageProvider: 'local',
-            extension: fileMetadata.extension,
-            sizeBytes: fileMetadata.sizeBytes,
-            checksum: fileMetadata.checksum,
-            thumbStatus: isPdfEarly && pdfColumnsExist ? ('thumb_pending' as const) : ('uploaded' as const),
-          };
-        }
-
-        if (pdfColumnsExist) {
-          attachmentData.pageCountStatus = isPdfEarly ? ("detecting" as const) : ("unknown" as const);
-        }
-      }
-      // Legacy method (GCS or direct URL)
-      else {
-        if (!fileUrl) {
-          return res.status(400).json({ error: "fileUrl is required for legacy uploads" });
-        }
-
-        // Determine storage provider for legacy uploads
-        // - http(s): external legacy URL
-        // - Supabase object key: typically starts with "uploads/" (or bucket-prefixed)
-        // - Otherwise: local storage key
-        let storageProvider: string | undefined;
-        if (fileUrl && (fileUrl.startsWith("http://") || fileUrl.startsWith("https://"))) {
-          storageProvider = undefined;
-        } else if (decidedTarget === 'supabase') {
-          storageProvider = 'supabase';
-        } else {
-          storageProvider = 'local';
-        }
-
-        attachmentData = {
-          ...attachmentData,
-          fileName,
-          fileUrl:
-            storageProvider === "supabase" &&
-              fileUrl &&
-              !fileUrl.startsWith("http://") &&
-              !fileUrl.startsWith("https://")
-              ? normalizeObjectKeyForDb(fileUrl)
-              : fileUrl,
-          fileSize: fileSize || null,
-          mimeType: mimeType || null,
-          originalFilename: originalFilename || fileName || null,
-          storageProvider,
-          bucket: "titan-private",
-          thumbStatus: isPdfEarly && pdfColumnsExist ? ("thumb_pending" as const) : ("uploaded" as const),
-        };
-
-        if (pdfColumnsExist) {
-          attachmentData.pageCountStatus = isPdfEarly ? ("detecting" as const) : ("unknown" as const);
-        }
+      if (!fileBuffer && !fileUrl) {
+        return res.status(400).json({ error: "fileUrl is required for legacy uploads" });
       }
 
-      const [attachment] = await db.insert(quoteAttachments).values(attachmentData).returning();
+      const attachment = fileBuffer && originalFilename
+        ? await persistQuoteAttachment({
+            quoteId: req.params.id,
+            organizationId,
+            userId,
+            userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+            description,
+            requestedTarget,
+            thumbStatus,
+            pageCountStatus,
+            source: {
+              kind: "buffer",
+              buffer: bufferForDecision || Buffer.from(fileBuffer, 'base64'),
+              originalFilename,
+              mimeType: (mimeType || 'application/octet-stream') as string,
+            },
+          })
+        : fileUrl && (fileUrl.startsWith("http://") || fileUrl.startsWith("https://"))
+          ? (
+              await db.insert(quoteAttachments).values({
+                quoteId: req.params.id,
+                organizationId,
+                uploadedByUserId: userId,
+                uploadedByName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+                description: description || null,
+                fileName,
+                fileUrl,
+                fileSize: fileSize || null,
+                mimeType: mimeType || null,
+                originalFilename: originalFilename || fileName || null,
+                storageProvider: undefined,
+                bucket: "titan-private",
+                thumbStatus,
+                pageCountStatus: pageCountStatus as any,
+              }).returning()
+            )[0]
+          : await persistQuoteAttachment({
+              quoteId: req.params.id,
+              organizationId,
+              userId,
+              userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+              description,
+              requestedTarget,
+              thumbStatus,
+              pageCountStatus,
+              source: {
+                kind: "existing-key",
+                fileUrl: normalizeObjectKeyForDb(fileUrl),
+                originalFilename: (originalFilename || fileName) as string,
+                mimeType: mimeType || null,
+                fileSize: fileSize || null,
+              },
+            });
+
+      const canonicalOriginal = attachment.fileRecordId
+        ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
+        : null;
+      const canonicalStorageKey = canonicalOriginal?.objectKey ?? canonicalOriginal?.localPathRef ?? null;
+      const canonicalStorageProvider = canonicalOriginal?.providerType
+        ?? (canonicalOriginal?.localPathRef ? "local_filesystem" : canonicalOriginal?.objectKey ? "supabase" : null);
 
       // Best-effort self-check for Supabase-backed keys (non-blocking)
-      if (attachment.storageProvider === "supabase" && attachment.fileUrl) {
+      if (canonicalStorageProvider === "supabase" && canonicalStorageKey) {
         res.on("finish", () => {
           scheduleSupabaseObjectSelfCheck({
             bucket: "titan-private",
-            path: attachment.fileUrl,
+            path: canonicalStorageKey,
             context: { attachmentType: "quote", quoteId: req.params.id, attachmentId: attachment.id },
           });
         });
@@ -1206,13 +1615,16 @@ export async function registerAttachmentRoutes(
       const { isSupportedImageType } = await import("../services/thumbnailGenerator");
       const attachmentFileNameForThumb = attachment.originalFilename || attachment.fileName || null;
       const isSupportedImage = isSupportedImageType(attachment.mimeType, attachmentFileNameForThumb);
-      const hasStorageProviderForThumb = !!attachment.storageProvider;
-      const isNotHttpUrlForThumb =
-        attachment.fileUrl &&
-        !attachment.fileUrl.startsWith("http://") &&
-        !attachment.fileUrl.startsWith("https://");
+      const hasStorageProviderForThumb = !!canonicalStorageProvider;
+      const isNotHttpUrlForThumb = !!canonicalStorageKey;
 
-      if (isSupportedImage && hasStorageProviderForThumb && isNotHttpUrlForThumb && attachment.fileUrl) {
+      if (
+        isSupportedImage &&
+        hasStorageProviderForThumb &&
+        isNotHttpUrlForThumb &&
+        canonicalStorageKey &&
+        (canonicalStorageProvider === "local_filesystem" || canonicalStorageProvider === "supabase")
+      ) {
         const { generateImageDerivatives, isThumbnailGenerationEnabled } = await import(
           "../services/thumbnailGenerator"
         );
@@ -1220,9 +1632,9 @@ export async function registerAttachmentRoutes(
           void generateImageDerivatives(
             attachment.id,
             "quote",
-            attachment.fileUrl,
+            canonicalStorageKey,
             attachment.mimeType || null,
-            attachment.storageProvider!,
+            canonicalStorageProvider,
             organizationId,
             attachmentFileNameForThumb
           ).catch((error) => {
@@ -1234,7 +1646,7 @@ export async function registerAttachmentRoutes(
         }
       } else if (isSupportedImage && (!hasStorageProviderForThumb || !isNotHttpUrlForThumb)) {
         console.log(
-          `[QuoteFiles:POST] Skipping thumbnail generation for ${attachment.id}: storageProvider=${attachment.storageProvider}, fileUrl starts with http=${attachment.fileUrl?.startsWith("http")}`
+          `[QuoteFiles:POST] Skipping thumbnail generation for ${attachment.id}: canonicalStorageProvider=${canonicalStorageProvider}, canonicalStorageKey=${canonicalStorageKey}`
         );
       }
 
@@ -1244,11 +1656,15 @@ export async function registerAttachmentRoutes(
       ).toLowerCase();
       const isPdf =
         (attachment.mimeType ?? "").toLowerCase().includes("pdf") || attachmentFileNameForPdf.endsWith(".pdf");
-      const normalizedStorageProvider =
-        (attachment.storageProvider as any) ??
-        (isSupabaseConfigured() && attachment.fileUrl?.startsWith("uploads/") ? "supabase" : null);
+      const normalizedStorageProvider = canonicalStorageProvider;
 
-      if (isPdf && pdfColumnsExist && normalizedStorageProvider && isNotHttpUrlForThumb && attachment.fileUrl) {
+      if (
+        isPdf &&
+        pdfColumnsExist &&
+        normalizedStorageProvider &&
+        isNotHttpUrlForThumb &&
+        canonicalStorageKey
+      ) {
         res.on("finish", () => {
           setImmediate(() => {
             void (async () => {
@@ -1257,7 +1673,7 @@ export async function registerAttachmentRoutes(
                 await processPdfAttachmentDerivedData({
                   orgId: organizationId,
                   attachmentId: attachment.id,
-                  storageKey: attachment.fileUrl,
+                  storageKey: canonicalStorageKey,
                   storageProvider: normalizedStorageProvider,
                   mimeType: attachment.mimeType || null,
                   attachmentType: "quote",
@@ -1270,7 +1686,8 @@ export async function registerAttachmentRoutes(
         });
       }
 
-      res.json({ success: true, data: attachment });
+      const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+      res.json({ success: true, data: enrichedAttachment });
     } catch (error) {
       console.error("Error attaching file to quote:", error);
       res.status(500).json({ error: "Failed to attach file to quote" });
@@ -1296,16 +1713,14 @@ export async function registerAttachmentRoutes(
 
       if (!assertQuoteEditable(res, quote)) return;
 
-      await db
-        .delete(quoteAttachments)
-        .where(
-          and(
-            eq(quoteAttachments.id, req.params.fileId),
-            eq(quoteAttachments.quoteId, req.params.id),
-            isNull(quoteAttachments.quoteLineItemId),
-            eq(quoteAttachments.organizationId, organizationId)
-          )
-        );
+      const deleted = await deleteQuoteAttachmentWithCleanup({
+        organizationId,
+        quoteId: req.params.id,
+        attachmentId: req.params.fileId,
+        quoteLineItemId: null,
+      });
+
+      if (!deleted) return res.status(404).json({ error: "Quote attachment not found" });
 
       res.json({ success: true });
     } catch (error) {
@@ -1563,6 +1978,8 @@ export async function registerAttachmentRoutes(
       const requestedTarget =
         (typeof requestedStorageTarget === 'string' ? requestedStorageTarget : null) ||
         (typeof storageTarget === 'string' ? storageTarget : null);
+      const { hasPageCountStatusColumn } = await import("../db");
+      const pdfColumnsExist = hasPageCountStatusColumn() === true;
 
       // Validate quote belongs to org
       const [quote] = await db
@@ -1577,75 +1994,73 @@ export async function registerAttachmentRoutes(
       // Chunked upload link: finalize happens via /api/uploads/:uploadId/finalize.
       // This endpoint links a finalized upload into quote_attachments.
       if (uploadId && typeof uploadId === "string") {
-        const { loadUploadSessionMeta, saveUploadSessionMeta, deleteUploadSession } = await import(
-          "../services/chunkedUploads"
-        );
-        const meta = await loadUploadSessionMeta(uploadId);
-        if (meta.organizationId !== organizationId) return res.status(404).json({ error: "Upload not found" });
-        if (meta.purpose !== "quote-attachment") return res.status(400).json({ error: "Invalid upload purpose" });
-        if (meta.status !== "finalized" || !meta.relativePath)
-          return res.status(400).json({ error: "Upload not finalized" });
-        if (meta.quoteId && meta.quoteId !== quoteId) return res.status(400).json({ error: "Upload quoteId mismatch" });
-
-        const { decideStorageTarget } = await import('../services/storageTarget');
-        const decidedTarget = decideStorageTarget({
-          fileName: meta.originalFilename,
-          fileSizeBytes: meta.sizeBytes || 0,
-          requestedTarget,
+        let created = await persistQuoteAttachment({
+          quoteId,
           organizationId,
-          context: 'POST /api/quotes/:quoteId/attachments (uploadId)',
+          userId,
+          userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+          description,
+          requestedTarget,
+          source: {
+            kind: "upload-session",
+            uploadId,
+            expectedPurpose: "quote-attachment",
+            expectedParentId: quoteId,
+          },
         });
 
-        let attachmentInsert: any = {
-          quoteId,
-          quoteLineItemId: null,
-          organizationId,
-          uploadedByUserId: userId,
-          uploadedByName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
-          description: description || null,
-          bucket: "titan-private",
-          fileName: meta.originalFilename,
-          fileUrl: meta.relativePath,
-          fileSize: meta.sizeBytes,
-          mimeType: meta.mimeType,
-          originalFilename: meta.originalFilename,
-          storedFilename: meta.storedFilename || null,
-          relativePath: meta.relativePath,
-          storageProvider: "local",
-          extension: meta.extension || null,
-          sizeBytes: meta.sizeBytes,
-          checksum: meta.checksum || null,
-        };
+        const createdFileName = (created.originalFilename ?? created.fileName ?? "").toString();
+        const createdMimeType = (created.mimeType ?? "").toString().toLowerCase();
+        const isPdfUpload = createdMimeType.includes("pdf") || createdFileName.toLowerCase().endsWith(".pdf");
 
-        // Server enforcement: if the file is under the cloud limit, store in Supabase even if it was uploaded via chunked-local.
-        if (decidedTarget === 'supabase' && isSupabaseConfigured() && meta.relativePath) {
-          const { SupabaseStorageService } = await import('../supabaseStorage');
-          const { getAbsolutePath, deleteFile: deleteLocalFile } = await import('../utils/fileStorage.js');
-          const fsPromises = await import('fs/promises');
+        if (isPdfUpload && pdfColumnsExist) {
+          const [updated] = await db
+            .update(quoteAttachments)
+            .set({
+              thumbStatus: "thumb_pending",
+              pageCountStatus: "detecting" as any,
+              updatedAt: new Date(),
+            })
+            .where(and(eq(quoteAttachments.id, created.id), eq(quoteAttachments.organizationId, organizationId)))
+            .returning();
 
-          const abs = getAbsolutePath(meta.relativePath);
-          const buffer = await fsPromises.readFile(abs);
-
-          const supabase = new SupabaseStorageService();
-          const uploaded = await supabase.uploadFile(meta.relativePath, buffer, meta.mimeType || 'application/octet-stream');
-
-          attachmentInsert = {
-            ...attachmentInsert,
-            fileUrl: normalizeObjectKeyForDb(uploaded.path),
-            relativePath: normalizeObjectKeyForDb(uploaded.path),
-            storageProvider: 'supabase',
-          };
-
-          // Best-effort: delete the local staged file after successful cloud upload
-          await deleteLocalFile(meta.relativePath).catch(() => false);
+          if (updated) {
+            created = updated;
+          }
         }
 
-        const [created] = await db.insert(quoteAttachments).values(attachmentInsert).returning();
+        try {
+          const canonicalOriginal = created.fileRecordId
+            ? await canonicalFileReadResolver.resolveOriginal(String(created.fileRecordId))
+            : null;
+          const canonicalStorageKey = canonicalOriginal?.objectKey ?? canonicalOriginal?.localPathRef ?? null;
+          const canonicalStorageProvider = canonicalOriginal?.providerType
+            ?? (canonicalOriginal?.localPathRef ? "local_filesystem" : canonicalOriginal?.objectKey ? "supabase" : null);
 
-        // Mark linked and remove temp session metadata (permanent file remains in uploads root).
-        meta.linkedAt = new Date().toISOString();
-        await saveUploadSessionMeta(uploadId, meta);
-        await deleteUploadSession(uploadId);
+          if (isPdfUpload && pdfColumnsExist && canonicalStorageKey && canonicalStorageProvider) {
+            res.on("finish", () => {
+              setImmediate(() => {
+                void (async () => {
+                  try {
+                    const { processPdfAttachmentDerivedData } = await import("../services/pdfProcessing");
+                    await processPdfAttachmentDerivedData({
+                      orgId: organizationId,
+                      attachmentId: created.id,
+                      storageKey: canonicalStorageKey,
+                      storageProvider: canonicalStorageProvider,
+                      mimeType: created.mimeType || null,
+                      attachmentType: "quote",
+                    });
+                  } catch (error: any) {
+                    console.error(`[QuoteAttachments:POST] PDF kickoff failed for ${created.id}:`, error);
+                  }
+                })();
+              });
+            });
+          }
+        } catch (kickoffPreparationError: any) {
+          console.error(`[QuoteAttachments:POST] PDF kickoff preparation failed (non-blocking) for ${created.id}:`, kickoffPreparationError);
+        }
 
         const enriched = await enrichAttachmentWithUrls(created);
         return res.json({ success: true, data: [enriched] });
@@ -1655,139 +2070,42 @@ export async function registerAttachmentRoutes(
       // Body format:
       // { files: [{ originalFilename, mimeType, sizeBytes, fileBufferBase64 }], description? }
       if (Array.isArray(files) && files.length > 0) {
-        const { SupabaseStorageService, isSupabaseConfigured: _isSupabaseConfigured } = await import(
-          "../supabaseStorage"
-        );
-        const {
-          processUploadedFile,
-          generateStoredFilename,
-          generateRelativePath,
-          computeChecksum,
-          getFileExtension,
-          deleteFile: deleteLocalFile,
-        } = await import("../utils/fileStorage.js");
-
-        const { decideStorageTarget } = await import('../services/storageTarget');
-
-        const uploadedKeys: Array<{ provider: "supabase" | "local"; key: string }> = [];
-
         try {
-          const inserted = await db.transaction(async (tx) => {
-            const results: any[] = [];
+          const inserted = [];
 
-            for (const f of files) {
-              const originalFilename = (f?.originalFilename ?? f?.fileName ?? "").toString();
-              const fileBufferBase64 = (f?.fileBufferBase64 ?? f?.fileBuffer ?? "").toString();
-              const fileMimeType = (f?.mimeType ?? "application/octet-stream").toString();
+          for (const f of files) {
+            const originalFilename = (f?.originalFilename ?? f?.fileName ?? "").toString();
+            const fileBufferBase64 = (f?.fileBufferBase64 ?? f?.fileBuffer ?? "").toString();
+            const fileMimeType = (f?.mimeType ?? "application/octet-stream").toString();
 
-              if (!originalFilename) {
-                throw new Error("originalFilename is required");
-              }
-              if (!fileBufferBase64) {
-                throw new Error(`fileBufferBase64 is required for ${originalFilename}`);
-              }
-
-              const buffer = Buffer.from(fileBufferBase64, "base64");
-
-              let attachmentInsert: any = {
-                quoteId,
-                quoteLineItemId: null,
-                organizationId,
-                uploadedByUserId: userId,
-                uploadedByName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
-                description: description || null,
-                bucket: "titan-private",
-              };
-
-              const decidedTarget = decideStorageTarget({
-                fileName: originalFilename,
-                fileSizeBytes: buffer.length,
-                requestedTarget,
-                organizationId,
-                context: 'POST /api/quotes/:quoteId/attachments (atomic)',
-              });
-
-              if (decidedTarget === 'supabase' && _isSupabaseConfigured()) {
-                const storedFilename = generateStoredFilename(originalFilename);
-                const relativePath = generateRelativePath({
-                  organizationId,
-                  resourceType: "quote",
-                  resourceId: quoteId,
-                  storedFilename,
-                });
-                const checksum = computeChecksum(buffer);
-                const extension = getFileExtension(originalFilename);
-                const sizeBytes = buffer.length;
-
-                const supabase = new SupabaseStorageService();
-                const uploaded = await supabase.uploadFile(relativePath, buffer, fileMimeType);
-                uploadedKeys.push({ provider: "supabase", key: uploaded.path });
-
-                attachmentInsert = {
-                  ...attachmentInsert,
-                  fileName: originalFilename,
-                  fileUrl: uploaded.path,
-                  fileSize: sizeBytes,
-                  mimeType: fileMimeType,
-                  originalFilename,
-                  storedFilename,
-                  relativePath,
-                  storageProvider: "supabase",
-                  extension,
-                  sizeBytes,
-                  checksum,
-                };
-              } else {
-                const fileMetadata = await processUploadedFile({
-                  originalFilename,
-                  buffer,
-                  mimeType: fileMimeType,
-                  organizationId,
-                  resourceType: "quote",
-                  resourceId: quoteId,
-                });
-                uploadedKeys.push({ provider: "local", key: fileMetadata.relativePath });
-
-                attachmentInsert = {
-                  ...attachmentInsert,
-                  fileName: originalFilename,
-                  fileUrl: fileMetadata.relativePath,
-                  fileSize: fileMetadata.sizeBytes,
-                  mimeType: fileMimeType,
-                  originalFilename: fileMetadata.originalFilename,
-                  storedFilename: fileMetadata.storedFilename,
-                  relativePath: fileMetadata.relativePath,
-                  storageProvider: "local",
-                  extension: fileMetadata.extension,
-                  sizeBytes: fileMetadata.sizeBytes,
-                  checksum: fileMetadata.checksum,
-                };
-              }
-
-              const [created] = await tx.insert(quoteAttachments).values(attachmentInsert).returning();
-              results.push(created);
+            if (!originalFilename) {
+              throw new Error("originalFilename is required");
+            }
+            if (!fileBufferBase64) {
+              throw new Error(`fileBufferBase64 is required for ${originalFilename}`);
             }
 
-            return results;
-          });
+            const created = await persistQuoteAttachment({
+              quoteId,
+              organizationId,
+              userId,
+              userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+              description,
+              requestedTarget,
+              source: {
+                kind: "buffer",
+                buffer: Buffer.from(fileBufferBase64, "base64"),
+                originalFilename,
+                mimeType: fileMimeType,
+              },
+            });
 
-          return res.json({ success: true, data: inserted });
-        } catch (error: any) {
-          // Best-effort cleanup of uploaded blobs on failure
-          try {
-            if (_isSupabaseConfigured()) {
-              const supabase = new SupabaseStorageService();
-              await Promise.all(
-                uploadedKeys.filter((k) => k.provider === "supabase").map((k) => supabase.deleteFile(k.key))
-              );
-            }
-            await Promise.all(
-              uploadedKeys.filter((k) => k.provider === "local").map((k) => deleteLocalFile(k.key).catch(() => false))
-            );
-          } catch {
-            // fail-soft cleanup
+            inserted.push(created);
           }
 
+          const enrichedInserted = await Promise.all(inserted.map((file) => enrichAttachmentWithUrls(file)));
+          return res.json({ success: true, data: enrichedInserted });
+        } catch (error: any) {
           console.error("[QuoteAttachments:POST] Atomic upload failed:", error);
           return res.status(500).json({ error: error?.message || "Failed to upload attachments" });
         }
@@ -1797,51 +2115,44 @@ export async function registerAttachmentRoutes(
       if (!fileName) return res.status(400).json({ error: "fileName is required" });
       if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
-      const { decideStorageTarget, getMaxCloudUploadBytes } = await import('../services/storageTarget');
-      const sizeForDecision = fileSize != null ? Number(fileSize) : 0;
-      const decidedTarget = decideStorageTarget({
-        fileName,
-        fileSizeBytes: Number.isFinite(sizeForDecision) ? sizeForDecision : 0,
-        requestedTarget,
-        organizationId,
-        context: 'POST /api/quotes/:quoteId/attachments (legacy)',
-      });
-      const maxCloudBytes = getMaxCloudUploadBytes();
-
-      // If the file is over the cloud limit, the client must use atomic upload.
-      if (decidedTarget === 'local_dev' && isSupabaseConfigured()) {
-        return res.status(400).json({
-          error: 'File exceeds cloud upload limit; use atomic upload.',
-          decidedTarget,
-          maxCloudBytes,
-        });
-      }
-
       const isHttp = fileUrl.startsWith('http://') || fileUrl.startsWith('https://');
-      const storageProvider: 'local' | 'supabase' | undefined =
-        isHttp ? undefined : (decidedTarget === 'supabase' ? 'supabase' : 'local');
-      const normalizedKey =
-        storageProvider === 'supabase' && !isHttp ? normalizeObjectKeyForDb(fileUrl) : fileUrl;
+      const attachment = isHttp
+        ? (
+            await db.insert(quoteAttachments).values({
+              quoteId,
+              quoteLineItemId: null,
+              organizationId,
+              uploadedByUserId: userId,
+              uploadedByName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+              fileName,
+              originalFilename: fileName,
+              fileUrl,
+              relativePath: null,
+              fileSize: fileSize || null,
+              mimeType: mimeType || null,
+              description: description || null,
+              bucket: "titan-private",
+              storageProvider: undefined,
+            }).returning()
+          )[0]
+        : await persistQuoteAttachment({
+            quoteId,
+            organizationId,
+            userId,
+            userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+            description,
+            requestedTarget,
+            source: {
+              kind: "existing-key",
+              fileUrl: normalizeObjectKeyForDb(fileUrl),
+              originalFilename: fileName,
+              mimeType: mimeType || null,
+              fileSize: fileSize || null,
+            },
+          });
 
-      const attachmentData: any = {
-        quoteId,
-        quoteLineItemId: null,
-        organizationId,
-        uploadedByUserId: userId,
-        uploadedByName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
-        fileName,
-        originalFilename: fileName,
-        fileUrl: normalizedKey,
-        relativePath: storageProvider ? normalizedKey : null,
-        fileSize: fileSize || null,
-        mimeType: mimeType || null,
-        description: description || null,
-        bucket: "titan-private",
-        storageProvider,
-      };
-
-      const [attachment] = await db.insert(quoteAttachments).values(attachmentData).returning();
-      return res.json({ success: true, data: attachment });
+      const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+      return res.json({ success: true, data: enrichedAttachment });
     } catch (error) {
       console.error("[QuoteAttachments:POST] Error:", error);
       return res.status(500).json({ error: "Failed to attach file to quote" });
@@ -1892,37 +2203,11 @@ export async function registerAttachmentRoutes(
         if (!attachment) return res.status(404).json({ error: "Attachment not found" });
 
         // Use resolver to get target file (currently returns original regardless of intent)
-        const resolved = resolveAttachmentDownloadTarget(attachment, downloadIntent);
+        const resolved = await resolveAttachmentDownloadTarget(attachment, downloadIntent);
         if (!resolved.objectPath) {
-          return res.status(404).json({ error: "File path not found" });
+          return res.status(404).json({ error: "File unavailable", availabilityStatus: resolved.availabilityStatus });
         }
-
-        res.setHeader("Content-Disposition", `attachment; filename="${resolved.displayFilename}"`);
-        res.setHeader("Content-Type", attachment.mimeType || "application/octet-stream");
-
-        if (
-          isSupabaseConfigured() &&
-          (attachment.storageProvider === "supabase" || (resolved.objectPath || "").startsWith("uploads/"))
-        ) {
-          const { SupabaseStorageService } = await import("../supabaseStorage");
-          const supabaseService = new SupabaseStorageService();
-          const signedUrl = await supabaseService.getSignedDownloadUrl(resolved.objectPath, 3600);
-          const fileResponse = await fetch(signedUrl);
-          if (!fileResponse.ok) throw new Error("Failed to fetch file from storage");
-          const buffer = await fileResponse.arrayBuffer();
-          return res.send(Buffer.from(buffer));
-        }
-
-        // Local storage fallback
-        const { resolveLocalStoragePath } = await import("../services/localStoragePath");
-        const fs = await import("fs");
-        const absPath = resolveLocalStoragePath(resolved.objectPath);
-        const stream = fs.createReadStream(absPath);
-        stream.on("error", (err) => {
-          console.error("[QuoteAttachments:DOWNLOAD:PROXY] Local stream error:", err);
-          if (!res.headersSent) res.status(404).json({ error: "File not found" });
-        });
-        return stream.pipe(res);
+        return res.redirect(`/objects/${resolved.objectPath}?download=1&filename=${encodeURIComponent(resolved.displayFilename)}`);
       } catch (error: any) {
         console.error("[QuoteAttachments:DOWNLOAD:PROXY] Error:", error);
         return res.status(500).json({ error: error.message || "Failed to download file" });
@@ -1950,16 +2235,14 @@ export async function registerAttachmentRoutes(
 
       if (!assertQuoteEditable(res, quote)) return;
 
-      await db
-        .delete(quoteAttachments)
-        .where(
-          and(
-            eq(quoteAttachments.id, attachmentId),
-            eq(quoteAttachments.quoteId, quoteId),
-            isNull(quoteAttachments.quoteLineItemId),
-            eq(quoteAttachments.organizationId, organizationId)
-          )
-        );
+      const deleted = await deleteQuoteAttachmentWithCleanup({
+        organizationId,
+        quoteId,
+        attachmentId,
+        quoteLineItemId: null,
+      });
+
+      if (!deleted) return res.status(404).json({ error: "Attachment not found" });
 
       return res.json({ success: true });
     } catch (error) {
@@ -1991,10 +2274,9 @@ export async function registerAttachmentRoutes(
       const attachmentRows = await db
         .select({
           id: quoteAttachments.id,
+          fileRecordId: quoteAttachments.fileRecordId,
           fileName: quoteAttachments.fileName,
           originalFilename: quoteAttachments.originalFilename,
-          fileUrl: quoteAttachments.fileUrl,
-          relativePath: quoteAttachments.relativePath,
         })
         .from(quoteAttachments)
         .where(
@@ -2010,10 +2292,9 @@ export async function registerAttachmentRoutes(
       const lineItemAttachmentRows = await db
         .select({
           id: quoteAttachments.id,
+          fileRecordId: quoteAttachments.fileRecordId,
           fileName: quoteAttachments.fileName,
           originalFilename: quoteAttachments.originalFilename,
-          fileUrl: quoteAttachments.fileUrl,
-          relativePath: quoteAttachments.relativePath,
           quoteLineItemId: quoteAttachments.quoteLineItemId,
         })
         .from(quoteAttachments)
@@ -2030,29 +2311,14 @@ export async function registerAttachmentRoutes(
       const files: Array<{ filename: string; objectPath: string }> = [];
 
       for (const att of attachmentRows) {
-        const filename = String(att.originalFilename || att.fileName || `attachment-${att.id}`);
-        // Extract objectPath from fileUrl (if it starts with /objects/) or use relativePath
-        let objectPath: string | null = null;
-        if (att.fileUrl && att.fileUrl.startsWith('/objects/')) {
-          objectPath = att.fileUrl.replace('/objects/', '').split('?')[0];
-        } else if (att.relativePath) {
-          objectPath = att.relativePath;
-        }
-        if (objectPath) files.push({ filename, objectPath });
+        const resolved = await resolveAttachmentDownloadTarget(att, "original");
+        if (resolved.objectPath) files.push({ filename: resolved.displayFilename, objectPath: resolved.objectPath });
       }
 
       for (const att of lineItemAttachmentRows) {
-        const filename = String(att.originalFilename || att.fileName || `attachment-${att.id}`);
-        // Use a folder structure for line item attachments
-        const filenameWithLabel = `line-item-${att.quoteLineItemId}/${filename}`;
-        // Extract objectPath from fileUrl (if it starts with /objects/) or use relativePath
-        let objectPath: string | null = null;
-        if (att.fileUrl && att.fileUrl.startsWith('/objects/')) {
-          objectPath = att.fileUrl.replace('/objects/', '').split('?')[0];
-        } else if (att.relativePath) {
-          objectPath = att.relativePath;
-        }
-        if (objectPath) files.push({ filename: filenameWithLabel, objectPath });
+        const resolved = await resolveAttachmentDownloadTarget(att, "original");
+        const filenameWithLabel = `line-item-${att.quoteLineItemId}/${resolved.displayFilename}`;
+        if (resolved.objectPath) files.push({ filename: filenameWithLabel, objectPath: resolved.objectPath });
       }
 
       if (files.length === 0) {
@@ -2156,10 +2422,9 @@ export async function registerAttachmentRoutes(
 
       let attachmentsToInclude: Array<{
         id: string;
+        fileRecordId?: string | null;
         fileName: string;
         originalFilename?: string | null;
-        fileUrl?: string | null;
-        relativePath?: string | null;
         orderLineItemId?: string | null;
       }> = [];
 
@@ -2181,10 +2446,9 @@ export async function registerAttachmentRoutes(
         const orderAttachmentRows = await db
           .select({
             id: orderAttachments.id,
+            fileRecordId: orderAttachments.fileRecordId,
             fileName: orderAttachments.fileName,
             originalFilename: orderAttachments.originalFilename,
-            fileUrl: orderAttachments.fileUrl,
-            relativePath: orderAttachments.relativePath,
             orderLineItemId: orderAttachments.orderLineItemId,
           })
           .from(orderAttachments)
@@ -2206,10 +2470,9 @@ export async function registerAttachmentRoutes(
           const quoteAttachmentRows = await db
             .select({
               id: quoteAttachments.id,
+              fileRecordId: quoteAttachments.fileRecordId,
               fileName: quoteAttachments.fileName,
               originalFilename: quoteAttachments.originalFilename,
-              fileUrl: quoteAttachments.fileUrl,
-              relativePath: quoteAttachments.relativePath,
               orderLineItemId: sql<string | null>`NULL`.as('orderLineItemId'),
             })
             .from(quoteAttachments)
@@ -2249,10 +2512,9 @@ export async function registerAttachmentRoutes(
           const allOrderAttachments = await db
             .select({
               id: orderAttachments.id,
+              fileRecordId: orderAttachments.fileRecordId,
               fileName: orderAttachments.fileName,
               originalFilename: orderAttachments.originalFilename,
-              fileUrl: orderAttachments.fileUrl,
-              relativePath: orderAttachments.relativePath,
               orderLineItemId: orderAttachments.orderLineItemId,
             })
             .from(orderAttachments)
@@ -2277,10 +2539,9 @@ export async function registerAttachmentRoutes(
           const allQuoteAttachments = await db
             .select({
               id: quoteAttachments.id,
+              fileRecordId: quoteAttachments.fileRecordId,
               fileName: quoteAttachments.fileName,
               originalFilename: quoteAttachments.originalFilename,
-              fileUrl: quoteAttachments.fileUrl,
-              relativePath: quoteAttachments.relativePath,
               orderLineItemId: sql<string | null>`NULL`.as('orderLineItemId'),
             })
             .from(quoteAttachments)
@@ -2305,10 +2566,9 @@ export async function registerAttachmentRoutes(
           count: attachmentsToInclude.length,
           first: attachmentsToInclude[0] ? {
             id: attachmentsToInclude[0].id,
+            fileRecordId: attachmentsToInclude[0].fileRecordId,
             fileName: attachmentsToInclude[0].fileName,
             originalFilename: attachmentsToInclude[0].originalFilename,
-            fileUrl: attachmentsToInclude[0].fileUrl,
-            relativePath: attachmentsToInclude[0].relativePath,
           } : null
         });
       }
@@ -2318,7 +2578,7 @@ export async function registerAttachmentRoutes(
       const missingFiles: string[] = [];
 
       for (const att of attachmentsToInclude) {
-        const resolved = resolveAttachmentDownloadTarget(att, downloadIntent);
+        const resolved = await resolveAttachmentDownloadTarget(att, downloadIntent);
         
         // Prefix with line-item folder if this is a line item attachment
         const filename = att.orderLineItemId

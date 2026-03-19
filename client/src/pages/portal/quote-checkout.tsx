@@ -42,7 +42,7 @@ export default function QuoteCheckout() {
         throw new Error("Failed to get upload URL");
       }
 
-      const { url, method } = await urlResponse.json();
+      const { url, method, path } = await urlResponse.json();
 
       // Upload each file
       for (const file of Array.from(e.target.files)) {
@@ -59,7 +59,7 @@ export default function QuoteCheckout() {
         }
 
         // Extract the uploaded file URL
-        const fileUrl = url.split("?")[0]; // Remove query params
+        const fileUrl = typeof path === "string" && path ? path : url.split("?")[0];
 
         setUploadedFileUrls((prev) => [
           ...prev,

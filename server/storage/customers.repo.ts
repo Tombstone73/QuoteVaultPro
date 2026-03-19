@@ -4,6 +4,7 @@ import {
     customerContacts,
     customerNotes,
     customerCreditTransactions,
+    customerProductionFolderReferences,
     users,
     quotes,
     orders,
@@ -197,6 +198,18 @@ export class CustomersRepository {
         })) as (CustomerCreditTransaction & { user: User })[];
 
         const customerQuotes = await this.dbInstance.select().from(quotes).where(eq(quotes.customerId, id)).orderBy(desc(quotes.createdAt)).catch(() => []);
+        const [productionFolderReference] = await this.dbInstance
+            .select()
+            .from(customerProductionFolderReferences)
+            .where(
+                and(
+                    eq(customerProductionFolderReferences.organizationId, organizationId),
+                    eq(customerProductionFolderReferences.customerId, id),
+                )
+            )
+            .orderBy(desc(customerProductionFolderReferences.updatedAt))
+            .limit(1)
+            .catch(() => [] as any[]);
 
         return {
             ...customer,
@@ -204,6 +217,11 @@ export class CustomersRepository {
             notes: notes as any, // Type cast needed due to notes field conflict (text field vs array relation)
             creditTransactions: creditTransactions as any,
             quotes: customerQuotes,
+            customerProductionFolderReference: productionFolderReference ?? null,
+            localCompanyFolderPath:
+                productionFolderReference && productionFolderReference.status !== "disabled"
+                    ? productionFolderReference.pathOrUri
+                    : null,
         };
     }
 

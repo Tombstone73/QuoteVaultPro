@@ -1,7 +1,50 @@
 import { db } from "../db";
-import { orderLineItems, products, productTypes, productionJobs, orders, materials } from "@shared/schema";
+import { orderLineItems, products, orders } from "@shared/schema";
 import { eq, and, inArray } from "drizzle-orm";
 import { routeLineItemToProduction } from "./productionRoutingService";
+import { resolveInitialProductionRoute } from "./productionRoutingResolver";
+
+type SchedulingCandidateLineItem = {
+  lineItemId: string;
+  productId: string;
+  productTypeId: string | null;
+  materialId: string | null;
+  status: string;
+  lineItemRequiresDesignSnapshot: boolean | null;
+  lineItemRequiresPrepressSnapshot: boolean | null;
+  requiresProductionJob: boolean;
+};
+
+type ScheduledItem = {
+  lineItemId: string;
+  productionJobId: string;
+  stationKey: string;
+  stepKey: string;
+  routingReason: string;
+  reused?: boolean;
+};
+
+type FailedItem = {
+  lineItemId: string;
+  traceId: string;
+  step: string;
+  code?: string;
+  constraint?: string;
+  table?: string;
+  detail?: string;
+  message: string;
+};
+
+const toFailedItem = (lineItemId: string, traceId: string, step: string, error: any): FailedItem => ({
+  lineItemId,
+  traceId,
+  step,
+  code: typeof error?.code === "string" ? error.code : undefined,
+  constraint: typeof error?.constraint === "string" ? error.constraint : undefined,
+  table: typeof error?.table === "string" ? error.table : undefined,
+  detail: typeof error?.detail === "string" ? error.detail : undefined,
+  message: String(error?.message || "Unknown scheduling error"),
+});
 
 /**
  * scheduleOrderLineItemsForProduction
@@ -24,6 +67,17 @@ export async function scheduleOrderLineItemsForProduction(args: {
   lineItemIds?: string[];
   loadRoutingRules: (orgId: string) => Promise<{ source: string; rules: any[] }>;
   appendEvent: (args: { tx: any; organizationId: string; productionJobId: string; type: "intake" | "routing_override" | "timer_started" | "timer_stopped" | "note" | "reprint_incremented" | "media_used_set"; payload?: any }) => Promise<void>;
+  traceId?: string;
+  loadLineItemsForSchedulingFn?: (args: {
+    organizationId: string;
+    orderId: string;
+    lineItemIds?: string[];
+  }) => Promise<{ orderExists: boolean; lineItemRecords: SchedulingCandidateLineItem[] }>;
+  transactionRunner?: {
+    transaction: <T>(cb: (tx: any) => Promise<T>) => Promise<T>;
+  };
+  resolveInitialProductionRouteFn?: typeof resolveInitialProductionRoute;
+  routeLineItemToProductionFn?: typeof routeLineItemToProduction;
 }): Promise<{
   success: boolean;
   data: {
@@ -31,233 +85,291 @@ export async function scheduleOrderLineItemsForProduction(args: {
     existingJobCount: number;
     skippedNonProductionCount: number;
     affectedLineItemIds: string[];
+    scheduled: ScheduledItem[];
+    failed: FailedItem[];
+    lineItemDiagnostics: Record<string, {
+      stationKey: string;
+      stepKey: string;
+      routingReason: string;
+      routingSource?: string;
+      idempotencyNote?: string;
+    }>;
   };
   message: string;
+  traceId: string;
 }> {
-  const { organizationId, orderId, lineItemIds, loadRoutingRules, appendEvent } = args;
+  const {
+    organizationId,
+    orderId,
+    lineItemIds,
+    loadRoutingRules: _loadRoutingRules,
+    appendEvent,
+    traceId,
+    loadLineItemsForSchedulingFn,
+    transactionRunner,
+    resolveInitialProductionRouteFn,
+    routeLineItemToProductionFn,
+  } = args;
 
-  if (process.env.NODE_ENV === 'development') {
-    console.log(`[ProductionScheduling] Starting schedule for orderId=${orderId}, targetLineItems=${lineItemIds?.length ?? 'ALL'}`);
-  }
+  const requestTraceId = String(traceId || `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
+  const txRunner = transactionRunner ?? db;
+  const resolveRoute = resolveInitialProductionRouteFn ?? resolveInitialProductionRoute;
+  const routeToProduction = routeLineItemToProductionFn ?? routeLineItemToProduction;
 
-  return await db.transaction(async (tx) => {
-    // Load order to verify it exists and belongs to this org
-    const [orderRecord] = await tx
+  const defaultLoadLineItemsForScheduling = async ({
+    organizationId,
+    orderId,
+    lineItemIds,
+  }: {
+    organizationId: string;
+    orderId: string;
+    lineItemIds?: string[];
+  }): Promise<{ orderExists: boolean; lineItemRecords: SchedulingCandidateLineItem[] }> => {
+    const [orderRecord] = await db
       .select({ id: orders.id })
       .from(orders)
       .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
       .limit(1);
 
     if (!orderRecord) {
-      throw new Error("Order not found");
+      return {
+        orderExists: false,
+        lineItemRecords: [],
+      };
     }
 
-    // Load line items with their products to check requiresProductionJob flag.
-    // Join productTypes to get production routing defaults; join materials as fallback.
-    let lineItemQuery = tx
+    const lineItemRecords = await db
       .select({
         lineItemId: orderLineItems.id,
         productId: orderLineItems.productId,
+        productTypeId: products.productTypeId,
         materialId: orderLineItems.materialId,
         status: orderLineItems.status,
+        lineItemRequiresDesignSnapshot: orderLineItems.requiresDesign,
+        lineItemRequiresPrepressSnapshot: orderLineItems.requiresPrepress,
         requiresProductionJob: products.requiresProductionJob,
-        materialType: materials.type,
-        // ProductType production defaults (preferred over material-based routing)
-        productTypeDefaultStationKey: productTypes.defaultStationKey,
-        productTypeDefaultStepKey: productTypes.defaultStepKey,
       })
       .from(orderLineItems)
       .innerJoin(products, eq(orderLineItems.productId, products.id))
-      .leftJoin(productTypes, eq(products.productTypeId, productTypes.id))
-      .leftJoin(materials, eq(orderLineItems.materialId, materials.id))
-      .where(and(
-        eq(orderLineItems.orderId, orderId),
-        // Filter to selected items if specified
-        lineItemIds && lineItemIds.length > 0 ? inArray(orderLineItems.id, lineItemIds) : undefined
-      ))
-      .$dynamic();
+      .where(
+        and(
+          eq(orderLineItems.orderId, orderId),
+          lineItemIds && lineItemIds.length > 0 ? inArray(orderLineItems.id, lineItemIds) : undefined,
+        ),
+      );
 
-    const lineItemRecords = await lineItemQuery;
+    return {
+      orderExists: true,
+      lineItemRecords,
+    };
+  };
 
-    if (lineItemRecords.length === 0) {
-      return {
-        success: true,
-        data: {
-          createdJobCount: 0,
-          existingJobCount: 0,
-          skippedNonProductionCount: 0,
-          affectedLineItemIds: [],
-        },
-        message: "No line items found",
-      };
-    }
+  const loadLineItems = loadLineItemsForSchedulingFn ?? defaultLoadLineItemsForScheduling;
 
-    // Filter to only those requiring production
-    const productionRequiredItems = lineItemRecords.filter((item) => item.requiresProductionJob === true);
-    const skippedCount = lineItemRecords.length - productionRequiredItems.length;
+  if (process.env.NODE_ENV === 'development') {
+    console.log(`[ProductionScheduling] Starting schedule traceId=${requestTraceId} for orderId=${orderId}, targetLineItems=${lineItemIds?.length ?? 'ALL'}`);
+  }
 
-    if (productionRequiredItems.length === 0) {
-      return {
-        success: true,
-        data: {
-          createdJobCount: 0,
-          existingJobCount: 0,
-          skippedNonProductionCount: skippedCount,
-          affectedLineItemIds: [],
-        },
-        message: "No line items require production",
-      };
-    }
+  const loaded = await loadLineItems({ organizationId, orderId, lineItemIds });
+  if (!loaded.orderExists) {
+    throw new Error("Order not found");
+  }
 
-    // Load production routing config (fail-soft: use defaults if missing)
-    const routing = await loadRoutingRules(organizationId);
-    const hasOrgRouting = routing.source === "org";
-    
-    // Default routing values when org config is missing/invalid
-    const DEFAULT_STATION_KEY = "flatbed";
-    const DEFAULT_STEP_KEY = "queued";
-    
-    if (!hasOrgRouting) {
-      console.warn(`[ProductionScheduling] No org routing config (source=${routing.source}) for org ${organizationId}; using defaults`);
-    }
-
-    // Check existing production jobs for these line items
-    const lineItemIdsToProcess = productionRequiredItems.map((item) => item.lineItemId);
-    
-    const existingJobs = lineItemIdsToProcess.length > 0
-      ? await tx
-          .select({
-            lineItemId: productionJobs.lineItemId,
-            jobId: productionJobs.id,
-          })
-          .from(productionJobs)
-          .where(
-            and(
-              eq(productionJobs.organizationId, organizationId),
-              inArray(productionJobs.lineItemId, lineItemIdsToProcess)
-            )
-          )
-      : [];
-
-    const existingJobsByLineItem = new Map(
-      existingJobs.map((job) => [job.lineItemId, job.jobId])
-    );
-
-    let createdCount = 0;
-    let existingCount = 0;
-    const affectedIds: string[] = [];
-
-    // Process each line item
-    for (const item of productionRequiredItems) {
-      // Check if job already exists
-      if (existingJobsByLineItem.has(item.lineItemId)) {
-        existingCount++;
-        affectedIds.push(item.lineItemId);
-        continue;
-      }
-
-      // --- Station / step resolution (priority order) ---
-      // 1. ProductType.defaultStationKey  (explicit production routing default)
-      // 2. Material-type fallback          (roll material → roll station, else flatbed)
-      // Step resolution:
-      // 1. ProductType.defaultStepKey (if set)
-      // 2. Routing rule stepKey       (org-configured status → step mapping)
-      // 3. System default step
-      const ptStationKey = (item.productTypeDefaultStationKey ?? "").trim();
-      const ptStepKey    = (item.productTypeDefaultStepKey    ?? "").trim();
-      const materialBasedStation = item.materialType === "roll" ? "roll" : "flatbed";
-      const resolvedStation = ptStationKey || materialBasedStation;
-
-      let stationKey: string;
-      let stepKey: string;
-      let usedDefaults = false;
-
-      // Determine routing rule from line item status
-      const rule = routing.rules.find((r: any) => r.id === item.status);
-
-      if (!rule || rule.sendToProduction !== true) {
-        // No applicable routing rule — fall back to productType or material defaults
-        stationKey = resolvedStation;
-        stepKey = ptStepKey || DEFAULT_STEP_KEY;
-        usedDefaults = true;
-        console.warn(
-          `[ProductionScheduling] No routing rule for lineItemId=${item.lineItemId} status=${item.status}; using productType station=${stationKey}, step=${stepKey}`
-        );
-      } else {
-        const ruleStepKey = String((rule as any).stepKey ?? "").trim();
-
-        if (!ruleStepKey) {
-          // Rule exists but step is unset — use productType defaults
-          stationKey = resolvedStation;
-          stepKey = ptStepKey || DEFAULT_STEP_KEY;
-          usedDefaults = true;
-          console.warn(
-            `[ProductionScheduling] Incomplete routing rule for lineItemId=${item.lineItemId}; using productType station=${stationKey}, step=${stepKey}`
-          );
-        } else {
-          // Rule provides a step; station always comes from productType (or material fallback)
-          stationKey = resolvedStation;
-          stepKey = ruleStepKey;
-        }
-      }
-
-      // Create production job via canonical routing service
-      const routingResult = await routeLineItemToProduction({
-        tx,
-        organizationId,
-        orderId,
-        lineItemId: item.lineItemId,
-        stationKey,
-        stepKey,
-        trigger: "scheduler",
-        extraEventPayload: {
-          fromStatus: null,
-          toStatus: item.status,
-          source: "bulk_schedule",
-          usedDefaultRouting: usedDefaults,
-        },
-      });
-
-      if (routingResult.outcome === "created") {
-        createdCount++;
-      } else {
-        existingCount++;
-      }
-      affectedIds.push(item.lineItemId);
-    }
-
-    const totalAffected = affectedIds.length;
-    let message = "";
-    if (createdCount > 0 && existingCount > 0) {
-      message = `Created ${createdCount} new job(s), ${existingCount} already existed`;
-    } else if (createdCount > 0) {
-      message = `Created ${createdCount} production job(s)`;
-    } else if (existingCount > 0) {
-      message = `${existingCount} item(s) already in production`;
-    } else {
-      message = "No jobs created (line items not routed to production)";
-    }
-
-    if (skippedCount > 0) {
-      message += `. Skipped ${skippedCount} non-production item(s)`;
-    }
-
-    if (process.env.NODE_ENV === 'development') {
-      console.log(`[ProductionScheduling] Completed for orderId=${orderId}: created=${createdCount}, existing=${existingCount}, skipped=${skippedCount}`);
-      if (createdCount > 0) {
-        console.log(`[ProductionScheduling] Sample job: orderId=${orderId}, station=${DEFAULT_STATION_KEY}, step=${DEFAULT_STEP_KEY}`);
-      }
-    }
-
+  if (loaded.lineItemRecords.length === 0) {
     return {
       success: true,
       data: {
-        createdJobCount: createdCount,
-        existingJobCount: existingCount,
-        skippedNonProductionCount: skippedCount,
-        affectedLineItemIds: affectedIds,
+        createdJobCount: 0,
+        existingJobCount: 0,
+        skippedNonProductionCount: 0,
+        affectedLineItemIds: [],
+        scheduled: [],
+        failed: [],
+        lineItemDiagnostics: {},
       },
-      message,
+      message: "No line items found",
+      traceId: requestTraceId,
     };
-  });
+  }
+
+  const productionRequiredItems = loaded.lineItemRecords.filter((item) => item.requiresProductionJob === true);
+  const skippedCount = loaded.lineItemRecords.length - productionRequiredItems.length;
+
+  if (productionRequiredItems.length === 0) {
+    return {
+      success: true,
+      data: {
+        createdJobCount: 0,
+        existingJobCount: 0,
+        skippedNonProductionCount: skippedCount,
+        affectedLineItemIds: [],
+        scheduled: [],
+        failed: [],
+        lineItemDiagnostics: {},
+      },
+      message: "No line items require production",
+      traceId: requestTraceId,
+    };
+  }
+
+  let createdCount = 0;
+  let existingCount = 0;
+  const affectedIds: string[] = [];
+  const scheduled: ScheduledItem[] = [];
+  const failed: FailedItem[] = [];
+  const lineItemDiagnostics: Record<string, {
+    stationKey: string;
+    stepKey: string;
+    routingReason: string;
+    routingSource?: string;
+    idempotencyNote?: string;
+  }> = {};
+
+  for (const item of productionRequiredItems) {
+    let step = "begin_item";
+    try {
+      const scheduledItem = await txRunner.transaction(async (tx) => {
+        step = "resolve_initial_route";
+        const route = await resolveRoute({
+          organizationId,
+          productTypeId: item.productTypeId,
+          lineItemRequiresDesignSnapshot:
+            typeof item.lineItemRequiresDesignSnapshot === "boolean"
+              ? item.lineItemRequiresDesignSnapshot
+              : undefined,
+          lineItemRequiresPrepressSnapshot:
+            typeof item.lineItemRequiresPrepressSnapshot === "boolean"
+              ? item.lineItemRequiresPrepressSnapshot
+              : undefined,
+        });
+
+        step = "route_line_item_to_production";
+        const routingResult = await routeToProduction({
+          tx,
+          organizationId,
+          orderId,
+          lineItemId: item.lineItemId,
+          stationKey: route.stationKey,
+          stepKey: route.stepKey,
+          trigger: "scheduler",
+          traceId: requestTraceId,
+          extraEventPayload: {
+            fromStatus: null,
+            toStatus: item.status,
+            source: "bulk_schedule",
+            routingReason: route.reason,
+          },
+        });
+
+        const targetWorkflowState =
+          route.stationKey === "design" || route.stepKey === "design"
+            ? "needs_design"
+            : route.stationKey === "prepress" || route.stepKey === "prepress"
+              ? "ready_for_prepress"
+              : "ready_for_production";
+
+        const targetLifecycleStatus = targetWorkflowState === "ready_for_production" ? "in_production" : "new";
+
+        await tx
+          .update(orderLineItems)
+          .set({
+            workflowState: targetWorkflowState as any,
+            status: targetLifecycleStatus as any,
+            updatedAt: new Date(),
+          })
+          .where(eq(orderLineItems.id, item.lineItemId));
+
+        if (routingResult.outcome === "existing" && routingResult.reason) {
+          console.warn(
+            `[ProductionScheduling] traceId=${requestTraceId} lineItemId=${item.lineItemId} not re-routed to ${route.stationKey}/${route.stepKey}: ${routingResult.reason}`,
+          );
+        }
+
+        return {
+          lineItemId: item.lineItemId,
+          productionJobId: routingResult.jobId,
+          stationKey: routingResult.stationKey,
+          stepKey: routingResult.stepKey,
+          routingReason: route.reason,
+          reused: routingResult.outcome === "existing",
+          idempotencyReason: routingResult.reason,
+        };
+      });
+
+      if (scheduledItem.reused) {
+        existingCount++;
+      } else {
+        createdCount++;
+      }
+
+      affectedIds.push(item.lineItemId);
+      scheduled.push({
+        lineItemId: scheduledItem.lineItemId,
+        productionJobId: scheduledItem.productionJobId,
+        stationKey: scheduledItem.stationKey,
+        stepKey: scheduledItem.stepKey,
+        routingReason: scheduledItem.routingReason,
+        reused: scheduledItem.reused,
+      });
+
+      lineItemDiagnostics[item.lineItemId] = {
+        stationKey: scheduledItem.stationKey,
+        stepKey: scheduledItem.stepKey,
+        routingReason: scheduledItem.routingReason,
+        routingSource: scheduledItem.routingReason.includes("product")
+          ? "product"
+          : scheduledItem.routingReason.includes("snapshot")
+            ? "snapshot"
+            : scheduledItem.routingReason.includes("org")
+              ? "org"
+              : "default",
+        idempotencyNote: scheduledItem.reused
+          ? scheduledItem.idempotencyReason || "Existing non-void production job reused"
+          : undefined,
+      };
+    } catch (error: any) {
+      const itemFailure = toFailedItem(item.lineItemId, requestTraceId, step, error);
+      console.error("[ProductionScheduling] per-item failure", itemFailure);
+      failed.push(itemFailure);
+    }
+  }
+
+  let message = "";
+  if (createdCount > 0 && existingCount > 0) {
+    message = `Created ${createdCount} new job(s), ${existingCount} already existed`;
+  } else if (createdCount > 0) {
+    message = `Created ${createdCount} production job(s)`;
+  } else if (existingCount > 0) {
+    message = `${existingCount} item(s) already in production`;
+  } else {
+    message = "No jobs created (line items not routed to production)";
+  }
+
+  if (skippedCount > 0) {
+    message += `. Skipped ${skippedCount} non-production item(s)`;
+  }
+  if (failed.length > 0) {
+    message += `. Failed ${failed.length} item(s)`;
+  }
+
+  if (process.env.NODE_ENV === 'development') {
+    console.log(
+      `[ProductionScheduling] Completed traceId=${requestTraceId} for orderId=${orderId}: created=${createdCount}, existing=${existingCount}, skipped=${skippedCount}, failed=${failed.length}`,
+    );
+  }
+
+  return {
+    success: true,
+    data: {
+      createdJobCount: createdCount,
+      existingJobCount: existingCount,
+      skippedNonProductionCount: skippedCount,
+      affectedLineItemIds: affectedIds,
+      scheduled,
+      failed,
+      lineItemDiagnostics,
+    },
+    message,
+    traceId: requestTraceId,
+  };
 }

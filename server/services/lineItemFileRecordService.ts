@@ -6,6 +6,7 @@ type CreateLineItemFileRecordInput = {
   organizationId: string;
   lineItemId: string;
   role: "original" | "final" | "reference";
+  fileRecordId?: string | null;
   storagePath: string;
   originalFilename: string;
   uploadedByUserId: string;
@@ -22,6 +23,7 @@ export async function createLineItemFileRecord(input: CreateLineItemFileRecordIn
     organizationId,
     lineItemId,
     role,
+    fileRecordId,
     storagePath,
     originalFilename,
     uploadedByUserId,
@@ -63,6 +65,7 @@ export async function createLineItemFileRecord(input: CreateLineItemFileRecordIn
       orderId: lineItemRow.orderId,
       lineItemId: lineItemRow.lineItemId,
       prepressSessionId: null,
+      fileRecordId: fileRecordId ?? null,
       role,
       status: "active",
       tag: tag ?? null,

@@ -1,6 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { OrderAttachment, InsertOrderAttachment, UpdateOrderAttachment, JobFile, InsertJobFile } from "@shared/schema";
 import { orderDetailQueryKey, orderTimelineQueryKey } from "./useOrders";
+import { normalizeOrderFileRows } from "@/lib/attachments/orderFileRows";
+import { apiFetch } from "@/lib/queryClient";
 
 // Enriched order attachment with user info and signed URLs
 export type OrderFileWithUser = OrderAttachment & {
@@ -55,10 +57,7 @@ export function useOrderFiles(orderId: string | undefined) {
 
       const data = Array.isArray(json?.data) ? json.data : [];
       const assets = Array.isArray(json?.assets) ? json.assets : [];
-      return [...data, ...assets].map((f: any) => ({
-        ...f,
-        __source: f?.fileUrl && !f?.orderId ? 'asset' : 'attachment',
-      }));
+      return normalizeOrderFileRows(data, assets) as unknown as OrderFileWithUser[];
     },
     enabled: !!orderId,
   });
@@ -264,12 +263,13 @@ export function useOrderLineItemFiles(orderId: string | undefined, lineItemId: s
     queryKey: ['/api/orders', orderId, 'line-items', lineItemId, 'files'],
     queryFn: async () => {
       if (!orderId || !lineItemId) return { data: [], assets: [] };
-      const res = await fetch(`/api/orders/${orderId}/line-items/${lineItemId}/files`, {
-        credentials: 'include',
-      });
+      const res = await apiFetch(`/api/orders/${orderId}/line-items/${lineItemId}/files`);
       if (!res.ok) throw new Error('Failed to fetch line item files');
       const json = await res.json();
-      return { data: json.data || [], assets: json.assets || [] };
+      return {
+        data: normalizeOrderFileRows(json.data || [], json.assets || []) as unknown as OrderFileWithUser[],
+        assets: json.assets || [],
+      };
     },
     enabled: !!orderId && !!lineItemId,
   });
@@ -318,9 +318,7 @@ export function useDetachOrderLineItemFile(orderId: string, lineItemId: string) 
 
   return useMutation({
     mutationFn: async (fileId: string) => {
-      // For now, use the order-level delete endpoint
-      // In future, could add line-item-specific endpoint
-      const res = await fetch(`/api/orders/${orderId}/files/${fileId}`, {
+      const res = await fetch(`/api/orders/${orderId}/line-items/${lineItemId}/files/${fileId}`, {
         method: 'DELETE',
         credentials: 'include',
       });

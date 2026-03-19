@@ -39,9 +39,13 @@ import {
     type InsertJobStatusLog,
 } from "@shared/schema";
 import { eq, and, or, ilike, gte, lte, desc, sql, isNull, inArray } from "drizzle-orm";
+import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
+import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
+import { resolveActiveProductionOwners } from "../services/productionOwnership";
 
 const ORDER_ATTACHMENT_SAFE_SELECT = {
     id: orderAttachments.id,
+    fileRecordId: orderAttachments.fileRecordId,
     orderId: orderAttachments.orderId,
     orderLineItemId: orderAttachments.orderLineItemId,
     quoteId: orderAttachments.quoteId,
@@ -61,8 +65,8 @@ const ORDER_ATTACHMENT_SAFE_SELECT = {
     checksum: orderAttachments.checksum,
     thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
     thumbnailGeneratedAt: orderAttachments.thumbnailGeneratedAt,
-    thumbKey: orderAttachments.thumbKey, // Required for thumbnail URL enrichment
-    previewKey: orderAttachments.previewKey, // Required for preview URL enrichment
+    thumbKey: orderAttachments.thumbKey,
+    previewKey: orderAttachments.previewKey,
     role: orderAttachments.role,
     side: orderAttachments.side,
     isPrimary: orderAttachments.isPrimary,
@@ -71,8 +75,26 @@ const ORDER_ATTACHMENT_SAFE_SELECT = {
     updatedAt: orderAttachments.updatedAt,
 } as const;
 
+type CreateOrderLineItemInput = Omit<InsertOrderLineItem, 'orderId' | 'requiresProofApproval'> & {
+    requiresProofApproval?: boolean;
+    variantId?: string | null;
+    productName?: string | null;
+    unit_price?: number | string | null;
+    total_price?: number | string | null;
+    linePrice?: number | string | null;
+    line_price?: number | string | null;
+};
+
 export class OrdersRepository {
     constructor(private readonly dbInstance = db) { }
+
+    private async resolvePreviewThumbnailUrl(att: { fileRecordId?: string | null; thumbKey?: string | null; previewKey?: string | null }) {
+        const previewAccess = await resolveDerivativeFileAccess(att, "preview");
+        if (previewAccess.url) return previewAccess.url;
+
+        const thumbAccess = await resolveDerivativeFileAccess(att, "thumbnail");
+        return thumbAccess.url ?? null;
+    }
 
     private async generateNextOrderNumber(organizationId: string, tx?: any): Promise<string> {
         // Try globalVariables first (pattern similar to quotes). If missing, fallback to MAX(order_number)+1
@@ -103,45 +125,23 @@ export class OrdersRepository {
     }
 
     private async getPreviewThumbnailsForOrderIds(organizationId: string, orderIds: string[]) {
-        const previewData: Map<string, { thumbnails: string[]; totalCount: number }> = new Map();
+        const previewData: Map<string, {
+            thumbnails: string[];
+            totalCount: number;
+            previews: Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }>;
+        }> = new Map();
         if (!orderIds.length) return previewData;
 
         // Query orderAttachments with thumb_ready status (matches Quotes pattern exactly)
         // Join with orders for organizationId filtering since order_attachments doesn't have org column
         const attachmentsQuery = await this.dbInstance
             .select({
+                id: orderAttachments.id,
+                fileRecordId: orderAttachments.fileRecordId,
                 orderId: orderAttachments.orderId,
-                thumbKey: orderAttachments.thumbKey,
-                previewKey: orderAttachments.previewKey,
                 fileName: orderAttachments.fileName,
-            })
-            .from(orderAttachments)
-            .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
-            .where(
-                and(
-                    inArray(orderAttachments.orderId, orderIds),
-                    eq(orders.organizationId, organizationId),
-                    sql`${orderAttachments.thumbStatus} = 'thumb_ready'`
-                )
-            )
-            .orderBy(orderAttachments.createdAt);
-
-        const groupedAttachments = new Map<string, Array<{ thumbKey: string | null; previewKey: string | null; fileName: string }>>();
-        for (const att of attachmentsQuery) {
-            if (!groupedAttachments.has(att.orderId)) {
-                groupedAttachments.set(att.orderId, []);
-            }
-            const group = groupedAttachments.get(att.orderId)!;
-            if (group.length < 3) {
-                group.push({ thumbKey: att.thumbKey, previewKey: att.previewKey, fileName: att.fileName });
-            }
-        }
-
-        // Total attachment count per order (do NOT require thumb_ready)
-        const countQuery = await this.dbInstance
-            .select({
-                orderId: orderAttachments.orderId,
-                count: sql<number>`count(*)::int`,
+                originalFilename: orderAttachments.originalFilename,
+                mimeType: orderAttachments.mimeType,
             })
             .from(orderAttachments)
             .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
@@ -151,23 +151,55 @@ export class OrdersRepository {
                     eq(orders.organizationId, organizationId)
                 )
             )
-            .groupBy(orderAttachments.orderId);
+            .orderBy(orderAttachments.createdAt);
 
+        const groupedAttachments = new Map<string, string[]>();
+        const groupedPreviews = new Map<string, Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }>>();
         const countMap = new Map<string, number>();
-        for (const row of countQuery) {
-            countMap.set(row.orderId, row.count);
+
+        const resolvedRows = await Promise.all(attachmentsQuery.map(async (att) => {
+            return {
+                id: String(att.id),
+                orderId: att.orderId,
+                filename: String(att.originalFilename ?? att.fileName ?? "Attachment"),
+                mimeType: att.mimeType ?? null,
+                thumbnailUrl: await this.resolvePreviewThumbnailUrl(att),
+            };
+        }));
+
+        for (const att of resolvedRows) {
+            countMap.set(att.orderId, (countMap.get(att.orderId) || 0) + 1);
+            if (!att.thumbnailUrl) continue;
+            if (!groupedAttachments.has(att.orderId)) {
+                groupedAttachments.set(att.orderId, []);
+            }
+            const group = groupedAttachments.get(att.orderId)!;
+            if (group.length < 3) {
+                group.push(att.thumbnailUrl);
+            }
+
+            if (!groupedPreviews.has(att.orderId)) {
+                groupedPreviews.set(att.orderId, []);
+            }
+            const previewGroup = groupedPreviews.get(att.orderId)!;
+            if (previewGroup.length < 3) {
+                previewGroup.push({
+                    id: att.id,
+                    filename: att.filename,
+                    mimeType: att.mimeType,
+                    thumbnailUrl: att.thumbnailUrl,
+                });
+            }
         }
 
         // Populate previewData for all requested orders.
         // Thumbnails are only from thumb_ready attachments, but totalCount is ALL attachments.
         for (const orderIdKey of orderIds) {
-            const attachments = groupedAttachments.get(orderIdKey) || [];
-            const thumbnails = attachments
-                .map((att) => att.previewKey || att.thumbKey)
-                .filter((key: string | null): key is string => !!key);
+            const thumbnails = groupedAttachments.get(orderIdKey) || [];
             previewData.set(orderIdKey, {
                 thumbnails,
                 totalCount: countMap.get(orderIdKey) || 0,
+                previews: groupedPreviews.get(orderIdKey) || [],
             });
         }
 
@@ -193,6 +225,10 @@ export class OrdersRepository {
             lineItemsCount: number;
             previewThumbnails?: string[];
             thumbsCount?: number;
+            attachmentsSummary?: {
+                totalCount: number;
+                previews: Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }>;
+            };
             listLabel?: string | null;
         }>;
         page: number;
@@ -286,7 +322,11 @@ export class OrdersRepository {
             .offset(offset);
 
         const orderIds = rows.map((r) => r.order.id);
-        let previewData = new Map<string, { thumbnails: string[]; totalCount: number }>();
+        let previewData = new Map<string, {
+            thumbnails: string[];
+            totalCount: number;
+            previews: Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }>;
+        }>();
         
         if (opts.includeThumbnails) {
             try {
@@ -325,6 +365,12 @@ export class OrdersRepository {
             lineItemsCount,
             previewThumbnails: previewData.get(order.id)?.thumbnails || [],
             thumbsCount: previewData.get(order.id)?.totalCount || 0,
+            attachmentsSummary: previewData.get(order.id)
+                ? {
+                    totalCount: previewData.get(order.id)?.totalCount || 0,
+                    previews: previewData.get(order.id)?.previews || [],
+                }
+                : { totalCount: 0, previews: [] },
             listLabel: listNotesMap.get(order.id) || null,
         }));
 
@@ -389,6 +435,14 @@ export class OrdersRepository {
         const [order] = await this.dbInstance.select().from(orders).where(and(eq(orders.id, id), eq(orders.organizationId, organizationId)));
         if (!order) return undefined;
         const rawLineItems = await this.dbInstance.select().from(orderLineItems).where(eq(orderLineItems.orderId, id));
+        const lineItemIds = rawLineItems.map((lineItem) => String(lineItem.id));
+        const activeOwnerByLineItem = lineItemIds.length > 0
+            ? await resolveActiveProductionOwners(this.dbInstance, {
+                organizationId,
+                lineItemIds,
+                debugLabel: "OrdersRepository.getOrderById",
+            })
+            : new Map<string, any>();
 
         const acceptedComponents = await this.dbInstance
             .select()
@@ -414,12 +468,16 @@ export class OrdersRepository {
                 if (li.productVariantId) {
                     [productVariant] = await this.dbInstance.select().from(productVariants).where(eq(productVariants.id, li.productVariantId));
                 }
+                const activeOwner = activeOwnerByLineItem.get(String(li.id)) ?? null;
                 return {
                     ...li,
                     product,
                     productVariant,
                     pbv2ActiveTreeVersionId: (product as any)?.pbv2ActiveTreeVersionId ? String((product as any).pbv2ActiveTreeVersionId) : null,
                     components: componentsByLineItemId.get(String(li.id)) ?? [],
+                    activeOwnerJobId: activeOwner?.id ?? null,
+                    activeOwnerStationKey: activeOwner?.stationKey ?? null,
+                    activeOwnerStepKey: activeOwner?.stepKey ?? null,
                 } as any;
             })
         );
@@ -468,7 +526,7 @@ export class OrdersRepository {
         discount?: number;
         notesInternal?: string | null;
         createdByUserId: string;
-        lineItems: Omit<InsertOrderLineItem, 'orderId'>[];
+        lineItems: CreateOrderLineItemInput[];
         taxRate?: number;
         taxAmount?: number;
         taxableSubtotal?: number;
@@ -543,10 +601,11 @@ export class OrdersRepository {
                         orderId: order.id,
                         orderLineItemId: null,
                         quoteId: data.quoteId,
+                        fileRecordId: a.fileRecordId ?? null,
                         uploadedByUserId: a.uploadedByUserId ?? null,
                         uploadedByName: a.uploadedByName ?? null,
                         fileName: a.fileName,
-                        fileUrl: a.fileUrl,
+                        fileUrl: a.fileUrl ?? null,
                         fileSize: a.fileSize ?? null,
                         mimeType: a.mimeType ?? null,
                         description: a.description ?? null,
@@ -613,6 +672,12 @@ export class OrdersRepository {
                 const taxAmountSafe = Number.isFinite(Number(taxAmountRaw)) ? Number(taxAmountRaw) : 0;
                 const isTaxableSnapshotRaw = (li as any).isTaxableSnapshot;
                 const isTaxableSnapshotSafe = typeof isTaxableSnapshotRaw === "boolean" ? isTaxableSnapshotRaw : true;
+                const requiresDesignSafe = Boolean((li as any).requiresDesign);
+                const requiresPrepressSafe = typeof (li as any).requiresPrepress === "boolean" ? (li as any).requiresPrepress : true;
+                const workflowStateSafe = getInitialWorkflowState({
+                    requiresDesign: requiresDesignSafe,
+                    requiresPrepress: requiresPrepressSafe,
+                });
                 return {
                     orderId: order.id,
                     quoteLineItemId: (li as any).quoteLineItemId || null,
@@ -626,7 +691,10 @@ export class OrdersRepository {
                     sqft: (li as any).sqft ? (li as any).sqft.toString() : null,
                     unitPrice: unitSafe.toString(),
                     totalPrice: totalSafe.toString(),
-                    status: 'queued',
+                    status: 'new',
+                    workflowState: workflowStateSafe,
+                    requiresDesign: requiresDesignSafe,
+                    requiresPrepress: requiresPrepressSafe,
                     specsJson: (li as any).specsJson || null,
                     selectedOptions: selectedOptionsSafe,
                     nestingConfigSnapshot: (li as any).nestingConfigSnapshot || null,
@@ -736,7 +804,7 @@ export class OrdersRepository {
         dueDate?: Date;
         promisedDate?: Date;
         priority?: string;
-        notesInternal?: Date;
+        notesInternal?: string | null;
     }): Promise<OrderWithRelations> {
         // Fetch the quote with line items
         const [quote] = await this.dbInstance.select().from(quotes).where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)));
@@ -780,12 +848,23 @@ export class OrdersRepository {
         }
 
         // Convert quote line items to order line items
-        const orderLineItemsData: Omit<InsertOrderLineItem, 'orderId'>[] = quoteLines.map((ql, index) => {
-            const requiresPrepress = productPrepressMap.get(ql.productId) ?? orgPrepressDefault;
-            // NOTE: runtime allows "pending_prepress"; shared InsertOrderLineItem status union is narrower.
-            const initialStatus = (requiresPrepress ? 'pending_prepress' : 'queued') as unknown as InsertOrderLineItem['status'];
+        const orderLineItemsData: CreateOrderLineItemInput[] = quoteLines.map((ql, index) => {
+            // TEMP→PERMANENT routing truth handoff:
+            // If the quote line item carries explicit routing intent (migration 0015), use it.
+            // Otherwise fall back to productType / org-level default (pre-existing behavior).
+            const qlAny = ql as any;
+            const requiresDesign: boolean = qlAny.requiresDesign === true;
+            const requiresPrepress: boolean = typeof qlAny.requiresPrepress === 'boolean'
+                ? qlAny.requiresPrepress
+                : (productPrepressMap.get(ql.productId) ?? orgPrepressDefault);
+            // Line item lifecycle: new → in_production → complete | canceled
+            const initialStatus = 'new' as unknown as InsertOrderLineItem['status'];
+            const workflowState = getInitialWorkflowState({
+                requiresDesign,
+                requiresPrepress,
+            });
 
-            return {
+            const lineItemData: CreateOrderLineItemInput = {
                 quoteLineItemId: ql.id,
                 productId: ql.productId,
                 productVariantId: ql.variantId,
@@ -798,6 +877,9 @@ export class OrdersRepository {
                 unitPrice: parseFloat(ql.linePrice) / ql.quantity,
                 totalPrice: parseFloat(ql.linePrice),
                 status: initialStatus,
+                workflowState,
+                requiresDesign, // From quote line item routing truth (migration 0015)
+                requiresProofApproval: false,
                 requiresPrepress, // Snapshot prepress requirement (TEMP→PERMANENT)
                 specsJson: ql.specsJson,
                 selectedOptions: ql.selectedOptions,
@@ -813,6 +895,8 @@ export class OrdersRepository {
                 taxAmount: ql.taxAmount || '0',
                 isTaxableSnapshot: ql.isTaxableSnapshot,
             };
+
+            return lineItemData;
         });
 
         // Create the order
@@ -857,6 +941,28 @@ export class OrdersRepository {
                 convertedToOrderId: createdOrder.id
             })
             .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)));
+
+        if ((createdOrder.lineItems?.length ?? 0) > 0) {
+            await this.dbInstance.transaction(async (tx) => {
+                for (const lineItem of createdOrder.lineItems || []) {
+                    const targetWorkflowState = (lineItem.workflowState ?? getInitialWorkflowState({
+                        requiresDesign: Boolean(lineItem.requiresDesign),
+                        requiresPrepress: typeof lineItem.requiresPrepress === 'boolean' ? lineItem.requiresPrepress : true,
+                    })) as any;
+
+                    await transitionLineItemWorkflowState(tx, {
+                        organizationId,
+                        lineItemId: lineItem.id,
+                        toState: targetWorkflowState,
+                        actorUserId: createdByUserId,
+                        metadata: {
+                            source: 'quote_to_order_conversion',
+                            quoteId,
+                        },
+                    });
+                }
+            });
+        }
 
         // PHASE 2: Copy asset_links from quote line items to order line items (fail-soft)
         try {
@@ -940,10 +1046,11 @@ export class OrdersRepository {
                             orderId: createdOrder.id,
                             orderLineItemId: orderLineItemId,
                             quoteId: quoteId,
+                            fileRecordId: qa.fileRecordId ?? null,
                             uploadedByUserId: qa.uploadedByUserId ?? null,
                             uploadedByName: qa.uploadedByName ?? null,
                             fileName: qa.fileName,
-                            fileUrl: qa.fileUrl,
+                            fileUrl: qa.fileUrl ?? null,
                             fileSize: qa.fileSize ?? null,
                             mimeType: qa.mimeType ?? null,
                             description: qa.description ?? null,
@@ -1055,6 +1162,12 @@ export class OrdersRepository {
             unitPrice: lineItem.unitPrice.toString(),
             totalPrice: lineItem.totalPrice.toString(),
             status: lineItem.status,
+            workflowState: lineItem.workflowState ?? getInitialWorkflowState({
+                requiresDesign: Boolean(lineItem.requiresDesign),
+                requiresPrepress: typeof lineItem.requiresPrepress === "boolean" ? lineItem.requiresPrepress : true,
+            }),
+            requiresDesign: lineItem.requiresDesign ?? false,
+            requiresPrepress: lineItem.requiresPrepress ?? true,
             specsJson: lineItem.specsJson ?? undefined,
             selectedOptions,
             nestingConfigSnapshot,
@@ -1091,8 +1204,12 @@ export class OrdersRepository {
     }
 
     // Shipment operations
-    async getShipmentsByOrder(orderId: string): Promise<Shipment[]> {
-        return await this.dbInstance.select().from(shipments).where(eq(shipments.orderId, orderId)).orderBy(desc(shipments.createdAt));
+    async getShipmentsByOrder(organizationId: string, orderId: string): Promise<Shipment[]> {
+        return await this.dbInstance
+            .select()
+            .from(shipments)
+            .where(and(eq(shipments.organizationId, organizationId), eq(shipments.orderId, orderId)))
+            .orderBy(desc(shipments.createdAt));
     }
 
     async getShipmentById(id: string): Promise<Shipment | undefined> {
@@ -1171,7 +1288,7 @@ export class OrdersRepository {
         const rows = await this.dbInstance
             .select(ORDER_ATTACHMENT_SAFE_SELECT)
             .from(orderAttachments)
-            .where(eq(orderAttachments.orderId, orderId))
+            .where(and(eq(orderAttachments.orderId, orderId), isNull(orderAttachments.orderLineItemId)))
             .orderBy(desc(orderAttachments.createdAt));
 
         return rows as any;
@@ -1213,7 +1330,7 @@ export class OrdersRepository {
             })
             .from(orderAttachments)
             .leftJoin(users, eq(orderAttachments.uploadedByUserId, users.id))
-            .where(eq(orderAttachments.orderId, orderId))
+            .where(and(eq(orderAttachments.orderId, orderId), isNull(orderAttachments.orderLineItemId)))
             .orderBy(desc(orderAttachments.createdAt));
 
         return files.map(f => ({
@@ -1290,7 +1407,7 @@ export class OrdersRepository {
     async detachOrderFile(id: string): Promise<boolean> {
         const deleted = await this.dbInstance
             .delete(orderAttachments)
-            .where(eq(orderAttachments.id, id))
+            .where(and(eq(orderAttachments.id, id), isNull(orderAttachments.orderLineItemId)))
             .returning({ id: orderAttachments.id });
 
         return deleted.length > 0;

@@ -1,4 +1,5 @@
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -8,10 +9,12 @@ import { Separator } from "@/components/ui/separator";
 import { Label } from "@/components/ui/label";
 import { PRICING_PROFILES, type FlatGoodsConfig, getProfile, getDefaultFormula } from "@shared/pricingProfiles";
 import type { ShippingPolicy, WeightUnit, WeightBasis, ShippingConfig } from "@shared/optionTreeV2";
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog";
 import { useToast } from "@/hooks/use-toast";
 import { BasePricingEditor } from "@/components/pbv2/builder-v2/BasePricingEditor";
+import { PricingVariableHelper } from "@/components/pbv2/builder-v2/PricingVariableHelper";
+import { FormulaReferenceModal } from "@/components/pbv2/builder-v2/FormulaReferenceModal";
 
 // Required field indicator component
 function RequiredIndicator() {
@@ -46,6 +49,8 @@ export const ProductForm = ({
   onDeletePricingV2Tier,
   pricingEngine,
   onPricingEngineChange,
+  pbv2PricingMode,
+  onPbv2PricingModeChange,
 }: {
   form: any;
   materials: any;
@@ -54,7 +59,7 @@ export const ProductForm = ({
   onSave: any;
   formId?: string;
   onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null }) => void;
-  treeMeta?: { shippingConfig?: ShippingConfig; productImages?: any[] };
+  treeMeta?: { shippingConfig?: ShippingConfig; productImages?: any[]; geometry?: { trimAllowance?: number; trimAllowanceX?: number; trimAllowanceY?: number } };
   onUpdateTreeMeta?: (updates: Record<string, unknown>) => void;
   pricingV2?: any;
   onUpdatePricingV2Base?: (base: { perSqftCents?: number; perPieceCents?: number; minimumChargeCents?: number }) => void;
@@ -64,6 +69,8 @@ export const ProductForm = ({
   onDeletePricingV2Tier?: (kind: 'qty' | 'sqft', index: number) => void;
   pricingEngine?: "formulaLibrary" | "pricingProfile" | "pricingFormula";
   onPricingEngineChange?: (engine: "formulaLibrary" | "pricingProfile" | "pricingFormula") => void;
+  pbv2PricingMode?: "basic" | "advanced";
+  onPbv2PricingModeChange?: (mode: "basic" | "advanced") => void;
 }) => {
   const { toast } = useToast();
   const addPricingProfileKey = form.watch("pricingProfileKey");
@@ -108,6 +115,12 @@ export const ProductForm = ({
   }, [shippingPolicy, baseWeight, weightUnit, weightBasis, onUpdateTreeMeta, form]);
 
   const isWeightDisabled = shippingPolicy === "pickup_only";
+  const legacyTrimAllowance = Number(treeMeta?.geometry?.trimAllowance ?? 0);
+  const normalizedLegacyTrimAllowance = Number.isFinite(legacyTrimAllowance) && legacyTrimAllowance >= 0 ? legacyTrimAllowance : 0;
+  const trimAllowanceX = Number(treeMeta?.geometry?.trimAllowanceX);
+  const trimAllowanceY = Number(treeMeta?.geometry?.trimAllowanceY);
+  const safeTrimAllowanceX = Number.isFinite(trimAllowanceX) && trimAllowanceX >= 0 ? trimAllowanceX : normalizedLegacyTrimAllowance;
+  const safeTrimAllowanceY = Number.isFinite(trimAllowanceY) && trimAllowanceY >= 0 ? trimAllowanceY : normalizedLegacyTrimAllowance;
 
   // Options are now managed by PBV2ProductBuilderSectionV2, not ProductForm
 
@@ -220,6 +233,10 @@ export const ProductForm = ({
           pricingProfileKey={addPricingProfileKey}
           pricingEngine={pricingEngine}
           onPricingEngineChange={onPricingEngineChange}
+          pricingMode={pbv2PricingMode ?? "basic"}
+          onPricingModeChange={onPbv2PricingModeChange}
+          trimAllowanceX={safeTrimAllowanceX}
+          trimAllowanceY={safeTrimAllowanceY}
         />
 
         {/* RIGHT: Material & Weight Configuration */}
@@ -416,6 +433,53 @@ export const ProductForm = ({
                 </FormItem>
               )}
             />
+
+            <div className="rounded-md border border-slate-700 bg-slate-900/30 p-3 space-y-2">
+              <h4 className="text-xs font-medium text-slate-300 uppercase tracking-wider">Finished Size Rules</h4>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-xs text-slate-400">Trim Allowance W (in)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={safeTrimAllowanceX}
+                    onChange={(e) => {
+                      const parsed = Number(e.target.value);
+                      const nextTrimAllowanceX = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+                      onUpdateTreeMeta?.({
+                        geometry: {
+                          ...(treeMeta?.geometry || {}),
+                          trimAllowanceX: nextTrimAllowanceX,
+                          trimAllowanceY: safeTrimAllowanceY,
+                        },
+                      });
+                    }}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-slate-400">Trim Allowance H (in)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={safeTrimAllowanceY}
+                    onChange={(e) => {
+                      const parsed = Number(e.target.value);
+                      const nextTrimAllowanceY = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+                      onUpdateTreeMeta?.({
+                        geometry: {
+                          ...(treeMeta?.geometry || {}),
+                          trimAllowanceX: safeTrimAllowanceX,
+                          trimAllowanceY: nextTrimAllowanceY,
+                        },
+                      });
+                    }}
+                  />
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-400">Adds to finished width/height to represent trimmed delivered size.</p>
+            </div>
           </div>
         </div>
         </div>
@@ -434,22 +498,84 @@ function PricingEngineRadioSection({
   pricingProfileKey,
   pricingEngine,
   onPricingEngineChange,
+  pricingMode,
+  onPricingModeChange,
+  trimAllowanceX,
+  trimAllowanceY,
 }: {
   form: any;
   pricingFormulas: any;
   pricingProfileKey: string;
   pricingEngine?: "formulaLibrary" | "pricingProfile" | "pricingFormula";
   onPricingEngineChange?: (engine: "formulaLibrary" | "pricingProfile" | "pricingFormula") => void;
+  pricingMode: "basic" | "advanced";
+  onPricingModeChange?: (mode: "basic" | "advanced") => void;
+  trimAllowanceX?: number;
+  trimAllowanceY?: number;
 }) {
-  type PricingMode = "formulaLibrary" | "pricingProfile" | "pricingFormula";
+  type PricingEngineMode = "formulaLibrary" | "pricingProfile" | "pricingFormula";
+  const BASIC_CANONICAL_FORMULA = "ceil(total_sqft) * p";
+  const DEFAULT_FLAT_GOODS_CONFIG: FlatGoodsConfig = {
+    sheetWidth: 48,
+    sheetHeight: 96,
+    allowRotation: true,
+    materialType: "sheet",
+    minPricePerItem: null,
+  };
 
   // Use controlled pricingEngine prop, with fallback to derive from form state
   const formulaId = form.watch("pricingFormulaId");
   const currentFormula = form.watch("pricingFormula");
   const currentProfile = form.watch("pricingProfileKey");
+  const currentProfileConfig = form.watch("pricingProfileConfig") as FlatGoodsConfig | null;
+  const isAdvancedMode = pricingMode === "advanced";
+  const hasTrimAllowance = (Number(trimAllowanceX) || 0) > 0 || (Number(trimAllowanceY) || 0) > 0;
+  const formulaUsesOrderedDimsPattern = /\bw\s*\*\s*h\b|\bh\s*\*\s*w\b|\/\s*144\b|\bwidth\s*\*\s*height\b|\bordered_/i.test(String(currentFormula || ""));
+  const shouldShowFinishedSizeWarning = isAdvancedMode && hasTrimAllowance && formulaUsesOrderedDimsPattern;
+  const [referenceOpen, setReferenceOpen] = useState(false);
+  const [referenceInsertEnabled, setReferenceInsertEnabled] = useState(false);
+  const formulaInputRef = useRef<HTMLInputElement | null>(null);
+  const [sheetWidthInput, setSheetWidthInput] = useState(String(DEFAULT_FLAT_GOODS_CONFIG.sheetWidth));
+  const [sheetHeightInput, setSheetHeightInput] = useState(String(DEFAULT_FLAT_GOODS_CONFIG.sheetHeight));
+  const [sheetWidthError, setSheetWidthError] = useState<string | null>(null);
+  const [sheetHeightError, setSheetHeightError] = useState<string | null>(null);
+
+  const parsePositiveFinite = (value: unknown): number | null => {
+    const parsed = typeof value === "number" ? value : Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return null;
+    }
+    return parsed;
+  };
+
+  const getSafeFlatGoodsConfig = useCallback((config: FlatGoodsConfig | null | undefined): FlatGoodsConfig => {
+    const safeSheetWidth = parsePositiveFinite(config?.sheetWidth) ?? DEFAULT_FLAT_GOODS_CONFIG.sheetWidth;
+    const safeSheetHeight = parsePositiveFinite(config?.sheetHeight) ?? DEFAULT_FLAT_GOODS_CONFIG.sheetHeight;
+    return {
+      ...DEFAULT_FLAT_GOODS_CONFIG,
+      ...(config || {}),
+      sheetWidth: safeSheetWidth,
+      sheetHeight: safeSheetHeight,
+      allowRotation: typeof config?.allowRotation === "boolean" ? config.allowRotation : DEFAULT_FLAT_GOODS_CONFIG.allowRotation,
+      materialType: config?.materialType === "roll" ? "roll" : "sheet",
+      minPricePerItem: config?.minPricePerItem ?? null,
+    };
+  }, []);
+
+  const updateFlatGoodsConfig = useCallback((updates: Partial<FlatGoodsConfig>, shouldDirty = true) => {
+    const current = getSafeFlatGoodsConfig(form.getValues("pricingProfileConfig") as FlatGoodsConfig | null);
+    form.setValue(
+      "pricingProfileConfig",
+      {
+        ...current,
+        ...updates,
+      },
+      { shouldDirty }
+    );
+  }, [form, getSafeFlatGoodsConfig]);
   
   // Determine effective mode (controlled or derived)
-  const effectiveMode: PricingMode = pricingEngine || (() => {
+  const derivedMode: PricingEngineMode = (() => {
     if (formulaId) return "formulaLibrary";
     
     const profile = getProfile(currentProfile || "default");
@@ -461,20 +587,48 @@ function PricingEngineRadioSection({
     
     return "pricingProfile";
   })();
+  const effectiveMode: PricingEngineMode = isAdvancedMode ? (pricingEngine || derivedMode) : "pricingProfile";
 
-  const handleModeChange = (mode: PricingMode) => {
+  useEffect(() => {
+    if (pricingMode !== "basic") return;
+    const existing = String(form.getValues("pricingFormula") || "").trim();
+    if (!existing) {
+      form.setValue("pricingFormula", BASIC_CANONICAL_FORMULA, { shouldDirty: false });
+    }
+  }, [pricingMode, form]);
+
+  useEffect(() => {
+    if (currentProfile !== "flat_goods") return;
+    const current = form.getValues("pricingProfileConfig") as FlatGoodsConfig | null;
+    const safe = getSafeFlatGoodsConfig(current);
+
+    const shouldSeed =
+      !current ||
+      parsePositiveFinite(current.sheetWidth) === null ||
+      parsePositiveFinite(current.sheetHeight) === null ||
+      typeof current.allowRotation !== "boolean";
+
+    if (shouldSeed) {
+      form.setValue("pricingProfileConfig", safe, { shouldDirty: false });
+    }
+  }, [currentProfile, form, getSafeFlatGoodsConfig]);
+
+  useEffect(() => {
+    if (currentProfile !== "flat_goods") return;
+    const safe = getSafeFlatGoodsConfig(currentProfileConfig);
+    setSheetWidthInput(String(safe.sheetWidth));
+    setSheetHeightInput(String(safe.sheetHeight));
+    setSheetWidthError(null);
+    setSheetHeightError(null);
+  }, [currentProfile, currentProfileConfig, getSafeFlatGoodsConfig]);
+
+  const handleModeChange = (mode: PricingEngineMode) => {
+    if (!isAdvancedMode) return;
     // Call parent handler if provided (for controlled mode)
     onPricingEngineChange?.(mode);
     // Clear other fields when switching modes
     if (mode !== "formulaLibrary") {
       form.setValue("pricingFormulaId", null, { shouldDirty: true });
-    }
-    if (mode === "pricingFormula") {
-      // Ensure formula field has a value
-      const currentFormula = form.getValues("pricingFormula");
-      if (!currentFormula) {
-        form.setValue("pricingFormula", getDefaultFormula(pricingProfileKey), { shouldDirty: true });
-      }
     }
     // Log mode change for verification
     if (import.meta.env.DEV) {
@@ -482,13 +636,71 @@ function PricingEngineRadioSection({
     }
   };
 
+  const openReference = (allowInsert: boolean) => {
+    setReferenceInsertEnabled(isAdvancedMode && allowInsert);
+    setReferenceOpen(true);
+  };
+
+  const insertFormulaTextAtCursor = (text: string) => {
+    const input = formulaInputRef.current;
+    const current = String(form.getValues("pricingFormula") || "");
+    if (!input) {
+      form.setValue("pricingFormula", `${current}${text}`, { shouldDirty: true });
+      return;
+    }
+
+    const start = input.selectionStart ?? current.length;
+    const end = input.selectionEnd ?? current.length;
+    const next = `${current.slice(0, start)}${text}${current.slice(end)}`;
+    form.setValue("pricingFormula", next, { shouldDirty: true });
+
+    window.setTimeout(() => {
+      const cursor = start + text.length;
+      input.focus();
+      input.setSelectionRange(cursor, cursor);
+    }, 0);
+  };
+
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 min-w-0">
       <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Pricing Engine</h3>
+
+      <div className="rounded-md border border-slate-700 bg-slate-900/30 p-2">
+        <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-2">PBV2 Pricing Mode</div>
+        <div className="grid grid-cols-2 gap-2">
+          <Button
+            type="button"
+            variant={pricingMode === "basic" ? "default" : "outline"}
+            size="sm"
+            onClick={() => onPricingModeChange?.("basic")}
+            className="h-8"
+          >
+            Basic
+          </Button>
+          <Button
+            type="button"
+            variant={pricingMode === "advanced" ? "default" : "outline"}
+            size="sm"
+            onClick={() => onPricingModeChange?.("advanced")}
+            className="h-8"
+          >
+            Advanced
+          </Button>
+        </div>
+        {pricingMode === "basic" ? (
+          <div className="mt-2 text-[11px] text-slate-400">
+            Structured builder only. Formula editor is locked; canonical formula is generated internally from finished geometry variables.
+          </div>
+        ) : (
+          <div className="mt-2 text-[11px] text-slate-400">
+            Full formula editor enabled. No automatic formula rewriting.
+          </div>
+        )}
+      </div>
 
       <RadioGroup
         value={effectiveMode}
-        onValueChange={(v) => handleModeChange(v as PricingMode)}
+        onValueChange={(v) => handleModeChange(v as PricingEngineMode)}
         className="space-y-0 gap-0"
       >
         {/* — Field 1: Formula Library — */}
@@ -498,8 +710,15 @@ function PricingEngineRadioSection({
             <label htmlFor="pe-formula-lib" className="text-xs font-medium text-slate-300 cursor-pointer select-none">
               Formula Library
             </label>
+            <button
+              type="button"
+              className="text-[10px] text-blue-300 hover:text-blue-200 underline-offset-2 hover:underline"
+              onClick={() => openReference(false)}
+            >
+              Reference
+            </button>
           </div>
-          <div className={effectiveMode !== "formulaLibrary" ? "opacity-40 pointer-events-none" : ""}>
+          <div className={!isAdvancedMode || effectiveMode !== "formulaLibrary" ? "opacity-40 pointer-events-none" : ""}>
             <FormField
               control={form.control}
               name="pricingFormulaId"
@@ -562,14 +781,9 @@ function PricingEngineRadioSection({
                       if (profile.usesFormula && profile.defaultFormula) {
                         form.setValue("pricingFormula", profile.defaultFormula);
                       }
-                      if (val === "flat_goods" && !form.getValues("pricingProfileConfig")) {
-                        form.setValue("pricingProfileConfig", {
-                          sheetWidth: 48,
-                          sheetHeight: 96,
-                          allowRotation: true,
-                          materialType: "sheet",
-                          minPricePerItem: null,
-                        });
+                      if (val === "flat_goods") {
+                        const current = form.getValues("pricingProfileConfig") as FlatGoodsConfig | null;
+                        form.setValue("pricingProfileConfig", getSafeFlatGoodsConfig(current), { shouldDirty: true });
                       }
                     }}
                     value={field.value || "default"}
@@ -589,32 +803,158 @@ function PricingEngineRadioSection({
                 </FormItem>
               )}
             />
+
+            {currentProfile === "flat_goods" ? (
+              <div className="mt-2 rounded-md border border-slate-700 bg-slate-900/30 p-3 space-y-2">
+                <div className="text-xs font-medium text-slate-300">Sheet Settings</div>
+                <p className="text-[11px] text-slate-400">Used only for Flat Goods nesting (sheet yield and waste). Does not change Finished Size or total_sqft geometry.</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <Label className="text-xs text-slate-400">Sheet Width (in)</Label>
+                    <Input
+                      type="number"
+                      min={0.01}
+                      step="0.01"
+                      value={sheetWidthInput}
+                      onChange={(e) => {
+                        const nextValue = e.target.value;
+                        setSheetWidthInput(nextValue);
+                        const parsed = parsePositiveFinite(nextValue);
+                        if (parsed === null) {
+                          setSheetWidthError("Must be a number greater than 0");
+                          return;
+                        }
+                        setSheetWidthError(null);
+                        updateFlatGoodsConfig({ sheetWidth: parsed }, true);
+                      }}
+                      onBlur={() => {
+                        const parsed = parsePositiveFinite(sheetWidthInput);
+                        const fallback = getSafeFlatGoodsConfig(form.getValues("pricingProfileConfig") as FlatGoodsConfig | null).sheetWidth;
+                        if (parsed === null) {
+                          setSheetWidthInput(String(fallback));
+                          setSheetWidthError(null);
+                          return;
+                        }
+                        setSheetWidthInput(String(parsed));
+                      }}
+                      className="h-8"
+                    />
+                    {sheetWidthError ? <p className="text-[11px] text-destructive">{sheetWidthError}</p> : null}
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label className="text-xs text-slate-400">Sheet Height (in)</Label>
+                    <Input
+                      type="number"
+                      min={0.01}
+                      step="0.01"
+                      value={sheetHeightInput}
+                      onChange={(e) => {
+                        const nextValue = e.target.value;
+                        setSheetHeightInput(nextValue);
+                        const parsed = parsePositiveFinite(nextValue);
+                        if (parsed === null) {
+                          setSheetHeightError("Must be a number greater than 0");
+                          return;
+                        }
+                        setSheetHeightError(null);
+                        updateFlatGoodsConfig({ sheetHeight: parsed }, true);
+                      }}
+                      onBlur={() => {
+                        const parsed = parsePositiveFinite(sheetHeightInput);
+                        const fallback = getSafeFlatGoodsConfig(form.getValues("pricingProfileConfig") as FlatGoodsConfig | null).sheetHeight;
+                        if (parsed === null) {
+                          setSheetHeightInput(String(fallback));
+                          setSheetHeightError(null);
+                          return;
+                        }
+                        setSheetHeightInput(String(parsed));
+                      }}
+                      className="h-8"
+                    />
+                    {sheetHeightError ? <p className="text-[11px] text-destructive">{sheetHeightError}</p> : null}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <Switch
+                    checked={getSafeFlatGoodsConfig(currentProfileConfig).allowRotation}
+                    onCheckedChange={(checked) => {
+                      updateFlatGoodsConfig({ allowRotation: Boolean(checked) }, true);
+                    }}
+                  />
+                  <Label className="text-xs text-slate-300">Allow Rotation</Label>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
 
         {/* — Field 3: Pricing Formula — */}
-        {getProfile(pricingProfileKey).usesFormula && (
-          <div className={`rounded-md px-3 py-2.5 transition-colors ${effectiveMode === "pricingFormula" ? "bg-slate-800/60" : "bg-transparent"}`}>
+        {getProfile(pricingProfileKey).usesFormula && isAdvancedMode && (
+          <div className={`rounded-md px-3 py-2.5 transition-colors min-w-0 ${effectiveMode === "pricingFormula" ? "bg-slate-800/60" : "bg-transparent"}`}>
             <div className="flex items-center gap-2 mb-1.5">
               <RadioGroupItem value="pricingFormula" id="pe-formula" className="h-3.5 w-3.5" />
               <label htmlFor="pe-formula" className="text-xs font-medium text-slate-300 cursor-pointer select-none">
                 Pricing Formula
               </label>
+              <button
+                type="button"
+                className="text-[10px] text-blue-300 hover:text-blue-200 underline-offset-2 hover:underline"
+                onClick={() => openReference(true)}
+              >
+                Reference
+              </button>
             </div>
-            <div className={effectiveMode !== "pricingFormula" ? "opacity-40 pointer-events-none" : ""}>
+            <div className={`min-w-0 ${effectiveMode !== "pricingFormula" ? "opacity-40 pointer-events-none" : ""}`}>
               <FormField
                 control={form.control}
                 name="pricingFormula"
                 render={({ field }) => (
-                  <FormItem className="space-y-0">
+                  <FormItem className="space-y-2 min-w-0">
                     <FormControl>
                       <Input
                         placeholder={getDefaultFormula(pricingProfileKey)}
                         {...field}
                         value={field.value || ""}
+                        ref={(node) => {
+                          field.ref(node);
+                          formulaInputRef.current = node;
+                        }}
                         className="bg-slate-950/60 border-slate-700/50 h-8 text-sm font-mono"
                       />
                     </FormControl>
+                    {!String(field.value || "").trim() ? (
+                      <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400">
+                        <span>No formula set. Preview will use recommended formula: total_sqft * p</span>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-6 px-2 text-[10px]"
+                          onClick={() => form.setValue("pricingFormula", "ceil(total_sqft) * p", { shouldDirty: true })}
+                        >
+                          Insert default formula
+                        </Button>
+                      </div>
+                    ) : null}
+                    {shouldShowFinishedSizeWarning ? (
+                      <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-200 space-y-1">
+                        <div>This formula recomputes sqft from ordered width/height and ignores Finished Size Rules. Use total_sqft (finished) or finished_width/finished_height to include trim.</div>
+                        <div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-6 px-2 text-[10px]"
+                            onClick={() => form.setValue("pricingFormula", "ceil(total_sqft) * p", { shouldDirty: true })}
+                          >
+                            Fix formula
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
+                    <PricingVariableHelper />
                     <FormMessage />
                   </FormItem>
                 )}
@@ -622,7 +962,24 @@ function PricingEngineRadioSection({
             </div>
           </div>
         )}
+
+        {getProfile(pricingProfileKey).usesFormula && !isAdvancedMode ? (
+          <div className="rounded-md px-3 py-2.5 bg-slate-900/30 border border-slate-700">
+            <div className="text-xs font-medium text-slate-300 mb-1">Generated Canonical Formula</div>
+            <Input
+              value={BASIC_CANONICAL_FORMULA}
+              readOnly
+              className="bg-slate-950/60 border-slate-700/50 h-8 text-sm font-mono"
+            />
+          </div>
+        ) : null}
       </RadioGroup>
+
+      <FormulaReferenceModal
+        open={referenceOpen}
+        onOpenChange={setReferenceOpen}
+        onInsertText={referenceInsertEnabled ? insertFormulaTextAtCursor : undefined}
+      />
     </div>
   );
 }

@@ -5,6 +5,16 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Lock, ExternalLink } from "lucide-react";
 import { useMutation } from "@tanstack/react-query";
 import { ConvertQuoteToOrderDialog } from "@/components/convert-quote-to-order-dialog";
@@ -15,6 +25,7 @@ import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useQuoteEditorState } from "./useQuoteEditorState";
+import type { QuoteDuplicateMode } from "./useQuoteEditorState";
 import { QuoteHeader } from "./components/QuoteHeader";
 import { CustomerCard, type CustomerCardRef } from "./components/CustomerCard";
 import { LineItemsSection } from "./components/LineItemsSection";
@@ -94,6 +105,11 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     const handleReviseQuote = () => {
         if (!state.quoteId) return;
         reviseMutation.mutate(state.quoteId);
+    };
+
+    const handleDuplicateChoice = async (mode: QuoteDuplicateMode) => {
+        setShowDuplicateDialog(false);
+        await state.handlers.duplicateQuote(mode);
     };
 
     // Approval workflow mutations
@@ -306,6 +322,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     // Dialog state (convert is still a dialog for now; core editing stays inline)
     const [showConvertDialog, setShowConvertDialog] = useState(false);
     const [showUnsavedChangesDialog, setShowUnsavedChangesDialog] = useState(false);
+    const [showDuplicateDialog, setShowDuplicateDialog] = useState(false);
     const [voidDialogOpen, setVoidDialogOpen] = useState(false);
     const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null);
     const [timelineOpen, setTimelineOpen] = useState(false);
@@ -897,7 +914,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                     editMode={editMode}
                     editModeDisabled={state.isSaving || isLocked}
                     onBack={handleBack}
-                    onDuplicateQuote={state.handlers.duplicateQuote}
+                    onDuplicateQuote={() => setShowDuplicateDialog(true)}
                     onReviseQuote={handleReviseQuote}
                     onEditModeChange={(next) => {
                         if (isLocked) {
@@ -1122,6 +1139,55 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                 isLoading={state.convertToOrderHook?.isPending}
                 onSubmit={state.handlers.convertToOrder}
             />
+
+            <AlertDialog open={showDuplicateDialog} onOpenChange={setShowDuplicateDialog}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Duplicate Quote</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Choose whether the new draft should copy only quote data or also relink existing artwork and attachment records.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+
+                    <div className="grid gap-3">
+                        <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
+                            <div className="text-sm font-medium text-foreground">Quote only</div>
+                            <div className="mt-1 text-sm text-muted-foreground">
+                                Copies quote details and line items. Artwork and attachments stay on the original quote.
+                            </div>
+                        </div>
+                        <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
+                            <div className="text-sm font-medium text-foreground">Quote + artwork</div>
+                            <div className="mt-1 text-sm text-muted-foreground">
+                                Copies quote details, line items, and attachment links without duplicating the underlying files.
+                            </div>
+                        </div>
+                    </div>
+
+                    <AlertDialogFooter>
+                        <AlertDialogCancel disabled={state.isDuplicatingQuote}>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={(event) => {
+                                event.preventDefault();
+                                void handleDuplicateChoice("quote_only");
+                            }}
+                            disabled={state.isDuplicatingQuote}
+                            className="bg-secondary text-secondary-foreground hover:bg-secondary/80"
+                        >
+                            Duplicate quote only
+                        </AlertDialogAction>
+                        <AlertDialogAction
+                            onClick={(event) => {
+                                event.preventDefault();
+                                void handleDuplicateChoice("quote_with_artwork");
+                            }}
+                            disabled={state.isDuplicatingQuote}
+                        >
+                            Duplicate quote + artwork
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
 
             {/* Unsaved Changes Dialog - for both Back button and navigation blocking */}
             {showUnsavedChangesDialog && (

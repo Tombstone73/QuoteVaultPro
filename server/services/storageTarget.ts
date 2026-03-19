@@ -1,4 +1,7 @@
 import { isSupabaseConfigured } from "../supabaseStorage";
+import { normalizeTitanManagedStorageConfig, type TitanManagedStorageConfig } from "@shared/storageSettings";
+
+export { normalizeTitanManagedStorageConfig };
 
 export type StorageTarget = "supabase" | "local_dev";
 
@@ -48,6 +51,16 @@ export function getMaxCloudUploadBytes(): number {
   return parsed ?? DEFAULT_MAX_CLOUD_UPLOAD_BYTES;
 }
 
+export function getEffectiveMaxCloudUploadBytes(providerConfigJson?: unknown): number {
+  const normalized = normalizeTitanManagedStorageConfig(providerConfigJson);
+  const override = normalized.maxCloudUploadBytesOverride;
+  if (typeof override === "number" && Number.isFinite(override) && override > 0) {
+    return Math.floor(override);
+  }
+
+  return getMaxCloudUploadBytes();
+}
+
 function shouldDebugStorage(): boolean {
   const raw = (process.env.DEBUG_STORAGE ?? "").toString().toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes";
@@ -59,11 +72,15 @@ export function decideStorageTarget(args: {
   fileName?: string | null;
   organizationId?: string | null;
   context?: string;
+  providerConfigJson?: unknown;
 }): StorageTarget {
   const fileSizeBytes = Number.isFinite(args.fileSizeBytes) && args.fileSizeBytes > 0 ? args.fileSizeBytes : 0;
   const requestedTarget = (args.requestedTarget ?? "").toString() || null;
-
-  const maxCloudBytes = getMaxCloudUploadBytes();
+  const normalizedConfig = normalizeTitanManagedStorageConfig(args.providerConfigJson);
+  const maxCloudBytes = getEffectiveMaxCloudUploadBytes(args.providerConfigJson);
+  const normalizedRequestedTarget = requestedTarget === "supabase" || requestedTarget === "local_dev"
+    ? requestedTarget
+    : null;
 
   // If Supabase isn't configured, we can only use local storage.
   if (!isSupabaseConfigured()) {
@@ -73,6 +90,7 @@ export function decideStorageTarget(args: {
         fileSizeBytes,
         maxCloudBytes,
         requestedTarget,
+        routingMode: normalizedConfig.routingMode,
         decidedTarget: "local_dev",
         reason: "supabase_not_configured",
         organizationId: args.organizationId ?? null,
@@ -82,7 +100,25 @@ export function decideStorageTarget(args: {
     return "local_dev";
   }
 
-  const decidedTarget: StorageTarget = fileSizeBytes <= maxCloudBytes ? "supabase" : "local_dev";
+  let decidedTarget: StorageTarget;
+  let reason: string;
+
+  if (normalizedConfig.routingMode === "local_dev") {
+    decidedTarget = "local_dev";
+    reason = "config_forces_local_dev";
+  } else if (normalizedConfig.routingMode === "supabase") {
+    decidedTarget = "supabase";
+    reason = "config_forces_supabase";
+  } else if (normalizedRequestedTarget === "local_dev") {
+    decidedTarget = "local_dev";
+    reason = "request_prefers_local_dev";
+  } else if (normalizedRequestedTarget === "supabase") {
+    decidedTarget = "supabase";
+    reason = "request_prefers_supabase";
+  } else {
+    decidedTarget = fileSizeBytes <= maxCloudBytes ? "supabase" : "local_dev";
+    reason = fileSizeBytes <= maxCloudBytes ? "under_or_equal_limit" : "over_limit";
+  }
 
   if (shouldDebugStorage()) {
     console.log("[StorageDecision]", {
@@ -90,8 +126,9 @@ export function decideStorageTarget(args: {
       fileSizeBytes,
       maxCloudBytes,
       requestedTarget,
+      routingMode: normalizedConfig.routingMode,
       decidedTarget,
-      reason: fileSizeBytes <= maxCloudBytes ? "under_or_equal_limit" : "over_limit",
+      reason,
       organizationId: args.organizationId ?? null,
       context: args.context ?? null,
     });

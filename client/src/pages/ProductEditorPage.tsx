@@ -18,7 +18,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { Card } from "@/components/ui/card";
-import { type FlatGoodsConfig } from "@shared/pricingProfiles";
+import { getDefaultFormula, getProfile, type FlatGoodsConfig } from "@shared/pricingProfiles";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -72,9 +72,10 @@ const ProductEditorPage = () => {
   // Track pricing engine dirty state
   const [engineDirty, setEngineDirty] = useState(false);
   const [pricingEngine, setPricingEngine] = useState<"formulaLibrary" | "pricingProfile" | "pricingFormula">("pricingProfile");
+  const [pbv2PricingMode, setPbv2PricingMode] = useState<"basic" | "advanced">("basic");
 
   // Track PBV2 tree meta (shippingConfig, productImages, pricingV2) for ProductForm
-  const [treeMeta, setTreeMeta] = useState<{ shippingConfig?: any; productImages?: any[]; pricingV2?: any }>({});
+  const [treeMeta, setTreeMeta] = useState<{ shippingConfig?: any; productImages?: any[]; pricingV2?: any; geometry?: { trimAllowance?: number; trimAllowanceX?: number; trimAllowanceY?: number } }>({});
 
   // Track PBV2 pricing/validation data for page-level pricing panel
   const [pbv2PricingData, setPbv2PricingData] = useState<{
@@ -98,7 +99,7 @@ const ProductEditorPage = () => {
       name: "",
       description: "",
       category: "",
-      pricingFormula: "sqft * p * q",
+      pricingFormula: "",
       pricingMode: "area",
       pricingProfileKey: "default",
       pricingProfileConfig: null,
@@ -146,7 +147,7 @@ const ProductEditorPage = () => {
         name: product.name,
         description: product.description || "",
         category: product.category || "",
-        pricingFormula: product.pricingFormula || "sqft * p * q",
+        pricingFormula: product.pricingFormula || "",
         pricingMode: product.pricingMode || "area",
         pricingProfileKey: product.pricingProfileKey || "default",
         pricingProfileConfig: product.pricingProfileConfig as FlatGoodsConfig | null,
@@ -170,6 +171,14 @@ const ProductEditorPage = () => {
       const loadedEngine = (product as any).pricingEngine || "pricingProfile";
       setPricingEngine(loadedEngine);
       setEngineDirty(false); // Clear engine dirty on load
+
+      const loadedProfileKey = product.pricingProfileKey || "default";
+      const loadedFormula = String(product.pricingFormula || "").trim();
+      const profile = getProfile(loadedProfileKey);
+      const defaultFormula = String(profile.defaultFormula || getDefaultFormula(loadedProfileKey)).trim();
+      const hasCustomFormula = loadedFormula.length > 0 && loadedFormula !== defaultFormula;
+      const hasFormulaLibrarySelection = Boolean(product.pricingFormulaId);
+      setPbv2PricingMode(hasCustomFormula || hasFormulaLibrarySelection ? "advanced" : "basic");
       
       if (import.meta.env.DEV) {
         console.log('[ProductEditor] Loaded pricingEngine:', loadedEngine);
@@ -846,6 +855,8 @@ const ProductEditorPage = () => {
                   console.log('[PRICING_ENGINE] Changed to:', engine, 'engineDirty=true');
                 }
               }}
+              pbv2PricingMode={pbv2PricingMode}
+              onPbv2PricingModeChange={setPbv2PricingMode}
               onAddPricingV2Tier={(kind) => {
                 const current = treeMeta.pricingV2 || {};
                 const tiers = kind === 'qty' ? (current.qtyTiers || []) : (current.sqftTiers || []);
@@ -899,8 +910,12 @@ const ProductEditorPage = () => {
         }
         right={
           <PricingValidationPanel
-            pricingPreview={pbv2PricingData.pricingPreview}
-            weightPreview={pbv2PricingData.weightPreview}
+            treeJson={pbv2State?.treeJson ?? form.getValues('optionTreeJson') ?? null}
+            pricingV2Override={treeMeta.pricingV2}
+            pricingFormulaOverride={form.watch("pricingFormula") || null}
+            pricingProfileKey={form.watch("pricingProfileKey") || null}
+            pricingProfileConfig={form.watch("pricingProfileConfig") || null}
+            pricingMode={pbv2PricingMode}
             findings={pbv2PricingData.findings}
           />
         }

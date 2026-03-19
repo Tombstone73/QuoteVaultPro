@@ -8,7 +8,7 @@ interface ConfigErrorProps {
 
 /**
  * Full-page configuration error display.
- * Shown when critical environment variables are missing in production.
+ * Shown when deployment configuration is invalid.
  */
 export function ConfigError({ error }: ConfigErrorProps) {
   return (
@@ -32,13 +32,13 @@ export function ConfigError({ error }: ConfigErrorProps) {
             <div>
               <h3 className="font-semibold mb-2">For Administrators:</h3>
               <p className="text-sm text-muted-foreground mb-3">
-                This application requires API/Object base URL environment variables to be set in your deployment platform.
+                API and object base URLs are optional overrides. Leave them unset for normal same-origin browser routing, and only set them when your deployment intentionally uses separate hosts.
               </p>
               
               <div className="bg-muted/50 rounded-lg p-4 space-y-2">
-                <p className="text-xs font-semibold text-muted-foreground">Recommended Environment Variables:</p>
+                <p className="text-xs font-semibold text-muted-foreground">Optional Override Examples:</p>
                 <code className="block text-xs bg-background p-2 rounded border">
-                  VITE_API_BASE_URL=https://api.printershero.com
+                  VITE_API_BASE_URL=https://dev.printershero.com
                   <br />
                   VITE_OBJECTS_BASE_URL=https://objects.printershero.com
                 </code>
@@ -50,7 +50,7 @@ export function ConfigError({ error }: ConfigErrorProps) {
               <ol className="text-sm text-muted-foreground space-y-2 list-decimal list-inside">
                 <li>Go to your Vercel project dashboard</li>
                 <li>Navigate to Settings → Environment Variables</li>
-                <li>Add <code className="bg-muted px-1 py-0.5 rounded text-xs">VITE_API_BASE_URL</code> and <code className="bg-muted px-1 py-0.5 rounded text-xs">VITE_OBJECTS_BASE_URL</code> with the proper environment subdomains</li>
+                <li>Remove any stale <code className="bg-muted px-1 py-0.5 rounded text-xs">VITE_API_BASE_URL</code> or <code className="bg-muted px-1 py-0.5 rounded text-xs">VITE_OBJECTS_BASE_URL</code> values unless your deployment explicitly needs cross-origin hosts</li>
                 <li>Redeploy the application</li>
               </ol>
             </div>

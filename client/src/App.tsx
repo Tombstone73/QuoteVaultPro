@@ -20,6 +20,7 @@ import { QuoteEditorPage } from "@/features/quotes/editor/QuoteEditorPage";
 import CustomerQuotes from "@/pages/customer-quotes";
 import InternalQuotes from "@/pages/internal-quotes";
 import ApprovalsPage from "@/pages/ApprovalsPage";
+import StaffProofingPage from "@/pages/StaffProofingPage";
 import Admin from "@/pages/admin";
 import AdminUsers from "@/pages/admin-users";
 import UserManagement from "@/pages/user-management";
@@ -44,6 +45,7 @@ import ProductTypesSettings from "@/pages/settings/product-types";
 import PricingFormulasSettings from "@/pages/settings/pricing-formulas";
 import SettingsIntegrations from "@/pages/settings/integrations";
 import AdminTools from "@/pages/settings/admin-tools";
+import StorageSettingsPage from "@/pages/settings/storage";
 import InvoicesListPage from "@/pages/invoices";
 import InvoiceDetailPage from "@/pages/invoice-detail";
 import MaterialsListPage from "@/pages/materials";
@@ -55,6 +57,7 @@ import PurchaseOrderDetailPage from "@/pages/purchase-order-detail";
 import ProductsPage from "@/pages/products";
 import ProductEditorPage from "@/pages/ProductEditorPage";
 import PrepressPage from "@/pages/prepress";
+import DesignProductionPage from "@/pages/DesignProductionPage";
 import PrepressProductionPageV2 from "@/pages/PrepressProductionPageV2";
 import ProductBuilderV2Page from "@/pages/product-builder-v2";
 import PlatformOrgCreatePage from "@/pages/platform/PlatformOrgCreatePage";
@@ -142,6 +145,7 @@ function Router() {
         <Route path={ROUTES.quotes.list} element={<InternalQuotes />} />
         <Route path="/my-quotes" element={<CustomerQuotes />} />
         <Route path="/approvals" element={<ApprovalsPage />} />
+        <Route path="/production/proofing" element={<StaffProofingPage />} />
 
         {/* Admin routes */}
         <Route path="/admin/users" element={<AdminUsers />} />
@@ -190,6 +194,7 @@ function Router() {
         <Route path="/production/flatbed" element={<ProductionBoard />} />
         <Route path="/production/roll" element={<ProductionBoard />} />
         <Route path="/production/apparel" element={<ProductionBoard />} />
+        <Route path="/production/design" element={<DesignProductionPage />} />
         <Route path="/production/prepress" element={<PrepressProductionPageV2 />} />
         <Route path="/production/jobs/:jobId" element={<ProductionJobDetailPage />} />
         <Route path="/jobs/:id" element={<JobDetail />} />
@@ -222,6 +227,7 @@ function Router() {
           <Route path="pricing-formulas" element={<PricingFormulasSettings />} />
           <Route path="integrations" element={<SettingsIntegrations />} />
           <Route path="email" element={<EmailSettings />} />
+          <Route path="storage" element={<StorageSettingsPage />} />
           <Route path="production" element={<ProductionSettings />} />
           <Route path="inventory" element={<InventorySettings />} />
           <Route path="notifications" element={<NotificationsSettings />} />

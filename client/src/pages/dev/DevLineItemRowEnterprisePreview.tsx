@@ -129,10 +129,9 @@ export default function DevLineItemRowEnterprisePreview() {
                           console.log("Override change", { orderId: loadedOrderId, itemId, nextChecked });
                         }}
                         statusOptions={[
-                          { value: "queued", label: "Queued" },
-                          { value: "printing", label: "Printing" },
-                          { value: "finishing", label: "Finishing" },
-                          { value: "done", label: "Done" },
+                          { value: "new", label: "New" },
+                          { value: "in_production", label: "In Production" },
+                          { value: "complete", label: "Complete" },
                           { value: "canceled", label: "Canceled" },
                         ]}
                         onStatusChange={(itemId, nextStatus) => {

@@ -63,7 +63,7 @@ export function OrderLineItemDialog({
     quantity: "1",
     unitPrice: "",
     totalPrice: "",
-    status: "queued",
+    status: "new",
     specsJson: "",
   });
 
@@ -208,7 +208,7 @@ export function OrderLineItemDialog({
         quantity: lineItem.quantity?.toString() || "1",
         unitPrice: lineItem.unitPrice || "",
         totalPrice: lineItem.totalPrice || "",
-        status: lineItem.status || "queued",
+        status: lineItem.status || "new",
         specsJson: lineItem.specsJson ? JSON.stringify(lineItem.specsJson, null, 2) : "",
       });
       // For editing, keep prices but allow recalculation if dimensions change
@@ -224,7 +224,7 @@ export function OrderLineItemDialog({
         quantity: "1",
         unitPrice: "",
         totalPrice: "",
-        status: "queued",
+        status: "new",
         specsJson: "",
       });
       setCalculatedPrice(null);
@@ -1021,10 +1021,9 @@ export function OrderLineItemDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="queued">Queued</SelectItem>
-                  <SelectItem value="printing">Printing</SelectItem>
-                  <SelectItem value="finishing">Finishing</SelectItem>
-                  <SelectItem value="done">Done</SelectItem>
+                  <SelectItem value="new">New</SelectItem>
+                  <SelectItem value="in_production">In Production</SelectItem>
+                  <SelectItem value="complete">Complete</SelectItem>
                   <SelectItem value="canceled">Canceled</SelectItem>
                 </SelectContent>
               </Select>
