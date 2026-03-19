@@ -35,6 +35,7 @@ import { db } from "../db";
 import { tenantContext, getRequestOrganizationId } from "../tenantContext";
 import { auditLogs, lineItemProofManualApprovalOverrides } from "../../shared/schema";
 import { proofingQueueResponseSchema, proofingReadModelSchema, type ProofVersionHistoryEntry } from "../../shared/proofing";
+import { createProofAccessToken, validateProofToken } from "../services/proofAccessTokenService";
 import {
   createLineItemProofVersion,
   listProofingQueue,
@@ -154,6 +155,26 @@ async function ensureProofingSchemaReady() {
   await db.execute(sql`create index if not exists line_item_proof_manual_approval_overrides_line_item_idx on line_item_proof_manual_approval_overrides (line_item_id)`);
   await db.execute(sql`create index if not exists line_item_proof_manual_approval_overrides_created_at_idx on line_item_proof_manual_approval_overrides (created_at)`);
   await db.execute(sql`create unique index if not exists line_item_proof_manual_approval_overrides_version_uidx on line_item_proof_manual_approval_overrides (proof_version_id)`);
+
+  await db.execute(sql`
+    create table if not exists proof_access_tokens (
+      id varchar primary key default gen_random_uuid()::text,
+      organization_id varchar not null references organizations(id) on delete cascade,
+      line_item_id varchar not null references order_line_items(id) on delete cascade,
+      proof_version_id varchar not null references line_item_proof_versions(id) on delete cascade,
+      token varchar(128) not null,
+      expires_at timestamp with time zone not null,
+      revoked_at timestamp with time zone,
+      created_at timestamp with time zone not null default now(),
+      created_by varchar(255) not null
+    )
+  `);
+
+  await db.execute(sql`create index if not exists proof_access_tokens_org_idx on proof_access_tokens (organization_id)`);
+  await db.execute(sql`create index if not exists proof_access_tokens_line_item_idx on proof_access_tokens (line_item_id)`);
+  await db.execute(sql`create index if not exists proof_access_tokens_proof_version_idx on proof_access_tokens (proof_version_id)`);
+  await db.execute(sql`create index if not exists proof_access_tokens_expires_at_idx on proof_access_tokens (expires_at)`);
+  await db.execute(sql`create unique index if not exists proof_access_tokens_token_uidx on proof_access_tokens (token)`);
 
   await db.execute(sql`
     do $$
@@ -477,6 +498,102 @@ function createTestApp() {
     }
   });
 
+  app.get("/api/portal/proof/:token", async (req: any, res: Response) => {
+    try {
+      const validation = await validateProofToken(db, String(req.params.token));
+
+      return res.json({
+        success: true,
+        data: {
+          proofVersion: {
+            id: validation.proofVersion.id,
+            versionNumber: validation.proofVersion.versionNumber,
+            createdAt: new Date(validation.proofVersion.createdAt).toISOString(),
+          },
+          attachments: [
+            {
+              id: validation.proofVersion.proofFileId,
+              downloadUrl: `https://example.com/objects/${validation.proofVersion.proofFileId}`,
+            },
+          ],
+          status: validation.currentApprovalState.status,
+        },
+      });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to resolve portal proof" });
+    }
+  });
+
+  app.post("/api/portal/proof/:token/action", async (req: any, res: Response) => {
+    try {
+      const parsed = z.object({
+        action: z.enum(["approve", "reject", "revision_request"]),
+        comment: z.string().optional().nullable(),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const result = await db.transaction(async (tx) => {
+        const validation = await validateProofToken(tx, String(req.params.token));
+
+        if (validation.currentApprovalState.isOverridden) {
+          throw Object.assign(new Error("This proof has already been resolved by manual approval override"), { statusCode: 409 });
+        }
+
+        if (validation.currentApprovalState.status !== "pending") {
+          throw Object.assign(new Error("This proof has already been resolved"), { statusCode: 409 });
+        }
+
+        const decision = parsed.data.action === "approve"
+          ? "approved"
+          : parsed.data.action === "reject"
+            ? "rejected"
+            : "revision_requested";
+
+        const responseResult = await recordProofResponse(tx, {
+          organizationId: validation.lineItem.organizationId,
+          proofVersionId: validation.proofVersion.id,
+          actorUserId: null,
+          responderName: validation.proofVersion.sentToName ?? null,
+          responderEmail: validation.proofVersion.sentToEmail ?? null,
+          responderSource: "customer",
+          decision,
+          responseNotes: parsed.data.comment ?? null,
+        });
+
+        await tx.insert(auditLogs).values({
+          organizationId: validation.lineItem.organizationId,
+          userId: null,
+          userName: validation.proofVersion.sentToEmail || validation.proofVersion.sentToName || "External customer",
+          actionType: "CREATE",
+          entityType: "line_item_proof_approval",
+          entityId: responseResult.approval.id,
+          entityName: `Proof response ${responseResult.approval.id}`,
+          description: `Customer recorded ${responseResult.approval.decision} response for proof version ${responseResult.approval.proofVersionId}`,
+          newValues: {
+            source: "customer",
+            lineItemId: responseResult.approval.lineItemId,
+            proofVersionId: responseResult.approval.proofVersionId,
+            decision: responseResult.approval.decision,
+          },
+        } as any);
+
+        const updated = await validateProofToken(tx, String(req.params.token));
+
+        return {
+          approval: responseResult.approval,
+          status: updated.currentApprovalState.status,
+        };
+      });
+
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to record customer proof action" });
+    }
+  });
+
   app.post("/api/line-items/:lineItemId/workflow-transition", isAuthenticated, tenantContext, async (req: any, res: Response) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -617,6 +734,7 @@ describe("proofing route integration", () => {
     await db.execute(sql`delete from audit_logs where organization_id = ${orgId} and entity_type in ('line_item_proof_version', 'line_item_proof_approval', 'line_item_proof_manual_approval_override')`);
     await db.execute(sql`delete from production_events where organization_id = ${orgId}`);
     await db.execute(sql`delete from production_jobs where organization_id = ${orgId}`);
+    await db.execute(sql`delete from proof_access_tokens where organization_id = ${orgId}`);
     await db.execute(sql`delete from line_item_proof_manual_approval_overrides where organization_id = ${orgId}`);
     await db.execute(sql`delete from line_item_proof_approvals where organization_id = ${orgId}`);
     await db.execute(sql`delete from line_item_proof_versions where organization_id = ${orgId}`);
@@ -667,11 +785,12 @@ describe("proofing route integration", () => {
         uploaded_by_user_id,
         uploaded_by_name,
         file_name,
+        file_url,
         role
       )
       values
-        (${proofFileA}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-proof-a.pdf`}, ${"proof"}),
-        (${proofFileB}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-proof-b.pdf`}, ${"proof"})
+        (${proofFileA}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-proof-a.pdf`}, ${`https://example.com/${proofFileA}.pdf`}, ${"proof"}),
+        (${proofFileB}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-proof-b.pdf`}, ${`https://example.com/${proofFileB}.pdf`}, ${"proof"})
     `);
 
     return { lineItemId, proofFileA, proofFileB };
@@ -701,6 +820,20 @@ describe("proofing route integration", () => {
       createRes,
       sendRes,
     };
+  }
+
+  async function createPortalToken(lineItemId: string, proofVersionId: string) {
+    const result = await db.transaction((tx) =>
+      createProofAccessToken(tx, {
+        organizationId: orgId,
+        lineItemId,
+        proofVersionId,
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        createdBy: userId,
+      }),
+    );
+
+    return result.rawToken;
   }
 
   test("creates a proof version and exposes the canonical read model", async () => {
@@ -1025,5 +1158,65 @@ describe("proofing route integration", () => {
       .expect(409);
 
     expect(sendStaleRes.body?.error).toBe("Only draft proof versions can be sent for review");
+  });
+
+  test("validates customer proof tokens and returns a customer-safe proof payload", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("portal_view");
+    const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
+    const token = await createPortalToken(lineItemId, proofVersionId);
+
+    const res = await request(app)
+      .get(`/api/portal/proof/${token}`)
+      .expect(200);
+
+    expect(res.body?.data?.proofVersion?.id).toBe(proofVersionId);
+    expect(res.body?.data?.status).toBe("pending");
+    expect(res.body?.data?.attachments?.[0]?.downloadUrl).toContain(proofFileA);
+  });
+
+  test("records a customer approval through the token layer and preserves canonical proofing truth", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("portal_approve");
+    const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
+    const token = await createPortalToken(lineItemId, proofVersionId);
+
+    const approveRes = await request(app)
+      .post(`/api/portal/proof/${token}/action`)
+      .send({ action: "approve", comment: "Approved by customer" })
+      .expect(200);
+
+    expect(approveRes.body?.data?.approval?.decision).toBe("approved");
+    expect(approveRes.body?.data?.status).toBe("approved");
+
+    const truthRes = await request(app)
+      .get(`/api/proofing/line-item/${lineItemId}`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .expect(200);
+
+    const truth = proofingReadModelSchema.parse(truthRes.body?.data);
+    expect(truth.approvedProofVersionId).toBe(proofVersionId);
+    expect(truth.proofDecisionHistory[0]?.responderSource).toBe("customer");
+  });
+
+  test("blocks customer token actions after manual approval override resolves the proof", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("portal_override");
+    const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
+    const token = await createPortalToken(lineItemId, proofVersionId);
+
+    await request(app)
+      .post(`/api/proofing/line-item/${lineItemId}/manual-approval-override`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ proofVersionId, overrideReason: "Press approval required" })
+      .expect(200);
+
+    const actionRes = await request(app)
+      .post(`/api/portal/proof/${token}/action`)
+      .send({ action: "revision_request", comment: "Too late" })
+      .expect(409);
+
+    expect(String(actionRes.body?.error || "")).toMatch(/manual approval override/i);
   });
 });

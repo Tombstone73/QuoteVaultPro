@@ -4977,6 +4977,24 @@ export const lineItemProofManualApprovalOverrides = pgTable("line_item_proof_man
   uniqueIndex("line_item_proof_manual_approval_overrides_version_uidx").on(table.proofVersionId),
 ]);
 
+export const proofAccessTokens = pgTable("proof_access_tokens", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  proofVersionId: varchar("proof_version_id").notNull().references(() => lineItemProofVersions.id, { onDelete: 'cascade' }),
+  token: varchar("token", { length: 128 }).notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  createdBy: varchar("created_by", { length: 255 }).notNull(),
+}, (table) => [
+  index("proof_access_tokens_org_idx").on(table.organizationId),
+  index("proof_access_tokens_line_item_idx").on(table.lineItemId),
+  index("proof_access_tokens_proof_version_idx").on(table.proofVersionId),
+  index("proof_access_tokens_expires_at_idx").on(table.expiresAt),
+  uniqueIndex("proof_access_tokens_token_uidx").on(table.token),
+]);
+
 // Zod schemas
 export const insertPrepressSessionSchema = createInsertSchema(prepressSessions).omit({
   id: true,
@@ -5028,6 +5046,16 @@ export const updateLineItemProofManualApprovalOverrideSchema = insertLineItemPro
   id: z.string(),
 });
 
+export const insertProofAccessTokenSchema = createInsertSchema(proofAccessTokens).omit({
+  id: true,
+  revokedAt: true,
+  createdAt: true,
+});
+
+export const updateProofAccessTokenSchema = insertProofAccessTokenSchema.partial().extend({
+  id: z.string(),
+});
+
 // Types
 export type PrepressSession = typeof prepressSessions.$inferSelect;
 export type InsertPrepressSession = z.infer<typeof insertPrepressSessionSchema>;
@@ -5048,6 +5076,10 @@ export type UpdateLineItemProofApproval = z.infer<typeof updateLineItemProofAppr
 export type LineItemProofManualApprovalOverride = typeof lineItemProofManualApprovalOverrides.$inferSelect;
 export type InsertLineItemProofManualApprovalOverride = z.infer<typeof insertLineItemProofManualApprovalOverrideSchema>;
 export type UpdateLineItemProofManualApprovalOverride = z.infer<typeof updateLineItemProofManualApprovalOverrideSchema>;
+
+export type ProofAccessToken = typeof proofAccessTokens.$inferSelect;
+export type InsertProofAccessToken = z.infer<typeof insertProofAccessTokenSchema>;
+export type UpdateProofAccessToken = z.infer<typeof updateProofAccessTokenSchema>;
 
 // ============================================================
 // REPRINT REQUESTS
