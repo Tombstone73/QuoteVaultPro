@@ -91,11 +91,12 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     section: "PRODUCTION",
     sectionKey: "production",
     items: [
-      { id: "production-overview", name: "Overview", icon: LayoutGrid, path: "/production" },
-      { id: "production-proofing", name: "Proofing", icon: ClipboardList, path: "/production/proofing" },
-      { id: "production-prepress", name: "Prepress", icon: FileText, path: "/production/prepress" },
-      { id: "production-flatbed", name: "Flatbed", icon: Factory, path: "/production/flatbed" },
-      { id: "production-roll", name: "Roll", icon: Factory, path: "/production/roll" },
+      { id: "production-overview", name: "Overview", icon: LayoutGrid, path: ROUTES.production.board },
+      { id: "production-design", name: "Design", icon: FileText, path: ROUTES.production.design },
+      { id: "production-proofing", name: "Proofing", icon: ClipboardList, path: ROUTES.production.proofing },
+      { id: "production-prepress", name: "Prepress", icon: FileText, path: ROUTES.production.prepress },
+      { id: "production-flatbed", name: "Flatbed", icon: Factory, path: ROUTES.production.flatbed },
+      { id: "production-roll", name: "Roll", icon: Factory, path: ROUTES.production.roll },
     ],
   },
   {

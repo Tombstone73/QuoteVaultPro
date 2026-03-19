@@ -164,6 +164,11 @@ export const ROUTES = {
   // Production
   production: {
     board: "/production",
+    design: "/production/design",
+    proofing: "/production/proofing",
+    prepress: "/production/prepress",
+    flatbed: "/production/flatbed",
+    roll: "/production/roll",
     jobDetail: (jobId: string) => `/production/jobs/${jobId}`,
   },
   
