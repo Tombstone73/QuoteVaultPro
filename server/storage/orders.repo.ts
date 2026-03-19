@@ -878,6 +878,7 @@ export class OrdersRepository {
                 totalPrice: parseFloat(ql.linePrice),
                 status: initialStatus,
                 workflowState,
+                designStatus: requiresDesign ? "needs_design" : null,
                 requiresDesign, // From quote line item routing truth (migration 0015)
                 requiresProofApproval: false,
                 requiresPrepress, // Snapshot prepress requirement (TEMP→PERMANENT)

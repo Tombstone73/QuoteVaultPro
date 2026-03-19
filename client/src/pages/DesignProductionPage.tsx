@@ -13,6 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 const WORKFLOW_LABELS: Record<string, string> = {
   needs_design: "Needs Design",
   in_design: "In Design",
+  design_complete: "Design Complete",
   ready_for_prepress: "Ready for Prepress",
   on_hold: "On Hold",
   canceled: "Canceled",
@@ -29,7 +30,7 @@ function getDesignActions(state: DesignQueueWorkflowState | undefined) {
     case "in_design":
       return [
         { label: "Return to Needs Design", action: "return-to-needs-design" },
-        { label: "Send to Prepress", action: "send-to-prepress" },
+        { label: "Complete Design", action: "complete" },
         { label: "Hold", toState: "on_hold" },
       ];
     default:
@@ -140,8 +141,8 @@ export default function DesignProductionPage() {
                         <div className="truncate text-sm font-medium">{item.jobNumber}</div>
                         <div className="truncate text-xs text-muted-foreground">{item.customerName}</div>
                       </div>
-                      <Badge variant={item.workflowState === "in_design" ? "default" : "outline"}>
-                        {WORKFLOW_LABELS[item.workflowState] || item.workflowState}
+                      <Badge variant={item.designStatus === "in_design" ? "default" : "outline"}>
+                        {WORKFLOW_LABELS[item.designStatus] || item.designStatus}
                       </Badge>
                     </div>
                     <div className="mt-1 truncate text-sm">{item.productName}</div>
@@ -167,14 +168,15 @@ export default function DesignProductionPage() {
           ) : (
             <div className="space-y-4">
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={selectedItem.workflowState === "in_design" ? "default" : "outline"}>
-                  {WORKFLOW_LABELS[selectedItem.workflowState] || selectedItem.workflowState}
+                <Badge variant={selectedItem.designStatus === "in_design" ? "default" : "outline"}>
+                  {WORKFLOW_LABELS[selectedItem.designStatus] || selectedItem.designStatus}
                 </Badge>
                 {selectedOwnerLabel && (
                   <Badge variant="secondary">
                     Owner: {selectedOwnerLabel}
                   </Badge>
                 )}
+                {selectedItem.requiresProofApproval && <Badge variant="outline">Requires Proof Approval</Badge>}
                 {selectedItem.requiresPrepress && <Badge variant="outline">Requires Prepress</Badge>}
               </div>
 
