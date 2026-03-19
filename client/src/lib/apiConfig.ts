@@ -17,6 +17,19 @@ function normalizeBaseUrl(value: string | undefined): string {
   return trimmed.replace(/\/+$/, "");
 }
 
+function inferHostedApiBaseUrl(): string {
+  if (typeof window === "undefined") {
+    return "";
+  }
+
+  const hostname = window.location.hostname.toLowerCase();
+  if (hostname === "printershero.com" || hostname.endsWith(".printershero.com")) {
+    return "https://api.printershero.com";
+  }
+
+  return "";
+}
+
 function normalizePath(path: string): string {
   return path.startsWith("/") ? path : `/${path}`;
 }
@@ -33,7 +46,7 @@ function isObjectsPath(pathname: string): boolean {
   return pathname === "/objects" || pathname.startsWith("/objects/");
 }
 
-const apiBaseUrl = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL);
+const apiBaseUrl = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL) || inferHostedApiBaseUrl();
 const objectsBaseUrl = normalizeBaseUrl(import.meta.env.VITE_OBJECTS_BASE_URL);
 
 export function apiUrl(path: string): string {
