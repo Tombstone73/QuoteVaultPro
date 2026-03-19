@@ -118,7 +118,6 @@ const KANBAN_COLUMNS = [
 
 // Column width constraints for fit mode
 const MIN_COLUMN_WIDTH = 320;
-const MAX_COLUMN_WIDTH = 520;
 const DEFAULT_COLUMN_WIDTH = 420;
 const BOARD_GAP = 16; // gap-4 = 16px
 
@@ -428,8 +427,8 @@ export default function ProductionOverviewPage() {
     const saved = localStorage.getItem("titan.production.board.fitColumns");
     return saved === "true";
   });
-  const [boardWidth, setBoardWidth] = useState<number>(0);
-  const boardContainerRef = useRef<HTMLDivElement>(null);
+  const [boardViewportWidth, setBoardViewportWidth] = useState<number>(0);
+  const boardViewportRef = useRef<HTMLDivElement>(null);
 
   const toggleFitColumns = () => {
     const newValue = !fitColumns;
@@ -437,52 +436,73 @@ export default function ProductionOverviewPage() {
     localStorage.setItem("titan.production.board.fitColumns", String(newValue));
   };
 
-  // Measure board container width with ResizeObserver
+  // Measure the visible board viewport width so fit-columns uses the actual
+  // usable content area instead of the flex track's content width.
   useEffect(() => {
-    const container = boardContainerRef.current;
-    if (!container) return;
+    const viewport = boardViewportRef.current;
+    if (!viewport) return;
 
-    // Immediately measure on mount
-    const initialWidth = container.getBoundingClientRect().width;
-    setBoardWidth(initialWidth);
+    const measureViewport = () => {
+      const nextWidth = Math.floor(viewport.clientWidth || viewport.getBoundingClientRect().width || 0);
+      setBoardViewportWidth((prev) => (prev === nextWidth ? prev : nextWidth));
+    };
+
+    measureViewport();
 
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        // Use contentRect for the inner dimensions
-        const newWidth = entry.contentRect.width;
-        setBoardWidth(newWidth);
+        const nextWidth = Math.floor(entry.contentRect.width || viewport.clientWidth || 0);
+        setBoardViewportWidth((prev) => (prev === nextWidth ? prev : nextWidth));
         
         if (process.env.NODE_ENV === 'development') {
-          console.log('[ProductionBoard] Resize detected:', { newWidth, fitColumns });
+          console.log('[ProductionBoard] Viewport resize detected:', { nextWidth, fitColumns });
         }
       }
     });
 
-    resizeObserver.observe(container);
+    resizeObserver.observe(viewport);
 
     return () => {
       resizeObserver.disconnect();
     };
-  }, [fitColumns]);
+  }, [fitColumns, viewMode]);
 
   // Calculate column width when fit mode is enabled
   const visibleColumnsCount = useMemo(() => {
     return KANBAN_COLUMNS.filter(col => boardColumnVisibility[col.id] !== false).length;
   }, [boardColumnVisibility]);
 
+  const totalVisibleGapWidth = useMemo(() => {
+    return BOARD_GAP * Math.max(visibleColumnsCount - 1, 0);
+  }, [visibleColumnsCount]);
+
+  const minimumBoardWidth = useMemo(() => {
+    return (visibleColumnsCount * MIN_COLUMN_WIDTH) + totalVisibleGapWidth;
+  }, [totalVisibleGapWidth, visibleColumnsCount]);
+
   const calculatedColumnWidth = useMemo(() => {
-    if (!fitColumns || visibleColumnsCount === 0 || boardWidth === 0) {
+    if (!fitColumns || visibleColumnsCount === 0 || boardViewportWidth === 0) {
       return DEFAULT_COLUMN_WIDTH;
     }
 
-    // Available width = total width - gaps between columns
-    const totalGapWidth = BOARD_GAP * (visibleColumnsCount - 1);
-    const availableWidth = boardWidth - totalGapWidth;
-    
-    // Divide by number of columns and clamp
-    const width = availableWidth / visibleColumnsCount;
-    return Math.max(MIN_COLUMN_WIDTH, Math.min(MAX_COLUMN_WIDTH, Math.floor(width)));
-  }, [fitColumns, visibleColumnsCount, boardWidth]);
+    const availableWidth = Math.max(boardViewportWidth - totalVisibleGapWidth, 0);
+    const fittedWidth = Math.floor(availableWidth / visibleColumnsCount);
+
+    if (boardViewportWidth >= minimumBoardWidth) {
+      return Math.max(fittedWidth, MIN_COLUMN_WIDTH);
+    }
+
+    return MIN_COLUMN_WIDTH;
+  }, [fitColumns, visibleColumnsCount, boardViewportWidth, totalVisibleGapWidth, minimumBoardWidth]);
+
+  const boardTrackWidth = useMemo(() => {
+    if (!fitColumns || visibleColumnsCount === 0) {
+      return undefined;
+    }
+
+    const fittedTrackWidth = (calculatedColumnWidth * visibleColumnsCount) + totalVisibleGapWidth;
+    return Math.max(boardViewportWidth, fittedTrackWidth);
+  }, [fitColumns, visibleColumnsCount, calculatedColumnWidth, totalVisibleGapWidth, boardViewportWidth]);
 
   const resetBoardCardConfig = () => {
     saveBoardCardConfig(DEFAULT_BOARD_CARD_CONFIG);
@@ -1458,28 +1478,27 @@ export default function ProductionOverviewPage() {
             onDragStart={handleDragStart}
             onDragEnd={handleDragEnd}
           >
-            <div 
-              ref={boardContainerRef}
-              className={cn(
-                "flex gap-4 pb-4",
-                fitColumns ? "overflow-x-hidden" : "overflow-x-auto"
-              )}
-            >
-              {KANBAN_COLUMNS.filter(col => boardColumnVisibility[col.id] !== false).map(column => {
-                const columnJobs = jobsByStatus.get(column.id) ?? [];
-                return (
-                  <KanbanColumn
-                    key={column.id}
-                    column={column}
-                    jobs={columnJobs}
-                    boardCardConfig={boardCardConfig}
-                    onArtworkClick={openArtworkModal}
-                    isCardExpanded={isCardExpanded}
-                    toggleCardExpanded={toggleCardExpanded}
-                    width={fitColumns ? calculatedColumnWidth : DEFAULT_COLUMN_WIDTH}
-                  />
-                );
-              })}
+            <div ref={boardViewportRef} className="overflow-x-auto">
+              <div
+                className="flex gap-4 pb-4"
+                style={boardTrackWidth ? { width: `${boardTrackWidth}px` } : undefined}
+              >
+                {KANBAN_COLUMNS.filter(col => boardColumnVisibility[col.id] !== false).map(column => {
+                  const columnJobs = jobsByStatus.get(column.id) ?? [];
+                  return (
+                    <KanbanColumn
+                      key={column.id}
+                      column={column}
+                      jobs={columnJobs}
+                      boardCardConfig={boardCardConfig}
+                      onArtworkClick={openArtworkModal}
+                      isCardExpanded={isCardExpanded}
+                      toggleCardExpanded={toggleCardExpanded}
+                      width={fitColumns ? calculatedColumnWidth : DEFAULT_COLUMN_WIDTH}
+                    />
+                  );
+                })}
+              </div>
             </div>
             <DragOverlay>
               {activeJob && (
