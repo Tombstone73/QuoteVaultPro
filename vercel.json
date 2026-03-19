@@ -2,7 +2,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://quotevaultpro-production.up.railway.app/api/:path*"
+      "destination": "https://api-dev.printershero.com/api/:path*"
     },
     {
       "source": "/:path*",
