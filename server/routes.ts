@@ -60,7 +60,7 @@ import { organizationStorageSettingsService } from "./services/storage/Organizat
 import { stationResolver } from "./services/stations/stationResolver";
 import { routeLineItemToProduction } from "./services/productionRoutingService";
 import { resolveInitialProductionRoute, resolvePostPrepressProductionRoute } from "./services/productionRoutingResolver";
-import { getInitialWorkflowState, transitionLineItemWorkflowState } from "./services/lineItemWorkflowService";
+import { completeLineItemDesign, getInitialWorkflowState, transitionLineItemWorkflowState } from "./services/lineItemWorkflowService";
 import {
   createLineItemProofVersion,
   listProofingQueue,
@@ -14405,7 +14405,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           orderId: orders.id,
           status: orderLineItems.status,
           workflowState: orderLineItems.workflowState,
+          designStatus: orderLineItems.designStatus,
           requiresDesign: orderLineItems.requiresDesign,
+          requiresProofApproval: orderLineItems.requiresProofApproval,
           requiresPrepress: orderLineItems.requiresPrepress,
           description: orderLineItems.description,
           productType: orderLineItems.productType,
@@ -14495,13 +14497,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
             dueDate: item.dueDate ?? null,
             status: item.status,
             workflowState: item.workflowState,
-            designStage: item.workflowState,
+            designStatus: item.designStatus ?? item.workflowState,
+            designStage: item.designStatus ?? item.workflowState,
             rush: item.priority === "rush",
             quantity: Number(item.quantity) || 0,
             width: item.width != null ? Number(item.width) : null,
             height: item.height != null ? Number(item.height) : null,
             sqFootage: item.sqft != null ? Number(item.sqft) : null,
             requiresDesign: item.requiresDesign,
+            requiresProofApproval: item.requiresProofApproval,
             requiresPrepress: item.requiresPrepress,
             activeOwnerJobId: activeOwner?.id ?? null,
             activeOwnerStationKey: activeOwner?.stationKey ?? null,
@@ -14524,7 +14528,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     req: any;
     res: any;
     lineItemId: string;
-    toState: "needs_design" | "in_design" | "ready_for_prepress";
+    toState: "needs_design" | "in_design";
     source: string;
     description: string;
     note?: string | null;
@@ -14546,6 +14550,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         id: orderLineItems.id,
         status: orderLineItems.status,
         workflowState: orderLineItems.workflowState,
+        designStatus: orderLineItems.designStatus,
       })
       .from(orderLineItems)
       .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
@@ -14580,6 +14585,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       oldValues: { workflowState: currentLineItem.workflowState, status: currentLineItem.status },
       newValues: {
         workflowState: result.toState,
+        designStatus:
+          result.toState === "needs_design" || result.toState === "in_design"
+            ? result.toState
+            : currentLineItem.designStatus,
         status: result.lifecycleStatus,
         ownerJobId: result.activeOwnerJobId,
         ownerStationKey: result.activeOwnerStationKey,
@@ -14649,22 +14658,78 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/design/line-item/:lineItemId/send-to-prepress", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.post("/api/design/line-item/:lineItemId/complete", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
-      await executeExplicitLineItemWorkflowAction({
-        req,
-        res,
-        lineItemId: String(req.params.lineItemId),
-        toState: "ready_for_prepress",
-        source: "api_design_send_to_prepress",
-        description: "Handed off line item from Design to Prepress",
-        note: typeof req.body?.note === "string" ? req.body.note : null,
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const lineItemId = String(req.params.lineItemId);
+      const note = typeof req.body?.note === "string" ? req.body.note : null;
+
+      const [currentLineItem] = await db
+        .select({
+          id: orderLineItems.id,
+          status: orderLineItems.status,
+          workflowState: orderLineItems.workflowState,
+          designStatus: orderLineItems.designStatus,
+          requiresProofApproval: orderLineItems.requiresProofApproval,
+          requiresPrepress: orderLineItems.requiresPrepress,
+        })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+
+      if (!currentLineItem) {
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      const result = await db.transaction(async (tx) => {
+        return completeLineItemDesign(tx, {
+          organizationId,
+          lineItemId,
+          actorUserId: userId,
+          note,
+          metadata: { source: "api_design_complete" },
+        });
       });
+
+      await db.insert(auditLogs).values({
+        organizationId,
+        userId,
+        userName: req.user?.email || req.user?.name || null,
+        actionType: "UPDATE",
+        entityType: "order_line_item",
+        entityId: lineItemId,
+        entityName: `Line item ${lineItemId}`,
+        description: "Completed Design work on line item",
+        oldValues: {
+          workflowState: currentLineItem.workflowState,
+          designStatus: currentLineItem.designStatus,
+          status: currentLineItem.status,
+        },
+        newValues: {
+          workflowState: result.toState,
+          designStatus: "design_complete",
+          status: result.lifecycleStatus,
+          requiresProofApproval: currentLineItem.requiresProofApproval,
+          requiresPrepress: currentLineItem.requiresPrepress,
+          ownerJobId: result.activeOwnerJobId,
+          ownerStationKey: result.activeOwnerStationKey,
+          ownerStepKey: result.activeOwnerStepKey,
+        },
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+      } as any);
+
+      return res.json({ success: true, data: result });
     } catch (error: any) {
       const status = error?.statusCode || 500;
-      console.error("[Design] Error sending line item to prepress:", error);
-      res.status(status).json({ error: error?.message || "Failed to send line item to prepress" });
+      console.error("[Design] Error completing design:", error);
+      res.status(status).json({ error: error?.message || "Failed to complete design" });
     }
   });
 
@@ -14703,6 +14768,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           id: orderLineItems.id,
           status: orderLineItems.status,
           workflowState: orderLineItems.workflowState,
+          designStatus: orderLineItems.designStatus,
         })
         .from(orderLineItems)
         .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
@@ -14736,6 +14802,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         oldValues: { workflowState: currentLineItem.workflowState, status: currentLineItem.status },
         newValues: {
           workflowState: result.toState,
+          designStatus:
+            parsed.data.toState === "needs_design" || parsed.data.toState === "in_design"
+              ? parsed.data.toState
+              : currentLineItem.designStatus,
           status: result.lifecycleStatus,
           ownerJobId: result.activeOwnerJobId,
           ownerStationKey: result.activeOwnerStationKey,

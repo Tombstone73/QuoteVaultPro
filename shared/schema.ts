@@ -55,6 +55,15 @@ export const lineItemWorkflowStateValues = [
 export const lineItemWorkflowStateSchema = z.enum(lineItemWorkflowStateValues);
 export type LineItemWorkflowState = (typeof lineItemWorkflowStateValues)[number];
 
+export const lineItemDesignStatusValues = [
+  "needs_design",
+  "in_design",
+  "design_complete",
+] as const;
+
+export const lineItemDesignStatusSchema = z.enum(lineItemDesignStatusValues);
+export type LineItemDesignStatus = (typeof lineItemDesignStatusValues)[number];
+
 // ============================================================
 // MULTI-TENANT ORGANIZATION SYSTEM
 // ============================================================
@@ -2585,6 +2594,7 @@ export const orderLineItems = pgTable("order_line_items", {
   requiresInventory: boolean("requires_inventory").notNull().default(true), // flag if inventory tracking is needed
   sortOrder: integer("sort_order").notNull().default(0), // Display order in UI (for drag-and-drop reordering)
   workflowState: varchar("workflow_state", { length: 50 }).notNull().default("new"),
+  designStatus: varchar("design_status", { length: 50 }).$type<LineItemDesignStatus | null>(),
   requiresDesign: boolean("requires_design").notNull().default(false),
   requiresProofApproval: boolean("requires_proof_approval").notNull().default(false),
   // Prepress requirement snapshot (migration 0051 - TEMP→PERMANENT contract)
@@ -2607,6 +2617,7 @@ export const orderLineItems = pgTable("order_line_items", {
   index("order_line_items_product_id_idx").on(table.productId),
   index("order_line_items_status_idx").on(table.status),
   index("order_line_items_workflow_state_idx").on(table.workflowState),
+  index("order_line_items_design_status_idx").on(table.designStatus),
   index("order_line_items_requires_design_idx").on(table.requiresDesign),
   index("order_line_items_requires_proof_approval_idx").on(table.requiresProofApproval),
   index("order_line_items_requires_prepress_idx").on(table.requiresPrepress),
@@ -2664,6 +2675,7 @@ export const insertOrderLineItemSchema = createInsertSchema(orderLineItems).omit
   sqft: z.coerce.number().positive().optional().nullable(),
   status: z.enum(["new", "in_production", "complete", "canceled"]).default("new"),
   workflowState: lineItemWorkflowStateSchema.default("new"),
+  designStatus: lineItemDesignStatusSchema.optional().nullable().default(null),
   requiresDesign: z.boolean().default(false),
   requiresProofApproval: z.boolean().default(false),
   specsJson: z.record(z.any()).optional().nullable(),

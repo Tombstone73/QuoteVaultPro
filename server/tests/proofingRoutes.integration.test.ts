@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, jest, test } from "@jest/globals";
 import express, { NextFunction, Response } from "express";
 import request from "supertest";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 
@@ -33,7 +33,7 @@ jest.mock("../services/productionRoutingService", () => {
 
 import { db } from "../db";
 import { tenantContext, getRequestOrganizationId } from "../tenantContext";
-import { auditLogs, lineItemProofManualApprovalOverrides } from "../../shared/schema";
+import { auditLogs, lineItemProofManualApprovalOverrides, orderLineItems } from "../../shared/schema";
 import { proofingQueueResponseSchema, proofingReadModelSchema, type ProofVersionHistoryEntry } from "../../shared/proofing";
 import { createProofAccessToken, validateProofToken } from "../services/proofAccessTokenService";
 import {
@@ -44,11 +44,12 @@ import {
   recordProofResponse,
   resolveLineItemProofingTruth,
 } from "../services/proofingService";
-import { transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
+import { completeLineItemDesign, transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
 
 async function ensureProofingSchemaReady() {
   await db.execute(sql`alter table order_line_items add column if not exists requires_proof_approval boolean not null default false`);
   await db.execute(sql`alter table order_line_items add column if not exists approved_proof_version_id varchar`);
+  await db.execute(sql`alter table order_line_items add column if not exists design_status varchar(50)`);
 
   await db.execute(sql`
     do $$
@@ -594,6 +595,30 @@ function createTestApp() {
     }
   });
 
+  app.post("/api/design/line-item/:lineItemId/complete", isAuthenticated, tenantContext, async (req: any, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const result = await db.transaction((tx) =>
+        completeLineItemDesign(tx, {
+          organizationId,
+          lineItemId: String(req.params.lineItemId),
+          actorUserId: userId,
+          note: typeof req.body?.note === "string" ? req.body.note : null,
+          metadata: { source: "test_design_complete" },
+        }),
+      );
+
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to complete design" });
+    }
+  });
+
   app.post("/api/line-items/:lineItemId/workflow-transition", isAuthenticated, tenantContext, async (req: any, res: Response) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -753,10 +778,25 @@ describe("proofing route integration", () => {
     await db.execute(sql`delete from organizations where id = ${orgId}`);
   });
 
-  async function createLineItemFixture(name: string) {
+  async function createLineItemFixture(
+    name: string,
+    options?: {
+      workflowState?: string;
+      designStatus?: string | null;
+      requiresDesign?: boolean;
+      requiresProofApproval?: boolean;
+      requiresPrepress?: boolean;
+    },
+  ) {
     const lineItemId = `line_${name}_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
     const proofFileA = `proof_a_${name}_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
     const proofFileB = `proof_b_${name}_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+
+    const workflowState = options?.workflowState ?? "ready_for_prepress";
+    const designStatus = options?.designStatus ?? null;
+    const requiresDesign = options?.requiresDesign ?? false;
+    const requiresProofApproval = options?.requiresProofApproval ?? false;
+    const requiresPrepress = options?.requiresPrepress ?? true;
 
     await db.execute(sql`
       insert into order_line_items (
@@ -768,12 +808,15 @@ describe("proofing route integration", () => {
         unit_price,
         total_price,
         sort_order,
+        requires_design,
+        requires_proof_approval,
         requires_prepress,
+        design_status,
         workflow_state,
         status
       )
       values (
-        ${lineItemId}, ${orderId}, ${productId}, ${`Line ${name}`}, ${1}, ${10}, ${10}, ${0}, ${true}, ${"ready_for_prepress"}, ${"new"}
+        ${lineItemId}, ${orderId}, ${productId}, ${`Line ${name}`}, ${1}, ${10}, ${10}, ${0}, ${requiresDesign}, ${requiresProofApproval}, ${requiresPrepress}, ${designStatus}, ${workflowState}, ${"new"}
       )
     `);
 
@@ -913,6 +956,85 @@ describe("proofing route integration", () => {
     const proofing = proofingReadModelSchema.parse(rejectRes.body?.data?.proofing);
     expect(proofing.approvedProofVersionId).toBeNull();
     expect(proofing.proofDecisionHistory[0]?.decision).toBe("rejected");
+  });
+
+  test("blocks incomplete design from bypassing directly into prepress", async () => {
+    const { lineItemId } = await createLineItemFixture("design_block", {
+      workflowState: "in_design",
+      designStatus: "in_design",
+      requiresDesign: true,
+      requiresPrepress: true,
+    });
+
+    const res = await request(app)
+      .post(`/api/line-items/${lineItemId}/workflow-transition`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ toState: "ready_for_prepress" })
+      .expect(409);
+
+    expect(res.body?.error).toBe("Design must be completed before transitioning to ready_for_prepress");
+  });
+
+  test("completes design into awaiting proof approval when proofing is required", async () => {
+    const { lineItemId } = await createLineItemFixture("design_to_proof", {
+      workflowState: "in_design",
+      designStatus: "in_design",
+      requiresDesign: true,
+      requiresProofApproval: true,
+      requiresPrepress: true,
+    });
+
+    const res = await request(app)
+      .post(`/api/design/line-item/${lineItemId}/complete`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ note: "ready for customer proof" })
+      .expect(200);
+
+    expect(res.body?.data?.fromState).toBe("in_design");
+    expect(res.body?.data?.toState).toBe("awaiting_proof_approval");
+
+    const [lineItem] = await db
+      .select({ workflowState: orderLineItems.workflowState, designStatus: orderLineItems.designStatus })
+      .from(orderLineItems)
+      .where(eq(orderLineItems.id, lineItemId))
+      .limit(1);
+
+    expect(lineItem?.workflowState).toBe("awaiting_proof_approval");
+    expect(lineItem?.designStatus).toBe("design_complete");
+  });
+
+  test("completes design into prepress when no proof is required", async () => {
+    const { lineItemId } = await createLineItemFixture("design_to_prepress", {
+      workflowState: "in_design",
+      designStatus: "in_design",
+      requiresDesign: true,
+      requiresProofApproval: false,
+      requiresPrepress: true,
+    });
+
+    const res = await request(app)
+      .post(`/api/design/line-item/${lineItemId}/complete`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ note: "ready for prepress" })
+      .expect(200);
+
+    expect(res.body?.data?.fromState).toBe("in_design");
+    expect(res.body?.data?.toState).toBe("ready_for_prepress");
+
+    const [lineItem] = await db
+      .select({ workflowState: orderLineItems.workflowState, designStatus: orderLineItems.designStatus })
+      .from(orderLineItems)
+      .where(eq(orderLineItems.id, lineItemId))
+      .limit(1);
+
+    expect(lineItem?.workflowState).toBe("ready_for_prepress");
+    expect(lineItem?.designStatus).toBe("design_complete");
   });
 
   test("returns proofing queue slices from canonical proofing truth", async () => {

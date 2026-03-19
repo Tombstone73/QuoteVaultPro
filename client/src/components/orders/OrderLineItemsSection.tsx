@@ -300,7 +300,7 @@ function getWorkflowActions(state: string | undefined) {
     case "in_design":
       return [
         { label: "Back to Needs Design", toState: "needs_design" as const },
-        { label: "Send to Prepress", toState: "ready_for_prepress" as const },
+        { label: "Complete Design", action: "complete-design" as const },
         { label: "Hold", toState: "on_hold" as const },
       ];
     case "ready_for_prepress":
@@ -1883,15 +1883,19 @@ export function OrderLineItemsSection({
 
                                 {!readOnly && getWorkflowActions(String((item as any).workflowState || "new")).length > 0 && (
                                   <div className="mt-2 flex flex-wrap gap-2">
-                                    {getWorkflowActions(String((item as any).workflowState || "new")).map((action) => (
+                                    {getWorkflowActions(String((item as any).workflowState || "new")).map((action, index) => (
                                       <Button
-                                        key={`${item.id}-${action.toState}`}
+                                        key={`${item.id}-${index}`}
                                         type="button"
                                         variant="outline"
                                         size="sm"
                                         className="h-8"
                                         disabled={transitionWorkflow.isPending}
-                                        onClick={() => transitionWorkflow.mutate({ lineItemId: String(item.id), toState: action.toState })}
+                                        onClick={() => transitionWorkflow.mutate({
+                                          lineItemId: String(item.id),
+                                          toState: action.toState,
+                                          action: (action as any).action,
+                                        })}
                                       >
                                         {action.label}
                                       </Button>
