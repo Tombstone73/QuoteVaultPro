@@ -8,6 +8,7 @@ import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { ViewAllAttachmentsDialog } from "@/components/ViewAllAttachmentsDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { getThumbSrc } from "@/lib/getThumbSrc";
+import { hasAnyUnsettledAttachment } from "@/lib/attachments/attachmentStatus";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -44,7 +45,7 @@ type OrderAttachment = {
   thumbError?: string | null;
   objectPath?: string | null;
   downloadUrl?: string | null;
-  pages?: Array<{ thumbUrl?: string | null }>;
+  pages?: Array<{ thumbUrl?: string | null; thumbStatus?: string | null }>;
 };
 
 function formatFileSize(bytes: number | null | undefined): string {
@@ -68,6 +69,10 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
   const [uploadItems, setUploadItems] = useState<
     Array<{ key: string; name: string; percent: number; error?: string | null }>
   >([]);
+  const pollingGuardRef = useRef<{ startAt: number | null; attempts: number }>({
+    startAt: null,
+    attempts: 0,
+  });
 
   const deleteAttachment = useDeleteOrderAttachment(orderId);
 
@@ -97,6 +102,33 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
       return data;
     },
     enabled: !!orderId,
+    refetchInterval: (query) => {
+      const MAX_POLL_MS = 60_000;
+      const MAX_ATTEMPTS = 40;
+      const POLL_INTERVAL_MS = 1500;
+
+      const data = query?.state?.data as OrderAttachment[] | undefined;
+
+      if (!hasAnyUnsettledAttachment(data)) {
+        pollingGuardRef.current = { startAt: null, attempts: 0 };
+        return false;
+      }
+
+      if (pollingGuardRef.current.startAt === null) {
+        pollingGuardRef.current.startAt = Date.now();
+        pollingGuardRef.current.attempts = 0;
+      }
+
+      pollingGuardRef.current.attempts += 1;
+      const elapsed = Date.now() - pollingGuardRef.current.startAt;
+      if (elapsed > MAX_POLL_MS || pollingGuardRef.current.attempts > MAX_ATTEMPTS) {
+        console.warn(`[OrderAttachmentsPanel] Polling guard tripped for ${attachmentsApiPath}: elapsed=${elapsed}ms attempts=${pollingGuardRef.current.attempts}`);
+        pollingGuardRef.current = { startAt: null, attempts: 0 };
+        return false;
+      }
+
+      return POLL_INTERVAL_MS;
+    },
   });
 
   const uploadsApiInit = "/api/uploads/init";
@@ -481,6 +513,7 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
           ) : null}
 
       <AttachmentViewerDialog
+        attachment={viewerAttachment as any}
         attachments={viewerAttachments as any}
         initialIndex={viewerInitialIndex}
         open={viewerOpen}

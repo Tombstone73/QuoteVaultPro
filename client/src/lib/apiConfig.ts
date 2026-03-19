@@ -2,10 +2,10 @@
  * API/Object URL Configuration
  *
  * Environment-driven frontend routing:
- * - `VITE_API_BASE_URL` for `/api/*`
- * - `VITE_OBJECTS_BASE_URL` for `/objects/*`
+ * - `VITE_API_BASE_URL` optionally overrides `/api/*`
+ * - `VITE_OBJECTS_BASE_URL` optionally overrides `/objects/*`
  *
- * Missing env vars default to empty string, preserving same-origin/local-dev behavior.
+ * Missing env vars preserve same-origin behavior.
  */
 
 export function checkApiConfig(): { isValid: boolean; error?: string } {

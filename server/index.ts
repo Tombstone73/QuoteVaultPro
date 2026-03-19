@@ -118,7 +118,9 @@ process.on('uncaughtException', (error) => {
 
     // Run Drizzle migrations before anything that depends on schema.
     // Set DRIZZLE_AUTO_MIGRATE=0 to disable in an emergency.
+    console.log("[Migrations] index.ts → about to call runMigrations()");
     await runMigrations();
+    console.log("[Migrations] index.ts → runMigrations() returned successfully");
 
     // Probe database schema before starting server
     const { probeDatabaseSchema } = await import('./db');

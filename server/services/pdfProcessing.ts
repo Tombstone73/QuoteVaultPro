@@ -16,13 +16,19 @@
  * - PERMANENT: Attachment row updated with pageCount, thumbKey, statuses, timestamps
  */
 
-import { db } from "../db";
-import { orderAttachments, quoteAttachments } from "@shared/schema";
+import { db, hasQuoteAttachmentPagesTable } from "../db";
+import { orderAttachments, quoteAttachmentPages, quoteAttachments } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage";
 import { fileExists, readFile } from "../utils/fileStorage";
 import { resolveLocalStoragePath } from "./localStoragePath";
 import { normalizeTenantObjectKey } from "../utils/orgKeys";
+import { persistReadyFileDerivative } from "./storage/persistFileDerivative";
+import { fileRecordRepository } from "../storage/fileRecord.repo";
+import { storagePlacementRepository } from "../storage/storagePlacement.repo";
+import { storageProviderConfigRepository } from "../storage/storageProviderConfig.repo";
+import { canonicalFileReadResolver } from "./storage/CanonicalFileReadResolver";
+import { storageRegistry } from "./storage/StorageRegistry";
 import path from "path";
 import * as fsPromises from "fs/promises";
 
@@ -34,6 +40,64 @@ let canvasAvailable = false;
 let sharpModule: any = null;
 let sharpAvailable = false;
 let dependencyWarningLogged = false;
+
+type PdfStorageProvider = "local" | "supabase" | "local_filesystem" | "titan_managed" | "s3";
+
+type CanonicalStorageContext = {
+  placementId: string;
+  providerConfig: any;
+  placementBucket: string | null;
+  objectKey: string | null;
+  localPathRef: string | null;
+  adapter: ReturnType<typeof storageRegistry.getAdapter>;
+};
+
+type UploadedDerivativeLocation = {
+  storageKey: string;
+  bucket: string | null;
+  objectKey: string | null;
+  localPathRef: string | null;
+};
+
+function normalizeLegacyStorageProvider(storageProvider: string | null | undefined): "supabase" | "local" | null {
+  if (storageProvider === "local" || storageProvider === "local_filesystem") {
+    return "local";
+  }
+  if (storageProvider === "supabase") {
+    return "supabase";
+  }
+  return null;
+}
+
+async function resolveCanonicalStorageContext(fileRecordId: string | null | undefined): Promise<CanonicalStorageContext | null> {
+  const normalizedFileRecordId = fileRecordId ? String(fileRecordId) : null;
+  if (!normalizedFileRecordId) {
+    return null;
+  }
+
+  const original = await canonicalFileReadResolver.resolveOriginal(normalizedFileRecordId);
+  if (original.status !== "available" || !original.providerConfigId || (!original.objectKey && !original.localPathRef)) {
+    return null;
+  }
+
+  const [providerConfig, placement] = await Promise.all([
+    storageProviderConfigRepository.getById(String(original.providerConfigId)),
+    storagePlacementRepository.getActiveCanonicalPlacementByFileRecordId(normalizedFileRecordId),
+  ]);
+
+  if (!providerConfig || !placement) {
+    return null;
+  }
+
+  return {
+    placementId: placement.id,
+    providerConfig,
+    placementBucket: placement.bucket ?? null,
+    objectKey: original.objectKey ?? null,
+    localPathRef: original.localPathRef ?? null,
+    adapter: storageRegistry.getAdapter(providerConfig.providerType),
+  };
+}
 
 /**
  * Load pdfjs-dist by trying known valid paths
@@ -121,7 +185,9 @@ async function ensureSharp(): Promise<boolean> {
  */
 async function downloadPdfFile(fileKey: string, storageProvider: string): Promise<Buffer | null> {
   try {
-    if (storageProvider === 'supabase') {
+    const legacyStorageProvider = normalizeLegacyStorageProvider(storageProvider);
+
+    if (legacyStorageProvider === 'supabase') {
       // Supabase storage
       console.log(`[PdfProcessing] Downloading from Supabase storage: ${fileKey}`);
       const supabaseService = new SupabaseStorageService();
@@ -134,7 +200,7 @@ async function downloadPdfFile(fileKey: string, storageProvider: string): Promis
       const buffer = Buffer.from(arrayBuffer);
       console.log(`[PdfProcessing] Downloaded from Supabase: ${fileKey}, size=${buffer.length} bytes`);
       return buffer;
-    } else if (storageProvider === 'local') {
+    } else if (legacyStorageProvider === 'local') {
       // Local file storage - resolve path and read directly
       const normalizedFileKey = normalizeTenantObjectKey(fileKey.replace(/\\/g, '/'));
       const resolvedPath = resolveLocalStoragePath(normalizedFileKey);
@@ -173,33 +239,109 @@ async function downloadPdfFile(fileKey: string, storageProvider: string): Promis
   }
 }
 
+async function downloadPdfFileFromCanonical(args: {
+  fileRecordId?: string | null;
+  fallbackStorageKey: string;
+  storageProvider: string;
+}): Promise<Buffer | null> {
+  const canonicalContext = await resolveCanonicalStorageContext(args.fileRecordId ?? null);
+  if (!canonicalContext) {
+    return downloadPdfFile(args.fallbackStorageKey, args.storageProvider);
+  }
+
+  try {
+    const downloadHandle = await canonicalContext.adapter.getDownloadHandle({
+      providerConfig: canonicalContext.providerConfig,
+      objectKey: canonicalContext.objectKey,
+      localPathRef: canonicalContext.localPathRef,
+    });
+
+    if (downloadHandle.kind === "signed_url") {
+      const response = await fetch(downloadHandle.value);
+      if (!response.ok) {
+        throw new Error(`Failed to download from canonical provider: ${response.statusText} (status=${response.status})`);
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      return Buffer.from(arrayBuffer);
+    }
+
+    return await fsPromises.readFile(downloadHandle.value);
+  } catch (error: any) {
+    const errorMsg = error?.message || String(error);
+    console.error(`[PdfProcessing] Failed canonical PDF download for fileRecordId=${args.fileRecordId}:`, errorMsg);
+    return downloadPdfFile(args.fallbackStorageKey, args.storageProvider);
+  }
+}
+
 /**
  * Upload thumbnail file to storage
  */
 async function uploadThumbnailFile(
-  thumbKey: string,
-  buffer: Buffer,
-  storageProvider: string,
-  organizationId: string
-): Promise<boolean> {
+  args: {
+    thumbKey: string;
+    buffer: Buffer;
+    storageProvider: string;
+    organizationId: string;
+    attachmentType: 'quote' | 'order';
+    attachmentId: string;
+    fileRecordId?: string | null;
+    originalFilename: string;
+    mimeType: string;
+  }
+): Promise<UploadedDerivativeLocation | null> {
   try {
-    if (storageProvider === 'supabase') {
+    const canonicalContext = await resolveCanonicalStorageContext(args.fileRecordId ?? null);
+    if (canonicalContext) {
+      const stored = await canonicalContext.adapter.putObject({
+        buffer: args.buffer,
+        originalFilename: args.originalFilename,
+        mimeType: args.mimeType,
+        requestedTarget: args.thumbKey,
+        providerConfig: canonicalContext.providerConfig,
+        resource: {
+          organizationId: args.organizationId,
+          resourceType: args.attachmentType,
+          resourceId: args.attachmentId,
+        },
+      });
+
+      const storageKey = stored.objectKey ?? stored.localPathRef;
+      if (!storageKey) {
+        throw new Error("Canonical derivative upload returned no object location");
+      }
+
+      return {
+        storageKey,
+        bucket: stored.bucket ?? canonicalContext.placementBucket,
+        objectKey: stored.objectKey ?? null,
+        localPathRef: stored.localPathRef ?? null,
+      };
+    }
+
+    const legacyStorageProvider = normalizeLegacyStorageProvider(args.storageProvider);
+
+    if (legacyStorageProvider === 'supabase') {
       // Supabase storage
       const supabaseService = new SupabaseStorageService();
-      await supabaseService.uploadFile(thumbKey, buffer, 'image/jpeg');
-      return true;
-    } else if (storageProvider === 'local') {
+      await supabaseService.uploadFile(args.thumbKey, args.buffer, args.mimeType);
+      return {
+        storageKey: args.thumbKey,
+        bucket: null,
+        objectKey: args.thumbKey,
+        localPathRef: null,
+      };
+    } else if (legacyStorageProvider === 'local') {
       // Local file storage - MUST use FILE_STORAGE_ROOT to match /objects route
       const storageRoot = process.env.FILE_STORAGE_ROOT || path.join(process.cwd(), 'uploads');
-      const fullPath = path.resolve(storageRoot, thumbKey);
+      const fullPath = path.resolve(storageRoot, args.thumbKey);
       
       // DEBUG_THUMBNAILS logging
       if (process.env.DEBUG_THUMBNAILS) {
         console.log(`[PdfProcessing] Writing PDF thumbnail to filesystem:`, {
-          thumbKey,
+          thumbKey: args.thumbKey,
           storageRoot,
           fullPath,
-          bufferSize: buffer.length,
+          bufferSize: args.buffer.length,
         });
       }
       
@@ -207,20 +349,25 @@ async function uploadThumbnailFile(
       await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
       
       // Write file
-      await fsPromises.writeFile(fullPath, buffer);
+      await fsPromises.writeFile(fullPath, args.buffer);
       
       if (process.env.DEBUG_THUMBNAILS) {
-        console.log(`[PdfProcessing] Successfully wrote PDF thumbnail ${thumbKey} to ${fullPath}`);
+        console.log(`[PdfProcessing] Successfully wrote PDF thumbnail ${args.thumbKey} to ${fullPath}`);
       }
       
-      return true;
+      return {
+        storageKey: args.thumbKey,
+        bucket: null,
+        objectKey: null,
+        localPathRef: args.thumbKey,
+      };
     } else {
-      console.error(`[PdfProcessing] Unsupported storage provider for thumbnail upload: ${storageProvider}`);
-      return false;
+      console.error(`[PdfProcessing] Unsupported storage provider for thumbnail upload: ${args.storageProvider}`);
+      return null;
     }
   } catch (error) {
-    console.error(`[PdfProcessing] Failed to upload thumbnail ${thumbKey}:`, error);
-    return false;
+    console.error(`[PdfProcessing] Failed to upload thumbnail ${args.thumbKey}:`, error);
+    return null;
   }
 }
 
@@ -237,16 +384,292 @@ function generateThumbnailKey(args: {
   return normalizeTenantObjectKey(`thumbs/${orgId}/${attachmentType}/${attachmentId}.thumb.jpg`);
 }
 
+function generatePageDerivativeKey(args: {
+  orgId: string;
+  attachmentId: string;
+  pageIndex: number;
+  variant: 'thumb' | 'preview';
+}): string {
+  const { orgId, attachmentId, pageIndex, variant } = args;
+  return normalizeTenantObjectKey(`thumbs/${orgId}/quote/${attachmentId}/pages/${pageIndex}.${variant}.jpg`);
+}
+
 async function verifyDerivativeExists(args: {
   storageProvider: string;
   thumbKey: string;
+  fileRecordId?: string | null;
+  location?: UploadedDerivativeLocation | null;
 }): Promise<boolean> {
   const { storageProvider, thumbKey } = args;
-  if (isSupabaseConfigured() && storageProvider === 'supabase') {
+  const canonicalContext = await resolveCanonicalStorageContext(args.fileRecordId ?? null);
+  if (canonicalContext && args.location) {
+    const verification = await canonicalContext.adapter.verifyObject({
+      providerConfig: canonicalContext.providerConfig,
+      objectKey: args.location.objectKey,
+      localPathRef: args.location.localPathRef,
+    });
+    return verification.exists;
+  }
+
+  const legacyStorageProvider = normalizeLegacyStorageProvider(storageProvider);
+  if (isSupabaseConfigured() && legacyStorageProvider === 'supabase') {
     const svc = new SupabaseStorageService();
     return await svc.fileExists(thumbKey);
   }
   return await fileExists(thumbKey);
+}
+
+async function createCanonicalPageFileRecord(args: {
+  tx: any;
+  organizationId: string;
+  sourceFileRecordId: string;
+  storedLocation: UploadedDerivativeLocation;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  createdByUserId?: string | null;
+}): Promise<string> {
+  const canonicalPlacement = await storagePlacementRepository.getActiveCanonicalPlacementByFileRecordId(
+    args.sourceFileRecordId,
+    args.tx,
+  );
+
+  if (!canonicalPlacement?.providerConfigId) {
+    throw new Error(`Missing canonical placement for page derivative source fileRecordId=${args.sourceFileRecordId}`);
+  }
+
+  const fileRecord = await fileRecordRepository.create({
+    organizationId: args.organizationId,
+    storageClass: 'hot',
+    lifecycleState: 'stored_hot',
+    originalFilename: args.fileName,
+    mimeType: args.mimeType,
+    sizeBytes: args.sizeBytes,
+    checksum: null,
+    createdByUserId: args.createdByUserId ?? null,
+  }, args.tx);
+
+  await storagePlacementRepository.create({
+    fileRecordId: fileRecord.id,
+    providerConfigId: canonicalPlacement.providerConfigId,
+    placementRole: 'canonical',
+    placementState: 'active',
+    bucket: args.storedLocation.bucket ?? canonicalPlacement.bucket ?? null,
+    objectKey: args.storedLocation.objectKey,
+    localPathRef: args.storedLocation.localPathRef,
+    checksum: null,
+    sizeBytes: args.sizeBytes,
+    lastVerifiedAt: new Date(),
+    createdAt: new Date(),
+  }, args.tx);
+
+  return fileRecord.id;
+}
+
+async function persistQuoteAttachmentPageDerivatives(args: {
+  organizationId: string;
+  attachment: typeof quoteAttachments.$inferSelect;
+  storageProvider: string;
+  pdfDocument: any;
+}): Promise<void> {
+  const { organizationId, attachment, storageProvider, pdfDocument } = args;
+
+  if (!attachment.fileRecordId) {
+    console.warn(`[PdfProcessing] Skipping page derivative canonical persistence for ${attachment.id}: missing fileRecordId`);
+    return;
+  }
+
+  const tableExists = hasQuoteAttachmentPagesTable();
+  if (tableExists !== true) {
+    return;
+  }
+
+  const pageCount = Number(pdfDocument?.numPages ?? 0);
+  if (pageCount <= 0) {
+    return;
+  }
+
+  const sharp = sharpModule.default || sharpModule;
+  const Canvas = canvasModule.createCanvas;
+  const existingPages = await db
+    .select()
+    .from(quoteAttachmentPages)
+    .where(and(
+      eq(quoteAttachmentPages.attachmentId, attachment.id),
+      eq(quoteAttachmentPages.organizationId, organizationId),
+    ));
+  const existingByIndex = new Map(existingPages.map((row) => [row.pageIndex, row]));
+
+  for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+    try {
+      const page = await pdfDocument.getPage(pageIndex + 1);
+      const viewport = page.getViewport({ scale: 2.0 });
+      const canvas = Canvas(viewport.width, viewport.height);
+      const context = canvas.getContext('2d');
+
+      await page.render({
+        canvasContext: context,
+        viewport,
+      }).promise;
+
+      const pageImageBuffer = canvas.toBuffer('image/png');
+      const thumbBuffer = await sharp(pageImageBuffer)
+        .resize(320, undefined, {
+          fit: 'inside',
+          withoutEnlargement: true,
+        })
+        .jpeg({ quality: 85 })
+        .toBuffer();
+      const previewBuffer = await sharp(pageImageBuffer)
+        .resize(1600, undefined, {
+          fit: 'inside',
+          withoutEnlargement: true,
+        })
+        .jpeg({ quality: 90 })
+        .toBuffer();
+
+      const thumbKey = generatePageDerivativeKey({
+        orgId: organizationId,
+        attachmentId: attachment.id,
+        pageIndex,
+        variant: 'thumb',
+      });
+      const previewKey = generatePageDerivativeKey({
+        orgId: organizationId,
+        attachmentId: attachment.id,
+        pageIndex,
+        variant: 'preview',
+      });
+
+      const [thumbUploaded, previewUploaded] = await Promise.all([
+        uploadThumbnailFile({
+          thumbKey,
+          buffer: thumbBuffer,
+          storageProvider,
+          organizationId,
+          attachmentType: 'quote',
+          attachmentId: attachment.id,
+          fileRecordId: attachment.fileRecordId,
+          originalFilename: `${attachment.fileName || attachment.id}-page-${pageIndex + 1}.thumb.jpg`,
+          mimeType: 'image/jpeg',
+        }),
+        uploadThumbnailFile({
+          thumbKey: previewKey,
+          buffer: previewBuffer,
+          storageProvider,
+          organizationId,
+          attachmentType: 'quote',
+          attachmentId: attachment.id,
+          fileRecordId: attachment.fileRecordId,
+          originalFilename: `${attachment.fileName || attachment.id}-page-${pageIndex + 1}.preview.jpg`,
+          mimeType: 'image/jpeg',
+        }),
+      ]);
+
+      if (!thumbUploaded || !previewUploaded) {
+        throw new Error(`Failed to upload page derivatives pageIndex=${pageIndex}`);
+      }
+
+      const [thumbExists, previewExists] = await Promise.all([
+        verifyDerivativeExists({
+          storageProvider,
+          thumbKey: thumbUploaded.storageKey,
+          fileRecordId: attachment.fileRecordId,
+          location: thumbUploaded,
+        }),
+        verifyDerivativeExists({
+          storageProvider,
+          thumbKey: previewUploaded.storageKey,
+          fileRecordId: attachment.fileRecordId,
+          location: previewUploaded,
+        }),
+      ]);
+
+      if (!thumbExists || !previewExists) {
+        throw new Error(`Page derivative missing after write pageIndex=${pageIndex}`);
+      }
+
+      const existingRow = existingByIndex.get(pageIndex) ?? null;
+
+      await db.transaction(async (tx) => {
+        const thumbFileRecordId = await createCanonicalPageFileRecord({
+          tx,
+          organizationId,
+          sourceFileRecordId: attachment.fileRecordId!,
+          storedLocation: thumbUploaded,
+          fileName: `${attachment.fileName || attachment.id}-page-${pageIndex + 1}.thumb.jpg`,
+          mimeType: 'image/jpeg',
+          sizeBytes: thumbBuffer.length,
+          createdByUserId: (attachment as any).uploadedByUserId ?? null,
+        });
+        const previewFileRecordId = await createCanonicalPageFileRecord({
+          tx,
+          organizationId,
+          sourceFileRecordId: attachment.fileRecordId!,
+          storedLocation: previewUploaded,
+          fileName: `${attachment.fileName || attachment.id}-page-${pageIndex + 1}.preview.jpg`,
+          mimeType: 'image/jpeg',
+          sizeBytes: previewBuffer.length,
+          createdByUserId: (attachment as any).uploadedByUserId ?? null,
+        });
+
+        if (existingRow) {
+          await tx
+            .update(quoteAttachmentPages)
+            .set({
+              thumbStatus: 'thumb_ready',
+              thumbFileRecordId,
+              thumbKey: null,
+              previewFileRecordId,
+              previewKey: null,
+              thumbError: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(quoteAttachmentPages.id, existingRow.id));
+        } else {
+          await tx
+            .insert(quoteAttachmentPages)
+            .values({
+              organizationId,
+              attachmentId: attachment.id,
+              pageIndex,
+              thumbStatus: 'thumb_ready',
+              thumbFileRecordId,
+              thumbKey: null,
+              previewFileRecordId,
+              previewKey: null,
+              thumbError: null,
+              updatedAt: new Date(),
+            });
+        }
+      });
+    } catch (error: any) {
+      console.warn(`[PdfProcessing] Failed to persist page derivative for attachment=${attachment.id} pageIndex=${pageIndex}:`, error?.message || error);
+
+      const existingRow = existingByIndex.get(pageIndex) ?? null;
+      if (existingRow) {
+        await db
+          .update(quoteAttachmentPages)
+          .set({
+            thumbStatus: 'thumb_failed',
+            thumbError: String(error?.message || error).slice(0, 500),
+            updatedAt: new Date(),
+          })
+          .where(eq(quoteAttachmentPages.id, existingRow.id));
+      } else {
+        await db
+          .insert(quoteAttachmentPages)
+          .values({
+            organizationId,
+            attachmentId: attachment.id,
+            pageIndex,
+            thumbStatus: 'thumb_failed',
+            thumbError: String(error?.message || error).slice(0, 500),
+            updatedAt: new Date(),
+          });
+      }
+    }
+  }
 }
 
 /**
@@ -352,8 +775,9 @@ export async function processPdfAttachmentDerivedData(args: {
       return;
     }
 
-    // Verify this is still the same file (stale task guard)
-    if (attachment.fileUrl !== storageKey) {
+    // Verify this is still the same file for legacy non-canonical rows only.
+    // Canonical attachments intentionally persist `fileRecordId` and often keep `fileUrl=null`.
+    if (!attachment.fileRecordId && attachment.fileUrl !== storageKey) {
       console.log(`[PdfProcessing] Skipping ${attachmentId}: fileUrl mismatch (expected ${storageKey}, got ${attachment.fileUrl})`);
       return;
     }
@@ -395,7 +819,11 @@ export async function processPdfAttachmentDerivedData(args: {
 
     // Download PDF file
     console.log(`[PdfProcessing] Attempting to read PDF file: storageKey=${storageKey}, storageProvider=${storageProvider}`);
-    const pdfBuffer = await downloadPdfFile(storageKey, storageProvider);
+    const pdfBuffer = await downloadPdfFileFromCanonical({
+      fileRecordId: (attachment as any).fileRecordId ?? null,
+      fallbackStorageKey: storageKey,
+      storageProvider,
+    });
     if (!pdfBuffer) {
       const errorMsg = `Failed to download PDF file from storageKey=${storageKey}`;
       console.error(`[PdfProcessing] ${errorMsg}`);
@@ -453,6 +881,15 @@ export async function processPdfAttachmentDerivedData(args: {
         console.error(`[PdfProcessing] DB update failed while setting pageCount for ${attachmentId}:`, dbError?.message || dbError);
         throw new Error(`Failed to update pageCount in database: ${dbError?.message || dbError}`);
       }
+
+      if (hasCanvas && hasSharp) {
+        await persistQuoteAttachmentPageDerivatives({
+          organizationId: orgId,
+          attachment: attachment as typeof quoteAttachments.$inferSelect,
+          storageProvider,
+          pdfDocument,
+        });
+      }
     }
 
     // Generate thumbnail from page 1 if canvas and sharp are available
@@ -506,17 +943,32 @@ export async function processPdfAttachmentDerivedData(args: {
 
       // Upload thumbnail
       console.log(`[PdfProcessing] Uploading thumbnail to storage for ${attachmentId}`);
-      const thumbUploaded = await uploadThumbnailFile(thumbKey, thumbBuffer, storageProvider, orgId);
+      const thumbUploaded = await uploadThumbnailFile({
+        thumbKey,
+        buffer: thumbBuffer,
+        storageProvider,
+        organizationId: orgId,
+        attachmentType,
+        attachmentId,
+        fileRecordId: (attachment as any).fileRecordId ?? null,
+        originalFilename: `${attachment.originalFilename || attachment.fileName || attachmentId}.thumb.jpg`,
+        mimeType: 'image/jpeg',
+      });
 
       if (thumbUploaded) {
         console.log(`[PdfProcessing] Thumbnail stored successfully for ${attachmentId}`);
 
         // Enforce invariant: do not claim thumb_ready unless the derivative actually exists.
-        const thumbExists = await verifyDerivativeExists({ storageProvider, thumbKey });
+        const thumbExists = await verifyDerivativeExists({
+          storageProvider,
+          thumbKey: thumbUploaded.storageKey,
+          fileRecordId: (attachment as any).fileRecordId ?? null,
+          location: thumbUploaded,
+        });
         if (!thumbExists) {
           console.warn(`[PdfProcessing] Derivative existence check failed for ${attachmentId}; not marking thumb_ready`, {
             storageProvider,
-            thumbKey,
+            thumbKey: thumbUploaded.storageKey,
           });
 
           const baseTable = attachmentType === 'quote' ? quoteAttachments : orderAttachments;
@@ -531,6 +983,14 @@ export async function processPdfAttachmentDerivedData(args: {
             .where(eq(baseTable.id, attachmentId));
           return;
         }
+
+        await persistReadyFileDerivative({
+          fileRecordId: (attachment as any).fileRecordId ?? null,
+          derivativeType: 'thumbnail',
+          objectKey: thumbUploaded.storageKey,
+          mimeType: 'image/jpeg',
+          sizeBytes: thumbBuffer.length,
+        });
         
         // Update database with thumbnail key (PERMANENT - final state)
         try {
@@ -539,7 +999,7 @@ export async function processPdfAttachmentDerivedData(args: {
           await db
             .update(baseTable)
             .set({
-              thumbKey: thumbKey,
+              thumbKey: null,
               thumbStatus: 'thumb_ready',
               thumbError: null,
               thumbnailGeneratedAt: new Date(),
@@ -562,11 +1022,10 @@ export async function processPdfAttachmentDerivedData(args: {
           const record = verification[0];
           const debugEnabled = process.env.DEBUG_THUMBNAILS === '1' || process.env.DEBUG_THUMBNAILS === 'true';
           
-          if (!record || !record.thumbKey || record.thumbStatus !== 'thumb_ready' || !record.thumbnailGeneratedAt || record.thumbError !== null) {
+          if (!record || record.thumbStatus !== 'thumb_ready' || !record.thumbnailGeneratedAt || record.thumbError !== null) {
             const issues: string[] = [];
             if (!record) issues.push('record not found');
             else {
-              if (!record.thumbKey) issues.push('thumbKey is null');
               if (record.thumbStatus !== 'thumb_ready') issues.push(`thumbStatus is '${record.thumbStatus}' not 'thumb_ready'`);
               if (!record.thumbnailGeneratedAt) issues.push('thumbnailGeneratedAt is null');
               if (record.thumbError !== null) issues.push('thumbError is not null');
@@ -576,7 +1035,7 @@ export async function processPdfAttachmentDerivedData(args: {
           }
 
           if (debugEnabled) {
-            console.log(`[PdfProcessing] ✅ Thumbnail persisted to DB: attachmentId=${attachmentId}, thumbKey=${thumbKey}, thumbStatus=thumb_ready`);
+            console.log(`[PdfProcessing] ✅ Thumbnail persisted to canonical derivatives: attachmentId=${attachmentId}, thumbKey=${thumbUploaded.storageKey}, thumbStatus=thumb_ready`);
           }
         } catch (dbError: any) {
           console.error(`[PdfProcessing] DB update failed while setting thumbKey for ${attachmentId}:`, dbError?.message || dbError);

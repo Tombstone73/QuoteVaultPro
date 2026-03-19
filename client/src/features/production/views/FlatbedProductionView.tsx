@@ -122,7 +122,7 @@ function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): str
 
   const normalizeArtworkImageUrl = (value: string): string | null => resolveObjectsPublicUrl(value);
   
-  // 1. Prefer thumbnailUrl (always an image if present)
+  // 1. Prefer thumbnailUrl (always an image if present).
   if (artwork.thumbnailUrl && artwork.thumbnailUrl.trim()) {
     if (process.env.NODE_ENV === 'development') {
       console.log(`[DEV:getBestArtworkImage] Using thumbnailUrl: ${artwork.thumbnailUrl}`);
@@ -130,26 +130,9 @@ function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): str
     return normalizeArtworkImageUrl(artwork.thumbnailUrl);
   }
   
-  // 2. Fallback to fileUrl, but ONLY if it's an image file
-  if (artwork.fileUrl && artwork.fileUrl.trim()) {
-    // Check if fileName suggests an image (jpg, jpeg, png, gif, webp, svg)
-    const fileName = (artwork.fileName || '').toLowerCase();
-    const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.tif', '.tiff'];
-    const isImageFile = imageExtensions.some(ext => fileName.endsWith(ext));
-    
-    if (isImageFile) {
-      if (process.env.NODE_ENV === 'development') {
-        console.log(`[DEV:getBestArtworkImage] Using fileUrl (image): ${artwork.fileUrl}`);
-      }
-      return normalizeArtworkImageUrl(artwork.fileUrl);
-    } else if (process.env.NODE_ENV === 'development') {
-      console.log(`[DEV:getBestArtworkImage] fileUrl exists but not an image file: ${fileName}`);
-    }
-  }
   
-  // 3. No valid image URL available (might be PDF or thumbnail pending)
   if (process.env.NODE_ENV === 'development') {
-    console.log(`[DEV:getBestArtworkImage] No valid image URL - fileName: ${artwork.fileName}, has thumbnailUrl: ${!!artwork.thumbnailUrl}, has fileUrl: ${!!artwork.fileUrl}`);
+    console.log(`[DEV:getBestArtworkImage] No derivative preview available - fileName: ${artwork.fileName}, has thumbnailUrl: ${!!artwork.thumbnailUrl}`);
   }
   return null;
 }
@@ -182,14 +165,8 @@ function ArtworkImage({
   }, [artwork]);
 
   const handleError = () => {
-    const fallbackSrc = artwork?.fileUrl ? resolveObjectsPublicUrl(artwork.fileUrl) : null;
-    if (!hasError && fallbackSrc && src !== fallbackSrc) {
-      // Fallback to fileUrl if thumbnail fails
-      setSrc(fallbackSrc);
-      setHasError(false);
-    } else {
-      setHasError(true);
-    }
+    setHasError(true);
+    setSrc(null);
   };
 
   if (!src || hasError) {
@@ -986,7 +963,7 @@ function ActionRail({
                   const note = sendToPrepressNote.trim();
                   if (!note || !job.lineItemId) return;
                   sendToPrepress.mutate(
-                    { lineItemId: job.lineItemId, note, noPrintsCompletedYet: sendToPrepressNoPrints },
+                    { lineItemId: job.lineItemId, jobId: job.id, note, noPrintsCompletedYet: sendToPrepressNoPrints },
                     {
                       onSuccess: () => {
                         setSendToPrepressOpen(false);
@@ -1131,7 +1108,7 @@ function ActionRail({
                       onSuccess: () => {
                         if (reprintSendToPrepress && reprintEditNotes.trim()) {
                           sendToPrepress.mutate(
-                            { lineItemId: job.lineItemId!, note: reprintEditNotes.trim(), noPrintsCompletedYet: reprintNoPrints },
+                            { lineItemId: job.lineItemId!, jobId: job.id, note: reprintEditNotes.trim(), noPrintsCompletedYet: reprintNoPrints },
                             { onSuccess: resetReprintModal },
                           );
                         } else {

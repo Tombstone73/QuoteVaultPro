@@ -15,8 +15,9 @@ import {
  * All methods enforce multi-tenant isolation via organizationId.
  */
 export class AssetRepository {
-  private normalizeAssetFileKey(raw: string): string {
+  private normalizeAssetFileKey(raw: string | null | undefined): string | null {
     let key = (raw || '').toString().trim();
+    if (!key) return null;
 
     // Prefer extracting canonical object keys from URLs.
     if (key.startsWith('http://') || key.startsWith('https://')) {
@@ -71,6 +72,7 @@ export class AssetRepository {
       .insert(assets)
       .values({
         ...data,
+        fileRecordId: (data as any).fileRecordId ?? null,
         fileKey: this.normalizeAssetFileKey((data as any).fileKey),
         ...this.getInitialPreviewState((data as any).mimeType),
         organizationId,
@@ -236,9 +238,15 @@ export class AssetRepository {
       previewError?: string | null;
     }
   ): Promise<Asset> {
+    const legacyMirrorPatch =
+      data.previewStatus === 'ready'
+        ? { previewKey: null, thumbKey: null }
+        : {};
+
     const [updated] = await db
       .update(assets)
       .set({
+        ...legacyMirrorPatch,
         ...data,
         updatedAt: new Date(),
       })

@@ -119,24 +119,19 @@ interface LineItemStatusBadgeProps {
 export function LineItemStatusBadge({ status, className }: LineItemStatusBadgeProps) {
   const getStatusConfig = (status: string) => {
     switch (status.toLowerCase()) {
-      case "queued":
+      case "new":
         return {
-          label: "Queued",
+          label: "New",
           className: "bg-gray-500/20 text-gray-700 dark:text-gray-300 border-gray-500/40",
         };
-      case "printing":
+      case "in_production":
         return {
-          label: "Printing",
+          label: "In Production",
           className: "bg-blue-500/20 text-blue-700 dark:text-blue-300 border-blue-500/40",
         };
-      case "finishing":
+      case "complete":
         return {
-          label: "Finishing",
-          className: "bg-purple-500/20 text-purple-700 dark:text-purple-300 border-purple-500/40",
-        };
-      case "done":
-        return {
-          label: "Done",
+          label: "Complete",
           className: "bg-green-500/20 text-green-700 dark:text-green-300 border-green-500/40",
         };
       case "canceled":

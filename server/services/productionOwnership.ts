@@ -1,0 +1,512 @@
+/**
+ * productionOwnership.ts
+ *
+ * Canonical shared helpers for production job ownership.
+ * Single source of truth for determining the active non-terminal production job
+ * for a line item, and for performing canonical close/create station transitions.
+ *
+ * Rules:
+ * - A production job is "terminal" if its status is one of: done, void, canceled, cancelled
+ * - A line item may have at most one active (non-terminal) production job at any time
+ * - Board ownership is derived exclusively from the active non-terminal production job
+ * - Station changes are modeled as close-current/create-next (historical chain), not in-place rewrites
+ */
+
+import { and, eq, notInArray, desc, sql, inArray } from "drizzle-orm";
+import { productionJobs } from "@shared/schema";
+import { appendEvent } from "../productionHelpers";
+
+// ────────────────────────────────────────────────────────────
+// Constants
+// ────────────────────────────────────────────────────────────
+
+/** Statuses considered terminal (job is no longer active). */
+export const TERMINAL_JOB_STATUSES = ["done", "void", "canceled", "cancelled"] as const;
+
+/** The lifecycle-only statuses allowed on order_line_items.status. */
+export const LINE_ITEM_LIFECYCLE_STATUSES = ["new", "in_production", "complete", "canceled"] as const;
+
+/**
+ * Station-like statuses that must NEVER be written to order_line_items.status.
+ * Kept for reference and defensive read-path guards.
+ */
+export const LEGACY_STATION_STATUSES = [
+  "pending_prepress",
+  "in_prepress",
+  "prepress_complete",
+  "print_ready",
+  "queued",
+  "printing",
+  "finishing",
+] as const;
+
+// ────────────────────────────────────────────────────────────
+// Type Exports
+// ────────────────────────────────────────────────────────────
+
+export type TerminalJobStatus = (typeof TERMINAL_JOB_STATUSES)[number];
+
+export interface ActiveProductionJob {
+  id: string;
+  orderId: string;
+  lineItemId: string | null;
+  stationKey: string;
+  stepKey: string;
+  status: string;
+  stationId: string | null;
+  totalSeconds: number;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface StationTransitionResult {
+  closedJobId: string;
+  createdJobId: string;
+  newStationKey: string;
+  newStepKey: string;
+  newStatus: string;
+}
+
+export interface ResolveActiveProductionOwnersArgs {
+  organizationId: string;
+  stationFilter?: string | null;
+  lineItemIds?: string[] | null;
+  debugLabel?: string;
+}
+
+// ────────────────────────────────────────────────────────────
+// Helpers
+// ────────────────────────────────────────────────────────────
+
+/**
+ * Returns true if the given status is terminal (job is no longer active).
+ */
+export function isTerminalStatus(status: string | null | undefined): boolean {
+  if (!status) return false;
+  return (TERMINAL_JOB_STATUSES as readonly string[]).includes(
+    status.toLowerCase().trim(),
+  );
+}
+
+/**
+ * Returns true if the given status is a non-terminal (active) production job status.
+ */
+export function isActiveJobStatus(status: string | null | undefined): boolean {
+  return !!status && !isTerminalStatus(status);
+}
+
+export function isPrepressOwnershipJob(
+  job:
+    | Pick<ActiveProductionJob, "stationKey" | "stepKey">
+    | { stationKey?: string | null; stepKey?: string | null }
+    | null
+    | undefined,
+): boolean {
+  if (!job) return false;
+  const stationKey = String(job.stationKey ?? "").trim().toLowerCase();
+  const stepKey = String(job.stepKey ?? "").trim().toLowerCase();
+  return stepKey === "prepress" || stationKey === "prepress";
+}
+
+export function isDesignOwnershipJob(
+  job:
+    | Pick<ActiveProductionJob, "stationKey" | "stepKey">
+    | { stationKey?: string | null; stepKey?: string | null }
+    | null
+    | undefined,
+): boolean {
+  if (!job) return false;
+  const stationKey = String(job.stationKey ?? "").trim().toLowerCase();
+  const stepKey = String(job.stepKey ?? "").trim().toLowerCase();
+  return stepKey === "design" || stationKey === "design";
+}
+
+export async function resolveActiveProductionOwners(
+  runner: any,
+  args: ResolveActiveProductionOwnersArgs,
+): Promise<Map<string, ActiveProductionJob>> {
+  const normalizedLineItemIds = Array.from(
+    new Set(
+      (args.lineItemIds ?? [])
+        .map((lineItemId) => String(lineItemId ?? "").trim())
+        .filter((lineItemId) => lineItemId.length > 0),
+    ),
+  );
+
+  if (Array.isArray(args.lineItemIds) && args.lineItemIds.length > 0 && normalizedLineItemIds.length === 0) {
+    return new Map<string, ActiveProductionJob>();
+  }
+
+  const stationFilter = String(args.stationFilter ?? "").trim().toLowerCase();
+
+  const rows = await runner
+    .select({
+      id: productionJobs.id,
+      orderId: productionJobs.orderId,
+      lineItemId: productionJobs.lineItemId,
+      stationKey: productionJobs.stationKey,
+      stepKey: productionJobs.stepKey,
+      status: productionJobs.status,
+      stationId: sql<string | null>`production_jobs.station_id`,
+      totalSeconds: productionJobs.totalSeconds,
+      startedAt: productionJobs.startedAt,
+      completedAt: productionJobs.completedAt,
+      createdAt: productionJobs.createdAt,
+      updatedAt: productionJobs.updatedAt,
+    })
+    .from(productionJobs)
+    .where(
+      and(
+        eq(productionJobs.organizationId, args.organizationId),
+        notInArray(productionJobs.status, [...TERMINAL_JOB_STATUSES]),
+        normalizedLineItemIds.length > 0
+          ? inArray(productionJobs.lineItemId, normalizedLineItemIds)
+          : undefined,
+        stationFilter
+          ? sql`(
+              lower(coalesce(${productionJobs.stationKey}, '')) = ${stationFilter}
+              or lower(coalesce(${productionJobs.stepKey}, '')) = ${stationFilter}
+            )`
+          : undefined,
+      ),
+    )
+    .orderBy(desc(productionJobs.updatedAt), desc(productionJobs.createdAt));
+
+  const owners = new Map<string, ActiveProductionJob>();
+  for (const row of rows) {
+    const lineItemId = String(row.lineItemId ?? "").trim();
+    if (!lineItemId || owners.has(lineItemId)) continue;
+    owners.set(lineItemId, row);
+  }
+
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[DEV][productionOwnership.resolveActiveProductionOwners]", {
+      organizationId: args.organizationId,
+      debugLabel: args.debugLabel ?? null,
+      requestedLineItemCount: normalizedLineItemIds.length || null,
+      stationFilter: stationFilter || null,
+      resolvedOwnerCount: owners.size,
+    });
+  }
+
+  return owners;
+}
+
+// ────────────────────────────────────────────────────────────
+// Core Ownership Queries
+// ────────────────────────────────────────────────────────────
+
+/**
+ * Find the single active (non-terminal) production job for a line item.
+ * Returns null if no active job exists.
+ *
+ * This is the CANONICAL way to check board ownership.
+ * If multiple active jobs exist (should not happen), returns the most recently updated.
+ *
+ * @param runner - Drizzle db or transaction handle
+ */
+export async function findActiveJobForLineItem(
+  runner: any,
+  args: { organizationId: string; lineItemId: string },
+): Promise<ActiveProductionJob | null> {
+  const owners = await resolveActiveProductionOwners(runner, {
+    organizationId: args.organizationId,
+    lineItemIds: [args.lineItemId],
+    debugLabel: "findActiveJobForLineItem",
+  });
+
+  return owners.get(args.lineItemId) ?? null;
+}
+
+/**
+ * Find ALL active (non-terminal) production jobs for a given line item.
+ * Normally this should return 0 or 1. If it returns >1, there's a data integrity issue.
+ */
+export async function findAllActiveJobsForLineItem(
+  runner: any,
+  args: { organizationId: string; lineItemId: string },
+): Promise<ActiveProductionJob[]> {
+  return runner
+    .select({
+      id: productionJobs.id,
+      orderId: productionJobs.orderId,
+      lineItemId: productionJobs.lineItemId,
+      stationKey: productionJobs.stationKey,
+      stepKey: productionJobs.stepKey,
+      status: productionJobs.status,
+      stationId: sql<string | null>`production_jobs.station_id`,
+      totalSeconds: productionJobs.totalSeconds,
+      startedAt: productionJobs.startedAt,
+      completedAt: productionJobs.completedAt,
+      createdAt: productionJobs.createdAt,
+      updatedAt: productionJobs.updatedAt,
+    })
+    .from(productionJobs)
+    .where(
+      and(
+        eq(productionJobs.organizationId, args.organizationId),
+        eq(productionJobs.lineItemId, args.lineItemId),
+        notInArray(productionJobs.status, [...TERMINAL_JOB_STATUSES]),
+      ),
+    )
+    .orderBy(desc(productionJobs.updatedAt));
+}
+
+/**
+ * Returns true if the line item currently has active board ownership
+ * (i.e., at least one non-terminal production job exists).
+ */
+export async function hasActiveBoardOwnership(
+  runner: any,
+  args: { organizationId: string; lineItemId: string },
+): Promise<boolean> {
+  const job = await findActiveJobForLineItem(runner, args);
+  return job !== null;
+}
+
+// ────────────────────────────────────────────────────────────
+// Canonical Transition: Close Current → Create Next
+// ────────────────────────────────────────────────────────────
+
+/**
+ * Atomically completes the current active job and creates a new job at the target station.
+ * This is the canonical way to perform a station change.
+ *
+ * Must be called within a transaction (pass tx).
+ *
+ * Returns the closed job ID, created job ID, and new station info.
+ * Throws if no active job exists.
+ */
+export async function transitionToStation(
+  tx: any,
+  args: {
+    organizationId: string;
+    orderId: string;
+    lineItemId: string;
+    targetStationKey: string;
+    targetStepKey: string;
+    reason: string;
+    actorUserId?: string | null;
+  },
+): Promise<StationTransitionResult> {
+  const now = new Date();
+
+  // 1. Find active job
+  const activeJob = await findActiveJobForLineItem(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+  });
+
+  if (!activeJob) {
+    throw Object.assign(
+      new Error(`No active production job found for line item ${args.lineItemId}`),
+      { statusCode: 404 },
+    );
+  }
+
+  // 2. Complete (close) the current active job
+  await tx
+    .update(productionJobs)
+    .set({
+      status: "done",
+      completedAt: now,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(productionJobs.organizationId, args.organizationId),
+        eq(productionJobs.id, activeJob.id),
+      ),
+    );
+
+  // 3. Emit routing_override event on the closed job
+  await appendEvent({
+    tx,
+    organizationId: args.organizationId,
+    productionJobId: activeJob.id,
+    type: "routing_override",
+    payload: {
+      action: "station_transition_close",
+      from: {
+        stationKey: activeJob.stationKey,
+        stepKey: activeJob.stepKey,
+        status: activeJob.status,
+      },
+      to: {
+        stationKey: args.targetStationKey,
+        stepKey: args.targetStepKey,
+      },
+      reason: args.reason,
+      actorUserId: args.actorUserId ?? null,
+    },
+  });
+
+  // 5. Guard: ensure no orphan active jobs remain before inserting
+  //    The partial unique index (migration 0059) will catch this at DB level too,
+  //    but an explicit check gives a clearer error message.
+  const residualActive = await findActiveJobForLineItem(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+  });
+  if (residualActive) {
+    throw Object.assign(
+      new Error(
+        `Cannot create new job: line item ${args.lineItemId} still has active job ${residualActive.id} after close attempt`,
+      ),
+      { statusCode: 409 },
+    );
+  }
+
+  // 6. Resolve station_id for the target station. Fail closed: a missing station
+  //    must block ownership creation rather than produce a station_id-null job row.
+  let stationId: string;
+  try {
+    const stationResult = await tx.execute(sql`
+      SELECT id FROM stations
+      WHERE organization_id = ${args.organizationId}
+        AND key = ${args.targetStationKey}
+      LIMIT 1
+    `);
+    const resolvedId = stationResult.rows[0]?.id
+      ? String(stationResult.rows[0].id)
+      : null;
+    if (!resolvedId) {
+      throw Object.assign(
+        new Error(
+          `[productionOwnership] station row not found for key="${args.targetStationKey}" in org="${args.organizationId}". ` +
+          `Ensure the station exists in the stations table before creating ownership records. ` +
+          `Refusing to create production_job with no station identity.`,
+        ),
+        { statusCode: 409, targetStationKey: args.targetStationKey, organizationId: args.organizationId, lineItemId: args.lineItemId },
+      );
+    }
+    stationId = resolvedId;
+  } catch (error: any) {
+    // Re-throw our own sentinel errors without wrapping
+    if (error?.statusCode) throw error;
+    // Unexpected DB error — rethrow with context
+    throw Object.assign(
+      new Error(
+        `[productionOwnership] station_id resolution DB error for key="${args.targetStationKey}": ${(error as Error).message}`,
+      ),
+      { statusCode: 500, cause: error, targetStationKey: args.targetStationKey, lineItemId: args.lineItemId },
+    );
+  }
+
+  // 7. Create new job at target station (stationId guaranteed non-null — fail-closed above).
+  //    Use ON CONFLICT to safely recycle a terminal row without aborting the transaction.
+  let newJob: {
+    id: string;
+    stationKey: string;
+    stepKey: string;
+    status: string;
+  };
+
+  const insertResult = await tx.execute(sql`
+      INSERT INTO production_jobs (
+        organization_id, order_id, line_item_id, station_id,
+        station_key, step_key, status, total_seconds, started_at, completed_at, updated_at
+      ) VALUES (
+        ${args.organizationId}, ${args.orderId}, ${args.lineItemId}, ${stationId},
+        ${args.targetStationKey}, ${args.targetStepKey}, ${"queued"}, ${0}, ${null}, ${null}, ${now}
+      )
+      ON CONFLICT (organization_id, line_item_id, station_id)
+      WHERE station_id IS NOT NULL
+      DO UPDATE SET
+        order_id = EXCLUDED.order_id,
+        station_key = EXCLUDED.station_key,
+        step_key = EXCLUDED.step_key,
+        status = EXCLUDED.status,
+        total_seconds = EXCLUDED.total_seconds,
+        started_at = EXCLUDED.started_at,
+        completed_at = EXCLUDED.completed_at,
+        updated_at = EXCLUDED.updated_at
+      WHERE lower(coalesce(production_jobs.status, '')) IN (${sql.join(
+        TERMINAL_JOB_STATUSES.map((status) => sql`${status}`),
+        sql`, `,
+      )})
+      RETURNING id, station_key AS "stationKey", step_key AS "stepKey", status
+    `);
+
+  const insertedRow = insertResult.rows[0] as
+    | { id: string; stationKey: string; stepKey: string; status: string }
+    | undefined;
+
+  if (!insertedRow) {
+    throw Object.assign(
+      new Error(
+        `Cannot create new job for station ${args.targetStationKey}: existing station row is not terminal`,
+      ),
+      { statusCode: 409 },
+    );
+  }
+
+  newJob = insertedRow;
+
+  // 8. Emit intake event on the new job
+  await appendEvent({
+    tx,
+    organizationId: args.organizationId,
+    productionJobId: newJob.id,
+    type: "intake",
+    payload: {
+      trigger: "station_transition",
+      previousJobId: activeJob.id,
+      previousStationKey: activeJob.stationKey,
+      previousStepKey: activeJob.stepKey,
+      stationKey: args.targetStationKey,
+      stepKey: args.targetStepKey,
+      reason: args.reason,
+      actorUserId: args.actorUserId ?? null,
+    },
+  });
+
+  return {
+    closedJobId: activeJob.id,
+    createdJobId: newJob.id,
+    newStationKey: newJob.stationKey,
+    newStepKey: newJob.stepKey,
+    newStatus: newJob.status,
+  };
+}
+
+/**
+ * Completes the current active job without creating a successor.
+ * Used for terminal completions (e.g., final production step done).
+ * Returns the closed job, or null if no active job existed.
+ */
+export async function completeActiveJob(
+  tx: any,
+  args: {
+    organizationId: string;
+    lineItemId: string;
+    reason?: string;
+  },
+): Promise<ActiveProductionJob | null> {
+  const now = new Date();
+
+  const activeJob = await findActiveJobForLineItem(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+  });
+
+  if (!activeJob) return null;
+
+  await tx
+    .update(productionJobs)
+    .set({
+      status: "done",
+      completedAt: now,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(productionJobs.organizationId, args.organizationId),
+        eq(productionJobs.id, activeJob.id),
+      ),
+    );
+
+  return activeJob;
+}

@@ -53,6 +53,9 @@ export type ProductionJobListItem = {
   view: string;
   stationKey?: string | null;
   stepKey?: string | null;
+  routingReason?: string | null;
+  routingSource?: string | null;
+  idempotencyNote?: string | null;
   lineItemId?: string | null;
   status: "queued" | "in_progress" | "done";
   startedAt: string | null;
@@ -160,8 +163,8 @@ export function useProductionJobs(
       const json = await res.json();
       return json.data || [];
     },
-    staleTime: 10_000,
-    refetchOnWindowFocus: true,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
     enabled: options?.enabled !== false,
   });
 }
@@ -177,6 +180,8 @@ export function useProductionJob(jobId: string | undefined) {
       return json.data;
     },
     enabled: !!jobId,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -211,6 +216,13 @@ export type ScheduleProductionResult = {
     existingJobCount: number;
     skippedNonProductionCount: number;
     affectedLineItemIds: string[];
+    lineItemDiagnostics?: Record<string, {
+      stationKey: string;
+      stepKey: string;
+      routingReason: string;
+      routingSource?: string;
+      idempotencyNote?: string;
+    }>;
   };
   message: string;
 };
@@ -233,9 +245,15 @@ export function useScheduleOrderLineItemsForProduction(orderId: string) {
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
       qc.invalidateQueries({ queryKey: ["/api/orders", orderId] as any });
+      const firstDiagnostic = data?.data?.lineItemDiagnostics
+        ? Object.values(data.data.lineItemDiagnostics)[0]
+        : null;
+      const details = firstDiagnostic
+        ? `Routed by: ${firstDiagnostic.routingReason}${firstDiagnostic.idempotencyNote ? ` • ${firstDiagnostic.idempotencyNote}` : ""}`
+        : data.message;
       toast({ 
         title: "Production scheduling complete", 
-        description: data.message 
+        description: details
       });
     },
     onError: (e: Error) => {
@@ -497,7 +515,7 @@ export function useSendLineItemToPrepress() {
   const qc = useQueryClient();
   const { toast } = useToast();
   return useMutation({
-    mutationFn: async (args: { lineItemId: string; note: string; noPrintsCompletedYet?: boolean }) => {
+    mutationFn: async (args: { lineItemId: string; jobId?: string; note: string; noPrintsCompletedYet?: boolean }) => {
       const res = await fetch(`/api/production/line-item/${args.lineItemId}/send-to-prepress`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -511,6 +529,9 @@ export function useSendLineItemToPrepress() {
     onSuccess: (_data, args) => {
       // Invalidate production boards so the job disappears
       qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      if (args.jobId) {
+        qc.invalidateQueries({ queryKey: ["/api/production/jobs", args.jobId] });
+      }
       // Invalidate prepress queue so the item appears
       qc.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
       toast({ title: "Sent to prepress", description: "Job moved to prepress queue for editing" });

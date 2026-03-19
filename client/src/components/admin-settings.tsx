@@ -993,6 +993,7 @@ export default function AdminSettings() {
   const [templateSearchTerm, setTemplateSearchTerm] = useState("");
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [viewMode, setViewMode] = useState<"table" | "grid">("table");
+  const [productStatusFilter, setProductStatusFilter] = useState<"all" | "active" | "inactive">("all");
   const [isMediaPickerOpen, setIsMediaPickerOpen] = useState(false);
   const [mediaPickerMode, setMediaPickerMode] = useState<"add" | "edit">("add");
   const [imageErrors, setImageErrors] = useState<Set<string>>(new Set());
@@ -1002,6 +1003,11 @@ export default function AdminSettings() {
   });
 
   const { data: productTypes } = useProductTypes();
+
+  const invalidateProductQueries = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/products?activeOnly=true"] });
+  };
 
   const addProductForm = useForm<InsertProduct>({
     resolver: zodResolver(insertProductSchema),
@@ -1132,7 +1138,7 @@ export default function AdminSettings() {
         title: "Product Added",
         description: "The product has been added successfully.",
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      invalidateProductQueries();
       setIsAddDialogOpen(false);
       addProductForm.reset();
     },
@@ -1154,7 +1160,7 @@ export default function AdminSettings() {
         title: "Product Updated",
         description: "The product has been updated successfully.",
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      invalidateProductQueries();
       setEditingProduct(null);
       editProductForm.reset();
     },
@@ -1176,7 +1182,7 @@ export default function AdminSettings() {
         title: "Product Deleted",
         description: "The product has been deleted successfully.",
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      invalidateProductQueries();
     },
     onError: (error: Error) => {
       toast({
@@ -1196,7 +1202,7 @@ export default function AdminSettings() {
         title: "Product Cloned",
         description: "The product has been cloned successfully. You can now edit the name and pricing.",
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      invalidateProductQueries();
     },
     onError: (error: Error) => {
       toast({
@@ -1216,7 +1222,7 @@ export default function AdminSettings() {
         title: "Products Imported",
         description: `Successfully imported ${data.imported.products} products, ${data.imported.variants} variants, and ${data.imported.options} options.`,
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      invalidateProductQueries();
       setCsvFile(null);
     },
     onError: (error: Error) => {
@@ -1557,6 +1563,28 @@ export default function AdminSettings() {
     },
   });
 
+  const toggleProductActiveMutation = useMutation({
+    mutationFn: async ({ id, isActive }: { id: string; isActive: boolean }) => {
+      return await apiRequest("PATCH", `/api/products/${id}`, { isActive });
+    },
+    onSuccess: (_data, variables) => {
+      toast({
+        title: variables.isActive ? "Product Activated" : "Product Deactivated",
+        description: variables.isActive
+          ? "The product is now available for new quote and order selection."
+          : "The product is now hidden from new quote and order selection.",
+      });
+      invalidateProductQueries();
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleEditProduct = (product: Product) => {
     setEditingProduct(product);
     // Reset dialog states when opening a product
@@ -1712,6 +1740,21 @@ export default function AdminSettings() {
       variable.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       variable.category?.toLowerCase().includes(searchTerm.toLowerCase())
     );
+
+  const filteredProducts = products?.filter((product) => {
+    if (productStatusFilter === "active") return product.isActive;
+    if (productStatusFilter === "inactive") return !product.isActive;
+    return true;
+  });
+
+  const renderProductStatusBadge = (product: Product) => (
+    <Badge
+      variant={product.isActive ? "default" : "secondary"}
+      className={product.isActive ? "bg-green-600 hover:bg-green-600 text-white" : "text-muted-foreground"}
+    >
+      {product.isActive ? "Active" : "Inactive"}
+    </Badge>
+  );
 
   if (productsLoading) {
     return (
@@ -1897,9 +1940,39 @@ export default function AdminSettings() {
                 </CardContent>
               </Card>
 
-              <div className="flex justify-between items-center">
+              <div className="flex justify-between items-center gap-4 flex-wrap">
                 <h3 className="text-lg font-semibold">Product Management</h3>
-                <div className="flex gap-2">
+                <div className="flex gap-2 flex-wrap justify-end">
+                  <div className="flex border rounded-md">
+                    <Button
+                      variant={productStatusFilter === "all" ? "default" : "ghost"}
+                      size="sm"
+                      onClick={() => setProductStatusFilter("all")}
+                      className="rounded-r-none"
+                      data-testid="button-filter-products-all"
+                    >
+                      All
+                    </Button>
+                    <Button
+                      variant={productStatusFilter === "active" ? "default" : "ghost"}
+                      size="sm"
+                      onClick={() => setProductStatusFilter("active")}
+                      className="rounded-none border-x"
+                      data-testid="button-filter-products-active"
+                    >
+                      Active
+                    </Button>
+                    <Button
+                      variant={productStatusFilter === "inactive" ? "default" : "ghost"}
+                      size="sm"
+                      onClick={() => setProductStatusFilter("inactive")}
+                      className="rounded-l-none"
+                      data-testid="button-filter-products-inactive"
+                    >
+                      Inactive
+                    </Button>
+                  </div>
+
                   <div className="flex border rounded-md">
                     <Button
                       variant={viewMode === "table" ? "default" : "ghost"}
@@ -2489,8 +2562,8 @@ export default function AdminSettings() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {products && products.length > 0 ? (
-                      products.map((product) => (
+                    {filteredProducts && filteredProducts.length > 0 ? (
+                      filteredProducts.map((product) => (
                         <TableRow key={product.id} data-testid={`row-product-${product.id}`}>
                           <TableCell className="font-medium" data-testid={`cell-name-${product.id}`}>
                             {product.name}
@@ -2502,14 +2575,24 @@ export default function AdminSettings() {
                             {product.pricingFormula}
                           </TableCell>
                           <TableCell data-testid={`cell-status-${product.id}`}>
-                            {product.isActive ? (
-                              <span className="text-green-600 dark:text-green-400">Active</span>
-                            ) : (
-                              <span className="text-muted-foreground">Inactive</span>
-                            )}
+                            {renderProductStatusBadge(product)}
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() =>
+                                  toggleProductActiveMutation.mutate({
+                                    id: product.id,
+                                    isActive: !product.isActive,
+                                  })
+                                }
+                                disabled={toggleProductActiveMutation.isPending}
+                                data-testid={`button-toggle-product-${product.id}`}
+                              >
+                                {product.isActive ? "Deactivate" : "Activate"}
+                              </Button>
                               <Dialog
                                 open={editingProduct?.id === product.id}
                                 onOpenChange={(open) => {
@@ -4273,7 +4356,9 @@ export default function AdminSettings() {
                     ) : (
                       <TableRow>
                         <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
-                          No products yet. Add your first product to get started.
+                          {products && products.length > 0
+                            ? "No products match the current status filter."
+                            : "No products yet. Add your first product to get started."}
                         </TableCell>
                       </TableRow>
                     )}
@@ -4282,8 +4367,8 @@ export default function AdminSettings() {
               </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4" data-testid="products-grid">
-                  {products && products.length > 0 ? (
-                    products.map((product) => {
+                  {filteredProducts && filteredProducts.length > 0 ? (
+                    filteredProducts.map((product) => {
                       const safeSrc = isValidHttpUrl(product.thumbnailUrls?.[0]) ? product.thumbnailUrls[0] : null;
                       const hasError = imageErrors.has(product.id);
                       
@@ -4318,14 +4403,26 @@ export default function AdminSettings() {
                             {product.description || "No description"}
                           </p>
                           <div className="flex items-center gap-2 pt-2">
-                            {product.isActive ? (
-                              <span className="text-xs text-green-600 dark:text-green-400" data-testid={`status-active-${product.id}`}>Active</span>
-                            ) : (
-                              <span className="text-xs text-muted-foreground" data-testid={`status-inactive-${product.id}`}>Inactive</span>
-                            )}
+                            <span data-testid={product.isActive ? `status-active-${product.id}` : `status-inactive-${product.id}`}>
+                              {renderProductStatusBadge(product)}
+                            </span>
                           </div>
                         </CardContent>
-                        <div className="p-4 pt-0 flex gap-2">
+                        <div className="p-4 pt-0 flex flex-wrap gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() =>
+                              toggleProductActiveMutation.mutate({
+                                id: product.id,
+                                isActive: !product.isActive,
+                              })
+                            }
+                            disabled={toggleProductActiveMutation.isPending}
+                            data-testid={`button-toggle-card-${product.id}`}
+                          >
+                            {product.isActive ? "Deactivate" : "Activate"}
+                          </Button>
                           <Button
                             variant="outline"
                             size="sm"
@@ -4367,7 +4464,9 @@ export default function AdminSettings() {
                     })
                   ) : (
                     <div className="col-span-full text-center py-12 text-muted-foreground">
-                      No products yet. Add your first product to get started.
+                      {products && products.length > 0
+                        ? "No products match the current status filter."
+                        : "No products yet. Add your first product to get started."}
                     </div>
                   )}
                 </div>

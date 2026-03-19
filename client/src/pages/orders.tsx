@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -27,8 +27,10 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAssignOrderStatusPill, useOrderStatusPills } from "@/hooks/useOrderStatusPills";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
-import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
+import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
+import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
+import { normalizeOrderFileRows } from "@/lib/attachments/orderFileRows";
 import BackNavControls from "@/components/BackNavControls";
 
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "paymentStatus";
@@ -138,7 +140,7 @@ export default function Orders() {
   // Pagination + performance controls (persisted per org+user, matching Quotes)
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
-  const [includeThumbnails, setIncludeThumbnails] = useState(true);
+  const [includeThumbnails, setIncludeThumbnails] = useState(false);
   
   // Attachments dialog state (list of files for an order)
   const [attachmentsDialogOpen, setAttachmentsDialogOpen] = useState(false);
@@ -148,7 +150,12 @@ export default function Orders() {
   const [loadingAttachments, setLoadingAttachments] = useState<string | null>(null);
 
   const [attachmentViewerOpen, setAttachmentViewerOpen] = useState(false);
-  const [selectedAttachment, setSelectedAttachment] = useState<any | null>(null);
+  const [selectedAttachmentIndex, setSelectedAttachmentIndex] = useState(0);
+
+  const normalizedAttachmentViewerItems = useMemo(
+    () => toAttachmentViewerAttachments(attachmentsDialogItems),
+    [attachmentsDialogItems]
+  ) as AttachmentData[];
 
   // Inline editing state
   const [editingPriorityOrderId, setEditingPriorityOrderId] = useState<string | null>(null);
@@ -388,7 +395,7 @@ export default function Orders() {
     },
   });
 
-  // Open attachments dialog - fetch all attachments for the order in one call
+  // Open attachments dialog - fetch current stabilized order file rows in one call
   const openAttachmentsDialog = async (orderId: string) => {
     setAttachmentsDialogOrderId(orderId);
     setAttachmentsDialogOpen(true);
@@ -397,7 +404,7 @@ export default function Orders() {
     setLoadingAttachments(orderId);
 
     try {
-      const response = await fetch(`/api/orders/${orderId}/attachments-unified`, {
+      const response = await fetch(`/api/orders/${orderId}/files`, {
         credentials: "include",
       });
 
@@ -406,7 +413,10 @@ export default function Orders() {
       }
 
       const result = await response.json();
-      const attachments = result.data || [];
+      const attachments = normalizeOrderFileRows(
+        Array.isArray(result?.data) ? result.data : [],
+        Array.isArray(result?.assets) ? result.assets : [],
+      );
       setAttachmentsDialogItems(Array.isArray(attachments) ? attachments : []);
     } catch (error: any) {
       console.error("[openAttachmentsDialog] Error:", error);
@@ -483,7 +493,7 @@ export default function Orders() {
       case "orderNumber": {
         const { displayNumber, isTest } = getDisplayOrderNumber(row);
         return (
-          <Link to={ROUTES.orders.detail(row.id)} state={{ referrer: buildReferrer(location) }} className="text-blue-600 hover:underline font-medium flex items-center gap-1.5">
+          <Link to={ROUTES.orders.detail(row.id)} state={{ referrer: buildReferrer(location) }} className="text-sm text-blue-600 hover:underline font-medium flex items-center gap-1.5">
             <span>{displayNumber}</span>
             {isTest && (
               <span className="text-[10px] bg-yellow-100 text-yellow-800 px-1.5 py-0.5 rounded font-medium">Test</span>
@@ -895,6 +905,20 @@ export default function Orders() {
             </SelectContent>
           </Select>
           <div className="flex items-center gap-3 whitespace-nowrap">
+            <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2">
+              <Switch
+                id="orders-include-thumbnails"
+                checked={includeThumbnails}
+                onCheckedChange={(checked) => setIncludeThumbnails(checked === true)}
+                aria-label="Toggle order thumbnails"
+              />
+              <Label htmlFor="orders-include-thumbnails" className="cursor-pointer text-sm text-foreground">
+                Thumbnails
+              </Label>
+              <Badge variant={includeThumbnails ? "default" : "secondary"} className="pointer-events-none text-[10px] uppercase tracking-wide">
+                {includeThumbnails ? "On" : "Off"}
+              </Badge>
+            </div>
             <Label className="text-sm text-muted-foreground">Rows per page</Label>
             <Select value={String(pageSize)} onValueChange={(v) => setPageSize(parseInt(v, 10))}>
               <SelectTrigger className="w-[100px] h-9">
@@ -1013,16 +1037,6 @@ export default function Orders() {
                 <div className="text-sm text-muted-foreground">
                   Showing {((page - 1) * pageSize) + 1}-{Math.min(page * pageSize, filteredOrders.length)} of {filteredOrders.length}
                 </div>
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="includeThumbnails"
-                    checked={includeThumbnails}
-                    onCheckedChange={(checked) => setIncludeThumbnails(checked === true)}
-                  />
-                  <Label htmlFor="includeThumbnails" className="text-sm text-muted-foreground cursor-pointer">
-                    Show thumbnails
-                  </Label>
-                </div>
               </div>
               <div className="flex items-center gap-2">
                 <Button
@@ -1062,7 +1076,7 @@ export default function Orders() {
             setAttachmentsDialogItems([]);
             setAttachmentsDialogLoading(false);
             setAttachmentViewerOpen(false);
-            setSelectedAttachment(null);
+            setSelectedAttachmentIndex(0);
           }
         }}
       >
@@ -1087,21 +1101,6 @@ export default function Orders() {
                 const originalUrl = att?.originalUrl || null;
                 const hasThumb = typeof thumbUrl === "string" && (thumbUrl.startsWith("http") || thumbUrl.startsWith("/"));
 
-                const viewerItem = {
-                  id: String(att?.id || filename),
-                  fileName: filename,
-                  originalFilename: att?.originalFilename || null,
-                  mimeType: att?.mimeType || null,
-                  fileSize: att?.fileSize ?? att?.sizeBytes ?? null,
-                  originalUrl: typeof originalUrl === "string" ? originalUrl : null,
-                  downloadUrl: typeof downloadUrl === "string" ? downloadUrl : null,
-                  previewThumbnailUrl: att?.previewThumbnailUrl ?? null,
-                  thumbnailUrl: att?.thumbnailUrl ?? null,
-                  thumbUrl: att?.thumbUrl ?? null,
-                  previewUrl: att?.previewUrl ?? null,
-                  pages: att?.pages ?? null,
-                };
-
                 return (
                   <button
                     key={att?.id || filename}
@@ -1109,7 +1108,8 @@ export default function Orders() {
                     className="w-full text-left flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 hover:bg-muted/20"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setSelectedAttachment(viewerItem);
+                      const clickedIndex = normalizedAttachmentViewerItems.findIndex((item) => item.id === String(att?.id || filename));
+                      setSelectedAttachmentIndex(clickedIndex >= 0 ? clickedIndex : 0);
                       setAttachmentViewerOpen(true);
                     }}
                   >
@@ -1163,9 +1163,17 @@ export default function Orders() {
       </Dialog>
 
       <AttachmentViewerDialog
-        attachment={selectedAttachment}
+        attachments={normalizedAttachmentViewerItems}
+        initialIndex={selectedAttachmentIndex}
         open={attachmentViewerOpen}
-        onOpenChange={setAttachmentViewerOpen}
+        hideFilmstrip={false}
+        showMetaPanel={true}
+        onOpenChange={(open) => {
+          setAttachmentViewerOpen(open);
+          if (!open) {
+            setSelectedAttachmentIndex(0);
+          }
+        }}
       />
     </Page>
   );

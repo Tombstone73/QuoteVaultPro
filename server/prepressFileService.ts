@@ -9,8 +9,8 @@
  */
 
 import { db } from "./db";
-import { lineItemFiles, orders, orderLineItems } from "../shared/schema";
-import { eq, and } from "drizzle-orm";
+import { lineItemFiles, orders, orderLineItems, orderAttachments } from "../shared/schema";
+import { eq, and, desc } from "drizzle-orm";
 import { getStorageClient } from "./objectStorage";
 import type { Response } from "express";
 import archiver from "archiver";
@@ -22,9 +22,45 @@ import {
   generateRelativePath,
 } from "./utils/fileStorage";
 import { decideStorageTarget } from "./services/storageTarget";
+import { storagePolicyResolver } from "./services/storage/StoragePolicyResolver";
 import { normalizeObjectKeyForDb } from "./lib/supabaseObjectHelpers";
+import {
+  createRequestLogOnce,
+  resolveDerivativeFileAccess,
+  resolveOriginalFileAccess,
+} from "./lib/supabaseObjectHelpers";
 
 const BUCKET_NAME = process.env.PREPRESS_FILES_BUCKET || process.env.GCS_BUCKET_NAME || "quotevaultpro-uploads";
+
+function buildPrepressDownloadEtag(fileId: string, sizeBytes: number | null | undefined, createdAt: Date | string | null | undefined) {
+  const createdAtValue = createdAt ? new Date(createdAt).getTime() : 0;
+  return `W/\"prepress-${fileId}-${sizeBytes ?? 0}-${createdAtValue}\"`;
+}
+
+/**
+ * Normalized shape for order-level attachments surfaced in the prepress file panel.
+ * These originate from the `order_attachments` table (uploaded on the order/quote page)
+ * and are bridged read-only into the prepress workspace so operators can see customer
+ * artwork that was submitted before the order entered the prepress queue.
+ */
+export type BridgedOriginal = {
+  id: string;
+  originalFilename: string;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  role: string;
+  createdAt: Date;
+  source: 'order_attachment';
+  downloadUrl: string;
+  thumbnailUrl: string | null;
+  uploadedBy: string | null;
+};
+
+export type EnsuredFinalArtworkResult = {
+  file: LineItemFile;
+  source: "existing_final" | "line_item_original" | "order_attachment";
+  created: boolean;
+};
 const MAX_FILE_SIZE_MB = 250;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
@@ -91,11 +127,15 @@ export async function uploadLineItemFile(params: {
     throw new Error(`File size exceeds maximum allowed size of ${MAX_FILE_SIZE_MB}MB`);
   }
 
+  const storagePolicy = await storagePolicyResolver.resolve(organizationId);
+  const canonicalProviderConfig = storagePolicyResolver.resolveCanonicalStorageBehavior(storagePolicy);
+
   const target = decideStorageTarget({
     fileName: originalFilename,
     fileSizeBytes: buffer.length,
     organizationId,
     context: "prepress.uploadLineItemFile",
+    providerConfigJson: canonicalProviderConfig.configJson,
   });
 
   let storagePath = "";
@@ -253,12 +293,29 @@ export async function downloadLineItemFile(
   });
   const downloadFilename = `${jobNumber}  ${computedDisplayFilename}`;
   const dispositionType = options?.inline ? "inline" : "attachment";
+  const etag = buildPrepressDownloadEtag(file.file.id, file.file.sizeBytes, file.file.createdAt);
+  const ifNoneMatchHeader = Array.isArray(res.req?.headers["if-none-match"])
+    ? res.req?.headers["if-none-match"][0]
+    : res.req?.headers["if-none-match"];
+  const ifNoneMatch = typeof ifNoneMatchHeader === "string" ? ifNoneMatchHeader : null;
+  const lastModified = file.file.createdAt ? new Date(file.file.createdAt).toUTCString() : null;
+
+  if (ifNoneMatch && ifNoneMatch === etag) {
+    res.status(304).end();
+    return;
+  }
 
   res.set({
     "Content-Type": file.file.mimeType,
     "Content-Disposition": `${dispositionType}; filename="${downloadFilename}"`,
-    "Cache-Control": "private, no-cache",
+    "Cache-Control": "private, max-age=0, must-revalidate",
+    ETag: etag,
+    "X-Served-As": "original",
   });
+
+  if (lastModified) {
+    res.set("Last-Modified", lastModified);
+  }
 
   // Prepress bucket path
   if (file.file.storageBucket) {
@@ -347,6 +404,7 @@ export async function downloadOriginalsAsZip(
     "Content-Type": "application/zip",
     "Content-Disposition": `attachment; filename="${zipFilename}"`,
     "Cache-Control": "private, no-cache",
+    "X-Served-As": "download",
   });
 
   const archive = archiver("zip", { zlib: { level: 6 } });
@@ -425,6 +483,7 @@ export async function getLineItemFiles(
   originals: LineItemFile[];
   finals: LineItemFile[];
   references: LineItemFile[];
+  bridgedOriginals: BridgedOriginal[];
 }> {
   const allFiles = await db
     .select()
@@ -438,10 +497,199 @@ export async function getLineItemFiles(
     )
     .orderBy(lineItemFiles.createdAt);
 
+  // Bridge in any order-level attachments that were uploaded before the order
+  // entered the prepress queue (e.g. uploaded by customer on the checkout or
+  // order detail page). These live in order_attachments keyed by orderLineItemId.
+  const legacyRows = await db
+    .select({
+      id: orderAttachments.id,
+      originalFilename: orderAttachments.originalFilename,
+      fileName: orderAttachments.fileName,
+      mimeType: orderAttachments.mimeType,
+      sizeBytes: orderAttachments.sizeBytes,
+      fileSize: orderAttachments.fileSize,
+      role: orderAttachments.role,
+      fileRecordId: orderAttachments.fileRecordId,
+      fileUrl: orderAttachments.fileUrl,
+      thumbKey: orderAttachments.thumbKey,
+      createdAt: orderAttachments.createdAt,
+      uploadedByName: orderAttachments.uploadedByName,
+    })
+    .from(orderAttachments)
+    .where(eq(orderAttachments.orderLineItemId, lineItemId))
+    .orderBy(orderAttachments.createdAt);
+
+  const logOnce = createRequestLogOnce();
+  const bridgedOriginals: BridgedOriginal[] = await Promise.all(legacyRows.map(async (row) => {
+    const [originalAccess, thumbAccess] = await Promise.all([
+      resolveOriginalFileAccess(row, { logOnce }),
+      resolveDerivativeFileAccess(row, "thumbnail", { logOnce }),
+    ]);
+
+    return {
+      id: row.id,
+      originalFilename: row.originalFilename || row.fileName,
+      mimeType: row.mimeType ?? null,
+      sizeBytes: row.sizeBytes ?? row.fileSize ?? null,
+      role: row.role ?? "other",
+      createdAt: row.createdAt,
+      source: "order_attachment" as const,
+      downloadUrl: originalAccess.downloadUrl ?? originalAccess.originalUrl ?? "",
+      thumbnailUrl: thumbAccess.url,
+      uploadedBy: row.uploadedByName ?? null,
+    };
+  }));
+
   return {
     originals: allFiles.filter((f) => f.role === "original"),
     finals: allFiles.filter((f) => f.role === "final"),
     references: allFiles.filter((f) => f.role === "reference"),
+    bridgedOriginals,
+  };
+}
+
+export async function ensureFinalArtworkForLineItem(params: {
+  organizationId: string;
+  orderId: string;
+  lineItemId: string;
+  prepressSessionId?: string | null;
+  createdByUserId: string;
+}): Promise<EnsuredFinalArtworkResult | null> {
+  const { organizationId, orderId, lineItemId, prepressSessionId, createdByUserId } = params;
+
+  const [existingFinal] = await db
+    .select()
+    .from(lineItemFiles)
+    .where(
+      and(
+        eq(lineItemFiles.organizationId, organizationId),
+        eq(lineItemFiles.lineItemId, lineItemId),
+        eq(lineItemFiles.role, "final"),
+        eq(lineItemFiles.status, "active"),
+      ),
+    )
+    .orderBy(desc(lineItemFiles.createdAt))
+    .limit(1);
+
+  if (existingFinal) {
+    return {
+      file: existingFinal,
+      source: "existing_final",
+      created: false,
+    };
+  }
+
+  const [existingOriginal] = await db
+    .select()
+    .from(lineItemFiles)
+    .where(
+      and(
+        eq(lineItemFiles.organizationId, organizationId),
+        eq(lineItemFiles.lineItemId, lineItemId),
+        eq(lineItemFiles.role, "original"),
+        eq(lineItemFiles.status, "active"),
+      ),
+    )
+    .orderBy(desc(lineItemFiles.createdAt))
+    .limit(1);
+
+  if (existingOriginal) {
+    const [clonedFinal] = await db.insert(lineItemFiles).values({
+      organizationId,
+      orderId,
+      lineItemId,
+      prepressSessionId: prepressSessionId || existingOriginal.prepressSessionId || null,
+      fileRecordId: existingOriginal.fileRecordId || null,
+      role: "final",
+      status: "active",
+      tag: "final_print",
+      storageBucket: existingOriginal.storageBucket || null,
+      storagePath: existingOriginal.storagePath,
+      storageKey: existingOriginal.storageKey || existingOriginal.storagePath,
+      originalFilename: existingOriginal.originalFilename,
+      mimeType: existingOriginal.mimeType,
+      sizeBytes: existingOriginal.sizeBytes,
+      supersedesFileId: null,
+      createdByUserId,
+    }).returning();
+
+    return {
+      file: clonedFinal,
+      source: "line_item_original",
+      created: true,
+    };
+  }
+
+  const attachmentCandidates = await db
+    .select({
+      id: orderAttachments.id,
+      fileRecordId: orderAttachments.fileRecordId,
+      fileName: orderAttachments.fileName,
+      originalFilename: orderAttachments.originalFilename,
+      mimeType: orderAttachments.mimeType,
+      fileUrl: orderAttachments.fileUrl,
+      relativePath: orderAttachments.relativePath,
+      sizeBytes: orderAttachments.sizeBytes,
+      fileSize: orderAttachments.fileSize,
+      role: orderAttachments.role,
+      isPrimary: orderAttachments.isPrimary,
+      createdAt: orderAttachments.createdAt,
+    })
+    .from(orderAttachments)
+    .where(eq(orderAttachments.orderLineItemId, lineItemId))
+    .orderBy(desc(orderAttachments.isPrimary), desc(orderAttachments.createdAt));
+
+  const eligibleAttachment = attachmentCandidates.find((candidate) =>
+    candidate.role === "artwork" || candidate.role === "proof" || candidate.role === "reference",
+  );
+
+  if (!eligibleAttachment) {
+    return null;
+  }
+
+  const resolvedOriginal = await resolveOriginalFileAccess({
+    id: eligibleAttachment.id,
+    fileRecordId: eligibleAttachment.fileRecordId,
+    fileName: eligibleAttachment.fileName,
+    originalFilename: eligibleAttachment.originalFilename,
+    mimeType: eligibleAttachment.mimeType,
+    fileUrl: eligibleAttachment.fileUrl,
+    fileKey: eligibleAttachment.relativePath,
+  });
+
+  const resolvedStoragePath =
+    resolvedOriginal.objectPath ||
+    eligibleAttachment.relativePath ||
+    eligibleAttachment.fileUrl ||
+    null;
+
+  if (resolvedOriginal.availabilityStatus !== "available" || !resolvedStoragePath) {
+    return null;
+  }
+
+  const [clonedAttachmentFinal] = await db.insert(lineItemFiles).values({
+    organizationId,
+    orderId,
+    lineItemId,
+    prepressSessionId: prepressSessionId || null,
+    fileRecordId: eligibleAttachment.fileRecordId || null,
+    role: "final",
+    status: "active",
+    tag: "final_print",
+    storageBucket: null,
+    storagePath: resolvedStoragePath,
+    storageKey: resolvedStoragePath,
+    originalFilename: eligibleAttachment.originalFilename || eligibleAttachment.fileName || `artwork-${eligibleAttachment.id}`,
+    mimeType: eligibleAttachment.mimeType || resolvedOriginal.mimeType || "application/octet-stream",
+    sizeBytes: Math.max(0, Number(eligibleAttachment.sizeBytes ?? eligibleAttachment.fileSize ?? 0)),
+    supersedesFileId: null,
+    createdByUserId,
+  }).returning();
+
+  return {
+    file: clonedAttachmentFinal,
+    source: "order_attachment",
+    created: true,
   };
 }
 

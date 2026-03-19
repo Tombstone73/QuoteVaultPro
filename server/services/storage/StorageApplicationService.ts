@@ -1,0 +1,351 @@
+import { db } from "../../db";
+import type { FileRecord, StoragePlacement, StorageProviderConfig, StorageJob } from "@shared/schema";
+import { deleteUploadSession, loadUploadSessionMeta, saveUploadSessionMeta } from "../chunkedUploads";
+import { fileRecordRepository } from "../../storage/fileRecord.repo";
+import { storagePlacementRepository } from "../../storage/storagePlacement.repo";
+import { normalizeLocalFilesystemStorageProviderConfig, normalizeS3CompatibleStorageProviderConfig, normalizeSupabaseStorageProviderConfig } from "@shared/storageSettings";
+import { storageJobRepository } from "../../storage/storageJob.repo";
+import { storagePolicyResolver } from "./StoragePolicyResolver";
+import { storageRegistry } from "./StorageRegistry";
+import type { StorageResourceContext, StoredObjectDescriptor } from "./adapters/StorageProviderAdapter";
+
+function lifecycleStateForStorageTarget(storageTarget: StoredObjectDescriptor["storageTarget"]): FileRecord["lifecycleState"] {
+  switch (storageTarget) {
+    case "supabase":
+    case "local_dev":
+      return "stored_hot";
+    default:
+      return "stored_hot";
+  }
+}
+
+function storageClassForTarget(): FileRecord["storageClass"] {
+  return "hot";
+}
+
+export type StorageWriteResult<TLinked> = {
+  fileRecord: FileRecord;
+  placement: StoragePlacement;
+  linkedRecord: TLinked;
+  storedObject: StoredObjectDescriptor;
+  storageJob: StorageJob;
+};
+
+export class StorageApplicationService {
+  async initiateUpload(input: {
+    organizationId: string;
+    fileName?: string | null;
+    fileSizeBytes: number;
+    requestedTarget?: string | null;
+  }) {
+    const policy = await storagePolicyResolver.resolve(input.organizationId);
+    const providerConfig = storagePolicyResolver.resolveIntakeStorageBehavior(policy);
+    const adapter = storageRegistry.getAdapter(providerConfig.providerType);
+    return adapter.initiateUpload({
+      organizationId: input.organizationId,
+      fileName: input.fileName,
+      fileSizeBytes: input.fileSizeBytes,
+      requestedTarget: input.requestedTarget,
+      providerConfig,
+    });
+  }
+
+  async finalizeUpload<TLinked>(input: {
+    organizationId: string;
+    createdByUserId: string | null;
+    requestedTarget?: string | null;
+    resource: StorageResourceContext;
+    source:
+      | {
+          kind: "buffer";
+          buffer: Buffer;
+          originalFilename: string;
+          mimeType: string;
+        }
+      | {
+          kind: "upload-session";
+          uploadId: string;
+          expectedPurpose: "quote-attachment" | "order-attachment";
+          expectedParentId: string;
+        }
+      | {
+          kind: "existing-key";
+          fileUrl: string;
+          originalFilename: string;
+          mimeType?: string | null;
+          fileSize?: number | null;
+          checksum?: string | null;
+          storedFilename?: string | null;
+          extension?: string | null;
+        };
+    persistLink: (tx: any, stored: {
+      fileRecord: FileRecord;
+      placement: StoragePlacement;
+      storedObject: StoredObjectDescriptor;
+      legacyStorageProvider: "local" | "supabase" | "s3";
+      legacyFileUrl: string;
+      legacyRelativePath: string | null;
+    }) => Promise<TLinked>;
+  }): Promise<StorageWriteResult<TLinked>> {
+    let stage = "resolve_policy";
+    const policy = await storagePolicyResolver.resolve(input.organizationId);
+    const providerConfig = storagePolicyResolver.resolveCanonicalStorageBehavior(policy);
+    const adapter = storageRegistry.getAdapter(providerConfig.providerType);
+
+    stage = "create_storage_job";
+    const storageJob = await storageJobRepository.create({
+      organizationId: input.organizationId,
+      jobType: "finalize_upload",
+      state: "queued",
+      fileRecordId: null,
+      sourcePlacementId: null,
+      targetProviderConfigId: providerConfig.id,
+      payloadJson: {
+        sourceKind: input.source.kind,
+        resourceType: input.resource.resourceType,
+        resourceId: input.resource.resourceId,
+      },
+      errorText: null,
+      attempts: 0,
+      scheduledAt: null,
+      startedAt: null,
+      finishedAt: null,
+    });
+
+    await storageJobRepository.updateState(storageJob.id, {
+      state: "running",
+      attempts: storageJob.attempts + 1,
+      startedAt: new Date(),
+    });
+
+    let storedObject: StoredObjectDescriptor | null = null;
+    let sourceUploadMeta: Awaited<ReturnType<typeof loadUploadSessionMeta>> | null = null;
+
+    try {
+      if (input.source.kind === "buffer") {
+        stage = "put_object";
+        storedObject = await adapter.putObject({
+          buffer: input.source.buffer,
+          originalFilename: input.source.originalFilename,
+          mimeType: input.source.mimeType,
+          requestedTarget: input.requestedTarget,
+          providerConfig,
+          resource: input.resource,
+        });
+      } else if (input.source.kind === "upload-session") {
+        stage = "load_upload_session";
+        sourceUploadMeta = await loadUploadSessionMeta(input.source.uploadId);
+        if (sourceUploadMeta.organizationId !== input.organizationId) {
+          throw new Error("Upload session does not belong to this organization");
+        }
+        if (sourceUploadMeta.purpose !== input.source.expectedPurpose) {
+          throw new Error("Upload session purpose mismatch");
+        }
+        if (sourceUploadMeta.status !== "finalized" || !sourceUploadMeta.relativePath) {
+          throw new Error("Upload not finalized");
+        }
+        const parentId =
+          sourceUploadMeta.purpose === "quote-attachment"
+            ? sourceUploadMeta.quoteId
+            : sourceUploadMeta.orderId;
+        if (parentId && parentId !== input.source.expectedParentId) {
+          throw new Error("Upload session parent mismatch");
+        }
+
+        stage = "finalize_upload_session";
+        storedObject = await adapter.finalizeUpload({
+          sourceRelativePath: sourceUploadMeta.relativePath,
+          originalFilename: sourceUploadMeta.originalFilename,
+          mimeType: sourceUploadMeta.mimeType || "application/octet-stream",
+          sizeBytes: sourceUploadMeta.sizeBytes || 0,
+          checksum: sourceUploadMeta.checksum || null,
+          extension: sourceUploadMeta.extension || null,
+          storedFilename: sourceUploadMeta.storedFilename || null,
+          requestedTarget: input.requestedTarget,
+          providerConfig,
+          resource: input.resource,
+        });
+      } else {
+        const rawKey = input.source.fileUrl.trim();
+        const looksHttp = rawKey.startsWith("http://") || rawKey.startsWith("https://");
+        if (looksHttp) {
+          throw new Error("External URLs are not supported by canonical storage finalization");
+        }
+
+        stage = "prepare_existing_key";
+        let storageTarget: StoredObjectDescriptor["storageTarget"];
+        let bucket: string | null;
+        let objectKey: string | null;
+        let localPathRef: string | null;
+
+        if (providerConfig.providerType === "s3") {
+          const normalized = normalizeS3CompatibleStorageProviderConfig(providerConfig.configJson);
+          storageTarget = "s3";
+          bucket = normalized.bucketName.trim() || null;
+          objectKey = rawKey;
+          localPathRef = null;
+        } else if (providerConfig.providerType === "supabase") {
+          const normalized = normalizeSupabaseStorageProviderConfig(providerConfig.configJson);
+          storageTarget = "supabase";
+          bucket = normalized.bucketName.trim() || null;
+          objectKey = rawKey;
+          localPathRef = null;
+        } else if (providerConfig.providerType === "local_filesystem") {
+          normalizeLocalFilesystemStorageProviderConfig(providerConfig.configJson);
+          storageTarget = "local_dev";
+          bucket = null;
+          objectKey = null;
+          localPathRef = rawKey;
+        } else {
+          const looksSupabaseKey = rawKey.startsWith("uploads/") || rawKey.startsWith("titan-private/");
+          storageTarget = input.requestedTarget === "supabase"
+            ? "supabase"
+            : input.requestedTarget === "local_dev"
+              ? "local_dev"
+              : looksSupabaseKey
+                ? "supabase"
+                : "local_dev";
+          bucket = storageTarget === "supabase" ? "titan-private" : null;
+          objectKey = storageTarget === "supabase" ? rawKey : null;
+          localPathRef = storageTarget === "supabase" ? null : rawKey;
+        }
+
+        storedObject = {
+          providerType: providerConfig.providerType,
+          storageTarget,
+          bucket,
+          objectKey,
+          localPathRef,
+          checksum: input.source.checksum ?? null,
+          sizeBytes: Math.max(0, Number(input.source.fileSize || 0)),
+          mimeType: input.source.mimeType || "application/octet-stream",
+          originalFilename: input.source.originalFilename,
+          storedFilename: input.source.storedFilename ?? null,
+          extension: input.source.extension ?? null,
+          persistenceConfirmed: true,
+        };
+      }
+
+      if (!storedObject) {
+        throw new Error("No stored object was produced during storage finalization");
+      }
+
+      stage = "verify_object";
+      const verification = await adapter.verifyObject({
+        providerConfig,
+        objectKey: storedObject.objectKey,
+        localPathRef: storedObject.localPathRef,
+      });
+      if (!verification.exists) {
+        throw new Error("Provider verification failed for stored object");
+      }
+
+      const persistedObject = storedObject;
+
+  stage = "persist_canonical_records";
+      const finalized = await db.transaction(async (tx) => {
+        const fileRecord = await fileRecordRepository.create(
+          {
+            organizationId: input.organizationId,
+            storageClass: storageClassForTarget(),
+            lifecycleState: lifecycleStateForStorageTarget(persistedObject.storageTarget),
+            originalFilename: persistedObject.originalFilename,
+            mimeType: persistedObject.mimeType,
+            sizeBytes: persistedObject.sizeBytes,
+            checksum: persistedObject.checksum,
+            createdByUserId: input.createdByUserId,
+          },
+          tx,
+        );
+
+        const placement = await storagePlacementRepository.create(
+          {
+            fileRecordId: fileRecord.id,
+            providerConfigId: providerConfig.id,
+            placementRole: "canonical",
+            placementState: "active",
+            bucket: persistedObject.bucket,
+            objectKey: persistedObject.objectKey,
+            localPathRef: persistedObject.localPathRef,
+            checksum: persistedObject.checksum,
+            sizeBytes: persistedObject.sizeBytes,
+            lastVerifiedAt: verification.verifiedAt,
+            createdAt: new Date(),
+          },
+          tx,
+        );
+
+        const linkedRecord = await input.persistLink(tx, {
+          fileRecord,
+          placement,
+          storedObject: persistedObject,
+          legacyStorageProvider:
+            persistedObject.storageTarget === "supabase"
+              ? "supabase"
+              : persistedObject.storageTarget === "s3"
+                ? "s3"
+                : "local",
+          legacyFileUrl: persistedObject.objectKey ?? persistedObject.localPathRef ?? "",
+          legacyRelativePath: persistedObject.objectKey ?? persistedObject.localPathRef ?? null,
+        });
+
+        return { fileRecord, placement, linkedRecord };
+      });
+
+      if (sourceUploadMeta) {
+        stage = "mark_upload_session_linked";
+        sourceUploadMeta.linkedAt = new Date().toISOString();
+        await saveUploadSessionMeta(sourceUploadMeta.uploadId, sourceUploadMeta);
+        await deleteUploadSession(sourceUploadMeta.uploadId);
+      }
+
+      stage = "complete_storage_job";
+      const completedJob = await storageJobRepository.updateState(storageJob.id, {
+        state: "succeeded",
+        fileRecordId: finalized.fileRecord.id,
+        finishedAt: new Date(),
+        errorText: null,
+      });
+
+      return {
+        fileRecord: finalized.fileRecord,
+        placement: finalized.placement,
+        linkedRecord: finalized.linkedRecord,
+        storedObject: persistedObject,
+        storageJob: completedJob,
+      };
+    } catch (error: any) {
+      console.error("[StorageApplicationService.finalizeUpload] Failed", {
+        organizationId: input.organizationId,
+        resourceType: input.resource.resourceType,
+        resourceId: input.resource.resourceId,
+        sourceKind: input.source.kind,
+        stage,
+        storageJobId: storageJob.id,
+        error: error?.message || String(error),
+        code: error?.code ?? null,
+      });
+
+      if (storedObject) {
+        await adapter.deleteObject({
+          providerConfig,
+          objectKey: storedObject.objectKey,
+          localPathRef: storedObject.localPathRef,
+        }).catch(() => false);
+      }
+
+      const failedState = input.source.kind === "upload-session" ? "retryable_failed" : "failed";
+      const failedJob = await storageJobRepository.updateState(storageJob.id, {
+        state: failedState,
+        errorText: error?.message || "Storage finalization failed",
+        finishedAt: new Date(),
+      });
+
+      throw Object.assign(error instanceof Error ? error : new Error(String(error)), {
+        storageJobId: failedJob.id,
+      });
+    }
+  }
+}
+
+export const storageApplicationService = new StorageApplicationService();

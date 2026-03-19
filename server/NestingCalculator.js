@@ -30,16 +30,17 @@ class SheetChargingPolicy {
 }
 
 class NestingCalculator {
-  constructor(sheetWidth, sheetHeight, sheetCost, minPricePerItem = null, volumePricing = null, sheetChargingPolicy = null) {
+  constructor(sheetWidth, sheetHeight, sheetCost, minPricePerItem = null, volumePricing = null, sheetChargingPolicy = null, allowRotation = true) {
     this.sheetWidth = sheetWidth;
     this.sheetHeight = sheetHeight;
     this.sheetCost = sheetCost;
     this.sheetSqft = (sheetWidth * sheetHeight) / 144;
     this.costPerSqft = sheetCost / this.sheetSqft;
-    this.fullSheetSqft = (48 * 96) / 144;
+    this.fullSheetSqft = this.sheetSqft;
     this.minPricePerItem = minPricePerItem;
     this.volumePricing = volumePricing;
     this.sheetChargingPolicy = sheetChargingPolicy || new SheetChargingPolicy();
+    this.allowRotation = allowRotation !== false;
   }
 
   /**
@@ -167,6 +168,10 @@ class NestingCalculator {
    * Test both orientations and return the best
    */
   findOptimalOrientation(pieceWidth, pieceHeight) {
+    if (!this.allowRotation) {
+      return this.calculateGridFit(pieceWidth, pieceHeight);
+    }
+
     const vertical = this.calculateGridFit(pieceWidth, pieceHeight);
     const horizontal = this.calculateGridFit(pieceHeight, pieceWidth);
 
@@ -182,6 +187,11 @@ class NestingCalculator {
    * Tests both sheet orientations to ensure consistent results
    */
   testMixedOrientations(pieceWidth, pieceHeight) {
+    if (!this.allowRotation) {
+      const unrotated = this.calculateGridFitOnSheet(pieceWidth, pieceHeight, this.sheetWidth, this.sheetHeight);
+      return unrotated ? [unrotated] : [];
+    }
+
     const results = [];
 
     console.log(`[MIXED DEBUG] Testing piece ${pieceWidth}×${pieceHeight} on sheet ${this.sheetWidth}×${this.sheetHeight}`);
@@ -335,7 +345,7 @@ class NestingCalculator {
 
     // Check if piece fits on the sheet (either orientation)
     const fitsNormal = pieceWidth <= useSheetWidth && pieceHeight <= useSheetHeight;
-    const fitsRotated = pieceHeight <= useSheetWidth && pieceWidth <= useSheetHeight;
+    const fitsRotated = this.allowRotation && pieceHeight <= useSheetWidth && pieceWidth <= useSheetHeight;
 
     if (!fitsNormal && !fitsRotated) {
       // Oversized - doesn't fit
@@ -434,7 +444,7 @@ class NestingCalculator {
       }
 
       // Option 2: All rotated orientation (grid pattern)
-      if (piecesWideRotated > 0) {
+      if (this.allowRotation && piecesWideRotated > 0) {
         const rowsNeeded = Math.ceil(remainingPieces / piecesWideRotated);
         const actualPiecesInLastRow = remainingPieces % piecesWideRotated || piecesWideRotated;
         const height = rowsNeeded * pieceWidth;
@@ -454,7 +464,7 @@ class NestingCalculator {
 
       // Option 3: Mixed orientation - try different combinations
       // This matches the logic from testMixedOrientations
-      if (piecesWideNormal > 0 && piecesWideRotated > 0 && pieceWidth !== pieceHeight) {
+      if (this.allowRotation && piecesWideNormal > 0 && piecesWideRotated > 0 && pieceWidth !== pieceHeight) {
         // Try filling rows with normal pieces, then add rotated pieces below
         for (let normalCount = 0; normalCount <= remainingPieces; normalCount++) {
           const rotatedCount = remainingPieces - normalCount;

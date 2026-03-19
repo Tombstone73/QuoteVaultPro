@@ -3,9 +3,365 @@ import { quoteAttachmentPages } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage";
 import { applyThumbnailContract } from "./thumbnailContract";
+import { canonicalFileReadResolver, type CanonicalFileReadStatus } from "../services/storage/CanonicalFileReadResolver";
+import { canonicalDerivativeReadResolver, type CanonicalDerivativeReadStatus } from "../services/storage/CanonicalDerivativeReadResolver";
 
 export type FileRole = "artwork" | "proof" | "reference" | "customer_po" | "setup" | "output" | "other";
 export type FileSide = "front" | "back" | "na";
+
+export type OriginalFileAccessResult = {
+    displayFilename: string;
+    mimeType: string | null;
+    objectPath: string | null;
+    originalUrl: string | null;
+    downloadUrl: string | null;
+    availabilityStatus: CanonicalFileReadStatus;
+};
+
+export type DerivativeFileAccessResult = {
+    objectPath: string | null;
+    url: string | null;
+    availabilityStatus: CanonicalDerivativeReadStatus;
+};
+
+function objectsProxyUrl(key: string, params?: { download?: boolean; filename?: string; bucket?: string | null; providerConfigId?: string | null }) {
+    const download = params?.download ? "download=1" : "";
+    const filename = params?.filename ? `filename=${encodeURIComponent(params.filename)}` : "";
+    const bucketParam = params?.bucket ? `bucket=${encodeURIComponent(params.bucket)}` : "";
+    const providerConfigParam = params?.providerConfigId ? `providerConfigId=${encodeURIComponent(params.providerConfigId)}` : "";
+    const query = [download, filename, bucketParam, providerConfigParam].filter(Boolean).join("&");
+    return `/objects/${key}${query ? `?${query}` : ""}`;
+}
+
+function extractLegacyObjectPath(candidate: string | null | undefined): string | null {
+    const raw = (candidate ?? "").toString().trim();
+    if (!raw) return null;
+
+    if (/^https?:\/\//i.test(raw)) {
+        try {
+            const url = new URL(raw);
+            const objectPath = url.pathname.match(/^\/objects\/(.+)$/)?.[1] ?? null;
+            return objectPath ? normalizeObjectKeyForDb(decodeURIComponent(objectPath)) : null;
+        } catch {
+            return null;
+        }
+    }
+
+    const [pathOnly] = raw.split("?");
+
+    if (pathOnly.startsWith("/objects/")) {
+        return normalizeObjectKeyForDb(decodeURIComponent(pathOnly.slice("/objects/".length)));
+    }
+
+    if (pathOnly.startsWith("objects/")) {
+        return normalizeObjectKeyForDb(decodeURIComponent(pathOnly.slice("objects/".length)));
+    }
+
+    if (pathOnly.startsWith("/") || pathOnly.startsWith("thumbs/") || pathOnly.startsWith("thumbnails/") || pathOnly.startsWith("uploads/")) {
+        return normalizeObjectKeyForDb(decodeURIComponent(pathOnly));
+    }
+
+    return normalizeObjectKeyForDb(decodeURIComponent(pathOnly));
+}
+
+function buildLegacyReadableUrls(args: {
+    candidate: string | null | undefined;
+    filename?: string | null;
+    bucket?: string | null;
+    providerConfigId?: string | null;
+}): { objectPath: string | null; originalUrl: string | null; downloadUrl: string | null } {
+    const raw = (args.candidate ?? "").toString().trim();
+    if (!raw) {
+        return { objectPath: null, originalUrl: null, downloadUrl: null };
+    }
+
+    if (/^https?:\/\//i.test(raw)) {
+        const objectPath = extractLegacyObjectPath(raw);
+        if (objectPath) {
+            return {
+                objectPath,
+                originalUrl: objectsProxyUrl(objectPath, { bucket: args.bucket ?? null, providerConfigId: args.providerConfigId ?? null }),
+                downloadUrl: objectsProxyUrl(objectPath, {
+                    download: true,
+                    filename: args.filename ?? undefined,
+                    bucket: args.bucket ?? null,
+                    providerConfigId: args.providerConfigId ?? null,
+                }),
+            };
+        }
+
+        return {
+            objectPath: null,
+            originalUrl: raw,
+            downloadUrl: raw,
+        };
+    }
+
+    const objectPath = extractLegacyObjectPath(raw);
+    if (!objectPath) {
+        return { objectPath: null, originalUrl: null, downloadUrl: null };
+    }
+
+    return {
+        objectPath,
+        originalUrl: objectsProxyUrl(objectPath, { bucket: args.bucket ?? null, providerConfigId: args.providerConfigId ?? null }),
+        downloadUrl: objectsProxyUrl(objectPath, {
+            download: true,
+            filename: args.filename ?? undefined,
+            bucket: args.bucket ?? null,
+            providerConfigId: args.providerConfigId ?? null,
+        }),
+    };
+}
+
+function buildLegacyDerivativeAccess(args: {
+    derivativeCandidate: string | null | undefined;
+    bucket?: string | null;
+}): DerivativeFileAccessResult {
+    const urls = buildLegacyReadableUrls({
+        candidate: args.derivativeCandidate,
+        bucket: args.bucket ?? null,
+    });
+
+    if (!urls.originalUrl) {
+        return {
+            objectPath: null,
+            url: null,
+            availabilityStatus: "missing",
+        };
+    }
+
+    return {
+        objectPath: urls.objectPath,
+        url: urls.originalUrl,
+        availabilityStatus: "available",
+    };
+}
+
+export async function resolveOriginalFileAccess(
+    attachment: {
+        id?: string | null;
+        fileRecordId?: string | null;
+        fileName?: string | null;
+        originalFilename?: string | null;
+        mimeType?: string | null;
+        fileUrl?: string | null;
+        fileKey?: string | null;
+        bucket?: string | null;
+        providerConfigId?: string | null;
+    },
+    options?: {
+        logOnce?: (key: string, ...args: any[]) => void;
+    }
+): Promise<OriginalFileAccessResult> {
+    const displayFilename = String(attachment.originalFilename || attachment.fileName || `attachment-${attachment.id || "unknown"}`);
+    const fallbackMimeType = attachment.mimeType ?? null;
+    const logOnce = options?.logOnce;
+    const legacyOriginal = buildLegacyReadableUrls({
+        candidate: attachment.fileUrl ?? attachment.fileKey ?? null,
+        filename: displayFilename,
+        bucket: attachment.bucket ?? null,
+        providerConfigId: attachment.providerConfigId ?? null,
+    });
+
+    if (!attachment.fileRecordId) {
+        if (legacyOriginal.originalUrl) {
+            logOnce?.(
+                `canonical-missing-legacy:${attachment.id ?? displayFilename}`,
+                "[CanonicalOriginalRead] Missing fileRecordId; falling back to legacy file location",
+                { attachmentId: attachment.id ?? null, displayFilename, objectPath: legacyOriginal.objectPath }
+            );
+
+            return {
+                displayFilename,
+                mimeType: fallbackMimeType,
+                objectPath: legacyOriginal.objectPath,
+                originalUrl: legacyOriginal.originalUrl,
+                downloadUrl: legacyOriginal.downloadUrl,
+                availabilityStatus: "available",
+            };
+        }
+
+        logOnce?.(
+            `canonical-missing:${attachment.id ?? displayFilename}`,
+            "[CanonicalOriginalRead] Missing fileRecordId; original file read unavailable",
+            { attachmentId: attachment.id ?? null, displayFilename }
+        );
+
+        return {
+            displayFilename,
+            mimeType: fallbackMimeType,
+            objectPath: null,
+            originalUrl: null,
+            downloadUrl: null,
+            availabilityStatus: "missing",
+        };
+    }
+
+    const resolved = await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId));
+    const objectPath = resolved.objectKey ?? resolved.localPathRef ?? null;
+    const availabilityStatus = resolved.status;
+    const canonicalDisplayName = resolved.displayFilename ?? displayFilename;
+    const canonicalMimeType = resolved.mimeType ?? fallbackMimeType;
+
+    if (availabilityStatus !== "available" || !objectPath) {
+        if (legacyOriginal.originalUrl) {
+            logOnce?.(
+                `canonical-fallback:${attachment.fileRecordId}`,
+                "[CanonicalOriginalRead] Canonical original unavailable; falling back to legacy file location",
+                {
+                    attachmentId: attachment.id ?? null,
+                    fileRecordId: attachment.fileRecordId,
+                    availabilityStatus,
+                    fallbackObjectPath: legacyOriginal.objectPath,
+                }
+            );
+
+            return {
+                displayFilename: canonicalDisplayName,
+                mimeType: canonicalMimeType,
+                objectPath: legacyOriginal.objectPath,
+                originalUrl: legacyOriginal.originalUrl,
+                downloadUrl: legacyOriginal.downloadUrl,
+                availabilityStatus: "available",
+            };
+        }
+
+        logOnce?.(
+            `canonical-unavailable:${attachment.fileRecordId}`,
+            "[CanonicalOriginalRead] Canonical original unavailable",
+            {
+                attachmentId: attachment.id ?? null,
+                fileRecordId: attachment.fileRecordId,
+                availabilityStatus,
+                objectPath,
+            }
+        );
+
+        return {
+            displayFilename: canonicalDisplayName,
+            mimeType: canonicalMimeType,
+            objectPath: null,
+            originalUrl: null,
+            downloadUrl: null,
+            availabilityStatus,
+        };
+    }
+
+    return {
+        displayFilename: canonicalDisplayName,
+        mimeType: canonicalMimeType,
+        objectPath,
+        originalUrl: objectsProxyUrl(objectPath, { bucket: resolved.bucket ?? null, providerConfigId: resolved.providerConfigId }),
+        downloadUrl: objectsProxyUrl(objectPath, {
+            download: true,
+            filename: canonicalDisplayName,
+            bucket: resolved.bucket ?? null,
+            providerConfigId: resolved.providerConfigId,
+        }),
+        availabilityStatus,
+    };
+}
+
+export async function resolveDerivativeFileAccess(
+    attachment: {
+        id?: string | null;
+        fileRecordId?: string | null;
+        thumbKey?: string | null;
+        previewKey?: string | null;
+        thumbUrl?: string | null;
+        previewUrl?: string | null;
+        thumbnailUrl?: string | null;
+        previewThumbnailUrl?: string | null;
+        bucket?: string | null;
+    },
+    derivativeType: "thumbnail" | "preview",
+    options?: {
+        logOnce?: (key: string, ...args: any[]) => void;
+    }
+): Promise<DerivativeFileAccessResult> {
+    const logOnce = options?.logOnce;
+    const legacyDerivative = buildLegacyDerivativeAccess({
+        derivativeCandidate:
+            derivativeType === "thumbnail"
+                ? (attachment.thumbUrl ?? attachment.thumbnailUrl ?? attachment.thumbKey ?? null)
+                : (attachment.previewUrl ?? attachment.previewThumbnailUrl ?? attachment.previewKey ?? null),
+        bucket: attachment.bucket ?? null,
+    });
+
+    if (!attachment.fileRecordId) {
+        if (legacyDerivative.url) {
+            logOnce?.(
+                `canonical-derivative-missing-legacy:${derivativeType}:${attachment.id ?? "unknown"}`,
+                `[CanonicalDerivativeRead] Missing fileRecordId; falling back to legacy ${derivativeType} location`,
+                { attachmentId: attachment.id ?? null, derivativeType, objectPath: legacyDerivative.objectPath }
+            );
+
+            return legacyDerivative;
+        }
+
+        logOnce?.(
+            `canonical-derivative-missing:${derivativeType}:${attachment.id ?? "unknown"}`,
+            `[CanonicalDerivativeRead] Missing fileRecordId; ${derivativeType} read unavailable`,
+            { attachmentId: attachment.id ?? null, derivativeType }
+        );
+
+        return {
+            objectPath: null,
+            url: null,
+            availabilityStatus: "missing",
+        };
+    }
+
+    const resolved = await canonicalDerivativeReadResolver.resolveDerivative(String(attachment.fileRecordId), derivativeType);
+    const objectPath = resolved.objectKey ?? null;
+
+    if (resolved.status !== "available" || !objectPath) {
+        if (legacyDerivative.url) {
+            logOnce?.(
+                `canonical-derivative-fallback:${derivativeType}:${attachment.fileRecordId}`,
+                `[CanonicalDerivativeRead] Canonical ${derivativeType} unavailable; falling back to legacy location`,
+                {
+                    attachmentId: attachment.id ?? null,
+                    fileRecordId: attachment.fileRecordId,
+                    derivativeType,
+                    availabilityStatus: resolved.status,
+                    fallbackObjectPath: legacyDerivative.objectPath,
+                }
+            );
+
+            return legacyDerivative;
+        }
+
+        if (resolved.status === "missing") {
+            logOnce?.(
+                `canonical-derivative-unavailable:${derivativeType}:${attachment.fileRecordId}`,
+                `[CanonicalDerivativeRead] Canonical derivative unavailable`,
+                {
+                    attachmentId: attachment.id ?? null,
+                    fileRecordId: attachment.fileRecordId,
+                    derivativeType,
+                    availabilityStatus: resolved.status,
+                }
+            );
+        }
+
+        return {
+            objectPath: null,
+            url: null,
+            availabilityStatus: resolved.status,
+        };
+    }
+
+    return {
+        objectPath,
+        url: objectsProxyUrl(objectPath, {
+            bucket: resolved.bucket ?? null,
+            providerConfigId: resolved.providerConfigId ?? null,
+        }),
+        availabilityStatus: resolved.status,
+    };
+}
 
 /**
  * Creates a function that logs a message only once for a given key.
@@ -88,70 +444,26 @@ export async function enrichAttachmentWithUrls(
         bucket?: string;
     }
 ): Promise<any> {
-    let originalUrl: string | null = null;
+    const originalAccess = await resolveOriginalFileAccess(attachment, { logOnce: options?.logOnce });
+    let originalUrl: string | null = originalAccess.originalUrl;
     let thumbUrl: string | null = null;
     let previewUrl: string | null = null;
 
-    let objectPath: string | null = null;
-    let downloadUrl: string | null = null;
+    let objectPath: string | null = originalAccess.objectPath;
+    let downloadUrl: string | null = originalAccess.downloadUrl;
 
     const logOnce = options?.logOnce;
 
-    const rawFileUrl = (attachment.fileUrl ?? "").toString();
-    const isHttpUrl = rawFileUrl.startsWith("http://") || rawFileUrl.startsWith("https://");
-    const storageProvider = (attachment.storageProvider ?? null) as string | null;
     const bucket = (options?.bucket || attachment.bucket || undefined) as string | undefined;
 
-    const objectsProxyUrl = (key: string, params?: { download?: boolean; filename?: string; bucket?: string }) => {
-        const download = params?.download ? "download=1" : "";
-        const filename = params?.filename ? `filename=${encodeURIComponent(params.filename)}` : "";
-        const bucketParam = params?.bucket ? `bucket=${encodeURIComponent(params.bucket)}` : "";
-        const query = [download, filename, bucketParam].filter(Boolean).join("&");
-        return `/objects/${key}${query ? `?${query}` : ""}`;
-    };
-
-    // External URL: use as-is, unless it's a Supabase URL that needs signing.
-    if (rawFileUrl && isHttpUrl) {
-        const maybeSupabaseKey = isSupabaseConfigured()
-            ? tryExtractSupabaseObjectKeyFromUrl(rawFileUrl, bucket || "titan-private")
-            : null;
-
-        if (maybeSupabaseKey) {
-            objectPath = maybeSupabaseKey;
-        }
-
-        if (maybeSupabaseKey) {
-            originalUrl = objectsProxyUrl(maybeSupabaseKey, { bucket });
-        } else {
-            originalUrl = rawFileUrl;
-        }
-    } else if (rawFileUrl && storageProvider === "local") {
-        originalUrl = objectsProxyUrl(rawFileUrl);
-        objectPath = normalizeObjectKeyForDb(rawFileUrl);
-    } else if (rawFileUrl && storageProvider === "supabase" && isSupabaseConfigured()) {
-        objectPath = normalizeObjectKeyForDb(rawFileUrl);
-        originalUrl = objectPath ? objectsProxyUrl(objectPath, { bucket }) : null;
-    } else if (rawFileUrl) {
-        originalUrl = objectsProxyUrl(rawFileUrl);
-        objectPath = normalizeObjectKeyForDb(rawFileUrl);
-    }
-
-    // Same-origin forced download URL (server enforces tenant scoping via key prefix)
-    if (objectPath && objectPath.length) {
-        const fileNameForDownload = String(attachment?.originalFilename ?? attachment?.fileName ?? "download");
-        downloadUrl = objectsProxyUrl(objectPath, { download: true, filename: fileNameForDownload, bucket });
-    }
-
     // Derivative URLs (Thumbnails/Previews)
-    const thumbKey = (attachment.thumbKey ?? null) as string | null;
-    if (thumbKey) {
-        thumbUrl = objectsProxyUrl(thumbKey);
-    }
+    const [thumbAccess, previewAccess] = await Promise.all([
+        resolveDerivativeFileAccess(attachment, "thumbnail", { logOnce }),
+        resolveDerivativeFileAccess(attachment, "preview", { logOnce }),
+    ]);
 
-    const previewKey = (attachment.previewKey ?? null) as string | null;
-    if (previewKey) {
-        previewUrl = objectsProxyUrl(previewKey);
-    }
+    thumbUrl = thumbAccess.url;
+    previewUrl = previewAccess.url;
 
     // Handle PDF pages if applicable
     let pages: any[] = [];
@@ -167,46 +479,28 @@ export async function enrichAttachmentWithUrls(
                     .from(quoteAttachmentPages)
                     .where(eq(quoteAttachmentPages.attachmentId, attachment.id))
                     .orderBy(quoteAttachmentPages.pageIndex);
+                pages = await Promise.all(pageRecords.map(async (page) => {
+                    const [pageThumbAccess, pagePreviewAccess] = await Promise.all([
+                        resolveOriginalFileAccess({
+                            id: page.id,
+                            fileRecordId: page.thumbFileRecordId,
+                            fileName: `${attachment.fileName || attachment.id || "attachment"}-page-${page.pageIndex + 1}.thumb.jpg`,
+                            mimeType: "image/jpeg",
+                        }, { logOnce }),
+                        resolveOriginalFileAccess({
+                            id: page.id,
+                            fileRecordId: page.previewFileRecordId,
+                            fileName: `${attachment.fileName || attachment.id || "attachment"}-page-${page.pageIndex + 1}.preview.jpg`,
+                            mimeType: "image/jpeg",
+                        }, { logOnce }),
+                    ]);
 
-                if (isSupabaseConfigured()) {
-                    const supabaseService = new SupabaseStorageService(bucket);
-                    pages = await Promise.all(pageRecords.map(async (page) => {
-                        let pageThumbUrl: string | null = null;
-                        let pagePreviewUrl: string | null = null;
-
-                        if (page.thumbKey) {
-                            try {
-                                pageThumbUrl = await supabaseService.getSignedDownloadUrl(page.thumbKey, 3600);
-                            } catch (error) {
-                                if (logOnce) {
-                                    logOnce(`pageThumb:${attachment.id}`, "[enrichAttachmentWithUrls] Failed to generate page thumbUrl (fail-soft)", error);
-                                }
-                            }
-                        }
-
-                        if (page.previewKey) {
-                            try {
-                                pagePreviewUrl = await supabaseService.getSignedDownloadUrl(page.previewKey, 3600);
-                            } catch (error) {
-                                if (logOnce) {
-                                    logOnce(`pagePreview:${attachment.id}`, "[enrichAttachmentWithUrls] Failed to generate page previewUrl (fail-soft)", error);
-                                }
-                            }
-                        }
-
-                        return {
-                            ...page,
-                            thumbUrl: pageThumbUrl,
-                            previewUrl: pagePreviewUrl,
-                        };
-                    }));
-                } else {
-                    pages = pageRecords.map((page) => ({
+                    return {
                         ...page,
-                        thumbUrl: page.thumbKey ? objectsProxyUrl(page.thumbKey) : null,
-                        previewUrl: page.previewKey ? objectsProxyUrl(page.previewKey) : null,
-                    }));
-                }
+                        thumbUrl: pageThumbAccess.originalUrl,
+                        previewUrl: pagePreviewAccess.originalUrl,
+                    };
+                }));
             } catch (error) {
                 console.error(`[enrichAttachmentWithUrls] Failed to fetch pages for ${attachment.id}:`, error);
             }
@@ -220,6 +514,7 @@ export async function enrichAttachmentWithUrls(
         previewUrl,
         objectPath,
         downloadUrl,
+        availabilityStatus: originalAccess.availabilityStatus,
         // `applyThumbnailContract` will set thumbnailUrl based on (pages[0]?.thumbUrl || previewThumbnailUrl || thumbUrl)
         pages,
     });

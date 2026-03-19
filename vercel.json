@@ -1,6 +1,10 @@
 {
   "rewrites": [
     {
+      "source": "/api/:path*",
+      "destination": "https://api-dev.printershero.com/api/:path*"
+    },
+    {
       "source": "/:path*",
       "destination": "/index.html"
     }
