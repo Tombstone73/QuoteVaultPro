@@ -23,6 +23,9 @@ function inferHostedApiBaseUrl(): string {
   }
 
   const hostname = window.location.hostname.toLowerCase();
+  if (hostname === "dev.printershero.com" || hostname.endsWith(".dev.printershero.com")) {
+    return "https://api-dev.printershero.com";
+  }
   if (hostname === "printershero.com" || hostname.endsWith(".printershero.com")) {
     return "https://api.printershero.com";
   }
