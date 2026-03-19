@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { format, formatDistanceToNow } from "date-fns";
 import {
   AlertCircle,
@@ -42,6 +42,7 @@ import { useToast } from "@/hooks/use-toast";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
 import { uploadAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
+import { proofQueueSliceValues } from "@shared/proofing";
 import type {
   ProofDecision,
   ProofQueueSlice,
@@ -173,13 +174,21 @@ function getRoleSummary(userRole: string | null | undefined) {
 
 export default function StaffProofingPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { user } = useAuth();
 
   const { isInternalUser, canOverride } = getRoleSummary(user?.role);
+  const requestedLineItemId = searchParams.get("lineItemId");
+  const requestedSlice = searchParams.get("slice");
+  const initialSlice = requestedSlice && (proofQueueSliceValues as readonly string[]).includes(requestedSlice)
+    ? (requestedSlice as ProofQueueSlice)
+    : requestedLineItemId
+      ? "all"
+      : "awaiting_approval";
 
-  const [slice, setSlice] = useState<ProofQueueSlice>("awaiting_approval");
+  const [slice, setSlice] = useState<ProofQueueSlice>(initialSlice);
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [viewerOpen, setViewerOpen] = useState(false);
@@ -217,11 +226,18 @@ export default function StaffProofingPage() {
       return;
     }
 
+    if (requestedLineItemId && queueRows.some((row) => row.lineItemId === requestedLineItemId)) {
+      if (selectedLineItemId !== requestedLineItemId) {
+        setSelectedLineItemId(requestedLineItemId);
+      }
+      return;
+    }
+
     const stillPresent = selectedLineItemId ? queueRows.some((row) => row.lineItemId === selectedLineItemId) : false;
     if (!stillPresent) {
       setSelectedLineItemId(queueRows[0].lineItemId);
     }
-  }, [queueRows, selectedLineItemId]);
+  }, [queueRows, requestedLineItemId, selectedLineItemId]);
 
   const selectedRow = queueRows.find((row) => row.lineItemId === selectedLineItemId) ?? queueRows[0];
 
