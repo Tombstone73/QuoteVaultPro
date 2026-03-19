@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { OrderAttachment, InsertOrderAttachment, UpdateOrderAttachment, JobFile, InsertJobFile } from "@shared/schema";
 import { orderDetailQueryKey, orderTimelineQueryKey } from "./useOrders";
 import { normalizeOrderFileRows } from "@/lib/attachments/orderFileRows";
+import { apiFetch } from "@/lib/queryClient";
 
 // Enriched order attachment with user info and signed URLs
 export type OrderFileWithUser = OrderAttachment & {
@@ -262,9 +263,7 @@ export function useOrderLineItemFiles(orderId: string | undefined, lineItemId: s
     queryKey: ['/api/orders', orderId, 'line-items', lineItemId, 'files'],
     queryFn: async () => {
       if (!orderId || !lineItemId) return { data: [], assets: [] };
-      const res = await fetch(`/api/orders/${orderId}/line-items/${lineItemId}/files`, {
-        credentials: 'include',
-      });
+      const res = await apiFetch(`/api/orders/${orderId}/line-items/${lineItemId}/files`);
       if (!res.ok) throw new Error('Failed to fetch line item files');
       const json = await res.json();
       return {
