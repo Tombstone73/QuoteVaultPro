@@ -91,6 +91,12 @@ const decisionLabels: Record<ProofDecision, string> = {
   revision_requested: "Request revision",
 };
 
+type StaffFacingStatus = {
+  label: string;
+  detail: string;
+  badgeVariant: "default" | "secondary" | "destructive" | "outline";
+};
+
 async function readJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
   const response = await fetch(input, {
     credentials: "include",
@@ -172,6 +178,95 @@ function getRoleSummary(userRole: string | null | undefined) {
   };
 }
 
+function getStaffFacingStatus(args: {
+  row: ProofingQueueRow | undefined;
+  detail: ProofingReadModel | undefined;
+  displayedVersion: ProofVersionHistoryEntry | null;
+}): StaffFacingStatus {
+  const { row, detail, displayedVersion } = args;
+
+  if (detail?.approvedProofSource || row?.currentQueueStatus === "approved") {
+    return {
+      label: "Approved",
+      detail: detail?.approvedByOverride
+        ? "This proof was approved internally with a manual override."
+        : "Customer approval has been recorded for the current proof.",
+      badgeVariant: "default",
+    };
+  }
+
+  if (
+    row?.currentQueueStatus === "revision_requested" ||
+    detail?.proofDecisionHistory[0]?.decision === "revision_requested"
+  ) {
+    return {
+      label: "Revision Requested",
+      detail: "Customer feedback has been recorded and the line item should return to design updates.",
+      badgeVariant: "destructive",
+    };
+  }
+
+  if (
+    displayedVersion?.status === "awaiting_response" ||
+    row?.currentQueueStatus === "awaiting_approval"
+  ) {
+    return {
+      label: "Awaiting Customer Approval",
+      detail: "The current proof version has been sent and is waiting on a customer decision.",
+      badgeVariant: "secondary",
+    };
+  }
+
+  if (displayedVersion?.status === "draft" || row?.currentQueueStatus === "awaiting_send") {
+    return {
+      label: "Ready to Send",
+      detail: "The current proof version is still draft and has not been sent to the customer yet.",
+      badgeVariant: "outline",
+    };
+  }
+
+  if (displayedVersion?.status === "rejected" || detail?.proofDecisionHistory[0]?.decision === "rejected") {
+    return {
+      label: "Rejected",
+      detail: "A rejection has been recorded for this proof version.",
+      badgeVariant: "destructive",
+    };
+  }
+
+  return {
+    label: "No Active Proof",
+    detail: "Create or select a proof version to continue proof review.",
+    badgeVariant: "outline",
+  };
+}
+
+function getVersionStatusLabel(status: ProofVersionStatus | null | undefined) {
+  switch (status) {
+    case "awaiting_response":
+      return "Awaiting Customer Approval";
+    case "approved":
+      return "Approved";
+    case "rejected":
+      return "Rejected";
+    case "draft":
+    default:
+      return "Ready to Send";
+  }
+}
+
+function getDecisionLabel(decision: ProofDecision) {
+  switch (decision) {
+    case "approved":
+      return "Approval Recorded";
+    case "revision_requested":
+      return "Revision Requested";
+    case "rejected":
+      return "Rejection Recorded";
+    default:
+      return decisionLabels[decision];
+  }
+}
+
 export default function StaffProofingPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -182,13 +277,13 @@ export default function StaffProofingPage() {
   const { isInternalUser, canOverride } = getRoleSummary(user?.role);
   const requestedLineItemId = searchParams.get("lineItemId");
   const requestedSlice = searchParams.get("slice");
-  const initialSlice = requestedSlice && (proofQueueSliceValues as readonly string[]).includes(requestedSlice)
+  const requestedQueueSlice = requestedSlice && (proofQueueSliceValues as readonly string[]).includes(requestedSlice)
     ? (requestedSlice as ProofQueueSlice)
     : requestedLineItemId
       ? "all"
       : "awaiting_approval";
 
-  const [slice, setSlice] = useState<ProofQueueSlice>(initialSlice);
+  const [slice, setSlice] = useState<ProofQueueSlice>(requestedQueueSlice);
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [viewerOpen, setViewerOpen] = useState(false);
@@ -219,6 +314,12 @@ export default function StaffProofingPage() {
 
   const queueData = queueQuery.data?.data;
   const queueRows = queueData?.rows ?? [];
+
+  useEffect(() => {
+    if (slice !== requestedQueueSlice) {
+      setSlice(requestedQueueSlice);
+    }
+  }, [requestedQueueSlice, slice]);
 
   useEffect(() => {
     if (!queueRows.length) {
@@ -285,6 +386,8 @@ export default function StaffProofingPage() {
   const previewName = displayedFile?.originalFilename || displayedFile?.fileName || "Proof";
   const previewIsPdf = Boolean(displayedFile && isPdfFile(displayedFile.mimeType || null, previewName));
   const previewIsImage = Boolean(displayedFile?.mimeType?.startsWith("image/"));
+  const staffStatus = getStaffFacingStatus({ row: selectedRow, detail, displayedVersion });
+  const latestCustomerFeedback = detail?.proofDecisionHistory?.[0] ?? null;
 
   useEffect(() => {
     if (!createDialogOpen) return;
@@ -355,7 +458,7 @@ export default function StaffProofingPage() {
       setUploadFile(null);
       toast({
         title: "Proof version created",
-        description: `Version ${data.proofVersion.versionNumber} is now in draft.`,
+        description: `Version ${data.proofVersion.versionNumber} is ready to send.`,
       });
     },
     onError: (error: Error) => {
@@ -382,7 +485,7 @@ export default function StaffProofingPage() {
       setSendToName("");
       setSendToEmail("");
       setCustomerMessage("");
-      toast({ title: "Proof sent", description: "The selected proof version is now awaiting response." });
+      toast({ title: "Proof sent", description: "The selected proof version was sent for customer review." });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to send proof", description: error.message, variant: "destructive" });
@@ -405,7 +508,7 @@ export default function StaffProofingPage() {
     onSuccess: async (_, decision) => {
       await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
       setResponseNotes("");
-      toast({ title: `${decisionLabels[decision]} recorded`, description: "Queue and detail were refreshed from backend truth." });
+      toast({ title: `${decisionLabels[decision]} recorded`, description: "The proof decision has been saved." });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to record proof response", description: error.message, variant: "destructive" });
@@ -430,7 +533,7 @@ export default function StaffProofingPage() {
       setOverrideDialogOpen(false);
       setOverrideReason("");
       setOverrideNote("");
-      toast({ title: "Manual override recorded", description: "Approval source is now manual override." });
+      toast({ title: "Manual override recorded", description: "The proof has been approved by manual override." });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to record manual override", description: error.message, variant: "destructive" });
@@ -454,12 +557,12 @@ export default function StaffProofingPage() {
 
   return (
     <>
-      <div className="flex h-[calc(100vh-8rem)] min-h-[720px] flex-col gap-4 p-6">
+      <div className="flex h-[calc(100vh-8rem)] min-h-[720px] flex-col gap-4 overflow-hidden p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-3xl font-bold tracking-tight">Staff Proofing</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Line-item proof operations backed by the live proofing queue, read model, and manual override history.
+              Review proofs, send versions to customers, and record proof decisions.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -474,11 +577,11 @@ export default function StaffProofingPage() {
           </div>
         </div>
 
-        <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[20rem_minmax(0,1fr)_24rem]">
-          <Card className="min-h-0">
+        <div className="grid min-h-0 flex-1 gap-4 overflow-hidden xl:grid-cols-[18rem_minmax(0,1fr)_22rem] 2xl:grid-cols-[19rem_minmax(0,1fr)_24rem]">
+          <Card className="min-h-0 overflow-hidden">
             <CardHeader className="pb-3">
               <CardTitle className="text-lg">Queue</CardTitle>
-              <CardDescription>Canonical slices from the proofing queue endpoint.</CardDescription>
+              <CardDescription>Open proofs and pending staff decisions.</CardDescription>
               <Tabs value={slice} onValueChange={(value) => setSlice(value as ProofQueueSlice)}>
                 <TabsList className="grid h-auto grid-cols-2 gap-2 xl:grid-cols-1">
                   {queueSliceMeta.map((tab) => (
@@ -492,7 +595,7 @@ export default function StaffProofingPage() {
                 </TabsList>
               </Tabs>
             </CardHeader>
-            <CardContent className="min-h-0 pt-0">
+            <CardContent className="min-h-0 overflow-hidden pt-0">
               {queueQuery.isLoading ? (
                 <div className="space-y-3">
                   {Array.from({ length: 5 }).map((_, index) => (
@@ -508,10 +611,11 @@ export default function StaffProofingPage() {
                   No line items are currently in this proofing slice.
                 </div>
               ) : (
-                <ScrollArea className="h-[calc(100vh-18rem)] pr-3">
+                <div className="h-[calc(100vh-18rem)] overflow-y-auto pr-2 [scrollbar-color:hsl(var(--muted-foreground)/0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40 [&::-webkit-scrollbar-track]:bg-transparent">
                   <div className="space-y-3">
                     {queueRows.map((row) => {
                       const isSelected = row.lineItemId === selectedRow?.lineItemId;
+                      const rowStatus = getStaffFacingStatus({ row, detail: undefined, displayedVersion: null });
                       return (
                         <button
                           key={row.lineItemId}
@@ -526,40 +630,44 @@ export default function StaffProofingPage() {
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
                               <p className="truncate text-sm font-semibold">{row.lineItemLabel}</p>
-                              <p className="mt-1 text-xs text-muted-foreground">{row.packageLabel}</p>
+                              <p className="mt-1 truncate text-xs text-muted-foreground">{row.customerDisplayName || "No customer linked"}</p>
                             </div>
-                            <Badge variant={statusBadgeVariant(row.currentQueueStatus)}>{row.currentQueueBadge}</Badge>
+                            <Badge variant={rowStatus.badgeVariant}>{rowStatus.label}</Badge>
                           </div>
                           <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+                            <p>{row.packageLabel}</p>
                             <p>Order {row.orderNumber ? `#${row.orderNumber}` : row.orderId}</p>
-                            <p>{row.customerDisplayName || "No customer linked"}</p>
-                            <p>Workflow: {row.workflowState}</p>
                             <p>Last activity {formatRelativeTime(row.lastActivityAt)}</p>
                           </div>
                         </button>
                       );
                     })}
                   </div>
-                </ScrollArea>
+                </div>
               )}
             </CardContent>
           </Card>
 
-          <Card className="min-h-0">
+          <Card className="min-h-0 overflow-hidden">
             <CardHeader className="pb-3">
               <div className="flex items-start justify-between gap-3">
-                <div>
-                  <CardTitle className="text-lg">{selectedRow?.lineItemLabel || "Proof Viewer"}</CardTitle>
+                <div className="min-w-0">
+                  <CardTitle className="truncate text-lg">{selectedRow?.customerDisplayName || selectedRow?.lineItemLabel || "Proof Viewer"}</CardTitle>
                   <CardDescription>
-                    {selectedRow ? `Order ${selectedRow.orderNumber ? `#${selectedRow.orderNumber}` : selectedRow.orderId}` : "Select a queue row to inspect proof truth."}
+                    {selectedRow
+                      ? `${selectedRow.lineItemLabel} • ${selectedRow.packageLabel} • Order ${selectedRow.orderNumber ? `#${selectedRow.orderNumber}` : selectedRow.orderId}`
+                      : "Select a queue row to review a proof."}
                   </CardDescription>
                 </div>
-                {selectedRow ? (
-                  <Button variant="outline" size="sm" onClick={() => navigate(`/orders/${selectedRow.orderId}`)}>
-                    <ExternalLink className="mr-2 h-4 w-4" />
-                    Open order
-                  </Button>
-                ) : null}
+                <div className="flex items-center gap-2">
+                  {displayedVersion ? <Badge variant="outline">{formatVersionLabel(displayedVersion)}</Badge> : null}
+                  {selectedRow ? (
+                    <Button variant="outline" size="sm" onClick={() => navigate(`/orders/${selectedRow.orderId}`)}>
+                      <ExternalLink className="mr-2 h-4 w-4" />
+                      Open order
+                    </Button>
+                  ) : null}
+                </div>
               </div>
             </CardHeader>
             <CardContent className="flex min-h-0 flex-col gap-4">
@@ -578,17 +686,6 @@ export default function StaffProofingPage() {
                 </div>
               ) : (
                 <>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant={statusBadgeVariant(displayedVersion?.status)}>{displayedVersion?.status || "No active version"}</Badge>
-                    <Badge variant="outline">{formatVersionLabel(displayedVersion)}</Badge>
-                    <Badge variant="outline">Workflow {detail.workflowState}</Badge>
-                    {detail.approvedProofSource ? (
-                      <Badge variant={detail.approvedByOverride ? "secondary" : "default"}>
-                        Approved via {detail.approvedProofSource === "manual_override" ? "manual override" : "normal response"}
-                      </Badge>
-                    ) : null}
-                  </div>
-
                   <div className="flex min-h-[32rem] flex-1 flex-col rounded-xl border bg-muted/20">
                     <div className="flex items-center justify-between border-b px-4 py-3">
                       <div>
@@ -656,11 +753,11 @@ export default function StaffProofingPage() {
             </CardContent>
           </Card>
 
-          <div className="grid min-h-0 gap-4 xl:grid-rows-[auto_auto_minmax(0,1fr)]">
+          <div className="grid min-h-0 gap-4 overflow-hidden xl:grid-rows-[auto_auto_auto_auto_minmax(0,1fr)]">
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-lg">Truth</CardTitle>
-                <CardDescription>Read model fields and current gating state.</CardDescription>
+                <CardTitle className="text-lg">Job Context</CardTitle>
+                <CardDescription>The selected order and proof reference.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3 text-sm">
                 {detailQuery.isLoading ? (
@@ -669,30 +766,25 @@ export default function StaffProofingPage() {
                   <>
                     <div className="grid grid-cols-2 gap-3">
                       <div className="rounded-lg border p-3">
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Workflow</p>
-                        <p className="mt-1 font-medium">{detail.workflowState}</p>
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Customer</p>
+                        <p className="mt-1 font-medium">{selectedRow?.customerDisplayName || "No customer linked"}</p>
                       </div>
                       <div className="rounded-lg border p-3">
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Blocked</p>
-                        <p className="mt-1 font-medium">{detail.blockedPendingProofApproval ? "Yes" : "No"}</p>
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Current Version</p>
+                        <p className="mt-1 font-medium">{formatVersionLabel(displayedVersion)}</p>
                       </div>
                       <div className="rounded-lg border p-3">
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Approved source</p>
-                        <p className="mt-1 font-medium">{detail.approvedProofSource || "Not approved"}</p>
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Order</p>
+                        <p className="mt-1 font-medium">{selectedRow?.orderNumber ? `#${selectedRow.orderNumber}` : selectedRow?.orderId}</p>
                       </div>
                       <div className="rounded-lg border p-3">
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Actionable version</p>
-                        <p className="mt-1 font-medium">
-                          {detail.currentActionableProofVersion ? `v${detail.currentActionableProofVersion.versionNumber}` : "None"}
-                        </p>
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Line Item</p>
+                        <p className="mt-1 font-medium">{selectedRow?.lineItemLabel || "Not selected"}</p>
                       </div>
                     </div>
                     <div className="rounded-lg border p-3">
-                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Approval flags</p>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        <Badge variant={detail.approvedNormally ? "default" : "outline"}>Normal approval {detail.approvedNormally ? "true" : "false"}</Badge>
-                        <Badge variant={detail.approvedByOverride ? "secondary" : "outline"}>Override approval {detail.approvedByOverride ? "true" : "false"}</Badge>
-                      </div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Package</p>
+                      <p className="mt-1 font-medium">{selectedRow?.packageLabel || "No package linked"}</p>
                     </div>
                   </>
                 ) : (
@@ -703,14 +795,33 @@ export default function StaffProofingPage() {
 
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-lg">Actions</CardTitle>
-                <CardDescription>State-gated staff actions only.</CardDescription>
+                <CardTitle className="text-lg">Current Status</CardTitle>
+                <CardDescription>One clear decision state for the selected proof.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="rounded-xl border p-4">
+                  <div className="flex items-center gap-2">
+                    <Badge variant={staffStatus.badgeVariant}>{staffStatus.label}</Badge>
+                    {displayedVersion ? <span className="text-xs text-muted-foreground">{formatVersionLabel(displayedVersion)}</span> : null}
+                  </div>
+                  <p className="mt-3 text-sm text-muted-foreground">{staffStatus.detail}</p>
+                  {displayedVersion?.sentAt ? (
+                    <p className="mt-3 text-xs text-muted-foreground">Sent {formatRelativeTime(displayedVersion.sentAt)}</p>
+                  ) : null}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-lg">Primary Actions</CardTitle>
+                <CardDescription>Staff actions for sending proofs and recording decisions.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
                   <Button className="w-full" onClick={() => setCreateDialogOpen(true)} disabled={!selectedRow}>
                     <Upload className="mr-2 h-4 w-4" />
-                    Create new proof version
+                    New Proof Version
                   </Button>
                   <Button
                     variant="outline"
@@ -719,20 +830,20 @@ export default function StaffProofingPage() {
                     disabled={!displayedVersion || displayedVersion.status !== "draft"}
                   >
                     <Send className="mr-2 h-4 w-4" />
-                    Send selected draft for review
+                    Send Current Version to Customer
                   </Button>
                 </div>
 
                 <Separator />
 
                 <div className="space-y-3">
-                  <Label htmlFor="proof-response-notes">Response notes</Label>
+                  <Label htmlFor="proof-response-notes">Decision notes</Label>
                   <Textarea
                     id="proof-response-notes"
                     value={responseNotes}
                     onChange={(event) => setResponseNotes(event.target.value)}
                     rows={4}
-                    placeholder="Record the customer response or internal context returned with this decision."
+                    placeholder="Record the customer feedback or context tied to this decision."
                     disabled={!detail?.currentActionableProofVersionId || displayedVersion?.id !== detail.currentActionableProofVersionId}
                   />
                   <div className="grid gap-2 sm:grid-cols-3">
@@ -741,21 +852,21 @@ export default function StaffProofingPage() {
                       disabled={respondMutation.isPending || displayedVersion?.id !== detail?.currentActionableProofVersionId || displayedVersion?.status !== "awaiting_response"}
                     >
                       {respondMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
-                      Approve
+                      Record Approval
                     </Button>
                     <Button
                       variant="outline"
                       onClick={() => respondMutation.mutate("revision_requested")}
                       disabled={respondMutation.isPending || displayedVersion?.id !== detail?.currentActionableProofVersionId || displayedVersion?.status !== "awaiting_response"}
                     >
-                      Revision
+                      Record Revision Request
                     </Button>
                     <Button
                       variant="destructive"
                       onClick={() => respondMutation.mutate("rejected")}
                       disabled={respondMutation.isPending || displayedVersion?.id !== detail?.currentActionableProofVersionId || displayedVersion?.status !== "awaiting_response"}
                     >
-                      Reject
+                      Record Rejection
                     </Button>
                   </div>
                 </div>
@@ -766,9 +877,9 @@ export default function StaffProofingPage() {
                   <div className="flex items-start gap-3">
                     <ShieldAlert className="mt-0.5 h-4 w-4 text-amber-600" />
                     <div className="space-y-2">
-                      <p className="text-sm font-medium">Manual approval override</p>
+                      <p className="text-sm font-medium">Advanced Admin Action</p>
                       <p className="text-xs text-muted-foreground">
-                        Separate backend mutation. Requires an explicit reason and records approval source as manual override.
+                        Use manual approval override only when you need to approve without a normal customer decision.
                       </p>
                       <Button
                         variant="outline"
@@ -784,14 +895,41 @@ export default function StaffProofingPage() {
               </CardContent>
             </Card>
 
-            <Card className="min-h-0">
+            <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-lg">Version & Decision History</CardTitle>
-                <CardDescription>Select the proof version shown in the viewer, then inspect backend history.</CardDescription>
+                <CardTitle className="text-lg">Customer Feedback</CardTitle>
+                <CardDescription>The most recent recorded response for this proof.</CardDescription>
               </CardHeader>
-              <CardContent className="min-h-0 pt-0">
+              <CardContent>
+                {!detail ? (
+                  <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">Load a queue row to inspect feedback.</div>
+                ) : !latestCustomerFeedback ? (
+                  <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">No customer feedback has been recorded yet.</div>
+                ) : (
+                  <div className="rounded-xl border p-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <Badge variant={statusBadgeVariant(latestCustomerFeedback.decision)}>{getDecisionLabel(latestCustomerFeedback.decision)}</Badge>
+                      <span className="text-xs text-muted-foreground">{formatTimestamp(latestCustomerFeedback.respondedAt)}</span>
+                    </div>
+                    <p className="mt-3 text-sm text-muted-foreground">{latestCustomerFeedback.responseNotes || "No notes were recorded with this decision."}</p>
+                    {(latestCustomerFeedback.responderName || latestCustomerFeedback.responderEmail) ? (
+                      <p className="mt-3 text-xs text-muted-foreground">
+                        {[latestCustomerFeedback.responderName, latestCustomerFeedback.responderEmail].filter(Boolean).join(" • ")}
+                      </p>
+                    ) : null}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="min-h-0 overflow-hidden">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-lg">Version History</CardTitle>
+                <CardDescription>Select the proof version shown in the viewer, then review version and decision history.</CardDescription>
+              </CardHeader>
+              <CardContent className="min-h-0 overflow-hidden pt-0">
                 {detail ? (
-                  <ScrollArea className="h-[calc(100vh-31rem)] pr-3">
+                  <div className="h-[calc(100vh-39rem)] overflow-y-auto pr-2 [scrollbar-color:hsl(var(--muted-foreground)/0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40 [&::-webkit-scrollbar-track]:bg-transparent">
                     <div className="space-y-4">
                       <div className="space-y-2">
                         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Versions</p>
@@ -809,7 +947,9 @@ export default function StaffProofingPage() {
                               >
                                 <div className="flex items-center justify-between gap-2">
                                   <p className="font-medium">Version {version.versionNumber}</p>
-                                  <Badge variant={statusBadgeVariant(version.status)}>{version.status}</Badge>
+                                  <Badge variant={statusBadgeVariant(version.status)}>
+                                    {getVersionStatusLabel(version.status)}
+                                  </Badge>
                                 </div>
                                 <p className="mt-1 text-xs text-muted-foreground">Created {formatTimestamp(version.createdAt)}</p>
                                 <p className="mt-1 text-xs text-muted-foreground">Sent {formatTimestamp(version.sentAt)}</p>
@@ -829,7 +969,7 @@ export default function StaffProofingPage() {
                           detail.proofDecisionHistory.map((decision) => (
                             <div key={decision.id} className="rounded-lg border p-3">
                               <div className="flex items-center justify-between gap-2">
-                                <Badge variant={statusBadgeVariant(decision.decision)}>{decision.decision}</Badge>
+                                <Badge variant={statusBadgeVariant(decision.decision)}>{getDecisionLabel(decision.decision)}</Badge>
                                 <span className="text-xs text-muted-foreground">{formatTimestamp(decision.respondedAt)}</span>
                               </div>
                               <p className="mt-2 text-sm text-muted-foreground">{decision.responseNotes || "No response notes"}</p>
@@ -846,7 +986,7 @@ export default function StaffProofingPage() {
                       <Separator />
 
                       <div className="space-y-2">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Manual Overrides</p>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Advanced Admin Overrides</p>
                         {detail.manualApprovalOverrideHistory.length === 0 ? (
                           <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">No manual overrides recorded.</div>
                         ) : (
@@ -866,9 +1006,9 @@ export default function StaffProofingPage() {
                         )}
                       </div>
                     </div>
-                  </ScrollArea>
+                  </div>
                 ) : (
-                  <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">Load a queue row to inspect history.</div>
+                  <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">Load a queue row to review version history.</div>
                 )}
               </CardContent>
             </Card>
@@ -883,7 +1023,7 @@ export default function StaffProofingPage() {
           <DialogHeader>
             <DialogTitle>Create Proof Version</DialogTitle>
             <DialogDescription>
-              Upload a new proof file or reuse an existing line-item file, then create a draft proof version from that canonical file record.
+              Upload a new proof file or reuse an existing proof file to create the next draft version.
             </DialogDescription>
           </DialogHeader>
 
@@ -896,7 +1036,7 @@ export default function StaffProofingPage() {
                 accept=".pdf,image/*"
                 onChange={(event) => setUploadFile(event.target.files?.[0] || null)}
               />
-              <p className="text-xs text-muted-foreground">If you upload a file here, it will be linked to the line item with role `proof` before the draft version is created.</p>
+              <p className="text-xs text-muted-foreground">If you upload a file here, it will be used for the new draft proof version.</p>
             </div>
 
             <div className="grid gap-2">
@@ -939,7 +1079,7 @@ export default function StaffProofingPage() {
                 rows={4}
                 value={createInternalNotes}
                 onChange={(event) => setCreateInternalNotes(event.target.value)}
-                placeholder="Internal notes for this proof version"
+                placeholder="Optional notes for the team"
               />
             </div>
           </div>
@@ -964,7 +1104,7 @@ export default function StaffProofingPage() {
           <DialogHeader>
             <DialogTitle>Send Proof for Review</DialogTitle>
             <DialogDescription>
-              Sends the selected draft version into the backend awaiting-response state. Fields are optional and only forwarded if provided.
+              Send the selected draft version to the customer for review. These fields are optional.
             </DialogDescription>
           </DialogHeader>
 
@@ -984,7 +1124,7 @@ export default function StaffProofingPage() {
                 rows={4}
                 value={customerMessage}
                 onChange={(event) => setCustomerMessage(event.target.value)}
-                placeholder="Optional message recorded alongside the send action"
+                placeholder="Optional message included with the proof send"
               />
             </div>
           </div>
@@ -995,7 +1135,7 @@ export default function StaffProofingPage() {
             </Button>
             <Button onClick={() => sendMutation.mutate()} disabled={sendMutation.isPending || displayedVersion?.status !== "draft"}>
               {sendMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
-              Send draft version
+              Send proof
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1006,7 +1146,7 @@ export default function StaffProofingPage() {
           <DialogHeader>
             <DialogTitle>Manual Approval Override</DialogTitle>
             <DialogDescription>
-              This is distinct from a normal proof response. The backend will record the override reason, actor, and approval source.
+              This is an advanced admin action and should only be used when normal customer approval cannot be recorded.
             </DialogDescription>
           </DialogHeader>
 
@@ -1018,7 +1158,7 @@ export default function StaffProofingPage() {
                 rows={4}
                 value={overrideReason}
                 onChange={(event) => setOverrideReason(event.target.value)}
-                placeholder="Required reason for bypassing normal proof approval"
+                placeholder="Required reason for bypassing normal approval"
               />
             </div>
             <div className="grid gap-2">
