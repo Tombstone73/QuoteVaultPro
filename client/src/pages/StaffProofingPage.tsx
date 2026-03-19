@@ -71,6 +71,11 @@ type ProofFileRow = OrderFileWithUser & {
   __source?: "attachment" | "asset";
 };
 
+type ProofAttachmentRow = ProofFileRow & {
+  __source?: "attachment";
+  role?: string | null;
+};
+
 const queueSliceMeta: Array<{ value: ProofQueueSlice; label: string; countKey: keyof ProofingQueueResponse["counts"] }> = [
   { value: "all", label: "All", countKey: "all" },
   { value: "awaiting_send", label: "Awaiting Send", countKey: "awaitingSend" },
@@ -180,7 +185,7 @@ export default function StaffProofingPage() {
   const [viewerOpen, setViewerOpen] = useState(false);
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
-  const [selectedExistingFileId, setSelectedExistingFileId] = useState<string>("");
+  const [selectedExistingAttachmentId, setSelectedExistingAttachmentId] = useState<string>("");
   const [createInternalNotes, setCreateInternalNotes] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
 
@@ -245,27 +250,33 @@ export default function StaffProofingPage() {
   const lineItemFiles = (filesQuery.data?.data ?? []) as ProofFileRow[];
 
   const selectableProofFiles = useMemo(
-    () => lineItemFiles.filter((file) => Boolean(file.fileRecordId)),
+    () =>
+      lineItemFiles.filter(
+        (file): file is ProofAttachmentRow =>
+          file.__source !== "asset" &&
+          Boolean(file.id) &&
+          String(file.role || "").toLowerCase() === "proof",
+      ),
     [lineItemFiles],
   );
 
-  useEffect(() => {
-    if (!createDialogOpen) return;
-    if (!selectedExistingFileId && selectableProofFiles.length > 0) {
-      const preferred = selectableProofFiles.find((file) => file.fileRecordId === displayedFile?.fileRecordId);
-      setSelectedExistingFileId(preferred?.fileRecordId || selectableProofFiles[0]?.fileRecordId || "");
-    }
-  }, [createDialogOpen, selectableProofFiles, selectedExistingFileId]);
-
   const displayedVersion = detail?.proofVersionHistory.find((version) => version.id === selectedVersionId) ?? null;
   const displayedFile = displayedVersion
-    ? lineItemFiles.find((file) => file.fileRecordId === displayedVersion.proofFileId) ?? null
+    ? lineItemFiles.find((file) => file.id === displayedVersion.proofFileId) ?? null
     : null;
   const previewUrl = getProofPreviewUrl(displayedFile);
   const downloadUrl = getDownloadUrl(displayedFile);
   const previewName = displayedFile?.originalFilename || displayedFile?.fileName || "Proof";
   const previewIsPdf = Boolean(displayedFile && isPdfFile(displayedFile.mimeType || null, previewName));
   const previewIsImage = Boolean(displayedFile?.mimeType?.startsWith("image/"));
+
+  useEffect(() => {
+    if (!createDialogOpen) return;
+    if (!selectedExistingAttachmentId && selectableProofFiles.length > 0) {
+      const preferred = selectableProofFiles.find((file) => file.id === displayedFile?.id);
+      setSelectedExistingAttachmentId(preferred?.id || selectableProofFiles[0]?.id || "");
+    }
+  }, [createDialogOpen, selectableProofFiles, selectedExistingAttachmentId, displayedFile?.id]);
 
   async function refreshProofing(lineItemId?: string | null, orderId?: string | null) {
     await queryClient.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
@@ -283,19 +294,22 @@ export default function StaffProofingPage() {
         throw new Error("Select a proofing queue row first");
       }
 
-      let proofFileId = selectedExistingFileId;
+      let proofFileId = selectedExistingAttachmentId;
 
       if (uploadFile) {
         const uploadResult = await uploadAttachmentViaChunked({
           file: uploadFile,
           purpose: "order-attachment",
           parentId: selectedRow.orderId,
-          linkUrl: `/api/orders/${selectedRow.orderId}/line-items/${selectedRow.lineItemId}/files`,
-          linkBody: { role: "proof" },
+          linkUrl: `/api/orders/${selectedRow.orderId}/files`,
+          linkBody: {
+            orderLineItemId: selectedRow.lineItemId,
+            role: "proof",
+            side: "na",
+          },
         });
 
-        const asset = Array.isArray(uploadResult.linkResponse?.assets) ? uploadResult.linkResponse.assets[0] : null;
-        proofFileId = asset?.fileRecordId || "";
+        proofFileId = String(uploadResult.linkResponse?.data?.id || "").trim();
       }
 
       if (!proofFileId) {
@@ -320,7 +334,7 @@ export default function StaffProofingPage() {
       await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
       setSelectedVersionId(data.proofVersion.id);
       setCreateDialogOpen(false);
-      setSelectedExistingFileId("");
+      setSelectedExistingAttachmentId("");
       setCreateInternalNotes("");
       setUploadFile(null);
       toast({
@@ -877,13 +891,13 @@ export default function StaffProofingPage() {
                     <div className="text-sm text-muted-foreground">No line-item files with a file record are available yet.</div>
                   ) : (
                     selectableProofFiles.map((file) => {
-                      const isSelected = selectedExistingFileId === file.fileRecordId;
+                      const isSelected = selectedExistingAttachmentId === file.id;
                       return (
                         <button
-                          key={`${file.id}-${file.fileRecordId}`}
+                          key={file.id}
                           type="button"
                           disabled={Boolean(uploadFile)}
-                          onClick={() => setSelectedExistingFileId(file.fileRecordId || "")}
+                          onClick={() => setSelectedExistingAttachmentId(file.id)}
                           className={`w-full rounded-lg border p-3 text-left ${isSelected ? "border-primary bg-primary/5" : "border-border"}`}
                         >
                           <div className="flex items-center justify-between gap-3">
@@ -920,7 +934,7 @@ export default function StaffProofingPage() {
             </Button>
             <Button
               onClick={() => createDraftMutation.mutate()}
-              disabled={createDraftMutation.isPending || (!uploadFile && !selectedExistingFileId)}
+              disabled={createDraftMutation.isPending || (!uploadFile && !selectedExistingAttachmentId)}
             >
               {createDraftMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
               Create draft version
