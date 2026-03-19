@@ -2,10 +2,10 @@
  * API/Object URL Configuration
  *
  * Environment-driven frontend routing:
- * - `VITE_API_BASE_URL` for `/api/*`
- * - `VITE_OBJECTS_BASE_URL` for `/objects/*`
+ * - `VITE_API_BASE_URL` optionally overrides `/api/*`
+ * - `VITE_OBJECTS_BASE_URL` optionally overrides `/objects/*`
  *
- * Missing env vars default to empty string, preserving same-origin/local-dev behavior.
+ * Missing env vars preserve same-origin behavior.
  */
 
 export function checkApiConfig(): { isValid: boolean; error?: string } {
@@ -15,19 +15,6 @@ export function checkApiConfig(): { isValid: boolean; error?: string } {
 function normalizeBaseUrl(value: string | undefined): string {
   const trimmed = (value ?? "").trim();
   return trimmed.replace(/\/+$/, "");
-}
-
-function inferHostedApiBaseUrl(): string {
-  if (typeof window === "undefined") {
-    return "";
-  }
-
-  const hostname = window.location.hostname.toLowerCase();
-  if (hostname === "printershero.com" || hostname.endsWith(".printershero.com")) {
-    return "https://api.printershero.com";
-  }
-
-  return "";
 }
 
 function normalizePath(path: string): string {
@@ -46,7 +33,7 @@ function isObjectsPath(pathname: string): boolean {
   return pathname === "/objects" || pathname.startsWith("/objects/");
 }
 
-const apiBaseUrl = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL) || inferHostedApiBaseUrl();
+const apiBaseUrl = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL);
 const objectsBaseUrl = normalizeBaseUrl(import.meta.env.VITE_OBJECTS_BASE_URL);
 
 export function apiUrl(path: string): string {
