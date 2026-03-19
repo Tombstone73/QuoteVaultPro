@@ -9,7 +9,13 @@ type ChunkedUploadArgs = {
   onProgress?: (percent: number) => void;
 };
 
-export async function uploadAttachmentViaChunked(args: ChunkedUploadArgs): Promise<void> {
+export type ChunkedUploadResult = {
+  uploadId: string;
+  finalizedFileId: string;
+  linkResponse: any;
+};
+
+export async function uploadAttachmentViaChunked(args: ChunkedUploadArgs): Promise<ChunkedUploadResult> {
   const initPayload = {
     filename: args.file.name,
     mimeType: args.file.type || "application/octet-stream",
@@ -110,5 +116,12 @@ export async function uploadAttachmentViaChunked(args: ChunkedUploadArgs): Promi
     throw new Error(json.error || "Failed to link attachment");
   }
 
+  const linkResponse = await linkResp.json().catch(() => ({}));
   args.onProgress?.(100);
+
+  return {
+    uploadId,
+    finalizedFileId: fileId,
+    linkResponse,
+  };
 }
