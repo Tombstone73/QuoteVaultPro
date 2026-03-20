@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
-import { ArrowRight, ExternalLink, Palette, Send } from "lucide-react";
+import { ExternalLink, Palette, Send } from "lucide-react";
 import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -334,6 +334,17 @@ function MetaCard(props: { label: string; primary: string; secondary?: string | 
   );
 }
 
+function CompactInfoRow(props: { label: string; value: string; valueClassName?: string }) {
+  const { label, value, valueClassName } = props;
+
+  return (
+    <div className="grid grid-cols-[96px_minmax(0,1fr)] items-start gap-3 text-sm leading-5">
+      <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className={cn("min-w-0 text-foreground", valueClassName)}>{value}</div>
+    </div>
+  );
+}
+
 export default function DesignProductionPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -606,6 +617,38 @@ export default function DesignProductionPage() {
     adjustReasonDraft.trim().length >= 3 &&
     parsedAdjustment.adjustedTotalMinutes !== currentTotalMinutes;
 
+  const metadataColumnOne = [
+    {
+      label: "Order / Line Item",
+      value: selectedOwnerLabel ? `#${selectedItem.jobNumber} • ${selectedOwnerLabel}` : `#${selectedItem.jobNumber} • ${selectedItem.lineItemId}`,
+    },
+    {
+      label: "Customer",
+      value: selectedItem.customerName,
+    },
+    {
+      label: "Due Date",
+      value: `${formatDateTime(order?.dueDate ?? selectedItem.dueDate)}${order?.dueDate ?? selectedItem.dueDate ? ` • ${formatRelativeTime(order?.dueDate ?? selectedItem.dueDate)}` : ""}`,
+    },
+  ];
+
+  const metadataColumnTwo = [
+    {
+      label: "Quantity",
+      value: String(selectedLineItem?.quantity ?? selectedItem.quantity ?? "-"),
+    },
+    {
+      label: "Size",
+      value:
+        (specRows.find((row) => row.label === "Size")?.value as string | undefined) ||
+        "-",
+    },
+    {
+      label: "Product",
+      value: getReadableLabel(selectedLineItem?.product?.name) || getReadableLabel(selectedItem.productName) || "-",
+    },
+  ];
+
   return (
     <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
       <Card className="border-border/80 bg-card/95 shadow-sm shadow-black/20">
@@ -691,39 +734,21 @@ export default function DesignProductionPage() {
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-                  <MetaCard
-                    label="Order / Line Item"
-                    primary={`#${selectedItem.jobNumber}`}
-                    secondary={selectedOwnerLabel ? `Owner: ${selectedOwnerLabel}` : selectedItem.lineItemId}
-                  />
-                  <MetaCard
-                    label="Due"
-                    primary={formatDateTime(order?.dueDate ?? selectedItem.dueDate)}
-                    secondary={formatRelativeTime(order?.dueDate ?? selectedItem.dueDate)}
-                  />
-                  <MetaCard
-                    label="Customer"
-                    primary={selectedItem.customerName}
-                    secondary={displayPrintType ?? "Design work item"}
-                  />
-                  <MetaCard
-                    label="Files"
-                    primary={`${selectedItem.fileCounts?.originals || 0} source`}
-                    secondary={`${selectedItem.fileCounts?.proofs || 0} proofs`}
-                  />
-                </div>
-
-                <div className="grid gap-2 xl:grid-cols-[minmax(0,1fr)_280px]">
-                  {specRows.length > 0 ? (
-                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                      {specRows.map((row) => (
-                        <MetaCard key={row.label} label={row.label} primary={String(row.value)} />
-                      ))}
+                <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_280px] xl:items-start">
+                  <div className="rounded-lg border border-border/60 bg-muted/10 px-3 py-3">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="space-y-2.5">
+                        {metadataColumnOne.map((item) => (
+                          <CompactInfoRow key={item.label} label={item.label} value={item.value} valueClassName="break-words" />
+                        ))}
+                      </div>
+                      <div className="space-y-2.5 border-border/50 md:border-l md:pl-4">
+                        {metadataColumnTwo.map((item) => (
+                          <CompactInfoRow key={item.label} label={item.label} value={item.value} valueClassName="break-words" />
+                        ))}
+                      </div>
                     </div>
-                  ) : (
-                    <div />
-                  )}
+                  </div>
 
                   <div className="rounded-lg border border-border/80 bg-muted/20 px-3 py-3 shadow-sm shadow-black/10">
                     <div className="flex items-start justify-between gap-3">
@@ -733,9 +758,6 @@ export default function DesignProductionPage() {
                         </div>
                         <div className="text-sm text-muted-foreground">{sessionStatusText}</div>
                       </div>
-                      <Badge variant={workspace?.session.status === "paused" ? "secondary" : "outline"}>
-                        {WORKFLOW_LABELS[workspace?.effectiveState || selectedItem.workflowState] || workspace?.effectiveState || selectedItem.workflowState}
-                      </Badge>
                     </div>
                     <div className="mt-3 grid gap-2 sm:grid-cols-2">
                       <Button
@@ -755,7 +777,6 @@ export default function DesignProductionPage() {
                         onClick={() => completeMutation.mutate()}
                       >
                         <span>Complete Design</span>
-                        <ArrowRight className="h-4 w-4" />
                       </Button>
                     </div>
                   </div>
