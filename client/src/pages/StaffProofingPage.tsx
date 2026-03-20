@@ -4,7 +4,6 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { format, formatDistanceToNow } from "date-fns";
 import {
   AlertCircle,
-  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -17,9 +16,7 @@ import {
   Search,
   Send,
   ShieldAlert,
-  SlidersHorizontal,
   Upload,
-  XCircle,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -46,14 +43,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { ROUTES } from "@/config/routes";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrderLineItemFiles, type OrderFileWithUser } from "@/hooks/useOrderFiles";
-import { useOrder } from "@/hooks/useOrders";
+import { useOrder, useUpdateOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
 import { uploadAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
 import { proofQueueSliceValues } from "@shared/proofing";
 import type {
-  ProofDecision,
   ProofQueueSlice,
   ProofQueueStatus,
   ProofVersionHistoryEntry,
@@ -93,12 +89,6 @@ const queueSliceMeta: Array<{ value: ProofQueueSlice; label: string; countKey: k
   { value: "revision_requested", label: "Revision Requested", countKey: "revisionRequested" },
   { value: "approved", label: "Approved", countKey: "approved" },
 ];
-
-const decisionLabels: Record<ProofDecision, string> = {
-  approved: "Approve",
-  rejected: "Reject",
-  revision_requested: "Request revision",
-};
 
 type StaffFacingStatus = {
   label: string;
@@ -478,19 +468,6 @@ function getVersionStatusLabel(status: ProofVersionStatus | null | undefined) {
   }
 }
 
-function getDecisionLabel(decision: ProofDecision) {
-  switch (decision) {
-    case "approved":
-      return "Approval Recorded";
-    case "revision_requested":
-      return "Revision Requested";
-    case "rejected":
-      return "Rejection Recorded";
-    default:
-      return decisionLabels[decision];
-  }
-}
-
 export default function StaffProofingPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -525,8 +502,8 @@ export default function StaffProofingPage() {
   const [sendToName, setSendToName] = useState("");
   const [sendToEmail, setSendToEmail] = useState("");
   const [customerMessage, setCustomerMessage] = useState("");
-
-  const [responseNotes, setResponseNotes] = useState("");
+  const [internalNotesDraft, setInternalNotesDraft] = useState("");
+  const [internalNotesDirty, setInternalNotesDirty] = useState(false);
 
   const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
@@ -598,6 +575,7 @@ export default function StaffProofingPage() {
 
   const detail = detailQuery.data?.data;
   const orderQuery = useOrder(selectedRow?.orderId);
+  const updateOrder = useUpdateOrder(selectedRow?.orderId ?? "");
   const selectedOrder = orderQuery.data;
   const selectedLineItem = useMemo(
     () => selectedOrder?.lineItems?.find((lineItem) => lineItem.id === selectedRow?.lineItemId) ?? null,
@@ -666,6 +644,11 @@ export default function StaffProofingPage() {
   const primaryActionLabel = getPrimaryActionLabel(canSendCurrentVersion, displayedVersion);
 
   useEffect(() => {
+    setInternalNotesDraft(selectedOrder?.notesInternal || "");
+    setInternalNotesDirty(false);
+  }, [selectedOrder?.id, selectedOrder?.notesInternal]);
+
+  useEffect(() => {
     setViewerZoom(previewIsPdf ? 85 : 100);
     setViewerPage(1);
   }, [previewIsPdf, selectedVersionId]);
@@ -686,6 +669,23 @@ export default function StaffProofingPage() {
         await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId, "line-items", lineItemId, "files"] });
       }
     }
+  }
+
+  async function handleSaveInternalNotes() {
+    if (!selectedRow?.orderId) return;
+
+    const currentValue = (selectedOrder?.notesInternal || "").trim();
+    const nextValue = internalNotesDraft.trim();
+
+    if (currentValue === nextValue) {
+      setInternalNotesDirty(false);
+      return;
+    }
+
+    await updateOrder.mutateAsync({
+      notesInternal: nextValue || null,
+    });
+    setInternalNotesDirty(false);
   }
 
   const createDraftMutation = useMutation({
@@ -773,29 +773,6 @@ export default function StaffProofingPage() {
     },
   });
 
-  const respondMutation = useMutation({
-    mutationFn: async (decision: ProofDecision) => {
-      if (!displayedVersion?.id) throw new Error("Select an actionable proof version first");
-      return readJson<JsonEnvelope<unknown>>(`/api/proofing/versions/${displayedVersion.id}/respond`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          decision,
-          responseNotes: responseNotes.trim() || null,
-          responderSource: "staff_ui",
-        }),
-      });
-    },
-    onSuccess: async (_, decision) => {
-      await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
-      setResponseNotes("");
-      toast({ title: `${decisionLabels[decision]} recorded`, description: "The proof decision has been saved." });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Failed to record proof response", description: error.message, variant: "destructive" });
-    },
-  });
-
   const overrideMutation = useMutation({
     mutationFn: async () => {
       if (!selectedRow?.lineItemId) throw new Error("Select a queue row first");
@@ -843,7 +820,6 @@ export default function StaffProofingPage() {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-xl font-bold tracking-tight text-white">Proofing</h1>
-              <p className="mt-0.5 text-xs text-slate-500">Manage proof versions, approvals, and revision loops</p>
             </div>
             <div className="flex items-center gap-4">
               <div className="relative">
@@ -884,10 +860,6 @@ export default function StaffProofingPage() {
 
         <main className="flex min-h-0 flex-1 overflow-hidden">
           <aside className="flex w-80 shrink-0 flex-col border-r border-[#232948] bg-[#0B1120]">
-            <div className="flex items-center justify-between border-b border-[#232948] p-4">
-              <h3 className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Active Queue</h3>
-              <SlidersHorizontal className="h-[18px] w-[18px] cursor-pointer text-slate-500" />
-            </div>
             <div className="custom-scrollbar flex-1 space-y-3 overflow-y-auto p-3">
               {queueQuery.isLoading ? (
                 <div className="space-y-2">
@@ -1119,16 +1091,7 @@ export default function StaffProofingPage() {
                     </p>
                   ) : null}
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <Button
-                    variant="outline"
-                    className="h-10 rounded-xl border-[#232948] bg-transparent text-[10px] font-bold uppercase tracking-wider text-slate-200 transition-all hover:bg-slate-800"
-                    onClick={() => respondMutation.mutate("approved")}
-                    disabled={respondMutation.isPending || !canRecordDecision}
-                  >
-                    <CheckCircle2 className="mr-2 h-4 w-4" />
-                    Record Approval
-                  </Button>
+                <div className="grid grid-cols-1 gap-3">
                   <Button
                     variant="outline"
                     className="h-10 rounded-xl border-[#232948] bg-transparent text-[10px] font-bold uppercase tracking-wider text-slate-200 transition-all hover:bg-slate-800"
@@ -1139,26 +1102,6 @@ export default function StaffProofingPage() {
                     View History
                   </Button>
                 </div>
-                {canRecordDecision ? (
-                  <div className="grid grid-cols-2 gap-3">
-                    <Button
-                      variant="outline"
-                      className="h-9 rounded-xl border-[#232948] bg-transparent text-[10px] font-bold uppercase tracking-wider text-slate-200 transition-all hover:bg-slate-800"
-                      onClick={() => respondMutation.mutate("revision_requested")}
-                      disabled={respondMutation.isPending}
-                    >
-                      Request Revision
-                    </Button>
-                    <Button
-                      variant="destructive"
-                      className="h-9 rounded-xl border border-rose-500/20 bg-rose-500/10 text-[10px] font-bold uppercase tracking-wider text-rose-300 transition-all hover:bg-rose-500/20"
-                      onClick={() => respondMutation.mutate("rejected")}
-                      disabled={respondMutation.isPending}
-                    >
-                      Reject
-                    </Button>
-                  </div>
-                ) : null}
               </div>
 
               <div className="border-b border-[#232948] bg-rose-500/[0.02] p-6">
@@ -1199,14 +1142,35 @@ export default function StaffProofingPage() {
                 )}
               </div>
 
-              <div className="border-b border-[#232948] bg-amber-500/5 p-6">
-                <h4 className="mb-4 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-amber-500/80">
+              <div className="border-b border-[#232948] bg-[#141824]/20 p-6">
+                <h4 className="mb-4 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-500">
                   <Lock className="h-4 w-4" />
                   Internal Staff Notes
                 </h4>
                 <div className="space-y-3">
-                  <div className="border-l border-amber-500/30 pl-3 text-[11px] italic leading-relaxed text-slate-400">
-                    &quot;{internalStaffNote || "No internal notes have been recorded for this proof yet."}&quot;
+                  <Textarea
+                    value={internalNotesDraft}
+                    onChange={(event) => {
+                      setInternalNotesDraft(event.target.value);
+                      setInternalNotesDirty(true);
+                    }}
+                    placeholder="Add internal staff notes for this order"
+                    className="min-h-[112px] resize-none rounded-xl border-[#232948] bg-[#0F1524] text-sm text-slate-100 placeholder:text-slate-500 focus-visible:ring-[#1337ec]"
+                    disabled={!selectedRow?.orderId || updateOrder.isPending}
+                  />
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-[11px] text-slate-500">
+                      {internalStaffNote ? "Saved to the order's internal notes." : "No internal notes have been recorded for this order yet."}
+                    </p>
+                    <Button
+                      variant="outline"
+                      className="h-9 rounded-xl border-[#232948] bg-transparent px-4 text-[10px] font-bold uppercase tracking-wider text-slate-200 transition-all hover:bg-slate-800"
+                      onClick={() => void handleSaveInternalNotes()}
+                      disabled={!selectedRow?.orderId || !internalNotesDirty || updateOrder.isPending}
+                    >
+                      {updateOrder.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                      Save Notes
+                    </Button>
                   </div>
                 </div>
               </div>
@@ -1216,7 +1180,7 @@ export default function StaffProofingPage() {
                   <h4 className="mb-4 text-[10px] font-bold uppercase tracking-widest text-slate-500">Manual Override</h4>
                   <Button
                     variant="outline"
-                    className="h-10 w-full rounded-xl border-[#232948] bg-transparent text-[10px] font-bold uppercase tracking-wider text-slate-200 transition-all hover:bg-slate-800"
+                    className="h-10 w-full rounded-xl border-[#232948] bg-[#141824] text-[10px] font-bold uppercase tracking-wider text-slate-100 transition-all hover:border-[#1337ec] hover:bg-[#1337ec]/10"
                     onClick={() => setOverrideDialogOpen(true)}
                     disabled={!detail?.currentActionableProofVersionId || detail.approvedProofSource === "manual_override"}
                   >
@@ -1229,27 +1193,29 @@ export default function StaffProofingPage() {
               <div ref={versionHistoryRef} className="p-6">
                 <h4 className="mb-4 text-[10px] font-bold uppercase tracking-widest text-slate-500">Version History</h4>
                 {detail ? (
-                  <div className="space-y-3">
-                    {detail.proofVersionHistory.map((version) => {
-                      const isSelected = version.id === selectedVersionId;
-                      return (
-                        <button
-                          key={version.id}
-                          type="button"
-                          onClick={() => setSelectedVersionId(version.id)}
-                          className={`w-full rounded-lg border p-3 text-left transition-all ${isSelected ? "border-[#1337ec] bg-[#1337ec]/10" : "border-[#232948] bg-[#141824]/40 hover:border-slate-600"}`}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="text-sm font-medium text-white">Version {version.versionNumber}</p>
-                            <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${getVersionStatusBadgeClass(version.status)}`}>
-                              {getVersionStatusLabel(version.status)}
-                            </span>
-                          </div>
-                          <p className="mt-1 text-[11px] text-slate-500">Created {formatTimestamp(version.createdAt)}</p>
-                        </button>
-                      );
-                    })}
-                  </div>
+                  <ScrollArea className="max-h-[26rem] pr-3">
+                    <div className="space-y-3">
+                      {detail.proofVersionHistory.map((version) => {
+                        const isSelected = version.id === selectedVersionId;
+                        return (
+                          <button
+                            key={version.id}
+                            type="button"
+                            onClick={() => setSelectedVersionId(version.id)}
+                            className={`w-full rounded-lg border p-3 text-left transition-all ${isSelected ? "border-[#1337ec] bg-[#1337ec]/10" : "border-[#232948] bg-[#141824]/40 hover:border-slate-600"}`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-sm font-medium text-white">Version {version.versionNumber}</p>
+                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${getVersionStatusBadgeClass(version.status)}`}>
+                                {getVersionStatusLabel(version.status)}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-[11px] text-slate-500">Created {formatTimestamp(version.createdAt)}</p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </ScrollArea>
                 ) : (
                   <div className="text-sm text-slate-500">Load a queue row to review version history.</div>
                 )}
