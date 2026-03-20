@@ -64,6 +64,17 @@ export const lineItemDesignStatusValues = [
 export const lineItemDesignStatusSchema = z.enum(lineItemDesignStatusValues);
 export type LineItemDesignStatus = (typeof lineItemDesignStatusValues)[number];
 
+export const productDesignPricingModeValues = [
+  "none",
+  "flat_fee",
+  "included_minutes_plus_overage",
+  "hourly",
+  "manual_quote",
+] as const;
+
+export const productDesignPricingModeSchema = z.enum(productDesignPricingModeValues);
+export type ProductDesignPricingMode = (typeof productDesignPricingModeValues)[number];
+
 // ============================================================
 // MULTI-TENANT ORGANIZATION SYSTEM
 // ============================================================
@@ -644,6 +655,44 @@ export const products = pgTable("products", {
   index("products_pbv2_active_tree_version_id_idx").on(table.pbv2ActiveTreeVersionId),
 ]);
 
+export const productDesignConfigs = pgTable("product_design_configs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  productId: varchar("product_id")
+    .notNull()
+    .references(() => products.id, { onDelete: 'cascade' }),
+  requiresDesign: boolean("requires_design").notNull().default(false),
+  designBriefRequired: boolean("design_brief_required").notNull().default(false),
+  useKeyInstructions: boolean("use_key_instructions").notNull().default(true),
+  useDesignObjective: boolean("use_design_objective").notNull().default(true),
+  useRequestedContent: boolean("use_requested_content").notNull().default(false),
+  useLayoutNotes: boolean("use_layout_notes").notNull().default(false),
+  useBrandStyleNotes: boolean("use_brand_style_notes").notNull().default(false),
+  useReferenceNotes: boolean("use_reference_notes").notNull().default(false),
+  usePriorityNotes: boolean("use_priority_notes").notNull().default(false),
+  requireKeyInstructions: boolean("require_key_instructions").notNull().default(false),
+  requireDesignObjective: boolean("require_design_objective").notNull().default(false),
+  estimatedDesignMinutes: integer("estimated_design_minutes"),
+  includedDesignMinutes: integer("included_design_minutes"),
+  allowDesignStartWhenBriefMissing: boolean("allow_design_start_when_brief_missing").notNull().default(false),
+  designPricingMode: varchar("design_pricing_mode", { length: 50 })
+    .$type<ProductDesignPricingMode>()
+    .notNull()
+    .default("none"),
+  flatFeeAmount: decimal("flat_fee_amount", { precision: 10, scale: 2 }),
+  hourlyRate: decimal("hourly_rate", { precision: 10, scale: 2 }),
+  overageRate: decimal("overage_rate", { precision: 10, scale: 2 }),
+  internalLaborRate: decimal("internal_labor_rate", { precision: 10, scale: 2 }),
+  costTrackingEnabled: boolean("cost_tracking_enabled").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("product_design_configs_product_id_unique").on(table.productId),
+  index("product_design_configs_organization_id_idx").on(table.organizationId),
+]);
+
 // ============================================================
 // PRODUCT BUILDER V2 (PBV2) - VERSIONED TREE MODEL
 // ============================================================
@@ -904,6 +953,28 @@ export const updateProductSchema = createInsertSchema(products).omit({
 export type InsertProduct = z.infer<typeof insertProductSchema>;
 export type UpdateProduct = z.infer<typeof updateProductSchema>;
 export type Product = typeof products.$inferSelect;
+
+export const insertProductDesignConfigSchema = createInsertSchema(productDesignConfigs).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  organizationId: true,
+  productId: true,
+}).extend({
+  estimatedDesignMinutes: z.coerce.number().int().nonnegative().optional().nullable(),
+  includedDesignMinutes: z.coerce.number().int().nonnegative().optional().nullable(),
+  designPricingMode: productDesignPricingModeSchema.default("none"),
+  flatFeeAmount: z.coerce.number().nonnegative().optional().nullable(),
+  hourlyRate: z.coerce.number().nonnegative().optional().nullable(),
+  overageRate: z.coerce.number().nonnegative().optional().nullable(),
+  internalLaborRate: z.coerce.number().nonnegative().optional().nullable(),
+});
+
+export const updateProductDesignConfigSchema = insertProductDesignConfigSchema.partial();
+
+export type ProductDesignConfig = typeof productDesignConfigs.$inferSelect;
+export type InsertProductDesignConfig = typeof productDesignConfigs.$inferInsert;
+export type UpdateProductDesignConfig = z.infer<typeof updateProductDesignConfigSchema>;
 
 // Product Variants table
 export const productVariants = pgTable("product_variants", {
