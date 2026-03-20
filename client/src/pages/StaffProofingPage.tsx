@@ -12,10 +12,12 @@ import {
   Eye,
   FileImage,
   FileText,
+  Lock,
   Loader2,
   Search,
   Send,
   ShieldAlert,
+  SlidersHorizontal,
   Upload,
   XCircle,
   ZoomIn,
@@ -373,6 +375,29 @@ function getQueueCardBadgeLabel(row: ProofingQueueRow) {
   }
 }
 
+function getQueueCardBadgeClass(row: ProofingQueueRow) {
+  switch (row.currentQueueStatus) {
+    case "awaiting_send":
+      return "border-[#3b4660] bg-[#1a2236] text-[#d7ddea]";
+    case "awaiting_approval":
+      return "border-[#6a5318] bg-[#2f2610] text-[#f2c663]";
+    case "revision_requested":
+      return "border-[#74324d] bg-[#3a1725] text-[#ff7f9f]";
+    case "approved":
+    case "approved_by_override":
+      return "border-[#244f45] bg-[#102b24] text-[#72d4b8]";
+    case "rejected":
+      return "border-[#74324d] bg-[#3a1725] text-[#ff7f9f]";
+    default:
+      return "border-[#3b4660] bg-[#1a2236] text-[#d7ddea]";
+  }
+}
+
+function getPrimaryActionLabel(canSendCurrentVersion: boolean, displayedVersion: ProofVersionHistoryEntry | null) {
+  if (!canSendCurrentVersion) return "New Proof";
+  return `Upload & Send v${displayedVersion?.versionNumber ?? "?"} Proof`;
+}
+
 function getVersionStatusLabel(status: ProofVersionStatus | null | undefined) {
   switch (status) {
     case "awaiting_response":
@@ -577,6 +602,7 @@ export default function StaffProofingPage() {
   const canSendCurrentVersion = displayedVersion?.status === "draft";
   const canRecordDecision =
     displayedVersion?.id === detail?.currentActionableProofVersionId && displayedVersion?.status === "awaiting_response";
+  const primaryActionLabel = getPrimaryActionLabel(canSendCurrentVersion, displayedVersion);
 
   useEffect(() => {
     setViewerZoom(previewIsPdf ? 85 : 100);
@@ -751,21 +777,24 @@ export default function StaffProofingPage() {
 
   return (
     <>
-      <div className="flex h-[calc(100vh-160px)] min-h-[46rem] flex-1 flex-col gap-3 overflow-hidden p-6 pt-4">
+      <div className="flex h-[calc(100vh-154px)] min-h-[46rem] flex-1 flex-col gap-3 overflow-hidden bg-[#08101f] p-5 text-white">
         <div className="flex shrink-0 items-center justify-between gap-3">
-          <h1 className="text-xl font-semibold tracking-tight">Proofing</h1>
+          <div>
+            <h1 className="text-[30px] font-semibold tracking-[-0.02em] text-white">Proofing</h1>
+            <p className="mt-0.5 text-xs text-[#7784a3]">Manage proof versions, approvals, and revision loops</p>
+          </div>
           <div className="flex w-full max-w-[29rem] items-center justify-end gap-2">
             <div className="relative w-full max-w-[17rem]">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#7784a3]" />
               <Input
                 type="search"
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
                 placeholder="Search proofs..."
-                className="h-9 rounded-lg pl-9"
+                className="h-10 rounded-xl border-[#18243a] bg-[#0e1728] pl-9 text-white placeholder:text-[#64708d]"
               />
             </div>
-            <Button className="h-9 rounded-lg px-4" onClick={() => setCreateDialogOpen(true)} disabled={!selectedRow}>
+            <Button className="h-10 rounded-xl bg-[#2850ff] px-4 text-white hover:bg-[#3a5dff]" onClick={() => setCreateDialogOpen(true)} disabled={!selectedRow}>
               <Upload className="mr-2 h-4 w-4" />
               New Proof
             </Button>
@@ -773,12 +802,12 @@ export default function StaffProofingPage() {
         </div>
 
         <Tabs value={slice} onValueChange={(value) => setSlice(value as ProofQueueSlice)} className="shrink-0">
-          <TabsList className="h-auto w-full justify-start gap-6 rounded-none border-b bg-transparent px-0 py-0">
+          <TabsList className="h-auto w-full justify-start gap-6 rounded-none border-b border-[#18243a] bg-transparent px-0 py-0">
             {queueSliceMeta.map((tab) => (
               <TabsTrigger
                 key={tab.value}
                 value={tab.value}
-                className="rounded-none border-b-2 border-transparent bg-transparent px-0 pb-2 pt-0 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground"
+                className="rounded-none border-b-2 border-transparent bg-transparent px-0 pb-3 pt-0 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8390ad] shadow-none data-[state=active]:border-[#2d63ff] data-[state=active]:bg-transparent data-[state=active]:text-white"
               >
                 {tab.label}
               </TabsTrigger>
@@ -787,12 +816,15 @@ export default function StaffProofingPage() {
         </Tabs>
 
         <div className="grid min-h-0 flex-1 gap-3 overflow-hidden xl:grid-cols-[16.5rem_minmax(0,1fr)_18rem] 2xl:grid-cols-[17rem_minmax(0,1fr)_19rem]">
-          <Card className="flex min-h-0 flex-col overflow-hidden rounded-2xl border">
-            <div className="flex items-center justify-between border-b px-4 py-2.5">
+          <Card className="flex min-h-0 flex-col overflow-hidden rounded-[18px] border border-[#18243a] bg-[#0b1220] shadow-none">
+            <div className="flex items-center justify-between border-b border-[#18243a] px-4 py-3">
               <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Active Queue</p>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#6f7b97]">Active Queue</p>
               </div>
-              {queueQuery.isFetching ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
+              <div className="flex items-center gap-2 text-[#6f7b97]">
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                {queueQuery.isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              </div>
             </div>
             <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden p-2.5 pt-2.5">
               {queueQuery.isLoading ? (
@@ -802,11 +834,11 @@ export default function StaffProofingPage() {
                   ))}
                 </div>
               ) : queueQuery.error ? (
-                <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+                <div className="rounded-xl border border-[#5b2638] bg-[#2a1420] p-3 text-sm text-[#ff8baa]">
                   {(queueQuery.error as Error).message}
                 </div>
               ) : filteredQueueRows.length === 0 ? (
-                <div className="rounded-xl border border-dashed p-5 text-sm text-muted-foreground">
+                <div className="rounded-xl border border-dashed border-[#243049] p-5 text-sm text-[#7b87a5]">
                   {searchQuery.trim() ? "No proofs match this search." : "No line items are currently in this proofing slice."}
                 </div>
               ) : (
@@ -815,13 +847,12 @@ export default function StaffProofingPage() {
                     {groupedQueueSections.map((section) => (
                       <div key={section.key} className="space-y-1.5">
                         <div className="flex items-center justify-between px-1">
-                          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">{section.label}</p>
-                          <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/80">({section.rows.length})</span>
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#71809f]">{section.label}</p>
+                          <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#71809f]">({section.rows.length})</span>
                         </div>
                         <div className="space-y-1.5">
                           {section.rows.map((row) => {
                             const isSelected = row.lineItemId === selectedRow?.lineItemId;
-                            const rowStatus = getStaffFacingStatus({ row, detail: undefined, displayedVersion: null });
                             return (
                               <button
                                 key={row.lineItemId}
@@ -829,19 +860,23 @@ export default function StaffProofingPage() {
                                 onClick={() => setSelectedLineItemId(row.lineItemId)}
                                 className={`w-full rounded-xl border px-3 py-2.5 text-left transition ${
                                   isSelected
-                                    ? "border-primary bg-primary/10 shadow-[0_0_0_1px_hsl(var(--primary))]"
-                                    : "border-border bg-card hover:border-primary/40 hover:bg-accent/40"
+                                    ? "border-[#2d63ff] bg-[#111d38] shadow-[0_0_0_1px_rgba(45,99,255,0.75)]"
+                                    : "border-[#1c2840] bg-[#0f1729] hover:border-[#2a3a59] hover:bg-[#131d32]"
                                 }`}
                               >
                                 <div className="flex items-center justify-between gap-3">
                                   <div className="min-w-0">
-                                    <p className="truncate text-sm font-semibold text-foreground">{row.lineItemLabel}</p>
+                                    <p className="truncate text-[11px] font-semibold uppercase tracking-[0.12em] text-[#60708f]">
+                                      {row.orderNumber ? `#${row.orderNumber}` : row.orderId}
+                                    </p>
+                                    <p className="mt-1 truncate text-sm font-semibold text-white">{row.lineItemLabel}</p>
                                   </div>
-                                  <Badge variant={rowStatus.badgeVariant} className="shrink-0 text-[10px] uppercase tracking-[0.12em]">
+                                  <Badge className={`shrink-0 rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${getQueueCardBadgeClass(row)}`}>
                                     {getQueueCardBadgeLabel(row)}
                                   </Badge>
                                 </div>
-                                <div className="mt-1.5 flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
+                                <div className="mt-2 flex items-center justify-between gap-3 text-[11px] text-[#7a87a4]">
+                                  <span className="truncate">{row.customerDisplayName || "No customer linked"}</span>
                                   <span className="shrink-0">{formatRelativeTime(row.lastActivityAt)}</span>
                                 </div>
                               </button>
@@ -856,7 +891,7 @@ export default function StaffProofingPage() {
             </CardContent>
           </Card>
 
-          <Card className="flex min-h-0 flex-col overflow-hidden rounded-2xl border">
+          <Card className="flex min-h-0 flex-col overflow-hidden rounded-[18px] border border-[#18243a] bg-[#0b1220] shadow-none">
             <CardContent className="flex min-h-0 flex-1 flex-col p-0">
               {detailQuery.isLoading ? (
                 <div className="space-y-3 p-4">
@@ -865,7 +900,7 @@ export default function StaffProofingPage() {
                 </div>
               ) : detailQuery.error ? (
                 <div className="p-4">
-                  <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+                  <div className="rounded-xl border border-[#5b2638] bg-[#2a1420] p-4 text-sm text-[#ff8baa]">
                     {(detailQuery.error as Error).message}
                   </div>
                 </div>
@@ -877,49 +912,52 @@ export default function StaffProofingPage() {
                 </div>
               ) : (
                 <div className="flex min-h-0 flex-1 flex-col p-2">
-                  <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 rounded-xl border bg-muted/20 px-3 py-2.5">
+                  <div className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-2 rounded-t-[18px] border border-[#18243a] bg-[#0f1729] px-3 py-2.5">
+                    <Badge className="rounded-full border border-[#6a263e] bg-[#3a1727] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-[#ff86a4]">
+                      Customer Visible Proof
+                    </Badge>
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
-                        <p className="truncate text-sm font-semibold text-foreground">{previewName}</p>
-                        {displayedVersion ? <Badge variant="outline">v{displayedVersion.versionNumber}</Badge> : null}
+                        <p className="truncate text-sm font-semibold text-white">{previewName}</p>
+                        {displayedVersion ? <Badge className="rounded-full border border-[#2f3950] bg-[#172136] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-[#d6dced]">v{displayedVersion.versionNumber}</Badge> : null}
                       </div>
                     </div>
 
-                    <div className="flex items-center justify-center gap-1 rounded-lg border bg-background/80 px-2 py-1">
+                    <div className="flex items-center justify-center gap-1 rounded-xl border border-[#26334d] bg-[#121b2f] px-2 py-1">
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7"
+                        className="h-7 w-7 text-[#90a1c2] hover:bg-[#1b2740] hover:text-white"
                         onClick={() => setViewerZoom((value) => Math.max(50, value - 10))}
                         disabled={!displayedFile}
                       >
                         <ZoomOut className="h-3.5 w-3.5" />
                       </Button>
-                      <span className="min-w-10 text-center text-xs font-medium text-foreground">{viewerZoom}%</span>
+                      <span className="min-w-10 text-center text-xs font-medium text-white">{viewerZoom}%</span>
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7"
+                        className="h-7 w-7 text-[#90a1c2] hover:bg-[#1b2740] hover:text-white"
                         onClick={() => setViewerZoom((value) => Math.min(200, value + 10))}
                         disabled={!displayedFile}
                       >
                         <ZoomIn className="h-3.5 w-3.5" />
                       </Button>
-                      <Separator orientation="vertical" className="mx-1 h-5" />
+                      <Separator orientation="vertical" className="mx-1 h-5 bg-[#2a3550]" />
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7"
+                        className="h-7 w-7 text-[#90a1c2] hover:bg-[#1b2740] hover:text-white"
                         onClick={() => setViewerPage((value) => Math.max(1, value - 1))}
                         disabled={!previewIsPdf || viewerPage <= 1}
                       >
                         <ChevronLeft className="h-3.5 w-3.5" />
                       </Button>
-                      <span className="min-w-12 text-center text-xs font-medium text-foreground">Page {viewerPage}</span>
+                      <span className="min-w-12 text-center text-xs font-medium text-white">{viewerPage}</span>
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7"
+                        className="h-7 w-7 text-[#90a1c2] hover:bg-[#1b2740] hover:text-white"
                         onClick={() => setViewerPage((value) => value + 1)}
                         disabled={!previewIsPdf}
                       >
@@ -928,13 +966,13 @@ export default function StaffProofingPage() {
                     </div>
 
                     <div className="flex items-center justify-end gap-1">
-                      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setViewerOpen(true)} disabled={!displayedFile}>
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-[#90a1c2] hover:bg-[#1b2740] hover:text-white" onClick={() => setViewerOpen(true)} disabled={!displayedFile}>
                         <Eye className="h-4 w-4" />
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-8 w-8"
+                        className="h-8 w-8 text-[#90a1c2] hover:bg-[#1b2740] hover:text-white"
                         onClick={() => downloadUrl && downloadFileFromUrl(downloadUrl, previewName)}
                         disabled={!downloadUrl}
                       >
@@ -943,7 +981,7 @@ export default function StaffProofingPage() {
                     </div>
                   </div>
 
-                  <div className="mt-2 flex min-h-0 flex-1 items-center justify-center rounded-2xl border bg-muted/10 p-2">
+                  <div className="flex min-h-0 flex-1 items-center justify-center rounded-b-[18px] border-x border-b border-[#18243a] bg-[#0b1220] p-2">
                     {!displayedVersion ? (
                       <div className="text-center text-sm text-muted-foreground">
                         <FileText className="mx-auto mb-3 h-10 w-10 opacity-50" />
@@ -955,7 +993,7 @@ export default function StaffProofingPage() {
                         This proof version has no resolved file in the current line-item file feed.
                       </div>
                     ) : previewIsPdf && embeddedPdfUrl ? (
-                      <iframe title={previewName} src={embeddedPdfUrl} className="h-full min-h-[33rem] w-full rounded-xl border bg-white" />
+                      <iframe title={previewName} src={embeddedPdfUrl} className="h-full min-h-[33rem] w-full rounded-xl border border-[#26334d] bg-white" />
                     ) : previewIsImage && previewUrl ? (
                       <div className="flex h-full w-full items-center justify-center overflow-auto rounded-xl border bg-white p-4">
                         <img
@@ -992,42 +1030,48 @@ export default function StaffProofingPage() {
 
           <div className="min-h-0 overflow-hidden">
             <div className="flex h-full min-h-0 flex-col gap-2.5 overflow-y-auto pr-2 [scrollbar-color:hsl(var(--muted-foreground)/0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40 [&::-webkit-scrollbar-track]:bg-transparent">
-              <Card className="rounded-2xl border">
+              <Card className="rounded-[18px] border border-[#18243a] bg-[#0b1220] shadow-none">
                 <CardContent className="space-y-3 p-4">
                   {detailQuery.isLoading ? (
                     <Skeleton className="h-28 w-full rounded-xl" />
                   ) : detail ? (
                     <>
                       <div className="space-y-1.5">
-                        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-primary">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#4b7bff]">
                           Order {selectedRow?.orderNumber ? `#${selectedRow.orderNumber}` : selectedRow?.orderId}
                         </p>
                         <div>
-                          <p className="text-xl font-semibold leading-tight text-foreground">{selectedRow?.lineItemLabel || "Proofing"}</p>
-                          <p className="mt-1 text-xs uppercase tracking-[0.14em] text-muted-foreground">{selectedRow?.packageLabel || "No package linked"}</p>
+                          <p className="text-[28px] font-semibold leading-[1.1] text-white">{selectedRow?.lineItemLabel || "Proofing"}</p>
+                          <p className="mt-1 text-xs uppercase tracking-[0.16em] text-[#7b87a5]">{selectedRow?.packageLabel || "No package linked"}</p>
                         </div>
                         {selectedOrder?.customer?.id ? (
-                          <Link to={ROUTES.customers.detail(selectedOrder.customer.id)} className="inline-flex text-sm text-primary hover:underline">
+                          <Link to={ROUTES.customers.detail(selectedOrder.customer.id)} className="inline-flex text-sm text-[#d5dbeb] hover:text-white hover:underline">
                             {selectedRow?.customerDisplayName || "View customer"}
                           </Link>
                         ) : selectedRow?.customerDisplayName ? (
-                          <p className="text-sm text-muted-foreground">{selectedRow.customerDisplayName}</p>
+                          <p className="text-sm text-[#d5dbeb]">{selectedRow.customerDisplayName}</p>
                         ) : null}
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          {displayedVersion ? <Badge className="rounded-full border border-[#2f3950] bg-[#172136] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-[#d6dced]">v{displayedVersion.versionNumber}</Badge> : null}
+                          <Badge className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${getQueueCardBadgeClass(selectedRow)}`}>
+                            {getQueueCardBadgeLabel(selectedRow)}
+                          </Badge>
+                        </div>
                       </div>
 
                       <Button
-                        className="h-10 w-full rounded-xl"
+                        className="h-11 w-full rounded-xl bg-[#2850ff] text-white hover:bg-[#3a5dff]"
                         onClick={() => (canSendCurrentVersion ? setSendDialogOpen(true) : setCreateDialogOpen(true))}
                         disabled={!selectedRow}
                       >
                         {canSendCurrentVersion ? <Send className="mr-2 h-4 w-4" /> : <Upload className="mr-2 h-4 w-4" />}
-                        {canSendCurrentVersion ? "Upload & Send Proof" : "New Proof"}
+                        {primaryActionLabel}
                       </Button>
 
                       <div className="grid grid-cols-2 gap-2">
                         <Button
                           variant="outline"
-                          className="h-9 rounded-xl"
+                          className="h-10 rounded-xl border-[#26334d] bg-transparent text-white hover:bg-[#131d32]"
                           onClick={() => respondMutation.mutate("approved")}
                           disabled={respondMutation.isPending || !canRecordDecision}
                         >
@@ -1036,7 +1080,7 @@ export default function StaffProofingPage() {
                         </Button>
                         <Button
                           variant="outline"
-                          className="h-9 rounded-xl"
+                          className="h-10 rounded-xl border-[#26334d] bg-transparent text-white hover:bg-[#131d32]"
                           onClick={() => versionHistoryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
                           disabled={!detail}
                         >
@@ -1048,7 +1092,7 @@ export default function StaffProofingPage() {
                         <div className="grid grid-cols-2 gap-2">
                             <Button
                               variant="outline"
-                              className="h-9 rounded-xl"
+                              className="h-9 rounded-xl border-[#26334d] bg-transparent text-white hover:bg-[#131d32]"
                               onClick={() => respondMutation.mutate("revision_requested")}
                               disabled={respondMutation.isPending}
                             >
@@ -1056,7 +1100,7 @@ export default function StaffProofingPage() {
                             </Button>
                             <Button
                               variant="destructive"
-                              className="h-9 rounded-xl"
+                              className="h-9 rounded-xl border-[#74324d] bg-[#3a1725] text-[#ff9ab4] hover:bg-[#4a1b2e]"
                               onClick={() => respondMutation.mutate("rejected")}
                               disabled={respondMutation.isPending}
                             >
@@ -1071,19 +1115,23 @@ export default function StaffProofingPage() {
                 </CardContent>
               </Card>
 
-              <Card className="rounded-2xl border">
+              <Card className="rounded-[18px] border border-[#18243a] bg-[#0b1220] shadow-none">
                 <CardContent className="space-y-2.5 p-4">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Customer Feedback</p>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#6f7b97]">Customer Feedback</p>
+                    {latestCustomerFeedback ? <Badge className="rounded-full border border-[#74324d] bg-[#3a1725] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-[#ff86a4]">New</Badge> : null}
+                  </div>
                   {!detail ? (
-                    <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">Load a queue row to inspect feedback.</div>
+                    <div className="rounded-xl border border-dashed border-[#243049] p-4 text-sm text-[#7b87a5]">Load a queue row to inspect feedback.</div>
                   ) : !latestCustomerFeedback ? (
-                    <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">No customer feedback has been recorded yet.</div>
+                    <div className="rounded-xl border border-dashed border-[#243049] p-4 text-sm text-[#7b87a5]">No customer feedback has been recorded yet.</div>
                   ) : (
-                    <div className="rounded-xl border p-4">
-                      <div className="flex items-center justify-end gap-2">
-                        <span className="text-[11px] text-muted-foreground">{formatRelativeTime(latestCustomerFeedback.respondedAt)}</span>
+                    <div className="rounded-xl border border-[#243049] bg-[#11192d] p-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-medium text-white">{latestCustomerFeedback.responderName || latestCustomerFeedback.responderEmail || "Customer response"}</p>
+                        <span className="text-[11px] text-[#7b87a5]">{formatRelativeTime(latestCustomerFeedback.respondedAt)}</span>
                       </div>
-                      <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                      <p className="mt-3 border-l-2 border-[#ff5e84] pl-3 text-sm italic leading-6 text-[#d5dbeb]">
                         {latestCustomerFeedback.responseNotes || "No notes were recorded with this decision."}
                       </p>
                     </div>
@@ -1091,17 +1139,17 @@ export default function StaffProofingPage() {
                 </CardContent>
               </Card>
 
-              <Card className="rounded-2xl border">
+              <Card className="rounded-[18px] border border-[#18243a] bg-[#0b1220] shadow-none">
                 <CardContent className="space-y-2.5 p-4">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Job Specifications</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#6f7b97]">Job Specifications</p>
                   {jobSpecificationRows.length === 0 ? (
-                    <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">No job specifications are available for this line item.</div>
+                    <div className="rounded-xl border border-dashed border-[#243049] p-4 text-sm text-[#7b87a5]">No job specifications are available for this line item.</div>
                   ) : (
                     <div className="grid grid-cols-2 gap-2.5">
                       {jobSpecificationRows.slice(0, 6).map((row) => (
-                        <div key={row.label} className="rounded-xl border p-2.5">
-                          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{row.label}</p>
-                          <p className="mt-1 text-sm font-medium text-foreground">{String(row.value)}</p>
+                        <div key={row.label} className="rounded-xl border border-[#243049] bg-[#10192d] p-2.5">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#6f7b97]">{row.label}</p>
+                          <p className="mt-1 text-sm font-medium text-white">{String(row.value)}</p>
                         </div>
                       ))}
                     </div>
@@ -1109,22 +1157,25 @@ export default function StaffProofingPage() {
                 </CardContent>
               </Card>
 
-              <Card className="rounded-2xl border">
+              <Card className="rounded-[18px] border border-[#18243a] bg-[#0b1220] shadow-none">
                 <CardContent className="space-y-2.5 p-4">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Internal Staff Notes</p>
-                  <div className="rounded-xl border p-4 text-sm leading-6 text-muted-foreground">
+                  <div className="flex items-center gap-2 text-[#f0b343]">
+                    <Lock className="h-3.5 w-3.5" />
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#f0b343]">Internal Staff Notes</p>
+                  </div>
+                  <div className="rounded-xl border border-[#243049] bg-[#10192d] p-4 text-sm leading-6 text-[#d5dbeb]">
                     {internalStaffNote || "No internal notes have been recorded for this proof yet."}
                   </div>
                 </CardContent>
               </Card>
 
               {canOverride ? (
-                <Card className="rounded-2xl border">
+                <Card className="rounded-[18px] border border-[#18243a] bg-[#0b1220] shadow-none">
                   <CardContent className="space-y-2.5 p-4">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Manual Override</p>
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#6f7b97]">Manual Override</p>
                     <Button
                       variant="outline"
-                      className="h-9 w-full rounded-xl"
+                      className="h-9 w-full rounded-xl border-[#26334d] bg-transparent text-white hover:bg-[#131d32]"
                       onClick={() => setOverrideDialogOpen(true)}
                       disabled={!detail?.currentActionableProofVersionId || detail.approvedProofSource === "manual_override"}
                     >
@@ -1135,14 +1186,14 @@ export default function StaffProofingPage() {
                 </Card>
               ) : null}
 
-              <Card ref={versionHistoryRef} className="rounded-2xl border">
+              <Card ref={versionHistoryRef} className="rounded-[18px] border border-[#18243a] bg-[#0b1220] shadow-none">
                 <CardContent className="space-y-3 p-4">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Version History</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#6f7b97]">Version History</p>
                   {detail ? (
                     <div className="space-y-3">
                       <div className="space-y-2">
                         {detail.proofVersionHistory.length === 0 ? (
-                          <div className="rounded-xl border border-dashed p-3 text-sm text-muted-foreground">No proof versions yet.</div>
+                          <div className="rounded-xl border border-dashed border-[#243049] p-3 text-sm text-[#7b87a5]">No proof versions yet.</div>
                         ) : (
                           detail.proofVersionHistory.map((version) => {
                             const isSelected = version.id === selectedVersionId;
@@ -1151,13 +1202,15 @@ export default function StaffProofingPage() {
                                 key={version.id}
                                 type="button"
                                 onClick={() => setSelectedVersionId(version.id)}
-                                className={`w-full rounded-xl border p-3 text-left transition ${isSelected ? "border-primary bg-primary/8" : "border-border"}`}
+                                className={`w-full rounded-xl border p-3 text-left transition ${isSelected ? "border-[#2d63ff] bg-[#111d38]" : "border-[#243049] bg-[#10192d]"}`}
                               >
                                 <div className="flex items-center justify-between gap-2">
-                                  <p className="text-sm font-medium text-foreground">Version {version.versionNumber}</p>
-                                  <Badge variant={statusBadgeVariant(version.status)}>{getVersionStatusLabel(version.status)}</Badge>
+                                  <p className="text-sm font-medium text-white">Version {version.versionNumber}</p>
+                                  <Badge className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${getQueueCardBadgeClass({ ...selectedRow!, currentQueueStatus: version.status === "draft" ? "awaiting_send" : version.status === "awaiting_response" ? "awaiting_approval" : version.status === "revision_requested" ? "revision_requested" : version.status === "approved" ? "approved" : "rejected" })}`}>
+                                    {getVersionStatusLabel(version.status)}
+                                  </Badge>
                                 </div>
-                                <p className="mt-1 text-[11px] text-muted-foreground">Created {formatTimestamp(version.createdAt)}</p>
+                                <p className="mt-1 text-[11px] text-[#7b87a5]">Created {formatTimestamp(version.createdAt)}</p>
                               </button>
                             );
                           })
@@ -1168,22 +1221,24 @@ export default function StaffProofingPage() {
 
                       <div className="space-y-2">
                         {detail.proofDecisionHistory.length === 0 ? (
-                          <div className="rounded-xl border border-dashed p-3 text-sm text-muted-foreground">No responses recorded yet.</div>
+                          <div className="rounded-xl border border-dashed border-[#243049] p-3 text-sm text-[#7b87a5]">No responses recorded yet.</div>
                         ) : (
                           detail.proofDecisionHistory.map((decision) => (
-                            <div key={decision.id} className="rounded-xl border p-3">
+                            <div key={decision.id} className="rounded-xl border border-[#243049] bg-[#10192d] p-3">
                               <div className="flex items-center justify-between gap-2">
-                                <Badge variant={statusBadgeVariant(decision.decision)}>{getDecisionLabel(decision.decision)}</Badge>
-                                <span className="text-[11px] text-muted-foreground">{formatTimestamp(decision.respondedAt)}</span>
+                                <Badge className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${decision.decision === "approved" ? "border-[#244f45] bg-[#102b24] text-[#72d4b8]" : decision.decision === "revision_requested" ? "border-[#74324d] bg-[#3a1725] text-[#ff7f9f]" : "border-[#74324d] bg-[#3a1725] text-[#ff7f9f]"}`}>
+                                  {getDecisionLabel(decision.decision)}
+                                </Badge>
+                                <span className="text-[11px] text-[#7b87a5]">{formatTimestamp(decision.respondedAt)}</span>
                               </div>
-                              <p className="mt-2 text-sm text-muted-foreground">{decision.responseNotes || "No response notes"}</p>
+                              <p className="mt-2 text-sm text-[#d5dbeb]">{decision.responseNotes || "No response notes"}</p>
                             </div>
                           ))
                         )}
                       </div>
                     </div>
                   ) : (
-                    <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">Load a queue row to review version history.</div>
+                    <div className="rounded-xl border border-dashed border-[#243049] p-4 text-sm text-[#7b87a5]">Load a queue row to review version history.</div>
                   )}
                 </CardContent>
               </Card>
