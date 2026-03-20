@@ -1,20 +1,25 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { format, formatDistanceToNow } from "date-fns";
 import {
   AlertCircle,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Download,
   ExternalLink,
   Eye,
   FileImage,
   FileText,
   Loader2,
+  Search,
   Send,
   ShieldAlert,
   Upload,
   XCircle,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
@@ -289,7 +294,65 @@ function getEmbeddedPdfUrl(url: string | null, compact: boolean) {
   if (!url) return null;
   if (!compact) return url;
   const separator = url.includes("#") ? "&" : "#";
-  return `${url}${separator}navpanes=0`;
+  return `${url}${separator}navpanes=0&toolbar=0`;
+}
+
+const queueSectionMeta: Array<{
+  key: string;
+  label: string;
+  matches: (row: ProofingQueueRow) => boolean;
+}> = [
+  {
+    key: "awaiting_send",
+    label: "READY TO SEND",
+    matches: (row) => row.currentQueueStatus === "awaiting_send",
+  },
+  {
+    key: "awaiting_approval",
+    label: "AWAITING APPROVAL",
+    matches: (row) => row.currentQueueStatus === "awaiting_approval",
+  },
+  {
+    key: "revision_requested",
+    label: "REVISION REQUESTED",
+    matches: (row) => row.currentQueueStatus === "revision_requested",
+  },
+  {
+    key: "approved",
+    label: "APPROVED",
+    matches: (row) => row.currentQueueStatus === "approved" || row.currentQueueStatus === "approved_by_override",
+  },
+  {
+    key: "other",
+    label: "OTHER",
+    matches: (row) => row.currentQueueStatus === "rejected" || row.currentQueueStatus === "no_active_proof",
+  },
+];
+
+function formatDimensions(width: string | null | undefined, height: string | null | undefined) {
+  if (!width || !height) return null;
+  return `${width} × ${height}`;
+}
+
+function getJobSpecificationRows(lineItem: any, row: ProofingQueueRow | undefined) {
+  const selectedOptions = Array.isArray(lineItem?.specsJson?.selectedOptions)
+    ? lineItem.specsJson.selectedOptions
+        .map((option: any) => {
+          const label = String(option?.optionName || option?.label || option?.name || "").trim();
+          const value = String(option?.displayValue ?? option?.value ?? "").trim();
+          if (!label || !value) return null;
+          return { label, value };
+        })
+        .filter(Boolean)
+    : [];
+
+  return [
+    { label: "Product", value: lineItem?.product?.name ?? null },
+    { label: "Quantity", value: lineItem?.quantity ?? null },
+    { label: "Dimensions", value: formatDimensions(lineItem?.width, lineItem?.height) },
+    { label: "Workflow", value: row?.workflowState ?? null },
+    ...selectedOptions,
+  ].filter((rowItem) => rowItem?.value !== null && rowItem?.value !== undefined && `${rowItem.value}`.trim() !== "");
 }
 
 function getVersionStatusLabel(status: ProofVersionStatus | null | undefined) {
@@ -339,6 +402,10 @@ export default function StaffProofingPage() {
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [viewerOpen, setViewerOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [viewerZoom, setViewerZoom] = useState(85);
+  const [viewerPage, setViewerPage] = useState(1);
+  const versionHistoryRef = useRef<HTMLDivElement | null>(null);
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [selectedExistingAttachmentId, setSelectedExistingAttachmentId] = useState<string>("");
@@ -367,6 +434,32 @@ export default function StaffProofingPage() {
   const queueData = queueQuery.data?.data;
   const queueRows = queueData?.rows ?? [];
   const sortedQueueRows = useMemo(() => [...queueRows].sort(compareProofQueueRows), [queueRows]);
+  const filteredQueueRows = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return sortedQueueRows;
+
+    return sortedQueueRows.filter((row) => {
+      return [
+        row.lineItemLabel,
+        row.customerDisplayName,
+        row.packageLabel,
+        row.orderNumber,
+      ]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query));
+    });
+  }, [searchQuery, sortedQueueRows]);
+
+  const groupedQueueSections = useMemo(
+    () =>
+      queueSectionMeta
+        .map((section) => ({
+          ...section,
+          rows: filteredQueueRows.filter((row) => section.matches(row)),
+        }))
+        .filter((section) => section.rows.length > 0),
+    [filteredQueueRows],
+  );
 
   useEffect(() => {
     if (slice !== requestedQueueSlice) {
@@ -375,25 +468,25 @@ export default function StaffProofingPage() {
   }, [requestedQueueSlice, slice]);
 
   useEffect(() => {
-    if (!sortedQueueRows.length) {
+    if (!filteredQueueRows.length) {
       if (selectedLineItemId !== null) setSelectedLineItemId(null);
       return;
     }
 
-    if (requestedLineItemId && sortedQueueRows.some((row) => row.lineItemId === requestedLineItemId)) {
+    if (requestedLineItemId && filteredQueueRows.some((row) => row.lineItemId === requestedLineItemId)) {
       if (selectedLineItemId !== requestedLineItemId) {
         setSelectedLineItemId(requestedLineItemId);
       }
       return;
     }
 
-    const stillPresent = selectedLineItemId ? sortedQueueRows.some((row) => row.lineItemId === selectedLineItemId) : false;
+    const stillPresent = selectedLineItemId ? filteredQueueRows.some((row) => row.lineItemId === selectedLineItemId) : false;
     if (!stillPresent) {
-      setSelectedLineItemId(sortedQueueRows[0].lineItemId);
+      setSelectedLineItemId(filteredQueueRows[0].lineItemId);
     }
-  }, [sortedQueueRows, requestedLineItemId, selectedLineItemId]);
+  }, [filteredQueueRows, requestedLineItemId, selectedLineItemId]);
 
-  const selectedRow = sortedQueueRows.find((row) => row.lineItemId === selectedLineItemId) ?? sortedQueueRows[0];
+  const selectedRow = filteredQueueRows.find((row) => row.lineItemId === selectedLineItemId) ?? filteredQueueRows[0];
 
   const detailQuery = useQuery<JsonEnvelope<ProofingReadModel>>({
     queryKey: ["/api/proofing/line-item", selectedRow?.lineItemId],
@@ -404,6 +497,10 @@ export default function StaffProofingPage() {
   const detail = detailQuery.data?.data;
   const orderQuery = useOrder(selectedRow?.orderId);
   const selectedOrder = orderQuery.data;
+  const selectedLineItem = useMemo(
+    () => selectedOrder?.lineItems?.find((lineItem) => lineItem.id === selectedRow?.lineItemId) ?? null,
+    [selectedOrder, selectedRow?.lineItemId],
+  );
 
   useEffect(() => {
     const defaultVersionId = getDefaultVersionId(detail, selectedRow);
@@ -445,7 +542,30 @@ export default function StaffProofingPage() {
   const latestCustomerFeedback = detail?.proofDecisionHistory?.[0] ?? null;
   const statusNote = getStatusNote({ detail, displayedVersion });
   const [pdfViewerMode, setPdfViewerMode] = useState<"compact" | "default">("compact");
-  const embeddedPdfUrl = getEmbeddedPdfUrl(previewIsPdf ? previewUrl : null, pdfViewerMode === "compact");
+  const embeddedPdfUrl = useMemo(() => {
+    if (!previewIsPdf || !previewUrl) return null;
+    const url = getEmbeddedPdfUrl(previewUrl, pdfViewerMode === "compact");
+    if (!url) return null;
+    const separator = url.includes("#") ? "&" : "#";
+    return `${url}${separator}page=${viewerPage}&zoom=${viewerZoom}`;
+  }, [pdfViewerMode, previewIsPdf, previewUrl, viewerPage, viewerZoom]);
+  const jobSpecificationRows = useMemo(() => getJobSpecificationRows(selectedLineItem, selectedRow), [selectedLineItem, selectedRow]);
+  const internalStaffNote = useMemo(() => {
+    const candidates = [
+      selectedOrder?.notesInternal,
+      detail?.manualApprovalOverrideHistory?.[0]?.internalNote,
+      statusNote,
+    ];
+    return candidates.find((value) => value && `${value}`.trim().length > 0) ?? null;
+  }, [detail?.manualApprovalOverrideHistory, selectedOrder?.notesInternal, statusNote]);
+  const canSendCurrentVersion = displayedVersion?.status === "draft";
+  const canRecordDecision =
+    displayedVersion?.id === detail?.currentActionableProofVersionId && displayedVersion?.status === "awaiting_response";
+
+  useEffect(() => {
+    setViewerZoom(previewIsPdf ? 85 : 100);
+    setViewerPage(1);
+  }, [previewIsPdf, selectedVersionId]);
 
   useEffect(() => {
     if (!createDialogOpen) return;
@@ -615,418 +735,433 @@ export default function StaffProofingPage() {
 
   return (
     <>
-      <div className="flex min-h-full flex-1 flex-col gap-4 overflow-hidden p-6">
-        <div className="flex shrink-0 items-start justify-between gap-4">
-          <div>
-            <h1 className="text-3xl font-bold tracking-tight">Staff Proofing</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Review proofs, send versions to customers, and record proof decisions.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" onClick={() => queueQuery.refetch()} disabled={queueQuery.isFetching}>
-              {queueQuery.isFetching ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Refresh queue
-            </Button>
-            <Button onClick={() => setCreateDialogOpen(true)} disabled={!selectedRow}>
+      <div className="flex h-[calc(100vh-168px)] min-h-[46rem] flex-1 flex-col gap-4 overflow-hidden p-6">
+        <div className="flex shrink-0 items-center justify-between gap-4">
+          <h1 className="text-2xl font-semibold tracking-tight">Proofing</h1>
+          <div className="flex w-full max-w-[32rem] items-center justify-end gap-3">
+            <div className="relative w-full max-w-[18rem]">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                type="search"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Search proofs..."
+                className="h-10 rounded-lg pl-9"
+              />
+            </div>
+            <Button className="h-10 rounded-lg px-4" onClick={() => setCreateDialogOpen(true)} disabled={!selectedRow}>
               <Upload className="mr-2 h-4 w-4" />
-              New proof version
+              New Proof
             </Button>
           </div>
         </div>
 
-        <div className="grid min-h-0 flex-1 gap-4 overflow-hidden xl:grid-cols-[17rem_minmax(0,1fr)_20rem] 2xl:grid-cols-[18rem_minmax(0,1fr)_22rem]">
-          <Card className="flex min-h-0 flex-col overflow-hidden">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-lg">Queue</CardTitle>
-              <CardDescription>Open proofs and pending staff decisions.</CardDescription>
-              <Tabs value={slice} onValueChange={(value) => setSlice(value as ProofQueueSlice)}>
-                <TabsList className="grid h-auto grid-cols-2 gap-2 xl:grid-cols-1">
-                  {queueSliceMeta.map((tab) => (
-                    <TabsTrigger key={tab.value} value={tab.value} className="justify-between">
-                      <span>{tab.label}</span>
-                      <span className="ml-2 text-xs text-muted-foreground">
-                        {queueData?.counts?.[tab.countKey] ?? 0}
-                      </span>
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-              </Tabs>
-            </CardHeader>
-            <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden pt-0">
+        <Tabs value={slice} onValueChange={(value) => setSlice(value as ProofQueueSlice)} className="shrink-0">
+          <TabsList className="h-auto w-full justify-start gap-6 rounded-none border-b bg-transparent px-0 py-0">
+            {queueSliceMeta.map((tab) => (
+              <TabsTrigger
+                key={tab.value}
+                value={tab.value}
+                className="rounded-none border-b-2 border-transparent bg-transparent px-0 pb-3 pt-0 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground"
+              >
+                {tab.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+
+        <div className="grid min-h-0 flex-1 gap-4 overflow-hidden xl:grid-cols-[17rem_minmax(0,1fr)_18.5rem] 2xl:grid-cols-[18rem_minmax(0,1fr)_20rem]">
+          <Card className="flex min-h-0 flex-col overflow-hidden rounded-2xl border">
+            <div className="flex items-center justify-between border-b px-4 py-3">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Active Queue</p>
+              </div>
+              {queueQuery.isFetching ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
+            </div>
+            <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden p-3 pt-3">
               {queueQuery.isLoading ? (
-                <div className="space-y-3">
-                  {Array.from({ length: 5 }).map((_, index) => (
-                    <Skeleton key={index} className="h-24 w-full" />
+                <div className="space-y-2">
+                  {Array.from({ length: 6 }).map((_, index) => (
+                    <Skeleton key={index} className="h-20 w-full rounded-xl" />
                   ))}
                 </div>
               ) : queueQuery.error ? (
-                <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+                <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
                   {(queueQuery.error as Error).message}
                 </div>
-              ) : sortedQueueRows.length === 0 ? (
-                <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">
-                  No line items are currently in this proofing slice.
+              ) : filteredQueueRows.length === 0 ? (
+                <div className="rounded-xl border border-dashed p-5 text-sm text-muted-foreground">
+                  {searchQuery.trim() ? "No proofs match this search." : "No line items are currently in this proofing slice."}
                 </div>
               ) : (
-                <div className="flex-1 overflow-y-auto pr-2 [scrollbar-color:hsl(var(--muted-foreground)/0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40 [&::-webkit-scrollbar-track]:bg-transparent">
-                  <div className="space-y-3">
-                    {sortedQueueRows.map((row) => {
-                      const isSelected = row.lineItemId === selectedRow?.lineItemId;
-                      const rowStatus = getStaffFacingStatus({ row, detail: undefined, displayedVersion: null });
-                      return (
-                        <button
-                          key={row.lineItemId}
-                          type="button"
-                          onClick={() => setSelectedLineItemId(row.lineItemId)}
-                          className={`w-full rounded-xl border p-4 text-left transition ${
-                            isSelected
-                              ? "border-primary bg-primary/5 shadow-sm"
-                              : "border-border bg-card hover:border-primary/40 hover:bg-accent/40"
-                          }`}
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-semibold">{row.lineItemLabel}</p>
-                              <p className="mt-1 truncate text-xs text-muted-foreground">{row.customerDisplayName || "No customer linked"}</p>
-                            </div>
-                            <Badge variant={rowStatus.badgeVariant}>{rowStatus.label}</Badge>
-                          </div>
-                          <div className="mt-3 space-y-1 text-xs text-muted-foreground">
-                            <p>{row.packageLabel}</p>
-                            <p>Order {row.orderNumber ? `#${row.orderNumber}` : row.orderId}</p>
-                            <p>Last activity {formatRelativeTime(row.lastActivityAt)}</p>
-                          </div>
-                        </button>
-                      );
-                    })}
+                <div className="flex-1 overflow-y-auto pr-1 [scrollbar-color:hsl(var(--muted-foreground)/0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40 [&::-webkit-scrollbar-track]:bg-transparent">
+                  <div className="space-y-4">
+                    {groupedQueueSections.map((section) => (
+                      <div key={section.key} className="space-y-2">
+                        <div className="flex items-center justify-between px-1">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">{section.label}</p>
+                          <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/80">({section.rows.length})</span>
+                        </div>
+                        <div className="space-y-2">
+                          {section.rows.map((row) => {
+                            const isSelected = row.lineItemId === selectedRow?.lineItemId;
+                            const rowStatus = getStaffFacingStatus({ row, detail: undefined, displayedVersion: null });
+                            return (
+                              <button
+                                key={row.lineItemId}
+                                type="button"
+                                onClick={() => setSelectedLineItemId(row.lineItemId)}
+                                className={`w-full rounded-xl border px-3 py-3 text-left transition ${
+                                  isSelected
+                                    ? "border-primary bg-primary/10 shadow-[0_0_0_1px_hsl(var(--primary))]"
+                                    : "border-border bg-card hover:border-primary/40 hover:bg-accent/40"
+                                }`}
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                                      {row.orderNumber ? `#${row.orderNumber}` : row.orderId}
+                                    </p>
+                                    <p className="mt-1 truncate text-sm font-semibold text-foreground">{row.lineItemLabel}</p>
+                                  </div>
+                                  <Badge variant={rowStatus.badgeVariant} className="shrink-0 text-[10px] uppercase tracking-[0.12em]">
+                                    {row.currentQueueStatus === "revision_requested" ? "Revision" : rowStatus.label}
+                                  </Badge>
+                                </div>
+                                <div className="mt-2 flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
+                                  <span className="truncate">{row.packageLabel}</span>
+                                  <span className="shrink-0">{formatRelativeTime(row.lastActivityAt)}</span>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
             </CardContent>
           </Card>
 
-          <Card className="min-h-0 overflow-hidden">
-            <CardHeader className="pb-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <CardTitle className="truncate text-lg">
-                    {selectedOrder?.customer?.id ? (
-                      <Link to={ROUTES.customers.detail(selectedOrder.customer.id)} className="hover:underline">
-                        {selectedRow?.customerDisplayName || selectedRow?.lineItemLabel || "Proof Viewer"}
-                      </Link>
-                    ) : (
-                      selectedRow?.customerDisplayName || selectedRow?.lineItemLabel || "Proof Viewer"
-                    )}
-                  </CardTitle>
-                  <CardDescription>
-                    {selectedRow ? (
-                      <span>
-                        {selectedRow.lineItemLabel} • {selectedRow.packageLabel} •{" "}
-                        <Link to={ROUTES.orders.detail(selectedRow.orderId)} className="text-primary hover:underline">
-                          Order {selectedRow.orderNumber ? `#${selectedRow.orderNumber}` : selectedRow.orderId}
-                        </Link>
-                      </span>
-                    ) : (
-                      "Select a queue row to review a proof."
-                    )}
-                  </CardDescription>
-                </div>
-                <div className="flex items-center gap-2">
-                  {displayedVersion ? <Badge variant="outline">{formatVersionLabel(displayedVersion)}</Badge> : null}
-                  {selectedRow ? (
-                    <Button variant="outline" size="sm" onClick={() => navigate(ROUTES.orders.detail(selectedRow.orderId))}>
-                      <ExternalLink className="mr-2 h-4 w-4" />
-                      Open order
-                    </Button>
-                  ) : null}
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="flex min-h-0 flex-col gap-4">
+          <Card className="flex min-h-0 flex-col overflow-hidden rounded-2xl border">
+            <CardContent className="flex min-h-0 flex-1 flex-col p-0">
               {detailQuery.isLoading ? (
-                <div className="space-y-3">
-                  <Skeleton className="h-10 w-48" />
-                  <Skeleton className="h-[32rem] w-full" />
+                <div className="space-y-3 p-4">
+                  <Skeleton className="h-12 w-full rounded-xl" />
+                  <Skeleton className="h-full min-h-[34rem] w-full rounded-xl" />
                 </div>
               ) : detailQuery.error ? (
-                <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
-                  {(detailQuery.error as Error).message}
+                <div className="p-4">
+                  <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+                    {(detailQuery.error as Error).message}
+                  </div>
                 </div>
               ) : !selectedRow || !detail ? (
-                <div className="flex h-full min-h-[32rem] items-center justify-center rounded-xl border border-dashed text-sm text-muted-foreground">
-                  Select a queue row to load proof detail.
+                <div className="flex h-full min-h-[34rem] items-center justify-center p-4">
+                  <div className="flex h-full w-full items-center justify-center rounded-xl border border-dashed text-sm text-muted-foreground">
+                    Select a queue row to load proof detail.
+                  </div>
                 </div>
               ) : (
-                <>
-                  <div className="flex min-h-[32rem] flex-1 flex-col rounded-xl border bg-muted/20">
-                    <div className="flex items-center justify-between border-b px-4 py-3">
-                      <div>
-                        <p className="text-sm font-medium">{previewName}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {displayedFile?.mimeType || "Unknown file type"}
-                          {displayedFile?.createdAt ? ` • uploaded ${formatRelativeTime(displayedFile.createdAt)}` : ""}
-                        </p>
-                      </div>
+                <div className="flex min-h-0 flex-1 flex-col p-3">
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 rounded-xl border bg-muted/20 px-4 py-3">
+                    <div className="min-w-0">
                       <div className="flex items-center gap-2">
-                        {previewIsPdf ? (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setPdfViewerMode((value) => (value === "compact" ? "default" : "compact"))}
-                          >
-                            {pdfViewerMode === "compact" ? "Show Full PDF UI" : "Compact PDF View"}
-                          </Button>
-                        ) : null}
-                        <Button variant="outline" size="sm" onClick={() => setViewerOpen(true)} disabled={!displayedFile}>
-                          <Eye className="mr-2 h-4 w-4" />
-                          Expand
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => downloadUrl && downloadFileFromUrl(downloadUrl, previewName)}
-                          disabled={!downloadUrl}
-                        >
-                          <Download className="mr-2 h-4 w-4" />
-                          Download
-                        </Button>
+                        <p className="truncate text-sm font-semibold text-foreground">{previewName}</p>
+                        {displayedVersion ? <Badge variant="outline">v{displayedVersion.versionNumber}</Badge> : null}
                       </div>
+                      <p className="mt-1 truncate text-[11px] text-muted-foreground">
+                        {displayedVersion?.sentAt ? `Sent ${formatRelativeTime(displayedVersion.sentAt)}` : displayedFile?.createdAt ? `Uploaded ${formatRelativeTime(displayedFile.createdAt)}` : "Ready to review"}
+                      </p>
                     </div>
 
-                    <div className="flex min-h-0 flex-1 items-center justify-center p-4">
-                      {!displayedVersion ? (
-                        <div className="text-center text-sm text-muted-foreground">
-                          <FileText className="mx-auto mb-3 h-10 w-10 opacity-50" />
-                          No proof version is currently selected.
-                        </div>
-                      ) : !displayedFile ? (
-                        <div className="text-center text-sm text-muted-foreground">
-                          <AlertCircle className="mx-auto mb-3 h-10 w-10 opacity-50" />
-                          This proof version has no resolved file in the current line-item file feed.
-                        </div>
-                      ) : previewIsPdf && embeddedPdfUrl ? (
-                        <iframe title={previewName} src={embeddedPdfUrl} className="h-full min-h-[28rem] w-full rounded-lg border bg-white" />
-                      ) : previewIsImage && previewUrl ? (
-                        <img src={previewUrl} alt={previewName} className="max-h-full max-w-full rounded-lg object-contain" />
-                      ) : previewUrl ? (
-                        <div className="text-center text-sm text-muted-foreground">
-                          <FileImage className="mx-auto mb-3 h-10 w-10 opacity-50" />
-                          Preview is not available inline for this file type.
-                          <div className="mt-3 flex justify-center gap-2">
-                            <Button variant="outline" size="sm" onClick={() => setViewerOpen(true)}>
-                              Open viewer
-                            </Button>
-                            <Button variant="outline" size="sm" onClick={() => downloadUrl && downloadFileFromUrl(downloadUrl, previewName)}>
-                              Download file
-                            </Button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="text-center text-sm text-muted-foreground">
-                          <AlertCircle className="mx-auto mb-3 h-10 w-10 opacity-50" />
-                          No preview URL is available for the selected proof file.
-                        </div>
-                      )}
+                    <div className="flex items-center justify-center gap-1 rounded-lg border bg-background/80 px-2 py-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={() => setViewerZoom((value) => Math.max(50, value - 10))}
+                        disabled={!displayedFile}
+                      >
+                        <ZoomOut className="h-3.5 w-3.5" />
+                      </Button>
+                      <span className="min-w-10 text-center text-xs font-medium text-foreground">{viewerZoom}%</span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={() => setViewerZoom((value) => Math.min(200, value + 10))}
+                        disabled={!displayedFile}
+                      >
+                        <ZoomIn className="h-3.5 w-3.5" />
+                      </Button>
+                      <Separator orientation="vertical" className="mx-1 h-5" />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={() => setViewerPage((value) => Math.max(1, value - 1))}
+                        disabled={!previewIsPdf || viewerPage <= 1}
+                      >
+                        <ChevronLeft className="h-3.5 w-3.5" />
+                      </Button>
+                      <span className="min-w-12 text-center text-xs font-medium text-foreground">Page {viewerPage}</span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={() => setViewerPage((value) => value + 1)}
+                        disabled={!previewIsPdf}
+                      >
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2">
+                      {previewIsPdf ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 px-2 text-xs"
+                          onClick={() => setPdfViewerMode((value) => (value === "compact" ? "default" : "compact"))}
+                        >
+                          {pdfViewerMode === "compact" ? "Full PDF UI" : "Compact PDF"}
+                        </Button>
+                      ) : null}
+                      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setViewerOpen(true)} disabled={!displayedFile}>
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => downloadUrl && downloadFileFromUrl(downloadUrl, previewName)}
+                        disabled={!downloadUrl}
+                      >
+                        <Download className="h-4 w-4" />
+                      </Button>
                     </div>
                   </div>
-                </>
+
+                  <div className="mt-3 flex min-h-0 flex-1 items-center justify-center rounded-2xl border bg-muted/10 p-3">
+                    {!displayedVersion ? (
+                      <div className="text-center text-sm text-muted-foreground">
+                        <FileText className="mx-auto mb-3 h-10 w-10 opacity-50" />
+                        No proof version is currently selected.
+                      </div>
+                    ) : !displayedFile ? (
+                      <div className="text-center text-sm text-muted-foreground">
+                        <AlertCircle className="mx-auto mb-3 h-10 w-10 opacity-50" />
+                        This proof version has no resolved file in the current line-item file feed.
+                      </div>
+                    ) : previewIsPdf && embeddedPdfUrl ? (
+                      <iframe title={previewName} src={embeddedPdfUrl} className="h-full min-h-[32rem] w-full rounded-xl border bg-white" />
+                    ) : previewIsImage && previewUrl ? (
+                      <div className="flex h-full w-full items-center justify-center overflow-auto rounded-xl border bg-white p-4">
+                        <img
+                          src={previewUrl}
+                          alt={previewName}
+                          className="max-h-full max-w-full rounded-lg object-contain transition-transform duration-150"
+                          style={{ transform: `scale(${viewerZoom / 100})` }}
+                        />
+                      </div>
+                    ) : previewUrl ? (
+                      <div className="text-center text-sm text-muted-foreground">
+                        <FileImage className="mx-auto mb-3 h-10 w-10 opacity-50" />
+                        Preview is not available inline for this file type.
+                        <div className="mt-3 flex justify-center gap-2">
+                          <Button variant="outline" size="sm" onClick={() => setViewerOpen(true)}>
+                            Open viewer
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => downloadUrl && downloadFileFromUrl(downloadUrl, previewName)}>
+                            Download file
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-center text-sm text-muted-foreground">
+                        <AlertCircle className="mx-auto mb-3 h-10 w-10 opacity-50" />
+                        No preview URL is available for the selected proof file.
+                      </div>
+                    )}
+                  </div>
+                </div>
               )}
             </CardContent>
           </Card>
 
           <div className="min-h-0 overflow-hidden">
-            <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto pr-2 [scrollbar-color:hsl(var(--muted-foreground)/0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40 [&::-webkit-scrollbar-track]:bg-transparent">
-              <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-lg">Order & Customer</CardTitle>
-                <CardDescription>Quick links for the selected proof.</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3 text-sm">
-                {detailQuery.isLoading ? (
-                  <Skeleton className="h-32 w-full" />
-                ) : detail ? (
-                  <>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="rounded-lg border p-3">
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Customer</p>
+            <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto pr-2 [scrollbar-color:hsl(var(--muted-foreground)/0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40 [&::-webkit-scrollbar-track]:bg-transparent">
+              <Card className="rounded-2xl border">
+                <CardContent className="space-y-4 p-4">
+                  {detailQuery.isLoading ? (
+                    <Skeleton className="h-28 w-full rounded-xl" />
+                  ) : detail ? (
+                    <>
+                      <div className="space-y-2">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-primary">
+                          Order {selectedRow?.orderNumber ? `#${selectedRow.orderNumber}` : selectedRow?.orderId}
+                        </p>
+                        <div>
+                          <p className="text-xl font-semibold leading-tight text-foreground">{selectedRow?.lineItemLabel || "Proofing"}</p>
+                          <p className="mt-1 text-xs uppercase tracking-[0.14em] text-muted-foreground">{selectedRow?.packageLabel || "No package linked"}</p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Badge variant={staffStatus.badgeVariant}>{staffStatus.label}</Badge>
+                          {displayedVersion ? <Badge variant="outline">v{displayedVersion.versionNumber}</Badge> : null}
+                        </div>
                         {selectedOrder?.customer?.id ? (
-                          <Link to={ROUTES.customers.detail(selectedOrder.customer.id)} className="mt-1 inline-flex font-medium text-primary hover:underline">
+                          <Link to={ROUTES.customers.detail(selectedOrder.customer.id)} className="inline-flex text-sm text-primary hover:underline">
                             {selectedRow?.customerDisplayName || "View customer"}
                           </Link>
-                        ) : (
-                          <p className="mt-1 font-medium">{selectedRow?.customerDisplayName || "No customer linked"}</p>
-                        )}
+                        ) : selectedRow?.customerDisplayName ? (
+                          <p className="text-sm text-muted-foreground">{selectedRow.customerDisplayName}</p>
+                        ) : null}
                       </div>
-                      <div className="rounded-lg border p-3">
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Current Version</p>
-                        <p className="mt-1 font-medium">{formatVersionLabel(displayedVersion)}</p>
-                      </div>
-                      <div className="rounded-lg border p-3">
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Order</p>
-                        {selectedRow ? (
-                          <Link to={ROUTES.orders.detail(selectedRow.orderId)} className="mt-1 inline-flex font-medium text-primary hover:underline">
-                            {selectedRow.orderNumber ? `#${selectedRow.orderNumber}` : selectedRow.orderId}
-                          </Link>
-                        ) : (
-                          <p className="mt-1 font-medium">—</p>
-                        )}
-                      </div>
-                      <div className="rounded-lg border p-3">
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Line Item</p>
-                        <p className="mt-1 font-medium">{selectedRow?.lineItemLabel || "Not selected"}</p>
-                      </div>
-                    </div>
-                    <div className="rounded-lg border p-3">
-                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Package</p>
-                      <p className="mt-1 font-medium">{selectedRow?.packageLabel || "No package linked"}</p>
-                    </div>
-                  </>
-                ) : (
-                  <div className="rounded-lg border border-dashed p-4 text-muted-foreground">No line item selected.</div>
-                )}
-              </CardContent>
-            </Card>
 
-              <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-lg">Current Status</CardTitle>
-                <CardDescription>Current proof decision state.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="rounded-xl border p-4">
-                  <div className="flex items-center gap-2">
-                    <Badge variant={staffStatus.badgeVariant}>{staffStatus.label}</Badge>
-                    {displayedVersion ? <span className="text-xs text-muted-foreground">{formatVersionLabel(displayedVersion)}</span> : null}
-                  </div>
-                  {statusNote ? <p className="mt-3 text-sm text-muted-foreground">{statusNote}</p> : null}
-                </div>
-              </CardContent>
-            </Card>
-
-              <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-lg">Primary Actions</CardTitle>
-                <CardDescription>Staff actions for sending proofs and recording decisions.</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Button className="w-full" onClick={() => setCreateDialogOpen(true)} disabled={!selectedRow}>
-                    <Upload className="mr-2 h-4 w-4" />
-                    New Proof Version
-                  </Button>
-                  <Button
-                    variant="outline"
-                    className="w-full"
-                    onClick={() => setSendDialogOpen(true)}
-                    disabled={!displayedVersion || displayedVersion.status !== "draft"}
-                  >
-                    <Send className="mr-2 h-4 w-4" />
-                    Send Current Version to Customer
-                  </Button>
-                </div>
-
-                <Separator />
-
-                <div className="space-y-3">
-                  <Label htmlFor="proof-response-notes">Decision notes</Label>
-                  <Textarea
-                    id="proof-response-notes"
-                    value={responseNotes}
-                    onChange={(event) => setResponseNotes(event.target.value)}
-                    rows={4}
-                    placeholder="Record the customer feedback or context tied to this decision."
-                    disabled={!detail?.currentActionableProofVersionId || displayedVersion?.id !== detail.currentActionableProofVersionId}
-                  />
-                  <div className="grid gap-2">
-                    <Button
-                      onClick={() => respondMutation.mutate("approved")}
-                      disabled={respondMutation.isPending || displayedVersion?.id !== detail?.currentActionableProofVersionId || displayedVersion?.status !== "awaiting_response"}
-                    >
-                      {respondMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
-                      Record Approval
-                    </Button>
-                    <Button
-                      variant="outline"
-                      onClick={() => respondMutation.mutate("revision_requested")}
-                      disabled={respondMutation.isPending || displayedVersion?.id !== detail?.currentActionableProofVersionId || displayedVersion?.status !== "awaiting_response"}
-                    >
-                      Record Revision Request
-                    </Button>
-                    <Button
-                      variant="destructive"
-                      onClick={() => respondMutation.mutate("rejected")}
-                      disabled={respondMutation.isPending || displayedVersion?.id !== detail?.currentActionableProofVersionId || displayedVersion?.status !== "awaiting_response"}
-                    >
-                      Record Rejection
-                    </Button>
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
-                  <div className="flex items-start gap-3">
-                    <ShieldAlert className="mt-0.5 h-4 w-4 text-amber-600" />
-                    <div className="space-y-2">
-                      <p className="text-sm font-medium">Advanced Admin Action</p>
-                      <p className="text-xs text-muted-foreground">
-                        Use manual approval override only when you need to approve without a normal customer decision.
-                      </p>
                       <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setOverrideDialogOpen(true)}
-                        disabled={!canOverride || !detail?.currentActionableProofVersionId || detail.approvedProofSource === "manual_override"}
+                        className="h-11 w-full rounded-xl"
+                        onClick={() => (canSendCurrentVersion ? setSendDialogOpen(true) : setCreateDialogOpen(true))}
+                        disabled={!selectedRow}
                       >
-                        Record manual override
+                        {canSendCurrentVersion ? <Send className="mr-2 h-4 w-4" /> : <Upload className="mr-2 h-4 w-4" />}
+                        {canSendCurrentVersion ? "Upload & Send Proof" : "New Proof"}
                       </Button>
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
 
-              <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-lg">Customer Feedback</CardTitle>
-                <CardDescription>The most recent recorded response for this proof.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                {!detail ? (
-                  <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">Load a queue row to inspect feedback.</div>
-                ) : !latestCustomerFeedback ? (
-                  <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">No customer feedback has been recorded yet.</div>
-                ) : (
-                  <div className="rounded-xl border p-4">
-                    <div className="flex items-center justify-between gap-2">
-                      <Badge variant={statusBadgeVariant(latestCustomerFeedback.decision)}>{getDecisionLabel(latestCustomerFeedback.decision)}</Badge>
-                      <span className="text-xs text-muted-foreground">{formatTimestamp(latestCustomerFeedback.respondedAt)}</span>
-                    </div>
-                    <p className="mt-3 text-sm text-muted-foreground">{latestCustomerFeedback.responseNotes || "No notes were recorded with this decision."}</p>
-                    {(latestCustomerFeedback.responderName || latestCustomerFeedback.responderEmail) ? (
-                      <p className="mt-3 text-xs text-muted-foreground">
-                        {[latestCustomerFeedback.responderName, latestCustomerFeedback.responderEmail].filter(Boolean).join(" • ")}
+                      <div className="grid grid-cols-2 gap-2">
+                        <Button
+                          variant="outline"
+                          className="h-10 rounded-xl"
+                          onClick={() => respondMutation.mutate("approved")}
+                          disabled={respondMutation.isPending || !canRecordDecision}
+                        >
+                          {respondMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
+                          Record Approval
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="h-10 rounded-xl"
+                          onClick={() => versionHistoryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                          disabled={!detail}
+                        >
+                          View History
+                        </Button>
+                      </div>
+
+                      {canRecordDecision ? (
+                        <div className="space-y-2 rounded-xl border bg-muted/10 p-3">
+                          <Textarea
+                            value={responseNotes}
+                            onChange={(event) => setResponseNotes(event.target.value)}
+                            rows={3}
+                            placeholder="Add a decision note..."
+                            className="min-h-[88px] resize-none"
+                          />
+                          <div className="grid grid-cols-2 gap-2">
+                            <Button
+                              variant="outline"
+                              className="h-9 rounded-xl"
+                              onClick={() => respondMutation.mutate("revision_requested")}
+                              disabled={respondMutation.isPending}
+                            >
+                              Request Revision
+                            </Button>
+                            <Button
+                              variant="destructive"
+                              className="h-9 rounded-xl"
+                              onClick={() => respondMutation.mutate("rejected")}
+                              disabled={respondMutation.isPending}
+                            >
+                              Reject
+                            </Button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </>
+                  ) : (
+                    <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">No line item selected.</div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-2xl border">
+                <CardContent className="space-y-3 p-4">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Customer Feedback</p>
+                  {!detail ? (
+                    <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">Load a queue row to inspect feedback.</div>
+                  ) : !latestCustomerFeedback ? (
+                    <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">No customer feedback has been recorded yet.</div>
+                  ) : (
+                    <div className="rounded-xl border p-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-medium text-foreground">{latestCustomerFeedback.responderName || latestCustomerFeedback.responderEmail || "Customer response"}</p>
+                        <span className="text-[11px] text-muted-foreground">{formatRelativeTime(latestCustomerFeedback.respondedAt)}</span>
+                      </div>
+                      <p className="mt-3 text-sm leading-6 text-muted-foreground">
+                        {latestCustomerFeedback.responseNotes || "No notes were recorded with this decision."}
                       </p>
+                      <button
+                        type="button"
+                        className="mt-3 text-xs font-semibold uppercase tracking-[0.14em] text-primary"
+                        onClick={() => setSendDialogOpen(true)}
+                      >
+                        Reply to Feedback
+                      </button>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-2xl border">
+                <CardContent className="space-y-3 p-4">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Job Specifications</p>
+                  {jobSpecificationRows.length === 0 ? (
+                    <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">No job specifications are available for this line item.</div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-3">
+                      {jobSpecificationRows.slice(0, 6).map((row) => (
+                        <div key={row.label} className="rounded-xl border p-3">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{row.label}</p>
+                          <p className="mt-1 text-sm font-medium text-foreground">{String(row.value)}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-2xl border">
+                <CardContent className="space-y-3 p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Internal Staff Notes</p>
+                    {canOverride ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-[10px] uppercase tracking-[0.14em]"
+                        onClick={() => setOverrideDialogOpen(true)}
+                        disabled={!detail?.currentActionableProofVersionId || detail.approvedProofSource === "manual_override"}
+                      >
+                        <ShieldAlert className="mr-1.5 h-3.5 w-3.5" />
+                        Manual Override
+                      </Button>
                     ) : null}
                   </div>
-                )}
-              </CardContent>
-            </Card>
+                  <div className="rounded-xl border p-4 text-sm leading-6 text-muted-foreground">
+                    {internalStaffNote || "No internal notes have been recorded for this proof yet."}
+                  </div>
+                </CardContent>
+              </Card>
 
-              <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-lg">Version History</CardTitle>
-                <CardDescription>Select the proof version shown in the viewer, then review version and decision history.</CardDescription>
-              </CardHeader>
-              <CardContent className="pt-0">
-                {detail ? (
-                  <div className="space-y-4">
+              <Card ref={versionHistoryRef} className="rounded-2xl border">
+                <CardContent className="space-y-4 p-4">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Version History</p>
+                  {detail ? (
                     <div className="space-y-4">
                       <div className="space-y-2">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Versions</p>
                         {detail.proofVersionHistory.length === 0 ? (
-                          <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">No proof versions yet.</div>
+                          <div className="rounded-xl border border-dashed p-3 text-sm text-muted-foreground">No proof versions yet.</div>
                         ) : (
                           detail.proofVersionHistory.map((version) => {
                             const isSelected = version.id === selectedVersionId;
@@ -1035,16 +1170,13 @@ export default function StaffProofingPage() {
                                 key={version.id}
                                 type="button"
                                 onClick={() => setSelectedVersionId(version.id)}
-                                className={`w-full rounded-lg border p-3 text-left ${isSelected ? "border-primary bg-primary/5" : "border-border"}`}
+                                className={`w-full rounded-xl border p-3 text-left transition ${isSelected ? "border-primary bg-primary/8" : "border-border"}`}
                               >
                                 <div className="flex items-center justify-between gap-2">
-                                  <p className="font-medium">Version {version.versionNumber}</p>
-                                  <Badge variant={statusBadgeVariant(version.status)}>
-                                    {getVersionStatusLabel(version.status)}
-                                  </Badge>
+                                  <p className="text-sm font-medium text-foreground">Version {version.versionNumber}</p>
+                                  <Badge variant={statusBadgeVariant(version.status)}>{getVersionStatusLabel(version.status)}</Badge>
                                 </div>
-                                <p className="mt-1 text-xs text-muted-foreground">Created {formatTimestamp(version.createdAt)}</p>
-                                <p className="mt-1 text-xs text-muted-foreground">Sent {formatTimestamp(version.sentAt)}</p>
+                                <p className="mt-1 text-[11px] text-muted-foreground">Created {formatTimestamp(version.createdAt)}</p>
                               </button>
                             );
                           })
@@ -1054,55 +1186,25 @@ export default function StaffProofingPage() {
                       <Separator />
 
                       <div className="space-y-2">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Responses</p>
                         {detail.proofDecisionHistory.length === 0 ? (
-                          <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">No responses recorded yet.</div>
+                          <div className="rounded-xl border border-dashed p-3 text-sm text-muted-foreground">No responses recorded yet.</div>
                         ) : (
                           detail.proofDecisionHistory.map((decision) => (
-                            <div key={decision.id} className="rounded-lg border p-3">
+                            <div key={decision.id} className="rounded-xl border p-3">
                               <div className="flex items-center justify-between gap-2">
                                 <Badge variant={statusBadgeVariant(decision.decision)}>{getDecisionLabel(decision.decision)}</Badge>
-                                <span className="text-xs text-muted-foreground">{formatTimestamp(decision.respondedAt)}</span>
+                                <span className="text-[11px] text-muted-foreground">{formatTimestamp(decision.respondedAt)}</span>
                               </div>
                               <p className="mt-2 text-sm text-muted-foreground">{decision.responseNotes || "No response notes"}</p>
-                              {(decision.responderName || decision.responderEmail || decision.responderSource) ? (
-                                <p className="mt-2 text-xs text-muted-foreground">
-                                  {[decision.responderName, decision.responderEmail, decision.responderSource].filter(Boolean).join(" • ")}
-                                </p>
-                              ) : null}
-                            </div>
-                          ))
-                        )}
-                      </div>
-
-                      <Separator />
-
-                      <div className="space-y-2">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Advanced Admin Overrides</p>
-                        {detail.manualApprovalOverrideHistory.length === 0 ? (
-                          <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">No manual overrides recorded.</div>
-                        ) : (
-                          detail.manualApprovalOverrideHistory.map((entry) => (
-                            <div key={entry.id} className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
-                              <div className="flex items-center justify-between gap-2">
-                                <Badge variant="secondary">Manual override</Badge>
-                                <span className="text-xs text-muted-foreground">{formatTimestamp(entry.overriddenAt)}</span>
-                              </div>
-                              <p className="mt-2 text-sm font-medium">{entry.overrideReason}</p>
-                              <p className="mt-2 text-sm text-muted-foreground">{entry.internalNote || "No internal note"}</p>
-                              {(entry.actorName || entry.actorEmail) ? (
-                                <p className="mt-2 text-xs text-muted-foreground">{[entry.actorName, entry.actorEmail].filter(Boolean).join(" • ")}</p>
-                              ) : null}
                             </div>
                           ))
                         )}
                       </div>
                     </div>
-                  </div>
-                ) : (
-                  <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">Load a queue row to review version history.</div>
-                )}
-              </CardContent>
+                  ) : (
+                    <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">Load a queue row to review version history.</div>
+                  )}
+                </CardContent>
               </Card>
             </div>
           </div>
