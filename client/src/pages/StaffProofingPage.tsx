@@ -529,6 +529,315 @@ export default function StaffProofingPage() {
   const [responseNotes, setResponseNotes] = useState("");
 
   const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
+  const [overrideReason, setOverrideReason] = useState("");
+  const [overrideNote, setOverrideNote] = useState("");
+
+  const queueQuery = useQuery<JsonEnvelope<ProofingQueueResponse>>({
+    queryKey: ["/api/proofing/queue", slice],
+    queryFn: () => readJson(`/api/proofing/queue?slice=${slice}`),
+    enabled: isInternalUser,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+
+  const queueData = queueQuery.data?.data;
+  const queueRows = queueData?.rows ?? [];
+  const sortedQueueRows = useMemo(() => [...queueRows].sort(compareProofQueueRows), [queueRows]);
+  const filteredQueueRows = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return sortedQueueRows;
+
+    return sortedQueueRows.filter((row) => {
+      return [row.lineItemLabel, row.customerDisplayName, row.packageLabel, row.orderNumber]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query));
+    });
+  }, [searchQuery, sortedQueueRows]);
+
+  const groupedQueueSections = useMemo(
+    () =>
+      queueSectionMeta
+        .map((section) => ({
+          ...section,
+          rows: filteredQueueRows.filter((row) => section.matches(row)),
+        }))
+        .filter((section) => section.rows.length > 0),
+    [filteredQueueRows],
+  );
+
+  useEffect(() => {
+    setSlice(requestedQueueSlice);
+  }, [requestedQueueSlice]);
+
+  useEffect(() => {
+    if (!filteredQueueRows.length) {
+      if (selectedLineItemId !== null) setSelectedLineItemId(null);
+      return;
+    }
+
+    if (requestedLineItemId && filteredQueueRows.some((row) => row.lineItemId === requestedLineItemId)) {
+      if (selectedLineItemId !== requestedLineItemId) {
+        setSelectedLineItemId(requestedLineItemId);
+      }
+      return;
+    }
+
+    const stillPresent = selectedLineItemId ? filteredQueueRows.some((row) => row.lineItemId === selectedLineItemId) : false;
+    if (!stillPresent) {
+      setSelectedLineItemId(filteredQueueRows[0].lineItemId);
+    }
+  }, [filteredQueueRows, requestedLineItemId, selectedLineItemId]);
+
+  const selectedRow = filteredQueueRows.find((row) => row.lineItemId === selectedLineItemId) ?? filteredQueueRows[0];
+
+  const detailQuery = useQuery<JsonEnvelope<ProofingReadModel>>({
+    queryKey: ["/api/proofing/line-item", selectedRow?.lineItemId],
+    queryFn: () => readJson(`/api/proofing/line-item/${selectedRow?.lineItemId}`),
+    enabled: Boolean(isInternalUser && selectedRow?.lineItemId),
+  });
+
+  const detail = detailQuery.data?.data;
+  const orderQuery = useOrder(selectedRow?.orderId);
+  const selectedOrder = orderQuery.data;
+  const selectedLineItem = useMemo(
+    () => selectedOrder?.lineItems?.find((lineItem) => lineItem.id === selectedRow?.lineItemId) ?? null,
+    [selectedOrder, selectedRow?.lineItemId],
+  );
+
+  useEffect(() => {
+    const defaultVersionId = getDefaultVersionId(detail, selectedRow);
+    if (!detail) {
+      if (selectedVersionId !== null) setSelectedVersionId(null);
+      return;
+    }
+
+    const exists = selectedVersionId ? detail.proofVersionHistory.some((version) => version.id === selectedVersionId) : false;
+    if (!exists) {
+      setSelectedVersionId(defaultVersionId);
+    }
+  }, [detail, selectedRow, selectedVersionId]);
+
+  const filesQuery = useOrderLineItemFiles(selectedRow?.orderId, selectedRow?.lineItemId);
+  const lineItemFiles = (filesQuery.data?.data ?? []) as ProofFileRow[];
+
+  const selectableProofFiles = useMemo(
+    () =>
+      lineItemFiles.filter(
+        (file): file is ProofAttachmentRow =>
+          file.__source !== "asset" &&
+          Boolean(file.id) &&
+          String(file.role || "").toLowerCase() === "proof",
+      ),
+    [lineItemFiles],
+  );
+
+  const displayedVersion = detail?.proofVersionHistory.find((version) => version.id === selectedVersionId) ?? null;
+  const displayedFile = displayedVersion
+    ? lineItemFiles.find((file) => file.id === displayedVersion.proofFileId) ?? null
+    : null;
+  const previewUrl = getProofPreviewUrl(displayedFile);
+  const downloadUrl = getDownloadUrl(displayedFile);
+  const previewName = displayedFile?.originalFilename || displayedFile?.fileName || "Proof";
+  const previewIsPdf = Boolean(displayedFile && isPdfFile(displayedFile.mimeType || null, previewName));
+  const previewIsImage = Boolean(displayedFile?.mimeType?.startsWith("image/"));
+  const staffStatus = getStaffFacingStatus({ row: selectedRow, detail, displayedVersion });
+  const latestCustomerFeedback = detail?.proofDecisionHistory?.[0] ?? null;
+  const statusNote = getStatusNote({ detail, displayedVersion });
+  const [pdfViewerMode, setPdfViewerMode] = useState<"compact" | "default">("compact");
+  const embeddedPdfUrl = useMemo(() => {
+    if (!previewIsPdf || !previewUrl) return null;
+    const url = getEmbeddedPdfUrl(previewUrl, pdfViewerMode === "compact");
+    if (!url) return null;
+    const separator = url.includes("#") ? "&" : "#";
+    return `${url}${separator}page=${viewerPage}&zoom=${viewerZoom}`;
+  }, [pdfViewerMode, previewIsPdf, previewUrl, viewerPage, viewerZoom]);
+  const jobSpecificationRows = useMemo(() => getJobSpecificationRows(selectedLineItem, selectedRow), [selectedLineItem, selectedRow]);
+  const internalStaffNote = useMemo(() => {
+    const candidates = [
+      selectedOrder?.notesInternal,
+      detail?.manualApprovalOverrideHistory?.[0]?.internalNote,
+      statusNote,
+    ];
+    return candidates.find((value) => value && `${value}`.trim().length > 0) ?? null;
+  }, [detail?.manualApprovalOverrideHistory, selectedOrder?.notesInternal, statusNote]);
+  const canSendCurrentVersion = displayedVersion?.status === "draft";
+  const canRecordDecision =
+    displayedVersion?.id === detail?.currentActionableProofVersionId && displayedVersion?.status === "awaiting_response";
+  const primaryActionLabel = getPrimaryActionLabel(canSendCurrentVersion, displayedVersion);
+
+  useEffect(() => {
+    setViewerZoom(previewIsPdf ? 85 : 100);
+    setViewerPage(1);
+  }, [previewIsPdf, selectedVersionId]);
+
+  useEffect(() => {
+    if (!createDialogOpen) return;
+    if (!selectedExistingAttachmentId && selectableProofFiles.length > 0) {
+      const preferred = selectableProofFiles.find((file) => file.id === displayedFile?.id);
+      setSelectedExistingAttachmentId(preferred?.id || selectableProofFiles[0]?.id || "");
+    }
+  }, [createDialogOpen, selectableProofFiles, selectedExistingAttachmentId, displayedFile?.id]);
+
+  async function refreshProofing(lineItemId?: string | null, orderId?: string | null) {
+    await queryClient.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
+    if (lineItemId) {
+      await queryClient.invalidateQueries({ queryKey: ["/api/proofing/line-item", lineItemId] });
+      if (orderId) {
+        await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId, "line-items", lineItemId, "files"] });
+      }
+    }
+  }
+
+  const createDraftMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedRow?.orderId || !selectedRow.lineItemId) {
+        throw new Error("Select a proofing queue row first");
+      }
+
+      let proofFileId = selectedExistingAttachmentId;
+
+      if (uploadFile) {
+        const uploadResult = await uploadAttachmentViaChunked({
+          file: uploadFile,
+          purpose: "order-attachment",
+          parentId: selectedRow.orderId,
+          linkUrl: `/api/orders/${selectedRow.orderId}/files`,
+          linkBody: {
+            orderLineItemId: selectedRow.lineItemId,
+            role: "proof",
+            side: "na",
+          },
+        });
+
+        proofFileId = String(uploadResult.linkResponse?.data?.id || "").trim();
+      }
+
+      if (!proofFileId) {
+        throw new Error("Select or upload a proof file before creating a version");
+      }
+
+      const result = await readJson<JsonEnvelope<{ proofVersion: ProofVersionHistoryEntry; proofing: ProofingReadModel }>>(
+        `/api/proofing/line-item/${selectedRow.lineItemId}/versions`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            proofFileId,
+            internalNotes: createInternalNotes.trim() || null,
+          }),
+        },
+      );
+
+      return result.data;
+    },
+    onSuccess: async (data) => {
+      await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
+      setSelectedVersionId(data.proofVersion.id);
+      setCreateDialogOpen(false);
+      setSelectedExistingAttachmentId("");
+      setCreateInternalNotes("");
+      setUploadFile(null);
+      toast({
+        title: "Proof version created",
+        description: `Version ${data.proofVersion.versionNumber} is ready to send.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to create proof version", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const sendMutation = useMutation({
+    mutationFn: async () => {
+      if (!displayedVersion?.id) throw new Error("Select a draft proof version to send");
+      return readJson<JsonEnvelope<unknown>>(`/api/proofing/versions/${displayedVersion.id}/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sentToName: sendToName.trim() || null,
+          sentToEmail: sendToEmail.trim() || null,
+          customerMessage: customerMessage.trim() || null,
+        }),
+      });
+    },
+    onSuccess: async () => {
+      await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
+      setSendDialogOpen(false);
+      setSendToName("");
+      setSendToEmail("");
+      setCustomerMessage("");
+      toast({ title: "Proof sent", description: "The selected proof version was sent for customer review." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to send proof", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const respondMutation = useMutation({
+    mutationFn: async (decision: ProofDecision) => {
+      if (!displayedVersion?.id) throw new Error("Select an actionable proof version first");
+      return readJson<JsonEnvelope<unknown>>(`/api/proofing/versions/${displayedVersion.id}/respond`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          decision,
+          responseNotes: responseNotes.trim() || null,
+          responderSource: "staff_ui",
+        }),
+      });
+    },
+    onSuccess: async (_, decision) => {
+      await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
+      setResponseNotes("");
+      toast({ title: `${decisionLabels[decision]} recorded`, description: "The proof decision has been saved." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to record proof response", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const overrideMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedRow?.lineItemId) throw new Error("Select a queue row first");
+      return readJson<JsonEnvelope<unknown>>(`/api/proofing/line-item/${selectedRow.lineItemId}/manual-approval-override`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          proofVersionId: detail?.currentActionableProofVersionId || displayedVersion?.id || null,
+          overrideReason: overrideReason.trim(),
+          internalNote: overrideNote.trim() || null,
+        }),
+      });
+    },
+    onSuccess: async () => {
+      await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
+      setOverrideDialogOpen(false);
+      setOverrideReason("");
+      setOverrideNote("");
+      toast({ title: "Manual override recorded", description: "The proof has been approved by manual override." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to record manual override", description: error.message, variant: "destructive" });
+    },
+  });
+
+  if (!isInternalUser) {
+    return (
+      <div className="p-6">
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center gap-3 text-muted-foreground">
+              <AlertCircle className="h-5 w-5" />
+              <p>You do not have permission to access the staff proofing queue.</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <>
       <div className="flex h-[calc(100vh-150px)] min-h-[48rem] flex-1 flex-col overflow-hidden bg-[#0B1120] text-slate-100">
         <header className="shrink-0 border-b border-[#232948] bg-[#0B1120] px-6 py-4">
           <div className="flex items-center justify-between">
@@ -948,320 +1257,6 @@ export default function StaffProofingPage() {
             </div>
           </aside>
         </main>
-      </div>
-                      </Button>
-                      <span className="min-w-10 text-center text-xs font-medium text-white">{viewerZoom}%</span>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 text-[#90a1c2] hover:bg-[#1b2740] hover:text-white"
-                        onClick={() => setViewerZoom((value) => Math.min(200, value + 10))}
-                        disabled={!displayedFile}
-                      >
-                        <ZoomIn className="h-3.5 w-3.5" />
-                      </Button>
-                      <Separator orientation="vertical" className="mx-1 h-5 bg-[#2a3550]" />
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 text-[#90a1c2] hover:bg-[#1b2740] hover:text-white"
-                        onClick={() => setViewerPage((value) => Math.max(1, value - 1))}
-                        disabled={!previewIsPdf || viewerPage <= 1}
-                      >
-                        <ChevronLeft className="h-3.5 w-3.5" />
-                      </Button>
-                      <span className="min-w-12 text-center text-xs font-medium text-white">{viewerPage}</span>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 text-[#90a1c2] hover:bg-[#1b2740] hover:text-white"
-                        onClick={() => setViewerPage((value) => value + 1)}
-                        disabled={!previewIsPdf}
-                      >
-                        <ChevronRight className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-
-                    <div className="flex items-center justify-end gap-1">
-                      <Button variant="ghost" size="icon" className="h-8 w-8 text-[#90a1c2] hover:bg-[#1b2740] hover:text-white" onClick={() => setViewerOpen(true)} disabled={!displayedFile}>
-                        <Eye className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-[#90a1c2] hover:bg-[#1b2740] hover:text-white"
-                        onClick={() => downloadUrl && downloadFileFromUrl(downloadUrl, previewName)}
-                        disabled={!downloadUrl}
-                      >
-                        <Download className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div className="flex min-h-0 flex-1 items-center justify-center rounded-b-[18px] border-x border-b border-[#18243a] bg-[#0b1220] p-2">
-                    {!displayedVersion ? (
-                      <div className="text-center text-sm text-muted-foreground">
-                        <FileText className="mx-auto mb-3 h-10 w-10 opacity-50" />
-                        No proof version is currently selected.
-                      </div>
-                    ) : !displayedFile ? (
-                      <div className="text-center text-sm text-muted-foreground">
-                        <AlertCircle className="mx-auto mb-3 h-10 w-10 opacity-50" />
-                        This proof version has no resolved file in the current line-item file feed.
-                      </div>
-                    ) : previewIsPdf && embeddedPdfUrl ? (
-                      <iframe title={previewName} src={embeddedPdfUrl} className="h-full min-h-[33rem] w-full rounded-xl border border-[#26334d] bg-white" />
-                    ) : previewIsImage && previewUrl ? (
-                      <div className="flex h-full w-full items-center justify-center overflow-auto rounded-xl border bg-white p-4">
-                        <img
-                          src={previewUrl}
-                          alt={previewName}
-                          className="max-h-full max-w-full rounded-lg object-contain transition-transform duration-150"
-                          style={{ transform: `scale(${viewerZoom / 100})` }}
-                        />
-                      </div>
-                    ) : previewUrl ? (
-                      <div className="text-center text-sm text-muted-foreground">
-                        <FileImage className="mx-auto mb-3 h-10 w-10 opacity-50" />
-                        Preview is not available inline for this file type.
-                        <div className="mt-3 flex justify-center gap-2">
-                          <Button variant="outline" size="sm" onClick={() => setViewerOpen(true)}>
-                            Open viewer
-                          </Button>
-                          <Button variant="outline" size="sm" onClick={() => downloadUrl && downloadFileFromUrl(downloadUrl, previewName)}>
-                            Download file
-                          </Button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="text-center text-sm text-muted-foreground">
-                        <AlertCircle className="mx-auto mb-3 h-10 w-10 opacity-50" />
-                        No preview URL is available for the selected proof file.
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          <div className="min-h-0 overflow-hidden">
-            <div className="flex h-full min-h-0 flex-col gap-2.5 overflow-y-auto pr-2 [scrollbar-color:hsl(var(--muted-foreground)/0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40 [&::-webkit-scrollbar-track]:bg-transparent">
-              <Card className="rounded-[18px] border border-[#18243a] bg-[#0b1220] shadow-none">
-                <CardContent className="space-y-3 p-4">
-                  {detailQuery.isLoading ? (
-                    <Skeleton className="h-28 w-full rounded-xl" />
-                  ) : detail ? (
-                    <>
-                      <div className="space-y-1.5">
-                        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#4b7bff]">
-                          Order {selectedRow?.orderNumber ? `#${selectedRow.orderNumber}` : selectedRow?.orderId}
-                        </p>
-                        <div>
-                          <p className="text-[28px] font-semibold leading-[1.1] text-white">{selectedRow?.lineItemLabel || "Proofing"}</p>
-                          <p className="mt-1 text-xs uppercase tracking-[0.16em] text-[#7b87a5]">{selectedRow?.packageLabel || "No package linked"}</p>
-                        </div>
-                        {selectedOrder?.customer?.id ? (
-                          <Link to={ROUTES.customers.detail(selectedOrder.customer.id)} className="inline-flex text-sm text-[#d5dbeb] hover:text-white hover:underline">
-                            {selectedRow?.customerDisplayName || "View customer"}
-                          </Link>
-                        ) : selectedRow?.customerDisplayName ? (
-                          <p className="text-sm text-[#d5dbeb]">{selectedRow.customerDisplayName}</p>
-                        ) : null}
-                        <div className="flex flex-wrap gap-2 pt-1">
-                          {displayedVersion ? <Badge className="rounded-full border border-[#2f3950] bg-[#172136] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-[#d6dced]">v{displayedVersion.versionNumber}</Badge> : null}
-                          <Badge className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${getQueueCardBadgeClass(selectedRow)}`}>
-                            {getQueueCardBadgeLabel(selectedRow)}
-                          </Badge>
-                        </div>
-                      </div>
-
-                      <Button
-                        className="h-11 w-full rounded-xl bg-[#2850ff] text-white hover:bg-[#3a5dff]"
-                        onClick={() => (canSendCurrentVersion ? setSendDialogOpen(true) : setCreateDialogOpen(true))}
-                        disabled={!selectedRow}
-                      >
-                        {canSendCurrentVersion ? <Send className="mr-2 h-4 w-4" /> : <Upload className="mr-2 h-4 w-4" />}
-                        {primaryActionLabel}
-                      </Button>
-
-                      <div className="grid grid-cols-2 gap-2">
-                        <Button
-                          variant="outline"
-                          className="h-10 rounded-xl border-[#26334d] bg-transparent text-white hover:bg-[#131d32]"
-                          onClick={() => respondMutation.mutate("approved")}
-                          disabled={respondMutation.isPending || !canRecordDecision}
-                        >
-                          {respondMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
-                          Record Approval
-                        </Button>
-                        <Button
-                          variant="outline"
-                          className="h-10 rounded-xl border-[#26334d] bg-transparent text-white hover:bg-[#131d32]"
-                          onClick={() => versionHistoryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
-                          disabled={!detail}
-                        >
-                          View History
-                        </Button>
-                      </div>
-
-                      {canRecordDecision ? (
-                        <div className="grid grid-cols-2 gap-2">
-                            <Button
-                              variant="outline"
-                              className="h-9 rounded-xl border-[#26334d] bg-transparent text-white hover:bg-[#131d32]"
-                              onClick={() => respondMutation.mutate("revision_requested")}
-                              disabled={respondMutation.isPending}
-                            >
-                              Request Revision
-                            </Button>
-                            <Button
-                              variant="destructive"
-                              className="h-9 rounded-xl border-[#74324d] bg-[#3a1725] text-[#ff9ab4] hover:bg-[#4a1b2e]"
-                              onClick={() => respondMutation.mutate("rejected")}
-                              disabled={respondMutation.isPending}
-                            >
-                              Reject
-                            </Button>
-                        </div>
-                      ) : null}
-                    </>
-                  ) : (
-                    <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">No line item selected.</div>
-                  )}
-                </CardContent>
-              </Card>
-
-              <Card className="rounded-[18px] border border-[#18243a] bg-[#0b1220] shadow-none">
-                <CardContent className="space-y-2.5 p-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#6f7b97]">Customer Feedback</p>
-                    {latestCustomerFeedback ? <Badge className="rounded-full border border-[#74324d] bg-[#3a1725] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-[#ff86a4]">New</Badge> : null}
-                  </div>
-                  {!detail ? (
-                    <div className="rounded-xl border border-dashed border-[#243049] p-4 text-sm text-[#7b87a5]">Load a queue row to inspect feedback.</div>
-                  ) : !latestCustomerFeedback ? (
-                    <div className="rounded-xl border border-dashed border-[#243049] p-4 text-sm text-[#7b87a5]">No customer feedback has been recorded yet.</div>
-                  ) : (
-                    <div className="rounded-xl border border-[#243049] bg-[#11192d] p-4">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-sm font-medium text-white">{latestCustomerFeedback.responderName || latestCustomerFeedback.responderEmail || "Customer response"}</p>
-                        <span className="text-[11px] text-[#7b87a5]">{formatRelativeTime(latestCustomerFeedback.respondedAt)}</span>
-                      </div>
-                      <p className="mt-3 border-l-2 border-[#ff5e84] pl-3 text-sm italic leading-6 text-[#d5dbeb]">
-                        {latestCustomerFeedback.responseNotes || "No notes were recorded with this decision."}
-                      </p>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-
-              <Card className="rounded-[18px] border border-[#18243a] bg-[#0b1220] shadow-none">
-                <CardContent className="space-y-2.5 p-4">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#6f7b97]">Job Specifications</p>
-                  {jobSpecificationRows.length === 0 ? (
-                    <div className="rounded-xl border border-dashed border-[#243049] p-4 text-sm text-[#7b87a5]">No job specifications are available for this line item.</div>
-                  ) : (
-                    <div className="grid grid-cols-2 gap-2.5">
-                      {jobSpecificationRows.slice(0, 6).map((row) => (
-                        <div key={row.label} className="rounded-xl border border-[#243049] bg-[#10192d] p-2.5">
-                          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#6f7b97]">{row.label}</p>
-                          <p className="mt-1 text-sm font-medium text-white">{String(row.value)}</p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-
-              <Card className="rounded-[18px] border border-[#18243a] bg-[#0b1220] shadow-none">
-                <CardContent className="space-y-2.5 p-4">
-                  <div className="flex items-center gap-2 text-[#f0b343]">
-                    <Lock className="h-3.5 w-3.5" />
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#f0b343]">Internal Staff Notes</p>
-                  </div>
-                  <div className="rounded-xl border border-[#243049] bg-[#10192d] p-4 text-sm leading-6 text-[#d5dbeb]">
-                    {internalStaffNote || "No internal notes have been recorded for this proof yet."}
-                  </div>
-                </CardContent>
-              </Card>
-
-              {canOverride ? (
-                <Card className="rounded-[18px] border border-[#18243a] bg-[#0b1220] shadow-none">
-                  <CardContent className="space-y-2.5 p-4">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#6f7b97]">Manual Override</p>
-                    <Button
-                      variant="outline"
-                      className="h-9 w-full rounded-xl border-[#26334d] bg-transparent text-white hover:bg-[#131d32]"
-                      onClick={() => setOverrideDialogOpen(true)}
-                      disabled={!detail?.currentActionableProofVersionId || detail.approvedProofSource === "manual_override"}
-                    >
-                      <ShieldAlert className="mr-2 h-4 w-4" />
-                      Manual Override
-                    </Button>
-                  </CardContent>
-                </Card>
-              ) : null}
-
-              <Card ref={versionHistoryRef} className="rounded-[18px] border border-[#18243a] bg-[#0b1220] shadow-none">
-                <CardContent className="space-y-3 p-4">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#6f7b97]">Version History</p>
-                  {detail ? (
-                    <div className="space-y-3">
-                      <div className="space-y-2">
-                        {detail.proofVersionHistory.length === 0 ? (
-                          <div className="rounded-xl border border-dashed border-[#243049] p-3 text-sm text-[#7b87a5]">No proof versions yet.</div>
-                        ) : (
-                          detail.proofVersionHistory.map((version) => {
-                            const isSelected = version.id === selectedVersionId;
-                            return (
-                              <button
-                                key={version.id}
-                                type="button"
-                                onClick={() => setSelectedVersionId(version.id)}
-                                className={`w-full rounded-xl border p-3 text-left transition ${isSelected ? "border-[#2d63ff] bg-[#111d38]" : "border-[#243049] bg-[#10192d]"}`}
-                              >
-                                <div className="flex items-center justify-between gap-2">
-                                  <p className="text-sm font-medium text-white">Version {version.versionNumber}</p>
-                                  <Badge className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${getQueueCardBadgeClass({ ...selectedRow!, currentQueueStatus: version.status === "draft" ? "awaiting_send" : version.status === "awaiting_response" ? "awaiting_approval" : version.status === "revision_requested" ? "revision_requested" : version.status === "approved" ? "approved" : "rejected" })}`}>
-                                    {getVersionStatusLabel(version.status)}
-                                  </Badge>
-                                </div>
-                                <p className="mt-1 text-[11px] text-[#7b87a5]">Created {formatTimestamp(version.createdAt)}</p>
-                              </button>
-                            );
-                          })
-                        )}
-                      </div>
-
-                      <Separator />
-
-                      <div className="space-y-2">
-                        {detail.proofDecisionHistory.length === 0 ? (
-                          <div className="rounded-xl border border-dashed border-[#243049] p-3 text-sm text-[#7b87a5]">No responses recorded yet.</div>
-                        ) : (
-                          detail.proofDecisionHistory.map((decision) => (
-                            <div key={decision.id} className="rounded-xl border border-[#243049] bg-[#10192d] p-3">
-                              <div className="flex items-center justify-between gap-2">
-                                <Badge className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${decision.decision === "approved" ? "border-[#244f45] bg-[#102b24] text-[#72d4b8]" : decision.decision === "revision_requested" ? "border-[#74324d] bg-[#3a1725] text-[#ff7f9f]" : "border-[#74324d] bg-[#3a1725] text-[#ff7f9f]"}`}>
-                                  {getDecisionLabel(decision.decision)}
-                                </Badge>
-                                <span className="text-[11px] text-[#7b87a5]">{formatTimestamp(decision.respondedAt)}</span>
-                              </div>
-                              <p className="mt-2 text-sm text-[#d5dbeb]">{decision.responseNotes || "No response notes"}</p>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="rounded-xl border border-dashed border-[#243049] p-4 text-sm text-[#7b87a5]">Load a queue row to review version history.</div>
-                  )}
-                </CardContent>
-              </Card>
-            </div>
-          </div>
-        </div>
       </div>
 
       <AttachmentViewerDialog attachment={displayedFile as any} open={viewerOpen} onOpenChange={setViewerOpen} />
