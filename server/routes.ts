@@ -14524,6 +14524,447 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  const designNoteKindSchema = z.enum(["internal_note", "progress_update", "blocker_update"]);
+
+  type DesignWorkspaceAuditRow = {
+    id: string;
+    createdAt: Date;
+    actionType: string;
+    entityType: string;
+    description: string;
+    userName: string | null;
+    newValues: any;
+  };
+
+  const getDesignLineItemContext = async (organizationId: string, lineItemId: string) => {
+    const [lineItem] = await db
+      .select({
+        id: orderLineItems.id,
+        orderId: orderLineItems.orderId,
+        status: orderLineItems.status,
+        workflowState: orderLineItems.workflowState,
+        designStatus: orderLineItems.designStatus,
+      })
+      .from(orderLineItems)
+      .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+      .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+      .limit(1);
+
+    return lineItem ?? null;
+  };
+
+  const listDesignAuditRows = async (organizationId: string, lineItemId: string) => {
+    return db
+      .select({
+        id: auditLogs.id,
+        createdAt: auditLogs.createdAt,
+        actionType: auditLogs.actionType,
+        entityType: auditLogs.entityType,
+        description: auditLogs.description,
+        userName: auditLogs.userName,
+        newValues: auditLogs.newValues,
+      })
+      .from(auditLogs)
+      .where(
+        and(
+          eq(auditLogs.organizationId, organizationId),
+          eq(auditLogs.entityType, "order_line_item"),
+          eq(auditLogs.entityId, lineItemId),
+        ),
+      )
+      .orderBy(asc(auditLogs.createdAt));
+  };
+
+  const buildDesignWorkspaceState = (auditRows: DesignWorkspaceAuditRow[]) => {
+    const nowMs = Date.now();
+    let sessionStartedAt: string | null = null;
+    let activeStartedAt: string | null = null;
+    let pausedAt: string | null = null;
+    let accumulatedElapsedMs = 0;
+    let sessionStatus: "idle" | "active" | "paused" = "idle";
+
+    const noteEntries: Array<{
+      id: string;
+      at: string;
+      userName: string | null;
+      noteKind: z.infer<typeof designNoteKindSchema>;
+      noteText: string;
+    }> = [];
+
+    for (const row of auditRows) {
+      const atMs = new Date(row.createdAt).getTime();
+      const atIso = row.createdAt.toISOString();
+
+      if (row.actionType === "design_session_started") {
+        sessionStartedAt = atIso;
+        activeStartedAt = atIso;
+        pausedAt = null;
+        accumulatedElapsedMs = 0;
+        sessionStatus = "active";
+        continue;
+      }
+
+      if (row.actionType === "design_session_resumed") {
+        if (!sessionStartedAt) {
+          sessionStartedAt = atIso;
+          accumulatedElapsedMs = 0;
+        }
+        activeStartedAt = atIso;
+        pausedAt = null;
+        sessionStatus = "active";
+        continue;
+      }
+
+      if (row.actionType === "design_session_paused") {
+        if (activeStartedAt) {
+          accumulatedElapsedMs += Math.max(0, atMs - new Date(activeStartedAt).getTime());
+        }
+        activeStartedAt = null;
+        pausedAt = atIso;
+        if (sessionStartedAt) {
+          sessionStatus = "paused";
+        }
+        continue;
+      }
+
+      if (row.actionType === "design_session_completed") {
+        if (activeStartedAt) {
+          accumulatedElapsedMs += Math.max(0, atMs - new Date(activeStartedAt).getTime());
+        }
+        activeStartedAt = null;
+        pausedAt = null;
+        sessionStartedAt = null;
+        accumulatedElapsedMs = 0;
+        sessionStatus = "idle";
+        continue;
+      }
+
+      if (row.actionType === "design_note_added") {
+        const noteText = String(row.newValues?.noteText || "").trim();
+        const noteKind = designNoteKindSchema.safeParse(row.newValues?.noteKind).success
+          ? (row.newValues.noteKind as z.infer<typeof designNoteKindSchema>)
+          : "internal_note";
+
+        if (noteText) {
+          noteEntries.push({
+            id: row.id,
+            at: atIso,
+            userName: row.userName,
+            noteKind,
+            noteText,
+          });
+        }
+      }
+    }
+
+    const elapsedMs =
+      sessionStatus === "active" && activeStartedAt
+        ? accumulatedElapsedMs + Math.max(0, nowMs - new Date(activeStartedAt).getTime())
+        : accumulatedElapsedMs;
+
+    return {
+      session: {
+        status: sessionStatus,
+        startedAt: sessionStartedAt,
+        activeStartedAt,
+        pausedAt,
+        elapsedMs,
+      },
+      notes: noteEntries.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()),
+    };
+  };
+
+  const createDesignActivityEntries = (auditRows: DesignWorkspaceAuditRow[]) => {
+    return [...auditRows]
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .map((row) => {
+        const noteKind = String(row.newValues?.noteKind || "").trim();
+        const noteText = String(row.newValues?.noteText || "").trim();
+
+        if (row.actionType === "design_note_added") {
+          return {
+            id: row.id,
+            at: row.createdAt.toISOString(),
+            type: "note",
+            label:
+              noteKind === "progress_update"
+                ? "Progress update"
+                : noteKind === "blocker_update"
+                  ? "Blocker update"
+                  : "Internal design note",
+            detail: noteText || row.description,
+            userName: row.userName,
+          };
+        }
+
+        if (row.actionType === "design_session_started") {
+          return {
+            id: row.id,
+            at: row.createdAt.toISOString(),
+            type: "session",
+            label: "Design session started",
+            detail: row.description,
+            userName: row.userName,
+          };
+        }
+
+        if (row.actionType === "design_session_resumed") {
+          return {
+            id: row.id,
+            at: row.createdAt.toISOString(),
+            type: "session",
+            label: "Design session resumed",
+            detail: row.description,
+            userName: row.userName,
+          };
+        }
+
+        if (row.actionType === "design_session_paused") {
+          return {
+            id: row.id,
+            at: row.createdAt.toISOString(),
+            type: "session",
+            label: "Design session paused",
+            detail: row.description,
+            userName: row.userName,
+          };
+        }
+
+        if (row.actionType === "design_session_completed") {
+          return {
+            id: row.id,
+            at: row.createdAt.toISOString(),
+            type: "session",
+            label: "Design session completed",
+            detail: row.description,
+            userName: row.userName,
+          };
+        }
+
+        return {
+          id: row.id,
+          at: row.createdAt.toISOString(),
+          type: "audit",
+          label: row.description,
+          detail: row.description,
+          userName: row.userName,
+        };
+      });
+  };
+
+  const insertDesignAuditLog = async (args: {
+    organizationId: string;
+    userId: string;
+    userName: string | null;
+    req: any;
+    lineItemId: string;
+    actionType: string;
+    description: string;
+    newValues?: any;
+    oldValues?: any;
+  }) => {
+    await db.insert(auditLogs).values({
+      organizationId: args.organizationId,
+      userId: args.userId,
+      userName: args.userName,
+      actionType: args.actionType,
+      entityType: "order_line_item",
+      entityId: args.lineItemId,
+      entityName: `Line item ${args.lineItemId}`,
+      description: args.description,
+      oldValues: args.oldValues ?? null,
+      newValues: args.newValues ?? null,
+      ipAddress: args.req.ip || null,
+      userAgent: args.req.headers["user-agent"] || null,
+    } as any);
+  };
+
+  app.get("/api/design/line-item/:lineItemId/workspace", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const lineItemId = String(req.params.lineItemId);
+      const lineItem = await getDesignLineItemContext(organizationId, lineItemId);
+
+      if (!lineItem) {
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      const auditRows = await listDesignAuditRows(organizationId, lineItemId);
+      const workspace = buildDesignWorkspaceState(auditRows);
+      const activity = createDesignActivityEntries(auditRows).slice(0, 12);
+
+      return res.json({
+        success: true,
+        data: {
+          session: workspace.session,
+          notes: workspace.notes,
+          activity,
+        },
+      });
+    } catch (error: any) {
+      console.error("[Design] Error fetching workspace detail:", error);
+      return res.status(500).json({ error: error?.message || "Failed to fetch design workspace detail" });
+    }
+  });
+
+  app.post("/api/design/line-item/:lineItemId/session", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const lineItemId = String(req.params.lineItemId);
+      const parsed = z
+        .object({
+          action: z.enum(["start", "pause", "resume"]),
+        })
+        .safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const lineItem = await getDesignLineItemContext(organizationId, lineItemId);
+      if (!lineItem) {
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      const auditRows = await listDesignAuditRows(organizationId, lineItemId);
+      const workspace = buildDesignWorkspaceState(auditRows);
+      const userName = req.user?.email || req.user?.name || null;
+
+      if (parsed.data.action === "start") {
+        if (workspace.session.status === "active") {
+          return res.json({ success: true, data: workspace });
+        }
+
+        await insertDesignAuditLog({
+          organizationId,
+          userId,
+          userName,
+          req,
+          lineItemId,
+          actionType: workspace.session.status === "paused" ? "design_session_resumed" : "design_session_started",
+          description: workspace.session.status === "paused" ? "Resumed design session" : "Started design session",
+          newValues: {
+            sessionState: "active",
+          },
+        });
+      }
+
+      if (parsed.data.action === "pause") {
+        if (workspace.session.status !== "active") {
+          return res.status(400).json({ error: "No active design session to pause" });
+        }
+
+        await insertDesignAuditLog({
+          organizationId,
+          userId,
+          userName,
+          req,
+          lineItemId,
+          actionType: "design_session_paused",
+          description: "Paused design session",
+          newValues: {
+            sessionState: "paused",
+          },
+        });
+      }
+
+      if (parsed.data.action === "resume") {
+        if (workspace.session.status !== "paused") {
+          return res.status(400).json({ error: "No paused design session to resume" });
+        }
+
+        await insertDesignAuditLog({
+          organizationId,
+          userId,
+          userName,
+          req,
+          lineItemId,
+          actionType: "design_session_resumed",
+          description: "Resumed design session",
+          newValues: {
+            sessionState: "active",
+          },
+        });
+      }
+
+      const updatedAudits = await listDesignAuditRows(organizationId, lineItemId);
+      const updatedWorkspace = buildDesignWorkspaceState(updatedAudits);
+
+      return res.json({ success: true, data: updatedWorkspace });
+    } catch (error: any) {
+      console.error("[Design] Error updating session:", error);
+      return res.status(500).json({ error: error?.message || "Failed to update design session" });
+    }
+  });
+
+  app.post("/api/design/line-item/:lineItemId/notes", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const lineItemId = String(req.params.lineItemId);
+      const parsed = z
+        .object({
+          noteText: z.string().trim().min(1).max(4000),
+          noteKind: designNoteKindSchema.default("internal_note"),
+        })
+        .safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const lineItem = await getDesignLineItemContext(organizationId, lineItemId);
+      if (!lineItem) {
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      const userName = req.user?.email || req.user?.name || null;
+
+      await insertDesignAuditLog({
+        organizationId,
+        userId,
+        userName,
+        req,
+        lineItemId,
+        actionType: "design_note_added",
+        description:
+          parsed.data.noteKind === "progress_update"
+            ? "Added design progress update"
+            : parsed.data.noteKind === "blocker_update"
+              ? "Added design blocker update"
+              : "Added internal design note",
+        newValues: {
+          noteKind: parsed.data.noteKind,
+          noteText: parsed.data.noteText,
+        },
+      });
+
+      const updatedAudits = await listDesignAuditRows(organizationId, lineItemId);
+      const updatedWorkspace = buildDesignWorkspaceState(updatedAudits);
+
+      return res.json({ success: true, data: updatedWorkspace.notes });
+    } catch (error: any) {
+      console.error("[Design] Error saving note:", error);
+      return res.status(500).json({ error: error?.message || "Failed to save design note" });
+    }
+  });
+
   const executeExplicitLineItemWorkflowAction = async (args: {
     req: any;
     res: any;
@@ -14724,6 +15165,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ipAddress: req.ip || null,
         userAgent: req.headers["user-agent"] || null,
       } as any);
+
+      const designAudits = await listDesignAuditRows(organizationId, lineItemId);
+      const designWorkspace = buildDesignWorkspaceState(designAudits);
+
+      if (designWorkspace.session.status === "active" || designWorkspace.session.status === "paused") {
+        await insertDesignAuditLog({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          req,
+          lineItemId,
+          actionType: "design_session_completed",
+          description: "Completed design session",
+          newValues: {
+            sessionState: "completed",
+          },
+        });
+      }
 
       return res.json({ success: true, data: result });
     } catch (error: any) {

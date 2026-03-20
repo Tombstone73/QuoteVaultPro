@@ -4,21 +4,23 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import {
   ArrowRight,
-  CheckCircle2,
   Clock3,
   ExternalLink,
   FileText,
   Package2,
-  Palette,
+  Pause,
+  Play,
   Send,
 } from "lucide-react";
 import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
 import { ROUTES } from "@/config/routes";
-import type { DesignQueueItem, DesignQueueWorkflowState } from "@/hooks/useOrders";
+import type { DesignQueueItem } from "@/hooks/useOrders";
 import { useDesignQueue, useOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
 import type { ProofingReadModel } from "@shared/proofing";
@@ -28,13 +30,48 @@ const WORKFLOW_LABELS: Record<string, string> = {
   in_design: "In Design",
   design_complete: "Design Complete",
   ready_for_prepress: "Ready for Prepress",
+  awaiting_proof_approval: "Ready for Proof",
   on_hold: "On Hold",
   canceled: "Canceled",
 };
 
-const SHELL_PANEL = "border border-white/[0.06] bg-[#101826]";
-const SECTION_PANEL = "rounded-[18px] border border-white/[0.06] bg-white/[0.02]";
-const META_PANEL = "rounded-[12px] border border-white/[0.07] bg-[#0f1827]";
+const NOTE_KIND_LABELS = {
+  internal_note: "Internal Note",
+  progress_update: "Progress Update",
+  blocker_update: "Blocker / Issue",
+} as const;
+
+const SHELL_PANEL = "border border-white/[0.07] bg-[#121b29] shadow-[0_20px_50px_rgba(0,0,0,0.28)]";
+const SECTION_PANEL = "rounded-[18px] border border-white/[0.06] bg-[#111927]";
+const META_PANEL = "rounded-[14px] border border-white/[0.08] bg-[#0d1623]";
+const MUTED_PANEL = "rounded-[16px] border border-white/[0.06] bg-[#0f1724]";
+
+type DesignNoteKind = keyof typeof NOTE_KIND_LABELS;
+
+type DesignWorkspaceData = {
+  session: {
+    status: "idle" | "active" | "paused";
+    startedAt: string | null;
+    activeStartedAt: string | null;
+    pausedAt: string | null;
+    elapsedMs: number;
+  };
+  notes: Array<{
+    id: string;
+    at: string;
+    userName: string | null;
+    noteKind: DesignNoteKind;
+    noteText: string;
+  }>;
+  activity: Array<{
+    id: string;
+    at: string;
+    type: string;
+    label: string;
+    detail: string;
+    userName: string | null;
+  }>;
+};
 
 function formatOwnerLabel(item: DesignQueueItem) {
   if (item.activeOwnerStepKey) {
@@ -78,10 +115,19 @@ function formatRelativeTime(value: string | null | undefined) {
   return formatDistanceToNow(date, { addSuffix: true });
 }
 
+function formatElapsedTime(totalMs: number) {
+  const totalSeconds = Math.max(0, Math.floor(totalMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  return [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
+}
+
 function getQueueBadgeClasses(state: string | null | undefined) {
   switch (state) {
     case "in_design":
-      return "border border-[#2d62f5]/40 bg-[#1337ec]/20 text-[#7da0ff]";
+      return "border border-[#2d62f5]/40 bg-[#1337ec]/18 text-[#89a9ff]";
     case "needs_design":
       return "border border-white/10 bg-white/[0.03] text-slate-200";
     case "design_complete":
@@ -188,7 +234,7 @@ function getRecommendedAction(args: {
   if (item.workflowState === "needs_design") {
     return {
       title: "Start Design",
-      detail: "Move this line item into active design work so ownership and downstream routing stay aligned.",
+      detail: "Open an active design session and move the item into live work so the next handoff stays explicit.",
     };
   }
 
@@ -202,7 +248,7 @@ function getRecommendedAction(args: {
   if (item.requiresProofApproval) {
     return {
       title: "Complete Design and route to Proofing",
-      detail: "Finish the design pass, then move the line item into proofing using the existing downstream workflow.",
+      detail: "Finish the current design pass, then move the line item into proofing using the existing downstream workflow.",
     };
   }
 
@@ -218,12 +264,27 @@ function getDownstreamPath(item: DesignQueueItem) {
   return "Production";
 }
 
+async function readJson<T>(input: RequestInfo, init?: RequestInit) {
+  const response = await fetch(input, {
+    credentials: "include",
+    ...init,
+  });
+  const json = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error((json as any).error || (json as any).message || "Request failed");
+  }
+  return json as T;
+}
+
 export default function DesignProductionPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { data: queue = [], isLoading } = useDesignQueue();
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
+  const [noteDraft, setNoteDraft] = useState("");
+  const [noteKind, setNoteKind] = useState<DesignNoteKind>("internal_note");
+  const [timerNow, setTimerNow] = useState(Date.now());
 
   useEffect(() => {
     if (queue.length === 0) {
@@ -247,6 +308,11 @@ export default function DesignProductionPage() {
     [queue, selectedLineItemId],
   );
 
+  useEffect(() => {
+    setNoteDraft("");
+    setNoteKind("internal_note");
+  }, [selectedItem?.lineItemId]);
+
   const selectedOwnerLabel = selectedItem ? formatOwnerLabel(selectedItem) : null;
 
   const orderQuery = useOrder(selectedItem?.orderId);
@@ -260,49 +326,71 @@ export default function DesignProductionPage() {
   const proofingQuery = useQuery<ProofingReadModel>({
     queryKey: ["/api/proofing/line-item", selectedItem?.lineItemId],
     queryFn: async () => {
-      const response = await fetch(`/api/proofing/line-item/${selectedItem?.lineItemId}`, {
-        credentials: "include",
-      });
-      const json = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(json.error || "Failed to fetch proofing detail");
-      }
-      return json.data as ProofingReadModel;
+      const json = await readJson<{ data: ProofingReadModel }>(`/api/proofing/line-item/${selectedItem?.lineItemId}`);
+      return json.data;
     },
     enabled: Boolean(selectedItem?.lineItemId),
     staleTime: 15_000,
     refetchOnWindowFocus: false,
   });
 
+  const workspaceQuery = useQuery<DesignWorkspaceData>({
+    queryKey: ["/api/design/line-item", selectedItem?.lineItemId, "workspace"],
+    queryFn: async () => {
+      const json = await readJson<{ data: DesignWorkspaceData }>(`/api/design/line-item/${selectedItem?.lineItemId}/workspace`);
+      return json.data;
+    },
+    enabled: Boolean(selectedItem?.lineItemId),
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  });
+
   const proofing = proofingQuery.data;
+  const workspace = workspaceQuery.data;
   const displayPrintType = selectedItem ? getDisplayPrintType(selectedItem, selectedLineItem) : null;
   const displayMaterial = selectedItem ? getDisplayMaterial(selectedItem, selectedLineItem) : null;
   const specRows = selectedItem ? getSpecRows(selectedItem, selectedLineItem, displayPrintType, displayMaterial) : [];
   const instructionItems = selectedItem ? getInstructionItems(selectedLineItem, displayPrintType, displayMaterial) : [];
   const proofVersionHistory = proofing?.proofVersionHistory.slice(0, 4) ?? [];
-  const recentActivity = useMemo(() => {
-    if (!proofing) return [] as Array<{ label: string; detail: string; at: string | null }>;
+  const proofingActivity = useMemo(() => {
+    if (!proofing) return [] as Array<{ id: string; label: string; detail: string; at: string | null }>;
 
-    const activities: Array<{ label: string; detail: string; at: string | null }> = [];
+    const items: Array<{ id: string; label: string; detail: string; at: string | null }> = [];
 
-    proofing.proofDecisionHistory.slice(0, 2).forEach((entry) => {
-      activities.push({
+    proofing.proofDecisionHistory.slice(0, 2).forEach((entry, index) => {
+      items.push({
+        id: `decision-${entry.respondedAt}-${index}`,
         label: `Proof ${entry.decision.replace(/_/g, " ")}`,
         detail: entry.responseNotes || entry.responderName || entry.responderEmail || "Proof response recorded",
         at: entry.respondedAt,
       });
     });
 
-    proofing.manualApprovalOverrideHistory.slice(0, 1).forEach((entry) => {
-      activities.push({
+    proofing.manualApprovalOverrideHistory.slice(0, 1).forEach((entry, index) => {
+      items.push({
+        id: `override-${entry.overriddenAt}-${index}`,
         label: "Manual approval override",
         detail: entry.overrideReason,
         at: entry.overriddenAt,
       });
     });
 
-    return activities.slice(0, 3);
+    return items;
   }, [proofing]);
+
+  const recentActivity = useMemo(() => {
+    const workspaceActivity = (workspace?.activity ?? []).map((entry) => ({
+      id: entry.id,
+      label: entry.label,
+      detail: entry.detail,
+      at: entry.at,
+    }));
+
+    return [...workspaceActivity, ...proofingActivity]
+      .filter((entry) => !!entry.at)
+      .sort((a, b) => new Date(b.at || 0).getTime() - new Date(a.at || 0).getTime())
+      .slice(0, 4);
+  }, [proofingActivity, workspace?.activity]);
 
   const recommendedAction = selectedItem
     ? getRecommendedAction({
@@ -312,35 +400,44 @@ export default function DesignProductionPage() {
       })
     : null;
 
+  useEffect(() => {
+    if (workspace?.session.status !== "active") return;
+
+    const intervalId = window.setInterval(() => {
+      setTimerNow(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [workspace?.session.status, workspace?.session.activeStartedAt]);
+
+  const invalidateDesignWorkspace = async (lineItemId?: string | null, orderId?: string | null) => {
+    await queryClient.invalidateQueries({ queryKey: ["/api/design/queue"] });
+    await queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+    await queryClient.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
+    await queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+    if (lineItemId) {
+      await queryClient.invalidateQueries({ queryKey: ["/api/design/line-item", lineItemId, "workspace"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/proofing/line-item", lineItemId] });
+    }
+    if (orderId) {
+      await queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
+    }
+  };
+
   const transitionWorkflow = useMutation({
     mutationFn: async ({ lineItemId, toState, action }: { lineItemId: string; toState?: string; action?: string }) => {
       const endpoint = action
         ? `/api/design/line-item/${lineItemId}/${action}`
         : `/api/line-items/${lineItemId}/workflow-transition`;
 
-      const response = await fetch(endpoint, {
+      await readJson(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify(toState ? { toState } : {}),
       });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to transition workflow");
-      }
-      return data.data;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/design/queue"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
-      if (selectedItem?.orderId) {
-        queryClient.invalidateQueries({ queryKey: ["orders", "detail", selectedItem.orderId] });
-      }
-      if (selectedItem?.lineItemId) {
-        queryClient.invalidateQueries({ queryKey: ["/api/proofing/line-item", selectedItem.lineItemId] });
-      }
-      queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+    onSuccess: async () => {
+      await invalidateDesignWorkspace(selectedItem?.lineItemId, selectedItem?.orderId);
     },
     onError: (error: Error) => {
       toast({
@@ -351,7 +448,118 @@ export default function DesignProductionPage() {
     },
   });
 
-  const canStartDesign = selectedItem?.workflowState === "needs_design";
+  const sessionMutation = useMutation({
+    mutationFn: async (action: "start" | "pause" | "resume") => {
+      if (!selectedItem) throw new Error("Select a line item first");
+
+      if (action === "start") {
+        if (selectedItem.workflowState !== "in_design") {
+          await readJson(`/api/design/line-item/${selectedItem.lineItemId}/start`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+        }
+        await readJson(`/api/design/line-item/${selectedItem.lineItemId}/session`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "start" }),
+        });
+        return;
+      }
+
+      await readJson(`/api/design/line-item/${selectedItem.lineItemId}/session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+    },
+    onSuccess: async (_, action) => {
+      await invalidateDesignWorkspace(selectedItem?.lineItemId, selectedItem?.orderId);
+      if (action === "pause") {
+        toast({ title: "Design paused", description: "The active design session was paused." });
+      }
+      if (action === "resume" || action === "start") {
+        toast({
+          title: workspace?.session.status === "paused" ? "Design resumed" : "Design started",
+          description: "The design session is now live in the header workspace controls.",
+        });
+      }
+    },
+    onError: (error: Error) => {
+      toast({ title: "Session update failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const noteMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedItem) throw new Error("Select a line item first");
+      const trimmed = noteDraft.trim();
+      if (!trimmed) throw new Error("Enter a note before saving");
+
+      await readJson(`/api/design/line-item/${selectedItem.lineItemId}/notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ noteText: trimmed, noteKind }),
+      });
+    },
+    onSuccess: async () => {
+      setNoteDraft("");
+      setNoteKind("internal_note");
+      await invalidateDesignWorkspace(selectedItem?.lineItemId, selectedItem?.orderId);
+      toast({ title: "Note saved", description: "The update was added to the design working log." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Could not save note", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const statusMutation = useMutation({
+    mutationFn: async (nextState: "needs_design" | "in_design" | "on_hold") => {
+      if (!selectedItem) throw new Error("Select a line item first");
+      if (nextState === selectedItem.workflowState) return;
+
+      if (nextState === "in_design") {
+        await readJson(`/api/design/line-item/${selectedItem.lineItemId}/start`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        return;
+      }
+
+      if (nextState === "needs_design") {
+        await readJson(`/api/design/line-item/${selectedItem.lineItemId}/return-to-needs-design`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        return;
+      }
+
+      await readJson(`/api/line-items/${selectedItem.lineItemId}/workflow-transition`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toState: nextState }),
+      });
+    },
+    onSuccess: async () => {
+      await invalidateDesignWorkspace(selectedItem?.lineItemId, selectedItem?.orderId);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Status update failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const workspaceTimerMs = useMemo(() => {
+    if (!workspace) return 0;
+    if (workspace.session.status !== "active") return workspace.session.elapsedMs;
+    return workspace.session.elapsedMs + Math.max(0, timerNow - workspaceQuery.dataUpdatedAt);
+  }, [timerNow, workspace, workspaceQuery.dataUpdatedAt]);
+
+  const canPauseSession = workspace?.session.status === "active";
+  const canResumeSession = workspace?.session.status === "paused";
+  const canStartSession = workspace?.session.status !== "active";
   const canCompleteDesign = selectedItem?.workflowState === "in_design";
   const canCreateProof = Boolean(selectedItem?.requiresProofApproval);
   const detailTitle =
@@ -367,7 +575,7 @@ export default function DesignProductionPage() {
     : "xl:grid-cols-[320px_minmax(0,1fr)]";
 
   return (
-    <div className="space-y-4 text-slate-100">
+    <div className="space-y-4 bg-[radial-gradient(circle_at_top,rgba(84,120,214,0.08),transparent_34%)] text-slate-100">
       <div className="rounded-[18px] border border-white/[0.06] bg-[#0b1220] px-5 py-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="space-y-1">
@@ -391,13 +599,13 @@ export default function DesignProductionPage() {
         </div>
       </div>
 
-      <div className={`grid overflow-hidden rounded-[22px] border border-white/[0.06] bg-[#0b1220] ${desktopGridClass}`}>
+      <div className={`grid overflow-hidden rounded-[22px] border border-white/[0.06] bg-[#09111b] ${desktopGridClass}`}>
         <aside className="border-b border-white/[0.06] bg-[#0c1320] xl:border-b-0 xl:border-r">
           <div className="border-b border-white/[0.06] px-5 py-5">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h2 className="text-[19px] font-semibold leading-tight text-white">Design Queue</h2>
-                <p className="mt-1 text-[12px] text-slate-400">Live line items currently in design workflow.</p>
+                <p className="mt-1 text-[12px] text-slate-400">Live line items currently in the design workflow.</p>
               </div>
               <div className="rounded-full border border-white/[0.06] bg-white/[0.03] px-2.5 py-1 text-[11px] font-medium text-slate-400">
                 {queue.length}
@@ -408,7 +616,9 @@ export default function DesignProductionPage() {
           <ScrollArea className="h-[calc(100vh-17rem)] min-h-[520px]">
             <div className="space-y-3 px-4 py-4">
               {isLoading ? (
-                Array.from({ length: 6 }).map((_, index) => <Skeleton key={index} className="h-24 w-full rounded-2xl bg-white/[0.04]" />)
+                Array.from({ length: 6 }).map((_, index) => (
+                  <Skeleton key={index} className="h-24 w-full rounded-2xl bg-white/[0.04]" />
+                ))
               ) : queue.length === 0 ? (
                 <div className="rounded-[16px] border border-dashed border-white/[0.08] px-4 py-5 text-sm text-slate-400">
                   No line items are currently assigned to Design.
@@ -463,7 +673,7 @@ export default function DesignProductionPage() {
             <div className="max-w-md rounded-[20px] border border-dashed border-white/[0.08] bg-white/[0.02] px-6 py-8 text-center">
               <div className="text-lg font-semibold text-white">Select a line item</div>
               <p className="mt-2 text-sm leading-6 text-slate-400">
-                Choose a job from the Design Queue to open the full production workspace, notes, files, and workflow rail.
+                Choose a job from the Design Queue to open the full production workspace, session controls, notes, and files.
               </p>
             </div>
           </div>
@@ -471,61 +681,128 @@ export default function DesignProductionPage() {
           <>
             <main className="border-b border-white/[0.06] bg-[#101827] xl:border-b-0 xl:border-r">
               <div className="space-y-5 px-6 py-6">
-                <section className={`${SHELL_PANEL} rounded-[20px] px-6 py-6`}>
-                  <div className="flex flex-wrap items-start justify-between gap-4">
+                <section className={`${SHELL_PANEL} rounded-[22px] px-6 py-6`}>
+                  <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_280px]">
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-                          {WORKFLOW_LABELS[selectedItem.workflowState] || selectedItem.workflowState}
+                          {selectedOwnerLabel || "Design"}
                         </span>
-                        {selectedOwnerLabel ? (
-                          <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-                            {selectedOwnerLabel}
-                          </span>
-                        ) : null}
+                        <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                          Routes to {getDownstreamPath(selectedItem)}
+                        </span>
                         {selectedItem.requiresProofApproval ? (
-                          <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-                            Requires Proof
-                          </span>
-                        ) : null}
-                        {selectedItem.requiresPrepress ? (
-                          <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-                            Routes to Prepress
+                          <span className="rounded-full border border-[#2d62f5]/25 bg-[#1337ec]/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#8ba9ff]">
+                            Proof handoff required
                           </span>
                         ) : null}
                       </div>
+
                       <h2 className="mt-4 text-[30px] font-semibold leading-tight text-white">{detailTitle}</h2>
                       <p className="mt-1 text-sm text-slate-400">
                         Order #{selectedItem.jobNumber} • {selectedItem.customerName}
                       </p>
-                    </div>
-                  </div>
 
-                  <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                    <div className={`${META_PANEL} px-4 py-3`}>
-                      <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Job / Line Item</div>
-                      <div className="mt-2 text-sm font-semibold text-white">#{selectedItem.jobNumber}</div>
-                      <div className="mt-1 text-xs text-slate-500">{detailTitle}</div>
+                      <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                        <div className={`${META_PANEL} px-4 py-3`}>
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Job / Line Item</div>
+                          <div className="mt-2 text-sm font-semibold text-white">#{selectedItem.jobNumber}</div>
+                          <div className="mt-1 text-xs text-slate-500">{detailTitle}</div>
+                        </div>
+                        <div className={`${META_PANEL} px-4 py-3`}>
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Due Date</div>
+                          <div className="mt-2 text-sm font-semibold text-white">{formatDateLabel(order?.dueDate ?? selectedItem.dueDate)}</div>
+                          <div className="mt-1 text-xs text-slate-500">{formatRelativeTime(order?.dueDate ?? selectedItem.dueDate)}</div>
+                        </div>
+                        <div className={`${META_PANEL} px-4 py-3`}>
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Customer</div>
+                          <div className="mt-2 text-sm font-semibold text-white">{selectedItem.customerName}</div>
+                          <div className="mt-1 text-xs text-slate-500">{displayPrintType || "Design work item"}</div>
+                        </div>
+                        <div className={`${META_PANEL} px-4 py-3`}>
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Files on Item</div>
+                          <div className="mt-2 text-sm font-semibold text-white">{selectedItem.fileCounts?.originals || 0} source</div>
+                          <div className="mt-1 text-xs text-slate-500">{selectedItem.fileCounts?.proofs || 0} proof files attached</div>
+                        </div>
+                      </div>
                     </div>
-                    <div className={`${META_PANEL} px-4 py-3`}>
-                      <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Due Date</div>
-                      <div className="mt-2 text-sm font-semibold text-white">{formatDateLabel(order?.dueDate ?? selectedItem.dueDate)}</div>
-                      <div className="mt-1 text-xs text-slate-500">{formatRelativeTime(order?.dueDate ?? selectedItem.dueDate)}</div>
-                    </div>
-                    <div className={`${META_PANEL} px-4 py-3`}>
-                      <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Customer</div>
-                      <div className="mt-2 text-sm font-semibold text-white">{selectedItem.customerName}</div>
-                      <div className="mt-1 text-xs text-slate-500">{displayPrintType || "Design work item"}</div>
-                    </div>
-                    <div className={`${META_PANEL} px-4 py-3`}>
-                      <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Files on Item</div>
-                      <div className="mt-2 text-sm font-semibold text-white">{selectedItem.fileCounts?.originals || 0} source</div>
-                      <div className="mt-1 text-xs text-slate-500">{selectedItem.fileCounts?.proofs || 0} proof files already attached</div>
+
+                    <div className="space-y-3">
+                      <div className={`${MUTED_PANEL} px-4 py-4`}>
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Design Status</div>
+                        <Select
+                          value={selectedItem.workflowState}
+                          onValueChange={(value: "needs_design" | "in_design" | "on_hold") => statusMutation.mutate(value)}
+                          disabled={statusMutation.isPending || transitionWorkflow.isPending}
+                        >
+                          <SelectTrigger className="mt-3 h-11 rounded-xl border-white/[0.08] bg-[#0b1420] text-sm text-white">
+                            <SelectValue placeholder="Select status" />
+                          </SelectTrigger>
+                          <SelectContent className="border-white/[0.08] bg-[#0e1623] text-slate-100">
+                            <SelectItem value="needs_design">Needs Design</SelectItem>
+                            <SelectItem value="in_design">In Design</SelectItem>
+                            <SelectItem value="on_hold">On Hold</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="rounded-[18px] border border-white/[0.08] bg-[#142031] px-4 py-4 shadow-[0_16px_35px_rgba(0,0,0,0.22)]">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">Design Session</div>
+                            <div className="mt-1 text-sm text-slate-300">
+                              {workspace?.session.status === "active"
+                                ? "Live session running"
+                                : workspace?.session.status === "paused"
+                                  ? "Paused and ready to resume"
+                                  : "No active session"}
+                            </div>
+                          </div>
+                          <Badge className="border-white/[0.08] bg-white/[0.05] text-slate-200 hover:bg-white/[0.05]">
+                            {workspace?.session.status === "active"
+                              ? "Active"
+                              : workspace?.session.status === "paused"
+                                ? "Paused"
+                                : "Idle"}
+                          </Badge>
+                        </div>
+
+                        <div className="mt-4 text-[30px] font-semibold tracking-tight text-white">{formatElapsedTime(workspaceTimerMs)}</div>
+                        <div className="mt-1 text-[12px] text-slate-400">
+                          {workspace?.session.status === "paused" && workspace?.session.pausedAt
+                            ? `Paused ${formatRelativeTime(workspace.session.pausedAt)}`
+                            : workspace?.session.startedAt
+                              ? `Started ${formatRelativeTime(workspace.session.startedAt)}`
+                              : "Start design when this line item is ready for active work."}
+                        </div>
+
+                        <div className="mt-4 flex gap-2">
+                          <Button
+                            type="button"
+                            className="h-10 flex-1 rounded-xl bg-[#2d62f5] text-white hover:bg-[#3a6cff]"
+                            disabled={!canStartSession || sessionMutation.isPending || workspaceQuery.isLoading}
+                            onClick={() => sessionMutation.mutate(canResumeSession ? "resume" : "start")}
+                          >
+                            <Play className="mr-2 h-4 w-4" />
+                            {canResumeSession ? "Resume" : "Start Design"}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="h-10 flex-1 rounded-xl border-white/[0.08] bg-white/[0.02] text-slate-200 hover:bg-white/[0.05]"
+                            disabled={!canPauseSession || sessionMutation.isPending}
+                            onClick={() => sessionMutation.mutate("pause")}
+                          >
+                            <Pause className="mr-2 h-4 w-4" />
+                            Pause
+                          </Button>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
                   {specRows.length > 0 ? (
-                    <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                       {specRows.map((row) => (
                         <div key={row.label} className={`${META_PANEL} px-4 py-3`}>
                           <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">{row.label}</div>
@@ -536,7 +813,7 @@ export default function DesignProductionPage() {
                   ) : null}
                 </section>
 
-                <div className="grid gap-5 xl:grid-cols-[minmax(0,1.12fr)_minmax(0,0.88fr)]">
+                <div className="grid gap-5 xl:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
                   <section className={`${SECTION_PANEL} p-5`}>
                     <div>
                       <h3 className="text-[18px] font-semibold text-white">Design Brief</h3>
@@ -545,7 +822,7 @@ export default function DesignProductionPage() {
                       </p>
                     </div>
 
-                    <div className="mt-5 rounded-[14px] border border-white/[0.06] bg-[#0f1827] px-4 py-4 text-sm leading-6 text-slate-200">
+                    <div className="mt-5 rounded-[16px] border border-white/[0.06] bg-[#121d2c] px-4 py-4 text-sm leading-6 text-slate-200">
                       {detailSummary}
                     </div>
 
@@ -572,7 +849,7 @@ export default function DesignProductionPage() {
                     <div>
                       <h3 className="text-[18px] font-semibold text-white">Notes & Context</h3>
                       <p className="mt-1 text-[12px] text-slate-400">
-                        Sales handoff, internal context, and customer feedback already on the record.
+                        Sales handoff, internal context, and the live working log for this design pass.
                       </p>
                     </div>
 
@@ -616,6 +893,71 @@ export default function DesignProductionPage() {
                             No proof feedback exists on this line item yet.
                           </div>
                         )}
+                      </div>
+
+                      <div className="border-t border-white/[0.06] pt-4">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Design Working Log</div>
+                            <div className="mt-1 text-[12px] text-slate-400">Add internal notes, progress updates, or blockers inline.</div>
+                          </div>
+                          <Select value={noteKind} onValueChange={(value: DesignNoteKind) => setNoteKind(value)}>
+                            <SelectTrigger className="h-9 w-[180px] rounded-xl border-white/[0.08] bg-[#0b1420] text-xs text-white">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent className="border-white/[0.08] bg-[#0e1623] text-slate-100">
+                              <SelectItem value="internal_note">Internal Note</SelectItem>
+                              <SelectItem value="progress_update">Progress Update</SelectItem>
+                              <SelectItem value="blocker_update">Blocker / Issue</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        <div className="mt-3 space-y-3">
+                          <Textarea
+                            value={noteDraft}
+                            onChange={(event) => setNoteDraft(event.target.value)}
+                            placeholder="Add a design note, handoff update, or blocker for this line item..."
+                            className="min-h-[110px] rounded-[14px] border-white/[0.08] bg-[#0b1420] text-sm text-slate-100 placeholder:text-slate-500"
+                          />
+                          <div className="flex justify-end">
+                            <Button
+                              type="button"
+                              className="h-10 rounded-xl bg-[#2d62f5] px-4 text-white hover:bg-[#3a6cff]"
+                              disabled={noteMutation.isPending || noteDraft.trim().length === 0}
+                              onClick={() => noteMutation.mutate()}
+                            >
+                              Save Note
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 space-y-3">
+                          {workspaceQuery.isLoading ? (
+                            <div className="space-y-2">
+                              {Array.from({ length: 3 }).map((_, index) => (
+                                <Skeleton key={index} className="h-20 w-full rounded-[14px] bg-white/[0.04]" />
+                              ))}
+                            </div>
+                          ) : (workspace?.notes.length ?? 0) === 0 ? (
+                            <div className="rounded-[14px] border border-dashed border-white/[0.08] px-4 py-4 text-slate-400">
+                              No design notes have been recorded yet for this line item.
+                            </div>
+                          ) : (
+                            workspace?.notes.map((entry) => (
+                              <div key={entry.id} className={`${MUTED_PANEL} px-4 py-4`}>
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <Badge variant="outline" className="border-white/[0.08] bg-white/[0.03] text-slate-300">
+                                    {NOTE_KIND_LABELS[entry.noteKind]}
+                                  </Badge>
+                                  <span className="text-[11px] text-slate-500">{formatRelativeTime(entry.at)}</span>
+                                </div>
+                                <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-200">{entry.noteText}</p>
+                                <div className="mt-2 text-[11px] text-slate-500">{entry.userName || "Team member"}</div>
+                              </div>
+                            ))
+                          )}
+                        </div>
                       </div>
                     </div>
                   </section>
@@ -671,13 +1013,13 @@ export default function DesignProductionPage() {
               </div>
             </main>
 
-            <aside className="bg-[#0c1320] px-4 py-4">
+            <aside className="bg-[#0d1421] px-4 py-4">
               <div className="space-y-4">
                 <section className={`${SECTION_PANEL} p-5`}>
                   <div>
                     <h3 className="text-[18px] font-semibold text-white">Workflow Rail</h3>
                     <p className="mt-1 text-[12px] text-slate-400">
-                      What stage this line item is in and the cleanest next move.
+                      Keep the next move obvious without repeating the full workstation state.
                     </p>
                   </div>
 
@@ -693,40 +1035,7 @@ export default function DesignProductionPage() {
                     </p>
                   </div>
 
-                  <div className="mt-4 space-y-3">
-                    <div className={`${META_PANEL} px-4 py-3`}>
-                      <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Workflow State</div>
-                      <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-white">
-                        <CheckCircle2 className="h-4 w-4 text-slate-500" />
-                        {WORKFLOW_LABELS[selectedItem.workflowState] || selectedItem.workflowState}
-                      </div>
-                    </div>
-                    <div className={`${META_PANEL} px-4 py-3`}>
-                      <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Design Status</div>
-                      <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-white">
-                        <Palette className="h-4 w-4 text-slate-500" />
-                        {WORKFLOW_LABELS[selectedItem.designStatus] || selectedItem.designStatus}
-                      </div>
-                    </div>
-                    <div className={`${META_PANEL} px-4 py-3`}>
-                      <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Downstream Path</div>
-                      <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-white">
-                        <ArrowRight className="h-4 w-4 text-slate-500" />
-                        {getDownstreamPath(selectedItem)}
-                      </div>
-                    </div>
-                  </div>
-
                   <div className="mt-4 space-y-2">
-                    <Button
-                      type="button"
-                      className="h-11 w-full justify-between rounded-xl bg-[#2d62f5] px-4 text-white hover:bg-[#3a6cff]"
-                      disabled={!canStartDesign || transitionWorkflow.isPending}
-                      onClick={() => transitionWorkflow.mutate({ lineItemId: selectedItem.lineItemId, action: "start" })}
-                    >
-                      <span>Start Design</span>
-                      <Palette className="h-4 w-4" />
-                    </Button>
                     <Button
                       type="button"
                       variant="outline"
@@ -825,12 +1134,12 @@ export default function DesignProductionPage() {
                   <div>
                     <h3 className="text-[18px] font-semibold text-white">Recent Activity</h3>
                     <p className="mt-1 text-[12px] text-slate-400">
-                      Latest proofing and approval activity already recorded on this job.
+                      Latest design and proofing activity already recorded on this line item.
                     </p>
                   </div>
 
                   <div className="mt-4">
-                    {proofingQuery.isLoading ? (
+                    {workspaceQuery.isLoading || proofingQuery.isLoading ? (
                       <div className="space-y-2">
                         {Array.from({ length: 3 }).map((_, index) => (
                           <Skeleton key={index} className="h-14 w-full rounded-[14px] bg-white/[0.04]" />
@@ -838,12 +1147,12 @@ export default function DesignProductionPage() {
                       </div>
                     ) : recentActivity.length === 0 ? (
                       <div className="rounded-[14px] border border-dashed border-white/[0.08] px-4 py-4 text-sm text-slate-400">
-                        No proofing activity is recorded yet. Use the workflow rail when this job is ready for proof creation.
+                        No recent activity is recorded yet. Use the session controls and working log as design work begins.
                       </div>
                     ) : (
                       <div className="space-y-3">
                         {recentActivity.map((activity) => (
-                          <div key={`${activity.label}-${activity.at}`} className={`${META_PANEL} px-4 py-3`}>
+                          <div key={activity.id} className={`${META_PANEL} px-4 py-3`}>
                             <div className="flex items-center justify-between gap-2">
                               <div className="text-sm font-semibold text-white">{activity.label}</div>
                               <span className="text-[11px] text-slate-500">{formatRelativeTime(activity.at)}</span>
