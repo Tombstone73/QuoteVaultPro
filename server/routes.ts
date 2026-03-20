@@ -10,7 +10,7 @@ import busboy from "busboy";
 import { storage } from "./storage";
 import * as prepressFileService from "./prepressFileService";
 import { db, hasQuoteAttachmentPagesTable } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, inventoryReservations, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, assetVariants, authIdentities, bugReports, prepressSessions, lineItemFiles, reprintRequests } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, inventoryReservations, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, assetVariants, authIdentities, bugReports, prepressSessions, lineItemFiles, reprintRequests, insertProductDesignConfigSchema } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, asc, inArray, notInArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -91,6 +91,7 @@ import {
 import { getAppEnv, getCookieDomain, getPublicWebOrigin } from "./lib/appRuntimeConfig";
 import { fileDerivativeRepository } from "./storage/fileDerivative.repo";
 import { fileRecordRepository } from "./storage/fileRecord.repo";
+import { productDesignConfigRepository } from "./storage/productDesignConfig.repo";
 
 // Auth provider selection logic
 // Priority: AUTH_PROVIDER env var > detection logic
@@ -3402,6 +3403,72 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching product:", error);
       res.status(500).json({ message: "Failed to fetch product" });
+    }
+  });
+
+  app.get("/api/products/:id/design-config", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(500).json({ success: false, data: null, message: "Missing organization context" });
+      }
+
+      const productId = String(req.params.id);
+      const product = await storage.getProductById(organizationId, productId);
+      if (!product) {
+        return res.status(404).json({ success: false, data: null, message: "Product not found" });
+      }
+
+      const config = await productDesignConfigRepository.getByProductId(organizationId, productId);
+
+      return res.json({
+        success: true,
+        data: config,
+        message: config ? "Product design config loaded" : "Product design config not configured",
+      });
+    } catch (error) {
+      console.error("[GET /api/products/:id/design-config] Failed to fetch product design config:", error);
+      return res.status(500).json({ success: false, data: null, message: "Failed to fetch product design config" });
+    }
+  });
+
+  app.put("/api/products/:id/design-config", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(500).json({ success: false, data: null, message: "Missing organization context" });
+      }
+
+      const productId = String(req.params.id);
+      const product = await storage.getProductById(organizationId, productId);
+      if (!product) {
+        return res.status(404).json({ success: false, data: null, message: "Product not found" });
+      }
+
+      const parsedData = insertProductDesignConfigSchema.parse(req.body);
+      const configInput = Object.fromEntries(
+        Object.entries(parsedData).map(([key, value]) => [key, typeof value === "string" && value.length === 0 ? null : value]),
+      );
+
+      const config = await productDesignConfigRepository.upsertForProduct(
+        organizationId,
+        productId,
+        configInput as any,
+      );
+
+      return res.json({ success: true, data: config, message: "Product design config saved" });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          success: false,
+          data: null,
+          message: fromZodError(error).message,
+          errors: error.errors,
+        });
+      }
+
+      console.error("[PUT /api/products/:id/design-config] Failed to save product design config:", error);
+      return res.status(500).json({ success: false, data: null, message: "Failed to save product design config" });
     }
   });
 
