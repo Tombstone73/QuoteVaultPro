@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { format, formatDistanceToNow } from "date-fns";
 import {
   AlertCircle,
@@ -36,8 +36,10 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { ROUTES } from "@/config/routes";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrderLineItemFiles, type OrderFileWithUser } from "@/hooks/useOrderFiles";
+import { useOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
@@ -93,8 +95,17 @@ const decisionLabels: Record<ProofDecision, string> = {
 
 type StaffFacingStatus = {
   label: string;
-  detail: string;
   badgeVariant: "default" | "secondary" | "destructive" | "outline";
+};
+
+const proofQueueStatusSortOrder: Record<ProofQueueStatus, number> = {
+  revision_requested: 0,
+  awaiting_approval: 1,
+  awaiting_send: 2,
+  approved: 3,
+  approved_by_override: 4,
+  rejected: 5,
+  no_active_proof: 6,
 };
 
 async function readJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
@@ -188,9 +199,6 @@ function getStaffFacingStatus(args: {
   if (detail?.approvedProofSource || row?.currentQueueStatus === "approved") {
     return {
       label: "Approved",
-      detail: detail?.approvedByOverride
-        ? "This proof was approved internally with a manual override."
-        : "Customer approval has been recorded for the current proof.",
       badgeVariant: "default",
     };
   }
@@ -201,7 +209,6 @@ function getStaffFacingStatus(args: {
   ) {
     return {
       label: "Revision Requested",
-      detail: "Customer feedback has been recorded and the line item should return to design updates.",
       badgeVariant: "destructive",
     };
   }
@@ -212,7 +219,6 @@ function getStaffFacingStatus(args: {
   ) {
     return {
       label: "Awaiting Customer Approval",
-      detail: "The current proof version has been sent and is waiting on a customer decision.",
       badgeVariant: "secondary",
     };
   }
@@ -220,7 +226,6 @@ function getStaffFacingStatus(args: {
   if (displayedVersion?.status === "draft" || row?.currentQueueStatus === "awaiting_send") {
     return {
       label: "Ready to Send",
-      detail: "The current proof version is still draft and has not been sent to the customer yet.",
       badgeVariant: "outline",
     };
   }
@@ -228,16 +233,63 @@ function getStaffFacingStatus(args: {
   if (displayedVersion?.status === "rejected" || detail?.proofDecisionHistory[0]?.decision === "rejected") {
     return {
       label: "Rejected",
-      detail: "A rejection has been recorded for this proof version.",
       badgeVariant: "destructive",
     };
   }
 
   return {
     label: "No Active Proof",
-    detail: "Create or select a proof version to continue proof review.",
     badgeVariant: "outline",
   };
+}
+
+function compareProofQueueRows(a: ProofingQueueRow, b: ProofingQueueRow) {
+  const statusDiff = proofQueueStatusSortOrder[a.currentQueueStatus] - proofQueueStatusSortOrder[b.currentQueueStatus];
+  if (statusDiff !== 0) return statusDiff;
+
+  const activityDiff = new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime();
+  if (activityDiff !== 0) return activityDiff;
+
+  const orderA = a.orderNumber || a.orderId;
+  const orderB = b.orderNumber || b.orderId;
+  const orderDiff = orderA.localeCompare(orderB, undefined, { numeric: true, sensitivity: "base" });
+  if (orderDiff !== 0) return orderDiff;
+
+  return a.lineItemLabel.localeCompare(b.lineItemLabel, undefined, { sensitivity: "base" });
+}
+
+function getStatusNote(args: {
+  detail: ProofingReadModel | undefined;
+  displayedVersion: ProofVersionHistoryEntry | null;
+}) {
+  const { detail, displayedVersion } = args;
+  const latestDecision = detail?.proofDecisionHistory?.[0];
+  const latestOverride = detail?.manualApprovalOverrideHistory?.[0];
+
+  if (detail?.approvedByOverride) {
+    return latestOverride?.overrideReason || latestOverride?.internalNote || "Approved by manual override.";
+  }
+
+  if (latestDecision?.responseNotes) {
+    return latestDecision.responseNotes;
+  }
+
+  if (displayedVersion?.status === "awaiting_response") {
+    return displayedVersion.sentAt ? `Sent ${formatRelativeTime(displayedVersion.sentAt)}.` : "Waiting on customer approval.";
+  }
+
+  if (displayedVersion?.status === "draft") {
+    return "This version is still draft and ready to send.";
+  }
+
+  return null;
+}
+
+function getEmbeddedPdfUrl(url: string | null, compact: boolean) {
+  if (!url) return null;
+  if (!compact) return url;
+  const separator = url.includes("#") ? "&" : "#";
+  return `${url}${separator}navpanes=0`;
 }
 
 function getVersionStatusLabel(status: ProofVersionStatus | null | undefined) {
@@ -314,6 +366,7 @@ export default function StaffProofingPage() {
 
   const queueData = queueQuery.data?.data;
   const queueRows = queueData?.rows ?? [];
+  const sortedQueueRows = useMemo(() => [...queueRows].sort(compareProofQueueRows), [queueRows]);
 
   useEffect(() => {
     if (slice !== requestedQueueSlice) {
@@ -322,25 +375,25 @@ export default function StaffProofingPage() {
   }, [requestedQueueSlice, slice]);
 
   useEffect(() => {
-    if (!queueRows.length) {
+    if (!sortedQueueRows.length) {
       if (selectedLineItemId !== null) setSelectedLineItemId(null);
       return;
     }
 
-    if (requestedLineItemId && queueRows.some((row) => row.lineItemId === requestedLineItemId)) {
+    if (requestedLineItemId && sortedQueueRows.some((row) => row.lineItemId === requestedLineItemId)) {
       if (selectedLineItemId !== requestedLineItemId) {
         setSelectedLineItemId(requestedLineItemId);
       }
       return;
     }
 
-    const stillPresent = selectedLineItemId ? queueRows.some((row) => row.lineItemId === selectedLineItemId) : false;
+    const stillPresent = selectedLineItemId ? sortedQueueRows.some((row) => row.lineItemId === selectedLineItemId) : false;
     if (!stillPresent) {
-      setSelectedLineItemId(queueRows[0].lineItemId);
+      setSelectedLineItemId(sortedQueueRows[0].lineItemId);
     }
-  }, [queueRows, requestedLineItemId, selectedLineItemId]);
+  }, [sortedQueueRows, requestedLineItemId, selectedLineItemId]);
 
-  const selectedRow = queueRows.find((row) => row.lineItemId === selectedLineItemId) ?? queueRows[0];
+  const selectedRow = sortedQueueRows.find((row) => row.lineItemId === selectedLineItemId) ?? sortedQueueRows[0];
 
   const detailQuery = useQuery<JsonEnvelope<ProofingReadModel>>({
     queryKey: ["/api/proofing/line-item", selectedRow?.lineItemId],
@@ -349,6 +402,8 @@ export default function StaffProofingPage() {
   });
 
   const detail = detailQuery.data?.data;
+  const orderQuery = useOrder(selectedRow?.orderId);
+  const selectedOrder = orderQuery.data;
 
   useEffect(() => {
     const defaultVersionId = getDefaultVersionId(detail, selectedRow);
@@ -388,6 +443,9 @@ export default function StaffProofingPage() {
   const previewIsImage = Boolean(displayedFile?.mimeType?.startsWith("image/"));
   const staffStatus = getStaffFacingStatus({ row: selectedRow, detail, displayedVersion });
   const latestCustomerFeedback = detail?.proofDecisionHistory?.[0] ?? null;
+  const statusNote = getStatusNote({ detail, displayedVersion });
+  const [pdfViewerMode, setPdfViewerMode] = useState<"compact" | "default">("compact");
+  const embeddedPdfUrl = getEmbeddedPdfUrl(previewIsPdf ? previewUrl : null, pdfViewerMode === "compact");
 
   useEffect(() => {
     if (!createDialogOpen) return;
@@ -557,8 +615,8 @@ export default function StaffProofingPage() {
 
   return (
     <>
-      <div className="flex h-[calc(100vh-8rem)] min-h-[720px] flex-col gap-4 overflow-hidden p-6">
-        <div className="flex items-start justify-between gap-4">
+      <div className="flex min-h-full flex-1 flex-col gap-4 overflow-hidden p-6">
+        <div className="flex shrink-0 items-start justify-between gap-4">
           <div>
             <h1 className="text-3xl font-bold tracking-tight">Staff Proofing</h1>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -577,8 +635,8 @@ export default function StaffProofingPage() {
           </div>
         </div>
 
-        <div className="grid min-h-0 flex-1 gap-4 overflow-hidden xl:grid-cols-[18rem_minmax(0,1fr)_22rem] 2xl:grid-cols-[19rem_minmax(0,1fr)_24rem]">
-          <Card className="min-h-0 overflow-hidden">
+        <div className="grid min-h-0 flex-1 gap-4 overflow-hidden xl:grid-cols-[17rem_minmax(0,1fr)_20rem] 2xl:grid-cols-[18rem_minmax(0,1fr)_22rem]">
+          <Card className="flex min-h-0 flex-col overflow-hidden">
             <CardHeader className="pb-3">
               <CardTitle className="text-lg">Queue</CardTitle>
               <CardDescription>Open proofs and pending staff decisions.</CardDescription>
@@ -595,7 +653,7 @@ export default function StaffProofingPage() {
                 </TabsList>
               </Tabs>
             </CardHeader>
-            <CardContent className="min-h-0 overflow-hidden pt-0">
+            <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden pt-0">
               {queueQuery.isLoading ? (
                 <div className="space-y-3">
                   {Array.from({ length: 5 }).map((_, index) => (
@@ -606,14 +664,14 @@ export default function StaffProofingPage() {
                 <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
                   {(queueQuery.error as Error).message}
                 </div>
-              ) : queueRows.length === 0 ? (
+              ) : sortedQueueRows.length === 0 ? (
                 <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">
                   No line items are currently in this proofing slice.
                 </div>
               ) : (
-                <div className="h-[calc(100vh-18rem)] overflow-y-auto pr-2 [scrollbar-color:hsl(var(--muted-foreground)/0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40 [&::-webkit-scrollbar-track]:bg-transparent">
+                <div className="flex-1 overflow-y-auto pr-2 [scrollbar-color:hsl(var(--muted-foreground)/0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40 [&::-webkit-scrollbar-track]:bg-transparent">
                   <div className="space-y-3">
-                    {queueRows.map((row) => {
+                    {sortedQueueRows.map((row) => {
                       const isSelected = row.lineItemId === selectedRow?.lineItemId;
                       const rowStatus = getStaffFacingStatus({ row, detail: undefined, displayedVersion: null });
                       return (
@@ -652,17 +710,32 @@ export default function StaffProofingPage() {
             <CardHeader className="pb-3">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <CardTitle className="truncate text-lg">{selectedRow?.customerDisplayName || selectedRow?.lineItemLabel || "Proof Viewer"}</CardTitle>
+                  <CardTitle className="truncate text-lg">
+                    {selectedOrder?.customer?.id ? (
+                      <Link to={ROUTES.customers.detail(selectedOrder.customer.id)} className="hover:underline">
+                        {selectedRow?.customerDisplayName || selectedRow?.lineItemLabel || "Proof Viewer"}
+                      </Link>
+                    ) : (
+                      selectedRow?.customerDisplayName || selectedRow?.lineItemLabel || "Proof Viewer"
+                    )}
+                  </CardTitle>
                   <CardDescription>
-                    {selectedRow
-                      ? `${selectedRow.lineItemLabel} • ${selectedRow.packageLabel} • Order ${selectedRow.orderNumber ? `#${selectedRow.orderNumber}` : selectedRow.orderId}`
-                      : "Select a queue row to review a proof."}
+                    {selectedRow ? (
+                      <span>
+                        {selectedRow.lineItemLabel} • {selectedRow.packageLabel} •{" "}
+                        <Link to={ROUTES.orders.detail(selectedRow.orderId)} className="text-primary hover:underline">
+                          Order {selectedRow.orderNumber ? `#${selectedRow.orderNumber}` : selectedRow.orderId}
+                        </Link>
+                      </span>
+                    ) : (
+                      "Select a queue row to review a proof."
+                    )}
                   </CardDescription>
                 </div>
                 <div className="flex items-center gap-2">
                   {displayedVersion ? <Badge variant="outline">{formatVersionLabel(displayedVersion)}</Badge> : null}
                   {selectedRow ? (
-                    <Button variant="outline" size="sm" onClick={() => navigate(`/orders/${selectedRow.orderId}`)}>
+                    <Button variant="outline" size="sm" onClick={() => navigate(ROUTES.orders.detail(selectedRow.orderId))}>
                       <ExternalLink className="mr-2 h-4 w-4" />
                       Open order
                     </Button>
@@ -696,6 +769,15 @@ export default function StaffProofingPage() {
                         </p>
                       </div>
                       <div className="flex items-center gap-2">
+                        {previewIsPdf ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setPdfViewerMode((value) => (value === "compact" ? "default" : "compact"))}
+                          >
+                            {pdfViewerMode === "compact" ? "Show Full PDF UI" : "Compact PDF View"}
+                          </Button>
+                        ) : null}
                         <Button variant="outline" size="sm" onClick={() => setViewerOpen(true)} disabled={!displayedFile}>
                           <Eye className="mr-2 h-4 w-4" />
                           Expand
@@ -723,8 +805,8 @@ export default function StaffProofingPage() {
                           <AlertCircle className="mx-auto mb-3 h-10 w-10 opacity-50" />
                           This proof version has no resolved file in the current line-item file feed.
                         </div>
-                      ) : previewIsPdf && previewUrl ? (
-                        <iframe title={previewName} src={previewUrl} className="h-full min-h-[28rem] w-full rounded-lg border bg-white" />
+                      ) : previewIsPdf && embeddedPdfUrl ? (
+                        <iframe title={previewName} src={embeddedPdfUrl} className="h-full min-h-[28rem] w-full rounded-lg border bg-white" />
                       ) : previewIsImage && previewUrl ? (
                         <img src={previewUrl} alt={previewName} className="max-h-full max-w-full rounded-lg object-contain" />
                       ) : previewUrl ? (
@@ -753,11 +835,12 @@ export default function StaffProofingPage() {
             </CardContent>
           </Card>
 
-          <div className="grid min-h-0 gap-4 overflow-hidden xl:grid-rows-[auto_auto_auto_auto_minmax(0,1fr)]">
-            <Card>
+          <div className="min-h-0 overflow-hidden">
+            <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto pr-2 [scrollbar-color:hsl(var(--muted-foreground)/0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40 [&::-webkit-scrollbar-track]:bg-transparent">
+              <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-lg">Job Context</CardTitle>
-                <CardDescription>The selected order and proof reference.</CardDescription>
+                <CardTitle className="text-lg">Order & Customer</CardTitle>
+                <CardDescription>Quick links for the selected proof.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3 text-sm">
                 {detailQuery.isLoading ? (
@@ -767,7 +850,13 @@ export default function StaffProofingPage() {
                     <div className="grid grid-cols-2 gap-3">
                       <div className="rounded-lg border p-3">
                         <p className="text-xs uppercase tracking-wide text-muted-foreground">Customer</p>
-                        <p className="mt-1 font-medium">{selectedRow?.customerDisplayName || "No customer linked"}</p>
+                        {selectedOrder?.customer?.id ? (
+                          <Link to={ROUTES.customers.detail(selectedOrder.customer.id)} className="mt-1 inline-flex font-medium text-primary hover:underline">
+                            {selectedRow?.customerDisplayName || "View customer"}
+                          </Link>
+                        ) : (
+                          <p className="mt-1 font-medium">{selectedRow?.customerDisplayName || "No customer linked"}</p>
+                        )}
                       </div>
                       <div className="rounded-lg border p-3">
                         <p className="text-xs uppercase tracking-wide text-muted-foreground">Current Version</p>
@@ -775,7 +864,13 @@ export default function StaffProofingPage() {
                       </div>
                       <div className="rounded-lg border p-3">
                         <p className="text-xs uppercase tracking-wide text-muted-foreground">Order</p>
-                        <p className="mt-1 font-medium">{selectedRow?.orderNumber ? `#${selectedRow.orderNumber}` : selectedRow?.orderId}</p>
+                        {selectedRow ? (
+                          <Link to={ROUTES.orders.detail(selectedRow.orderId)} className="mt-1 inline-flex font-medium text-primary hover:underline">
+                            {selectedRow.orderNumber ? `#${selectedRow.orderNumber}` : selectedRow.orderId}
+                          </Link>
+                        ) : (
+                          <p className="mt-1 font-medium">—</p>
+                        )}
                       </div>
                       <div className="rounded-lg border p-3">
                         <p className="text-xs uppercase tracking-wide text-muted-foreground">Line Item</p>
@@ -793,26 +888,23 @@ export default function StaffProofingPage() {
               </CardContent>
             </Card>
 
-            <Card>
+              <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-lg">Current Status</CardTitle>
-                <CardDescription>One clear decision state for the selected proof.</CardDescription>
+                <CardDescription>Current proof decision state.</CardDescription>
               </CardHeader>
-              <CardContent className="space-y-3">
+              <CardContent>
                 <div className="rounded-xl border p-4">
                   <div className="flex items-center gap-2">
                     <Badge variant={staffStatus.badgeVariant}>{staffStatus.label}</Badge>
                     {displayedVersion ? <span className="text-xs text-muted-foreground">{formatVersionLabel(displayedVersion)}</span> : null}
                   </div>
-                  <p className="mt-3 text-sm text-muted-foreground">{staffStatus.detail}</p>
-                  {displayedVersion?.sentAt ? (
-                    <p className="mt-3 text-xs text-muted-foreground">Sent {formatRelativeTime(displayedVersion.sentAt)}</p>
-                  ) : null}
+                  {statusNote ? <p className="mt-3 text-sm text-muted-foreground">{statusNote}</p> : null}
                 </div>
               </CardContent>
             </Card>
 
-            <Card>
+              <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-lg">Primary Actions</CardTitle>
                 <CardDescription>Staff actions for sending proofs and recording decisions.</CardDescription>
@@ -846,7 +938,7 @@ export default function StaffProofingPage() {
                     placeholder="Record the customer feedback or context tied to this decision."
                     disabled={!detail?.currentActionableProofVersionId || displayedVersion?.id !== detail.currentActionableProofVersionId}
                   />
-                  <div className="grid gap-2 sm:grid-cols-3">
+                  <div className="grid gap-2">
                     <Button
                       onClick={() => respondMutation.mutate("approved")}
                       disabled={respondMutation.isPending || displayedVersion?.id !== detail?.currentActionableProofVersionId || displayedVersion?.status !== "awaiting_response"}
@@ -895,7 +987,7 @@ export default function StaffProofingPage() {
               </CardContent>
             </Card>
 
-            <Card>
+              <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-lg">Customer Feedback</CardTitle>
                 <CardDescription>The most recent recorded response for this proof.</CardDescription>
@@ -922,14 +1014,14 @@ export default function StaffProofingPage() {
               </CardContent>
             </Card>
 
-            <Card className="min-h-0 overflow-hidden">
+              <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-lg">Version History</CardTitle>
                 <CardDescription>Select the proof version shown in the viewer, then review version and decision history.</CardDescription>
               </CardHeader>
-              <CardContent className="min-h-0 overflow-hidden pt-0">
+              <CardContent className="pt-0">
                 {detail ? (
-                  <div className="h-[calc(100vh-39rem)] overflow-y-auto pr-2 [scrollbar-color:hsl(var(--muted-foreground)/0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/40 [&::-webkit-scrollbar-track]:bg-transparent">
+                  <div className="space-y-4">
                     <div className="space-y-4">
                       <div className="space-y-2">
                         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Versions</p>
@@ -1011,7 +1103,8 @@ export default function StaffProofingPage() {
                   <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">Load a queue row to review version history.</div>
                 )}
               </CardContent>
-            </Card>
+              </Card>
+            </div>
           </div>
         </div>
       </div>
