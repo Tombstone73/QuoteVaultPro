@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
-import { ExternalLink, Palette, Send } from "lucide-react";
+import { CircleAlert, ExternalLink, Palette, Send } from "lucide-react";
 import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ROUTES } from "@/config/routes";
 import { useAuth } from "@/hooks/useAuth";
 import type { DesignQueueItem } from "@/hooks/useOrders";
@@ -288,26 +289,26 @@ function getActivityVariant(type: DesignWorkspaceData["activity"][number]["type"
 function parseSignedMinutesInput(rawValue: string, currentTotalMinutes: number) {
   const trimmed = rawValue.trim();
   if (!trimmed) {
-    return { isValid: false, adjustedTotalMinutes: null as number | null };
+    return { isValid: false, adjustedTotalMinutes: null as number | null, deltaMinutes: null as number | null };
   }
 
-  if (!/^[+-]?\d+$/.test(trimmed)) {
-    return { isValid: false, adjustedTotalMinutes: null as number | null };
+  if (!/^[+-]\d+$/.test(trimmed)) {
+    return { isValid: false, adjustedTotalMinutes: null as number | null, deltaMinutes: null as number | null };
   }
 
   const parsed = Number.parseInt(trimmed, 10);
   if (!Number.isFinite(parsed)) {
-    return { isValid: false, adjustedTotalMinutes: null as number | null };
+    return { isValid: false, adjustedTotalMinutes: null as number | null, deltaMinutes: null as number | null };
   }
 
-  const isDelta = /^[+-]/.test(trimmed);
-  const adjustedTotalMinutes = isDelta ? currentTotalMinutes + parsed : parsed;
+  const deltaMinutes = parsed;
+  const adjustedTotalMinutes = currentTotalMinutes + deltaMinutes;
 
   if (!Number.isFinite(adjustedTotalMinutes) || adjustedTotalMinutes < 0) {
-    return { isValid: false, adjustedTotalMinutes: null as number | null };
+    return { isValid: false, adjustedTotalMinutes: null as number | null, deltaMinutes: null as number | null };
   }
 
-  return { isValid: true, adjustedTotalMinutes };
+  return { isValid: true, adjustedTotalMinutes, deltaMinutes };
 }
 
 async function readJson<T>(input: RequestInfo, init?: RequestInit) {
@@ -546,13 +547,18 @@ export default function DesignProductionPage() {
   const adjustTimeMutation = useMutation({
     mutationFn: async () => {
       if (!selectedItem) throw new Error("Select a line item first");
-      if (!parsedAdjustment.isValid || parsedAdjustment.adjustedTotalMinutes == null) {
+      if (
+        !parsedAdjustment.isValid ||
+        parsedAdjustment.adjustedTotalMinutes == null ||
+        parsedAdjustment.deltaMinutes == null
+      ) {
         throw new Error("Enter a valid minute adjustment");
       }
       await readJson(`/api/design/line-item/${selectedItem.lineItemId}/time-adjustments`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          deltaMinutes: parsedAdjustment.deltaMinutes,
           adjustedTotalMinutes: parsedAdjustment.adjustedTotalMinutes,
           reason: adjustReasonDraft.trim(),
         }),
@@ -617,37 +623,39 @@ export default function DesignProductionPage() {
     adjustReasonDraft.trim().length >= 3 &&
     parsedAdjustment.adjustedTotalMinutes !== currentTotalMinutes;
 
-  const metadataColumnOne = [
-    {
-      label: "Order / Line Item",
-      value: selectedOwnerLabel ? `#${selectedItem.jobNumber} • ${selectedOwnerLabel}` : `#${selectedItem.jobNumber} • ${selectedItem.lineItemId}`,
-    },
-    {
-      label: "Customer",
-      value: selectedItem.customerName,
-    },
-    {
-      label: "Due Date",
-      value: `${formatDateTime(order?.dueDate ?? selectedItem.dueDate)}${order?.dueDate ?? selectedItem.dueDate ? ` • ${formatRelativeTime(order?.dueDate ?? selectedItem.dueDate)}` : ""}`,
-    },
-  ];
+  const metadataColumnOne = selectedItem
+    ? [
+        {
+          label: "Order / Line Item",
+          value: selectedOwnerLabel ? `#${selectedItem.jobNumber} • ${selectedOwnerLabel}` : `#${selectedItem.jobNumber} • ${selectedItem.lineItemId}`,
+        },
+        {
+          label: "Customer",
+          value: selectedItem.customerName,
+        },
+        {
+          label: "Due Date",
+          value: `${formatDateTime(order?.dueDate ?? selectedItem.dueDate)}${order?.dueDate ?? selectedItem.dueDate ? ` • ${formatRelativeTime(order?.dueDate ?? selectedItem.dueDate)}` : ""}`,
+        },
+      ]
+    : [];
 
-  const metadataColumnTwo = [
-    {
-      label: "Quantity",
-      value: String(selectedLineItem?.quantity ?? selectedItem.quantity ?? "-"),
-    },
-    {
-      label: "Size",
-      value:
-        (specRows.find((row) => row.label === "Size")?.value as string | undefined) ||
-        "-",
-    },
-    {
-      label: "Product",
-      value: getReadableLabel(selectedLineItem?.product?.name) || getReadableLabel(selectedItem.productName) || "-",
-    },
-  ];
+  const metadataColumnTwo = selectedItem
+    ? [
+        {
+          label: "Quantity",
+          value: String(selectedLineItem?.quantity ?? selectedItem.quantity ?? "-"),
+        },
+        {
+          label: "Size",
+          value: (specRows.find((row) => row.label === "Size")?.value as string | undefined) || "-",
+        },
+        {
+          label: "Product",
+          value: getReadableLabel(selectedLineItem?.product?.name) || getReadableLabel(selectedItem.productName) || "-",
+        },
+      ]
+    : [];
 
   return (
     <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
@@ -898,11 +906,29 @@ export default function DesignProductionPage() {
                   </div>
 
                   <div className="space-y-3 rounded-lg border border-border/80 bg-muted/15 p-3">
-                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Admin Time Correction</div>
+                    <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      <span>Time Correction</span>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            className="inline-flex h-4 w-4 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+                            aria-label="Time correction help"
+                          >
+                            <CircleAlert className="h-3.5 w-3.5" />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" align="start" className="max-w-xs text-xs leading-5">
+                          Use + or - with whole minutes to adjust the current total.
+                          Example: +15 adds 15 minutes, -30 removes 30 minutes.
+                          All corrections are recorded.
+                        </TooltipContent>
+                      </Tooltip>
+                    </div>
                     <Input
                       value={adjustMinutesDraft}
                       onChange={(event) => setAdjustMinutesDraft(event.target.value)}
-                      placeholder="Minutes or signed delta, e.g. 45 or -15"
+                      placeholder="Enter +15 or -30"
                       className="border-border/80 bg-background/60"
                       disabled={!isAdminOrOwner}
                     />
@@ -913,13 +939,6 @@ export default function DesignProductionPage() {
                       className="min-h-[88px] resize-y border-border/80 bg-background/60"
                       disabled={!isAdminOrOwner}
                     />
-                    <div className="text-xs text-muted-foreground">
-                      {parsedAdjustment.isValid && parsedAdjustment.adjustedTotalMinutes != null
-                        ? `Resulting total: ${parsedAdjustment.adjustedTotalMinutes}m`
-                        : isAdminOrOwner
-                          ? "Enter whole minutes. Use a leading + or - for delta corrections."
-                          : "Owner or Admin required"}
-                    </div>
                     <Button
                       type="button"
                       className="w-full"
@@ -928,6 +947,7 @@ export default function DesignProductionPage() {
                     >
                       Apply Time Correction
                     </Button>
+                    {/* TODO: if exact-total mode is added later, keep it admin-only and expose it via a separate secondary action such as a modal. */}
                   </div>
                 </div>
               </CardContent>
