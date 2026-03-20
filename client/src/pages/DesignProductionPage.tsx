@@ -15,11 +15,12 @@ import {
 import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { ROUTES } from "@/config/routes";
+import { useAuth } from "@/hooks/useAuth";
 import type { DesignQueueItem } from "@/hooks/useOrders";
 import { useDesignQueue, useOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
@@ -28,6 +29,7 @@ import type { ProofingReadModel } from "@shared/proofing";
 const WORKFLOW_LABELS: Record<string, string> = {
   needs_design: "Needs Design",
   in_design: "In Design",
+  paused: "Paused",
   design_complete: "Design Complete",
   ready_for_prepress: "Ready for Prepress",
   awaiting_proof_approval: "Ready for Proof",
@@ -47,8 +49,19 @@ const META_PANEL = "rounded-[14px] border border-white/[0.08] bg-[#0d1623]";
 const MUTED_PANEL = "rounded-[16px] border border-white/[0.06] bg-[#0f1724]";
 
 type DesignNoteKind = keyof typeof NOTE_KIND_LABELS;
+type EffectiveDesignState = "needs_design" | "in_design" | "paused" | "design_complete";
+
+type WorkingLogEntry = {
+  id: string;
+  at: string;
+  type: "session" | "note" | "adjustment" | "audit";
+  label: string;
+  detail: string;
+  userName: string | null;
+};
 
 type DesignWorkspaceData = {
+  effectiveState: EffectiveDesignState;
   session: {
     status: "idle" | "active" | "paused";
     startedAt: string | null;
@@ -56,6 +69,9 @@ type DesignWorkspaceData = {
     pausedAt: string | null;
     elapsedMs: number;
   };
+  totalTrackedMs: number;
+  rawTrackedMs: number;
+  totalAdjustmentMs: number;
   notes: Array<{
     id: string;
     at: string;
@@ -63,14 +79,16 @@ type DesignWorkspaceData = {
     noteKind: DesignNoteKind;
     noteText: string;
   }>;
-  activity: Array<{
+  adjustments: Array<{
     id: string;
     at: string;
-    type: string;
-    label: string;
-    detail: string;
     userName: string | null;
+    reason: string;
+    beforeMs: number;
+    afterMs: number;
+    deltaMs: number;
   }>;
+  activity: WorkingLogEntry[];
 };
 
 function formatOwnerLabel(item: DesignQueueItem) {
@@ -122,6 +140,16 @@ function formatElapsedTime(totalMs: number) {
   const seconds = totalSeconds % 60;
 
   return [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
+}
+
+function formatDurationLabel(totalMs: number) {
+  const totalMinutes = Math.max(0, Math.round(totalMs / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  if (hours === 0) return `${minutes}m`;
+  if (minutes === 0) return `${hours}h`;
+  return `${hours}h ${minutes}m`;
 }
 
 function getQueueBadgeClasses(state: string | null | undefined) {
@@ -234,7 +262,7 @@ function getRecommendedAction(args: {
   if (item.workflowState === "needs_design") {
     return {
       title: "Start Design",
-      detail: "Open an active design session and move the item into live work so the next handoff stays explicit.",
+      detail: "Open a new design session and move the item into active work.",
     };
   }
 
@@ -248,7 +276,7 @@ function getRecommendedAction(args: {
   if (item.requiresProofApproval) {
     return {
       title: "Complete Design and route to Proofing",
-      detail: "Finish the current design pass, then move the line item into proofing using the existing downstream workflow.",
+      detail: "Finish this design pass, then move the line item into proofing using the existing downstream workflow.",
     };
   }
 
@@ -280,11 +308,14 @@ export default function DesignProductionPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { user } = useAuth();
   const { data: queue = [], isLoading } = useDesignQueue();
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [noteKind, setNoteKind] = useState<DesignNoteKind>("internal_note");
   const [timerNow, setTimerNow] = useState(Date.now());
+  const [adjustedMinutesDraft, setAdjustedMinutesDraft] = useState("");
+  const [adjustReasonDraft, setAdjustReasonDraft] = useState("");
 
   useEffect(() => {
     if (queue.length === 0) {
@@ -311,9 +342,11 @@ export default function DesignProductionPage() {
   useEffect(() => {
     setNoteDraft("");
     setNoteKind("internal_note");
+    setAdjustReasonDraft("");
   }, [selectedItem?.lineItemId]);
 
   const selectedOwnerLabel = selectedItem ? formatOwnerLabel(selectedItem) : null;
+  const isAdminOrOwner = user?.role === "owner" || user?.role === "admin" || Boolean(user?.isAdmin);
 
   const orderQuery = useOrder(selectedItem?.orderId);
   const order = orderQuery.data;
@@ -347,11 +380,18 @@ export default function DesignProductionPage() {
 
   const proofing = proofingQuery.data;
   const workspace = workspaceQuery.data;
+  const effectiveState = workspace?.effectiveState ?? "needs_design";
   const displayPrintType = selectedItem ? getDisplayPrintType(selectedItem, selectedLineItem) : null;
   const displayMaterial = selectedItem ? getDisplayMaterial(selectedItem, selectedLineItem) : null;
   const specRows = selectedItem ? getSpecRows(selectedItem, selectedLineItem, displayPrintType, displayMaterial) : [];
   const instructionItems = selectedItem ? getInstructionItems(selectedLineItem, displayPrintType, displayMaterial) : [];
   const proofVersionHistory = proofing?.proofVersionHistory.slice(0, 4) ?? [];
+
+  useEffect(() => {
+    if (!workspace) return;
+    setAdjustedMinutesDraft((workspace.totalTrackedMs / 60000).toFixed(2));
+  }, [workspace?.totalTrackedMs]);
+
   const proofingActivity = useMemo(() => {
     if (!proofing) return [] as Array<{ id: string; label: string; detail: string; at: string | null }>;
 
@@ -379,18 +419,29 @@ export default function DesignProductionPage() {
   }, [proofing]);
 
   const recentActivity = useMemo(() => {
-    const workspaceActivity = (workspace?.activity ?? []).map((entry) => ({
-      id: entry.id,
-      label: entry.label,
-      detail: entry.detail,
-      at: entry.at,
-    }));
+    const workspaceActivity = [...(workspace?.activity ?? [])]
+      .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
+      .slice(0, 4)
+      .map((entry) => ({
+        id: entry.id,
+        label: entry.label,
+        detail: entry.detail,
+        at: entry.at,
+      }));
 
     return [...workspaceActivity, ...proofingActivity]
       .filter((entry) => !!entry.at)
       .sort((a, b) => new Date(b.at || 0).getTime() - new Date(a.at || 0).getTime())
       .slice(0, 4);
   }, [proofingActivity, workspace?.activity]);
+
+  const adjustmentMap = useMemo(() => {
+    const map = new Map<string, DesignWorkspaceData["adjustments"][number]>();
+    for (const adjustment of workspace?.adjustments ?? []) {
+      map.set(adjustment.id, adjustment);
+    }
+    return map;
+  }, [workspace?.adjustments]);
 
   const recommendedAction = selectedItem
     ? getRecommendedAction({
@@ -424,30 +475,6 @@ export default function DesignProductionPage() {
     }
   };
 
-  const transitionWorkflow = useMutation({
-    mutationFn: async ({ lineItemId, toState, action }: { lineItemId: string; toState?: string; action?: string }) => {
-      const endpoint = action
-        ? `/api/design/line-item/${lineItemId}/${action}`
-        : `/api/line-items/${lineItemId}/workflow-transition`;
-
-      await readJson(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(toState ? { toState } : {}),
-      });
-    },
-    onSuccess: async () => {
-      await invalidateDesignWorkspace(selectedItem?.lineItemId, selectedItem?.orderId);
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Workflow update failed",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
-
   const sessionMutation = useMutation({
     mutationFn: async (action: "start" | "pause" | "resume") => {
       if (!selectedItem) throw new Error("Select a line item first");
@@ -479,15 +506,33 @@ export default function DesignProductionPage() {
       if (action === "pause") {
         toast({ title: "Design paused", description: "The active design session was paused." });
       }
-      if (action === "resume" || action === "start") {
-        toast({
-          title: workspace?.session.status === "paused" ? "Design resumed" : "Design started",
-          description: "The design session is now live in the header workspace controls.",
-        });
+      if (action === "resume") {
+        toast({ title: "Design resumed", description: "A new working segment resumed on this line item." });
+      }
+      if (action === "start") {
+        toast({ title: "Design started", description: "A new design session was created for this line item." });
       }
     },
     onError: (error: Error) => {
       toast({ title: "Session update failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const completeMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedItem) throw new Error("Select a line item first");
+      await readJson(`/api/design/line-item/${selectedItem.lineItemId}/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+    },
+    onSuccess: async () => {
+      await invalidateDesignWorkspace(selectedItem?.lineItemId, selectedItem?.orderId);
+      toast({ title: "Design completed", description: "The working period was closed and completion was recorded." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Complete design failed", description: error.message, variant: "destructive" });
     },
   });
 
@@ -507,60 +552,68 @@ export default function DesignProductionPage() {
       setNoteDraft("");
       setNoteKind("internal_note");
       await invalidateDesignWorkspace(selectedItem?.lineItemId, selectedItem?.orderId);
-      toast({ title: "Note saved", description: "The update was added to the design working log." });
+      toast({ title: "Note saved", description: "The update was added to the working log." });
     },
     onError: (error: Error) => {
       toast({ title: "Could not save note", description: error.message, variant: "destructive" });
     },
   });
 
-  const statusMutation = useMutation({
-    mutationFn: async (nextState: "needs_design" | "in_design" | "on_hold") => {
+  const adjustmentMutation = useMutation({
+    mutationFn: async () => {
       if (!selectedItem) throw new Error("Select a line item first");
-      if (nextState === selectedItem.workflowState) return;
+      const adjustedTotalMinutes = Number(adjustedMinutesDraft);
+       if (!Number.isFinite(adjustedTotalMinutes)) throw new Error("Enter a valid total in minutes");
+      const reason = adjustReasonDraft.trim();
+      if (!reason) throw new Error("A reason is required for time corrections");
 
-      if (nextState === "in_design") {
-        await readJson(`/api/design/line-item/${selectedItem.lineItemId}/start`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        });
-        return;
-      }
-
-      if (nextState === "needs_design") {
-        await readJson(`/api/design/line-item/${selectedItem.lineItemId}/return-to-needs-design`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        });
-        return;
-      }
-
-      await readJson(`/api/line-items/${selectedItem.lineItemId}/workflow-transition`, {
+      await readJson(`/api/design/line-item/${selectedItem.lineItemId}/time-adjustments`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ toState: nextState }),
+        body: JSON.stringify({ adjustedTotalMinutes, reason }),
       });
     },
     onSuccess: async () => {
+      setAdjustReasonDraft("");
       await invalidateDesignWorkspace(selectedItem?.lineItemId, selectedItem?.orderId);
+      toast({ title: "Tracked time adjusted", description: "The correction was recorded in the working log." });
     },
     onError: (error: Error) => {
-      toast({ title: "Status update failed", description: error.message, variant: "destructive" });
+      toast({ title: "Time adjustment failed", description: error.message, variant: "destructive" });
     },
   });
 
-  const workspaceTimerMs = useMemo(() => {
+  const displayedTimerMs = useMemo(() => {
     if (!workspace) return 0;
-    if (workspace.session.status !== "active") return workspace.session.elapsedMs;
-    return workspace.session.elapsedMs + Math.max(0, timerNow - workspaceQuery.dataUpdatedAt);
+    if (workspace.session.status !== "active") return workspace.totalTrackedMs;
+    return workspace.totalTrackedMs + Math.max(0, timerNow - workspaceQuery.dataUpdatedAt);
   }, [timerNow, workspace, workspaceQuery.dataUpdatedAt]);
 
-  const canPauseSession = workspace?.session.status === "active";
-  const canResumeSession = workspace?.session.status === "paused";
-  const canStartSession = workspace?.session.status !== "active";
-  const canCompleteDesign = selectedItem?.workflowState === "in_design";
+  const sessionControl = useMemo(() => {
+    if (effectiveState === "paused") {
+      return {
+        label: "Resume",
+        action: "resume" as const,
+        icon: Play,
+      };
+    }
+
+    if (effectiveState === "in_design") {
+      return {
+        label: "Pause",
+        action: "pause" as const,
+        icon: Pause,
+      };
+    }
+
+    return {
+      label: "Start",
+      action: "start" as const,
+      icon: Play,
+    };
+  }, [effectiveState]);
+
+  const canCompleteDesign = effectiveState === "in_design" || effectiveState === "paused";
   const canCreateProof = Boolean(selectedItem?.requiresProofApproval);
   const detailTitle =
     getReadableLabel(selectedLineItem?.product?.name) ||
@@ -588,7 +641,7 @@ export default function DesignProductionPage() {
               <h1 className="text-sm font-semibold text-white">Design Workspace</h1>
               {selectedItem ? (
                 <span className="rounded-full border border-[#2d62f5]/30 bg-[#1337ec]/12 px-2.5 py-1 text-[11px] font-medium text-[#8ba9ff]">
-                  {WORKFLOW_LABELS[selectedItem.designStatus] || selectedItem.designStatus}
+                  {WORKFLOW_LABELS[effectiveState] || WORKFLOW_LABELS[selectedItem.designStatus] || selectedItem.designStatus}
                 </span>
               ) : null}
             </div>
@@ -673,7 +726,7 @@ export default function DesignProductionPage() {
             <div className="max-w-md rounded-[20px] border border-dashed border-white/[0.08] bg-white/[0.02] px-6 py-8 text-center">
               <div className="text-lg font-semibold text-white">Select a line item</div>
               <p className="mt-2 text-sm leading-6 text-slate-400">
-                Choose a job from the Design Queue to open the full production workspace, session controls, notes, and files.
+                Choose a job from the Design Queue to open the full production workspace, session controls, working log, and files.
               </p>
             </div>
           </div>
@@ -682,7 +735,7 @@ export default function DesignProductionPage() {
             <main className="border-b border-white/[0.06] bg-[#101827] xl:border-b-0 xl:border-r">
               <div className="space-y-5 px-6 py-6">
                 <section className={`${SHELL_PANEL} rounded-[22px] px-6 py-6`}>
-                  <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_280px]">
+                  <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
@@ -727,76 +780,46 @@ export default function DesignProductionPage() {
                       </div>
                     </div>
 
-                    <div className="space-y-3">
-                      <div className={`${MUTED_PANEL} px-4 py-4`}>
-                        <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Design Status</div>
-                        <Select
-                          value={selectedItem.workflowState}
-                          onValueChange={(value: "needs_design" | "in_design" | "on_hold") => statusMutation.mutate(value)}
-                          disabled={statusMutation.isPending || transitionWorkflow.isPending}
-                        >
-                          <SelectTrigger className="mt-3 h-11 rounded-xl border-white/[0.08] bg-[#0b1420] text-sm text-white">
-                            <SelectValue placeholder="Select status" />
-                          </SelectTrigger>
-                          <SelectContent className="border-white/[0.08] bg-[#0e1623] text-slate-100">
-                            <SelectItem value="needs_design">Needs Design</SelectItem>
-                            <SelectItem value="in_design">In Design</SelectItem>
-                            <SelectItem value="on_hold">On Hold</SelectItem>
-                          </SelectContent>
-                        </Select>
+                    <div className="rounded-[18px] border border-white/[0.08] bg-[#142031] px-4 py-4 shadow-[0_16px_35px_rgba(0,0,0,0.22)]">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">Design Session</div>
+                          <div className="mt-1 text-sm text-slate-300">{WORKFLOW_LABELS[effectiveState] || "Needs Design"}</div>
+                        </div>
+                        <Badge className="border-white/[0.08] bg-white/[0.05] text-slate-200 hover:bg-white/[0.05]">
+                          {WORKFLOW_LABELS[effectiveState] || effectiveState}
+                        </Badge>
                       </div>
 
-                      <div className="rounded-[18px] border border-white/[0.08] bg-[#142031] px-4 py-4 shadow-[0_16px_35px_rgba(0,0,0,0.22)]">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">Design Session</div>
-                            <div className="mt-1 text-sm text-slate-300">
-                              {workspace?.session.status === "active"
-                                ? "Live session running"
-                                : workspace?.session.status === "paused"
-                                  ? "Paused and ready to resume"
-                                  : "No active session"}
-                            </div>
-                          </div>
-                          <Badge className="border-white/[0.08] bg-white/[0.05] text-slate-200 hover:bg-white/[0.05]">
-                            {workspace?.session.status === "active"
-                              ? "Active"
-                              : workspace?.session.status === "paused"
-                                ? "Paused"
-                                : "Idle"}
-                          </Badge>
-                        </div>
+                      <div className="mt-4 text-[30px] font-semibold tracking-tight text-white">{formatElapsedTime(displayedTimerMs)}</div>
+                      <div className="mt-1 text-[12px] text-slate-400">
+                        {workspace?.session.status === "paused" && workspace?.session.pausedAt
+                          ? `Paused ${formatRelativeTime(workspace.session.pausedAt)}`
+                          : workspace?.session.startedAt
+                            ? `Started ${formatRelativeTime(workspace.session.startedAt)}`
+                            : "Start design when this line item is ready for active work."}
+                      </div>
 
-                        <div className="mt-4 text-[30px] font-semibold tracking-tight text-white">{formatElapsedTime(workspaceTimerMs)}</div>
-                        <div className="mt-1 text-[12px] text-slate-400">
-                          {workspace?.session.status === "paused" && workspace?.session.pausedAt
-                            ? `Paused ${formatRelativeTime(workspace.session.pausedAt)}`
-                            : workspace?.session.startedAt
-                              ? `Started ${formatRelativeTime(workspace.session.startedAt)}`
-                              : "Start design when this line item is ready for active work."}
-                        </div>
-
-                        <div className="mt-4 flex gap-2">
-                          <Button
-                            type="button"
-                            className="h-10 flex-1 rounded-xl bg-[#2d62f5] text-white hover:bg-[#3a6cff]"
-                            disabled={!canStartSession || sessionMutation.isPending || workspaceQuery.isLoading}
-                            onClick={() => sessionMutation.mutate(canResumeSession ? "resume" : "start")}
-                          >
-                            <Play className="mr-2 h-4 w-4" />
-                            {canResumeSession ? "Resume" : "Start Design"}
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="h-10 flex-1 rounded-xl border-white/[0.08] bg-white/[0.02] text-slate-200 hover:bg-white/[0.05]"
-                            disabled={!canPauseSession || sessionMutation.isPending}
-                            onClick={() => sessionMutation.mutate("pause")}
-                          >
-                            <Pause className="mr-2 h-4 w-4" />
-                            Pause
-                          </Button>
-                        </div>
+                      <div className="mt-4 grid grid-cols-2 gap-2">
+                        <Button
+                          type="button"
+                          className="h-11 rounded-xl bg-[#2d62f5] text-white hover:bg-[#3a6cff]"
+                          disabled={sessionMutation.isPending || workspaceQuery.isLoading}
+                          onClick={() => sessionMutation.mutate(sessionControl.action)}
+                        >
+                          <sessionControl.icon className="mr-2 h-4 w-4" />
+                          {sessionControl.label}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-11 rounded-xl border-white/[0.08] bg-white/[0.02] text-slate-200 hover:bg-white/[0.05]"
+                          disabled={!canCompleteDesign || completeMutation.isPending}
+                          onClick={() => completeMutation.mutate()}
+                        >
+                          <ArrowRight className="mr-2 h-4 w-4" />
+                          Complete Design
+                        </Button>
                       </div>
                     </div>
                   </div>
@@ -847,9 +870,9 @@ export default function DesignProductionPage() {
 
                   <section className={`${SECTION_PANEL} p-5`}>
                     <div>
-                      <h3 className="text-[18px] font-semibold text-white">Notes & Context</h3>
+                      <h3 className="text-[18px] font-semibold text-white">Context</h3>
                       <p className="mt-1 text-[12px] text-slate-400">
-                        Sales handoff, internal context, and the live working log for this design pass.
+                        Sales handoff, internal order context, and latest proof feedback already on the record.
                       </p>
                     </div>
 
@@ -894,74 +917,169 @@ export default function DesignProductionPage() {
                           </div>
                         )}
                       </div>
-
-                      <div className="border-t border-white/[0.06] pt-4">
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <div>
-                            <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Design Working Log</div>
-                            <div className="mt-1 text-[12px] text-slate-400">Add internal notes, progress updates, or blockers inline.</div>
-                          </div>
-                          <Select value={noteKind} onValueChange={(value: DesignNoteKind) => setNoteKind(value)}>
-                            <SelectTrigger className="h-9 w-[180px] rounded-xl border-white/[0.08] bg-[#0b1420] text-xs text-white">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent className="border-white/[0.08] bg-[#0e1623] text-slate-100">
-                              <SelectItem value="internal_note">Internal Note</SelectItem>
-                              <SelectItem value="progress_update">Progress Update</SelectItem>
-                              <SelectItem value="blocker_update">Blocker / Issue</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-
-                        <div className="mt-3 space-y-3">
-                          <Textarea
-                            value={noteDraft}
-                            onChange={(event) => setNoteDraft(event.target.value)}
-                            placeholder="Add a design note, handoff update, or blocker for this line item..."
-                            className="min-h-[110px] rounded-[14px] border-white/[0.08] bg-[#0b1420] text-sm text-slate-100 placeholder:text-slate-500"
-                          />
-                          <div className="flex justify-end">
-                            <Button
-                              type="button"
-                              className="h-10 rounded-xl bg-[#2d62f5] px-4 text-white hover:bg-[#3a6cff]"
-                              disabled={noteMutation.isPending || noteDraft.trim().length === 0}
-                              onClick={() => noteMutation.mutate()}
-                            >
-                              Save Note
-                            </Button>
-                          </div>
-                        </div>
-
-                        <div className="mt-4 space-y-3">
-                          {workspaceQuery.isLoading ? (
-                            <div className="space-y-2">
-                              {Array.from({ length: 3 }).map((_, index) => (
-                                <Skeleton key={index} className="h-20 w-full rounded-[14px] bg-white/[0.04]" />
-                              ))}
-                            </div>
-                          ) : (workspace?.notes.length ?? 0) === 0 ? (
-                            <div className="rounded-[14px] border border-dashed border-white/[0.08] px-4 py-4 text-slate-400">
-                              No design notes have been recorded yet for this line item.
-                            </div>
-                          ) : (
-                            workspace?.notes.map((entry) => (
-                              <div key={entry.id} className={`${MUTED_PANEL} px-4 py-4`}>
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <Badge variant="outline" className="border-white/[0.08] bg-white/[0.03] text-slate-300">
-                                    {NOTE_KIND_LABELS[entry.noteKind]}
-                                  </Badge>
-                                  <span className="text-[11px] text-slate-500">{formatRelativeTime(entry.at)}</span>
-                                </div>
-                                <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-200">{entry.noteText}</p>
-                                <div className="mt-2 text-[11px] text-slate-500">{entry.userName || "Team member"}</div>
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      </div>
                     </div>
                   </section>
                 </div>
+
+                <section className={`${SECTION_PANEL} p-5`}>
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <h3 className="text-[18px] font-semibold text-white">Working Log</h3>
+                      <p className="mt-1 text-[12px] text-slate-400">
+                        Immutable design session history, notes, and time corrections for this line item.
+                      </p>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      <div className={`${META_PANEL} min-w-[140px] px-4 py-3`}>
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Total Tracked</div>
+                        <div className="mt-2 text-sm font-semibold text-white">{formatDurationLabel(displayedTimerMs)}</div>
+                      </div>
+                      <div className={`${META_PANEL} min-w-[140px] px-4 py-3`}>
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Raw Sessions</div>
+                        <div className="mt-2 text-sm font-semibold text-white">{formatDurationLabel(workspace?.rawTrackedMs ?? 0)}</div>
+                      </div>
+                      <div className={`${META_PANEL} min-w-[140px] px-4 py-3`}>
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Adjustments</div>
+                        <div className="mt-2 text-sm font-semibold text-white">{formatDurationLabel(workspace?.totalAdjustmentMs ?? 0)}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.95fr)]">
+                    <div className="space-y-4">
+                      <div className={`${MUTED_PANEL} px-4 py-4`}>
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Add to Working Log</div>
+                            <div className="mt-1 text-[12px] text-slate-400">Notes become permanent history alongside session events and corrections.</div>
+                          </div>
+                          <div className="flex gap-2">
+                            {(["internal_note", "progress_update", "blocker_update"] as DesignNoteKind[]).map((value) => (
+                              <button
+                                key={value}
+                                type="button"
+                                onClick={() => setNoteKind(value)}
+                                className={`rounded-full border px-3 py-1 text-[11px] font-medium ${
+                                  noteKind === value
+                                    ? "border-[#2d62f5]/40 bg-[#1337ec]/18 text-[#8ba9ff]"
+                                    : "border-white/[0.08] bg-white/[0.03] text-slate-400"
+                                }`}
+                              >
+                                {NOTE_KIND_LABELS[value]}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <Textarea
+                          value={noteDraft}
+                          onChange={(event) => setNoteDraft(event.target.value)}
+                          placeholder="Add a design note, progress update, or blocker for this line item..."
+                          className="mt-3 min-h-[110px] rounded-[14px] border-white/[0.08] bg-[#0b1420] text-sm text-slate-100 placeholder:text-slate-500"
+                        />
+                        <div className="mt-3 flex justify-end">
+                          <Button
+                            type="button"
+                            className="h-10 rounded-xl bg-[#2d62f5] px-4 text-white hover:bg-[#3a6cff]"
+                            disabled={noteMutation.isPending || noteDraft.trim().length === 0}
+                            onClick={() => noteMutation.mutate()}
+                          >
+                            Save to Log
+                          </Button>
+                        </div>
+                      </div>
+
+                      {isAdminOrOwner ? (
+                        <div className={`${MUTED_PANEL} px-4 py-4`}>
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Admin Time Correction</div>
+                          <div className="mt-1 text-[12px] text-slate-400">Adjust total tracked minutes without rewriting raw session history. A reason is required.</div>
+                          <div className="mt-3 grid gap-3 md:grid-cols-[180px_minmax(0,1fr)_auto]">
+                            <Input
+                              type="number"
+                              min="0"
+                              step="0.25"
+                              value={adjustedMinutesDraft}
+                              onChange={(event) => setAdjustedMinutesDraft(event.target.value)}
+                              className="h-10 rounded-xl border-white/[0.08] bg-[#0b1420] text-slate-100"
+                              placeholder="Total minutes"
+                            />
+                            <Input
+                              value={adjustReasonDraft}
+                              onChange={(event) => setAdjustReasonDraft(event.target.value)}
+                              className="h-10 rounded-xl border-white/[0.08] bg-[#0b1420] text-slate-100"
+                              placeholder="Reason for adjustment"
+                            />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="h-10 rounded-xl border-white/[0.08] bg-white/[0.02] text-slate-200 hover:bg-white/[0.05]"
+                              disabled={adjustmentMutation.isPending || adjustReasonDraft.trim().length === 0 || adjustedMinutesDraft.trim().length === 0}
+                              onClick={() => adjustmentMutation.mutate()}
+                            >
+                              Record Adjustment
+                            </Button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="space-y-3">
+                      {workspaceQuery.isLoading ? (
+                        Array.from({ length: 4 }).map((_, index) => (
+                          <Skeleton key={index} className="h-24 w-full rounded-[14px] bg-white/[0.04]" />
+                        ))
+                      ) : (workspace?.activity.length ?? 0) === 0 ? (
+                        <div className="rounded-[14px] border border-dashed border-white/[0.08] px-4 py-4 text-slate-400">
+                          No working-log history is recorded yet for this line item.
+                        </div>
+                      ) : (
+                        workspace?.activity.map((entry) => {
+                          const adjustment = adjustmentMap.get(entry.id);
+                          return (
+                            <div key={entry.id} className={`${MUTED_PANEL} px-4 py-4`}>
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  <Badge variant="outline" className="border-white/[0.08] bg-white/[0.03] text-slate-300">
+                                    {entry.type === "note"
+                                      ? "Note"
+                                      : entry.type === "session"
+                                        ? "Session"
+                                        : entry.type === "adjustment"
+                                          ? "Adjustment"
+                                          : "Audit"}
+                                  </Badge>
+                                  <div className="text-sm font-semibold text-white">{entry.label}</div>
+                                </div>
+                                <span className="text-[11px] text-slate-500">{formatRelativeTime(entry.at)}</span>
+                              </div>
+
+                              <div className="mt-3 text-sm leading-6 text-slate-200">{entry.detail}</div>
+
+                              {adjustment ? (
+                                <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                                  <div className={`${META_PANEL} px-3 py-2`}>
+                                    <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Before</div>
+                                    <div className="mt-1 text-sm font-semibold text-white">{formatDurationLabel(adjustment.beforeMs)}</div>
+                                  </div>
+                                  <div className={`${META_PANEL} px-3 py-2`}>
+                                    <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">After</div>
+                                    <div className="mt-1 text-sm font-semibold text-white">{formatDurationLabel(adjustment.afterMs)}</div>
+                                  </div>
+                                  <div className={`${META_PANEL} px-3 py-2`}>
+                                    <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Delta</div>
+                                    <div className="mt-1 text-sm font-semibold text-white">{adjustment.deltaMs >= 0 ? "+" : ""}{formatDurationLabel(Math.abs(adjustment.deltaMs))}</div>
+                                  </div>
+                                </div>
+                              ) : null}
+
+                              <div className="mt-3 text-[11px] text-slate-500">{entry.userName || "Team member"}</div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                </section>
 
                 <section className={`${SECTION_PANEL} p-5`}>
                   <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1019,7 +1137,7 @@ export default function DesignProductionPage() {
                   <div>
                     <h3 className="text-[18px] font-semibold text-white">Workflow Rail</h3>
                     <p className="mt-1 text-[12px] text-slate-400">
-                      Keep the next move obvious without repeating the full workstation state.
+                      Keep the next move obvious without repeating the working-state model already shown in the header.
                     </p>
                   </div>
 
@@ -1036,16 +1154,6 @@ export default function DesignProductionPage() {
                   </div>
 
                   <div className="mt-4 space-y-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="h-11 w-full justify-between rounded-xl border-white/[0.08] bg-white/[0.02] px-4 text-slate-200 hover:bg-white/[0.05]"
-                      disabled={!canCompleteDesign || transitionWorkflow.isPending}
-                      onClick={() => transitionWorkflow.mutate({ lineItemId: selectedItem.lineItemId, action: "complete" })}
-                    >
-                      <span>Complete Design</span>
-                      <ArrowRight className="h-4 w-4" />
-                    </Button>
                     <Button
                       type="button"
                       variant="secondary"
@@ -1147,7 +1255,7 @@ export default function DesignProductionPage() {
                       </div>
                     ) : recentActivity.length === 0 ? (
                       <div className="rounded-[14px] border border-dashed border-white/[0.08] px-4 py-4 text-sm text-slate-400">
-                        No recent activity is recorded yet. Use the session controls and working log as design work begins.
+                        No recent activity is recorded yet. Use the session control and working log as design work begins.
                       </div>
                     ) : (
                       <div className="space-y-3">
