@@ -3,13 +3,11 @@ import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import {
-  AlertCircle,
   ArrowRight,
   CheckCircle2,
   Clock3,
   ExternalLink,
   FileText,
-  Layers3,
   Package2,
   Palette,
   Send,
@@ -17,9 +15,7 @@ import {
 import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ROUTES } from "@/config/routes";
 import type { DesignQueueItem, DesignQueueWorkflowState } from "@/hooks/useOrders";
@@ -36,24 +32,9 @@ const WORKFLOW_LABELS: Record<string, string> = {
   canceled: "Canceled",
 };
 
-function getDesignActions(state: DesignQueueWorkflowState | undefined) {
-  switch (state) {
-    case "needs_design":
-      return [
-        { label: "Start Design", action: "start" },
-        { label: "Hold", toState: "on_hold" },
-        { label: "Cancel", toState: "canceled" },
-      ];
-    case "in_design":
-      return [
-        { label: "Return to Needs Design", action: "return-to-needs-design" },
-        { label: "Complete Design", action: "complete" },
-        { label: "Hold", toState: "on_hold" },
-      ];
-    default:
-      return [];
-  }
-}
+const SHELL_PANEL = "border border-white/[0.06] bg-[#101826]";
+const SECTION_PANEL = "rounded-[18px] border border-white/[0.06] bg-white/[0.02]";
+const META_PANEL = "rounded-[12px] border border-white/[0.07] bg-[#0f1827]";
 
 function formatOwnerLabel(item: DesignQueueItem) {
   if (item.activeOwnerStepKey) {
@@ -67,21 +48,69 @@ function formatOwnerLabel(item: DesignQueueItem) {
   return null;
 }
 
-function formatDateTime(value: string | null | undefined) {
+function looksLikeUuid(value: string | null | undefined) {
+  if (!value) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim());
+}
+
+function getReadableLabel(value: string | null | undefined) {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed || looksLikeUuid(trimmed)) return null;
+  return trimmed;
+}
+
+function formatDateLabel(value: string | null | undefined) {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleString();
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
 function formatRelativeTime(value: string | null | undefined) {
-  if (!value) return "—";
+  if (!value) return "No due date";
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "—";
+  if (Number.isNaN(date.getTime())) return "No due date";
   return formatDistanceToNow(date, { addSuffix: true });
 }
 
-function getSpecRows(selectedItem: DesignQueueItem, selectedLineItem: any) {
+function getQueueBadgeClasses(state: string | null | undefined) {
+  switch (state) {
+    case "in_design":
+      return "border border-[#2d62f5]/40 bg-[#1337ec]/20 text-[#7da0ff]";
+    case "needs_design":
+      return "border border-white/10 bg-white/[0.03] text-slate-200";
+    case "design_complete":
+      return "border border-emerald-500/30 bg-emerald-500/10 text-emerald-300";
+    case "on_hold":
+      return "border border-amber-500/30 bg-amber-500/10 text-amber-300";
+    default:
+      return "border border-white/10 bg-white/[0.03] text-slate-300";
+  }
+}
+
+function getDisplayPrintType(selectedItem: DesignQueueItem, selectedLineItem: any) {
+  return (
+    getReadableLabel(selectedLineItem?.productVariant?.name) ||
+    getReadableLabel(selectedLineItem?.specsJson?.printTypeLabel) ||
+    getReadableLabel(selectedItem.printType)
+  );
+}
+
+function getDisplayMaterial(selectedItem: DesignQueueItem, selectedLineItem: any) {
+  return getReadableLabel(selectedLineItem?.specsJson?.materialLabel) || getReadableLabel(selectedItem.media);
+}
+
+function getSpecRows(
+  selectedItem: DesignQueueItem,
+  selectedLineItem: any,
+  displayPrintType: string | null,
+  displayMaterial: string | null,
+) {
   const rows = [
     { label: "Quantity", value: selectedLineItem?.quantity ?? selectedItem.quantity ?? null },
     {
@@ -93,38 +122,44 @@ function getSpecRows(selectedItem: DesignQueueItem, selectedLineItem: any) {
             ? `${selectedItem.width} × ${selectedItem.height}`
             : null,
     },
-    { label: "Material", value: selectedItem.media ?? null },
-    { label: "Print Type", value: selectedItem.printType ?? null },
+    { label: "Print Type", value: displayPrintType },
+    {
+      label: "Product",
+      value: getReadableLabel(selectedLineItem?.product?.name) || getReadableLabel(selectedItem.productName),
+    },
+    { label: "Material", value: displayMaterial },
     {
       label: "Sq Ft",
       value: selectedItem.sqFootage != null ? `${selectedItem.sqFootage}` : null,
-    },
-    {
-      label: "Product",
-      value: selectedLineItem?.product?.name ?? selectedItem.productName ?? null,
     },
   ];
 
   return rows.filter((row) => row.value !== null && row.value !== undefined && `${row.value}`.trim() !== "");
 }
 
-function getInstructionItems(selectedLineItem: any, selectedItem: DesignQueueItem) {
+function getInstructionItems(
+  selectedLineItem: any,
+  displayPrintType: string | null,
+  displayMaterial: string | null,
+) {
   const optionRows = Array.isArray(selectedLineItem?.specsJson?.selectedOptions)
     ? selectedLineItem.specsJson.selectedOptions
         .map((option: any) => {
           const name = String(option?.optionName || option?.label || option?.name || "").trim();
           const value = String(option?.displayValue ?? option?.value ?? "").trim();
-          if (!name || !value) return null;
+          if (!name || !value || looksLikeUuid(value)) return null;
           return `${name}: ${value}`;
         })
         .filter(Boolean)
     : [];
 
   return [
-    selectedItem.printType ? `Print type: ${selectedItem.printType}` : null,
-    selectedItem.media ? `Material: ${selectedItem.media}` : null,
+    displayPrintType ? `Print type: ${displayPrintType}` : null,
+    displayMaterial ? `Material: ${displayMaterial}` : null,
     ...(optionRows as string[]),
-  ].slice(0, 6).filter(Boolean) as string[];
+  ]
+    .slice(0, 6)
+    .filter(Boolean) as string[];
 }
 
 function getRecommendedAction(args: {
@@ -144,7 +179,9 @@ function getRecommendedAction(args: {
   if (proofing?.proofDecisionHistory[0]?.decision === "revision_requested") {
     return {
       title: "Address the latest revision request",
-      detail: proofing.proofDecisionHistory[0].responseNotes || "A customer revision was requested on the latest proof. Update artwork and prepare the next version.",
+      detail:
+        proofing.proofDecisionHistory[0].responseNotes ||
+        "A customer revision was requested on the latest proof. Update artwork and prepare the next version.",
     };
   }
 
@@ -173,6 +210,12 @@ function getRecommendedAction(args: {
     title: "Complete Design",
     detail: "Once artwork is ready, complete design so the line item can continue into prepress or production.",
   };
+}
+
+function getDownstreamPath(item: DesignQueueItem) {
+  if (item.requiresProofApproval) return "Proofing";
+  if (item.requiresPrepress) return "Prepress";
+  return "Production";
 }
 
 export default function DesignProductionPage() {
@@ -232,8 +275,10 @@ export default function DesignProductionPage() {
   });
 
   const proofing = proofingQuery.data;
-  const specRows = selectedItem ? getSpecRows(selectedItem, selectedLineItem) : [];
-  const instructionItems = selectedItem ? getInstructionItems(selectedLineItem, selectedItem) : [];
+  const displayPrintType = selectedItem ? getDisplayPrintType(selectedItem, selectedLineItem) : null;
+  const displayMaterial = selectedItem ? getDisplayMaterial(selectedItem, selectedLineItem) : null;
+  const specRows = selectedItem ? getSpecRows(selectedItem, selectedLineItem, displayPrintType, displayMaterial) : [];
+  const instructionItems = selectedItem ? getInstructionItems(selectedLineItem, displayPrintType, displayMaterial) : [];
   const proofVersionHistory = proofing?.proofVersionHistory.slice(0, 4) ?? [];
   const recentActivity = useMemo(() => {
     if (!proofing) return [] as Array<{ label: string; detail: string; at: string | null }>;
@@ -309,411 +354,512 @@ export default function DesignProductionPage() {
   const canStartDesign = selectedItem?.workflowState === "needs_design";
   const canCompleteDesign = selectedItem?.workflowState === "in_design";
   const canCreateProof = Boolean(selectedItem?.requiresProofApproval);
+  const detailTitle =
+    getReadableLabel(selectedLineItem?.product?.name) ||
+    getReadableLabel(selectedItem?.productName) ||
+    "Design Workspace";
+  const detailSummary =
+    getReadableLabel(selectedLineItem?.description) ||
+    getReadableLabel(selectedItem?.productName) ||
+    "No detailed design brief captured on this line item.";
+  const desktopGridClass = selectedItem
+    ? "xl:grid-cols-[320px_minmax(0,1fr)_320px]"
+    : "xl:grid-cols-[320px_minmax(0,1fr)]";
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
-      <Card className="border-border bg-card">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-lg">Design Queue</CardTitle>
-          <CardDescription>Live line items currently in design workflow.</CardDescription>
-        </CardHeader>
-        <CardContent className="p-0">
-          <ScrollArea className="h-[78vh]">
-            <div className="divide-y divide-border/60">
+    <div className="space-y-4 text-slate-100">
+      <div className="rounded-[18px] border border-white/[0.06] bg-[#0b1220] px-5 py-4">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+              <span>Production Board</span>
+              <span className="text-slate-700">/</span>
+              <span className="text-slate-300">Design</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="text-sm font-semibold text-white">Design Workspace</h1>
+              {selectedItem ? (
+                <span className="rounded-full border border-[#2d62f5]/30 bg-[#1337ec]/12 px-2.5 py-1 text-[11px] font-medium text-[#8ba9ff]">
+                  {WORKFLOW_LABELS[selectedItem.designStatus] || selectedItem.designStatus}
+                </span>
+              ) : null}
+            </div>
+          </div>
+          <div className="text-right text-xs text-slate-500">
+            {selectedItem ? `Order #${selectedItem.jobNumber}` : `${queue.length} active queue items`}
+          </div>
+        </div>
+      </div>
+
+      <div className={`grid overflow-hidden rounded-[22px] border border-white/[0.06] bg-[#0b1220] ${desktopGridClass}`}>
+        <aside className="border-b border-white/[0.06] bg-[#0c1320] xl:border-b-0 xl:border-r">
+          <div className="border-b border-white/[0.06] px-5 py-5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-[19px] font-semibold leading-tight text-white">Design Queue</h2>
+                <p className="mt-1 text-[12px] text-slate-400">Live line items currently in design workflow.</p>
+              </div>
+              <div className="rounded-full border border-white/[0.06] bg-white/[0.03] px-2.5 py-1 text-[11px] font-medium text-slate-400">
+                {queue.length}
+              </div>
+            </div>
+          </div>
+
+          <ScrollArea className="h-[calc(100vh-17rem)] min-h-[520px]">
+            <div className="space-y-3 px-4 py-4">
               {isLoading ? (
-                <div className="space-y-3 p-4">
-                  {Array.from({ length: 5 }).map((_, index) => (
-                    <Skeleton key={index} className="h-20 w-full" />
-                  ))}
-                </div>
+                Array.from({ length: 6 }).map((_, index) => <Skeleton key={index} className="h-24 w-full rounded-2xl bg-white/[0.04]" />)
               ) : queue.length === 0 ? (
-                <div className="p-4 text-sm text-muted-foreground">No line items are currently assigned to Design.</div>
+                <div className="rounded-[16px] border border-dashed border-white/[0.08] px-4 py-5 text-sm text-slate-400">
+                  No line items are currently assigned to Design.
+                </div>
               ) : (
-                queue.map((item) => (
-                  <button
-                    key={item.lineItemId}
-                    type="button"
-                    onClick={() => setSelectedLineItemId(item.lineItemId)}
-                    className={`w-full px-4 py-3 text-left hover:bg-muted/30 ${selectedItem?.lineItemId === item.lineItemId ? "bg-muted/40" : ""}`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium">#{item.jobNumber}</div>
-                        <div className="truncate text-xs text-muted-foreground">{item.customerName}</div>
+                queue.map((item) => {
+                  const isSelected = selectedItem?.lineItemId === item.lineItemId;
+                  return (
+                    <button
+                      key={item.lineItemId}
+                      type="button"
+                      onClick={() => setSelectedLineItemId(item.lineItemId)}
+                      className={`w-full rounded-[18px] border px-4 py-3 text-left transition-all ${
+                        isSelected
+                          ? "border-[#2d62f5] bg-[#1337ec]/14 shadow-[0_0_0_1px_rgba(45,98,245,0.15)]"
+                          : "border-white/[0.06] bg-white/[0.02] hover:border-white/[0.12] hover:bg-white/[0.04]"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-[11px] font-semibold text-slate-300">#{item.jobNumber}</div>
+                          <div className="truncate text-[11px] text-slate-500">{item.customerName}</div>
+                        </div>
+                        <span
+                          className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${getQueueBadgeClasses(
+                            item.designStatus,
+                          )}`}
+                        >
+                          {WORKFLOW_LABELS[item.designStatus] || item.designStatus}
+                        </span>
                       </div>
-                      <Badge variant={item.designStatus === "in_design" ? "default" : "outline"}>
-                        {WORKFLOW_LABELS[item.designStatus] || item.designStatus}
-                      </Badge>
-                    </div>
-                    <div className="mt-1 truncate text-sm">{item.productName}</div>
-                    <div className="mt-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                      <div className="flex gap-3">
-                        <span>Art: {item.fileCounts?.originals || 0}</span>
-                        <span>Proofs: {item.fileCounts?.proofs || 0}</span>
+
+                      <div className="mt-2 line-clamp-2 text-[14px] font-semibold leading-5 text-white">{item.productName}</div>
+
+                      <div className="mt-3 flex items-center justify-between gap-3 text-[11px] text-slate-500">
+                        <div className="flex items-center gap-3">
+                          <span>Art: {item.fileCounts?.originals || 0}</span>
+                          <span>Proofs: {item.fileCounts?.proofs || 0}</span>
+                        </div>
+                        <span>{item.dueDate ? formatRelativeTime(item.dueDate) : "No due date"}</span>
                       </div>
-                      <span>{item.dueDate ? formatRelativeTime(item.dueDate) : "No due date"}</span>
-                    </div>
-                  </button>
-                ))
+                    </button>
+                  );
+                })
               )}
             </div>
           </ScrollArea>
-        </CardContent>
-      </Card>
+        </aside>
 
-      {!selectedItem ? (
-        <Card className="border-border bg-card">
-          <CardContent className="p-8 text-sm text-muted-foreground">Select a line item from the queue to open the designer workspace.</CardContent>
-        </Card>
-      ) : (
-        <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_340px]">
-          <div className="space-y-4">
-            <Card className="border-border bg-card">
-              <CardHeader className="pb-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="space-y-1">
-                    <CardTitle className="text-2xl">{selectedLineItem?.product?.name ?? selectedItem.productName}</CardTitle>
-                    <CardDescription>
-                      Order #{selectedItem.jobNumber} • {selectedItem.customerName}
-                    </CardDescription>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant={selectedItem.designStatus === "in_design" ? "default" : "outline"}>
-                      {WORKFLOW_LABELS[selectedItem.designStatus] || selectedItem.designStatus}
-                    </Badge>
-                    {selectedOwnerLabel ? <Badge variant="secondary">Owner: {selectedOwnerLabel}</Badge> : null}
-                    {selectedItem.requiresProofApproval ? <Badge variant="outline">Requires Proof Approval</Badge> : null}
-                    {selectedItem.requiresPrepress ? <Badge variant="outline">Routes to Prepress</Badge> : null}
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                  <div className="rounded-lg border border-border/70 bg-muted/20 p-3">
-                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Job / Line Item</div>
-                    <div className="mt-1 text-sm font-medium">#{selectedItem.jobNumber}</div>
-                    <div className="text-xs text-muted-foreground">{selectedItem.lineItemId}</div>
-                  </div>
-                  <div className="rounded-lg border border-border/70 bg-muted/20 p-3">
-                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Due Date</div>
-                    <div className="mt-1 text-sm font-medium">{formatDateTime(order?.dueDate ?? selectedItem.dueDate)}</div>
-                    <div className="text-xs text-muted-foreground">{formatRelativeTime(order?.dueDate ?? selectedItem.dueDate)}</div>
-                  </div>
-                  <div className="rounded-lg border border-border/70 bg-muted/20 p-3">
-                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Customer</div>
-                    <div className="mt-1 text-sm font-medium">{selectedItem.customerName}</div>
-                    <div className="text-xs text-muted-foreground">{selectedItem.printType ?? "Design work item"}</div>
-                  </div>
-                  <div className="rounded-lg border border-border/70 bg-muted/20 p-3">
-                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Files on Item</div>
-                    <div className="mt-1 text-sm font-medium">{selectedItem.fileCounts?.originals || 0} source</div>
-                    <div className="text-xs text-muted-foreground">{selectedItem.fileCounts?.proofs || 0} proof files already attached</div>
-                  </div>
-                </div>
-
-                {specRows.length > 0 ? (
-                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                    {specRows.map((row) => (
-                      <div key={row.label} className="rounded-lg border border-border/60 p-3">
-                        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{row.label}</div>
-                        <div className="mt-1 text-sm font-medium">{row.value}</div>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-              </CardContent>
-            </Card>
-
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
-              <Card className="border-border bg-card">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2 text-lg">
-                    <Palette className="h-4 w-4 text-muted-foreground" />
-                    Design Brief
-                  </CardTitle>
-                  <CardDescription>What this job is and what the designer needs to produce.</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="rounded-lg border border-border/60 bg-muted/20 p-4 text-sm leading-6">
-                    {selectedLineItem?.description || selectedItem.productName || "No detailed design brief captured on this line item."}
-                  </div>
-
-                  {instructionItems.length > 0 ? (
-                    <div>
-                      <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Key Instructions</div>
-                      <ul className="space-y-2 text-sm text-foreground">
-                        {instructionItems.map((item) => (
-                          <li key={item} className="flex gap-2">
-                            <span className="mt-1 h-1.5 w-1.5 rounded-full bg-primary" />
-                            <span>{item}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : (
-                    <div className="rounded-lg border border-dashed border-border/60 p-4 text-sm text-muted-foreground">
-                      No structured design instructions were captured beyond the line item description.
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-
-              <Card className="border-border bg-card">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2 text-lg">
-                    <AlertCircle className="h-4 w-4 text-muted-foreground" />
-                    Notes & Context
-                  </CardTitle>
-                  <CardDescription>Sales handoff, internal context, and customer feedback already on the record.</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4 text-sm">
-                  <div>
-                    <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Order Internal Notes</div>
-                    {orderQuery.isLoading ? (
-                      <Skeleton className="h-20 w-full" />
-                    ) : order?.notesInternal ? (
-                      <div className="rounded-lg border border-border/60 bg-muted/20 p-4 leading-6">{order.notesInternal}</div>
-                    ) : (
-                      <div className="rounded-lg border border-dashed border-border/60 p-4 text-muted-foreground">
-                        No order-level internal notes are attached to this job yet.
-                      </div>
-                    )}
-                  </div>
-
-                  <div>
-                    <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Latest Proof Feedback</div>
-                    {proofingQuery.isLoading ? (
-                      <Skeleton className="h-16 w-full" />
-                    ) : proofing?.proofDecisionHistory[0] ? (
-                      <div className="rounded-lg border border-border/60 p-4">
-                        <div className="flex items-center justify-between gap-2">
-                          <Badge variant="outline">{proofing.proofDecisionHistory[0].decision.replace(/_/g, " ")}</Badge>
-                          <span className="text-xs text-muted-foreground">{formatRelativeTime(proofing.proofDecisionHistory[0].respondedAt)}</span>
-                        </div>
-                        <p className="mt-3 leading-6 text-foreground">
-                          {proofing.proofDecisionHistory[0].responseNotes || "No written feedback was captured on the latest proof response."}
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="rounded-lg border border-dashed border-border/60 p-4 text-muted-foreground">
-                        No proof feedback exists on this line item yet.
-                      </div>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
+        {!selectedItem ? (
+          <div className="flex items-center justify-center bg-[#101827] px-6 py-16">
+            <div className="max-w-md rounded-[20px] border border-dashed border-white/[0.08] bg-white/[0.02] px-6 py-8 text-center">
+              <div className="text-lg font-semibold text-white">Select a line item</div>
+              <p className="mt-2 text-sm leading-6 text-slate-400">
+                Choose a job from the Design Queue to open the full production workspace, notes, files, and workflow rail.
+              </p>
             </div>
+          </div>
+        ) : (
+          <>
+            <main className="border-b border-white/[0.06] bg-[#101827] xl:border-b-0 xl:border-r">
+              <div className="space-y-5 px-6 py-6">
+                <section className={`${SHELL_PANEL} rounded-[20px] px-6 py-6`}>
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                          {WORKFLOW_LABELS[selectedItem.workflowState] || selectedItem.workflowState}
+                        </span>
+                        {selectedOwnerLabel ? (
+                          <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                            {selectedOwnerLabel}
+                          </span>
+                        ) : null}
+                        {selectedItem.requiresProofApproval ? (
+                          <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                            Requires Proof
+                          </span>
+                        ) : null}
+                        {selectedItem.requiresPrepress ? (
+                          <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                            Routes to Prepress
+                          </span>
+                        ) : null}
+                      </div>
+                      <h2 className="mt-4 text-[30px] font-semibold leading-tight text-white">{detailTitle}</h2>
+                      <p className="mt-1 text-sm text-slate-400">
+                        Order #{selectedItem.jobNumber} • {selectedItem.customerName}
+                      </p>
+                    </div>
+                  </div>
 
-            <Card className="border-border bg-card">
-              <CardHeader>
-                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    <div className={`${META_PANEL} px-4 py-3`}>
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Job / Line Item</div>
+                      <div className="mt-2 text-sm font-semibold text-white">#{selectedItem.jobNumber}</div>
+                      <div className="mt-1 text-xs text-slate-500">{detailTitle}</div>
+                    </div>
+                    <div className={`${META_PANEL} px-4 py-3`}>
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Due Date</div>
+                      <div className="mt-2 text-sm font-semibold text-white">{formatDateLabel(order?.dueDate ?? selectedItem.dueDate)}</div>
+                      <div className="mt-1 text-xs text-slate-500">{formatRelativeTime(order?.dueDate ?? selectedItem.dueDate)}</div>
+                    </div>
+                    <div className={`${META_PANEL} px-4 py-3`}>
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Customer</div>
+                      <div className="mt-2 text-sm font-semibold text-white">{selectedItem.customerName}</div>
+                      <div className="mt-1 text-xs text-slate-500">{displayPrintType || "Design work item"}</div>
+                    </div>
+                    <div className={`${META_PANEL} px-4 py-3`}>
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Files on Item</div>
+                      <div className="mt-2 text-sm font-semibold text-white">{selectedItem.fileCounts?.originals || 0} source</div>
+                      <div className="mt-1 text-xs text-slate-500">{selectedItem.fileCounts?.proofs || 0} proof files already attached</div>
+                    </div>
+                  </div>
+
+                  {specRows.length > 0 ? (
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      {specRows.map((row) => (
+                        <div key={row.label} className={`${META_PANEL} px-4 py-3`}>
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">{row.label}</div>
+                          <div className="mt-2 text-sm font-semibold text-white">{row.value}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+
+                <div className="grid gap-5 xl:grid-cols-[minmax(0,1.12fr)_minmax(0,0.88fr)]">
+                  <section className={`${SECTION_PANEL} p-5`}>
+                    <div>
+                      <h3 className="text-[18px] font-semibold text-white">Design Brief</h3>
+                      <p className="mt-1 text-[12px] text-slate-400">
+                        What this job is and what the designer needs to produce.
+                      </p>
+                    </div>
+
+                    <div className="mt-5 rounded-[14px] border border-white/[0.06] bg-[#0f1827] px-4 py-4 text-sm leading-6 text-slate-200">
+                      {detailSummary}
+                    </div>
+
+                    <div className="mt-5">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Key Instructions</div>
+                      {instructionItems.length > 0 ? (
+                        <ul className="mt-3 space-y-2 text-sm text-slate-200">
+                          {instructionItems.map((item) => (
+                            <li key={item} className="flex gap-2.5">
+                              <span className="mt-[9px] h-1.5 w-1.5 rounded-full bg-[#4d79ff]" />
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <div className="mt-3 rounded-[14px] border border-dashed border-white/[0.08] px-4 py-4 text-sm text-slate-400">
+                          No structured design instructions were captured beyond the line item description.
+                        </div>
+                      )}
+                    </div>
+                  </section>
+
+                  <section className={`${SECTION_PANEL} p-5`}>
+                    <div>
+                      <h3 className="text-[18px] font-semibold text-white">Notes & Context</h3>
+                      <p className="mt-1 text-[12px] text-slate-400">
+                        Sales handoff, internal context, and customer feedback already on the record.
+                      </p>
+                    </div>
+
+                    <div className="mt-5 space-y-4 text-sm">
+                      <div>
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Order Internal Notes</div>
+                        {orderQuery.isLoading ? (
+                          <Skeleton className="mt-3 h-24 w-full rounded-[14px] bg-white/[0.04]" />
+                        ) : order?.notesInternal ? (
+                          <div className="mt-3 rounded-[14px] border border-white/[0.06] bg-[#0f1827] px-4 py-4 leading-6 text-slate-200">
+                            {order.notesInternal}
+                          </div>
+                        ) : (
+                          <div className="mt-3 rounded-[14px] border border-dashed border-white/[0.08] px-4 py-4 text-slate-400">
+                            No order-level internal notes are attached to this job yet.
+                          </div>
+                        )}
+                      </div>
+
+                      <div>
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Latest Proof Feedback</div>
+                        {proofingQuery.isLoading ? (
+                          <Skeleton className="mt-3 h-24 w-full rounded-[14px] bg-white/[0.04]" />
+                        ) : proofing?.proofDecisionHistory[0] ? (
+                          <div className="mt-3 rounded-[14px] border border-white/[0.06] bg-[#0f1827] px-4 py-4">
+                            <div className="flex items-center justify-between gap-2">
+                              <Badge variant="outline" className="border-white/[0.08] bg-white/[0.03] text-slate-300">
+                                {proofing.proofDecisionHistory[0].decision.replace(/_/g, " ")}
+                              </Badge>
+                              <span className="text-[11px] text-slate-500">
+                                {formatRelativeTime(proofing.proofDecisionHistory[0].respondedAt)}
+                              </span>
+                            </div>
+                            <p className="mt-3 leading-6 text-slate-200">
+                              {proofing.proofDecisionHistory[0].responseNotes ||
+                                "No written feedback was captured on the latest proof response."}
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="mt-3 rounded-[14px] border border-dashed border-white/[0.08] px-4 py-4 text-slate-400">
+                            No proof feedback exists on this line item yet.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </section>
+                </div>
+
+                <section className={`${SECTION_PANEL} p-5`}>
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-[18px] font-semibold text-white">Files & References</h3>
+                      <p className="mt-1 text-[12px] text-slate-400">
+                        Use the existing line-item file manager for source art, references, and uploads.
+                      </p>
+                    </div>
+                    <Button
+                      asChild
+                      variant="outline"
+                      size="sm"
+                      className="h-9 rounded-xl border-white/[0.08] bg-white/[0.02] px-3 text-slate-200 hover:bg-white/[0.05]"
+                    >
+                      <Link to={ROUTES.orders.detail(selectedItem.orderId)}>
+                        Open Order
+                        <ExternalLink className="ml-2 h-3.5 w-3.5" />
+                      </Link>
+                    </Button>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[11px] font-medium text-slate-300">
+                      {selectedItem.fileCounts?.originals || 0} source files
+                    </span>
+                    <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[11px] font-medium text-slate-300">
+                      {selectedItem.fileCounts?.proofs || 0} proof files
+                    </span>
+                    {selectedItem.requiresProofApproval ? (
+                      <span className="rounded-full border border-[#2d62f5]/25 bg-[#1337ec]/10 px-2.5 py-1 text-[11px] font-medium text-[#8ba9ff]">
+                        Proof handoff required
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <div className="mt-4">
+                    <LineItemAttachmentsPanel
+                      quoteId={null}
+                      parentType="order"
+                      orderId={selectedItem.orderId}
+                      lineItemId={selectedItem.lineItemId}
+                      lineItemKey={selectedItem.lineItemId}
+                      productName={selectedItem.productName}
+                      defaultExpanded={true}
+                    />
+                  </div>
+                </section>
+              </div>
+            </main>
+
+            <aside className="bg-[#0c1320] px-4 py-4">
+              <div className="space-y-4">
+                <section className={`${SECTION_PANEL} p-5`}>
                   <div>
-                    <CardTitle className="flex items-center gap-2 text-lg">
-                      <Layers3 className="h-4 w-4 text-muted-foreground" />
-                      Files & References
-                    </CardTitle>
-                    <CardDescription>Use the existing line-item file manager for source art, references, and uploads.</CardDescription>
+                    <h3 className="text-[18px] font-semibold text-white">Workflow Rail</h3>
+                    <p className="mt-1 text-[12px] text-slate-400">
+                      What stage this line item is in and the cleanest next move.
+                    </p>
                   </div>
-                  <Button asChild variant="outline" size="sm">
-                    <Link to={ROUTES.orders.detail(selectedItem.orderId)}>
-                      Open Order
-                      <ExternalLink className="ml-2 h-3.5 w-3.5" />
-                    </Link>
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex flex-wrap gap-2">
-                  <Badge variant="outline">{selectedItem.fileCounts?.originals || 0} source files</Badge>
-                  <Badge variant="outline">{selectedItem.fileCounts?.proofs || 0} proof files</Badge>
-                  {selectedItem.requiresProofApproval ? <Badge variant="secondary">Proof handoff required</Badge> : null}
-                </div>
 
-                <LineItemAttachmentsPanel
-                  quoteId={null}
-                  parentType="order"
-                  orderId={selectedItem.orderId}
-                  lineItemId={selectedItem.lineItemId}
-                  lineItemKey={selectedItem.lineItemId}
-                  productName={selectedItem.productName}
-                  defaultExpanded={true}
-                />
-              </CardContent>
-            </Card>
-          </div>
-
-          <div className="space-y-4">
-            <Card className="border-border bg-card">
-              <CardHeader>
-                <CardTitle className="text-lg">Workflow Rail</CardTitle>
-                <CardDescription>What stage this line item is in and the cleanest next move.</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
-                  <div className="text-[11px] font-medium uppercase tracking-wide text-primary/80">Recommended Next Action</div>
-                  <div className="mt-2 text-lg font-semibold">{recommendedAction?.title ?? "Review line item"}</div>
-                  <p className="mt-2 text-sm leading-6 text-muted-foreground">{recommendedAction?.detail ?? "Use the workspace to review files, notes, and workflow state."}</p>
-                </div>
-
-                <div className="grid gap-3">
-                  <div className="rounded-lg border border-border/60 p-3">
-                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Workflow State</div>
-                    <div className="mt-1 flex items-center gap-2 text-sm font-medium">
-                      <CheckCircle2 className="h-4 w-4 text-muted-foreground" />
-                      {WORKFLOW_LABELS[selectedItem.workflowState] || selectedItem.workflowState}
+                  <div className="mt-5 rounded-[16px] border border-[#2d62f5]/20 bg-[#1337ec]/10 p-4">
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#8ba9ff]">
+                      Recommended Next Action
                     </div>
-                  </div>
-                  <div className="rounded-lg border border-border/60 p-3">
-                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Design Status</div>
-                    <div className="mt-1 flex items-center gap-2 text-sm font-medium">
-                      <Palette className="h-4 w-4 text-muted-foreground" />
-                      {WORKFLOW_LABELS[selectedItem.designStatus] || selectedItem.designStatus}
+                    <div className="mt-2 text-[22px] font-semibold leading-tight text-white">
+                      {recommendedAction?.title ?? "Review line item"}
                     </div>
+                    <p className="mt-3 text-sm leading-6 text-slate-300">
+                      {recommendedAction?.detail ?? "Use the workspace to review files, notes, and workflow state."}
+                    </p>
                   </div>
-                  <div className="rounded-lg border border-border/60 p-3">
-                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Downstream Path</div>
-                    <div className="mt-1 flex items-center gap-2 text-sm font-medium">
-                      <ArrowRight className="h-4 w-4 text-muted-foreground" />
-                      {selectedItem.requiresProofApproval
-                        ? "Proofing"
-                        : selectedItem.requiresPrepress
-                          ? "Prepress"
-                          : "Production"}
-                    </div>
-                  </div>
-                </div>
 
-                <div className="space-y-2">
-                  <Button
-                    type="button"
-                    className="w-full justify-between"
-                    disabled={!canStartDesign || transitionWorkflow.isPending}
-                    onClick={() => transitionWorkflow.mutate({ lineItemId: selectedItem.lineItemId, action: "start" })}
-                  >
-                    <span>Start Design</span>
-                    <Palette className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="w-full justify-between"
-                    disabled={!canCompleteDesign || transitionWorkflow.isPending}
-                    onClick={() => transitionWorkflow.mutate({ lineItemId: selectedItem.lineItemId, action: "complete" })}
-                  >
-                    <span>Complete Design</span>
-                    <ArrowRight className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    className="w-full justify-between"
-                    disabled={!canCreateProof}
-                    onClick={() => navigate(`${ROUTES.production.proofing}?lineItemId=${selectedItem.lineItemId}&slice=all`)}
-                  >
-                    <span>Create & Send Proof</span>
-                    <Send className="h-4 w-4" />
-                  </Button>
-                </div>
-
-                <Separator />
-
-                <div className="space-y-3 text-sm text-muted-foreground">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="inline-flex items-center gap-2">
-                      <Clock3 className="h-4 w-4" />
-                      Last order update
-                    </span>
-                    <span>{formatRelativeTime(order?.updatedAt)}</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="inline-flex items-center gap-2">
-                      <FileText className="h-4 w-4" />
-                      Proof versions
-                    </span>
-                    <span>{proofing?.proofVersionHistory.length ?? 0}</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="inline-flex items-center gap-2">
-                      <Package2 className="h-4 w-4" />
-                      Source files
-                    </span>
-                    <span>{selectedItem.fileCounts?.originals || 0}</span>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="border-border bg-card">
-              <CardHeader>
-                <CardTitle className="text-lg">Versions</CardTitle>
-                <CardDescription>Existing proof/version history already attached to this line item.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                {proofingQuery.isLoading ? (
-                  <div className="space-y-2">
-                    {Array.from({ length: 3 }).map((_, index) => (
-                      <Skeleton key={index} className="h-14 w-full" />
-                    ))}
-                  </div>
-                ) : proofVersionHistory.length === 0 ? (
-                  <div className="rounded-lg border border-dashed border-border/60 p-4 text-sm text-muted-foreground">
-                    No proof versions exist yet for this line item.
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {proofVersionHistory.map((version) => (
-                      <div key={version.id} className="rounded-lg border border-border/60 p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="font-medium">Version {version.versionNumber}</div>
-                          <Badge variant={version.status === "approved" ? "default" : "outline"}>
-                            {version.status.replace(/_/g, " ")}
-                          </Badge>
-                        </div>
-                        <div className="mt-2 text-xs text-muted-foreground">
-                          Created {formatRelativeTime(version.createdAt)}
-                          {version.sentAt ? ` • Sent ${formatRelativeTime(version.sentAt)}` : ""}
-                        </div>
+                  <div className="mt-4 space-y-3">
+                    <div className={`${META_PANEL} px-4 py-3`}>
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Workflow State</div>
+                      <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-white">
+                        <CheckCircle2 className="h-4 w-4 text-slate-500" />
+                        {WORKFLOW_LABELS[selectedItem.workflowState] || selectedItem.workflowState}
                       </div>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card className="border-border bg-card">
-              <CardHeader>
-                <CardTitle className="text-lg">Recent Activity</CardTitle>
-                <CardDescription>Latest proofing and approval activity already recorded on this job.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                {proofingQuery.isLoading ? (
-                  <div className="space-y-2">
-                    {Array.from({ length: 3 }).map((_, index) => (
-                      <Skeleton key={index} className="h-12 w-full" />
-                    ))}
-                  </div>
-                ) : recentActivity.length === 0 ? (
-                  <div className="rounded-lg border border-dashed border-border/60 p-4 text-sm text-muted-foreground">
-                    No proofing activity is recorded yet. Use the workflow rail when this job is ready for proof creation.
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {recentActivity.map((activity) => (
-                      <div key={`${activity.label}-${activity.at}`} className="rounded-lg border border-border/60 p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="font-medium">{activity.label}</div>
-                          <span className="text-xs text-muted-foreground">{formatRelativeTime(activity.at)}</span>
-                        </div>
-                        <p className="mt-2 text-sm leading-6 text-muted-foreground">{activity.detail}</p>
+                    </div>
+                    <div className={`${META_PANEL} px-4 py-3`}>
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Design Status</div>
+                      <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-white">
+                        <Palette className="h-4 w-4 text-slate-500" />
+                        {WORKFLOW_LABELS[selectedItem.designStatus] || selectedItem.designStatus}
                       </div>
-                    ))}
+                    </div>
+                    <div className={`${META_PANEL} px-4 py-3`}>
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Downstream Path</div>
+                      <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-white">
+                        <ArrowRight className="h-4 w-4 text-slate-500" />
+                        {getDownstreamPath(selectedItem)}
+                      </div>
+                    </div>
                   </div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-        </div>
-      )}
+
+                  <div className="mt-4 space-y-2">
+                    <Button
+                      type="button"
+                      className="h-11 w-full justify-between rounded-xl bg-[#2d62f5] px-4 text-white hover:bg-[#3a6cff]"
+                      disabled={!canStartDesign || transitionWorkflow.isPending}
+                      onClick={() => transitionWorkflow.mutate({ lineItemId: selectedItem.lineItemId, action: "start" })}
+                    >
+                      <span>Start Design</span>
+                      <Palette className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-11 w-full justify-between rounded-xl border-white/[0.08] bg-white/[0.02] px-4 text-slate-200 hover:bg-white/[0.05]"
+                      disabled={!canCompleteDesign || transitionWorkflow.isPending}
+                      onClick={() => transitionWorkflow.mutate({ lineItemId: selectedItem.lineItemId, action: "complete" })}
+                    >
+                      <span>Complete Design</span>
+                      <ArrowRight className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="h-11 w-full justify-between rounded-xl border border-white/[0.08] bg-[#111b2c] px-4 text-slate-200 hover:bg-[#152235]"
+                      disabled={!canCreateProof}
+                      onClick={() => navigate(`${ROUTES.production.proofing}?lineItemId=${selectedItem.lineItemId}&slice=all`)}
+                    >
+                      <span>Create & Send Proof</span>
+                      <Send className="h-4 w-4" />
+                    </Button>
+                  </div>
+
+                  <div className="mt-5 space-y-3 border-t border-white/[0.06] pt-4 text-sm text-slate-400">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-2">
+                        <Clock3 className="h-4 w-4" />
+                        Last order update
+                      </span>
+                      <span>{formatRelativeTime(order?.updatedAt)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-2">
+                        <FileText className="h-4 w-4" />
+                        Proof versions
+                      </span>
+                      <span>{proofing?.proofVersionHistory.length ?? 0}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-2">
+                        <Package2 className="h-4 w-4" />
+                        Source files
+                      </span>
+                      <span>{selectedItem.fileCounts?.originals || 0}</span>
+                    </div>
+                  </div>
+                </section>
+
+                <section className={`${SECTION_PANEL} p-5`}>
+                  <div>
+                    <h3 className="text-[18px] font-semibold text-white">Versions</h3>
+                    <p className="mt-1 text-[12px] text-slate-400">
+                      Existing proof/version history already attached to this line item.
+                    </p>
+                  </div>
+
+                  <div className="mt-4">
+                    {proofingQuery.isLoading ? (
+                      <div className="space-y-2">
+                        {Array.from({ length: 3 }).map((_, index) => (
+                          <Skeleton key={index} className="h-16 w-full rounded-[14px] bg-white/[0.04]" />
+                        ))}
+                      </div>
+                    ) : proofVersionHistory.length === 0 ? (
+                      <div className="rounded-[14px] border border-dashed border-white/[0.08] px-4 py-4 text-sm text-slate-400">
+                        No proof versions exist yet for this line item.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {proofVersionHistory.map((version) => (
+                          <div key={version.id} className={`${META_PANEL} px-4 py-3`}>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-sm font-semibold text-white">Version {version.versionNumber}</div>
+                              <Badge
+                                variant={version.status === "approved" ? "default" : "outline"}
+                                className={
+                                  version.status === "approved"
+                                    ? "bg-emerald-600 text-white"
+                                    : "border-white/[0.08] bg-white/[0.03] text-slate-300"
+                                }
+                              >
+                                {version.status.replace(/_/g, " ")}
+                              </Badge>
+                            </div>
+                            <div className="mt-2 text-[11px] text-slate-500">
+                              Created {formatRelativeTime(version.createdAt)}
+                              {version.sentAt ? ` • Sent ${formatRelativeTime(version.sentAt)}` : ""}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </section>
+
+                <section className={`${SECTION_PANEL} p-5`}>
+                  <div>
+                    <h3 className="text-[18px] font-semibold text-white">Recent Activity</h3>
+                    <p className="mt-1 text-[12px] text-slate-400">
+                      Latest proofing and approval activity already recorded on this job.
+                    </p>
+                  </div>
+
+                  <div className="mt-4">
+                    {proofingQuery.isLoading ? (
+                      <div className="space-y-2">
+                        {Array.from({ length: 3 }).map((_, index) => (
+                          <Skeleton key={index} className="h-14 w-full rounded-[14px] bg-white/[0.04]" />
+                        ))}
+                      </div>
+                    ) : recentActivity.length === 0 ? (
+                      <div className="rounded-[14px] border border-dashed border-white/[0.08] px-4 py-4 text-sm text-slate-400">
+                        No proofing activity is recorded yet. Use the workflow rail when this job is ready for proof creation.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {recentActivity.map((activity) => (
+                          <div key={`${activity.label}-${activity.at}`} className={`${META_PANEL} px-4 py-3`}>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-sm font-semibold text-white">{activity.label}</div>
+                              <span className="text-[11px] text-slate-500">{formatRelativeTime(activity.at)}</span>
+                            </div>
+                            <p className="mt-2 text-sm leading-6 text-slate-300">{activity.detail}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </section>
+              </div>
+            </aside>
+          </>
+        )}
+      </div>
     </div>
   );
 }
