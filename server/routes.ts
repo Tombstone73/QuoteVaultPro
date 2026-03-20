@@ -14575,12 +14575,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       .orderBy(asc(auditLogs.createdAt));
   };
 
-  const buildDesignWorkspaceState = (auditRows: DesignWorkspaceAuditRow[]) => {
+  const buildDesignWorkspaceState = (args: {
+    lineItem: {
+      workflowState: string | null;
+      designStatus: string | null;
+    } | null;
+    auditRows: DesignWorkspaceAuditRow[];
+  }) => {
+    const { lineItem, auditRows } = args;
     const nowMs = Date.now();
     let sessionStartedAt: string | null = null;
     let activeStartedAt: string | null = null;
     let pausedAt: string | null = null;
-    let accumulatedElapsedMs = 0;
+    let rawTrackedMs = 0;
+    let totalAdjustmentMs = 0;
     let sessionStatus: "idle" | "active" | "paused" = "idle";
 
     const noteEntries: Array<{
@@ -14591,6 +14599,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       noteText: string;
     }> = [];
 
+    const adjustmentEntries: Array<{
+      id: string;
+      at: string;
+      userName: string | null;
+      reason: string;
+      beforeMs: number;
+      afterMs: number;
+      deltaMs: number;
+    }> = [];
+
+    const activity: Array<{
+      id: string;
+      at: string;
+      type: "session" | "note" | "adjustment" | "audit";
+      label: string;
+      detail: string;
+      userName: string | null;
+    }> = [];
+
     for (const row of auditRows) {
       const atMs = new Date(row.createdAt).getTime();
       const atIso = row.createdAt.toISOString();
@@ -14599,43 +14626,70 @@ export async function registerRoutes(app: Express): Promise<Server> {
         sessionStartedAt = atIso;
         activeStartedAt = atIso;
         pausedAt = null;
-        accumulatedElapsedMs = 0;
         sessionStatus = "active";
+        activity.push({
+          id: row.id,
+          at: atIso,
+          type: "session",
+          label: "Design session started",
+          detail: row.description,
+          userName: row.userName,
+        });
         continue;
       }
 
       if (row.actionType === "design_session_resumed") {
         if (!sessionStartedAt) {
           sessionStartedAt = atIso;
-          accumulatedElapsedMs = 0;
         }
         activeStartedAt = atIso;
         pausedAt = null;
         sessionStatus = "active";
+        activity.push({
+          id: row.id,
+          at: atIso,
+          type: "session",
+          label: "Design session resumed",
+          detail: row.description,
+          userName: row.userName,
+        });
         continue;
       }
 
       if (row.actionType === "design_session_paused") {
         if (activeStartedAt) {
-          accumulatedElapsedMs += Math.max(0, atMs - new Date(activeStartedAt).getTime());
+          rawTrackedMs += Math.max(0, atMs - new Date(activeStartedAt).getTime());
         }
         activeStartedAt = null;
         pausedAt = atIso;
-        if (sessionStartedAt) {
-          sessionStatus = "paused";
-        }
+        sessionStatus = sessionStartedAt ? "paused" : "idle";
+        activity.push({
+          id: row.id,
+          at: atIso,
+          type: "session",
+          label: "Design session paused",
+          detail: row.description,
+          userName: row.userName,
+        });
         continue;
       }
 
       if (row.actionType === "design_session_completed") {
         if (activeStartedAt) {
-          accumulatedElapsedMs += Math.max(0, atMs - new Date(activeStartedAt).getTime());
+          rawTrackedMs += Math.max(0, atMs - new Date(activeStartedAt).getTime());
         }
         activeStartedAt = null;
         pausedAt = null;
         sessionStartedAt = null;
-        accumulatedElapsedMs = 0;
         sessionStatus = "idle";
+        activity.push({
+          id: row.id,
+          at: atIso,
+          type: "session",
+          label: "Design session completed",
+          detail: row.description,
+          userName: row.userName,
+        });
         continue;
       }
 
@@ -14653,38 +14707,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             noteKind,
             noteText,
           });
-        }
-      }
-    }
-
-    const elapsedMs =
-      sessionStatus === "active" && activeStartedAt
-        ? accumulatedElapsedMs + Math.max(0, nowMs - new Date(activeStartedAt).getTime())
-        : accumulatedElapsedMs;
-
-    return {
-      session: {
-        status: sessionStatus,
-        startedAt: sessionStartedAt,
-        activeStartedAt,
-        pausedAt,
-        elapsedMs,
-      },
-      notes: noteEntries.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()),
-    };
-  };
-
-  const createDesignActivityEntries = (auditRows: DesignWorkspaceAuditRow[]) => {
-    return [...auditRows]
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-      .map((row) => {
-        const noteKind = String(row.newValues?.noteKind || "").trim();
-        const noteText = String(row.newValues?.noteText || "").trim();
-
-        if (row.actionType === "design_note_added") {
-          return {
+          activity.push({
             id: row.id,
-            at: row.createdAt.toISOString(),
+            at: atIso,
             type: "note",
             label:
               noteKind === "progress_update"
@@ -14692,64 +14717,88 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 : noteKind === "blocker_update"
                   ? "Blocker update"
                   : "Internal design note",
-            detail: noteText || row.description,
+            detail: noteText,
             userName: row.userName,
-          };
+          });
         }
+        continue;
+      }
 
-        if (row.actionType === "design_session_started") {
-          return {
-            id: row.id,
-            at: row.createdAt.toISOString(),
-            type: "session",
-            label: "Design session started",
-            detail: row.description,
-            userName: row.userName,
-          };
-        }
-
-        if (row.actionType === "design_session_resumed") {
-          return {
-            id: row.id,
-            at: row.createdAt.toISOString(),
-            type: "session",
-            label: "Design session resumed",
-            detail: row.description,
-            userName: row.userName,
-          };
-        }
-
-        if (row.actionType === "design_session_paused") {
-          return {
-            id: row.id,
-            at: row.createdAt.toISOString(),
-            type: "session",
-            label: "Design session paused",
-            detail: row.description,
-            userName: row.userName,
-          };
-        }
-
-        if (row.actionType === "design_session_completed") {
-          return {
-            id: row.id,
-            at: row.createdAt.toISOString(),
-            type: "session",
-            label: "Design session completed",
-            detail: row.description,
-            userName: row.userName,
-          };
-        }
-
-        return {
+      if (row.actionType === "design_time_adjusted") {
+        const beforeMs = Number(row.newValues?.beforeMs ?? 0);
+        const afterMs = Number(row.newValues?.afterMs ?? beforeMs);
+        const deltaMs = Number(row.newValues?.deltaMs ?? afterMs - beforeMs);
+        const reason = String(row.newValues?.reason || "").trim() || row.description;
+        totalAdjustmentMs += deltaMs;
+        adjustmentEntries.push({
           id: row.id,
-          at: row.createdAt.toISOString(),
-          type: "audit",
-          label: row.description,
-          detail: row.description,
+          at: atIso,
           userName: row.userName,
-        };
+          reason,
+          beforeMs,
+          afterMs,
+          deltaMs,
+        });
+        activity.push({
+          id: row.id,
+          at: atIso,
+          type: "adjustment",
+          label: "Time adjustment",
+          detail: reason,
+          userName: row.userName,
+        });
+        continue;
+      }
+
+      activity.push({
+        id: row.id,
+        at: atIso,
+        type: "audit",
+        label: row.description,
+        detail: row.description,
+        userName: row.userName,
       });
+    }
+
+    const rawTrackedWithLiveMs =
+      sessionStatus === "active" && activeStartedAt
+        ? rawTrackedMs + Math.max(0, nowMs - new Date(activeStartedAt).getTime())
+        : rawTrackedMs;
+
+    const totalTrackedMs = rawTrackedWithLiveMs + totalAdjustmentMs;
+    const normalizedWorkflowState = String(lineItem?.workflowState || "").trim().toLowerCase();
+    const normalizedDesignStatus = String(lineItem?.designStatus || "").trim().toLowerCase();
+    const effectiveState =
+      sessionStatus === "paused"
+        ? "paused"
+        : sessionStatus === "active"
+          ? "in_design"
+          : normalizedDesignStatus === "design_complete"
+            ? "design_complete"
+            : normalizedWorkflowState === "needs_design"
+              ? "needs_design"
+              : normalizedWorkflowState === "in_design"
+                ? "in_design"
+                : normalizedDesignStatus === "needs_design" || normalizedDesignStatus === "in_design"
+                  ? normalizedDesignStatus
+                  : "design_complete";
+
+    return {
+      effectiveState,
+      session: {
+        status: sessionStatus,
+        startedAt: sessionStartedAt,
+        activeStartedAt,
+        pausedAt,
+        elapsedMs: totalTrackedMs,
+      },
+      totalTrackedMs,
+      rawTrackedMs: rawTrackedWithLiveMs,
+      totalAdjustmentMs,
+      notes: noteEntries.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()),
+      adjustments: adjustmentEntries.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()),
+      activity: activity.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime()),
+    };
   };
 
   const insertDesignAuditLog = async (args: {
@@ -14793,15 +14842,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const auditRows = await listDesignAuditRows(organizationId, lineItemId);
-      const workspace = buildDesignWorkspaceState(auditRows);
-      const activity = createDesignActivityEntries(auditRows).slice(0, 12);
+      const workspace = buildDesignWorkspaceState({ lineItem, auditRows });
 
       return res.json({
         success: true,
         data: {
+          effectiveState: workspace.effectiveState,
           session: workspace.session,
+          totalTrackedMs: workspace.totalTrackedMs,
+          rawTrackedMs: workspace.rawTrackedMs,
+          totalAdjustmentMs: workspace.totalAdjustmentMs,
           notes: workspace.notes,
-          activity,
+          adjustments: workspace.adjustments,
+          activity: workspace.activity,
         },
       });
     } catch (error: any) {
@@ -14837,7 +14890,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const auditRows = await listDesignAuditRows(organizationId, lineItemId);
-      const workspace = buildDesignWorkspaceState(auditRows);
+  const workspace = buildDesignWorkspaceState({ lineItem, auditRows });
       const userName = req.user?.email || req.user?.name || null;
 
       if (parsed.data.action === "start") {
@@ -14898,7 +14951,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const updatedAudits = await listDesignAuditRows(organizationId, lineItemId);
-      const updatedWorkspace = buildDesignWorkspaceState(updatedAudits);
+      const updatedWorkspace = buildDesignWorkspaceState({ lineItem, auditRows: updatedAudits });
 
       return res.json({ success: true, data: updatedWorkspace });
     } catch (error: any) {
@@ -14956,7 +15009,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       const updatedAudits = await listDesignAuditRows(organizationId, lineItemId);
-      const updatedWorkspace = buildDesignWorkspaceState(updatedAudits);
+      const updatedWorkspace = buildDesignWorkspaceState({ lineItem, auditRows: updatedAudits });
 
       return res.json({ success: true, data: updatedWorkspace.notes });
     } catch (error: any) {
@@ -14964,6 +15017,78 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.status(500).json({ error: error?.message || "Failed to save design note" });
     }
   });
+
+  app.post(
+    "/api/design/line-item/:lineItemId/time-adjustments",
+    isAuthenticated,
+    tenantContext,
+    isAdminOrOwner,
+    async (req: any, res) => {
+      try {
+        if (!assertInternalUser(req, res)) return;
+
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+        const userId = getUserId(req.user);
+        if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+        const lineItemId = String(req.params.lineItemId);
+        const parsed = z
+          .object({
+            adjustedTotalMinutes: z.number().finite().min(0).max(5256000),
+            reason: z.string().trim().min(3).max(1000),
+          })
+          .safeParse(req.body);
+
+        if (!parsed.success) {
+          return res.status(400).json({ error: fromZodError(parsed.error).message });
+        }
+
+        const lineItem = await getDesignLineItemContext(organizationId, lineItemId);
+        if (!lineItem) {
+          return res.status(404).json({ error: "Line item not found" });
+        }
+
+        const auditRows = await listDesignAuditRows(organizationId, lineItemId);
+        const workspace = buildDesignWorkspaceState({ lineItem, auditRows });
+        const beforeMs = workspace.totalTrackedMs;
+        const afterMs = Math.round(parsed.data.adjustedTotalMinutes * 60_000);
+        const deltaMs = afterMs - beforeMs;
+
+        if (deltaMs === 0) {
+          return res.json({ success: true, data: workspace });
+        }
+
+        await insertDesignAuditLog({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          req,
+          lineItemId,
+          actionType: "design_time_adjusted",
+          description: "Adjusted tracked design time",
+          oldValues: {
+            totalTrackedMs: beforeMs,
+          },
+          newValues: {
+            reason: parsed.data.reason,
+            beforeMs,
+            afterMs,
+            deltaMs,
+          },
+        });
+
+        const updatedAudits = await listDesignAuditRows(organizationId, lineItemId);
+        const updatedWorkspace = buildDesignWorkspaceState({ lineItem, auditRows: updatedAudits });
+
+        return res.json({ success: true, data: updatedWorkspace });
+      } catch (error: any) {
+        console.error("[Design] Error adjusting tracked time:", error);
+        return res.status(500).json({ error: error?.message || "Failed to adjust tracked time" });
+      }
+    },
+  );
 
   const executeExplicitLineItemWorkflowAction = async (args: {
     req: any;
@@ -15167,7 +15292,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } as any);
 
       const designAudits = await listDesignAuditRows(organizationId, lineItemId);
-      const designWorkspace = buildDesignWorkspaceState(designAudits);
+      const designWorkspace = buildDesignWorkspaceState({ lineItem: currentLineItem, auditRows: designAudits });
 
       if (designWorkspace.session.status === "active" || designWorkspace.session.status === "paused") {
         await insertDesignAuditLog({
