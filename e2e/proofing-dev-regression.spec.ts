@@ -21,9 +21,8 @@ import {
 } from "../shared/schema";
 
 const ORG_ID = "org_titan_001";
-const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || "https://dev.printershero.com";
-const EMAIL = process.env.PLAYWRIGHT_EMAIL || "titangraphics1@gmail.com";
-const PASSWORD = process.env.PLAYWRIGHT_PASSWORD || "sandbox123";
+const BASE_URL = requireEnv("PLAYWRIGHT_BASE_URL");
+const EMAIL = requireEnv("PLAYWRIGHT_EMAIL");
 const SAME_ORIGIN_API_PREFIX = `${new URL(BASE_URL).origin}/api/`;
 
 type FixtureLine = {
@@ -43,8 +42,6 @@ type Fixture = {
 };
 
 test.describe.serial("staff proofing DEV regression", () => {
-  test.use({ storageState: { cookies: [], origins: [] } });
-
   test("same-origin proofing workflow stays operational", async ({ page }) => {
     test.setTimeout(300_000);
 
@@ -56,12 +53,9 @@ test.describe.serial("staff proofing DEV regression", () => {
     const fixture = await seedFixture();
 
     try {
-      await test.step("same-origin login establishes browser session", async () => {
-        await login(page);
-
-        const authRequests = filterRequests(requestUrls, "/api/auth/");
-        expect(authRequests.length).toBeGreaterThan(0);
-        expect(authRequests.every((url) => url.startsWith(SAME_ORIGIN_API_PREFIX))).toBe(true);
+      await test.step("shared auth state yields a same-origin browser session", async () => {
+        await page.goto(urlFor("/dashboard"), { waitUntil: "domcontentloaded" });
+        await expect(page).not.toHaveURL(/\/login/);
 
         const sessionState = await browserSameOriginApi(page, "/api/auth/session");
         expect(sessionState.status).toBe(200);
@@ -239,23 +233,6 @@ test.describe.serial("staff proofing DEV regression", () => {
   });
 });
 
-async function login(page: Page) {
-  await page.goto(urlFor("/login"), { waitUntil: "domcontentloaded" });
-  await page.locator("#email").fill(EMAIL);
-  await page.locator("#password").fill(PASSWORD);
-  await page.locator('button[type="submit"]').click();
-
-  await expect
-    .poll(
-      async () => {
-        const session = await browserSameOriginApi(page, "/api/auth/session");
-        return session.status === 200 && session.json?.authenticated === true;
-      },
-      { timeout: 30_000 }
-    )
-    .toBe(true);
-}
-
 async function waitForProofingShell(page: Page) {
   await page.waitForTimeout(4_000);
   const body = await page.locator("body").innerText();
@@ -309,6 +286,14 @@ async function browserSameOriginApi(page: Page, path: string, method = "GET", bo
 
 function filterRequests(requestUrls: Set<string>, fragment: string) {
   return Array.from(requestUrls).filter((url) => url.includes(fragment));
+}
+
+function requireEnv(name: string) {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`${name} must be set in .env.playwright`);
+  }
+  return value;
 }
 
 async function seedFixture(): Promise<Fixture> {
