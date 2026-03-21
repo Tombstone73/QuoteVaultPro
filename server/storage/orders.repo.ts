@@ -42,6 +42,8 @@ import { eq, and, or, ilike, gte, lte, desc, sql, isNull, inArray } from "drizzl
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
 import { resolveActiveProductionOwners } from "../services/productionOwnership";
+import { copyLineItemDesignSnapshotFields, materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
+import { productDesignConfigRepository } from "./productDesignConfig.repo";
 
 const ORDER_ATTACHMENT_SAFE_SELECT = {
     id: orderAttachments.id,
@@ -87,6 +89,11 @@ type CreateOrderLineItemInput = Omit<InsertOrderLineItem, 'orderId' | 'requiresP
 
 export class OrdersRepository {
     constructor(private readonly dbInstance = db) { }
+
+    private async getDesignConfigMap(organizationId: string, productIds: string[], executor: any = this.dbInstance) {
+        const configs = await productDesignConfigRepository.listByProductIds(organizationId, Array.from(new Set(productIds)), executor);
+        return new Map(configs.map((config) => [config.productId, config]));
+    }
 
     private async resolvePreviewThumbnailUrl(att: { fileRecordId?: string | null; thumbKey?: string | null; previewKey?: string | null }) {
         const previewAccess = await resolveDerivativeFileAccess(att, "preview");
@@ -651,7 +658,26 @@ export class OrdersRepository {
                 }
             }
 
+            const lineItemsWithSnapshots = await Promise.all(data.lineItems.map(async (li) => {
+                const existingSnapshot = (li as any).quoteLineItemId != null ||
+                    (li as any).requiresDesignSnapshot !== undefined ||
+                    (li as any).designPricingModeSnapshot !== undefined;
+
+                if (existingSnapshot) {
+                    return copyLineItemDesignSnapshotFields(li as any);
+                }
+
+                return materializeLineItemDesignSnapshot({
+                    config: await productDesignConfigRepository.getByProductId(organizationId, li.productId, tx),
+                    requestedNeedsDesignOverride: Object.prototype.hasOwnProperty.call(li as any, 'needsDesignOverride')
+                        ? ((li as any).needsDesignOverride ?? null)
+                        : undefined,
+                    requestedEffectiveRequiresDesign: typeof (li as any).requiresDesign === 'boolean' ? (li as any).requiresDesign : null,
+                });
+            }));
+
             const lineItemsData = data.lineItems.map((li, index) => {
+                const designSnapshot = lineItemsWithSnapshots[index];
                 const unitRaw = (li as any).unitPrice ?? (li as any).unit_price;
                 const totalRaw =
                     (li as any).totalPrice ??
@@ -672,7 +698,7 @@ export class OrdersRepository {
                 const taxAmountSafe = Number.isFinite(Number(taxAmountRaw)) ? Number(taxAmountRaw) : 0;
                 const isTaxableSnapshotRaw = (li as any).isTaxableSnapshot;
                 const isTaxableSnapshotSafe = typeof isTaxableSnapshotRaw === "boolean" ? isTaxableSnapshotRaw : true;
-                const requiresDesignSafe = Boolean((li as any).requiresDesign);
+                const requiresDesignSafe = designSnapshot.effectiveRequiresDesign;
                 const requiresPrepressSafe = typeof (li as any).requiresPrepress === "boolean" ? (li as any).requiresPrepress : true;
                 const workflowStateSafe = getInitialWorkflowState({
                     requiresDesign: requiresDesignSafe,
@@ -693,6 +719,16 @@ export class OrdersRepository {
                     totalPrice: totalSafe.toString(),
                     status: 'new',
                     workflowState: workflowStateSafe,
+                    requiresDesignSnapshot: designSnapshot.requiresDesignSnapshot,
+                    designBriefRequiredSnapshot: designSnapshot.designBriefRequiredSnapshot,
+                    estimatedDesignMinutesSnapshot: designSnapshot.estimatedDesignMinutesSnapshot,
+                    includedDesignMinutesSnapshot: designSnapshot.includedDesignMinutesSnapshot,
+                    designPricingModeSnapshot: designSnapshot.designPricingModeSnapshot,
+                    flatFeeAmountSnapshot: designSnapshot.flatFeeAmountSnapshot,
+                    hourlyRateSnapshot: designSnapshot.hourlyRateSnapshot,
+                    overageRateSnapshot: designSnapshot.overageRateSnapshot,
+                    internalLaborRateSnapshot: designSnapshot.internalLaborRateSnapshot,
+                    needsDesignOverride: designSnapshot.needsDesignOverride,
                     requiresDesign: requiresDesignSafe,
                     requiresPrepress: requiresPrepressSafe,
                     specsJson: (li as any).specsJson || null,
@@ -828,15 +864,17 @@ export class OrdersRepository {
 
         // Fetch product types for prepress override logic (migration 0051)
         const productIds = Array.from(new Set(quoteLines.map(ql => ql.productId)));
-        const productsWithTypes = await this.dbInstance
-            .select({
-                productId: products.id,
-                productTypeId: products.productTypeId,
-                requiresPrepressOverride: productTypes.requiresPrepressOverride,
-            })
-            .from(products)
-            .leftJoin(productTypes, eq(products.productTypeId, productTypes.id))
-            .where(inArray(products.id, productIds as [string, ...string[]]));
+        const productsWithTypes = productIds.length > 0
+            ? await this.dbInstance
+                .select({
+                    productId: products.id,
+                    productTypeId: products.productTypeId,
+                    requiresPrepressOverride: productTypes.requiresPrepressOverride,
+                })
+                .from(products)
+                .leftJoin(productTypes, eq(products.productTypeId, productTypes.id))
+                .where(inArray(products.id, productIds as [string, ...string[]]))
+            : [];
         
         const productPrepressMap = new Map<string, boolean>();
         for (const p of productsWithTypes) {
@@ -857,10 +895,11 @@ export class OrdersRepository {
             const requiresPrepress: boolean = typeof qlAny.requiresPrepress === 'boolean'
                 ? qlAny.requiresPrepress
                 : (productPrepressMap.get(ql.productId) ?? orgPrepressDefault);
+            const designSnapshot = copyLineItemDesignSnapshotFields(qlAny);
             // Line item lifecycle: new → in_production → complete | canceled
             const initialStatus = 'new' as unknown as InsertOrderLineItem['status'];
             const workflowState = getInitialWorkflowState({
-                requiresDesign,
+                requiresDesign: designSnapshot.effectiveRequiresDesign,
                 requiresPrepress,
             });
 
@@ -878,8 +917,18 @@ export class OrdersRepository {
                 totalPrice: parseFloat(ql.linePrice),
                 status: initialStatus,
                 workflowState,
-                designStatus: requiresDesign ? "needs_design" : null,
-                requiresDesign, // From quote line item routing truth (migration 0015)
+                designStatus: designSnapshot.effectiveRequiresDesign ? "needs_design" : null,
+                requiresDesignSnapshot: designSnapshot.requiresDesignSnapshot,
+                designBriefRequiredSnapshot: designSnapshot.designBriefRequiredSnapshot,
+                estimatedDesignMinutesSnapshot: designSnapshot.estimatedDesignMinutesSnapshot,
+                includedDesignMinutesSnapshot: designSnapshot.includedDesignMinutesSnapshot,
+                designPricingModeSnapshot: designSnapshot.designPricingModeSnapshot,
+                flatFeeAmountSnapshot: designSnapshot.flatFeeAmountSnapshot == null ? null : Number(designSnapshot.flatFeeAmountSnapshot),
+                hourlyRateSnapshot: designSnapshot.hourlyRateSnapshot == null ? null : Number(designSnapshot.hourlyRateSnapshot),
+                overageRateSnapshot: designSnapshot.overageRateSnapshot == null ? null : Number(designSnapshot.overageRateSnapshot),
+                internalLaborRateSnapshot: designSnapshot.internalLaborRateSnapshot == null ? null : Number(designSnapshot.internalLaborRateSnapshot),
+                needsDesignOverride: designSnapshot.needsDesignOverride,
+                requiresDesign: designSnapshot.effectiveRequiresDesign,
                 requiresProofApproval: false,
                 requiresPrepress, // Snapshot prepress requirement (TEMP→PERMANENT)
                 specsJson: ql.specsJson,
@@ -1123,6 +1172,29 @@ export class OrdersRepository {
     }
 
     async createOrderLineItem(lineItem: InsertOrderLineItem): Promise<OrderLineItem> {
+        const [orderRow] = await this.dbInstance
+            .select({ organizationId: orders.organizationId })
+            .from(orders)
+            .where(eq(orders.id, lineItem.orderId))
+            .limit(1);
+
+        if (!orderRow) {
+            throw new Error(`Order ${lineItem.orderId} not found`);
+        }
+
+        const existingSnapshot = (lineItem as any).quoteLineItemId != null ||
+            (lineItem as any).requiresDesignSnapshot !== undefined ||
+            (lineItem as any).designPricingModeSnapshot !== undefined;
+        const designSnapshot = existingSnapshot
+            ? copyLineItemDesignSnapshotFields(lineItem as any)
+            : materializeLineItemDesignSnapshot({
+                config: await productDesignConfigRepository.getByProductId(orderRow.organizationId, lineItem.productId),
+                requestedNeedsDesignOverride: Object.prototype.hasOwnProperty.call(lineItem as any, 'needsDesignOverride')
+                    ? ((lineItem as any).needsDesignOverride ?? null)
+                    : undefined,
+                requestedEffectiveRequiresDesign: typeof (lineItem as any).requiresDesign === 'boolean' ? (lineItem as any).requiresDesign : null,
+            });
+
         type SelectedOptionsInsert = typeof orderLineItems.$inferInsert["selectedOptions"];
         type SelectedOptionInsert = SelectedOptionsInsert extends Array<infer T> ? T : never;
         type NestingConfigInsert = typeof orderLineItems.$inferInsert["nestingConfigSnapshot"];
@@ -1164,10 +1236,20 @@ export class OrdersRepository {
             totalPrice: lineItem.totalPrice.toString(),
             status: lineItem.status,
             workflowState: lineItem.workflowState ?? getInitialWorkflowState({
-                requiresDesign: Boolean(lineItem.requiresDesign),
+                requiresDesign: designSnapshot.effectiveRequiresDesign,
                 requiresPrepress: typeof lineItem.requiresPrepress === "boolean" ? lineItem.requiresPrepress : true,
             }),
-            requiresDesign: lineItem.requiresDesign ?? false,
+            requiresDesignSnapshot: designSnapshot.requiresDesignSnapshot,
+            designBriefRequiredSnapshot: designSnapshot.designBriefRequiredSnapshot,
+            estimatedDesignMinutesSnapshot: designSnapshot.estimatedDesignMinutesSnapshot,
+            includedDesignMinutesSnapshot: designSnapshot.includedDesignMinutesSnapshot,
+            designPricingModeSnapshot: designSnapshot.designPricingModeSnapshot,
+            flatFeeAmountSnapshot: designSnapshot.flatFeeAmountSnapshot,
+            hourlyRateSnapshot: designSnapshot.hourlyRateSnapshot,
+            overageRateSnapshot: designSnapshot.overageRateSnapshot,
+            internalLaborRateSnapshot: designSnapshot.internalLaborRateSnapshot,
+            needsDesignOverride: designSnapshot.needsDesignOverride,
+            requiresDesign: designSnapshot.effectiveRequiresDesign,
             requiresPrepress: lineItem.requiresPrepress ?? true,
             specsJson: lineItem.specsJson ?? undefined,
             selectedOptions,

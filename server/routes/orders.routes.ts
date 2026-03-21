@@ -49,6 +49,8 @@ import { portalContext, tenantContext, getPortalCustomer } from "../tenantContex
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
 import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
 import { findActiveJobForLineItem } from "../services/productionOwnership";
+import { materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
+import { productDesignConfigRepository } from "../storage/productDesignConfig.repo";
 import { pbv2ToChildItemProposals, pbv2ToMaterialEffects, pbv2ToPricingAddons } from "@shared/pbv2/pricingAdapter";
 import { computePbv2InputSignature } from "@shared/pbv2/pbv2InputSignature";
 import { pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
@@ -4323,10 +4325,18 @@ export async function registerOrderRoutes(
             // Structured logging for PBV2 pricing persistence
             console.log(`[PBV2_PRICE_PERSIST] orderId=${lineItemData.orderId} treeVersionId=${pricingResult.pbv2TreeVersionId} totalCents=${pricingResult.lineTotalCents} pricedAt=${new Date().toISOString()}`);
 
+            const designSnapshot = materializeLineItemDesignSnapshot({
+                config: await productDesignConfigRepository.getByProductId(organizationId, String(lineItemData.productId)),
+                requestedNeedsDesignOverride: Object.prototype.hasOwnProperty.call(lineItemData, 'needsDesignOverride')
+                    ? ((lineItemData as any).needsDesignOverride ?? null)
+                    : undefined,
+                requestedEffectiveRequiresDesign: typeof lineItemData.requiresDesign === "boolean" ? lineItemData.requiresDesign : null,
+            });
+
             const routing = await resolveEffectiveLineItemRouting({
                 organizationId,
                 productId: String(lineItemData.productId),
-                requestedRequiresDesign: lineItemData.requiresDesign,
+                requestedRequiresDesign: designSnapshot.effectiveRequiresDesign,
                 requestedRequiresPrepress: lineItemData.requiresPrepress,
             });
 
@@ -4335,6 +4345,16 @@ export async function registerOrderRoutes(
                 ...lineItemData,
                 status: "new",
                 workflowState: routing.workflowState,
+                requiresDesignSnapshot: designSnapshot.requiresDesignSnapshot,
+                designBriefRequiredSnapshot: designSnapshot.designBriefRequiredSnapshot,
+                estimatedDesignMinutesSnapshot: designSnapshot.estimatedDesignMinutesSnapshot,
+                includedDesignMinutesSnapshot: designSnapshot.includedDesignMinutesSnapshot,
+                designPricingModeSnapshot: designSnapshot.designPricingModeSnapshot,
+                flatFeeAmountSnapshot: designSnapshot.flatFeeAmountSnapshot,
+                hourlyRateSnapshot: designSnapshot.hourlyRateSnapshot,
+                overageRateSnapshot: designSnapshot.overageRateSnapshot,
+                internalLaborRateSnapshot: designSnapshot.internalLaborRateSnapshot,
+                needsDesignOverride: designSnapshot.needsDesignOverride,
                 requiresDesign: routing.requiresDesign,
                 requiresPrepress: routing.requiresPrepress,
                 pbv2TreeVersionId: pricingResult.pbv2TreeVersionId,

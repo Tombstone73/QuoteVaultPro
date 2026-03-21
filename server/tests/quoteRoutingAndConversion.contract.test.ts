@@ -5,6 +5,7 @@ import { db } from "../db";
 import {
   orderLineItems,
   orders,
+  productDesignConfigs,
   quoteLineItems,
   type LineItemWorkflowState,
 } from "@shared/schema";
@@ -54,6 +55,31 @@ beforeAll(async () => {
     on conflict (id) do nothing
   `);
 
+  await db.insert(productDesignConfigs).values({
+    organizationId,
+    productId,
+    requiresDesign: true,
+    designBriefRequired: true,
+    useKeyInstructions: true,
+    useDesignObjective: true,
+    useRequestedContent: false,
+    useLayoutNotes: false,
+    useBrandStyleNotes: false,
+    useReferenceNotes: false,
+    usePriorityNotes: false,
+    requireKeyInstructions: true,
+    requireDesignObjective: true,
+    estimatedDesignMinutes: 45,
+    includedDesignMinutes: 30,
+    allowDesignStartWhenBriefMissing: false,
+    designPricingMode: "hourly",
+    flatFeeAmount: null,
+    hourlyRate: "65.00",
+    overageRate: "80.00",
+    internalLaborRate: "32.50",
+    costTrackingEnabled: true,
+  });
+
   await db.execute(sql`
     insert into stations (organization_id, key, name, sort, active)
     values
@@ -100,6 +126,7 @@ afterAll(async () => {
   await db.execute(sql`delete from quote_line_items where quote_id in (select id from quotes where organization_id = ${organizationId})`);
   await db.execute(sql`delete from quotes where organization_id = ${organizationId}`);
   await db.execute(sql`delete from audit_logs where organization_id = ${organizationId}`);
+  await db.execute(sql`delete from product_design_configs where organization_id = ${organizationId}`);
   await db.execute(sql`delete from global_variables where organization_id = ${organizationId}`);
   await db.execute(sql`delete from stations where organization_id = ${organizationId}`);
   await db.execute(sql`delete from user_organizations where user_id = ${userId} and organization_id = ${organizationId}`);
@@ -280,10 +307,19 @@ describe("quote routing persistence and conversion contract", () => {
     const byName = new Map(quote.lineItems.map((lineItem: any) => [lineItem.productName, lineItem]));
 
     expect(byName.get("Workflow Contract Product A")?.requiresDesign).toBe(true);
+    expect(byName.get("Workflow Contract Product A")?.requiresDesignSnapshot).toBe(true);
+    expect(byName.get("Workflow Contract Product A")?.designBriefRequiredSnapshot).toBe(true);
+    expect(byName.get("Workflow Contract Product A")?.designPricingModeSnapshot).toBe("hourly");
+    expect(byName.get("Workflow Contract Product A")?.hourlyRateSnapshot).toBe("65.00");
+    expect(byName.get("Workflow Contract Product A")?.needsDesignOverride).toBe(null);
     expect(byName.get("Workflow Contract Product A")?.requiresPrepress).toBe(true);
     expect(byName.get("Workflow Contract Product B")?.requiresDesign).toBe(false);
+    expect(byName.get("Workflow Contract Product B")?.requiresDesignSnapshot).toBe(true);
+    expect(byName.get("Workflow Contract Product B")?.needsDesignOverride).toBe(false);
     expect(byName.get("Workflow Contract Product B")?.requiresPrepress).toBe(true);
     expect(byName.get("Workflow Contract Product C")?.requiresDesign).toBe(false);
+    expect(byName.get("Workflow Contract Product C")?.requiresDesignSnapshot).toBe(true);
+    expect(byName.get("Workflow Contract Product C")?.needsDesignOverride).toBe(false);
     expect(byName.get("Workflow Contract Product C")?.requiresPrepress).toBe(false);
 
     const lineItemB = byName.get("Workflow Contract Product B");
@@ -295,6 +331,8 @@ describe("quote routing persistence and conversion contract", () => {
     } as any);
 
     expect(updated.requiresDesign).toBe(true);
+    expect(updated.requiresDesignSnapshot).toBe(true);
+    expect(updated.needsDesignOverride).toBe(null);
     expect(updated.requiresPrepress).toBe(false);
   });
 
@@ -315,8 +353,16 @@ describe("quote routing persistence and conversion contract", () => {
     const itemC = lineItemsByQuoteLineItemId.get(quoteItemC!.id);
 
     expect(itemA?.workflowState).toBe("needs_design");
+    expect(itemA?.requiresDesignSnapshot).toBe(true);
+    expect(itemA?.designPricingModeSnapshot).toBe("hourly");
+    expect(itemA?.hourlyRateSnapshot).toBe("65.00");
+    expect(itemA?.needsDesignOverride).toBe(null);
     expect(itemB?.workflowState).toBe("ready_for_prepress");
+    expect(itemB?.requiresDesignSnapshot).toBe(true);
+    expect(itemB?.needsDesignOverride).toBe(false);
     expect(itemC?.workflowState).toBe("ready_for_production");
+    expect(itemC?.requiresDesignSnapshot).toBe(true);
+    expect(itemC?.needsDesignOverride).toBe(false);
 
     const activeJobsA = await getActiveJobs(String(itemA!.id));
     const activeJobsB = await getActiveJobs(String(itemB!.id));
@@ -387,5 +433,36 @@ describe("quote routing persistence and conversion contract", () => {
     expect(afterJobs[0].id).toBe(beforeJobs[0].id);
     expect(afterJobs[0].stationKey).toBe("prepress");
     expect(afterJobs[0].stepKey).toBe("prepress");
+  });
+
+  test("manual order line creation snapshots current product design config", async () => {
+    const createdOrder = await ordersRepo.createOrder(organizationId, {
+      customerId,
+      createdByUserId: userId,
+      lineItems: [
+        {
+          productId,
+          productType: "wide_roll",
+          description: "Manual order line snapshot",
+          width: 12,
+          height: 18,
+          quantity: 1,
+          unitPrice: 25,
+          totalPrice: 25,
+          status: "new",
+          requiresDesign: false,
+          requiresPrepress: true,
+          selectedOptions: [],
+        },
+      ],
+    } as any);
+
+    const createdLine = createdOrder.lineItems[0] as any;
+    expect(createdLine.requiresDesignSnapshot).toBe(true);
+    expect(createdLine.designBriefRequiredSnapshot).toBe(true);
+    expect(createdLine.designPricingModeSnapshot).toBe("hourly");
+    expect(createdLine.hourlyRateSnapshot).toBe("65.00");
+    expect(createdLine.needsDesignOverride).toBe(false);
+    expect(createdLine.requiresDesign).toBe(false);
   });
 });
