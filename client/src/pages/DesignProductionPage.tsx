@@ -93,6 +93,48 @@ type DesignWorkspaceData = {
   } | null;
 };
 
+type LineItemDesignBriefDetail = {
+  id: string | null;
+  orderId: string;
+  orderLineItemId: string;
+  effectiveRequiresDesign: boolean;
+  designBriefRequired: boolean;
+  status: "not_required" | "required_missing" | "captured";
+  keyInstructions: string | null;
+  designObjective: string | null;
+  requestedContent: string | null;
+  layoutNotes: string | null;
+  brandStyleNotes: string | null;
+  referenceNotes: string | null;
+  priorityNotes: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+type StructuredOrderInternalNote = {
+  id: string;
+  noteText: string;
+  audienceTags: string[] | null;
+  createdByUserId: string | null;
+  createdByUserName: string | null;
+  createdAt: string;
+};
+
+type StructuredLineItemNote = {
+  id: string;
+  category: "internal" | "design_working";
+  noteText: string;
+  createdByUserId: string | null;
+  createdByUserName: string | null;
+  createdAt: string;
+};
+
+const DESIGN_BRIEF_STATUS_LABELS: Record<LineItemDesignBriefDetail["status"], string> = {
+  not_required: "Not Required",
+  required_missing: "Required Missing",
+  captured: "Captured",
+};
+
 function formatCurrencyValue(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return "-";
   return `$${value.toFixed(2)}`;
@@ -103,16 +145,10 @@ function formatMinuteValue(value: number | null | undefined) {
   return `${value.toFixed(2)} min`;
 }
 
-function formatOwnerLabel(item: DesignQueueItem) {
-  if (item.activeOwnerStepKey) {
-    return item.activeOwnerStepKey.replace(/_/g, " ");
-  }
-
-  if (item.activeOwnerStationKey) {
-    return item.activeOwnerStationKey.replace(/_/g, " ");
-  }
-
-  return null;
+function normalizeTextValue(value: unknown) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function formatDateTime(value: string | null | undefined) {
@@ -200,31 +236,6 @@ function getSpecRows(
   ];
 
   return rows.filter((row) => row.value !== null && row.value !== undefined && `${row.value}`.trim() !== "");
-}
-
-function getInstructionItems(
-  selectedLineItem: any,
-  displayPrintType: string | null,
-  displayMaterial: string | null,
-) {
-  const optionRows = Array.isArray(selectedLineItem?.specsJson?.selectedOptions)
-    ? selectedLineItem.specsJson.selectedOptions
-        .map((option: any) => {
-          const name = String(option?.optionName || option?.label || option?.name || "").trim();
-          const value = String(option?.displayValue ?? option?.value ?? "").trim();
-          if (!name || !value || looksLikeUuid(value)) return null;
-          return `${name}: ${value}`;
-        })
-        .filter(Boolean)
-    : [];
-
-  return [
-    displayPrintType ? `Print type: ${displayPrintType}` : null,
-    displayMaterial ? `Material: ${displayMaterial}` : null,
-    ...(optionRows as string[]),
-  ]
-    .slice(0, 6)
-    .filter(Boolean) as string[];
 }
 
 function getRecommendedAction(args: {
@@ -378,6 +389,103 @@ function CompactInfoRow(props: { label: string; value: string; valueClassName?: 
   );
 }
 
+function DetailTextBlock(props: { label: string; value: string | null | undefined; emptyLabel: string }) {
+  const { label, value, emptyLabel } = props;
+  const normalizedValue = normalizeTextValue(value);
+
+  return (
+    <div className="space-y-2">
+      <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+      {normalizedValue ? (
+        <div className="rounded-lg border border-border/80 bg-muted/15 p-3 text-sm leading-6 text-foreground whitespace-pre-wrap">
+          {normalizedValue}
+        </div>
+      ) : (
+        <div className="rounded-lg border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
+          {emptyLabel}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StructuredNotesList(props: {
+  notes: Array<{
+    id: string;
+    noteText: string;
+    createdAt: string;
+    createdByUserName: string | null;
+  }>;
+  isLoading: boolean;
+  emptyLabel: string;
+  legacyHint?: string | null;
+}) {
+  const { notes, isLoading, emptyLabel, legacyHint } = props;
+
+  if (isLoading) {
+    return <Skeleton className="h-24 w-full" />;
+  }
+
+  if (notes.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
+        <div>{emptyLabel}</div>
+        {legacyHint ? <div className="mt-2 text-xs leading-5">{legacyHint}</div> : null}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {notes.map((note) => (
+        <div key={note.id} className="rounded-lg border border-border/80 bg-muted/15 p-3">
+          <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+            <span>{note.createdByUserName || "Unknown user"}</span>
+            <span>{formatDateTime(note.createdAt)}</span>
+          </div>
+          <div className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{note.noteText}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DesignWorkingNotesList(props: {
+  notes: DesignWorkspaceData["notes"];
+  isLoading: boolean;
+}) {
+  const { notes, isLoading } = props;
+
+  if (isLoading) {
+    return <Skeleton className="h-24 w-full" />;
+  }
+
+  if (notes.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
+        No design working notes yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {notes.map((note) => (
+        <div key={note.id} className="rounded-lg border border-border/80 bg-muted/15 p-3">
+          <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2">
+              <Badge variant="outline">{getNoteKindLabel(note.noteKind)}</Badge>
+              <span>{note.userName || "Unknown user"}</span>
+            </div>
+            <span>{formatDateTime(note.at)}</span>
+          </div>
+          <div className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{note.noteText}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function DesignProductionPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -421,7 +529,6 @@ export default function DesignProductionPage() {
     setAdjustReasonDraft("");
   }, [selectedItem?.lineItemId]);
 
-  const selectedOwnerLabel = selectedItem ? formatOwnerLabel(selectedItem) : null;
   const isAdminOrOwner = user?.role === "owner" || user?.role === "admin" || Boolean(isAdmin || user?.isAdmin);
 
   const orderQuery = useOrder(selectedItem?.orderId);
@@ -454,15 +561,68 @@ export default function DesignProductionPage() {
     refetchOnWindowFocus: false,
   });
 
+  const designBriefQuery = useQuery<LineItemDesignBriefDetail>({
+    queryKey: ["orders", "lineItemDesignBrief", selectedItem?.orderId, selectedItem?.lineItemId],
+    queryFn: async () => {
+      const json = await readJson<{ data: LineItemDesignBriefDetail }>(
+        `/api/orders/${selectedItem?.orderId}/line-items/${selectedItem?.lineItemId}/design-brief`,
+      );
+      return json.data;
+    },
+    enabled: Boolean(selectedItem?.orderId && selectedItem?.lineItemId),
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+  });
+
+  const orderInternalNotesQuery = useQuery<StructuredOrderInternalNote[]>({
+    queryKey: ["orders", "internalNotes", selectedItem?.orderId],
+    queryFn: async () => {
+      const json = await readJson<{ data: StructuredOrderInternalNote[] }>(`/api/orders/${selectedItem?.orderId}/internal-notes`);
+      return json.data;
+    },
+    enabled: Boolean(selectedItem?.orderId),
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+  });
+
+  const lineItemInternalNotesQuery = useQuery<StructuredLineItemNote[]>({
+    queryKey: ["orders", "lineItemNotes", selectedItem?.orderId, selectedItem?.lineItemId, "internal"],
+    queryFn: async () => {
+      const json = await readJson<{ data: StructuredLineItemNote[] }>(
+        `/api/orders/${selectedItem?.orderId}/line-items/${selectedItem?.lineItemId}/notes?category=internal`,
+      );
+      return json.data;
+    },
+    enabled: Boolean(selectedItem?.orderId && selectedItem?.lineItemId),
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+  });
+
   const proofing = proofingQuery.data;
   const workspace = workspaceQuery.data;
+  const designBrief = designBriefQuery.data;
+  const orderInternalNotes = orderInternalNotesQuery.data ?? [];
+  const lineItemInternalNotes = lineItemInternalNotesQuery.data ?? [];
+  const designWorkingNotes = workspace?.notes ?? [];
   const displayPrintType = selectedItem ? getDisplayPrintType(selectedItem, selectedLineItem) : null;
   const displayMaterial = selectedItem ? getDisplayMaterial(selectedItem, selectedLineItem) : null;
   const specRows = selectedItem ? getSpecRows(selectedItem, selectedLineItem, displayPrintType, displayMaterial) : [];
-  const instructionItems = selectedItem ? getInstructionItems(selectedLineItem, displayPrintType, displayMaterial) : [];
   const proofVersionHistory = proofing?.proofVersionHistory.slice(0, 4) ?? [];
   const latestProofFeedback = workspace?.latestProofFeedback ?? null;
   const designCostSummary = workspace?.designCostSummary ?? null;
+  const hasLegacyOrderInternalNotes = Boolean(normalizeTextValue(order?.notesInternal));
+  const designBriefHasAnyContent = Boolean(
+    designBrief &&
+      [
+        designBrief.keyInstructions,
+        designBrief.designObjective,
+        designBrief.requestedContent,
+        designBrief.layoutNotes,
+        designBrief.brandStyleNotes,
+        designBrief.referenceNotes,
+        designBrief.priorityNotes,
+      ].some((value) => normalizeTextValue(value)),
+  );
   const recommendedAction = selectedItem
     ? getRecommendedAction({
         item: selectedItem,
@@ -660,16 +820,23 @@ export default function DesignProductionPage() {
   const metadataColumnOne = selectedItem
     ? [
         {
-          label: "Order / Line Item",
-          value: selectedOwnerLabel ? `#${selectedItem.jobNumber} • ${selectedOwnerLabel}` : `#${selectedItem.jobNumber} • ${selectedItem.lineItemId}`,
+          label: "Order Reference",
+          value: `#${selectedItem.jobNumber}${order?.label ? ` • ${order.label}` : order?.poNumber ? ` • PO ${order.poNumber}` : ""}`,
+        },
+        {
+          label: "Line Item Reference",
+          value: selectedLineItem?.id ?? selectedItem.lineItemId,
         },
         {
           label: "Customer",
-          value: selectedItem.customerName,
+          value: order?.customer?.companyName || selectedItem.customerName,
         },
         {
-          label: "Due Date",
-          value: `${formatDateTime(order?.dueDate ?? selectedItem.dueDate)}${order?.dueDate ?? selectedItem.dueDate ? ` • ${formatRelativeTime(order?.dueDate ?? selectedItem.dueDate)}` : ""}`,
+          label: order?.dueDate ? "Order Due Date" : "Due Date",
+          value:
+            order?.dueDate ?? selectedItem.dueDate
+              ? `${formatDateTime(order?.dueDate ?? selectedItem.dueDate)} • ${formatRelativeTime(order?.dueDate ?? selectedItem.dueDate)}`
+              : "No due date set",
         },
       ]
     : [];
@@ -687,6 +854,10 @@ export default function DesignProductionPage() {
         {
           label: "Product",
           value: getReadableLabel(selectedLineItem?.product?.name) || getReadableLabel(selectedItem.productName) || "-",
+        },
+        {
+          label: "Line Item",
+          value: getReadableLabel(selectedLineItem?.description) || "No line item description",
         },
       ]
     : [];
@@ -828,122 +999,139 @@ export default function DesignProductionPage() {
 
             <Card className="border-border/80 bg-card/95 shadow-sm shadow-black/20">
               <CardHeader className="pb-3">
-                <CardTitle className="text-base">Design Brief</CardTitle>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <CardTitle className="text-base">Design Brief</CardTitle>
+                  {designBrief ? (
+                    <Badge
+                      variant={designBrief.status === "captured" ? "secondary" : "outline"}
+                      className={cn(
+                        designBrief.status === "required_missing" && "border-amber-500/30 bg-amber-500/10 text-amber-700",
+                      )}
+                    >
+                      {DESIGN_BRIEF_STATUS_LABELS[designBrief.status]}
+                    </Badge>
+                  ) : null}
+                </div>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="rounded-lg border border-border/80 bg-muted/20 p-3 text-sm leading-6 text-foreground">
-                  {selectedLineItem?.description || selectedItem.productName || "No detailed design brief captured on this line item."}
-                </div>
-
-                <div className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
-                  <div className="space-y-2">
-                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Key Instructions</div>
-                    {instructionItems.length > 0 ? (
-                      <ul className="space-y-2 text-sm text-foreground">
-                        {instructionItems.map((item) => (
-                          <li key={item} className="flex gap-2">
-                            <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-primary" />
-                            <span>{item}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <div className="rounded-lg border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
-                        No structured design instructions captured.
+                {designBriefQuery.isLoading ? (
+                  <div className="space-y-3">
+                    <Skeleton className="h-14 w-full" />
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {Array.from({ length: 6 }).map((_, index) => (
+                        <Skeleton key={index} className="h-24 w-full" />
+                      ))}
+                    </div>
+                  </div>
+                ) : designBrief ? (
+                  <>
+                    <div className="rounded-lg border border-border/80 bg-muted/15 px-3 py-3 text-sm text-muted-foreground">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span>
+                          {designBrief.designBriefRequired
+                            ? "This line item requires a captured design brief snapshot."
+                            : designBrief.effectiveRequiresDesign
+                              ? "This line item is design-related, but the current snapshot does not require a captured brief."
+                              : "This line item does not currently require design work from the saved snapshot."}
+                        </span>
+                        <span className="text-xs">
+                          {designBrief.updatedAt ? `Updated ${formatRelativeTime(designBrief.updatedAt)}` : "No brief row saved yet"}
+                        </span>
                       </div>
-                    )}
+                    </div>
+
+                    {!designBriefHasAnyContent ? (
+                      <div className="rounded-lg border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
+                        {designBrief.status === "not_required"
+                          ? "No design brief is required for this line item."
+                          : "No design brief content has been captured yet."}
+                      </div>
+                    ) : null}
+
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <DetailTextBlock label="Key Instructions" value={designBrief.keyInstructions} emptyLabel="No key instructions captured." />
+                      <DetailTextBlock label="Design Objective" value={designBrief.designObjective} emptyLabel="No design objective captured." />
+                      <DetailTextBlock label="Requested Content" value={designBrief.requestedContent} emptyLabel="No requested content captured." />
+                      <DetailTextBlock label="Layout Notes" value={designBrief.layoutNotes} emptyLabel="No layout notes captured." />
+                      <DetailTextBlock label="Brand / Style Notes" value={designBrief.brandStyleNotes} emptyLabel="No brand or style notes captured." />
+                      <DetailTextBlock label="Reference Notes" value={designBrief.referenceNotes} emptyLabel="No reference notes captured." />
+                      <div className="md:col-span-2">
+                        <DetailTextBlock label="Priority Notes" value={designBrief.priorityNotes} emptyLabel="No priority notes captured." />
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
+                    Design brief details are unavailable for this line item.
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="border-border/80 bg-card/95 shadow-sm shadow-black/20">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Notes</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-4 xl:grid-cols-3">
+                  <div className="space-y-2">
+                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Order Internal Notes</div>
+                    <StructuredNotesList
+                      notes={orderInternalNotes}
+                      isLoading={orderInternalNotesQuery.isLoading}
+                      emptyLabel="No structured order internal notes yet."
+                      legacyHint={
+                        hasLegacyOrderInternalNotes
+                          ? "Legacy order note text still exists on the order record, but it is intentionally not merged into this structured section."
+                          : null
+                      }
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Line Item Internal Notes</div>
+                    <StructuredNotesList
+                      notes={lineItemInternalNotes}
+                      isLoading={lineItemInternalNotesQuery.isLoading}
+                      emptyLabel="No structured line item internal notes yet."
+                    />
                   </div>
 
                   <div className="space-y-3">
                     <div>
-                      <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Internal Notes</div>
-                      {orderQuery.isLoading ? (
-                        <Skeleton className="h-16 w-full" />
-                      ) : order?.notesInternal ? (
-                        <div className="rounded-lg border border-border/80 bg-muted/20 p-3 text-sm leading-6">
-                          {order.notesInternal}
-                        </div>
-                      ) : (
-                        <div className="rounded-lg border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
-                          No internal notes.
-                        </div>
-                      )}
+                      <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Design Working Notes</div>
+                      <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                        Working notes on this page remain sourced from the design audit log so the current design-page write flow stays intact.
+                      </div>
                     </div>
+                    <DesignWorkingNotesList notes={designWorkingNotes} isLoading={workspaceQuery.isLoading} />
 
-                    <div>
-                      <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Latest Proof Feedback</div>
-                      {workspaceQuery.isLoading ? (
-                        <Skeleton className="h-16 w-full" />
-                      ) : latestProofFeedback ? (
-                        <div className="rounded-lg border border-border/80 bg-muted/15 p-3">
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-2">
-                              <Badge variant="outline">
-                                {latestProofFeedback.decision.replace(/_/g, " ")}
-                              </Badge>
-                              <span className="text-xs text-muted-foreground">
-                                Proof v{latestProofFeedback.versionNumber}
-                              </span>
-                            </div>
-                            <span className="text-xs text-muted-foreground">
-                              {formatRelativeTime(latestProofFeedback.respondedAt)}
-                            </span>
-                          </div>
-                          <p className="mt-2 text-sm leading-6 text-foreground">
-                            {latestProofFeedback.responseSnippet}
-                          </p>
-                          <div className="mt-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                            <span>
-                              {latestProofFeedback.responderName
-                                ? `From ${latestProofFeedback.responderName}${latestProofFeedback.responderRole ? ` • ${latestProofFeedback.responderRole}` : ""}`
-                                : latestProofFeedback.responderRole
-                                  ? `Source: ${latestProofFeedback.responderRole}`
-                                  : "Responder unavailable"}
-                            </span>
-                            <Button asChild variant="ghost" size="sm" className="h-7 px-2 text-xs">
-                              <Link to={ROUTES.production.proofing}>
-                                Open proofing
-                                <ExternalLink className="ml-1 h-3 w-3" />
-                              </Link>
-                            </Button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="rounded-lg border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
-                          No proof feedback yet.
-                        </div>
-                      )}
-                    </div>
-
-                    <div>
-                      <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Design Cost Summary</div>
-                      {workspaceQuery.isLoading ? (
-                        <Skeleton className="h-24 w-full" />
-                      ) : designCostSummary ? (
-                        <div className="rounded-lg border border-border/80 bg-muted/15 p-3 text-sm">
-                          <div className="flex items-center justify-between gap-2">
-                            <Badge variant="outline">
-                              {designCostSummary.designCostState.replace(/_/g, " ")}
-                            </Badge>
-                            <span className="text-xs text-muted-foreground">
-                              Billing: {designCostSummary.billingStatus.replace(/_/g, " ")}
-                            </span>
-                          </div>
-                          <div className="mt-3 space-y-2">
-                            <CompactInfoRow label="Tracked" value={formatMinuteValue(designCostSummary.correctedTrackedMinutes)} />
-                            <CompactInfoRow label="Internal Cost" value={formatCurrencyValue(designCostSummary.internalDesignCostCalculated)} />
-                            <CompactInfoRow label="Sold Design" value={formatCurrencyValue(designCostSummary.soldDesignAmount)} />
-                            <CompactInfoRow label="Candidate Billable" value={formatCurrencyValue(designCostSummary.billableDesignAmount)} />
-                          </div>
-                          <p className="mt-3 text-xs leading-5 text-muted-foreground">
-                            Candidate billable amount is read-only visibility only in this phase and does not mean invoiced.
-                          </p>
-                        </div>
-                      ) : (
-                        <div className="rounded-lg border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
-                          No design cost summary available.
-                        </div>
-                      )}
+                    <div className="space-y-3 rounded-lg border border-border/80 bg-muted/15 p-3">
+                      <div className="flex flex-wrap gap-2">
+                        {(["internal_note", "progress_update", "blocker_update"] as DesignNoteKind[]).map((kind) => (
+                          <Button
+                            key={kind}
+                            type="button"
+                            size="sm"
+                            variant={noteKind === kind ? "secondary" : "outline"}
+                            className="h-8"
+                            onClick={() => setNoteKind(kind)}
+                          >
+                            {getNoteKindLabel(kind)}
+                          </Button>
+                        ))}
+                      </div>
+                      <Textarea
+                        value={noteDraft}
+                        onChange={(event) => setNoteDraft(event.target.value)}
+                        placeholder="Add a concise design working note"
+                        className="min-h-[108px] resize-y border-border/80 bg-background/60"
+                      />
+                      <div className="flex justify-end">
+                        <Button type="button" disabled={!canSaveNote || noteMutation.isPending} onClick={() => noteMutation.mutate()}>
+                          Save Working Note
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -952,45 +1140,17 @@ export default function DesignProductionPage() {
 
             <Card className="border-border/80 bg-card/95 shadow-sm shadow-black/20">
               <CardHeader className="pb-3">
-                <CardTitle className="text-base">Working Log</CardTitle>
+                <CardTitle className="text-base">Tracked Time & Corrections</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="grid gap-2 md:grid-cols-3">
                   <MetaCard label="Total Tracked" primary={formatDurationLabel(workspace?.totalTrackedMs ?? 0)} secondary={formatElapsedTime(workspace?.totalTrackedMs ?? 0)} />
-                  <MetaCard label="Raw Sessions" primary={formatDurationLabel(workspace?.rawTrackedMs ?? 0)} secondary={`${workspace?.notes.length ?? 0} notes`} />
+                  <MetaCard label="Raw Sessions" primary={formatDurationLabel(workspace?.rawTrackedMs ?? 0)} secondary={`${designWorkingNotes.length} working notes`} />
                   <MetaCard label="Adjustments" primary={formatDurationLabel(workspace?.totalAdjustmentMs ?? 0)} secondary={`${workspace?.adjustments.length ?? 0} entries`} />
                 </div>
 
-                <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
-                  <div className="space-y-3 rounded-lg border border-border/80 bg-muted/15 p-3">
-                    <div className="flex flex-wrap gap-2">
-                      {(["internal_note", "progress_update", "blocker_update"] as DesignNoteKind[]).map((kind) => (
-                        <Button
-                          key={kind}
-                          type="button"
-                          size="sm"
-                          variant={noteKind === kind ? "secondary" : "outline"}
-                          className="h-8"
-                          onClick={() => setNoteKind(kind)}
-                        >
-                          {getNoteKindLabel(kind)}
-                        </Button>
-                      ))}
-                    </div>
-                    <Textarea
-                      value={noteDraft}
-                      onChange={(event) => setNoteDraft(event.target.value)}
-                      placeholder="Add a concise working note"
-                      className="min-h-[108px] resize-y border-border/80 bg-background/60"
-                    />
-                    <div className="flex justify-end">
-                      <Button type="button" disabled={!canSaveNote || noteMutation.isPending} onClick={() => noteMutation.mutate()}>
-                        Save Note
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div className="space-y-3 rounded-lg border border-border/80 bg-muted/15 p-3">
+                <div className="rounded-lg border border-border/80 bg-muted/15 p-3">
+                  <div className="space-y-3">
                     <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                       <span>Time Correction</span>
                       <Tooltip>
@@ -1026,7 +1186,7 @@ export default function DesignProductionPage() {
                     />
                     <Button
                       type="button"
-                      className="w-full"
+                      className="w-full sm:w-auto"
                       disabled={!canSubmitAdjustment || adjustTimeMutation.isPending}
                       onClick={() => adjustTimeMutation.mutate()}
                     >
@@ -1063,6 +1223,80 @@ export default function DesignProductionPage() {
           </div>
 
           <div className="space-y-3">
+            <Card className="border-border/80 bg-card/95 shadow-sm shadow-black/20">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Latest Proof Feedback</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {workspaceQuery.isLoading ? (
+                  <Skeleton className="h-20 w-full" />
+                ) : latestProofFeedback ? (
+                  <div className="rounded-lg border border-border/80 bg-muted/15 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline">{latestProofFeedback.decision.replace(/_/g, " ")}</Badge>
+                        <span className="text-xs text-muted-foreground">Proof v{latestProofFeedback.versionNumber}</span>
+                      </div>
+                      <span className="text-xs text-muted-foreground">{formatRelativeTime(latestProofFeedback.respondedAt)}</span>
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-foreground">{latestProofFeedback.responseSnippet}</p>
+                    <div className="mt-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                      <span>
+                        {latestProofFeedback.responderName
+                          ? `From ${latestProofFeedback.responderName}${latestProofFeedback.responderRole ? ` • ${latestProofFeedback.responderRole}` : ""}`
+                          : latestProofFeedback.responderRole
+                            ? `Source: ${latestProofFeedback.responderRole}`
+                            : "Responder unavailable"}
+                      </span>
+                      <Button asChild variant="ghost" size="sm" className="h-7 px-2 text-xs">
+                        <Link to={ROUTES.production.proofing}>
+                          Open proofing
+                          <ExternalLink className="ml-1 h-3 w-3" />
+                        </Link>
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
+                    No proof feedback yet.
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="border-border/80 bg-card/95 shadow-sm shadow-black/20">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Design Cost Summary</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {workspaceQuery.isLoading ? (
+                  <Skeleton className="h-24 w-full" />
+                ) : designCostSummary ? (
+                  <div className="rounded-lg border border-border/80 bg-muted/15 p-3 text-sm">
+                    <div className="flex items-center justify-between gap-2">
+                      <Badge variant="outline">{designCostSummary.designCostState.replace(/_/g, " ")}</Badge>
+                      <span className="text-xs text-muted-foreground">
+                        Billing: {designCostSummary.billingStatus.replace(/_/g, " ")}
+                      </span>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      <CompactInfoRow label="Tracked" value={formatMinuteValue(designCostSummary.correctedTrackedMinutes)} />
+                      <CompactInfoRow label="Internal Cost" value={formatCurrencyValue(designCostSummary.internalDesignCostCalculated)} />
+                      <CompactInfoRow label="Sold Design" value={formatCurrencyValue(designCostSummary.soldDesignAmount)} />
+                      <CompactInfoRow label="Candidate Billable" value={formatCurrencyValue(designCostSummary.billableDesignAmount)} />
+                    </div>
+                    <p className="mt-3 text-xs leading-5 text-muted-foreground">
+                      Candidate billable amount is read-only visibility only in this phase and does not mean invoiced.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
+                    No design cost summary available.
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
             <Card className="border-border/80 bg-card/95 shadow-sm shadow-black/20">
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">Next Action</CardTitle>
@@ -1104,7 +1338,7 @@ export default function DesignProductionPage() {
 
             <Card className="border-border/80 bg-card/95 shadow-sm shadow-black/20">
               <CardHeader className="pb-3">
-                <CardTitle className="text-base">Versions</CardTitle>
+                <CardTitle className="text-base">Proof Versions</CardTitle>
               </CardHeader>
               <CardContent>
                 {proofingQuery.isLoading ? (
@@ -1139,7 +1373,7 @@ export default function DesignProductionPage() {
             <Card className="border-border/80 bg-card/95 shadow-sm shadow-black/20">
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between gap-3">
-                  <CardTitle className="text-base">Recent Activity</CardTitle>
+                  <CardTitle className="text-base">Working Log / Activity</CardTitle>
                   <div className="flex items-center gap-1 rounded-md border border-border/70 bg-muted/20 p-1">
                     <Button
                       type="button"
