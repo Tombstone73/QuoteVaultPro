@@ -69,6 +69,7 @@ import {
   recordProofResponse,
   resolveLineItemProofingTruth,
 } from "./services/proofingService";
+import { getLatestProofFeedbackByLineItemId } from "./services/proofFeedbackProjectionService";
 import { validateProofToken } from "./services/proofAccessTokenService";
 import {
   findActiveJobForLineItem,
@@ -14895,6 +14896,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } as any);
   };
 
+  const buildDesignWorkspacePayload = async (args: {
+    organizationId: string;
+    lineItem: Awaited<ReturnType<typeof getDesignLineItemContext>> extends infer T ? T : never;
+  }) => {
+    const auditRows = await listDesignAuditRows(args.organizationId, args.lineItem.id);
+    const workspace = buildDesignWorkspaceState({ lineItem: args.lineItem, auditRows });
+    const latestProofFeedback = await getLatestProofFeedbackByLineItemId({
+      organizationId: args.organizationId,
+      lineItemId: args.lineItem.id,
+    });
+
+    return {
+      effectiveState: workspace.effectiveState,
+      session: workspace.session,
+      totalTrackedMs: workspace.totalTrackedMs,
+      rawTrackedMs: workspace.rawTrackedMs,
+      totalAdjustmentMs: workspace.totalAdjustmentMs,
+      notes: workspace.notes,
+      adjustments: workspace.adjustments,
+      activity: workspace.activity,
+      latestProofFeedback,
+    };
+  };
+
   app.get("/api/design/line-item/:lineItemId/workspace", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -14908,21 +14933,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Line item not found" });
       }
 
-      const auditRows = await listDesignAuditRows(organizationId, lineItemId);
-      const workspace = buildDesignWorkspaceState({ lineItem, auditRows });
+      const workspace = await buildDesignWorkspacePayload({ organizationId, lineItem });
 
       return res.json({
         success: true,
-        data: {
-          effectiveState: workspace.effectiveState,
-          session: workspace.session,
-          totalTrackedMs: workspace.totalTrackedMs,
-          rawTrackedMs: workspace.rawTrackedMs,
-          totalAdjustmentMs: workspace.totalAdjustmentMs,
-          notes: workspace.notes,
-          adjustments: workspace.adjustments,
-          activity: workspace.activity,
-        },
+        data: workspace,
       });
     } catch (error: any) {
       console.error("[Design] Error fetching workspace detail:", error);

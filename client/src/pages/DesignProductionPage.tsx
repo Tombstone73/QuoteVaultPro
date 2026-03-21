@@ -69,6 +69,16 @@ type DesignWorkspaceData = {
     detail: string;
     userName: string | null;
   }>;
+  latestProofFeedback: {
+    decision: string;
+    responseNotes: string | null;
+    responseSnippet: string;
+    responderName: string | null;
+    responderRole: string | null;
+    respondedAt: string;
+    versionId: string;
+    versionNumber: number;
+  } | null;
 };
 
 function formatOwnerLabel(item: DesignQueueItem) {
@@ -429,6 +439,7 @@ export default function DesignProductionPage() {
   const specRows = selectedItem ? getSpecRows(selectedItem, selectedLineItem, displayPrintType, displayMaterial) : [];
   const instructionItems = selectedItem ? getInstructionItems(selectedLineItem, displayPrintType, displayMaterial) : [];
   const proofVersionHistory = proofing?.proofVersionHistory.slice(0, 4) ?? [];
+  const latestProofFeedback = workspace?.latestProofFeedback ?? null;
   const recommendedAction = selectedItem
     ? getRecommendedAction({
         item: selectedItem,
@@ -838,21 +849,41 @@ export default function DesignProductionPage() {
 
                     <div>
                       <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Latest Proof Feedback</div>
-                      {proofingQuery.isLoading ? (
+                      {workspaceQuery.isLoading ? (
                         <Skeleton className="h-16 w-full" />
-                      ) : proofing?.proofDecisionHistory[0] ? (
+                      ) : latestProofFeedback ? (
                         <div className="rounded-lg border border-border/80 bg-muted/15 p-3">
                           <div className="flex items-center justify-between gap-2">
-                            <Badge variant="outline">
-                              {proofing.proofDecisionHistory[0].decision.replace(/_/g, " ")}
-                            </Badge>
+                            <div className="flex items-center gap-2">
+                              <Badge variant="outline">
+                                {latestProofFeedback.decision.replace(/_/g, " ")}
+                              </Badge>
+                              <span className="text-xs text-muted-foreground">
+                                Proof v{latestProofFeedback.versionNumber}
+                              </span>
+                            </div>
                             <span className="text-xs text-muted-foreground">
-                              {formatRelativeTime(proofing.proofDecisionHistory[0].respondedAt)}
+                              {formatRelativeTime(latestProofFeedback.respondedAt)}
                             </span>
                           </div>
                           <p className="mt-2 text-sm leading-6 text-foreground">
-                            {proofing.proofDecisionHistory[0].responseNotes || "No written feedback captured."}
+                            {latestProofFeedback.responseSnippet}
                           </p>
+                          <div className="mt-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                            <span>
+                              {latestProofFeedback.responderName
+                                ? `From ${latestProofFeedback.responderName}${latestProofFeedback.responderRole ? ` • ${latestProofFeedback.responderRole}` : ""}`
+                                : latestProofFeedback.responderRole
+                                  ? `Source: ${latestProofFeedback.responderRole}`
+                                  : "Responder unavailable"}
+                            </span>
+                            <Button asChild variant="ghost" size="sm" className="h-7 px-2 text-xs">
+                              <Link to={ROUTES.production.proofing}>
+                                Open proofing
+                                <ExternalLink className="ml-1 h-3 w-3" />
+                              </Link>
+                            </Button>
+                          </div>
                         </div>
                       ) : (
                         <div className="rounded-lg border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
