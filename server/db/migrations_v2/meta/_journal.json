@@ -148,6 +148,13 @@
       "when": 1774047603000,
       "tag": "0020_product_design_configs",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1774047604000,
+      "tag": "0021_line_item_design_snapshots",
+      "breakpoints": true
     }
   ]
 }

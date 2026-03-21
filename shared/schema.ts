@@ -1380,6 +1380,19 @@ export const quoteLineItems = pgTable("quote_line_items", {
   //   requiresPrepress = true  → ready_for_prepress (after design, if any)
   //   requiresPrepress = false → ready_for_production (skip prepress)
   //   requiresPrepress = null  → fall back to productType / org default at conversion time
+  requiresDesignSnapshot: boolean("requires_design_snapshot").notNull().default(false),
+  designBriefRequiredSnapshot: boolean("design_brief_required_snapshot").notNull().default(false),
+  estimatedDesignMinutesSnapshot: integer("estimated_design_minutes_snapshot"),
+  includedDesignMinutesSnapshot: integer("included_design_minutes_snapshot"),
+  designPricingModeSnapshot: varchar("design_pricing_mode_snapshot", { length: 50 })
+    .$type<ProductDesignPricingMode>()
+    .notNull()
+    .default("none"),
+  flatFeeAmountSnapshot: decimal("flat_fee_amount_snapshot", { precision: 10, scale: 2 }),
+  hourlyRateSnapshot: decimal("hourly_rate_snapshot", { precision: 10, scale: 2 }),
+  overageRateSnapshot: decimal("overage_rate_snapshot", { precision: 10, scale: 2 }),
+  internalLaborRateSnapshot: decimal("internal_labor_rate_snapshot", { precision: 10, scale: 2 }),
+  needsDesignOverride: boolean("needs_design_override"),
   requiresDesign: boolean("requires_design").notNull().default(false),
   requiresPrepress: boolean("requires_prepress"),
 }, (table) => [
@@ -1429,6 +1442,14 @@ export const insertQuoteLineItemSchema = createInsertSchema(quoteLineItems).omit
   linePrice: z.coerce.number().positive(),
   displayOrder: z.coerce.number().int(),
   specsJson: z.record(z.any()).optional().nullable(),
+  estimatedDesignMinutesSnapshot: z.coerce.number().int().nonnegative().optional().nullable(),
+  includedDesignMinutesSnapshot: z.coerce.number().int().nonnegative().optional().nullable(),
+  designPricingModeSnapshot: productDesignPricingModeSchema.optional(),
+  flatFeeAmountSnapshot: z.coerce.number().nonnegative().optional().nullable(),
+  hourlyRateSnapshot: z.coerce.number().nonnegative().optional().nullable(),
+  overageRateSnapshot: z.coerce.number().nonnegative().optional().nullable(),
+  internalLaborRateSnapshot: z.coerce.number().nonnegative().optional().nullable(),
+  needsDesignOverride: z.boolean().optional().nullable(),
 });
 
 export type InsertQuote = z.infer<typeof insertQuoteSchema>;
@@ -2666,6 +2687,19 @@ export const orderLineItems = pgTable("order_line_items", {
   sortOrder: integer("sort_order").notNull().default(0), // Display order in UI (for drag-and-drop reordering)
   workflowState: varchar("workflow_state", { length: 50 }).notNull().default("new"),
   designStatus: varchar("design_status", { length: 50 }).$type<LineItemDesignStatus | null>(),
+  requiresDesignSnapshot: boolean("requires_design_snapshot").notNull().default(false),
+  designBriefRequiredSnapshot: boolean("design_brief_required_snapshot").notNull().default(false),
+  estimatedDesignMinutesSnapshot: integer("estimated_design_minutes_snapshot"),
+  includedDesignMinutesSnapshot: integer("included_design_minutes_snapshot"),
+  designPricingModeSnapshot: varchar("design_pricing_mode_snapshot", { length: 50 })
+    .$type<ProductDesignPricingMode>()
+    .notNull()
+    .default("none"),
+  flatFeeAmountSnapshot: decimal("flat_fee_amount_snapshot", { precision: 10, scale: 2 }),
+  hourlyRateSnapshot: decimal("hourly_rate_snapshot", { precision: 10, scale: 2 }),
+  overageRateSnapshot: decimal("overage_rate_snapshot", { precision: 10, scale: 2 }),
+  internalLaborRateSnapshot: decimal("internal_labor_rate_snapshot", { precision: 10, scale: 2 }),
+  needsDesignOverride: boolean("needs_design_override"),
   requiresDesign: boolean("requires_design").notNull().default(false),
   requiresProofApproval: boolean("requires_proof_approval").notNull().default(false),
   // Prepress requirement snapshot (migration 0051 - TEMP→PERMANENT contract)
@@ -2744,6 +2778,14 @@ export const insertOrderLineItemSchema = createInsertSchema(orderLineItems).omit
   width: z.coerce.number().positive().optional().nullable(),
   height: z.coerce.number().positive().optional().nullable(),
   sqft: z.coerce.number().positive().optional().nullable(),
+  estimatedDesignMinutesSnapshot: z.coerce.number().int().nonnegative().optional().nullable(),
+  includedDesignMinutesSnapshot: z.coerce.number().int().nonnegative().optional().nullable(),
+  designPricingModeSnapshot: productDesignPricingModeSchema.optional(),
+  flatFeeAmountSnapshot: z.coerce.number().nonnegative().optional().nullable(),
+  hourlyRateSnapshot: z.coerce.number().nonnegative().optional().nullable(),
+  overageRateSnapshot: z.coerce.number().nonnegative().optional().nullable(),
+  internalLaborRateSnapshot: z.coerce.number().nonnegative().optional().nullable(),
+  needsDesignOverride: z.boolean().optional().nullable(),
   status: z.enum(["new", "in_production", "complete", "canceled"]).default("new"),
   workflowState: lineItemWorkflowStateSchema.default("new"),
   designStatus: lineItemDesignStatusSchema.optional().nullable().default(null),
