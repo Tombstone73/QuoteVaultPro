@@ -8,6 +8,7 @@ import { buildDesignWorkspaceState, type DesignWorkspaceAuditRow } from "./desig
 import {
   designCostSummaryRepository,
   type DesignCostSummaryLineItemContext,
+  type OrderDesignBillingVisibilityRow,
 } from "../storage/designCostSummary.repo";
 
 const roundToTwo = (value: number): number => Math.round(value * 100) / 100;
@@ -182,6 +183,72 @@ const normalizeSummaryRow = (row: LineItemDesignCostSummary | null) => {
 };
 
 export type DesignCostSummaryReadModel = NonNullable<ReturnType<typeof normalizeSummaryRow>>;
+
+const normalizeMinutes = (value: string | number | null | undefined): number | null => {
+  const numeric = toNumber(value);
+  return numeric == null ? null : roundToTwo(numeric);
+};
+
+const deriveVisibilityState = (row: OrderDesignBillingVisibilityRow): "not_applicable" | "no_summary" | "available" => {
+  const effectiveRequiresDesign = row.needsDesignOverride ?? row.requiresDesignSnapshot;
+  if (!effectiveRequiresDesign) {
+    return "not_applicable";
+  }
+
+  return row.designCostState == null ? "no_summary" : "available";
+};
+
+export type OrderDesignBillingVisibilityItem = {
+  lineItemId: string;
+  orderId: string;
+  description: string | null;
+  quantity: number;
+  productName: string | null;
+  effectiveRequiresDesign: boolean;
+  designPricingModeSnapshot: string | null;
+  visibilityState: "not_applicable" | "no_summary" | "available";
+  designCostState: DesignCostState | null;
+  correctedTrackedMinutes: number | null;
+  soldDesignAmount: number | null;
+  billableDesignMinutes: number | null;
+  billableDesignAmount: number | null;
+  billingStatus: LineItemDesignBillingStatus | null;
+  lastSyncedAt: string | null;
+};
+
+export async function listOrderDesignBillingVisibility(args: {
+  organizationId: string;
+  orderId: string;
+  executor?: any;
+}): Promise<OrderDesignBillingVisibilityItem[] | null> {
+  const rows = await designCostSummaryRepository.listOrderVisibilityRows(
+    args.organizationId,
+    args.orderId,
+    args.executor,
+  );
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  return rows.map((row) => ({
+    lineItemId: row.lineItemId,
+    orderId: row.orderId,
+    description: row.description,
+    quantity: row.quantity,
+    productName: row.productName,
+    effectiveRequiresDesign: row.needsDesignOverride ?? row.requiresDesignSnapshot,
+    designPricingModeSnapshot: row.designPricingModeSnapshot,
+    visibilityState: deriveVisibilityState(row),
+    designCostState: (row.designCostState as DesignCostState | null) ?? null,
+    correctedTrackedMinutes: normalizeMinutes(row.correctedTrackedMinutes),
+    soldDesignAmount: normalizeMoney(row.soldDesignAmount),
+    billableDesignMinutes: normalizeMinutes(row.billableDesignMinutes),
+    billableDesignAmount: normalizeMoney(row.billableDesignAmount),
+    billingStatus: (row.billingStatus as LineItemDesignBillingStatus | null) ?? null,
+    lastSyncedAt: toIsoString(row.lastSyncedAt),
+  }));
+}
 
 export async function getDesignCostSummaryByLineItemId(args: {
   organizationId: string;
