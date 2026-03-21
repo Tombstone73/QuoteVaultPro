@@ -50,6 +50,7 @@ import { ensureCustomerForUser } from "../db/syncUsersToCustomers";
 import { updateOrderFulfillmentStatus } from "../fulfillmentService";
 import { portalContext, tenantContext, getPortalCustomer } from "../tenantContext";
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
+import { listOrderDesignBillingVisibility } from "../services/designCostSummaryService";
 import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
 import { getLineItemDesignBriefDetail, upsertLineItemDesignBrief } from "../services/lineItemDesignBriefService";
 import { addLineItemNote, addOrderInternalNote, listLineItemNotes, listOrderInternalNotes } from "../services/structuredOrderNotesService";
@@ -1196,6 +1197,27 @@ export async function registerOrderRoutes(
         } catch (error) {
             console.error("Error fetching order:", error);
             res.status(500).json({ message: "Failed to fetch order" });
+        }
+    });
+
+    app.get("/api/orders/:id/design-billing-visibility", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const items = await listOrderDesignBillingVisibility({
+                organizationId,
+                orderId: String(req.params.id),
+            });
+
+            if (items === null) {
+                return res.status(404).json({ message: "Order not found" });
+            }
+
+            return res.json({ success: true, data: items, message: "Order design billing visibility loaded" });
+        } catch (error) {
+            console.error("[GET /api/orders/:id/design-billing-visibility] Failed", error);
+            return res.status(500).json({ message: "Failed to load order design billing visibility" });
         }
     });
 

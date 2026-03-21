@@ -128,6 +128,47 @@ type OrderInternalNoteRow = {
   createdAt: string;
 };
 
+type OrderDesignBillingVisibilityItem = {
+  lineItemId: string;
+  orderId: string;
+  description: string | null;
+  quantity: number;
+  productName: string | null;
+  effectiveRequiresDesign: boolean;
+  designPricingModeSnapshot: string | null;
+  visibilityState: "not_applicable" | "no_summary" | "available";
+  designCostState: "not_applicable" | "estimated" | "accrued" | "finalized" | null;
+  correctedTrackedMinutes: number | null;
+  soldDesignAmount: number | null;
+  billableDesignMinutes: number | null;
+  billableDesignAmount: number | null;
+  billingStatus: "not_billable" | "candidate" | "approved_for_invoice" | "invoiced" | "waived" | null;
+  lastSyncedAt: string | null;
+};
+
+const DESIGN_BILLING_STATUS_LABELS: Record<NonNullable<OrderDesignBillingVisibilityItem["billingStatus"]>, string> = {
+  not_billable: "Not billable",
+  candidate: "Candidate",
+  approved_for_invoice: "Approved for invoice",
+  invoiced: "Invoiced",
+  waived: "Waived",
+};
+
+const DESIGN_COST_STATE_LABELS: Record<NonNullable<OrderDesignBillingVisibilityItem["designCostState"]>, string> = {
+  not_applicable: "Not applicable",
+  estimated: "Estimated",
+  accrued: "Accrued",
+  finalized: "Finalized",
+};
+
+const DESIGN_PRICING_MODE_LABELS: Record<string, string> = {
+  none: "None",
+  flat_fee: "Flat fee",
+  hourly: "Hourly",
+  included_minutes_plus_overage: "Included minutes + overage",
+  manual_quote: "Manual quote",
+};
+
 const fulfillmentMethods = ["pickup", "ship", "deliver"] as const;
 type FulfillmentMethod = (typeof fulfillmentMethods)[number];
 const isFulfillmentMethod = (value: string): value is FulfillmentMethod =>
@@ -281,6 +322,20 @@ export default function OrderDetail() {
       }
       const payload = await response.json();
       return payload.data as OrderInternalNoteRow[];
+    },
+  });
+
+  const orderDesignBillingVisibilityQuery = useQuery<OrderDesignBillingVisibilityItem[]>({
+    queryKey: ["orders", "design-billing-visibility", orderId],
+    enabled: Boolean(orderId),
+    queryFn: async () => {
+      const response = await fetch(`/api/orders/${orderId}/design-billing-visibility`, { credentials: "include" });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.message || "Failed to load design billing visibility");
+      }
+      const payload = await response.json();
+      return payload.data as OrderDesignBillingVisibilityItem[];
     },
   });
 
@@ -1215,6 +1270,10 @@ export default function OrderDetail() {
   const billingOverrideActive = Boolean((order as any).billingReadyOverride);
   const billingOverrideNoteValue = String((order as any).billingReadyOverrideNote || '');
   const billingReadyAtValue = (order as any).billingReadyAt as string | null | undefined;
+  const designBillingRows = orderDesignBillingVisibilityQuery.data ?? [];
+  const designBillingCandidateTotal = designBillingRows.reduce((sum, row) => sum + (row.billableDesignAmount ?? 0), 0);
+  const designBillingSoldTotal = designBillingRows.reduce((sum, row) => sum + (row.soldDesignAmount ?? 0), 0);
+  const designBillingUnsyncedCount = designBillingRows.filter((row) => row.visibilityState === "no_summary").length;
   const billingBadgeVariant: "default" | "secondary" | "outline" =
     billingStatus === 'ready' ? 'default' : billingStatus === 'billed' ? 'secondary' : 'outline';
   const billingLabel =
@@ -2659,6 +2718,87 @@ export default function OrderDetail() {
                     <Button variant="outline" onClick={handleClearBillingOverride} disabled={clearBillingOverrideMutation.isPending}>
                       {clearBillingOverrideMutation.isPending ? 'Clearing…' : 'Clear Override'}
                     </Button>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-sm font-medium">Design billing visibility</div>
+                    {designBillingRows.length > 0 && (
+                      <div className="text-xs text-muted-foreground">
+                        Candidate {formatCurrency(designBillingCandidateTotal)} • Sold {formatCurrency(designBillingSoldTotal)}
+                      </div>
+                    )}
+                  </div>
+                  <div className="text-sm text-muted-foreground">
+                    Visibility only. This does not create invoice rows or change order totals.
+                    {designBillingUnsyncedCount > 0 ? ` ${designBillingUnsyncedCount} line item${designBillingUnsyncedCount === 1 ? '' : 's'} still have no synced design summary.` : ''}
+                  </div>
+                  {orderDesignBillingVisibilityQuery.isLoading ? (
+                    <div className="text-sm text-muted-foreground">Loading design billing visibility…</div>
+                  ) : orderDesignBillingVisibilityQuery.isError ? (
+                    <div className="text-sm text-destructive">{(orderDesignBillingVisibilityQuery.error as Error).message}</div>
+                  ) : designBillingRows.length === 0 ? (
+                    <div className="text-sm text-muted-foreground">No line items available for design billing visibility.</div>
+                  ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Line Item</TableHead>
+                          <TableHead>Pricing</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead className="text-right">Tracked</TableHead>
+                          <TableHead className="text-right">Sold</TableHead>
+                          <TableHead className="text-right">Candidate</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {designBillingRows.map((row) => {
+                          const title = row.description || row.productName || "Line item";
+                          const pricingLabel = row.designPricingModeSnapshot
+                            ? (DESIGN_PRICING_MODE_LABELS[row.designPricingModeSnapshot] ?? row.designPricingModeSnapshot)
+                            : "—";
+                          const statusLabel = row.visibilityState === "not_applicable"
+                            ? "Not applicable"
+                            : row.visibilityState === "no_summary"
+                              ? "No summary yet"
+                              : row.billingStatus
+                                ? (DESIGN_BILLING_STATUS_LABELS[row.billingStatus] ?? row.billingStatus)
+                                : row.designCostState
+                                  ? (DESIGN_COST_STATE_LABELS[row.designCostState] ?? row.designCostState)
+                                  : "Available";
+
+                          return (
+                            <TableRow key={row.lineItemId}>
+                              <TableCell>
+                                <div className="font-medium">{title}</div>
+                                <div className="text-xs text-muted-foreground">
+                                  Qty {row.quantity}{row.productName ? ` • ${row.productName}` : ""}
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <div>{pricingLabel}</div>
+                                {row.lastSyncedAt && (
+                                  <div className="text-xs text-muted-foreground">Synced {formatDate(row.lastSyncedAt)}</div>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant={row.visibilityState === "available" ? "outline" : "secondary"}>{statusLabel}</Badge>
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {row.correctedTrackedMinutes == null ? "—" : `${row.correctedTrackedMinutes}m`}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {row.soldDesignAmount == null ? "—" : formatCurrency(row.soldDesignAmount)}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {row.billableDesignAmount == null ? "—" : formatCurrency(row.billableDesignAmount)}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
                   )}
                 </div>
 

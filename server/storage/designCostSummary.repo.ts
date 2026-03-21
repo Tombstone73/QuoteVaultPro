@@ -6,6 +6,7 @@ import {
   lineItemDesignCostSummaries,
   orderLineItems,
   orders,
+  products,
   quoteLineItems,
   type InsertLineItemDesignCostSummary,
 } from "@shared/schema";
@@ -27,6 +28,24 @@ export type DesignCostSummaryLineItemContext = {
   quoteLineItemId: string | null;
   quotedDesignPricingModeSnapshot: string | null;
   quotedFlatFeeAmountSnapshot: string | null;
+};
+
+export type OrderDesignBillingVisibilityRow = {
+  lineItemId: string;
+  orderId: string;
+  description: string | null;
+  quantity: number;
+  productName: string | null;
+  requiresDesignSnapshot: boolean;
+  needsDesignOverride: boolean | null;
+  designPricingModeSnapshot: string | null;
+  designCostState: string | null;
+  correctedTrackedMinutes: string | null;
+  soldDesignAmount: string | null;
+  billableDesignMinutes: string | null;
+  billableDesignAmount: string | null;
+  billingStatus: string | null;
+  lastSyncedAt: Date | null;
 };
 
 export class DesignCostSummaryRepository {
@@ -107,6 +126,43 @@ export class DesignCostSummaryRepository {
       .limit(1);
 
     return row ?? null;
+  }
+
+  async listOrderVisibilityRows(
+    organizationId: string,
+    orderId: string,
+    executor: any = this.dbInstance,
+  ): Promise<OrderDesignBillingVisibilityRow[]> {
+    return executor
+      .select({
+        lineItemId: orderLineItems.id,
+        orderId: orderLineItems.orderId,
+        description: orderLineItems.description,
+        quantity: orderLineItems.quantity,
+        productName: products.name,
+        requiresDesignSnapshot: orderLineItems.requiresDesignSnapshot,
+        needsDesignOverride: orderLineItems.needsDesignOverride,
+        designPricingModeSnapshot: orderLineItems.designPricingModeSnapshot,
+        designCostState: lineItemDesignCostSummaries.designCostState,
+        correctedTrackedMinutes: lineItemDesignCostSummaries.correctedTrackedMinutes,
+        soldDesignAmount: lineItemDesignCostSummaries.soldDesignAmount,
+        billableDesignMinutes: lineItemDesignCostSummaries.billableDesignMinutes,
+        billableDesignAmount: lineItemDesignCostSummaries.billableDesignAmount,
+        billingStatus: lineItemDesignCostSummaries.billingStatus,
+        lastSyncedAt: lineItemDesignCostSummaries.lastSyncedAt,
+      })
+      .from(orderLineItems)
+      .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+      .leftJoin(products, eq(orderLineItems.productId, products.id))
+      .leftJoin(
+        lineItemDesignCostSummaries,
+        and(
+          eq(lineItemDesignCostSummaries.organizationId, orders.organizationId),
+          eq(lineItemDesignCostSummaries.lineItemId, orderLineItems.id),
+        ),
+      )
+      .where(and(eq(orders.organizationId, organizationId), eq(orderLineItems.orderId, orderId)))
+      .orderBy(orderLineItems.createdAt, orderLineItems.id);
   }
 
   async upsertSummary(
