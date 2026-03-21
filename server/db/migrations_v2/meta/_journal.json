@@ -169,6 +169,13 @@
       "when": 1774047606000,
       "tag": "0023_structured_order_notes",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1774047607000,
+      "tag": "0024_line_item_design_cost_summaries",
+      "breakpoints": true
     }
   ]
 }
