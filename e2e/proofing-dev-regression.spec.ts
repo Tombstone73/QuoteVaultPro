@@ -77,7 +77,11 @@ test.describe.serial("staff proofing DEV regression", () => {
           `/api/orders/${fixture.orderId}/line-items/${fixture.createAndSend.id}/files`,
         );
 
-        await page.getByRole("button", { name: /^New Proof(?: Version)?$/i }).click();
+        await page
+          .getByRole("heading", { name: /^Proofing$/i })
+          .locator("..")
+          .getByRole("button", { name: /^New Proof(?: Version)?$/i })
+          .click();
         await page.getByRole("heading", { name: /Create Proof Version/i }).waitFor({ state: "visible", timeout: 30_000 });
 
         const existingProofButton = page.locator("button").filter({ hasText: "seed-existing-proof.pdf" }).first();
@@ -100,7 +104,11 @@ test.describe.serial("staff proofing DEV regression", () => {
       });
 
       await test.step("uploading a proof file creates the next draft version", async () => {
-        await page.getByRole("button", { name: /^New Proof(?: Version)?$/i }).click();
+        await page
+          .getByRole("heading", { name: /^Proofing$/i })
+          .locator("..")
+          .getByRole("button", { name: /^New Proof(?: Version)?$/i })
+          .click();
         await page.getByRole("heading", { name: /Create Proof Version/i }).waitFor({ state: "visible", timeout: 30_000 });
 
         await page.locator("#proof-upload-file").setInputFiles({
