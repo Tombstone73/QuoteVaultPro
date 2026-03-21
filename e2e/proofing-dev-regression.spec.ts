@@ -234,15 +234,22 @@ test.describe.serial("staff proofing DEV regression", () => {
 });
 
 async function waitForProofingShell(page: Page) {
-  await page.waitForTimeout(4_000);
-  const body = await page.locator("body").innerText();
-  if (body.includes("Loading...") && !body.includes("Staff Proofing")) {
-    throw new Error(`Page remained stuck on Loading. url=${page.url()} body=${JSON.stringify(body.slice(0, 500))}`);
-  }
-  if (!body.includes("Staff Proofing")) {
-    throw new Error(`Staff Proofing shell did not render. url=${page.url()} body=${JSON.stringify(body.slice(0, 500))}`);
-  }
   await expect(page).not.toHaveURL(/\/login/);
+
+  const proofingHeading = page.getByRole("heading", { name: /^Proofing$/i }).first();
+  const newProofButton = page.getByRole("button", { name: /^New Proof$/i });
+  const allProofsTab = page.getByRole("tab", { name: /^All Proofs$/i });
+
+  try {
+    await expect(proofingHeading).toBeVisible({ timeout: 30_000 });
+    await expect(newProofButton).toBeVisible({ timeout: 30_000 });
+    await expect(allProofsTab).toBeVisible({ timeout: 30_000 });
+  } catch {
+    const body = await page.locator("body").innerText();
+    throw new Error(
+      `Proofing shell did not render expected controls. url=${page.url()} body=${JSON.stringify(body.slice(0, 500))}`,
+    );
+  }
 }
 
 async function clickSlice(page: Page, label: string) {
