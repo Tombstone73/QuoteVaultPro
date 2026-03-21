@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 import { db } from "../db";
 import {
@@ -10,8 +10,12 @@ import {
 export class ProductDesignConfigRepository {
   constructor(private readonly dbInstance = db) {}
 
-  async getByProductId(organizationId: string, productId: string): Promise<ProductDesignConfig | null> {
-    const [config] = await this.dbInstance
+  async getByProductId(
+    organizationId: string,
+    productId: string,
+    executor: any = this.dbInstance,
+  ): Promise<ProductDesignConfig | null> {
+    const [config] = await executor
       .select()
       .from(productDesignConfigs)
       .where(
@@ -23,6 +27,26 @@ export class ProductDesignConfigRepository {
       .limit(1);
 
     return config ?? null;
+  }
+
+  async listByProductIds(
+    organizationId: string,
+    productIds: string[],
+    executor: any = this.dbInstance,
+  ): Promise<ProductDesignConfig[]> {
+    if (productIds.length === 0) {
+      return [];
+    }
+
+    return executor
+      .select()
+      .from(productDesignConfigs)
+      .where(
+        and(
+          eq(productDesignConfigs.organizationId, organizationId),
+          inArray(productDesignConfigs.productId, productIds as [string, ...string[]]),
+        ),
+      );
   }
 
   async upsertForProduct(

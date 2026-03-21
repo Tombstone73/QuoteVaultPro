@@ -23,9 +23,16 @@ import {
 import { and, eq, isNull, like, gte, lte, desc, asc, sql, inArray } from "drizzle-orm";
 import { DB_TO_WORKFLOW, getEffectiveWorkflowState, type QuoteWorkflowState as WorkflowState } from "@shared/quoteWorkflow";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
+import { materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
+import { productDesignConfigRepository } from "./productDesignConfig.repo";
 
 export class QuotesRepository {
     constructor(private readonly dbInstance = db) { }
+
+    private async getDesignConfigMap(organizationId: string, productIds: string[], executor: any = this.dbInstance) {
+        const configs = await productDesignConfigRepository.listByProductIds(organizationId, Array.from(new Set(productIds)), executor);
+        return new Map(configs.map((config) => [config.productId, config]));
+    }
 
     private async resolvePreviewThumbnailUrl(att: { fileRecordId?: string | null; thumbKey?: string | null; previewKey?: string | null }) {
         const previewAccess = await resolveDerivativeFileAccess(att, "preview");
@@ -525,8 +532,18 @@ export class QuotesRepository {
         if (existingLineItemIds.length > 0) {
             console.log(`[createQuote] Skipping ${existingLineItemIds.length} line items that already exist (will be linked via finalizeTemporaryLineItemsForUser):`, existingLineItemIds);
         }
+
+        const designConfigMap = await this.getDesignConfigMap(
+            organizationId,
+            Array.from(new Set(newLineItems.map((item) => item.productId).filter(Boolean))),
+        );
         
         const lineItemsData = newLineItems.map((item, index) => ({
+            ...materializeLineItemDesignSnapshot({
+                config: designConfigMap.get(item.productId) ?? null,
+                requestedNeedsDesignOverride: (item as any).needsDesignOverride,
+                requestedEffectiveRequiresDesign: typeof (item as any).requiresDesign === 'boolean' ? (item as any).requiresDesign : null,
+            }),
             quoteId: newQuote.id,
             productId: item.productId,
             productName: item.productName,
@@ -559,7 +576,11 @@ export class QuotesRepository {
             pbv2SnapshotJson: (item as any).pbv2SnapshotJson || {},
             pricedAt: (item as any).pricedAt || new Date(),
             // Canonical routing intent (migration 0015)
-            requiresDesign: (item as any).requiresDesign === true,
+            requiresDesign: materializeLineItemDesignSnapshot({
+                config: designConfigMap.get(item.productId) ?? null,
+                requestedNeedsDesignOverride: (item as any).needsDesignOverride,
+                requestedEffectiveRequiresDesign: typeof (item as any).requiresDesign === 'boolean' ? (item as any).requiresDesign : null,
+            }).effectiveRequiresDesign,
             requiresPrepress: typeof (item as any).requiresPrepress === 'boolean' ? (item as any).requiresPrepress : null,
         }));
 
@@ -573,17 +594,55 @@ export class QuotesRepository {
         // This prevents accidentally stealing line items from other quotes.
         let linkedLineItems: QuoteLineItem[] = [];
         if (existingLineItemIds.length > 0) {
-            linkedLineItems = await this.dbInstance
-                .update(quoteLineItems)
-                .set({ quoteId: newQuote.id, isTemporary: false })
+            const existingLineItems = await this.dbInstance
+                .select()
+                .from(quoteLineItems)
                 .where(
                     and(
-                        inArray(quoteLineItems.id, existingLineItemIds),
+                        inArray(quoteLineItems.id, existingLineItemIds as [string, ...string[]]),
                         isNull(quoteLineItems.quoteId),
                         eq(quoteLineItems.isTemporary, true)
                     )
-                )
-                .returning();
+                );
+
+            if (existingLineItems.length > 0) {
+                const existingConfigMap = await this.getDesignConfigMap(
+                    organizationId,
+                    Array.from(new Set(existingLineItems.map((item) => item.productId).filter(Boolean))),
+                );
+
+                linkedLineItems = [];
+                for (const existingLineItem of existingLineItems) {
+                    const designSnapshot = materializeLineItemDesignSnapshot({
+                        config: existingConfigMap.get(existingLineItem.productId) ?? null,
+                        existingEffectiveRequiresDesign: existingLineItem.requiresDesign,
+                    });
+
+                    const [updatedExistingLineItem] = await this.dbInstance
+                        .update(quoteLineItems)
+                        .set({
+                            quoteId: newQuote.id,
+                            isTemporary: false,
+                            requiresDesign: designSnapshot.effectiveRequiresDesign,
+                            requiresDesignSnapshot: designSnapshot.requiresDesignSnapshot,
+                            designBriefRequiredSnapshot: designSnapshot.designBriefRequiredSnapshot,
+                            estimatedDesignMinutesSnapshot: designSnapshot.estimatedDesignMinutesSnapshot,
+                            includedDesignMinutesSnapshot: designSnapshot.includedDesignMinutesSnapshot,
+                            designPricingModeSnapshot: designSnapshot.designPricingModeSnapshot,
+                            flatFeeAmountSnapshot: designSnapshot.flatFeeAmountSnapshot,
+                            hourlyRateSnapshot: designSnapshot.hourlyRateSnapshot,
+                            overageRateSnapshot: designSnapshot.overageRateSnapshot,
+                            internalLaborRateSnapshot: designSnapshot.internalLaborRateSnapshot,
+                            needsDesignOverride: designSnapshot.needsDesignOverride,
+                        })
+                        .where(eq(quoteLineItems.id, existingLineItem.id))
+                        .returning();
+
+                    if (updatedExistingLineItem) {
+                        linkedLineItems.push(updatedExistingLineItem);
+                    }
+                }
+            }
             console.log(`[createQuote] Linked ${linkedLineItems.length}/${existingLineItemIds.length} existing line items to quote ${newQuote.id}`);
             
             // Warn if any items were NOT linked (already had a quoteId or weren't temporary)
@@ -766,7 +825,24 @@ export class QuotesRepository {
     }
 
     async addLineItem(quoteId: string, lineItem: Omit<InsertQuoteLineItem, 'quoteId'>): Promise<QuoteLineItem> {
+        const [quoteRow] = await this.dbInstance
+            .select({ organizationId: quotes.organizationId })
+            .from(quotes)
+            .where(eq(quotes.id, quoteId))
+            .limit(1);
+
+        if (!quoteRow) {
+            throw new Error(`Quote ${quoteId} not found`);
+        }
+
+        const designSnapshot = materializeLineItemDesignSnapshot({
+            config: await productDesignConfigRepository.getByProductId(quoteRow.organizationId, lineItem.productId),
+            requestedNeedsDesignOverride: (lineItem as any).needsDesignOverride,
+            requestedEffectiveRequiresDesign: typeof (lineItem as any).requiresDesign === 'boolean' ? (lineItem as any).requiresDesign : null,
+        });
+
         const lineItemData = {
+            ...designSnapshot,
             quoteId,
             productId: lineItem.productId,
             productName: lineItem.productName,
@@ -797,7 +873,7 @@ export class QuotesRepository {
             pbv2SnapshotJson: (lineItem as any).pbv2SnapshotJson || {},
             pricedAt: (lineItem as any).pricedAt || new Date(),
             // Canonical routing intent (migration 0015)
-            requiresDesign: (lineItem as any).requiresDesign === true,
+            requiresDesign: designSnapshot.effectiveRequiresDesign,
             requiresPrepress: typeof (lineItem as any).requiresPrepress === 'boolean' ? (lineItem as any).requiresPrepress : null,
         };
 
@@ -806,6 +882,29 @@ export class QuotesRepository {
     }
 
     async updateLineItem(id: string, lineItem: Partial<InsertQuoteLineItem>): Promise<QuoteLineItem> {
+        const [currentLineItem] = await this.dbInstance
+            .select({
+                id: quoteLineItems.id,
+                productId: quoteLineItems.productId,
+                requiresDesign: quoteLineItems.requiresDesign,
+                quoteId: quoteLineItems.quoteId,
+            })
+            .from(quoteLineItems)
+            .where(eq(quoteLineItems.id, id))
+            .limit(1);
+
+        if (!currentLineItem) {
+            throw new Error(`Line item ${id} not found`);
+        }
+
+        const [quoteRow] = currentLineItem.quoteId
+            ? await this.dbInstance
+                .select({ organizationId: quotes.organizationId })
+                .from(quotes)
+                .where(eq(quotes.id, currentLineItem.quoteId))
+                .limit(1)
+            : [];
+
         const updateData: any = {};
         const allowedStatus = ["draft", "active", "canceled"];
         if (lineItem.productId !== undefined) updateData.productId = lineItem.productId;
@@ -824,6 +923,32 @@ export class QuotesRepository {
         // Canonical routing intent (migration 0015)
         if ((lineItem as any).requiresDesign !== undefined) updateData.requiresDesign = (lineItem as any).requiresDesign === true;
         if ((lineItem as any).requiresPrepress !== undefined) updateData.requiresPrepress = typeof (lineItem as any).requiresPrepress === 'boolean' ? (lineItem as any).requiresPrepress : null;
+
+        if (quoteRow) {
+            const designSnapshot = materializeLineItemDesignSnapshot({
+                config: await productDesignConfigRepository.getByProductId(
+                    quoteRow.organizationId,
+                    lineItem.productId ?? currentLineItem.productId,
+                ),
+                requestedNeedsDesignOverride: Object.prototype.hasOwnProperty.call(lineItem, 'needsDesignOverride')
+                    ? ((lineItem as any).needsDesignOverride ?? null)
+                    : undefined,
+                requestedEffectiveRequiresDesign: typeof (lineItem as any).requiresDesign === 'boolean' ? (lineItem as any).requiresDesign : null,
+                existingEffectiveRequiresDesign: currentLineItem.requiresDesign,
+            });
+
+            updateData.requiresDesignSnapshot = designSnapshot.requiresDesignSnapshot;
+            updateData.designBriefRequiredSnapshot = designSnapshot.designBriefRequiredSnapshot;
+            updateData.estimatedDesignMinutesSnapshot = designSnapshot.estimatedDesignMinutesSnapshot;
+            updateData.includedDesignMinutesSnapshot = designSnapshot.includedDesignMinutesSnapshot;
+            updateData.designPricingModeSnapshot = designSnapshot.designPricingModeSnapshot;
+            updateData.flatFeeAmountSnapshot = designSnapshot.flatFeeAmountSnapshot;
+            updateData.hourlyRateSnapshot = designSnapshot.hourlyRateSnapshot;
+            updateData.overageRateSnapshot = designSnapshot.overageRateSnapshot;
+            updateData.internalLaborRateSnapshot = designSnapshot.internalLaborRateSnapshot;
+            updateData.needsDesignOverride = designSnapshot.needsDesignOverride;
+            updateData.requiresDesign = designSnapshot.effectiveRequiresDesign;
+        }
 
         const [updated] = await this.dbInstance
             .update(quoteLineItems)
@@ -847,7 +972,14 @@ export class QuotesRepository {
             throw new Error("createTemporaryLineItem called without productId");
         }
 
+        const designSnapshot = materializeLineItemDesignSnapshot({
+            config: await productDesignConfigRepository.getByProductId(organizationId, lineItem.productId),
+            requestedNeedsDesignOverride: (lineItem as any).needsDesignOverride,
+            requestedEffectiveRequiresDesign: typeof (lineItem as any).requiresDesign === 'boolean' ? (lineItem as any).requiresDesign : null,
+        });
+
         const lineItemData: typeof quoteLineItems.$inferInsert = {
+            ...designSnapshot,
             createdByUserId,
             quoteId: null,
             isTemporary: true,
@@ -867,6 +999,7 @@ export class QuotesRepository {
             priceBreakdown: lineItem.priceBreakdown as any,
             materialUsages: (lineItem as any).materialUsages ?? [],
             displayOrder: lineItem.displayOrder ?? 0,
+            requiresDesign: designSnapshot.effectiveRequiresDesign,
         } as any;
 
         const [created] = await this.dbInstance
@@ -914,20 +1047,42 @@ export class QuotesRepository {
 
         // Attach temp items to the new quote and mark as finalized
         // Note: We only update quoteId and isTemporary. Line items do NOT have a status column.
-        const updated = await this.dbInstance
-            .update(quoteLineItems)
-            .set({
-                quoteId,
-                isTemporary: false,
-            })
-            .where(
-                and(
-                    eq(quoteLineItems.createdByUserId, userId),
-                    eq(quoteLineItems.isTemporary, true),
-                    isNull(quoteLineItems.quoteId)
-                )
-            )
-            .returning();
+        const designConfigMap = await this.getDesignConfigMap(
+            organizationId,
+            Array.from(new Set(tempItems.map((item) => item.productId).filter(Boolean))),
+        );
+
+        const updated: QuoteLineItem[] = [];
+        for (const tempItem of tempItems) {
+            const designSnapshot = materializeLineItemDesignSnapshot({
+                config: designConfigMap.get(tempItem.productId) ?? null,
+                existingEffectiveRequiresDesign: tempItem.requiresDesign,
+            });
+
+            const [updatedItem] = await this.dbInstance
+                .update(quoteLineItems)
+                .set({
+                    quoteId,
+                    isTemporary: false,
+                    requiresDesign: designSnapshot.effectiveRequiresDesign,
+                    requiresDesignSnapshot: designSnapshot.requiresDesignSnapshot,
+                    designBriefRequiredSnapshot: designSnapshot.designBriefRequiredSnapshot,
+                    estimatedDesignMinutesSnapshot: designSnapshot.estimatedDesignMinutesSnapshot,
+                    includedDesignMinutesSnapshot: designSnapshot.includedDesignMinutesSnapshot,
+                    designPricingModeSnapshot: designSnapshot.designPricingModeSnapshot,
+                    flatFeeAmountSnapshot: designSnapshot.flatFeeAmountSnapshot,
+                    hourlyRateSnapshot: designSnapshot.hourlyRateSnapshot,
+                    overageRateSnapshot: designSnapshot.overageRateSnapshot,
+                    internalLaborRateSnapshot: designSnapshot.internalLaborRateSnapshot,
+                    needsDesignOverride: designSnapshot.needsDesignOverride,
+                })
+                .where(eq(quoteLineItems.id, tempItem.id))
+                .returning();
+
+            if (updatedItem) {
+                updated.push(updatedItem);
+            }
+        }
 
         return updated;
     }
