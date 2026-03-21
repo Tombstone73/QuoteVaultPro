@@ -118,6 +118,16 @@ type OrderAddressSnapshotFields = {
 type OrderDetailOrder = HookOrderWithRelations & OrderAddressSnapshotFields;
 type OrderDetailLineItem = HookOrderWithRelations["lineItems"][number];
 
+type OrderInternalNoteRow = {
+  id: string;
+  orderId: string;
+  noteText: string;
+  audienceTags: string[] | null;
+  createdByUserId: string | null;
+  createdByUserName: string | null;
+  createdAt: string;
+};
+
 const fulfillmentMethods = ["pickup", "ship", "deliver"] as const;
 type FulfillmentMethod = (typeof fulfillmentMethods)[number];
 const isFulfillmentMethod = (value: string): value is FulfillmentMethod =>
@@ -255,6 +265,46 @@ export default function OrderDetail() {
       const res = await fetch(`/api/orders/${orderId}/pbv2/rollup`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to load PBV2 rollup");
       return res.json();
+    },
+  });
+
+  const [orderInternalNoteDraft, setOrderInternalNoteDraft] = useState("");
+
+  const orderInternalNotesQuery = useQuery<OrderInternalNoteRow[]>({
+    queryKey: ["orders", "internalNotes", orderId],
+    enabled: Boolean(orderId),
+    queryFn: async () => {
+      const response = await fetch(`/api/orders/${orderId}/internal-notes`, { credentials: "include" });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.message || "Failed to load order internal notes");
+      }
+      const payload = await response.json();
+      return payload.data as OrderInternalNoteRow[];
+    },
+  });
+
+  const addOrderInternalNoteMutation = useMutation({
+    mutationFn: async (noteText: string) => {
+      const response = await fetch(`/api/orders/${orderId}/internal-notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ noteText }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(payload?.message || "Failed to add order internal note");
+      }
+      return payload.data as OrderInternalNoteRow;
+    },
+    onSuccess: async () => {
+      setOrderInternalNoteDraft("");
+      await queryClient.invalidateQueries({ queryKey: ["orders", "internalNotes", orderId] });
+      toast({ title: "Order internal note added" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to add order internal note", description: error.message, variant: "destructive" });
     },
   });
 
@@ -1127,12 +1177,11 @@ export default function OrderDetail() {
   if (isLoading) {
     return (
       <Page>
-        <div className="flex items-center justify-center min-h-[400px]">
-          <div className="flex items-center gap-2">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-titan-accent"></div>
-            <span className="text-titan-text-secondary">Loading order...</span>
-          </div>
-        </div>
+        <ContentLayout>
+          <DataCard className="bg-titan-bg-card border-titan-border-subtle">
+            <div className="py-16 text-center text-sm text-titan-text-muted">Loading order...</div>
+          </DataCard>
+        </ContentLayout>
       </Page>
     );
   }
@@ -2002,7 +2051,7 @@ export default function OrderDetail() {
 
                 {order.notesInternal && (
                   <div>
-                    <label className="text-sm font-medium text-muted-foreground">Internal Notes</label>
+                    <label className="text-sm font-medium text-muted-foreground">Legacy Order Internal Notes (text blob)</label>
                     <div className="mt-1 text-sm p-3 bg-muted rounded-md whitespace-pre-wrap">
                       {order.notesInternal}
                     </div>

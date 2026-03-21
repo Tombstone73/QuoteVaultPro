@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Separator } from "@/components/ui/separator";
+import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -379,6 +380,72 @@ function buildOptionFlags(selectedOptions: any[] | undefined | null): string[] {
   return flags;
 }
 
+type LineItemDesignBriefStatus = "not_required" | "required_missing" | "captured";
+
+type LineItemDesignBriefDraft = {
+  keyInstructions: string;
+  designObjective: string;
+  requestedContent: string;
+  layoutNotes: string;
+  brandStyleNotes: string;
+  referenceNotes: string;
+  priorityNotes: string;
+};
+
+type LineItemDesignBriefDetail = LineItemDesignBriefDraft & {
+  id: string | null;
+  orderId: string;
+  orderLineItemId: string;
+  effectiveRequiresDesign: boolean;
+  designBriefRequired: boolean;
+  status: LineItemDesignBriefStatus;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+type LineItemScopedNote = {
+  id: string;
+  orderId: string;
+  lineItemId: string;
+  category: "internal" | "design_working";
+  noteText: string;
+  createdByUserId: string | null;
+  createdByUserName: string | null;
+  createdAt: string;
+};
+
+const EMPTY_DESIGN_BRIEF_DRAFT: LineItemDesignBriefDraft = {
+  keyInstructions: "",
+  designObjective: "",
+  requestedContent: "",
+  layoutNotes: "",
+  brandStyleNotes: "",
+  referenceNotes: "",
+  priorityNotes: "",
+};
+
+const DESIGN_BRIEF_STATUS_LABELS: Record<LineItemDesignBriefStatus, string> = {
+  not_required: "Not required",
+  required_missing: "Required missing",
+  captured: "Captured",
+};
+
+function toDesignBriefDraft(detail?: Partial<LineItemDesignBriefDetail> | null): LineItemDesignBriefDraft {
+  return {
+    keyInstructions: detail?.keyInstructions ?? "",
+    designObjective: detail?.designObjective ?? "",
+    requestedContent: detail?.requestedContent ?? "",
+    layoutNotes: detail?.layoutNotes ?? "",
+    brandStyleNotes: detail?.brandStyleNotes ?? "",
+    referenceNotes: detail?.referenceNotes ?? "",
+    priorityNotes: detail?.priorityNotes ?? "",
+  };
+}
+
+function hasAnyDesignBriefText(draft: LineItemDesignBriefDraft): boolean {
+  return Object.values(draft).some((value) => value.trim().length > 0);
+}
+
 export function OrderLineItemsSection({
   orderId,
   customerId,
@@ -670,6 +737,101 @@ export function OrderLineItemsSection({
     return injectDerivedMaterialOptionIntoProductOptions(expandedProduct, base);
   }, [expandedProduct]);
 
+  const [designBriefDraft, setDesignBriefDraft] = useState<LineItemDesignBriefDraft>(EMPTY_DESIGN_BRIEF_DRAFT);
+  const [designBriefSavedAt, setDesignBriefSavedAt] = useState<string | null>(null);
+  const designBriefSnapshotRef = useRef<Record<string, LineItemDesignBriefDraft>>({});
+  const [lineItemInternalNoteDraft, setLineItemInternalNoteDraft] = useState("");
+
+  const designBriefQuery = useQuery<LineItemDesignBriefDetail>({
+    queryKey: ["orders", "lineItemDesignBrief", orderId, expandedItem?.id],
+    queryFn: async () => {
+      if (!expandedItem?.id) {
+        throw new Error("Line item ID is required");
+      }
+
+      const response = await fetch(`/api/orders/${orderId}/line-items/${expandedItem.id}/design-brief`, {
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.message || "Failed to fetch design brief");
+      }
+
+      const data = await response.json();
+      return data.data as LineItemDesignBriefDetail;
+    },
+    enabled: !!expandedItem?.id,
+  });
+
+  const saveDesignBrief = useMutation({
+    mutationFn: async ({ lineItemId, data }: { lineItemId: string; data: LineItemDesignBriefDraft }) => {
+      const response = await fetch(`/api/orders/${orderId}/line-items/${lineItemId}/design-brief`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.message || "Failed to save design brief");
+      }
+
+      const payload = await response.json();
+      return payload.data as LineItemDesignBriefDetail;
+    },
+    onSuccess: async (detail) => {
+      designBriefSnapshotRef.current[detail.orderLineItemId] = toDesignBriefDraft(detail);
+      setDesignBriefSavedAt(detail.orderLineItemId);
+      await queryClient.invalidateQueries({ queryKey: ["orders", "lineItemDesignBrief", orderId, detail.orderLineItemId] });
+    },
+  });
+
+  const lineItemInternalNotesQuery = useQuery<LineItemScopedNote[]>({
+    queryKey: ["orders", "lineItemNotes", orderId, expandedItem?.id, "internal"],
+    queryFn: async () => {
+      if (!expandedItem?.id) {
+        throw new Error("Line item ID is required");
+      }
+
+      const response = await fetch(`/api/orders/${orderId}/line-items/${expandedItem.id}/notes?category=internal`, {
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.message || "Failed to fetch line item internal notes");
+      }
+
+      const payload = await response.json();
+      return payload.data as LineItemScopedNote[];
+    },
+    enabled: !!expandedItem?.id,
+  });
+
+  const addLineItemInternalNote = useMutation({
+    mutationFn: async ({ lineItemId, noteText }: { lineItemId: string; noteText: string }) => {
+      const response = await fetch(`/api/orders/${orderId}/line-items/${lineItemId}/notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category: "internal", noteText }),
+        credentials: "include",
+      });
+
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(payload?.message || "Failed to add line item internal note");
+      }
+
+      return payload.data as LineItemScopedNote;
+    },
+    onSuccess: async (_note, variables) => {
+      setLineItemInternalNoteDraft("");
+      await queryClient.invalidateQueries({ queryKey: ["orders", "lineItemNotes", orderId, variables.lineItemId, "internal"] });
+    },
+  });
+
   // PBV2 snapshot from /calculate response (contains treeJson, visibleNodeIds, selections)
   const [pbv2SnapshotJson, setPbv2SnapshotJson] = useState<any>(null);
 
@@ -707,6 +869,32 @@ export function OrderLineItemsSection({
       }
     >
   >({});
+
+  useEffect(() => {
+    if (!expandedItem?.id) {
+      setDesignBriefDraft(EMPTY_DESIGN_BRIEF_DRAFT);
+      setLineItemInternalNoteDraft("");
+      return;
+    }
+
+    if (!designBriefQuery.data) {
+      const savedDraft = designBriefSnapshotRef.current[expandedItem.id];
+      if (savedDraft) {
+        setDesignBriefDraft(savedDraft);
+      } else {
+        setDesignBriefDraft(EMPTY_DESIGN_BRIEF_DRAFT);
+      }
+      return;
+    }
+
+    const nextDraft = toDesignBriefDraft(designBriefQuery.data);
+    setDesignBriefDraft(nextDraft);
+    designBriefSnapshotRef.current[expandedItem.id] = nextDraft;
+  }, [expandedItem?.id, designBriefQuery.data]);
+
+  useEffect(() => {
+    setLineItemInternalNoteDraft("");
+  }, [expandedItem?.id]);
 
   // Inline add product search
   const [searchOpen, setSearchOpen] = useState(false);
@@ -859,6 +1047,7 @@ export function OrderLineItemsSection({
     if (!expandedItem) return false;
     const saved = savedSnapshotRef.current[expandedItem.id];
     if (!saved) return true;
+    const savedBrief = designBriefSnapshotRef.current[expandedItem.id] ?? EMPTY_DESIGN_BRIEF_DRAFT;
 
     const currentNotes = notes || "";
     const savedNotes = saved.notes || "";
@@ -866,6 +1055,8 @@ export function OrderLineItemsSection({
     const savedProductionNotes = saved.productionNotes || "";
     const currentOptions = JSON.stringify(optionSelections || {});
     const savedOptions = JSON.stringify(saved.optionSelections || {});
+    const currentBrief = JSON.stringify(designBriefDraft);
+    const persistedBrief = JSON.stringify(savedBrief);
 
     return (
       Math.abs(widthNum - saved.width) > 0.01 ||
@@ -875,9 +1066,10 @@ export function OrderLineItemsSection({
       currentProductionNotes !== savedProductionNotes ||
       requiresDesignInput !== saved.requiresDesign ||
       requiresPrepressInput !== saved.requiresPrepress ||
-      currentOptions !== savedOptions
+      currentOptions !== savedOptions ||
+      currentBrief !== persistedBrief
     );
-  }, [expandedItem, widthNum, heightNum, qtyNum, notes, notesDraftById, optionSelections, requiresDesignInput, requiresPrepressInput]);
+  }, [expandedItem, widthNum, heightNum, qtyNum, notes, notesDraftById, optionSelections, requiresDesignInput, requiresPrepressInput, designBriefDraft]);
 
   // Debounced price calculation for expanded item
   useDebouncedEffect(
@@ -1016,6 +1208,16 @@ export function OrderLineItemsSection({
         },
       });
 
+      const shouldPersistDesignBrief = Boolean(designBriefQuery.data?.id)
+        || Boolean(designBriefQuery.data?.effectiveRequiresDesign)
+        || hasAnyDesignBriefText(designBriefDraft);
+      if (shouldPersistDesignBrief) {
+        await saveDesignBrief.mutateAsync({
+          lineItemId: itemId,
+          data: designBriefDraft,
+        });
+      }
+
       setSavedItemId(itemId);
 
       savedSnapshotRef.current[itemId] = {
@@ -1029,8 +1231,10 @@ export function OrderLineItemsSection({
         optionSelections,
         totalPrice,
       };
+      designBriefSnapshotRef.current[itemId] = designBriefDraft;
 
       setTimeout(() => setSavedItemId(null), 2000);
+      setTimeout(() => setDesignBriefSavedAt(null), 2000);
 
       if (onAfterLineItemsChange) {
         await onAfterLineItemsChange();
@@ -1385,6 +1589,11 @@ export function OrderLineItemsSection({
                   const productForItem = products.find((p) => p.id === item.productId);
                   const itemRequiresProduction = (productForItem as any)?.requiresProductionJob === true;
                   const isSelectedForProduction = selectedForProduction.has(item.id);
+                  const expandedBriefDetail = isExpanded && expandedItem && expandedItem.id === item.id ? designBriefQuery.data : null;
+                  const showDesignBriefEditor = Boolean(
+                    expandedBriefDetail?.effectiveRequiresDesign ||
+                    hasAnyDesignBriefText(designBriefDraft)
+                  );
 
                   return (
                     <SortableOrderLineItemWrapper key={itemKey} id={itemKey} disabled={reorderDisabled}>
@@ -1623,6 +1832,154 @@ export function OrderLineItemsSection({
                                         />
                                       </div>
                                     )}
+
+                                    {showDesignBriefEditor && (
+                                      <div className="mb-3 rounded-md border border-border/40 bg-muted/20 p-3">
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                          <div>
+                                            <div className="text-sm font-medium">Design brief</div>
+                                            <div className="text-xs text-muted-foreground">
+                                              Key Instructions and Design Objective are required when this item needs design.
+                                            </div>
+                                          </div>
+                                          <div className="flex items-center gap-2">
+                                            <Badge
+                                              variant={expandedBriefDetail?.status === "captured" ? "secondary" : "outline"}
+                                              className={cn(
+                                                expandedBriefDetail?.status === "required_missing" && "border-amber-500/30 bg-amber-500/10 text-amber-700"
+                                              )}
+                                            >
+                                              {DESIGN_BRIEF_STATUS_LABELS[expandedBriefDetail?.status ?? "required_missing"]}
+                                            </Badge>
+                                            {designBriefQuery.isFetching && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+                                          </div>
+                                        </div>
+
+                                        <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                          <div className="space-y-2">
+                                            <div className="text-xs font-medium text-muted-foreground">Key Instructions</div>
+                                            <Textarea
+                                              value={designBriefDraft.keyInstructions}
+                                              onChange={(e) => setDesignBriefDraft((prev) => ({ ...prev, keyInstructions: e.target.value }))}
+                                              placeholder="Critical copy, offer, CTA, or non-negotiable requirements"
+                                              className="min-h-24"
+                                              disabled={readOnly}
+                                            />
+                                          </div>
+                                          <div className="space-y-2">
+                                            <div className="text-xs font-medium text-muted-foreground">Design Objective</div>
+                                            <Textarea
+                                              value={designBriefDraft.designObjective}
+                                              onChange={(e) => setDesignBriefDraft((prev) => ({ ...prev, designObjective: e.target.value }))}
+                                              placeholder="What the design must accomplish"
+                                              className="min-h-24"
+                                              disabled={readOnly}
+                                            />
+                                          </div>
+                                          <div className="space-y-2">
+                                            <div className="text-xs font-medium text-muted-foreground">Requested Content</div>
+                                            <Textarea
+                                              value={designBriefDraft.requestedContent}
+                                              onChange={(e) => setDesignBriefDraft((prev) => ({ ...prev, requestedContent: e.target.value }))}
+                                              placeholder="Specific text, assets, or required elements"
+                                              className="min-h-20"
+                                              disabled={readOnly}
+                                            />
+                                          </div>
+                                          <div className="space-y-2">
+                                            <div className="text-xs font-medium text-muted-foreground">Layout Notes</div>
+                                            <Textarea
+                                              value={designBriefDraft.layoutNotes}
+                                              onChange={(e) => setDesignBriefDraft((prev) => ({ ...prev, layoutNotes: e.target.value }))}
+                                              placeholder="Sizing, hierarchy, or placement guidance"
+                                              className="min-h-20"
+                                              disabled={readOnly}
+                                            />
+                                          </div>
+                                          <div className="space-y-2">
+                                            <div className="text-xs font-medium text-muted-foreground">Brand / Style Notes</div>
+                                            <Textarea
+                                              value={designBriefDraft.brandStyleNotes}
+                                              onChange={(e) => setDesignBriefDraft((prev) => ({ ...prev, brandStyleNotes: e.target.value }))}
+                                              placeholder="Brand tone, color, or visual direction"
+                                              className="min-h-20"
+                                              disabled={readOnly}
+                                            />
+                                          </div>
+                                          <div className="space-y-2">
+                                            <div className="text-xs font-medium text-muted-foreground">Reference Notes</div>
+                                            <Textarea
+                                              value={designBriefDraft.referenceNotes}
+                                              onChange={(e) => setDesignBriefDraft((prev) => ({ ...prev, referenceNotes: e.target.value }))}
+                                              placeholder="Reference files, links, or examples"
+                                              className="min-h-20"
+                                              disabled={readOnly}
+                                            />
+                                          </div>
+                                          <div className="space-y-2 md:col-span-2">
+                                            <div className="text-xs font-medium text-muted-foreground">Priority Notes</div>
+                                            <Textarea
+                                              value={designBriefDraft.priorityNotes}
+                                              onChange={(e) => setDesignBriefDraft((prev) => ({ ...prev, priorityNotes: e.target.value }))}
+                                              placeholder="Rush notes, sequencing, or internal priorities"
+                                              className="min-h-20"
+                                              disabled={readOnly}
+                                            />
+                                          </div>
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    <div className="mb-3 rounded-md border border-border/40 bg-muted/20 p-3">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <div>
+                                          <div className="text-sm font-medium">Line Item Internal Notes</div>
+                                          <div className="text-xs text-muted-foreground">
+                                            Structured staff notes for this line item. Legacy production notes remain below for compatibility.
+                                          </div>
+                                        </div>
+                                        {lineItemInternalNotesQuery.isFetching && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+                                      </div>
+
+                                      <div className="mt-3 space-y-2">
+                                        {(lineItemInternalNotesQuery.data ?? []).length === 0 ? (
+                                          <div className="rounded-md border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
+                                            No structured line item internal notes yet.
+                                          </div>
+                                        ) : (
+                                          (lineItemInternalNotesQuery.data ?? []).map((note) => (
+                                            <div key={note.id} className="rounded-md border border-border/50 bg-background/80 p-3">
+                                              <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                                                <span>{note.createdByUserName || "Unknown user"}</span>
+                                                <span>{new Date(note.createdAt).toLocaleString()}</span>
+                                              </div>
+                                              <div className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{note.noteText}</div>
+                                            </div>
+                                          ))
+                                        )}
+
+                                        {!readOnly && isExpanded && expandedItem && expandedItem.id === item.id && (
+                                          <div className="space-y-2 pt-1">
+                                            <Textarea
+                                              value={lineItemInternalNoteDraft}
+                                              onChange={(e) => setLineItemInternalNoteDraft(e.target.value)}
+                                              placeholder="Add a structured internal note for this line item..."
+                                              className="min-h-24"
+                                            />
+                                            <div className="flex justify-end">
+                                              <Button
+                                                type="button"
+                                                size="sm"
+                                                onClick={() => addLineItemInternalNote.mutate({ lineItemId: item.id, noteText: lineItemInternalNoteDraft })}
+                                                disabled={addLineItemInternalNote.isPending || lineItemInternalNoteDraft.trim().length === 0}
+                                              >
+                                                {addLineItemInternalNote.isPending ? "Adding..." : "Add Line Item Internal Note"}
+                                              </Button>
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
                                   </>
                                 }
                                 artworkSlot={
@@ -1819,7 +2176,7 @@ export function OrderLineItemsSection({
                                 detailsSide="right"
                                 isDirty={isExpanded && expandedItem && expandedItem.id === item.id ? isDirty : false}
                                 isSaving={savingItemId === item.id}
-                                isSaved={!isDirty && savedItemId === item.id}
+                                isSaved={!isDirty && (savedItemId === item.id || designBriefSavedAt === item.id)}
                                 onSave={readOnly ? undefined : handleSaveItem}
                                 onDuplicate={readOnly ? undefined : () => void handleDuplicateItem(item)}
                                 onRemove={readOnly ? undefined : () => void handleRemoveItem(item.id)}

@@ -12,6 +12,7 @@ import {
 
 import { QuotesRepository } from "../storage/quotes.repo";
 import { OrdersRepository } from "../storage/orders.repo";
+import { getLineItemDesignBriefDetail, upsertLineItemDesignBrief } from "../services/lineItemDesignBriefService";
 import { transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
 import { findAllActiveJobsForLineItem } from "../services/productionOwnership";
 
@@ -464,5 +465,86 @@ describe("quote routing persistence and conversion contract", () => {
     expect(createdLine.hourlyRateSnapshot).toBe("65.00");
     expect(createdLine.needsDesignOverride).toBe(false);
     expect(createdLine.requiresDesign).toBe(false);
+  });
+
+  test("design brief detail returns required_missing before save and captured after save", async () => {
+    const quote = await createMixedRoutingQuote(`Design brief ${suffix}`);
+    const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId);
+    const designLine = createdOrder.lineItems.find((lineItem: any) => lineItem.description?.includes("Product A"));
+
+    expect(designLine).toBeDefined();
+
+    const initialDetail = await getLineItemDesignBriefDetail({
+      organizationId,
+      orderId: String(createdOrder.id),
+      orderLineItemId: String(designLine!.id),
+    });
+
+    expect(initialDetail).not.toBeNull();
+    expect(initialDetail?.id).toBeNull();
+    expect(initialDetail?.effectiveRequiresDesign).toBe(true);
+    expect(initialDetail?.designBriefRequired).toBe(true);
+    expect(initialDetail?.status).toBe("required_missing");
+
+    const savedDetail = await upsertLineItemDesignBrief({
+      organizationId,
+      orderId: String(createdOrder.id),
+      orderLineItemId: String(designLine!.id),
+      userId,
+      values: {
+        keyInstructions: "  Use the spring promo headline prominently.  ",
+        designObjective: "Drive walk-in conversions with a bold call to action.",
+        requestedContent: "Logo, phone, QR code",
+      },
+    });
+
+    expect(savedDetail).not.toBeNull();
+    expect(savedDetail?.id).toBeTruthy();
+    expect(savedDetail?.keyInstructions).toBe("Use the spring promo headline prominently.");
+    expect(savedDetail?.designObjective).toBe("Drive walk-in conversions with a bold call to action.");
+    expect(savedDetail?.status).toBe("captured");
+
+    const updatedDetail = await upsertLineItemDesignBrief({
+      organizationId,
+      orderId: String(createdOrder.id),
+      orderLineItemId: String(designLine!.id),
+      userId,
+      values: {
+        keyInstructions: "Use the spring promo headline prominently.",
+        designObjective: "Drive walk-in conversions with a bold call to action.",
+        priorityNotes: "Rush for Friday pickup",
+      },
+    });
+
+    expect(updatedDetail?.id).toBe(savedDetail?.id);
+    expect(updatedDetail?.priorityNotes).toBe("Rush for Friday pickup");
+    expect(updatedDetail?.status).toBe("captured");
+  });
+
+  test("design brief status becomes not_required when override disables design", async () => {
+    const quote = await createMixedRoutingQuote(`Design brief override ${suffix}`);
+    const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId);
+    const designLine = createdOrder.lineItems.find((lineItem: any) => lineItem.description?.includes("Product A"));
+
+    expect(designLine).toBeDefined();
+
+    await db
+      .update(orderLineItems)
+      .set({
+        needsDesignOverride: false,
+        requiresDesign: false,
+      })
+      .where(eq(orderLineItems.id, String(designLine!.id)));
+
+    const detail = await getLineItemDesignBriefDetail({
+      organizationId,
+      orderId: String(createdOrder.id),
+      orderLineItemId: String(designLine!.id),
+    });
+
+    expect(detail).not.toBeNull();
+    expect(detail?.effectiveRequiresDesign).toBe(false);
+    expect(detail?.designBriefRequired).toBe(false);
+    expect(detail?.status).toBe("not_required");
   });
 });

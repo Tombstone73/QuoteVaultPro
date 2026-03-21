@@ -75,6 +75,23 @@ export const productDesignPricingModeValues = [
 export const productDesignPricingModeSchema = z.enum(productDesignPricingModeValues);
 export type ProductDesignPricingMode = (typeof productDesignPricingModeValues)[number];
 
+export const lineItemDesignBriefStatusValues = [
+  "not_required",
+  "required_missing",
+  "captured",
+] as const;
+
+export const lineItemDesignBriefStatusSchema = z.enum(lineItemDesignBriefStatusValues);
+export type LineItemDesignBriefStatus = (typeof lineItemDesignBriefStatusValues)[number];
+
+export const orderLineItemNoteCategoryValues = [
+  "internal",
+  "design_working",
+] as const;
+
+export const orderLineItemNoteCategorySchema = z.enum(orderLineItemNoteCategoryValues);
+export type OrderLineItemNoteCategory = (typeof orderLineItemNoteCategoryValues)[number];
+
 // ============================================================
 // MULTI-TENANT ORGANIZATION SYSTEM
 // ============================================================
@@ -2731,6 +2748,74 @@ export const orderLineItems = pgTable("order_line_items", {
   index("order_line_items_pbv2_tree_version_id_idx").on(table.pbv2TreeVersionId),
 ]);
 
+export const lineItemDesignBriefs = pgTable("line_item_design_briefs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id")
+    .notNull()
+    .references(() => orders.id, { onDelete: 'cascade' }),
+  orderLineItemId: varchar("order_line_item_id")
+    .notNull()
+    .references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  keyInstructions: text("key_instructions"),
+  designObjective: text("design_objective"),
+  requestedContent: text("requested_content"),
+  layoutNotes: text("layout_notes"),
+  brandStyleNotes: text("brand_style_notes"),
+  referenceNotes: text("reference_notes"),
+  priorityNotes: text("priority_notes"),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  updatedByUserId: varchar("updated_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("line_item_design_briefs_line_item_id_unique").on(table.orderLineItemId),
+  index("line_item_design_briefs_org_id_idx").on(table.organizationId),
+  index("line_item_design_briefs_order_id_idx").on(table.orderId),
+]);
+
+export const orderInternalNotes = pgTable("order_internal_notes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id")
+    .notNull()
+    .references(() => orders.id, { onDelete: 'cascade' }),
+  noteText: text("note_text").notNull(),
+  audienceTags: jsonb("audience_tags").$type<string[] | null>(),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("order_internal_notes_order_created_idx").on(table.orderId, table.createdAt),
+  index("order_internal_notes_org_order_idx").on(table.organizationId, table.orderId),
+]);
+
+export const orderLineItemNotes = pgTable("order_line_item_notes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id")
+    .notNull()
+    .references(() => orders.id, { onDelete: 'cascade' }),
+  lineItemId: varchar("line_item_id")
+    .notNull()
+    .references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  category: varchar("category", { length: 50 })
+    .$type<OrderLineItemNoteCategory>()
+    .notNull(),
+  noteText: text("note_text").notNull(),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("order_line_item_notes_order_created_idx").on(table.orderId, table.createdAt),
+  index("order_line_item_notes_line_category_created_idx").on(table.lineItemId, table.category, table.createdAt),
+  index("order_line_item_notes_org_line_idx").on(table.organizationId, table.lineItemId),
+]);
+
 // Order Line Item Components (PBV2 child item acceptance)
 export const orderLineItemComponents = pgTable("order_line_item_components", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -2877,6 +2962,61 @@ export const updateOrderLineItemSchema = insertOrderLineItemSchema.partial().ext
 export type InsertOrderLineItem = z.infer<typeof insertOrderLineItemSchema>;
 export type UpdateOrderLineItem = z.infer<typeof updateOrderLineItemSchema>;
 export type OrderLineItem = typeof orderLineItems.$inferSelect;
+
+export const insertLineItemDesignBriefSchema = createInsertSchema(lineItemDesignBriefs).omit({
+  id: true,
+  organizationId: true,
+  orderId: true,
+  orderLineItemId: true,
+  createdByUserId: true,
+  updatedByUserId: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  keyInstructions: z.string().trim().optional().nullable(),
+  designObjective: z.string().trim().optional().nullable(),
+  requestedContent: z.string().trim().optional().nullable(),
+  layoutNotes: z.string().trim().optional().nullable(),
+  brandStyleNotes: z.string().trim().optional().nullable(),
+  referenceNotes: z.string().trim().optional().nullable(),
+  priorityNotes: z.string().trim().optional().nullable(),
+});
+
+export const updateLineItemDesignBriefSchema = insertLineItemDesignBriefSchema.partial();
+
+export type LineItemDesignBrief = typeof lineItemDesignBriefs.$inferSelect;
+export type InsertLineItemDesignBrief = typeof lineItemDesignBriefs.$inferInsert;
+export type UpdateLineItemDesignBrief = z.infer<typeof updateLineItemDesignBriefSchema>;
+
+export const insertOrderInternalNoteSchema = createInsertSchema(orderInternalNotes).omit({
+  id: true,
+  organizationId: true,
+  orderId: true,
+  createdByUserId: true,
+  createdAt: true,
+}).extend({
+  noteText: z.string().trim().min(1).max(4000),
+  audienceTags: z.array(z.string().trim().min(1).max(100)).max(20).optional().nullable(),
+});
+
+export const insertOrderLineItemNoteSchema = createInsertSchema(orderLineItemNotes).omit({
+  id: true,
+  organizationId: true,
+  orderId: true,
+  lineItemId: true,
+  createdByUserId: true,
+  createdAt: true,
+}).extend({
+  category: orderLineItemNoteCategorySchema,
+  noteText: z.string().trim().min(1).max(4000),
+});
+
+export type OrderInternalNote = typeof orderInternalNotes.$inferSelect;
+export type InsertOrderInternalNote = typeof orderInternalNotes.$inferInsert;
+export type CreateOrderInternalNote = z.infer<typeof insertOrderInternalNoteSchema>;
+export type OrderLineItemNote = typeof orderLineItemNotes.$inferSelect;
+export type InsertOrderLineItemNote = typeof orderLineItemNotes.$inferInsert;
+export type CreateOrderLineItemNote = z.infer<typeof insertOrderLineItemNoteSchema>;
 
 // ============================================================
 // Order Workflow Status System (Per-Org, Configurable)
@@ -3882,6 +4022,7 @@ export const ordersRelations = relations(orders, ({ one, many }) => ({
     fields: [orders.createdByUserId],
     references: [users.id],
   }),
+  internalNotes: many(orderInternalNotes),
   lineItems: many(orderLineItems),
 }));
 
@@ -3902,7 +4043,34 @@ export const orderLineItemsRelations = relations(orderLineItems, ({ one, many })
     fields: [orderLineItems.quoteLineItemId],
     references: [quoteLineItems.id],
   }),
+  notes: many(orderLineItemNotes),
   jobs: many(jobs),
+}));
+
+export const orderInternalNotesRelations = relations(orderInternalNotes, ({ one }) => ({
+  order: one(orders, {
+    fields: [orderInternalNotes.orderId],
+    references: [orders.id],
+  }),
+  createdByUser: one(users, {
+    fields: [orderInternalNotes.createdByUserId],
+    references: [users.id],
+  }),
+}));
+
+export const orderLineItemNotesRelations = relations(orderLineItemNotes, ({ one }) => ({
+  order: one(orders, {
+    fields: [orderLineItemNotes.orderId],
+    references: [orders.id],
+  }),
+  lineItem: one(orderLineItems, {
+    fields: [orderLineItemNotes.lineItemId],
+    references: [orderLineItems.id],
+  }),
+  createdByUser: one(users, {
+    fields: [orderLineItemNotes.createdByUserId],
+    references: [users.id],
+  }),
 }));
 
 // Jobs relations
