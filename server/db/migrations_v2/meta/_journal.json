@@ -155,6 +155,20 @@
       "when": 1774047604000,
       "tag": "0021_line_item_design_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1774047605000,
+      "tag": "0022_line_item_design_briefs",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1774047606000,
+      "tag": "0023_structured_order_notes",
+      "breakpoints": true
     }
   ]
 }

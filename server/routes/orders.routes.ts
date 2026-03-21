@@ -29,8 +29,11 @@ import {
     productTypes,
     insertOrderSchema,
     updateOrderSchema,
+    insertOrderInternalNoteSchema,
     insertOrderLineItemSchema,
+    insertOrderLineItemNoteSchema,
     updateOrderLineItemSchema,
+    updateLineItemDesignBriefSchema,
     insertMaterialSchema,
     updateMaterialSchema,
     insertInventoryAdjustmentSchema,
@@ -48,6 +51,8 @@ import { updateOrderFulfillmentStatus } from "../fulfillmentService";
 import { portalContext, tenantContext, getPortalCustomer } from "../tenantContext";
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
 import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
+import { getLineItemDesignBriefDetail, upsertLineItemDesignBrief } from "../services/lineItemDesignBriefService";
+import { addLineItemNote, addOrderInternalNote, listLineItemNotes, listOrderInternalNotes } from "../services/structuredOrderNotesService";
 import { findActiveJobForLineItem } from "../services/productionOwnership";
 import { materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
 import { productDesignConfigRepository } from "../storage/productDesignConfig.repo";
@@ -3555,6 +3560,106 @@ export async function registerOrderRoutes(
         }
     });
 
+    app.get('/api/orders/:orderId/internal-notes', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+            const notes = await listOrderInternalNotes({
+                organizationId,
+                orderId: String(req.params.orderId),
+            });
+
+            if (notes === null) {
+                return res.status(404).json({ message: 'Order not found' });
+            }
+
+            return res.json({ success: true, data: notes, message: 'Order internal notes loaded' });
+        } catch (error) {
+            console.error('[ORDER_INTERNAL_NOTES_GET] Error:', error);
+            return res.status(500).json({ message: 'Failed to fetch order internal notes' });
+        }
+    });
+
+    app.post('/api/orders/:orderId/internal-notes', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+            const userId = getUserId(req.user) ?? null;
+            const parsed = insertOrderInternalNoteSchema.parse(req.body ?? {});
+
+            const note = await addOrderInternalNote({
+                organizationId,
+                orderId: String(req.params.orderId),
+                userId,
+                values: parsed,
+            });
+
+            if (!note) {
+                return res.status(404).json({ message: 'Order not found' });
+            }
+
+            return res.status(201).json({ success: true, data: note, message: 'Order internal note added' });
+        } catch (error) {
+            if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            console.error('[ORDER_INTERNAL_NOTES_POST] Error:', error);
+            return res.status(500).json({ message: 'Failed to add order internal note' });
+        }
+    });
+
+    app.get('/api/orders/:orderId/line-items/:lineItemId/notes', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+            const notes = await listLineItemNotes({
+                organizationId,
+                orderId: String(req.params.orderId),
+                lineItemId: String(req.params.lineItemId),
+                category: typeof req.query.category === 'string' ? req.query.category : null,
+            });
+
+            if (notes === null) {
+                return res.status(404).json({ message: 'Order line item not found for this order' });
+            }
+
+            return res.json({ success: true, data: notes, message: 'Line item notes loaded' });
+        } catch (error) {
+            if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            console.error('[ORDER_LINE_ITEM_NOTES_GET] Error:', error);
+            return res.status(500).json({ message: 'Failed to fetch line item notes' });
+        }
+    });
+
+    app.post('/api/orders/:orderId/line-items/:lineItemId/notes', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+            const userId = getUserId(req.user) ?? null;
+            const parsed = insertOrderLineItemNoteSchema.parse(req.body ?? {});
+
+            const note = await addLineItemNote({
+                organizationId,
+                orderId: String(req.params.orderId),
+                lineItemId: String(req.params.lineItemId),
+                userId,
+                values: parsed,
+            });
+
+            if (!note) {
+                return res.status(404).json({ message: 'Order line item not found for this order' });
+            }
+
+            return res.status(201).json({ success: true, data: note, message: 'Line item note added' });
+        } catch (error) {
+            if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            console.error('[ORDER_LINE_ITEM_NOTES_POST] Error:', error);
+            return res.status(500).json({ message: 'Failed to add line item note' });
+        }
+    });
+
     app.post('/api/orders/:id/audit', isAuthenticated, async (req: any, res) => {
         try {
             const userId = getUserId(req.user);
@@ -4270,6 +4375,56 @@ export async function registerOrderRoutes(
         }
     });
 
+    app.get("/api/orders/:orderId/line-items/:lineItemId/design-brief", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const detail = await getLineItemDesignBriefDetail({
+                organizationId,
+                orderId: String(req.params.orderId),
+                orderLineItemId: String(req.params.lineItemId),
+            });
+
+            if (!detail) {
+                return res.status(404).json({ message: "Order line item not found" });
+            }
+
+            return res.json({ success: true, data: detail });
+        } catch (error) {
+            console.error("[LINE_ITEM_DESIGN_BRIEF_GET] Error:", error);
+            return res.status(500).json({ message: "Failed to fetch line item design brief" });
+        }
+    });
+
+    app.put("/api/orders/:orderId/line-items/:lineItemId/design-brief", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const userId = getUserId(req.user) ?? null;
+            const parsed = updateLineItemDesignBriefSchema.parse(req.body ?? {});
+
+            const detail = await upsertLineItemDesignBrief({
+                organizationId,
+                orderId: String(req.params.orderId),
+                orderLineItemId: String(req.params.lineItemId),
+                userId,
+                values: parsed,
+            });
+
+            if (!detail) {
+                return res.status(404).json({ message: "Order line item not found" });
+            }
+
+            return res.json({ success: true, data: detail, message: "Design brief saved" });
+        } catch (error) {
+            if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            console.error("[LINE_ITEM_DESIGN_BRIEF_PUT] Error:", error);
+            return res.status(500).json({ message: "Failed to save line item design brief" });
+        }
+    });
+
     app.post("/api/order-line-items", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
@@ -4457,6 +4612,11 @@ export async function registerOrderRoutes(
                     requestedRequiresDesign: typeof requestedRequiresDesign === "boolean" ? requestedRequiresDesign : Boolean((oldLineItem as any).requiresDesign),
                     requestedRequiresPrepress: typeof requestedRequiresPrepress === "boolean" ? requestedRequiresPrepress : Boolean((oldLineItem as any).requiresPrepress),
                 });
+
+                const snapshotRequiresDesign = Boolean((oldLineItem as any).requiresDesignSnapshot);
+                updateData.needsDesignOverride = routing.requiresDesign === snapshotRequiresDesign
+                    ? null
+                    : routing.requiresDesign;
 
                 updateData.requiresDesign = routing.requiresDesign;
                 updateData.requiresPrepress = routing.requiresPrepress;
