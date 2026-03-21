@@ -79,7 +79,29 @@ type DesignWorkspaceData = {
     versionId: string;
     versionNumber: number;
   } | null;
+  designCostSummary: {
+    designCostState: "not_applicable" | "estimated" | "accrued" | "finalized";
+    actualTrackedMinutes: number;
+    correctedTrackedMinutes: number;
+    internalDesignCostCalculated: number | null;
+    quotedDesignAmount: number | null;
+    soldDesignAmount: number | null;
+    billableDesignMinutes: number | null;
+    billableDesignAmount: number | null;
+    billingStatus: "not_billable" | "candidate" | "approved_for_invoice" | "invoiced" | "waived";
+    lastSyncedAt: string | null;
+  } | null;
 };
+
+function formatCurrencyValue(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return "-";
+  return `$${value.toFixed(2)}`;
+}
+
+function formatMinuteValue(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return "-";
+  return `${value.toFixed(2)} min`;
+}
 
 function formatOwnerLabel(item: DesignQueueItem) {
   if (item.activeOwnerStepKey) {
@@ -440,6 +462,7 @@ export default function DesignProductionPage() {
   const instructionItems = selectedItem ? getInstructionItems(selectedLineItem, displayPrintType, displayMaterial) : [];
   const proofVersionHistory = proofing?.proofVersionHistory.slice(0, 4) ?? [];
   const latestProofFeedback = workspace?.latestProofFeedback ?? null;
+  const designCostSummary = workspace?.designCostSummary ?? null;
   const recommendedAction = selectedItem
     ? getRecommendedAction({
         item: selectedItem,
@@ -888,6 +911,37 @@ export default function DesignProductionPage() {
                       ) : (
                         <div className="rounded-lg border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
                           No proof feedback yet.
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Design Cost Summary</div>
+                      {workspaceQuery.isLoading ? (
+                        <Skeleton className="h-24 w-full" />
+                      ) : designCostSummary ? (
+                        <div className="rounded-lg border border-border/80 bg-muted/15 p-3 text-sm">
+                          <div className="flex items-center justify-between gap-2">
+                            <Badge variant="outline">
+                              {designCostSummary.designCostState.replace(/_/g, " ")}
+                            </Badge>
+                            <span className="text-xs text-muted-foreground">
+                              Billing: {designCostSummary.billingStatus.replace(/_/g, " ")}
+                            </span>
+                          </div>
+                          <div className="mt-3 space-y-2">
+                            <CompactInfoRow label="Tracked" value={formatMinuteValue(designCostSummary.correctedTrackedMinutes)} />
+                            <CompactInfoRow label="Internal Cost" value={formatCurrencyValue(designCostSummary.internalDesignCostCalculated)} />
+                            <CompactInfoRow label="Sold Design" value={formatCurrencyValue(designCostSummary.soldDesignAmount)} />
+                            <CompactInfoRow label="Candidate Billable" value={formatCurrencyValue(designCostSummary.billableDesignAmount)} />
+                          </div>
+                          <p className="mt-3 text-xs leading-5 text-muted-foreground">
+                            Candidate billable amount is read-only visibility only in this phase and does not mean invoiced.
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="rounded-lg border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
+                          No design cost summary available.
                         </div>
                       )}
                     </div>

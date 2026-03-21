@@ -92,6 +92,27 @@ export const orderLineItemNoteCategoryValues = [
 export const orderLineItemNoteCategorySchema = z.enum(orderLineItemNoteCategoryValues);
 export type OrderLineItemNoteCategory = (typeof orderLineItemNoteCategoryValues)[number];
 
+export const designCostStateValues = [
+  "not_applicable",
+  "estimated",
+  "accrued",
+  "finalized",
+] as const;
+
+export const designCostStateSchema = z.enum(designCostStateValues);
+export type DesignCostState = (typeof designCostStateValues)[number];
+
+export const lineItemDesignBillingStatusValues = [
+  "not_billable",
+  "candidate",
+  "approved_for_invoice",
+  "invoiced",
+  "waived",
+] as const;
+
+export const lineItemDesignBillingStatusSchema = z.enum(lineItemDesignBillingStatusValues);
+export type LineItemDesignBillingStatus = (typeof lineItemDesignBillingStatusValues)[number];
+
 // ============================================================
 // MULTI-TENANT ORGANIZATION SYSTEM
 // ============================================================
@@ -2776,6 +2797,42 @@ export const lineItemDesignBriefs = pgTable("line_item_design_briefs", {
   index("line_item_design_briefs_order_id_idx").on(table.orderId),
 ]);
 
+export const lineItemDesignCostSummaries = pgTable("line_item_design_cost_summaries", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id")
+    .notNull()
+    .references(() => orders.id, { onDelete: 'cascade' }),
+  lineItemId: varchar("line_item_id")
+    .notNull()
+    .references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  designCostState: varchar("design_cost_state", { length: 50 })
+    .$type<DesignCostState>()
+    .notNull()
+    .default("not_applicable"),
+  actualTrackedMinutes: decimal("actual_tracked_minutes", { precision: 10, scale: 2 }).notNull().default("0.00"),
+  correctedTrackedMinutes: decimal("corrected_tracked_minutes", { precision: 10, scale: 2 }).notNull().default("0.00"),
+  internalDesignCostCalculated: decimal("internal_design_cost_calculated", { precision: 10, scale: 2 }),
+  quotedDesignAmount: decimal("quoted_design_amount", { precision: 10, scale: 2 }),
+  soldDesignAmount: decimal("sold_design_amount", { precision: 10, scale: 2 }),
+  billableDesignMinutes: decimal("billable_design_minutes", { precision: 10, scale: 2 }),
+  billableDesignAmount: decimal("billable_design_amount", { precision: 10, scale: 2 }),
+  billingStatus: varchar("billing_status", { length: 50 })
+    .$type<LineItemDesignBillingStatus>()
+    .notNull()
+    .default("not_billable"),
+  lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }).defaultNow().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("line_item_design_cost_summaries_line_item_id_unique").on(table.lineItemId),
+  index("line_item_design_cost_summaries_org_id_idx").on(table.organizationId),
+  index("line_item_design_cost_summaries_order_id_idx").on(table.orderId),
+  index("line_item_design_cost_summaries_billing_status_idx").on(table.billingStatus),
+]);
+
 export const orderInternalNotes = pgTable("order_internal_notes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id")
@@ -2962,6 +3019,29 @@ export const updateOrderLineItemSchema = insertOrderLineItemSchema.partial().ext
 export type InsertOrderLineItem = z.infer<typeof insertOrderLineItemSchema>;
 export type UpdateOrderLineItem = z.infer<typeof updateOrderLineItemSchema>;
 export type OrderLineItem = typeof orderLineItems.$inferSelect;
+
+export const insertLineItemDesignCostSummarySchema = createInsertSchema(lineItemDesignCostSummaries).omit({
+  id: true,
+  organizationId: true,
+  orderId: true,
+  lineItemId: true,
+  lastSyncedAt: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  designCostState: designCostStateSchema,
+  actualTrackedMinutes: z.coerce.number().nonnegative(),
+  correctedTrackedMinutes: z.coerce.number().nonnegative(),
+  internalDesignCostCalculated: z.coerce.number().nonnegative().optional().nullable(),
+  quotedDesignAmount: z.coerce.number().nonnegative().optional().nullable(),
+  soldDesignAmount: z.coerce.number().nonnegative().optional().nullable(),
+  billableDesignMinutes: z.coerce.number().nonnegative().optional().nullable(),
+  billableDesignAmount: z.coerce.number().nonnegative().optional().nullable(),
+  billingStatus: lineItemDesignBillingStatusSchema,
+});
+
+export type LineItemDesignCostSummary = typeof lineItemDesignCostSummaries.$inferSelect;
+export type InsertLineItemDesignCostSummary = typeof lineItemDesignCostSummaries.$inferInsert;
 
 export const insertLineItemDesignBriefSchema = createInsertSchema(lineItemDesignBriefs).omit({
   id: true,
@@ -4043,8 +4123,23 @@ export const orderLineItemsRelations = relations(orderLineItems, ({ one, many })
     fields: [orderLineItems.quoteLineItemId],
     references: [quoteLineItems.id],
   }),
+  designCostSummary: one(lineItemDesignCostSummaries, {
+    fields: [orderLineItems.id],
+    references: [lineItemDesignCostSummaries.lineItemId],
+  }),
   notes: many(orderLineItemNotes),
   jobs: many(jobs),
+}));
+
+export const lineItemDesignCostSummariesRelations = relations(lineItemDesignCostSummaries, ({ one }) => ({
+  order: one(orders, {
+    fields: [lineItemDesignCostSummaries.orderId],
+    references: [orders.id],
+  }),
+  lineItem: one(orderLineItems, {
+    fields: [lineItemDesignCostSummaries.lineItemId],
+    references: [orderLineItems.id],
+  }),
 }));
 
 export const orderInternalNotesRelations = relations(orderInternalNotes, ({ one }) => ({
