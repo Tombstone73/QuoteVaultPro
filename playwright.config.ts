@@ -2,16 +2,16 @@ import { defineConfig, devices } from "@playwright/test";
 import { config as loadDotenv } from "dotenv";
 import { resolve } from "path";
 
-// Load .env.playwright first (e2e-specific), then fall back to .env for any gaps.
+// Load the dedicated Playwright env file only. This keeps deployed DEV validation
+// isolated from unrelated app/runtime env files.
 loadDotenv({ path: resolve(process.cwd(), ".env.playwright") });
-loadDotenv({ path: resolve(process.cwd(), ".env"), override: false });
 
 const BASE_URL = process.env.PLAYWRIGHT_BASE_URL;
 if (!BASE_URL) {
   // Fail fast at config load time so the error is obvious.
   throw new Error(
-    "PLAYWRIGHT_BASE_URL is required. " +
-      "Copy .env.playwright.example → .env.playwright and fill in the values."
+    "PLAYWRIGHT_BASE_URL is required for Playwright E2E. " +
+      "Set it in .env.playwright or provide it via the shell environment."
   );
 }
 
