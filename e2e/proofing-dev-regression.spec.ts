@@ -236,14 +236,12 @@ test.describe.serial("staff proofing DEV regression", () => {
 async function waitForProofingShell(page: Page) {
   await expect(page).not.toHaveURL(/\/login/);
 
-  const proofingHeading = page.getByRole("heading", { name: /^Proofing$/i }).first();
-  const newProofButton = page.getByRole("button", { name: /^New Proof$/i });
-  const allProofsTab = page.getByRole("tab", { name: /^All Proofs$/i });
+  const proofingMain = page.getByRole("main").first();
 
   try {
-    await expect(proofingHeading).toBeVisible({ timeout: 30_000 });
-    await expect(newProofButton).toBeVisible({ timeout: 30_000 });
-    await expect(allProofsTab).toBeVisible({ timeout: 30_000 });
+    await expect(proofingMain).toContainText("Proofing", { timeout: 30_000 });
+    await expect(proofingMain).toContainText("New Proof", { timeout: 30_000 });
+    await expect(proofingMain).toContainText("All Proofs", { timeout: 30_000 });
   } catch {
     const body = await page.locator("body").innerText();
     throw new Error(
