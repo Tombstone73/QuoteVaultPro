@@ -715,9 +715,7 @@ export class OrdersRepository {
                 const isTaxableSnapshotSafe = typeof isTaxableSnapshotRaw === "boolean" ? isTaxableSnapshotRaw : true;
                 const requiresDesignSafe = designSnapshot.effectiveRequiresDesign;
                 const requiresPrepressSafe = typeof (li as any).requiresPrepress === "boolean" ? (li as any).requiresPrepress : true;
-                const requiresProofApprovalSafe = typeof li.requiresProofApproval === "boolean"
-                    ? li.requiresProofApproval
-                    : (productProofApprovalMap.get(li.productId) ?? false);
+                const requiresProofApprovalSafe = productProofApprovalMap.get(li.productId) ?? false;
                 const workflowStateSafe = getInitialWorkflowState({
                     requiresDesign: requiresDesignSafe,
                     requiresPrepress: requiresPrepressSafe,
@@ -1241,6 +1239,13 @@ export class OrdersRepository {
             return typeof value === "object" ? (value as T) : undefined;
         };
 
+        const [productProofRow] = await this.dbInstance
+            .select({ requiresProofApproval: products.requiresProofApproval })
+            .from(products)
+            .where(eq(products.id, lineItem.productId))
+            .limit(1);
+        const requiresProofApprovalSafe = Boolean(productProofRow?.requiresProofApproval);
+
         // JSON/array fields often come from Zod/JSON sources as unknown; narrow them to the Drizzle column types.
         const selectedOptions = asArrayOrUndefined<SelectedOptionInsert>(lineItem.selectedOptions) as SelectedOptionsInsert | undefined;
         const nestingConfigSnapshot = asObjectOrNull<NestingConfigNonNull>(lineItem.nestingConfigSnapshot) as NestingConfigInsert;
@@ -1265,7 +1270,7 @@ export class OrdersRepository {
             workflowState: lineItem.workflowState ?? getInitialWorkflowState({
                 requiresDesign: designSnapshot.effectiveRequiresDesign,
                 requiresPrepress: typeof lineItem.requiresPrepress === "boolean" ? lineItem.requiresPrepress : true,
-                requiresProofApproval: typeof lineItem.requiresProofApproval === "boolean" ? lineItem.requiresProofApproval : false,
+                requiresProofApproval: requiresProofApprovalSafe,
             }),
             requiresDesignSnapshot: designSnapshot.requiresDesignSnapshot,
             designBriefRequiredSnapshot: designSnapshot.designBriefRequiredSnapshot,
@@ -1278,7 +1283,7 @@ export class OrdersRepository {
             internalLaborRateSnapshot: designSnapshot.internalLaborRateSnapshot,
             needsDesignOverride: designSnapshot.needsDesignOverride,
             requiresDesign: designSnapshot.effectiveRequiresDesign,
-            requiresProofApproval: lineItem.requiresProofApproval ?? false,
+            requiresProofApproval: requiresProofApprovalSafe,
             requiresPrepress: lineItem.requiresPrepress ?? true,
             specsJson: lineItem.specsJson ?? undefined,
             selectedOptions,

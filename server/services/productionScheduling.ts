@@ -10,7 +10,9 @@ type SchedulingCandidateLineItem = {
   productTypeId: string | null;
   materialId: string | null;
   status: string;
+  workflowState: string | null;
   lineItemRequiresDesignSnapshot: boolean | null;
+  lineItemRequiresProofApprovalSnapshot: boolean | null;
   lineItemRequiresPrepressSnapshot: boolean | null;
   requiresProductionJob: boolean;
 };
@@ -145,7 +147,9 @@ export async function scheduleOrderLineItemsForProduction(args: {
         productTypeId: products.productTypeId,
         materialId: orderLineItems.materialId,
         status: orderLineItems.status,
+        workflowState: orderLineItems.workflowState,
         lineItemRequiresDesignSnapshot: orderLineItems.requiresDesign,
+        lineItemRequiresProofApprovalSnapshot: orderLineItems.requiresProofApproval,
         lineItemRequiresPrepressSnapshot: orderLineItems.requiresPrepress,
         requiresProductionJob: products.requiresProductionJob,
       })
@@ -228,6 +232,17 @@ export async function scheduleOrderLineItemsForProduction(args: {
   for (const item of productionRequiredItems) {
     let step = "begin_item";
     try {
+      const currentWorkflowState = String(item.workflowState || "").trim().toLowerCase();
+      if (currentWorkflowState === "awaiting_proof_approval") {
+        lineItemDiagnostics[item.lineItemId] = {
+          stationKey: "proofing",
+          stepKey: "awaiting_proof_approval",
+          routingReason: "proof_approval_required_before_scheduling",
+          idempotencyNote: "Skipped scheduling while proof approval is still pending",
+        };
+        continue;
+      }
+
       const scheduledItem = await txRunner.transaction(async (tx) => {
         step = "resolve_initial_route";
         const route = await resolveRoute({
