@@ -676,6 +676,21 @@ export class OrdersRepository {
                 });
             }));
 
+            const productIds = Array.from(new Set(data.lineItems.map((li) => li.productId)));
+            const productProofRows = productIds.length > 0
+                ? await tx
+                    .select({
+                        productId: products.id,
+                        requiresProofApproval: products.requiresProofApproval,
+                    })
+                    .from(products)
+                    .where(inArray(products.id, productIds as [string, ...string[]]))
+                : [];
+            const productProofApprovalMap = new Map<string, boolean>();
+            for (const row of productProofRows) {
+                productProofApprovalMap.set(row.productId, Boolean(row.requiresProofApproval));
+            }
+
             const lineItemsData = data.lineItems.map((li, index) => {
                 const designSnapshot = lineItemsWithSnapshots[index];
                 const unitRaw = (li as any).unitPrice ?? (li as any).unit_price;
@@ -700,9 +715,13 @@ export class OrdersRepository {
                 const isTaxableSnapshotSafe = typeof isTaxableSnapshotRaw === "boolean" ? isTaxableSnapshotRaw : true;
                 const requiresDesignSafe = designSnapshot.effectiveRequiresDesign;
                 const requiresPrepressSafe = typeof (li as any).requiresPrepress === "boolean" ? (li as any).requiresPrepress : true;
+                const requiresProofApprovalSafe = typeof li.requiresProofApproval === "boolean"
+                    ? li.requiresProofApproval
+                    : (productProofApprovalMap.get(li.productId) ?? false);
                 const workflowStateSafe = getInitialWorkflowState({
                     requiresDesign: requiresDesignSafe,
                     requiresPrepress: requiresPrepressSafe,
+                    requiresProofApproval: requiresProofApprovalSafe,
                 });
                 return {
                     orderId: order.id,
@@ -730,6 +749,7 @@ export class OrdersRepository {
                     internalLaborRateSnapshot: designSnapshot.internalLaborRateSnapshot,
                     needsDesignOverride: designSnapshot.needsDesignOverride,
                     requiresDesign: requiresDesignSafe,
+                    requiresProofApproval: requiresProofApprovalSafe,
                     requiresPrepress: requiresPrepressSafe,
                     specsJson: (li as any).specsJson || null,
                     selectedOptions: selectedOptionsSafe,
@@ -870,6 +890,7 @@ export class OrdersRepository {
                     productId: products.id,
                     productTypeId: products.productTypeId,
                     requiresPrepressOverride: productTypes.requiresPrepressOverride,
+                    requiresProofApproval: products.requiresProofApproval,
                 })
                 .from(products)
                 .leftJoin(productTypes, eq(products.productTypeId, productTypes.id))
@@ -877,12 +898,14 @@ export class OrdersRepository {
             : [];
         
         const productPrepressMap = new Map<string, boolean>();
+        const productProofApprovalMap = new Map<string, boolean>();
         for (const p of productsWithTypes) {
             // requiresPrepress = productType.requiresPrepressOverride ?? org.prepressDefaultEnabled
             const requiresPrepress = p.requiresPrepressOverride !== null 
                 ? p.requiresPrepressOverride 
                 : orgPrepressDefault;
             productPrepressMap.set(p.productId, requiresPrepress);
+            productProofApprovalMap.set(p.productId, Boolean(p.requiresProofApproval));
         }
 
         // Convert quote line items to order line items
@@ -895,12 +918,16 @@ export class OrdersRepository {
             const requiresPrepress: boolean = typeof qlAny.requiresPrepress === 'boolean'
                 ? qlAny.requiresPrepress
                 : (productPrepressMap.get(ql.productId) ?? orgPrepressDefault);
+            const requiresProofApproval: boolean = typeof qlAny.requiresProofApproval === 'boolean'
+                ? qlAny.requiresProofApproval
+                : (productProofApprovalMap.get(ql.productId) ?? false);
             const designSnapshot = copyLineItemDesignSnapshotFields(qlAny);
             // Line item lifecycle: new → in_production → complete | canceled
             const initialStatus = 'new' as unknown as InsertOrderLineItem['status'];
             const workflowState = getInitialWorkflowState({
                 requiresDesign: designSnapshot.effectiveRequiresDesign,
                 requiresPrepress,
+                requiresProofApproval,
             });
 
             const lineItemData: CreateOrderLineItemInput = {
@@ -929,7 +956,7 @@ export class OrdersRepository {
                 internalLaborRateSnapshot: designSnapshot.internalLaborRateSnapshot == null ? null : Number(designSnapshot.internalLaborRateSnapshot),
                 needsDesignOverride: designSnapshot.needsDesignOverride,
                 requiresDesign: designSnapshot.effectiveRequiresDesign,
-                requiresProofApproval: false,
+                requiresProofApproval,
                 requiresPrepress, // Snapshot prepress requirement (TEMP→PERMANENT)
                 specsJson: ql.specsJson,
                 selectedOptions: ql.selectedOptions,
@@ -1238,6 +1265,7 @@ export class OrdersRepository {
             workflowState: lineItem.workflowState ?? getInitialWorkflowState({
                 requiresDesign: designSnapshot.effectiveRequiresDesign,
                 requiresPrepress: typeof lineItem.requiresPrepress === "boolean" ? lineItem.requiresPrepress : true,
+                requiresProofApproval: typeof lineItem.requiresProofApproval === "boolean" ? lineItem.requiresProofApproval : false,
             }),
             requiresDesignSnapshot: designSnapshot.requiresDesignSnapshot,
             designBriefRequiredSnapshot: designSnapshot.designBriefRequiredSnapshot,
@@ -1250,6 +1278,7 @@ export class OrdersRepository {
             internalLaborRateSnapshot: designSnapshot.internalLaborRateSnapshot,
             needsDesignOverride: designSnapshot.needsDesignOverride,
             requiresDesign: designSnapshot.effectiveRequiresDesign,
+            requiresProofApproval: lineItem.requiresProofApproval ?? false,
             requiresPrepress: lineItem.requiresPrepress ?? true,
             specsJson: lineItem.specsJson ?? undefined,
             selectedOptions,

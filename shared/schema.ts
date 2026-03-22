@@ -681,6 +681,7 @@ export const products = pgTable("products", {
   }>().default(sql`'{"enabled":false,"tiers":[]}'::jsonb`).notNull(),
   // Production workflow flag
   requiresProductionJob: boolean("requires_production_job").default(true).notNull(),
+  requiresProofApproval: boolean("requires_proof_approval").default(false).notNull(),
   // Tax system
   isTaxable: boolean("is_taxable").default(true).notNull(),
   isActive: boolean("is_active").default(true).notNull(),

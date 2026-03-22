@@ -10621,6 +10621,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             productTypeId: products.productTypeId,
             status: orderLineItems.status,
             requiresDesign: orderLineItems.requiresDesign,
+            requiresProofApproval: orderLineItems.requiresProofApproval,
             requiresPrepress: orderLineItems.requiresPrepress,
           })
           .from(orderLineItems)
@@ -10657,6 +10658,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const targetState = getInitialWorkflowState({
             requiresDesign: Boolean(li.requiresDesign),
             requiresPrepress: Boolean(li.requiresPrepress),
+            requiresProofApproval: Boolean(li.requiresProofApproval),
           });
 
           const transition = await transitionLineItemWorkflowState(tx, {

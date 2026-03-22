@@ -683,8 +683,13 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
   };
 }
 
-export function getInitialWorkflowState(args: { requiresDesign: boolean; requiresPrepress: boolean }): LineItemWorkflowState {
+export function getInitialWorkflowState(args: {
+  requiresDesign: boolean;
+  requiresPrepress: boolean;
+  requiresProofApproval?: boolean;
+}): LineItemWorkflowState {
   if (args.requiresDesign) return "needs_design";
+  if (args.requiresProofApproval) return "awaiting_proof_approval";
   if (args.requiresPrepress) return "ready_for_prepress";
   return "ready_for_production";
 }

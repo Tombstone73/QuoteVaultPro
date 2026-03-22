@@ -176,6 +176,13 @@
       "when": 1774047607000,
       "tag": "0024_line_item_design_cost_summaries",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1774051200000,
+      "tag": "0025_product_requires_proof_approval",
+      "breakpoints": true
     }
   ]
 }
