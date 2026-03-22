@@ -40,52 +40,51 @@ export const ProductForm = ({
   formId,
   onPbv2StateChange,
   treeMeta,
-  onUpdateTreeMeta,
-  pricingV2,
-  onUpdatePricingV2Base,
-  onUpdatePricingV2UnitSystem,
-  onAddPricingV2Tier,
-  onUpdatePricingV2Tier,
-  onDeletePricingV2Tier,
-  pricingEngine,
-  onPricingEngineChange,
-  pbv2PricingMode,
-  onPbv2PricingModeChange,
-}: {
-  form: any;
-  materials: any;
-  pricingFormulas: any;
-  productTypes: any;
-  onSave: any;
-  formId?: string;
-  onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null }) => void;
-  treeMeta?: { shippingConfig?: ShippingConfig; productImages?: any[]; geometry?: { trimAllowance?: number; trimAllowanceX?: number; trimAllowanceY?: number } };
-  onUpdateTreeMeta?: (updates: Record<string, unknown>) => void;
-  pricingV2?: any;
-  onUpdatePricingV2Base?: (base: { perSqftCents?: number; perPieceCents?: number; minimumChargeCents?: number }) => void;
-  onUpdatePricingV2UnitSystem?: (unitSystem: 'imperial' | 'metric') => void;
-  onAddPricingV2Tier?: (kind: 'qty' | 'sqft') => void;
-  onUpdatePricingV2Tier?: (kind: 'qty' | 'sqft', index: number, tier: any) => void;
-  onDeletePricingV2Tier?: (kind: 'qty' | 'sqft', index: number) => void;
-  pricingEngine?: "formulaLibrary" | "pricingProfile" | "pricingFormula";
-  onPricingEngineChange?: (engine: "formulaLibrary" | "pricingProfile" | "pricingFormula") => void;
-  pbv2PricingMode?: "basic" | "advanced";
-  onPbv2PricingModeChange?: (mode: "basic" | "advanced") => void;
-}) => {
-  const { toast } = useToast();
-  const addPricingProfileKey = form.watch("pricingProfileKey");
+          <div className="rounded-md border border-slate-700 bg-slate-900/30 p-3 space-y-2">
+            <h4 className="text-xs font-medium text-slate-300 uppercase tracking-wider">Finished Size Rules</h4>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <Label className="text-xs text-slate-400">Trim Allowance W (in)</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={safeTrimAllowanceX}
+                  onChange={(e) => {
+                    const parsed = Number(e.target.value);
+                    const nextTrimAllowanceX = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+                    onUpdateTreeMeta?.({
+                      geometry: {
+                        ...(treeMeta?.geometry || {}),
+                        trimAllowanceX: nextTrimAllowanceX,
+                        trimAllowanceY: safeTrimAllowanceY,
+                      },
+                    });
+                  }}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-slate-400">Trim Allowance H (in)</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={safeTrimAllowanceY}
+                  onChange={(e) => {
+                    const parsed = Number(e.target.value);
+                    const nextTrimAllowanceY = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+                    onUpdateTreeMeta?.({
 
   // Shipping config local state — synced from treeMeta
   // CRITICAL: Also use setValue to mark form dirty when shipping fields change
   const [shippingPolicy, setShippingPolicy] = useState<ShippingPolicy>(treeMeta?.shippingConfig?.shippingPolicy ?? "pickup_only");
   const [baseWeight, setBaseWeight] = useState<string>(treeMeta?.shippingConfig?.baseWeight != null ? String(treeMeta.shippingConfig.baseWeight) : "");
-  const [weightUnit, setWeightUnit] = useState<WeightUnit>(treeMeta?.shippingConfig?.weightUnit ?? "oz");
-  const [weightBasis, setWeightBasis] = useState<WeightBasis>(treeMeta?.shippingConfig?.weightBasis ?? "per_item");
-  
-  // Hidden tracking field to mark form dirty when shipping config changes
+                      });
+                  }}
+                />
   const shippingConfigTracker = form.watch("__shippingConfigTracker");
-
   // Sync local state from treeMeta when it loads from server
+            <p className="text-xs text-slate-400 col-span-2">Applied after ordered width/height to derive finished dimensions for pricing and previews.</p>
   useEffect(() => {
     if (treeMeta?.shippingConfig) {
       setShippingPolicy(treeMeta.shippingConfig.shippingPolicy ?? "pickup_only");
@@ -383,16 +382,14 @@ export const ProductForm = ({
           />
         </div>
 
-        {/* RIGHT: Advanced Settings — toggles stacked vertically */}
-        <div className="space-y-3">
-          <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Advanced Settings</h3>
-
-          <div className="space-y-3">
+        {/* RIGHT: Advanced Settings + Finished Size Rules */}
+        <div className="flex flex-col gap-4 pt-0.5">
+          <div className="grid grid-cols-2 gap-x-6 gap-y-3">
             <FormField
               control={form.control}
               name="isActive"
               render={({ field }) => (
-                <FormItem>
+                <FormItem className="min-h-9">
                   <div className="flex items-center gap-2">
                     <FormControl>
                       <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
@@ -407,7 +404,7 @@ export const ProductForm = ({
               control={form.control}
               name="requiresProductionJob"
               render={({ field }) => (
-                <FormItem>
+                <FormItem className="min-h-9">
                   <div className="flex items-center gap-2">
                     <FormControl>
                       <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
@@ -422,7 +419,7 @@ export const ProductForm = ({
               control={form.control}
               name="isTaxable"
               render={({ field }) => (
-                <FormItem>
+                <FormItem className="min-h-9">
                   <div className="flex items-center gap-2">
                     <FormControl>
                       <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
@@ -433,6 +430,23 @@ export const ProductForm = ({
                 </FormItem>
               )}
             />
+
+            <FormField
+              control={form.control}
+              name="requiresProofApproval"
+              render={({ field }) => (
+                <FormItem className="min-h-9">
+                  <div className="flex items-center gap-2">
+                    <FormControl>
+                      <Switch checked={field.value ?? false} onCheckedChange={field.onChange} />
+                    </FormControl>
+                    <FormLabel className="text-sm text-slate-300 !mt-0">Requires Proof Approval</FormLabel>
+                  </div>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
 
             <div className="rounded-md border border-slate-700 bg-slate-900/30 p-3 space-y-2">
               <h4 className="text-xs font-medium text-slate-300 uppercase tracking-wider">Finished Size Rules</h4>
