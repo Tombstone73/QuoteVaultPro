@@ -7,6 +7,8 @@ import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessa
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Separator } from "@/components/ui/separator";
 import { Label } from "@/components/ui/label";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { PRICING_PROFILES, type FlatGoodsConfig, getProfile, getDefaultFormula } from "@shared/pricingProfiles";
 import type { ShippingPolicy, WeightUnit, WeightBasis, ShippingConfig } from "@shared/optionTreeV2";
 import React, { useState, useEffect, useCallback, useRef } from "react";
@@ -15,6 +17,7 @@ import { useToast } from "@/hooks/use-toast";
 import { BasePricingEditor } from "@/components/pbv2/builder-v2/BasePricingEditor";
 import { PricingVariableHelper } from "@/components/pbv2/builder-v2/PricingVariableHelper";
 import { FormulaReferenceModal } from "@/components/pbv2/builder-v2/FormulaReferenceModal";
+import { CircleHelp } from "lucide-react";
 
 // Required field indicator component
 function RequiredIndicator() {
@@ -677,39 +680,46 @@ function PricingEngineRadioSection({
 
   return (
     <div className="space-y-3 min-w-0">
-      <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Pricing Engine</h3>
-
-      <div className="rounded-md border border-slate-700 bg-slate-900/30 p-2">
-        <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-2">PBV2 Pricing Mode</div>
-        <div className="grid grid-cols-2 gap-2">
-          <Button
-            type="button"
-            variant={pricingMode === "basic" ? "default" : "outline"}
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Pricing Engine</h3>
+        <div className="flex items-center gap-2">
+          <ToggleGroup
+            type="single"
+            value={pricingMode}
+            onValueChange={(value) => {
+              if (value === "basic" || value === "advanced") {
+                onPricingModeChange?.(value);
+              }
+            }}
+            variant="outline"
             size="sm"
-            onClick={() => onPricingModeChange?.("basic")}
-            className="h-8"
+            className="gap-0 rounded-md border border-slate-700 bg-slate-900/30 p-0.5"
           >
-            Basic
-          </Button>
-          <Button
-            type="button"
-            variant={pricingMode === "advanced" ? "default" : "outline"}
-            size="sm"
-            onClick={() => onPricingModeChange?.("advanced")}
-            className="h-8"
-          >
-            Advanced
-          </Button>
+            <ToggleGroupItem value="basic" className="h-7 rounded-sm border-0 px-2.5 text-[11px] text-slate-300 data-[state=on]:bg-slate-200 data-[state=on]:text-slate-950">
+              Basic
+            </ToggleGroupItem>
+            <ToggleGroupItem value="advanced" className="h-7 rounded-sm border-0 px-2.5 text-[11px] text-slate-300 data-[state=on]:bg-slate-200 data-[state=on]:text-slate-950">
+              Advanced
+            </ToggleGroupItem>
+          </ToggleGroup>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-sm border border-slate-700 bg-slate-900/30 text-slate-400 transition-colors hover:text-slate-200"
+                  aria-label="Pricing mode help"
+                >
+                  <CircleHelp className="h-3.5 w-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[260px] text-xs leading-relaxed">
+                <div>Basic: Uses the structured builder and generated canonical formula.</div>
+                <div>Advanced: Enables direct formula editing and advanced pricing control.</div>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
-        {pricingMode === "basic" ? (
-          <div className="mt-2 text-[11px] text-slate-400">
-            Structured builder only. Formula editor is locked; canonical formula is generated internally from finished geometry variables.
-          </div>
-        ) : (
-          <div className="mt-2 text-[11px] text-slate-400">
-            Full formula editor enabled. No automatic formula rewriting.
-          </div>
-        )}
       </div>
 
       <RadioGroup
