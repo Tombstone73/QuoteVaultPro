@@ -142,7 +142,10 @@ async function resolveEffectiveLineItemRouting(args: {
         .limit(1);
 
     const [productRow] = await db
-        .select({ requiresPrepressOverride: productTypes.requiresPrepressOverride })
+        .select({
+            requiresPrepressOverride: productTypes.requiresPrepressOverride,
+            requiresProofApproval: products.requiresProofApproval,
+        })
         .from(products)
         .leftJoin(productTypes, eq(products.productTypeId, productTypes.id))
         .where(eq(products.id, args.productId))
@@ -152,11 +155,13 @@ async function resolveEffectiveLineItemRouting(args: {
     const requiresPrepress = typeof args.requestedRequiresPrepress === "boolean"
         ? args.requestedRequiresPrepress
         : productRow?.requiresPrepressOverride ?? org?.prepressDefaultEnabled ?? true;
+    const requiresProofApproval = Boolean(productRow?.requiresProofApproval);
 
     return {
         requiresDesign,
         requiresPrepress,
-        workflowState: getInitialWorkflowState({ requiresDesign, requiresPrepress }),
+        requiresProofApproval,
+        workflowState: getInitialWorkflowState({ requiresDesign, requiresPrepress, requiresProofApproval }),
     };
 }
 
