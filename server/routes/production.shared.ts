@@ -1,7 +1,15 @@
+import crypto from "crypto";
 import { z } from "zod";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 
-import { organizations, productionEvents } from "@shared/schema";
+import {
+  inventoryAdjustments,
+  inventoryReservations,
+  materials,
+  orderMaterialUsage,
+  organizations,
+  productionEvents,
+} from "@shared/schema";
 
 import { db } from "../db";
 
@@ -515,4 +523,190 @@ export const appendEvent = async (args: {
     type: args.type,
     payload,
   });
+};
+
+// ---------------------------------------------------------------------------
+// Inventory consumption helpers (used by production job complete/status routes)
+// ---------------------------------------------------------------------------
+
+const normalizeQty2dp = (value: unknown): string => {
+  const n = typeof value === "number" ? value : Number(String(value));
+  if (!Number.isFinite(n)) return (0).toFixed(2);
+  return (Math.round(n * 100) / 100).toFixed(2);
+};
+
+const toQtyNumber2dp = (value: unknown): number => Number(normalizeQty2dp(value));
+
+const buildEffectiveMaterialsFingerprint = (
+  materialsInput: Array<{ materialId: string; uom: string; qty: number }>
+): string => {
+  const canonical = (materialsInput || [])
+    .map((m) => ({
+      materialId: String(m.materialId || "").trim(),
+      uom: String(m.uom || "").trim(),
+      qty: normalizeQty2dp(m.qty),
+    }))
+    .filter((m) => !!m.materialId && !!m.uom && Number(m.qty) > 0)
+    .sort((a, b) => `${a.materialId}:${a.uom}`.localeCompare(`${b.materialId}:${b.uom}`));
+
+  const serialized = JSON.stringify(canonical);
+  return crypto.createHash("sha256").update(serialized).digest("hex");
+};
+
+const buildReservedFingerprintFromRows = (
+  rows: Array<{ sourceKey: string; uom: string; qty: string | number }>
+): string => {
+  return buildEffectiveMaterialsFingerprint(
+    (rows || []).map((r) => ({
+      materialId: String(r.sourceKey || "").trim(),
+      uom: String(r.uom || "").trim(),
+      qty: toQtyNumber2dp(r.qty),
+    }))
+  );
+};
+
+const listReservedMaterialsForLineItem = async (tx: any, args: { organizationId: string; orderId: string; lineItemId: string }) => {
+  return tx
+    .select({
+      id: inventoryReservations.id,
+      sourceKey: inventoryReservations.sourceKey,
+      uom: inventoryReservations.uom,
+      qty: inventoryReservations.qty,
+    })
+    .from(inventoryReservations)
+    .where(
+      and(
+        eq(inventoryReservations.organizationId, args.organizationId),
+        eq(inventoryReservations.orderId, args.orderId),
+        eq(inventoryReservations.orderLineItemId, args.lineItemId),
+        eq(inventoryReservations.sourceType, "PBV2_MATERIAL"),
+        eq(inventoryReservations.status, "RESERVED")
+      )
+    );
+};
+
+const wasMaterialsLifecycleEventProcessed = async (
+  tx: any,
+  args: { organizationId: string; productionJobId: string; eventType: string; fingerprint: string }
+) => {
+  const rows = await tx
+    .select({ payload: productionEvents.payload })
+    .from(productionEvents)
+    .where(
+      and(
+        eq(productionEvents.organizationId, args.organizationId),
+        eq(productionEvents.productionJobId, args.productionJobId),
+        eq(productionEvents.type, "note")
+      )
+    )
+    .orderBy(desc(productionEvents.createdAt))
+    .limit(200);
+
+  return rows.some((row: any) => {
+    const payload = row?.payload as any;
+    return (
+      payload &&
+      payload.eventType === args.eventType &&
+      String(payload.materialFingerprint || "") === args.fingerprint
+    );
+  });
+};
+
+export const consumeReservedMaterialsForLineItem = async (
+  tx: any,
+  args: {
+    organizationId: string;
+    orderId: string;
+    lineItemId: string;
+    productionJobId: string;
+    userId: string;
+  }
+) => {
+  const reserved = await listReservedMaterialsForLineItem(tx, {
+    organizationId: args.organizationId,
+    orderId: args.orderId,
+    lineItemId: args.lineItemId,
+  });
+
+  if (!reserved.length) {
+    return { consumed: false, reason: "no_reserved_rows" as const, fingerprint: buildReservedFingerprintFromRows([]), consumedCount: 0 };
+  }
+
+  const fingerprint = buildReservedFingerprintFromRows(reserved);
+  const alreadyConsumed = await wasMaterialsLifecycleEventProcessed(tx, {
+    organizationId: args.organizationId,
+    productionJobId: args.productionJobId,
+    eventType: "materials_consumed",
+    fingerprint,
+  });
+
+  if (alreadyConsumed) {
+    return { consumed: false, reason: "idempotent_skip" as const, fingerprint, consumedCount: 0 };
+  }
+
+  const now = new Date();
+  let consumedCount = 0;
+
+  for (const row of reserved) {
+    const materialId = String(row.sourceKey || "").trim();
+    if (!materialId) continue;
+    const qty = toQtyNumber2dp(row.qty);
+    if (!Number.isFinite(qty) || qty <= 0) continue;
+
+    await tx.insert(orderMaterialUsage).values({
+      orderId: args.orderId,
+      orderLineItemId: args.lineItemId,
+      materialId,
+      quantityUsed: normalizeQty2dp(qty),
+      unitOfMeasure: String(row.uom || "each"),
+      calculatedBy: "auto",
+    } as any);
+
+    await tx.insert(inventoryAdjustments).values({
+      materialId,
+      type: "job_usage",
+      quantityChange: normalizeQty2dp(-qty),
+      reason: `Auto-consumed from reservation for line item ${args.lineItemId}`,
+      orderId: args.orderId,
+      userId: args.userId,
+    } as any);
+
+    await tx
+      .update(materials)
+      .set({
+        stockQuantity: sql`${materials.stockQuantity} - ${normalizeQty2dp(qty)}`,
+        updatedAt: now,
+      } as any)
+      .where(and(eq(materials.organizationId, args.organizationId), eq(materials.id, materialId)));
+
+    consumedCount += 1;
+  }
+
+  await tx
+    .update(inventoryReservations)
+    .set({ status: "RELEASED", updatedAt: now } as any)
+    .where(
+      and(
+        eq(inventoryReservations.organizationId, args.organizationId),
+        eq(inventoryReservations.orderId, args.orderId),
+        eq(inventoryReservations.orderLineItemId, args.lineItemId),
+        eq(inventoryReservations.sourceType, "PBV2_MATERIAL"),
+        eq(inventoryReservations.status, "RESERVED")
+      )
+    );
+
+  await tx.insert(productionEvents).values({
+    organizationId: args.organizationId,
+    productionJobId: args.productionJobId,
+    type: "note",
+    payload: {
+      eventType: "materials_consumed",
+      lineItemId: args.lineItemId,
+      orderId: args.orderId,
+      materialFingerprint: fingerprint,
+      consumedCount,
+    },
+  });
+
+  return { consumed: true, reason: "ok" as const, fingerprint, consumedCount };
 };
