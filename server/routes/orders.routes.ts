@@ -4538,6 +4538,7 @@ export async function registerOrderRoutes(
                 internalLaborRateSnapshot: designSnapshot.internalLaborRateSnapshot,
                 needsDesignOverride: designSnapshot.needsDesignOverride,
                 requiresDesign: routing.requiresDesign,
+                requiresProofApproval: routing.requiresProofApproval,
                 requiresPrepress: routing.requiresPrepress,
                 pbv2TreeVersionId: pricingResult.pbv2TreeVersionId,
                 pbv2SnapshotJson: pricingResult.pbv2SnapshotJson as any,
@@ -4615,6 +4616,7 @@ export async function registerOrderRoutes(
             const requestedRequiresDesign = updateData.requiresDesign;
             const requestedRequiresPrepress = updateData.requiresPrepress;
             const hasRoutingChange =
+                updateData.productId !== undefined ||
                 (typeof requestedRequiresDesign === "boolean" && requestedRequiresDesign !== Boolean((oldLineItem as any).requiresDesign)) ||
                 (typeof requestedRequiresPrepress === "boolean" && requestedRequiresPrepress !== Boolean((oldLineItem as any).requiresPrepress));
 
@@ -4646,6 +4648,7 @@ export async function registerOrderRoutes(
                     : routing.requiresDesign;
 
                 updateData.requiresDesign = routing.requiresDesign;
+                updateData.requiresProofApproval = routing.requiresProofApproval;
                 updateData.requiresPrepress = routing.requiresPrepress;
                 updateData.workflowState = routing.workflowState;
                 updateData.status = "new";
