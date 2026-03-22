@@ -54,6 +54,9 @@ describe("workflow contract policy", () => {
     expect(getInitialWorkflowState({ requiresDesign: true, requiresPrepress: true })).toBe("needs_design");
     expect(getInitialWorkflowState({ requiresDesign: false, requiresPrepress: true })).toBe("ready_for_prepress");
     expect(getInitialWorkflowState({ requiresDesign: false, requiresPrepress: false })).toBe("ready_for_production");
+    expect(getInitialWorkflowState({ requiresDesign: false, requiresProofApproval: true, requiresPrepress: true })).toBe("awaiting_proof_approval");
+    expect(getInitialWorkflowState({ requiresDesign: false, requiresProofApproval: true, requiresPrepress: false })).toBe("awaiting_proof_approval");
+    expect(getInitialWorkflowState({ requiresDesign: true, requiresProofApproval: true, requiresPrepress: true })).toBe("needs_design");
   });
 });
 
