@@ -26,6 +26,9 @@ describe("/api/orders/:orderId/production/schedule partial failure", () => {
                 productTypeId: "pt_1",
                 materialId: null,
                 status: "new",
+                workflowState: "new",
+                lineItemRequiresDesignSnapshot: false,
+                lineItemRequiresProofApprovalSnapshot: false,
                 lineItemRequiresPrepressSnapshot: true,
                 requiresProductionJob: true,
               },
@@ -35,13 +38,22 @@ describe("/api/orders/:orderId/production/schedule partial failure", () => {
                 productTypeId: "pt_2",
                 materialId: null,
                 status: "new",
+                workflowState: "new",
+                lineItemRequiresDesignSnapshot: false,
+                lineItemRequiresProofApprovalSnapshot: false,
                 lineItemRequiresPrepressSnapshot: false,
                 requiresProductionJob: true,
               },
             ],
           }),
           transactionRunner: {
-            transaction: async <T>(cb: (tx: any) => Promise<T>) => cb({}),
+            transaction: async <T>(cb: (tx: any) => Promise<T>) => cb({
+              update: () => ({
+                set: () => ({
+                  where: async () => undefined,
+                }),
+              }),
+            }),
           },
           resolveInitialProductionRouteFn: async ({ lineItemRequiresPrepressSnapshot }: any) => ({
             stationKey: lineItemRequiresPrepressSnapshot ? "prepress" : "flatbed",
