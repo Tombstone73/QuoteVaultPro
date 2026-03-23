@@ -17,7 +17,7 @@ import { ensureCustomerForUser } from "./db/syncUsersToCustomers";
 import * as quickbooksService from "./quickbooksService";
 import { assertStripeServerConfig, getStripeClient } from "./lib/stripe";
 import * as syncWorker from "./workers/syncProcessor";
-import { tenantContext, getUserOrganizations, setDefaultOrganization, getRequestOrganizationId, optionalTenantContext, ensureUserOrganization, DEFAULT_ORGANIZATION_ID, portalContext, getPortalCustomer } from "./tenantContext";
+import { tenantContext, getUserOrganizations, setDefaultOrganization, getRequestOrganizationId } from "./tenantContext";
 import { calculateQuoteOrderTotals, getOrganizationTaxSettings, type LineItemInput } from "./quoteOrderPricing";
 import {
   getEffectiveWorkflowState,
