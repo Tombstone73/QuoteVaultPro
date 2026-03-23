@@ -316,7 +316,6 @@ import {
   tryExtractSupabaseObjectKeyFromUrl
 } from "./lib/supabaseObjectHelpers";
 import type { FileRole, FileSide } from "./lib/supabaseObjectHelpers";
-import { getInvoiceWithRelations, applyPayment, refreshInvoiceStatus } from './invoicesService';
 import { generatePackingSlipHTML, sendShipmentEmail, updateOrderFulfillmentStatus } from './fulfillmentService';
 import { registerMvpInvoicingRoutes } from './routes/mvpInvoicing.routes';
 import { getQuickBooksSyncQueueCountsForOrg, listQuickBooksConnectedOrganizationIds, runQuickBooksSyncWorkerForOrg } from './services/quickbooksSyncQueueWorker';
@@ -10021,59 +10020,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // ============================================================
-  // INVOICES & PAYMENTS
-  // ============================================================
-
-  // Apply payment
-  app.post('/api/payments', isAuthenticated, tenantContext, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
-      const userId = getUserId(req.user);
-      const { invoiceId, amount, method, notes } = req.body || {};
-      if (!invoiceId || !amount || !method) return res.status(400).json({ error: 'invoiceId, amount, method required' });
-
-      // Ensure invoice belongs to org
-      const rel = await getInvoiceWithRelations(invoiceId);
-      if (!rel) return res.status(404).json({ error: 'Invoice not found' });
-      if ((rel.invoice as any).organizationId !== organizationId) return res.status(404).json({ error: 'Invoice not found' });
-
-      const payment = await applyPayment(invoiceId, userId!, { amount: Number(amount), method, notes });
-      res.json({ success: true, data: payment });
-    } catch (error: any) {
-      console.error('Error applying payment:', error);
-      res.status(500).json({ error: error.message || 'Failed to apply payment' });
-    }
-  });
-
-  // Payment deletion (only if invoice not fully paid yet)
-  app.delete('/api/payments/:id', isAuthenticated, tenantContext, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
-
-      const paymentId = req.params.id;
-      const paymentRows = await db.select().from(payments).where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId)));
-      const payment = paymentRows[0];
-      if (!payment) return res.status(404).json({ error: 'Payment not found' });
-
-      if (String((payment as any).provider || '').toLowerCase() === 'stripe') {
-        return res.status(400).json({ error: 'Stripe payments cannot be deleted' });
-      }
-
-      const rel = await getInvoiceWithRelations(payment.invoiceId);
-      if (!rel) return res.status(404).json({ error: 'Parent invoice not found' });
-      if ((rel.invoice as any).organizationId !== organizationId) return res.status(404).json({ error: 'Parent invoice not found' });
-      if (rel.invoice.status === 'paid') return res.status(400).json({ error: 'Cannot delete payment from fully paid invoice' });
-      await db.delete(payments).where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId)));
-      await refreshInvoiceStatus(payment.invoiceId);
-      res.json({ success: true });
-    } catch (error) {
-      console.error('Error deleting payment:', error);
-      res.status(500).json({ error: 'Failed to delete payment' });
-    }
-  });
+  // Payment routes extracted to ./routes/mvpInvoicing.routes.ts (do NOT re-add here)
 
   // ===== SHIPMENT & FULFILLMENT ROUTES =====
 
