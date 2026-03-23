@@ -7,7 +7,6 @@ import crypto from "crypto";
 import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
-import * as prepressFileService from "./prepressFileService";
 import { db, hasQuoteAttachmentPagesTable } from "./db";
 import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, inventoryReservations, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, assetVariants, authIdentities, bugReports, prepressSessions, lineItemFiles, reprintRequests, insertProductDesignConfigSchema } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, asc, inArray, notInArray, or, sql } from "drizzle-orm";
@@ -35,7 +34,6 @@ import {
   APPROVED_LOCK_MESSAGE,
   CONVERTED_LOCK_MESSAGE,
 } from "@shared/quoteWorkflow";
-import { proofQueueSliceSchema } from "@shared/proofing";
 import { registerAttachmentRoutes } from "./routes/attachments.routes";
 import { registerOrderRoutes } from "./routes/orders.routes";
 import { registerPrepressRoutes } from "./prepress/routes";
@@ -50,12 +48,6 @@ import { registerProductionJobsRoutes } from "./routes/productionJobs.routes";
 import { registerDesignRoutes } from "./routes/design.routes";
 import { registerPrepressQueueRoutes } from "./routes/prepress.routes";
 import { registerPrepressFileRoutes } from "./routes/prepressFiles.routes";
-import {
-  parseDimensionsFromDescription,
-  computeTotalSqFt,
-  extractFinishingBullets,
-  buildPrepressOptionRows,
-} from "./routes/flatStockNesting.shared";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/validator";
 import { resolveInventoryPolicyFromOrgPreferences } from "@shared/inventoryPolicy";
 import { mergeInventoryPolicyIntoPreferences, normalizeInventoryPolicyPatch } from "@shared/inventoryPolicyPreferences";
@@ -68,42 +60,8 @@ import { deleteStoredObjectKeys } from "./services/storage/deleteStoredObjectKey
 import { organizationStorageSettingsService } from "./services/storage/OrganizationStorageSettingsService";
 import { stationResolver } from "./services/stations/stationResolver";
 import { routeLineItemToProduction } from "./services/productionRoutingService";
-import { resolveInitialProductionRoute, resolvePostPrepressProductionRoute } from "./services/productionRoutingResolver";
-import { completeLineItemDesign, getInitialWorkflowState, transitionLineItemWorkflowState } from "./services/lineItemWorkflowService";
-import {
-  createLineItemProofVersion,
-  listProofingQueue,
-  markProofVersionSent,
-  recordManualProofApprovalOverride,
-  recordProofResponse,
-  resolveLineItemProofingTruth,
-} from "./services/proofingService";
-import { getLatestProofFeedbackByLineItemId } from "./services/proofFeedbackProjectionService";
-import { syncDesignCostSummary } from "./services/designCostSummaryService";
-import {
-  buildDesignWorkspaceState,
-  designNoteKindSchema,
-  type DesignWorkspaceAuditRow,
-} from "./services/designWorkspaceState";
-import { validateProofToken } from "./services/proofAccessTokenService";
-import {
-  findActiveJobForLineItem,
-  isDesignOwnershipJob,
-  isPrepressOwnershipJob,
-  resolveActiveProductionOwners,
-  transitionToStation,
-  type StationTransitionResult,
-} from "./services/productionOwnership";
+import { transitionLineItemWorkflowState } from "./services/lineItemWorkflowService";
 import { getDashboardSummary } from "./services/dashboardSummaryService";
-import { resolveVisibleNodes } from "@shared/optionTreeV2Runtime";
-import { computePlannedMaterialsForLineItem } from "./services/prepressPlannedMaterials";
-import {
-  appendMaterialOverrideToSpecsJson,
-  computeEffectiveMaterials,
-  materialOverrideOpInputSchema,
-  materialOverridesFromSpecsJson,
-  withServerDefaultsForOverride,
-} from "./services/prepressMaterialOverrides";
 import { getAppEnv, getCookieDomain, getPublicWebOrigin } from "./lib/appRuntimeConfig";
 import { fileDerivativeRepository } from "./storage/fileDerivative.repo";
 import { fileRecordRepository } from "./storage/fileRecord.repo";
