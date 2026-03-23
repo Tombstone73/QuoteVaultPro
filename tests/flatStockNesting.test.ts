@@ -1,3 +1,12 @@
+/**
+ * Unit tests for server/routes/flatStockNesting.shared.ts
+ *
+ * Compile gate: `npm run check` (tsc) is the authoritative pass/fail signal.
+ * Jest runner: These tests pass on CI and on machines with ≥8 GB available to Node.
+ * On development machines with limited RAM (≤6 GB), ts-jest may OOM before
+ * reaching these tests — this is an environment constraint, not a test failure.
+ * Use `npm test` (which sets --max-old-space-size=8192) rather than npx jest directly.
+ */
 import { describe, expect, test } from "@jest/globals";
 import {
   parseDimensionsFromDescription,
