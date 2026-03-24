@@ -54,7 +54,6 @@ import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2Overr
 import { createLineItemFileRecord } from "./services/lineItemFileRecordService";
 import { canonicalFileReadResolver } from "./services/storage/CanonicalFileReadResolver";
 import { deleteStoredObjectKeys } from "./services/storage/deleteStoredObjectKeys";
-import { organizationStorageSettingsService } from "./services/storage/OrganizationStorageSettingsService";
 import { stationResolver } from "./services/stations/stationResolver";
 import { routeLineItemToProduction } from "./services/productionRoutingService";
 import { transitionLineItemWorkflowState } from "./services/lineItemWorkflowService";
@@ -311,6 +310,7 @@ import { registerQuickBooksRoutes } from './routes/quickbooks.routes';
 import { registerProcurementRoutes } from './routes/procurement.routes';
 import { registerStripeRoutes } from './routes/stripe.routes';
 import { registerCatalogSettingsRoutes } from './routes/catalogSettings.routes';
+import { registerAdminStorageRoutes } from './routes/adminStorage.routes';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -1618,79 +1618,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get('/api/admin/storage-settings', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) {
-        return res.status(403).json({ success: false, error: 'No organization context' });
-      }
-
-      const settings = await organizationStorageSettingsService.getSettings(organizationId);
-      return res.json({ success: true, data: settings });
-    } catch (error: any) {
-      console.error('[StorageSettings:GET] Error:', error);
-      return res.status(500).json({ success: false, error: error?.message || 'Failed to fetch storage settings' });
-    }
-  });
-
-  app.post('/api/admin/storage-settings/validate', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) {
-        return res.status(403).json({ success: false, error: 'No organization context' });
-      }
-
-      const validation = await organizationStorageSettingsService.validateRequest(organizationId, req.body ?? {});
-      return res.json({ success: true, data: validation });
-    } catch (error: any) {
-      console.error('[StorageSettings:VALIDATE] Error:', error);
-      if (error?.name === 'ZodError') {
-        return res.status(400).json({ success: false, error: fromZodError(error).message });
-      }
-      return res.status(500).json({ success: false, error: error?.message || 'Failed to validate storage settings' });
-    }
-  });
-
-  app.put('/api/admin/storage-settings', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) {
-        return res.status(403).json({ success: false, error: 'No organization context' });
-      }
-
-      const settings = await organizationStorageSettingsService.saveRequest(organizationId, req.body ?? {});
-      return res.json({ success: true, data: settings });
-    } catch (error: any) {
-      console.error('[StorageSettings:PUT] Error:', error);
-      if (error?.name === 'ZodError') {
-        return res.status(400).json({ success: false, error: fromZodError(error).message });
-      }
-      return res.status(500).json({ success: false, error: error?.message || 'Failed to save storage settings' });
-    }
-  });
-
-  app.post('/api/admin/storage-settings/activate', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) {
-        return res.status(403).json({ success: false, error: 'No organization context' });
-      }
-
-      const providerConfigId = typeof req.body?.providerConfigId === 'string' ? req.body.providerConfigId : '';
-      if (!providerConfigId) {
-        return res.status(400).json({ success: false, error: 'providerConfigId is required' });
-      }
-
-      const settings = await organizationStorageSettingsService.activateProvider(organizationId, providerConfigId);
-      return res.json({ success: true, data: settings });
-    } catch (error: any) {
-      console.error('[StorageSettings:ACTIVATE] Error:', error);
-      if (error?.name === 'ZodError') {
-        return res.status(400).json({ success: false, error: fromZodError(error).message });
-      }
-      return res.status(500).json({ success: false, error: error?.message || 'Failed to activate storage provider' });
-    }
-  });
+  // Admin Storage Settings routes extracted to ./routes/adminStorage.routes.ts (do NOT re-add here)
 
   // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Object storage routes moved to ./routes/attachments.routes.ts
@@ -10654,6 +10582,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Product Types + Global Variables routes extracted to ./routes/catalogSettings.routes.ts (do NOT re-add here)
   registerCatalogSettingsRoutes(app, { isAuthenticated, tenantContext, isAdmin, requireOrgOwnerAdmin });
+
+  // Admin Storage Settings routes extracted to ./routes/adminStorage.routes.ts (do NOT re-add here)
+  registerAdminStorageRoutes(app, { isAuthenticated, tenantContext, isAdmin });
 
   /**
    * GET /api/system/status
