@@ -50,8 +50,6 @@ import { canonicalFileReadResolver } from "./services/storage/CanonicalFileReadR
 import { deleteStoredObjectKeys } from "./services/storage/deleteStoredObjectKeys";
 import { stationResolver } from "./services/stations/stationResolver";
 import { routeLineItemToProduction } from "./services/productionRoutingService";
-import { getDashboardSummary } from "./services/dashboardSummaryService";
-import { getAppEnv, getCookieDomain, getPublicWebOrigin } from "./lib/appRuntimeConfig";
 import { fileDerivativeRepository } from "./storage/fileDerivative.repo";
 import { fileRecordRepository } from "./storage/fileRecord.repo";
 import { productDesignConfigRepository } from "./storage/productDesignConfig.repo";
@@ -222,6 +220,7 @@ import { registerCompanySettingsRoutes } from './routes/companySettings.routes';
 import { registerCustomerRelationsRoutes } from './routes/customerRelations.routes';
 import { registerCustomerRoutes } from './routes/customers.routes';
 import { registerImportJobRoutes } from './routes/importJobs.routes';
+import { registerSystemRoutes } from './routes/system.routes';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -462,54 +461,6 @@ async function snapshotCustomerData(
 export async function registerRoutes(app: Express): Promise<Server> {
   await setupAuth(app);
 
-  // Health check endpoint (no auth required)
-  app.get('/api/health', (req, res) => {
-    res.json({
-      ok: true,
-      env: getAppEnv(),
-      publicWebOrigin: getPublicWebOrigin(),
-      cookieDomain: getCookieDomain() ?? null,
-      apiHost: req.get('host') ?? null,
-      time: new Date().toISOString(),
-    });
-  });
-
-  // Attachment routes extracted to ./routes/attachments.routes.ts (do NOT re-add here)
-  await registerAttachmentRoutes(app, { isAuthenticated, tenantContext, isAdmin });
-
-  // Order routes extracted to ./routes/orders.routes.ts (do NOT re-add here)
-  await registerOrderRoutes(app, { isAuthenticated, tenantContext, isAdmin, isAdminOrOwner });
-
-  // MVP Invoicing + Payments + Billing Ready (mounted, minimal changes in routes.ts)
-  await registerMvpInvoicingRoutes(app, { isAuthenticated, tenantContext });
-
-  // Prepress routes (standalone PDF preflight service)
-  registerPrepressRoutes(app);
-
-  // Platform admin routes (org creation, step-up auth)
-  registerPlatformRoutes(app);
-  registerInviteRoutes(app);
-  registerMeRoutes(app);
-
-  // Bug report routes (submit + admin list/view)
-  registerBugReportRoutes(app, { isAuthenticated, tenantContext });
-
-  // Dashboard summary (KPI cards only, org-scoped)
-  app.get('/api/dashboard/summary', isAuthenticated, tenantContext, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) {
-        return res.status(500).json({ success: false, message: 'Missing organization context' });
-      }
-
-      const data = await getDashboardSummary(organizationId);
-      return res.json({ success: true, data, message: 'Dashboard summary fetched' });
-    } catch (error) {
-      console.error('[DashboardSummary:GET] failed:', error);
-      return res.status(500).json({ success: false, message: 'Failed to fetch dashboard summary' });
-    }
-  });
-
   // Dev-only debug: verify status pills exist per org/state
   if (nodeEnv === 'development') {
     try {
@@ -680,57 +631,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Object storage routes moved to ./routes/attachments.routes.ts
   // (GET /objects/:objectPath, POST /api/objects/upload, POST /api/objects/acl)
   // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-  app.get("/api/media", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const assets = await storage.getAllMediaAssets(organizationId);
-      res.json(assets);
-    } catch (error) {
-      console.error("Error fetching media assets:", error);
-      res.status(500).json({ message: "Failed to fetch media assets" });
-    }
-  });
-
-  app.post("/api/media", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const { filename, url, fileSize, mimeType } = req.body;
-
-      if (!filename || !url || fileSize === undefined || !mimeType) {
-        return res.status(400).json({ message: "filename, url, fileSize, and mimeType are required" });
-      }
-
-      const userId = getUserId(req.user);
-      const asset = await storage.createMediaAsset(organizationId, {
-        filename,
-        url,
-        uploadedBy: userId!,
-        fileSize,
-        mimeType,
-      });
-
-      res.json(asset);
-    } catch (error) {
-      console.error("Error creating media asset:", error);
-      res.status(500).json({ message: "Failed to create media asset" });
-    }
-  });
-
-  app.delete("/api/media/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const { id } = req.params;
-      await storage.deleteMediaAsset(organizationId, id);
-      res.json({ success: true });
-    } catch (error) {
-      console.error("Error deleting media asset:", error);
-      res.status(500).json({ message: "Failed to delete media asset" });
-    }
-  });
 
   // Product Types routes extracted to ./routes/catalogSettings.routes.ts (do NOT re-add here)
 
@@ -7182,21 +7082,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerCustomerRoutes(app, { isAuthenticated, tenantContext, isAdmin });
   registerImportJobRoutes(app, { isAuthenticated, tenantContext, isAdmin });
 
-  /**
-   * GET /api/system/status
-   * Get system status including feature flags
-   */
-  app.get('/api/system/status', isAuthenticated, async (req: any, res) => {
-    try {
-      const { isThumbnailGenerationEnabled } = await import('./services/thumbnailGenerator');
-      res.json({
-        thumbnailsEnabled: isThumbnailGenerationEnabled(),
-      });
-    } catch (error: any) {
-      console.error('[System Status] Error:', error);
-      res.status(500).json({ error: 'Failed to get system status' });
-    }
-  });
+  // Health, Dashboard, Media, and System Status routes extracted to ./routes/system.routes.ts (do NOT re-add here)
+  registerSystemRoutes(app, { isAuthenticated, tenantContext, isAdmin });
+
 
   // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // API catch-all: Prevent HTML fallback for unknown API routes
