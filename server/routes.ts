@@ -7238,6 +7238,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Timeline + Audit Logs routes extracted to ./routes/timeline.routes.ts (do NOT re-add here)
 
+  // Customer Contacts, Notes, and Credit Transactions routes extracted to ./routes/customerRelations.routes.ts (do NOT re-add here)
 
   // Diagnostic route to check user-customer linkage (dev only)
   app.get("/api/debug/user-customer-linkage", isAuthenticated, async (req: any, res) => {
