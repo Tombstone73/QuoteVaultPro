@@ -246,8 +246,6 @@ import {
   updateProductOptionSchema,
   insertProductVariantSchema,
   updateProductVariantSchema,
-  insertCompanySettingsSchema,
-  updateCompanySettingsSchema,
   insertCustomerSchema,
   insertCustomerSchemaRefined,
   updateCustomerSchema,
@@ -306,6 +304,7 @@ import { registerJobsRoutes } from './routes/jobs.routes';
 import { registerTimelineRoutes } from './routes/timeline.routes';
 import { registerOrganizationRoutes } from './routes/organization.routes';
 import { registerUsersRoutes } from './routes/users.routes';
+import { registerCompanySettingsRoutes } from './routes/companySettings.routes';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -6241,58 +6240,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Email Settings + Email Sending routes extracted to ./routes/email.routes.ts (do NOT re-add here)
 
-  // Company Settings routes
-  app.get("/api/company-settings", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const settings = await storage.getCompanySettings(organizationId);
-      if (!settings) {
-        return res.status(404).json({ message: "Company settings not found" });
-      }
-      res.json(settings);
-    } catch (error) {
-      console.error("Error fetching company settings:", error);
-      res.status(500).json({ message: "Failed to fetch company settings" });
-    }
-  });
-
-  app.post("/api/company-settings", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const settingsData = insertCompanySettingsSchema.parse(req.body);
-      const { organizationId: _orgId, ...settingsWithoutOrgId } =
-        settingsData as typeof settingsData & { organizationId?: string };
-      const settings = await storage.createCompanySettings(organizationId, settingsWithoutOrgId);
-      res.json(settings);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: fromZodError(error).message });
-      }
-      console.error("Error creating company settings:", error);
-      res.status(500).json({ message: "Failed to create company settings" });
-    }
-  });
-
-  app.patch("/api/company-settings/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const settingsData = updateCompanySettingsSchema.parse(req.body);
-      const { organizationId: _orgId, ...updateData } =
-        settingsData as typeof settingsData & { organizationId?: string };
-      const settings = await storage.updateCompanySettings(organizationId, req.params.id, updateData);
-      res.json(settings);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: fromZodError(error).message });
-      }
-      console.error("Error updating company settings:", error);
-      res.status(500).json({ message: "Failed to update company settings" });
-    }
-  });
-
   // Global search endpoint
   // Global search endpoint - searches across all major entities
   app.get("/api/search", isAuthenticated, tenantContext, async (req: any, res) => {
@@ -8437,6 +8384,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Users + Admin Users routes extracted to ./routes/users.routes.ts (do NOT re-add here)
   registerUsersRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin, isAdminOrOwner });
+
+  // Company Settings routes extracted to ./routes/companySettings.routes.ts (do NOT re-add here)
+  registerCompanySettingsRoutes(app, { isAuthenticated, tenantContext, isAdmin });
 
   /**
    * GET /api/system/status
