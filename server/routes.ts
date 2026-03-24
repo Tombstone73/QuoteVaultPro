@@ -8,13 +8,13 @@ import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db, hasQuoteAttachmentPagesTable } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, inventoryReservations, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderStatusPills, jobs, productionJobs, productionEvents, quoteListNotes, listSettings, assets, assetLinks, assetVariants, authIdentities, bugReports, prepressSessions, lineItemFiles, reprintRequests, insertProductDesignConfigSchema } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, inventoryReservations, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderStatusPills, jobs, productionJobs, productionEvents, quoteListNotes, assets, assetLinks, assetVariants, authIdentities, bugReports, prepressSessions, lineItemFiles, reprintRequests, insertProductDesignConfigSchema } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, asc, inArray, notInArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
 import { emailService } from "./emailService";
 import { ensureCustomerForUser } from "./db/syncUsersToCustomers";
-import { tenantContext, getUserOrganizations, setDefaultOrganization, getRequestOrganizationId } from "./tenantContext";
+import { tenantContext, getRequestOrganizationId } from "./tenantContext";
 import { calculateQuoteOrderTotals, getOrganizationTaxSettings, type LineItemInput } from "./quoteOrderPricing";
 import {
   getEffectiveWorkflowState,
@@ -46,10 +46,6 @@ import { registerDesignRoutes } from "./routes/design.routes";
 import { registerPrepressQueueRoutes } from "./routes/prepress.routes";
 import { registerPrepressFileRoutes } from "./routes/prepressFiles.routes";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/validator";
-import { resolveInventoryPolicyFromOrgPreferences } from "@shared/inventoryPolicy";
-import { mergeInventoryPolicyIntoPreferences, normalizeInventoryPolicyPatch } from "@shared/inventoryPolicyPreferences";
-import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBooksPreferences";
-import { resolveMaterialsOverrideModeFromOrgPreferences } from "@shared/materialsOverrideMode";
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2OverrideConfig";
 import { createLineItemFileRecord } from "./services/lineItemFileRecordService";
 import { canonicalFileReadResolver } from "./services/storage/CanonicalFileReadResolver";
@@ -310,6 +306,7 @@ import { registerPricingRoutes } from './routes/pricing.routes';
 import { registerEmailRoutes } from './routes/email.routes';
 import { registerJobsRoutes } from './routes/jobs.routes';
 import { registerTimelineRoutes } from './routes/timeline.routes';
+import { registerOrganizationRoutes } from './routes/organization.routes';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -1334,288 +1331,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // ============================================================
-  // ORGANIZATION MANAGEMENT ROUTES (Multi-Tenant)
-  // ============================================================
-
-  // Get current user's organizations
-  app.get('/api/organizations', isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = getUserId(req.user);
-      if (!userId) {
-        return res.status(401).json({ message: "Unauthorized" });
-      }
-
-      const orgs = await getUserOrganizations(userId);
-      res.json(orgs);
-    } catch (error) {
-      console.error("Error fetching organizations:", error);
-      res.status(500).json({ message: "Failed to fetch organizations" });
-    }
-  });
-
-  // Set default organization
-  app.post('/api/organizations/:id/set-default', isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = getUserId(req.user);
-      const { id } = req.params;
-
-      if (!userId) {
-        return res.status(401).json({ message: "Unauthorized" });
-      }
-
-      await setDefaultOrganization(userId, id);
-      res.json({ success: true });
-    } catch (error) {
-      console.error("Error setting default organization:", error);
-      res.status(500).json({ message: "Failed to set default organization" });
-    }
-  });
-
-  // Get current organization context (for debugging/verification)
-  app.get('/api/organization/current', isAuthenticated, tenantContext, async (req: any, res) => {
-    try {
-      if (!req.organizationId) {
-        return res.status(403).json({ message: "No organization context" });
-      }
-
-      const [org] = await db
-        .select()
-        .from(organizations)
-        .where(eq(organizations.id, req.organizationId))
-        .limit(1);
-
-      res.json(org);
-    } catch (error) {
-      console.error("Error fetching current organization:", error);
-      res.status(500).json({ message: "Failed to fetch organization" });
-    }
-  });
-
-  // Get organization preferences (from settings.preferences)
-  app.get('/api/organization/preferences', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) {
-        return res.status(403).json({ message: "No organization context" });
-      }
-
-      // Only allow owners/admins to read preferences
-      const userRole = req.user?.role || 'customer';
-      if (!['owner', 'admin'].includes(userRole)) {
-        return res.status(403).json({ message: "Only owners and admins can view preferences" });
-      }
-
-      const [org] = await db
-        .select({
-          settings: organizations.settings,
-          prepressDefaultEnabled: organizations.prepressDefaultEnabled,
-        })
-        .from(organizations)
-        .where(eq(organizations.id, organizationId))
-        .limit(1);
-
-      if (!org) {
-        return res.status(404).json({ message: "Organization not found" });
-      }
-
-      // Extract preferences from settings.preferences, default to empty object
-      const rawPreferences = (org.settings as any)?.preferences;
-      const preferences = rawPreferences && typeof rawPreferences === "object" ? rawPreferences : {};
-
-      // Extract email templates from settings.emailTemplates
-      const emailTemplates = (org.settings as any)?.emailTemplates || {};
-
-      // Ensure stable defaults for inventory policy toggles
-      const inventoryPolicy = resolveInventoryPolicyFromOrgPreferences(preferences);
-
-      // Ensure stable defaults for QuickBooks preferences
-      const quickBooks = resolveQuickBooksPreferencesFromOrgPreferences(preferences);
-
-      const materialsOverrideMode = resolveMaterialsOverrideModeFromOrgPreferences(preferences);
-
-      res.json({
-        ...(preferences as any),
-        prepressDefaultEnabled: org.prepressDefaultEnabled,
-        production: {
-          ...(((preferences as any)?.production && typeof (preferences as any).production === "object") ? (preferences as any).production : {}),
-          materialsOverrideMode,
-        },
-        inventoryPolicy,
-        quickBooks,
-        emailTemplates,
-      });
-    } catch (error) {
-      console.error("Error fetching organization preferences:", error);
-      res.status(500).json({ message: "Failed to fetch preferences" });
-    }
-  });
-
-  // Update organization preferences (merge into settings.preferences)
-  app.put('/api/organization/preferences', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) {
-        return res.status(403).json({ message: "No organization context" });
-      }
-
-      // Only allow owners/admins to update preferences
-      const userRole = req.user?.role || 'customer';
-      if (!['owner', 'admin'].includes(userRole)) {
-        return res.status(403).json({ message: "Only owners and admins can update preferences" });
-      }
-
-      const newPreferences = req.body;
-
-      // Extract emailTemplates if present (will be stored at settings.emailTemplates)
-      const { emailTemplates, prepressDefaultEnabled, ...otherPreferences } = newPreferences;
-
-      // Get current settings
-      const [org] = await db
-        .select({
-          settings: organizations.settings,
-          prepressDefaultEnabled: organizations.prepressDefaultEnabled,
-        })
-        .from(organizations)
-        .where(eq(organizations.id, organizationId))
-        .limit(1);
-
-      if (!org) {
-        return res.status(404).json({ message: "Organization not found" });
-      }
-
-      // Merge new preferences into existing settings
-      const currentSettings = (org.settings || {}) as any;
-      const updatedSettings = {
-        ...currentSettings,
-        preferences: otherPreferences,
-        ...(emailTemplates && { emailTemplates }),
-      };
-
-      // Update organization settings
-      await db
-        .update(organizations)
-        .set({
-          settings: updatedSettings as any,
-          ...(typeof prepressDefaultEnabled === "boolean" ? { prepressDefaultEnabled } : {}),
-          updatedAt: new Date(),
-        })
-        .where(eq(organizations.id, organizationId));
-
-      res.json({
-        success: true,
-        preferences: otherPreferences,
-        emailTemplates,
-        prepressDefaultEnabled:
-          typeof prepressDefaultEnabled === "boolean"
-            ? prepressDefaultEnabled
-            : org.prepressDefaultEnabled,
-      });
-    } catch (error) {
-      console.error("Error updating organization preferences:", error);
-      res.status(500).json({ message: "Failed to update preferences" });
-    }
-  });
-
-  // Safely patch ONLY the inventory policy preferences (does not overwrite other keys)
-  app.patch('/api/organization/preferences/inventory-policy', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) {
-        return res.status(403).json({ success: false, message: "No organization context" });
-      }
-
-      // Only allow owners/admins to update preferences
-      const userRole = req.user?.role || 'customer';
-      if (!['owner', 'admin'].includes(userRole)) {
-        return res.status(403).json({ success: false, message: "Only owners and admins can update preferences" });
-      }
-
-      const patchSchema = z
-        .object({
-          enabled: z.boolean().optional(),
-          reservationsEnabled: z.boolean().optional(),
-          mode: z.enum(["off", "advisory", "enforced"]).optional(),
-          enforcementMode: z.enum(["off", "warn_only", "block_on_shortage"]).optional(),
-          autoReserveOnApplyPbV2: z.boolean().optional(),
-          autoReserveOnOrderConfirm: z.boolean().optional(),
-          allowNegative: z.boolean().optional(),
-        })
-        .strict()
-        .refine((obj) => Object.keys(obj).length > 0, {
-          message: "At least one inventory policy field is required",
-        })
-        .superRefine((obj, ctx) => {
-          if (
-            typeof obj.enabled === "boolean" &&
-            typeof obj.reservationsEnabled === "boolean" &&
-            obj.enabled !== obj.reservationsEnabled
-          ) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              message: "enabled and reservationsEnabled must match when both are provided",
-              path: ["reservationsEnabled"],
-            });
-          }
-        });
-
-      const parsed = patchSchema.safeParse(req.body);
-      if (!parsed.success) {
-        const message = fromZodError(parsed.error).toString();
-        return res.status(400).json({ success: false, message });
-      }
-
-      // Load current settings
-      const [org] = await db
-        .select({ settings: organizations.settings })
-        .from(organizations)
-        .where(eq(organizations.id, organizationId))
-        .limit(1);
-
-      if (!org) {
-        return res.status(404).json({ success: false, message: "Organization not found" });
-      }
-
-      const currentSettings = (org.settings || {}) as any;
-      const currentPreferences = (currentSettings as any)?.preferences || {};
-
-      const normalized = normalizeInventoryPolicyPatch(parsed.data);
-      const updatedPreferences = mergeInventoryPolicyIntoPreferences(currentPreferences, normalized.patch);
-
-      // Update organization settings without clobbering unrelated settings keys
-      const updatedSettings = {
-        ...currentSettings,
-        preferences: updatedPreferences,
-      };
-
-      await db
-        .update(organizations)
-        .set({
-          settings: updatedSettings as any,
-          updatedAt: new Date(),
-        })
-        .where(eq(organizations.id, organizationId));
-
-      // TODO(org-preferences-audit): add audit log event for org preference patches
-
-      // Return canonical preferences payload (same shape as GET)
-      const canonicalPreferences = {
-        ...(updatedPreferences as any),
-        inventoryPolicy: resolveInventoryPolicyFromOrgPreferences(updatedPreferences),
-        quickBooks: resolveQuickBooksPreferencesFromOrgPreferences(updatedPreferences),
-      };
-
-      return res.json({
-        success: true,
-        data: canonicalPreferences,
-        message: "Inventory policy updated",
-        ...(normalized.warnings.length > 0 ? { meta: { warnings: normalized.warnings } } : {}),
-      });
-    } catch (error) {
-      console.error("Error patching inventory policy:", error);
-      return res.status(500).json({ success: false, message: "Failed to update inventory policy" });
-    }
-  });
 
   // Admin Storage Settings routes extracted to ./routes/adminStorage.routes.ts (do NOT re-add here)
 
@@ -2034,176 +1749,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // ============================================================
-  // DANGER ZONE: Organization Reset/Disable/Delete (Stubs)
-  // ============================================================
-
-  /**
-   * POST /api/admin/org/reset
-   * Reset organization transactional data (orders, invoices, quotes, production records).
-   * Preserves organization, users, and core configuration.
-   * Requires owner/admin role.
-   */
-  app.post("/api/admin/org/reset", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      const userId = getUserId(req.user);
-
-      if (!userId) {
-        return res.status(401).json({ message: "User ID not found" });
-      }
-
-      // Audit log
-      await db.insert(auditLogs).values({
-        organizationId,
-        userId,
-        actionType: "org.reset.requested",
-        entityType: "organization",
-        entityId: organizationId,
-        description: "Organization data reset requested",
-        newValues: {},
-      });
-
-      // Return 501 Not Implemented
-      return res.status(501).json({
-        code: "NOT_IMPLEMENTED",
-        message: "Organization reset functionality is not yet implemented. Please contact system administrator.",
-      });
-    } catch (error: any) {
-      console.error("[Org Reset] Error:", error);
-      res.status(500).json({ message: error.message || "Failed to reset organization" });
-    }
-  });
-
-  /**
-   * POST /api/admin/org/disable
-   * Disable organization - prevents non-admin access.
-   * Organization remains in system.
-   * Requires owner/admin role.
-   */
-  app.post("/api/admin/org/disable", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      const userId = getUserId(req.user);
-
-      if (!userId) {
-        return res.status(401).json({ message: "User ID not found" });
-      }
-
-      // Audit log
-      await db.insert(auditLogs).values({
-        organizationId,
-        userId,
-        actionType: "org.disable.requested",
-        entityType: "organization",
-        entityId: organizationId,
-        description: "Organization disable requested",
-        newValues: {},
-      });
-
-      // Return 501 Not Implemented
-      return res.status(501).json({
-        code: "NOT_IMPLEMENTED",
-        message: "Organization disable functionality is not yet implemented. Please contact system administrator.",
-      });
-    } catch (error: any) {
-      console.error("[Org Disable] Error:", error);
-      res.status(500).json({ message: error.message || "Failed to disable organization" });
-    }
-  });
-
-  /**
-   * DELETE /api/admin/org
-   * Request organization deletion (sets pending_delete state).
-   * Only org owner/admin can request. Platform admin must finalize.
-   * Requires owner/admin role.
-   */
-  app.delete("/api/admin/org", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      const userId = getUserId(req.user);
-
-      if (!userId) {
-        return res.status(401).json({ message: "User ID not found" });
-      }
-
-      // Get current org state
-      const [org] = await db
-        .select({
-          id: organizations.id,
-          deleteState: organizations.deleteState,
-          slug: organizations.slug,
-        })
-        .from(organizations)
-        .where(eq(organizations.id, organizationId))
-        .limit(1);
-
-      if (!org) {
-        return res.status(404).json({ message: "Organization not found" });
-      }
-
-      // Validate org is active (not already pending/deleted)
-      if (org.deleteState !== 'active') {
-        return res.status(409).json({
-          code: "ORG_ALREADY_PENDING_DELETE",
-          message: `Organization is already in ${org.deleteState} state`,
-          deleteState: org.deleteState,
-        });
-      }
-
-      // Extract optional reason from body
-      const { reason } = req.body || {};
-
-      // Update org to pending_delete state
-      await db
-        .update(organizations)
-        .set({
-          deleteState: 'pending_delete',
-          deleteRequestedAt: new Date(),
-          deleteRequestedByUserId: userId,
-          deleteReason: reason || null,
-        })
-        .where(eq(organizations.id, organizationId));
-
-      // Audit log
-      await db.insert(auditLogs).values({
-        organizationId,
-        userId,
-        actionType: "org.delete.requested",
-        entityType: "organization",
-        entityId: organizationId,
-        description: `Organization deletion requested${reason ? `: ${reason}` : ''}`,
-        newValues: {
-          deleteState: 'pending_delete',
-          reason: reason || null,
-        },
-      });
-
-      // Notify devs
-      const { notifyDev } = await import('./services/devNotify');
-      await notifyDev({
-        eventName: 'org.delete.requested',
-        priority: 'high',
-        organizationId,
-        userId,
-        message: `Organization "${org.slug}" deletion requested by user ${userId}`,
-        metadata: {
-          orgId: organizationId,
-          orgSlug: org.slug,
-          reason: reason || 'No reason provided',
-        },
-      });
-
-      return res.json({
-        success: true,
-        message: "Deletion request submitted. A platform administrator must finalize this action.",
-        deleteState: 'pending_delete',
-      });
-    } catch (error: any) {
-      console.error("[Org Delete Request] Error:", error);
-      res.status(500).json({ message: error.message || "Failed to request organization deletion" });
-    }
-  });
 
   // ============================================================================
   // PBV2 (Product Builder v2) - Versioned Tree Lifecycle
@@ -4996,66 +4541,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // List Settings (column visibility, order, custom labels, date format)
-  app.get("/api/list-settings/:listKey", isAuthenticated, tenantContext, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const userId = getUserId(req.user);
-      if (!userId) return res.status(401).json({ message: "User ID not found" });
-      const { listKey } = req.params;
-
-      const [settings] = await db
-        .select()
-        .from(listSettings)
-        .where(
-          and(
-            eq(listSettings.organizationId, organizationId),
-            eq(listSettings.userId, userId),
-            eq(listSettings.listKey, listKey)
-          )
-        )
-        .limit(1);
-
-      res.json({ settings: settings?.settingsJson || {} });
-    } catch (error) {
-      console.error("Error fetching list settings:", error);
-      res.status(500).json({ message: "Failed to fetch list settings" });
-    }
-  });
-
-  app.put("/api/list-settings/:listKey", isAuthenticated, tenantContext, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const userId = getUserId(req.user);
-      const { listKey } = req.params;
-      const { settings } = req.body;
-
-      const [updated] = await db
-        .insert(listSettings)
-        .values({
-          organizationId,
-          userId,
-          listKey,
-          settingsJson: settings,
-          updatedAt: new Date(),
-        })
-        .onConflictDoUpdate({
-          target: [listSettings.organizationId, listSettings.userId, listSettings.listKey],
-          set: {
-            settingsJson: settings,
-            updatedAt: new Date(),
-          },
-        })
-        .returning();
-
-      res.json({ success: true, settings: updated.settingsJson });
-    } catch (error) {
-      console.error("Error updating list settings:", error);
-      res.status(500).json({ message: "Failed to update list settings" });
-    }
-  });
 
   // Helper: Get organization preferences
   async function getOrgPreferences(organizationId: string): Promise<any> {
@@ -9520,6 +9005,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Timeline + Audit Logs routes extracted to ./routes/timeline.routes.ts (do NOT re-add here)
   registerTimelineRoutes(app, { isAuthenticated, tenantContext, isOwner });
+
+  // Organization, List Settings, Org Danger Zone routes extracted to ./routes/organization.routes.ts (do NOT re-add here)
+  registerOrganizationRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
 
   /**
    * GET /api/system/status
