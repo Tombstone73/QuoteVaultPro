@@ -1,0 +1,549 @@
+/**
+ * customers.routes.ts
+ *
+ * Customer CRUD, detail, CSV import/export, and production folder reference routes
+ * extracted from server/routes.ts.
+ *
+ * Routes:
+ *   GET    /api/customers
+ *   POST   /api/customers
+ *   PATCH  /api/customers/:id
+ *   DELETE /api/customers/:id
+ *   GET    /api/customers/:id
+ *   GET    /api/customers/csv-template
+ *   GET    /api/customers/export
+ *   POST   /api/customers/import
+ *   GET    /api/customers/:id/production-folder-reference
+ *   PATCH  /api/customers/:id/production-folder-reference
+ *
+ * Placement: server/routes/customers.routes.ts
+ * Registered by: server/routes.ts via registerCustomerRoutes
+ */
+
+import type { Express } from "express";
+import { z } from "zod";
+import { fromZodError } from "zod-validation-error";
+import Papa from "papaparse";
+import { storage } from "../storage";
+import { getRequestOrganizationId } from "../tenantContext";
+import {
+  insertCustomerSchema,
+  insertCustomerSchemaRefined,
+  updateCustomerSchema,
+  updateCustomerProductionFolderReferenceSchema,
+} from "@shared/schema";
+import { customerProductionFolderReferenceRepository } from "../storage/customerProductionFolderReference.repo";
+
+// =============================
+// Customer Production Folder Helpers
+// =============================
+
+const resolveProductionFolderReferenceDraft = (rawPath: string | null | undefined) => {
+  const trimmed = typeof rawPath === "string" ? rawPath.trim() : "";
+
+  if (!trimmed) {
+    return {
+      pathOrUri: "",
+      status: "disabled" as const,
+      validationError: null,
+    };
+  }
+
+  if (/[\u0000-\u001f]/.test(trimmed)) {
+    return {
+      pathOrUri: trimmed,
+      status: "invalid" as const,
+      validationError: "Folder reference contains unsupported control characters.",
+    };
+  }
+
+  const looksValid =
+    /^\\\\[^\\]+\\[^\\]+/.test(trimmed) ||
+    /^[A-Za-z]:\\/.test(trimmed) ||
+    /^\//.test(trimmed) ||
+    /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed);
+
+  return {
+    pathOrUri: trimmed,
+    status: looksValid ? ("configured" as const) : ("invalid" as const),
+    validationError: looksValid
+      ? null
+      : "Enter a valid UNC path, drive path, absolute path, or URI.",
+  };
+};
+
+const saveCustomerProductionFolderReference = async (args: {
+  organizationId: string;
+  customerId: string;
+  companyName: string;
+  pathOrUri: string | null | undefined;
+}) => {
+  const draft = resolveProductionFolderReferenceDraft(args.pathOrUri);
+  return customerProductionFolderReferenceRepository.upsertForCustomer(args.organizationId, args.customerId, {
+    label: `${args.companyName} Production Folder`,
+    folderType: "production_destination",
+    pathOrUri: draft.pathOrUri,
+    status: draft.status,
+    validationError: draft.validationError,
+  });
+};
+
+export function registerCustomerRoutes(
+  app: Express,
+  middleware: {
+    isAuthenticated: any;
+    tenantContext: any;
+    isAdmin: any;
+  },
+): void {
+  const { isAuthenticated, tenantContext, isAdmin } = middleware;
+
+  app.get("/api/customers", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const filters = {
+        search: req.query.search as string | undefined,
+        status: req.query.status as string | undefined,
+        customerType: req.query.customerType as string | undefined,
+        assignedTo: req.query.assignedTo as string | undefined,
+      };
+      const customers = await storage.getAllCustomers(organizationId, filters);
+
+      // Calculate availableCredit for each customer
+      const customersWithCredit = customers.map(customer => ({
+        ...customer,
+        availableCredit: (parseFloat(customer.creditLimit || "0") - parseFloat(customer.currentBalance || "0")).toString(),
+      }));
+
+      res.json(customersWithCredit);
+    } catch (error) {
+      console.error("Error fetching customers:", error);
+      res.status(500).json({ message: "Failed to fetch customers" });
+    }
+  });
+
+  app.post("/api/customers", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const primaryContactInputSchema = z.object({
+        firstName: z.string().min(1),
+        lastName: z.string().min(1),
+        email: z.string().email(),
+        phone: z.string().optional(),
+        title: z.string().optional(),
+        isPrimary: z.boolean().optional(),
+      });
+
+      const createCustomerWithContactSchema = insertCustomerSchema.extend({
+        primaryContact: primaryContactInputSchema.optional(),
+      });
+
+      const parsed = createCustomerWithContactSchema.parse(req.body);
+      const { primaryContact, ...customerData } = parsed;
+
+      const result = await storage.createCustomerWithPrimaryContact(organizationId, {
+        customer: customerData,
+        primaryContact: primaryContact || null,
+      });
+
+      res.json(result.customer);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        console.error("Zod validation error:", error.errors);
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error creating customer:", error);
+      res.status(500).json({ message: "Failed to create customer" });
+    }
+  });
+
+  app.patch("/api/customers/:id", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const payload = { ...(req.body || {}) };
+      const localCompanyFolderPath =
+        payload.localCompanyFolderPath === null || typeof payload.localCompanyFolderPath === "string"
+          ? payload.localCompanyFolderPath
+          : undefined;
+
+      delete payload.localCompanyFolderPath;
+      delete payload.customerProductionFolderReference;
+
+      const customerData = updateCustomerSchema.parse(payload);
+      const currentCustomer = await storage.getCustomerById(organizationId, req.params.id);
+      if (!currentCustomer) {
+        return res.status(404).json({ message: "Customer not found" });
+      }
+
+      if (Object.keys(customerData).length > 0) {
+        await storage.updateCustomer(organizationId, req.params.id, customerData);
+      }
+
+      if (localCompanyFolderPath !== undefined) {
+        await saveCustomerProductionFolderReference({
+          organizationId,
+          customerId: req.params.id,
+          companyName: currentCustomer.companyName,
+          pathOrUri: localCompanyFolderPath,
+        });
+      }
+
+      const hydratedCustomer = await storage.getCustomerById(organizationId, req.params.id);
+      res.json(hydratedCustomer ?? currentCustomer);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error updating customer:", error);
+      res.status(500).json({ message: "Failed to update customer" });
+    }
+  });
+
+  app.delete("/api/customers/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      await storage.deleteCustomer(organizationId, req.params.id);
+      res.json({ message: "Customer deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting customer:", error);
+      res.status(500).json({ message: "Failed to delete customer" });
+    }
+  });
+
+  // =============================
+  // Customer CSV Import/Export
+  // =============================
+  app.get("/api/customers/csv-template", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const templateData = [
+        {
+          'Customer ID': '',
+          'Company Name': 'Acme Printing',
+          'Customer Type': 'business',
+          Email: 'billing@acme.com',
+          Phone: '555-555-5555',
+          Website: 'https://acme.com',
+          'Billing Street 1': '123 Main St',
+          'Billing Street 2': '',
+          'Billing City': 'Dallas',
+          'Billing State': 'TX',
+          'Billing Postal Code': '75001',
+          'Billing Country': 'US',
+          'Shipping Street 1': '123 Main St',
+          'Shipping Street 2': '',
+          'Shipping City': 'Dallas',
+          'Shipping State': 'TX',
+          'Shipping Postal Code': '75001',
+          'Shipping Country': 'US',
+          'Tax ID': '',
+          'Credit Limit': '0',
+          'Pricing Tier': 'default',
+          'Default Discount %': '',
+          'Default Markup %': '',
+          'Default Margin %': '',
+          'Product Visibility Mode': 'default',
+          'Is Tax Exempt': 'false',
+          'Tax Rate Override': '',
+          'Tax Exempt Reason': '',
+          'Tax Exempt Certificate Ref': '',
+          'Is Active': 'true',
+          Status: 'active',
+          Notes: '',
+          'External Accounting ID': '',
+        },
+      ];
+
+      const csv = Papa.unparse(templateData);
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename="customer-import-template.csv"');
+      res.send(csv);
+    } catch (error) {
+      console.error('Error generating customer CSV template:', error);
+      res.status(500).json({ message: 'Failed to generate CSV template' });
+    }
+  });
+
+  app.get("/api/customers/export", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+      const customers = await storage.getAllCustomers(organizationId, {});
+
+      const exportData = customers.map((customer: any) => ({
+        'Customer ID': customer.id,
+        'Company Name': customer.companyName || '',
+        'Customer Type': customer.customerType || '',
+        Email: customer.email || '',
+        Phone: customer.phone || '',
+        Website: customer.website || '',
+        'Billing Street 1': customer.billingStreet1 || '',
+        'Billing Street 2': customer.billingStreet2 || '',
+        'Billing City': customer.billingCity || '',
+        'Billing State': customer.billingState || '',
+        'Billing Postal Code': customer.billingPostalCode || '',
+        'Billing Country': customer.billingCountry || '',
+        'Shipping Street 1': customer.shippingStreet1 || '',
+        'Shipping Street 2': customer.shippingStreet2 || '',
+        'Shipping City': customer.shippingCity || '',
+        'Shipping State': customer.shippingState || '',
+        'Shipping Postal Code': customer.shippingPostalCode || '',
+        'Shipping Country': customer.shippingCountry || '',
+        'Tax ID': customer.taxId || '',
+        'Credit Limit': customer.creditLimit ?? '',
+        'Pricing Tier': customer.pricingTier || 'default',
+        'Default Discount %': customer.defaultDiscountPercent ?? '',
+        'Default Markup %': customer.defaultMarkupPercent ?? '',
+        'Default Margin %': customer.defaultMarginPercent ?? '',
+        'Product Visibility Mode': customer.productVisibilityMode || 'default',
+        'Is Tax Exempt': customer.isTaxExempt ? 'true' : 'false',
+        'Tax Rate Override': customer.taxRateOverride ?? '',
+        'Tax Exempt Reason': customer.taxExemptReason || '',
+        'Tax Exempt Certificate Ref': customer.taxExemptCertificateRef || '',
+        'Is Active': customer.isActive === false ? 'false' : 'true',
+        Status: customer.status || '',
+        Notes: customer.notes || '',
+        'External Accounting ID': customer.externalAccountingId || '',
+      }));
+
+      const csv = Papa.unparse(exportData);
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename="customers.csv"');
+      res.send(csv);
+    } catch (error) {
+      console.error('Error exporting customers:', error);
+      res.status(500).json({ message: 'Failed to export customers' });
+    }
+  });
+
+  app.get("/api/customers/:id", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const customer = await storage.getCustomerById(organizationId, req.params.id);
+      if (!customer) {
+        return res.status(404).json({ message: "Customer not found" });
+      }
+      res.json(customer);
+    } catch (error) {
+      console.error("Error fetching customer:", error);
+      res.status(500).json({ message: "Failed to fetch customer" });
+    }
+  });
+
+  app.get("/api/customers/:id/production-folder-reference", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const customer = await storage.getCustomerById(organizationId, req.params.id);
+      if (!customer) {
+        return res.status(404).json({ error: "Customer not found" });
+      }
+
+      const reference = await customerProductionFolderReferenceRepository.getForCustomer(organizationId, req.params.id);
+      return res.json({
+        success: true,
+        data:
+          reference ?? {
+            customerId: req.params.id,
+            folderType: "production_destination",
+            pathOrUri: null,
+            status: "missing",
+            validationError: null,
+          },
+      });
+    } catch (error) {
+      console.error("Error fetching customer production folder reference:", error);
+      return res.status(500).json({ error: "Failed to fetch customer production folder reference" });
+    }
+  });
+
+  app.patch("/api/customers/:id/production-folder-reference", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const customer = await storage.getCustomerById(organizationId, req.params.id);
+      if (!customer) {
+        return res.status(404).json({ error: "Customer not found" });
+      }
+
+      const input = updateCustomerProductionFolderReferenceSchema
+        .extend({
+          pathOrUri: z.string().max(2048).nullable().optional(),
+          disable: z.boolean().optional(),
+        })
+        .parse(req.body || {});
+
+      const nextPath = input.disable ? "" : input.pathOrUri;
+      const saved = await saveCustomerProductionFolderReference({
+        organizationId,
+        customerId: req.params.id,
+        companyName: customer.companyName,
+        pathOrUri: nextPath,
+      });
+
+      return res.json({ success: true, data: saved });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: fromZodError(error).message });
+      }
+      console.error("Error updating customer production folder reference:", error);
+      return res.status(500).json({ error: "Failed to update customer production folder reference" });
+    }
+  });
+
+  app.post("/api/customers/import", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+      const { csvData, dryRun } = req.body as { csvData?: unknown; dryRun?: unknown };
+      if (!csvData || typeof csvData !== 'string') {
+        return res.status(400).json({ message: 'CSV data is required' });
+      }
+
+      const parseResult = Papa.parse(csvData, {
+        header: true,
+        skipEmptyLines: true,
+        transformHeader: (header: string) => header.trim(),
+      });
+
+      if (parseResult.errors.length > 0) {
+        console.error('Customer CSV parsing errors:', parseResult.errors);
+        return res.status(400).json({
+          message: 'CSV parsing failed',
+          errors: parseResult.errors.map((e) => e.message),
+        });
+      }
+
+      const rows = parseResult.data as Record<string, string>[];
+      if (rows.length === 0) {
+        return res.status(400).json({ message: 'CSV must contain at least one data row' });
+      }
+
+      const parseBool = (v: unknown) => {
+        if (v == null) return undefined;
+        const s = String(v).trim().toLowerCase();
+        if (s === '') return undefined;
+        if (['true', '1', 'yes', 'y'].includes(s)) return true;
+        if (['false', '0', 'no', 'n'].includes(s)) return false;
+        return undefined;
+      };
+
+      const parseNum = (v: unknown) => {
+        if (v == null) return undefined;
+        const s = String(v).trim();
+        if (s === '') return undefined;
+        const n = Number(s);
+        return Number.isFinite(n) ? n : undefined;
+      };
+
+      const parseTaxRateOverride = (v: unknown) => {
+        const n = parseNum(v);
+        if (n == null) return undefined;
+        // Allow 8.25 to mean 8.25%.
+        if (n > 1) return n / 100;
+        return n;
+      };
+
+      let created = 0;
+      let updated = 0;
+      let skipped = 0;
+      const rowErrors: Array<{ row: number; message: string }> = [];
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+
+        const customerId = (row['Customer ID'] || row['ID'] || '').trim();
+        const companyName = (row['Company Name'] || '').trim();
+        if (!companyName) {
+          skipped++;
+          continue;
+        }
+
+        const payload: any = {
+          companyName,
+          customerType: (row['Customer Type'] || '').trim() || undefined,
+          email: (row['Email'] || row['email'] || '').trim() || undefined,
+          phone: (row['Phone'] || '').trim() || undefined,
+          website: (row['Website'] || '').trim() || undefined,
+
+          billingStreet1: (row['Billing Street 1'] || '').trim() || undefined,
+          billingStreet2: (row['Billing Street 2'] || '').trim() || undefined,
+          billingCity: (row['Billing City'] || '').trim() || undefined,
+          billingState: (row['Billing State'] || '').trim() || undefined,
+          billingPostalCode: (row['Billing Postal Code'] || '').trim() || undefined,
+          billingCountry: (row['Billing Country'] || '').trim() || undefined,
+
+          shippingStreet1: (row['Shipping Street 1'] || '').trim() || undefined,
+          shippingStreet2: (row['Shipping Street 2'] || '').trim() || undefined,
+          shippingCity: (row['Shipping City'] || '').trim() || undefined,
+          shippingState: (row['Shipping State'] || '').trim() || undefined,
+          shippingPostalCode: (row['Shipping Postal Code'] || '').trim() || undefined,
+          shippingCountry: (row['Shipping Country'] || '').trim() || undefined,
+
+          taxId: (row['Tax ID'] || '').trim() || undefined,
+          creditLimit: parseNum(row['Credit Limit']),
+          pricingTier: (row['Pricing Tier'] || '').trim() || undefined,
+          defaultDiscountPercent: parseNum(row['Default Discount %']),
+          defaultMarkupPercent: parseNum(row['Default Markup %']),
+          defaultMarginPercent: parseNum(row['Default Margin %']),
+          productVisibilityMode: (row['Product Visibility Mode'] || '').trim() || undefined,
+
+          isTaxExempt: parseBool(row['Is Tax Exempt']),
+          taxRateOverride: parseTaxRateOverride(row['Tax Rate Override']),
+          taxExemptReason: (row['Tax Exempt Reason'] || '').trim() || undefined,
+          taxExemptCertificateRef: (row['Tax Exempt Certificate Ref'] || '').trim() || undefined,
+
+          isActive: parseBool(row['Is Active']),
+          status: (row['Status'] || '').trim() || undefined,
+          notes: (row['Notes'] || '').trim() || undefined,
+
+          externalAccountingId: (row['External Accounting ID'] || '').trim() || undefined,
+        };
+
+        try {
+          if (customerId) {
+            // Update
+            const parsedUpdate = updateCustomerSchema.parse(payload);
+            if (parsedUpdate.isTaxExempt && !parsedUpdate.taxExemptReason) {
+              throw new Error('Tax exempt reason is required when marking customer as tax exempt');
+            }
+            if (!dryRun) {
+              await storage.updateCustomer(organizationId, customerId, parsedUpdate);
+            }
+            updated++;
+          } else {
+            // Create
+            const parsedCreate = insertCustomerSchemaRefined.parse(payload);
+            if (!dryRun) {
+              await storage.createCustomerWithPrimaryContact(organizationId, {
+                customer: parsedCreate,
+                primaryContact: null,
+              });
+            }
+            created++;
+          }
+        } catch (err: any) {
+          const message = err instanceof z.ZodError ? fromZodError(err).message : (err?.message || 'Unknown error');
+          rowErrors.push({ row: i + 2, message }); // +2 because header row is 1
+        }
+      }
+
+      res.json({
+        message: dryRun ? 'Customer import validated' : 'Customers imported successfully',
+        imported: { created, updated, skipped },
+        errors: rowErrors,
+      });
+    } catch (error) {
+      console.error('Error importing customers:', error);
+      res.status(500).json({ message: 'Failed to import customers' });
+    }
+  });
+}
