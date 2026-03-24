@@ -7,7 +7,7 @@ import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db, hasQuoteAttachmentPagesTable } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, inventoryReservations, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderStatusPills, jobs, productionJobs, productionEvents, quoteListNotes, assets, assetLinks, assetVariants, authIdentities, bugReports, prepressSessions, lineItemFiles, reprintRequests, insertProductDesignConfigSchema } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, inventoryReservations, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, productTypes, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderStatusPills, jobs, productionJobs, productionEvents, quoteListNotes, assets, assetLinks, assetVariants, bugReports, lineItemFiles, insertProductDesignConfigSchema } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, asc, inArray, notInArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -221,6 +221,7 @@ import { registerCustomerRelationsRoutes } from './routes/customerRelations.rout
 import { registerCustomerRoutes } from './routes/customers.routes';
 import { registerImportJobRoutes } from './routes/importJobs.routes';
 import { registerSystemRoutes } from './routes/system.routes';
+import { registerAuthRoutes } from './routes/auth.routes';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -533,97 +534,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return true;
   };
 
-  app.get('/api/auth/user', isAuthenticated, async (req: any, res) => {
-    try {
-      // Diagnostic logging for session verification (non-sensitive)
-      if (process.env.NODE_ENV !== 'production' || process.env.DEBUG_AUTH === 'true') {
-        console.log('[Auth /api/auth/user] Session ID exists:', !!req.sessionID);
-        console.log('[Auth /api/auth/user] User authenticated:', !!req.user);
-        console.log('[Auth /api/auth/user] Cookie header present:', !!req.headers.cookie);
-      }
-      
-      const userId = getUserId(req.user);
-      const user = await storage.getUser(userId!);
-      res.json(user);
-    } catch (error) {
-      console.error("Error fetching user:", error);
-      res.status(500).json({ message: "Failed to fetch user" });
-    }
-  });
-
-  // Set new password (forced password change on first login)
-  app.post("/api/auth/set-password", isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = getUserId(req.user);
-      if (!userId) {
-        return res.status(401).json({ message: "Unauthorized" });
-      }
-
-      const schema = z.object({
-        currentPassword: z.string().min(1, "Current password is required"),
-        newPassword: z.string().min(10, "New password must be at least 10 characters"),
-      });
-
-      const parsed = schema.safeParse(req.body);
-      if (!parsed.success) {
-        return res.status(400).json({ message: fromZodError(parsed.error).toString() });
-      }
-
-      const { currentPassword, newPassword } = parsed.data;
-
-      // Verify current password
-      const [identity] = await db
-        .select()
-        .from(authIdentities)
-        .where(
-          and(
-            eq(authIdentities.userId, userId),
-            eq(authIdentities.provider, 'password')
-          )
-        )
-        .limit(1);
-
-      if (!identity || !identity.passwordHash) {
-        return res.status(400).json({ message: "No password authentication method found" });
-      }
-
-      const bcrypt = await import('bcryptjs');
-      const isValid = await bcrypt.compare(currentPassword, identity.passwordHash);
-      
-      if (!isValid) {
-        return res.status(400).json({ message: "Current password is incorrect" });
-      }
-
-      // Hash new password
-      const newPasswordHash = await bcrypt.hash(newPassword, 10);
-
-      // Update password hash
-      await db
-        .update(authIdentities)
-        .set({ 
-          passwordHash: newPasswordHash,
-          passwordSetAt: new Date(),
-        })
-        .where(eq(authIdentities.id, identity.id));
-
-      // Clear mustSetPassword flag
-      await db
-        .update(users)
-        .set({ mustSetPassword: false })
-        .where(eq(users.id, userId));
-
-      console.log(`[Set Password] User ${userId} successfully set new password`);
-
-      res.json({ 
-        success: true, 
-        message: "Password updated successfully" 
-      });
-    } catch (error) {
-      console.error("Error setting password:", error);
-      res.status(500).json({ message: "Failed to update password" });
-    }
-  });
-
+  // Auth routes extracted to ./routes/auth.routes.ts (do NOT re-add here)
+  registerAuthRoutes(app, { isAuthenticated });
 
   // Admin Storage Settings routes extracted to ./routes/adminStorage.routes.ts (do NOT re-add here)
 
