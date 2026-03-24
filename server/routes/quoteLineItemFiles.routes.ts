@@ -46,6 +46,7 @@ import { storageApplicationService } from "../services/storage/StorageApplicatio
 import { deleteStoredObjectKeys } from "../services/storage/deleteStoredObjectKeys";
 import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
 import { fileRecordRepository } from "../storage/fileRecord.repo";
+import { assertQuoteEditable } from "./helpers/quoteWorkflow.helpers";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -63,10 +64,9 @@ export function registerQuoteLineItemFileRoutes(
   middleware: {
     isAuthenticated: any;
     tenantContext: any;
-    assertQuoteEditable: (res: any, quote: any) => boolean;
   },
 ): void {
-  const { isAuthenticated, tenantContext, assertQuoteEditable } = middleware;
+  const { isAuthenticated, tenantContext } = middleware;
 
   // ────────────────────────────────────────────────────────────────────────────
   // Quote Line Item Attachments (per-line-item artwork)
