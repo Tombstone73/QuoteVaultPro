@@ -26,8 +26,14 @@ const DEFAULT_POLL_INTERVAL_MS = 10_000;
 const DEFAULT_NON_PROD_POLL_INTERVAL_MS = 300_000;
 const DEFAULT_BATCH_SIZE = 10;
 
-let workerInterval: NodeJS.Timeout | null = null;
+let workerTimer: NodeJS.Timeout | null = null;
 let isPolling = false;
+
+// Idle backoff: track consecutive empty polls and scale interval up to MAX_IDLE_INTERVAL_MS.
+// Resets to base interval immediately when pending work is found.
+let consecutiveEmptyPolls = 0;
+const IDLE_BACKOFF_AFTER = 6;   // ~1 min at 10s base; scale up after this many empty polls
+const MAX_IDLE_INTERVAL_MS = 60_000;
 
 const LOCAL_ORIGINAL_NOT_PRESENT = "local_original_not_present";
 
@@ -235,7 +241,7 @@ async function pollOnce(): Promise<void> {
           inArray(table.thumbStatus, ["uploaded", "thumb_pending"]),
           and(
             eq(table.thumbStatus, "thumb_ready"),
-            sql`(${table.storageProvider} = 'local' OR ${table.storageProvider} IS NULL)`
+            sql`${table.storageProvider} = 'local'`
           )
         ),
         // Don’t re-process failures endlessly; manual retry can reset status.
@@ -282,8 +288,12 @@ async function pollOnce(): Promise<void> {
       organizationId: r.organizationId || "",
     }));
 
-    if (rows.length === 0) return;
+    if (rows.length === 0) {
+      consecutiveEmptyPolls++;
+      return;
+    }
 
+    consecutiveEmptyPolls = 0;
     if (debug) console.log(`[Thumbnail Worker] Found ${rows.length} pending attachment(s)`);
 
     const { generateImageDerivatives, isSupportedImageType, isThumbnailGenerationEnabled } =
@@ -299,6 +309,13 @@ async function pollOnce(): Promise<void> {
         }
         const fileName = (row.originalFilename ?? row.fileName ?? null) as string | null;
         const storageProvider = originalInput.storageProvider;
+
+        // Defensive guard: thumb_ready rows should only be queued for local self-heal.
+        // If a non-local thumb_ready row somehow reaches this point, skip it to prevent
+        // infinite reprocessing of already-complete Supabase/managed attachments.
+        if (row.thumbStatus === 'thumb_ready' && storageProvider !== 'local') {
+          continue;
+        }
 
         // Self-heal check for local thumb_ready rows: if derivatives exist, skip quietly.
         if (storageProvider === 'local' && row.thumbStatus === 'thumb_ready') {
@@ -415,8 +432,24 @@ async function pollOnce(): Promise<void> {
   }
 }
 
+function getNextPollDelayMs(): number {
+  const base = getPollIntervalMs();
+  if (consecutiveEmptyPolls < IDLE_BACKOFF_AFTER) return base;
+  // Scale up linearly by one base interval per IDLE_BACKOFF_AFTER empty polls, capped at MAX.
+  const factor = Math.ceil(consecutiveEmptyPolls / IDLE_BACKOFF_AFTER);
+  return Math.min(MAX_IDLE_INTERVAL_MS, base * factor);
+}
+
+function scheduleNextPoll(): void {
+  const delay = getNextPollDelayMs();
+  workerTimer = setTimeout(async () => {
+    await pollOnce();
+    scheduleNextPoll();
+  }, delay);
+}
+
 export function startThumbnailWorker(): void {
-  if (workerInterval) {
+  if (workerTimer) {
     console.log("[Thumbnail Worker] Worker already running");
     return;
   }
@@ -428,18 +461,15 @@ export function startThumbnailWorker(): void {
   }
 
   const intervalMs = getPollIntervalMs();
-  console.log(`[Thumbnail Worker] Starting worker (poll interval: ${intervalMs}ms)`);
+  console.log(`[Thumbnail Worker] Starting worker (base poll interval: ${intervalMs}ms, idle backoff up to ${MAX_IDLE_INTERVAL_MS}ms)`);
 
-  void pollOnce();
-  workerInterval = setInterval(() => {
-    void pollOnce();
-  }, intervalMs);
+  void pollOnce().then(() => scheduleNextPoll());
 }
 
 export function stopThumbnailWorker(): void {
-  if (workerInterval) {
-    clearInterval(workerInterval);
-    workerInterval = null;
+  if (workerTimer) {
+    clearTimeout(workerTimer);
+    workerTimer = null;
     console.log("[Thumbnail Worker] Worker stopped");
   }
 }
