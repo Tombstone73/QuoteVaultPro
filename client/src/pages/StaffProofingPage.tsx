@@ -788,6 +788,9 @@ export default function StaffProofingPage() {
     },
     onSuccess: async () => {
       await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
+      // Manual override advances the job to its next stage (typically print production).
+      // Invalidate production boards so the job appears immediately without waiting for polling.
+      queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] });
       setOverrideDialogOpen(false);
       setOverrideReason("");
       setOverrideNote("");

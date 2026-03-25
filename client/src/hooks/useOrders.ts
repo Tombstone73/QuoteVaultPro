@@ -1010,13 +1010,16 @@ export function useTransitionOrderStatus(orderId: string) {
       queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
       queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
       
-      // BUGFIX: Invalidate production queries so scheduled jobs appear immediately
+      // Invalidate all queue domains — order status transitions (cancel, hold, etc.)
+      // remove items from production, prepress, and proofing queues simultaneously.
       queryClient.invalidateQueries({
         predicate: (query) => {
           const key = query.queryKey;
           return Array.isArray(key) && key[0] === "/api/production/jobs";
         },
       });
+      queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
       
       // Show success message with any warnings
       const warnings = response.warnings?.length ? `\n\nWarnings: ${response.warnings.join(', ')}` : '';
