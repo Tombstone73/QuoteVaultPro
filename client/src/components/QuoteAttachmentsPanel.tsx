@@ -8,6 +8,7 @@ import { isValidHttpUrl } from "@/lib/utils";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { getThumbSrc } from "@/lib/getThumbSrc";
+import { invalidateCachedAssetUrl } from "@/lib/assetUrlCache";
 import { getAttachmentPollingInterval, isAttachmentSettled } from "@/lib/attachments/attachmentStatus";
 import { toAttachmentViewerAttachment } from "@/lib/attachmentViewer";
 import {
@@ -281,6 +282,7 @@ export function QuoteAttachmentsPanel({ quoteId, locked = false }: { quoteId: st
         throw new Error(json.error || "Failed to remove attachment");
       }
 
+      invalidateCachedAssetUrl(attachmentId);
       queryClient.invalidateQueries({ queryKey: [attachmentsApiPath] });
       toast({ title: "Removed", description: "Attachment removed from quote." });
       setAttachmentToDelete(null);

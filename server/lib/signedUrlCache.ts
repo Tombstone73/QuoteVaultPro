@@ -20,6 +20,10 @@ const MAX_ENTRIES = 2000;
 interface SignedUrlEntry {
   url: string;
   expiresAt: number;
+  /** ETag forwarded from upstream (Supabase/S3), e.g. `"abc123"` — already quoted */
+  etag?: string;
+  /** Last-Modified forwarded from upstream, e.g. `"Wed, 01 Jan 2025 00:00:00 GMT"` */
+  lastModified?: string;
 }
 
 const _cache = new Map<string, SignedUrlEntry>();
@@ -36,6 +40,32 @@ export function getSignedUrlFromCache(bucket: string, key: string): string | nul
     return null;
   }
   return entry.url;
+}
+
+/**
+ * Return cached ETag / Last-Modified for a previously-served object, if present and still fresh.
+ * Returns null if the entry is absent or expired.
+ */
+export function getSignedUrlMeta(bucket: string, key: string): { etag?: string; lastModified?: string } | null {
+  const entry = _cache.get(cacheKey(bucket, key));
+  if (!entry) return null;
+  if (Date.now() >= entry.expiresAt) {
+    _cache.delete(cacheKey(bucket, key));
+    return null;
+  }
+  if (!entry.etag && !entry.lastModified) return null;
+  return { etag: entry.etag, lastModified: entry.lastModified };
+}
+
+/**
+ * Store ETag and/or Last-Modified on an existing cache entry (in-place, preserves TTL).
+ * No-ops if the entry does not exist yet (will be populated on next full fetch).
+ */
+export function patchSignedUrlMeta(bucket: string, key: string, etag?: string, lastModified?: string): void {
+  const entry = _cache.get(cacheKey(bucket, key));
+  if (!entry) return;
+  if (etag) entry.etag = etag;
+  if (lastModified) entry.lastModified = lastModified;
 }
 
 export function setSignedUrlInCache(bucket: string, key: string, url: string): void {
