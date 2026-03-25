@@ -248,6 +248,7 @@ export const updateQuoteWorkflowState = quotesRepo.updateQuoteWorkflowState.bind
 // =============================
 // Orders Repository Exports
 // =============================
+export const getMaxOrderNumber = ordersRepo.getMaxOrderNumber.bind(ordersRepo);
 export const getAllOrders = ordersRepo.getAllOrders.bind(ordersRepo);
 export const getAllOrdersPaginated = ordersRepo.getAllOrdersPaginated.bind(ordersRepo);
 export const getOrderById = ordersRepo.getOrderById.bind(ordersRepo);
@@ -457,6 +458,7 @@ export const storage = {
     updateQuoteWorkflowState,
 
     // Orders
+    getMaxOrderNumber,
     getAllOrders,
     getAllOrdersPaginated,
     getOrderById,

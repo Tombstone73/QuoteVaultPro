@@ -104,31 +104,47 @@ export class OrdersRepository {
     }
 
     private async generateNextOrderNumber(organizationId: string, tx?: any): Promise<string> {
-        // Try globalVariables first (pattern similar to quotes). If missing, fallback to MAX(order_number)+1
         const executor = tx || this.dbInstance;
-        try {
-            const result = await executor.execute(sql`
-        SELECT * FROM ${globalVariables}
-        WHERE ${globalVariables.name} = 'next_order_number'
-        AND ${globalVariables.organizationId} = ${organizationId}
-        FOR UPDATE
-      `);
-            const row = (result as any).rows?.[0];
-            if (row) {
-                const current = Math.floor(Number(row.value));
-                // Increment for next
-                await executor.update(globalVariables)
-                    .set({ value: (current + 1).toString(), updatedAt: new Date().toISOString() })
-                    .where(and(eq(globalVariables.id, row.id), eq(globalVariables.organizationId, organizationId)));
-                return current.toString();
-            }
-        } catch (e) {
-            // Ignore and fallback
+        let orderNumberVar = await executor
+            .select()
+            .from(globalVariables)
+            .where(and(
+                eq(globalVariables.name, 'next_order_number'),
+                eq(globalVariables.organizationId, organizationId)
+            ))
+            .limit(1)
+            .then((rows: any[]) => rows[0]);
+
+        if (!orderNumberVar) {
+            console.log(`[NUMBERING] Auto-initialized order numbering for org ${organizationId} with default sequence.`);
+            const [newVar] = await executor
+                .insert(globalVariables)
+                .values({
+                    name: 'next_order_number',
+                    value: '1000',
+                    description: 'Next order number sequence (auto-initialized)',
+                    category: 'numbering',
+                    isActive: true,
+                    organizationId,
+                })
+                .returning();
+            orderNumberVar = newVar;
         }
-        // Fallback: compute max existing numeric orderNumber within this organization
-        const maxResult = await this.dbInstance.execute(sql`SELECT MAX(CAST(order_number AS INTEGER)) AS max_num FROM orders WHERE order_number ~ '^[0-9]+$' AND organization_id = ${organizationId}`);
-        const maxNum = (maxResult as any).rows?.[0]?.max_num ? Number((maxResult as any).rows[0].max_num) : 999;
-        return (maxNum + 1).toString();
+
+        const current = Math.floor(Number(orderNumberVar.value));
+        await executor
+            .update(globalVariables)
+            .set({ value: (current + 1).toString(), updatedAt: new Date() })
+            .where(and(eq(globalVariables.id, orderNumberVar.id), eq(globalVariables.organizationId, organizationId)));
+        return current.toString();
+    }
+
+    async getMaxOrderNumber(organizationId: string): Promise<number | null> {
+        const result = await this.dbInstance.execute(
+            sql`SELECT MAX(CAST(order_number AS INTEGER)) AS max_num FROM orders WHERE order_number ~ '^[0-9]+$' AND organization_id = ${organizationId}`
+        );
+        const val = (result as any).rows?.[0]?.max_num;
+        return val != null ? Number(val) : null;
     }
 
     private async getPreviewThumbnailsForOrderIds(organizationId: string, orderIds: string[]) {
