@@ -124,7 +124,7 @@ export function getAttachmentPollingInterval(args: {
     isVisible = true,
     maxPollMs = 180_000,
     maxAttempts = 120,
-    intervalMs = 1500,
+    intervalMs = 3000,
     logLabel,
   } = args;
 

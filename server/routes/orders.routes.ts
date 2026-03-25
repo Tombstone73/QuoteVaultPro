@@ -1056,9 +1056,9 @@ export async function registerOrderRoutes(
                                             const { enrichAssetPreviewUrls } = await import('../services/assets/enrichAssetWithUrls');
 
                                             const thumbByAssetId = new Map<string, string | null>();
-                                            for (const assetId of assetIds) {
+                                            await Promise.all(assetIds.map(async (assetId) => {
                                                 const asset = assetsById.get(assetId);
-                                                if (!asset) continue;
+                                                if (!asset) return;
                                                 const enriched = await enrichAssetPreviewUrls(asset);
                                                 const thumb =
                                                     (enriched as any).previewThumbnailUrl ??
@@ -1066,7 +1066,7 @@ export async function registerOrderRoutes(
                                                     (enriched as any).thumbUrl ??
                                                     null;
                                                 thumbByAssetId.set(assetId, typeof thumb === 'string' && thumb.length ? thumb : null);
-                                            }
+                                            }));
 
                                             const linksByOrderId: Record<string, Array<{ assetId: string; role: string }>> = {};
                                             for (const row of linkRows as any[]) {

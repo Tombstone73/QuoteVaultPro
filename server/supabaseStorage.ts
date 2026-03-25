@@ -45,6 +45,8 @@ export class SupabaseStorageService {
     this.bucket = bucket || SUPABASE_BUCKET;
   }
 
+  get bucketName(): string { return this.bucket; }
+
   private normalizeObjectPath(inputPath: string): string {
     let p = (inputPath || '').toString().trim();
 
