@@ -54,8 +54,12 @@ export function usePrepressJobList() {
       return result.data as PrepressJob[];
     },
     refetchInterval: (query) => {
-      // Stop polling if query is in error state to prevent spam
-      return query?.state?.status === 'error' ? false : 10000;
+      // Stop on error to prevent spam.
+      if (query?.state?.status === 'error') return false;
+      // Only poll while at least one job is actively in progress.
+      const jobs = (query?.state?.data as PrepressJob[]) ?? [];
+      const hasActiveJob = jobs.some((j) => j.status === 'queued' || j.status === 'running');
+      return hasActiveJob ? 10_000 : false;
     },
   });
 }

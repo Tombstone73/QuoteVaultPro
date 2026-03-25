@@ -16,6 +16,7 @@ import { formatDistanceToNow } from "date-fns";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
 import type { PrepressQueueItem, PrepressQueueWorkflowState } from "@/hooks/useOrders";
+import { usePageVisible } from "@/hooks/usePageVisible";
 
 type LineItemFile = {
   id: string;
@@ -224,6 +225,7 @@ function getPrepressLineItemQueryKey(lineItemId: string | null) {
 export default function PrepressProductionPageV2() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const isPageVisible = usePageVisible();
   const fileInputRef = useRef<HTMLInputElement>(null);
   
   // UI State
@@ -301,11 +303,14 @@ export default function PrepressProductionPageV2() {
       return data.data as PrepressQueueItem[];
     },
     staleTime: 0,
-    refetchInterval: 10000,
-    refetchIntervalInBackground: true,
-    refetchOnWindowFocus: true,
-    refetchOnMount: "always",
-    refetchOnReconnect: true,
+    refetchInterval: (query) => {
+      // Never poll in hidden tabs — no one is watching.
+      if (!isPageVisible) return false;
+      // Stop polling when the queue is empty; rely on manual refresh (refreshPrepressQueue) for new arrivals.
+      const items = (query.state.data as PrepressQueueItem[]) ?? [];
+      return items.length > 0 ? 10_000 : false;
+    },
+    refetchOnWindowFocus: false,
   });
 
   // Line Item Files Query
