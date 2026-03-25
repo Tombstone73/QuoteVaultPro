@@ -111,6 +111,8 @@ type PollingGuardState = {
 export function getAttachmentPollingInterval(args: {
   attachments: AttachmentWithStatus[] | null | undefined;
   guard: PollingGuardState;
+  /** Pass false when the browser tab is hidden to suspend polling without resetting the guard. */
+  isVisible?: boolean;
   maxPollMs?: number;
   maxAttempts?: number;
   intervalMs?: number;
@@ -119,11 +121,15 @@ export function getAttachmentPollingInterval(args: {
   const {
     attachments,
     guard,
+    isVisible = true,
     maxPollMs = 180_000,
     maxAttempts = 120,
     intervalMs = 1500,
     logLabel,
   } = args;
+
+  // Hidden tab: suspend without resetting guard so the cap resumes correctly on return.
+  if (!isVisible) return false;
 
   if (!hasAnyUnsettledAttachment(attachments)) {
     guard.startAt = null;

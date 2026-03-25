@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { usePageVisible } from "@/hooks/usePageVisible";
 import { FileText, Loader2 } from "lucide-react";
 import { isPdfAttachment } from "@/lib/attachments";
 import { getAttachmentPollingInterval, isAttachmentSettled } from "@/lib/attachments/attachmentStatus";
@@ -49,6 +50,7 @@ export function LineItemThumbnail({
   placeholderOnly = false
 }: LineItemThumbnailProps) {
   const [imageError, setImageError] = useState(false);
+  const isPageVisible = usePageVisible();
   const pollingGuardRef = useRef<{ startAt: number | null; attempts: number }>({
     startAt: null,
     attempts: 0,
@@ -90,6 +92,7 @@ export function LineItemThumbnail({
       return getAttachmentPollingInterval({
         attachments: data,
         guard: pollingGuardRef.current,
+        isVisible: isPageVisible,
         logLabel: filesApiPath,
       });
     },

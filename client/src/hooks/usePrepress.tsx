@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { usePageVisible } from "@/hooks/usePageVisible";
 
 /**
  * Prepress API Hooks
@@ -41,19 +42,21 @@ export interface PrepressJob {
  * Fetch list of all prepress jobs for current org
  */
 export function usePrepressJobList() {
+  const isPageVisible = usePageVisible();
   return useQuery({
     queryKey: ['prepress', 'jobs'],
     queryFn: async () => {
       const response = await fetch('/api/prepress/jobs');
-      
+
       if (!response.ok) {
         throw new Error('Failed to fetch jobs');
       }
-      
+
       const result = await response.json();
       return result.data as PrepressJob[];
     },
     refetchInterval: (query) => {
+      if (!isPageVisible) return false;
       // Stop on error to prevent spam.
       if (query?.state?.status === 'error') return false;
       // Only poll while at least one job is actively in progress.
@@ -98,21 +101,23 @@ export function useCreatePrepressJob() {
  * Fetch job status
  */
 export function usePrepressJob(jobId: string | null) {
+  const isPageVisible = usePageVisible();
   return useQuery({
     queryKey: ['prepress', 'job', jobId],
     queryFn: async () => {
       if (!jobId) return null;
-      
+
       const response = await fetch(`/api/prepress/jobs/${jobId}`);
-      
+
       if (!response.ok) {
         throw new Error('Failed to fetch job');
       }
-      
+
       return await response.json() as PrepressJob;
     },
     enabled: !!jobId,
     refetchInterval: (query) => {
+      if (!isPageVisible) return false;
       // Poll every 2s while running/queued, stop when complete
       const data = query?.state?.data as PrepressJob | null | undefined;
       if (!data) return false;

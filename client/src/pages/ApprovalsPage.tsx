@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { usePageVisible } from "@/hooks/usePageVisible";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
@@ -44,6 +45,7 @@ export default function ApprovalsPage() {
   const { user } = useAuth();
   const { preferences } = useOrgPreferences();
   const queryClient = useQueryClient();
+  const isPageVisible = usePageVisible();
   const [approvingId, setApprovingId] = useState<string | null>(null);
   const [approveAndSendingId, setApproveAndSendingId] = useState<string | null>(null);
 
@@ -72,7 +74,7 @@ export default function ApprovalsPage() {
     enabled: isApprover && requireApproval,
     staleTime: 60_000,
     refetchOnWindowFocus: false,
-    refetchInterval: 120_000,
+    refetchInterval: () => (isPageVisible ? 120_000 : false),
   });
 
   const approveMutation = useMutation({
