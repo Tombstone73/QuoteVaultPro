@@ -24,6 +24,7 @@ import { fromZodError } from "zod-validation-error";
 import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
 import { insertGlobalVariableSchema, updateGlobalVariableSchema } from "@shared/schema";
+import { getMaxInvoiceNumber } from "../invoicesService";
 
 export function registerCatalogSettingsRoutes(
   app: Express,
@@ -130,18 +131,31 @@ export function registerCatalogSettingsRoutes(
         id: req.params.id,
       });
 
-      // Special validation for next_quote_number to prevent duplicate quote numbers
+      // Validate numbering sequence updates — prevent setting below the existing maximum
       const currentVariable = await storage.getGlobalVariableById(organizationId, req.params.id);
-      if (currentVariable?.name === 'next_quote_number' && variableData.value !== undefined) {
+      if (variableData.value !== undefined && currentVariable?.name) {
         const newValue = Math.floor(Number(variableData.value));
-
-        // Get the maximum existing quote number
-        const maxQuoteNumber = await storage.getMaxQuoteNumber(organizationId);
-
-        if (maxQuoteNumber !== null && newValue <= maxQuoteNumber) {
-          return res.status(400).json({
-            message: `Cannot set next quote number to ${newValue}. The highest existing quote number is ${maxQuoteNumber}. Please set a value greater than ${maxQuoteNumber}.`
-          });
+        if (currentVariable.name === 'next_quote_number') {
+          const maxQuoteNumber = await storage.getMaxQuoteNumber(organizationId);
+          if (maxQuoteNumber !== null && newValue <= maxQuoteNumber) {
+            return res.status(400).json({
+              message: `Cannot set next quote number to ${newValue}. The highest existing quote number is ${maxQuoteNumber}. Please set a value greater than ${maxQuoteNumber}.`
+            });
+          }
+        } else if (currentVariable.name === 'next_order_number') {
+          const maxOrderNumber = await storage.getMaxOrderNumber(organizationId);
+          if (maxOrderNumber !== null && newValue <= maxOrderNumber) {
+            return res.status(400).json({
+              message: `Cannot set next order number to ${newValue}. The highest existing order number is ${maxOrderNumber}. Please set a value greater than ${maxOrderNumber}.`
+            });
+          }
+        } else if (currentVariable.name === 'next_invoice_number') {
+          const maxInvoiceNumber = await getMaxInvoiceNumber(organizationId);
+          if (maxInvoiceNumber !== null && newValue <= maxInvoiceNumber) {
+            return res.status(400).json({
+              message: `Cannot set next invoice number to ${newValue}. The highest existing invoice number is ${maxInvoiceNumber}. Please set a value greater than ${maxInvoiceNumber}.`
+            });
+          }
         }
       }
 
