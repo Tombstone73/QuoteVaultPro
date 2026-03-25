@@ -56,6 +56,7 @@ export function getSession() {
     createTableIfMissing: false,
     ttl: sessionTtl,
     tableName: "sessions",
+    disableTouch: true,  // prevent UPDATE on every session read; sessions expire by original TTL
   });
   
   const cookieConfig = getSessionCookieConfig(sessionTtl);
