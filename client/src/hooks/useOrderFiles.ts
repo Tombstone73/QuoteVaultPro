@@ -3,6 +3,7 @@ import type { OrderAttachment, InsertOrderAttachment, UpdateOrderAttachment, Job
 import { orderDetailQueryKey, orderTimelineQueryKey } from "./useOrders";
 import { normalizeOrderFileRows } from "@/lib/attachments/orderFileRows";
 import { apiFetch } from "@/lib/queryClient";
+import { invalidateCachedAssetUrl } from "@/lib/assetUrlCache";
 
 // Enriched order attachment with user info and signed URLs
 export type OrderFileWithUser = OrderAttachment & {
@@ -165,7 +166,8 @@ export function useDetachOrderFile(orderId: string) {
 
       return true;
     },
-    onSuccess: () => {
+    onSuccess: (_, fileId) => {
+      invalidateCachedAssetUrl(fileId);
       queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'files'] });
       queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'artwork-summary'] });
       queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
@@ -330,7 +332,8 @@ export function useDetachOrderLineItemFile(orderId: string, lineItemId: string) 
 
       return true;
     },
-    onSuccess: () => {
+    onSuccess: (_, fileId) => {
+      invalidateCachedAssetUrl(fileId);
       queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'line-items', lineItemId, 'files'] });
       queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'files'] });
       queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
