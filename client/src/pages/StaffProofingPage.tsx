@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { usePageVisible } from "@/hooks/usePageVisible";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { format, formatDistanceToNow } from "date-fns";
@@ -474,6 +475,7 @@ export default function StaffProofingPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { user } = useAuth();
+  const isPageVisible = usePageVisible();
 
   const { isInternalUser, canOverride } = getRoleSummary(user?.role);
   const requestedLineItemId = searchParams.get("lineItemId");
@@ -514,7 +516,10 @@ export default function StaffProofingPage() {
     queryFn: () => readJson(`/api/proofing/queue?slice=${slice}`),
     enabled: isInternalUser,
     staleTime: 30_000,
-    refetchInterval: 60_000,
+    // All local staff actions (create draft, send, override) already invalidate this query immediately.
+    // The only remaining reason to poll is external events: customer proof decisions arriving via the
+    // customer portal. 90s is sufficient fallback for those; hidden tabs never need to watch.
+    refetchInterval: () => (isPageVisible ? 90_000 : false),
   });
 
   const queueData = queueQuery.data?.data;
