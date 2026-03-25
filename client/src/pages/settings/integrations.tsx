@@ -219,10 +219,11 @@ export default function SettingsIntegrations() {
     queryKey: ["/api/integrations/quickbooks/jobs"],
     enabled: qbStatus?.connected === true,
     refetchInterval: (query) => {
+      if (!isPageVisible) return false;
       const data = query.state.data as { jobs: SyncJob[] } | undefined;
       const jobs = data?.jobs ?? [];
       const hasActiveJob = jobs.some((job) => job.status === 'pending' || job.status === 'processing');
-      return hasActiveJob ? 3000 : 20000;
+      return hasActiveJob ? 3_000 : 20_000;
     },
   });
 
