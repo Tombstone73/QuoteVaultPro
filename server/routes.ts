@@ -6,7 +6,7 @@ import { randomUUID } from "crypto";
 import { evaluate } from "mathjs";
 import { storage } from "./storage";
 import { db, hasQuoteAttachmentPagesTable } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, inventoryReservations, organizations, userOrganizations, customerVisibleProducts, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderStatusPills, jobs, productionJobs, productionEvents, quoteListNotes, bugReports, lineItemFiles } from "@shared/schema";
+import { orders, invoices, invoiceLineItems, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, inventoryReservations, organizations, userOrganizations, customerVisibleProducts, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderStatusPills, jobs, productionJobs, productionEvents, quoteListNotes, bugReports, lineItemFiles } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, asc, inArray, notInArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -180,6 +180,7 @@ import { registerImportJobRoutes } from './routes/importJobs.routes';
 import { registerSystemRoutes } from './routes/system.routes';
 import { registerAuthRoutes } from './routes/auth.routes';
 import { registerSearchRoutes } from './routes/search.routes';
+import { registerDebugRoutes } from './routes/debug.routes';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -283,56 +284,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Global Search route extracted to ./routes/search.routes.ts (do NOT re-add here)
   registerSearchRoutes(app, { isAuthenticated, tenantContext });
 
-  // Diagnostic route to check user-customer linkage (dev only)
-  app.get("/api/debug/user-customer-linkage", isAuthenticated, async (req: any, res) => {
-    if (process.env.NODE_ENV !== 'development') {
-      return res.status(404).json({ message: "Not found" });
-    }
-
-    try {
-      const allUsers = await db.select().from(users);
-      const allCustomers = await db.select().from(customers);
-      const sampleQuotes = await db.select().from(quotes).limit(10);
-
-      const userLinkage = allUsers.map(user => {
-        const linkedCustomer = allCustomers.find(c => c.userId === user.id);
-        const customerByEmail = allCustomers.find(c => c.email?.toLowerCase() === user.email?.toLowerCase());
-        return {
-          userId: user.id,
-          email: user.email,
-          role: user.role,
-          linkedCustomerId: linkedCustomer?.id || null,
-          linkedCustomerName: linkedCustomer?.companyName || null,
-          customerByEmailId: customerByEmail?.id || null,
-          customerByEmailName: customerByEmail?.companyName || null,
-          needsLink: !linkedCustomer && !!customerByEmail,
-        };
-      });
-
-      const quoteInfo = sampleQuotes.map(q => ({
-        id: q.id,
-        quoteNumber: q.quoteNumber,
-        source: q.source,
-        customerId: q.customerId,
-        userId: q.userId,
-        customerName: q.customerName,
-      }));
-
-      res.json({
-        summary: {
-          totalUsers: allUsers.length,
-          totalCustomers: allCustomers.length,
-          usersWithLinkedCustomer: userLinkage.filter(u => u.linkedCustomerId).length,
-          usersNeedingLink: userLinkage.filter(u => u.needsLink).length,
-        },
-        userLinkage,
-        sampleQuotes: quoteInfo,
-      });
-    } catch (error) {
-      console.error("Error checking linkage:", error);
-      res.status(500).json({ message: "Failed to check linkage" });
-    }
-  });
+  // Debug routes extracted to ./routes/debug.routes.ts (do NOT re-add here)
+  registerDebugRoutes(app, { isAuthenticated });
 
   const assertInternalUser = (req: any, res: any) => {
     const role = req.user?.role || "";
