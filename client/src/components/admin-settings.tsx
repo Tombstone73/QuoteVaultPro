@@ -322,6 +322,99 @@ function MediaLibraryTab() {
   );
 }
 
+function NumberSequenceSettings({ varName, label, description }: { varName: string; label: string; description: string }) {
+  const { toast } = useToast();
+  const [isEditing, setIsEditing] = useState(false);
+  const [newStartNumber, setNewStartNumber] = useState<string>("");
+
+  const { data: globalVariables, isLoading } = useQuery<GlobalVariable[]>({
+    queryKey: ["/api/global-variables"],
+  });
+
+  const varEntry = globalVariables?.find(v => v.name === varName);
+  const currentNextNumber = varEntry ? Math.floor(Number(varEntry.value)) : null;
+
+  const updateMutation = useMutation({
+    mutationFn: async (newNumber: number) => {
+      if (!varEntry) throw new Error(`${label} numbering not initialized`);
+      return apiRequest("PATCH", `/api/global-variables/${varEntry.id}`, { value: newNumber });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/global-variables"] });
+      setIsEditing(false);
+      setNewStartNumber("");
+      toast({ title: `${label} numbering updated`, description: `The next ${label.toLowerCase()} number has been updated successfully` });
+    },
+    onError: (error: Error) => {
+      toast({ title: `Failed to update ${label.toLowerCase()} numbering`, description: error.message, variant: "destructive" });
+    },
+  });
+
+  const handleSave = () => {
+    const num = parseInt(newStartNumber);
+    if (isNaN(num) || num < 1) {
+      toast({ title: "Invalid number", description: "Please enter a valid positive number", variant: "destructive" });
+      return;
+    }
+    updateMutation.mutate(num);
+  };
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardHeader><CardTitle>{label} Numbering System</CardTitle></CardHeader>
+        <CardContent><Skeleton className="h-10 w-full" /></CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{label} Numbering System</CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex items-center gap-4">
+          <div className="flex-1">
+            <Label htmlFor={`next-${varName}`}>Next {label} Number</Label>
+            {isEditing ? (
+              <Input
+                id={`next-${varName}`}
+                type="number"
+                min="1"
+                value={newStartNumber}
+                onChange={(e) => setNewStartNumber(e.target.value)}
+                placeholder={currentNextNumber?.toString() || "1001"}
+                className="mt-2"
+              />
+            ) : (
+              <div className="text-2xl font-bold mt-2">{currentNextNumber || "Not set"}</div>
+            )}
+            <p className="text-sm text-muted-foreground mt-2">
+              The next {label.toLowerCase()} created will be assigned number {currentNextNumber || "N/A"}
+            </p>
+          </div>
+          <div className="flex gap-2">
+            {isEditing ? (
+              <>
+                <Button variant="outline" onClick={() => { setIsEditing(false); setNewStartNumber(""); }}>Cancel</Button>
+                <Button onClick={handleSave} disabled={updateMutation.isPending}>
+                  {updateMutation.isPending ? "Saving..." : "Save"}
+                </Button>
+              </>
+            ) : (
+              <Button variant="outline" onClick={() => { setIsEditing(true); setNewStartNumber(currentNextNumber?.toString() || "1001"); }}>
+                Change Starting Number
+              </Button>
+            )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function QuoteNumberSettings() {
   const { toast } = useToast();
   const [isEditing, setIsEditing] = useState(false);
@@ -978,6 +1071,8 @@ export default function AdminSettings() {
   const { toast } = useToast();
   const [showUserManagement, setShowUserManagement] = useState(false);
   const [showQuoteNumbering, setShowQuoteNumbering] = useState(false);
+  const [showOrderNumbering, setShowOrderNumbering] = useState(false);
+  const [showInvoiceNumbering, setShowInvoiceNumbering] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [editingOption, setEditingOption] = useState<ProductOption | null>(null);
@@ -1800,6 +1895,60 @@ export default function AdminSettings() {
     );
   }
 
+  if (showOrderNumbering) {
+    return (
+      <div className="space-y-6">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Hash className="w-5 h-5" />
+                <CardTitle>Order Numbering System</CardTitle>
+              </div>
+              <Button variant="ghost" size="icon" onClick={() => setShowOrderNumbering(false)}>
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <NumberSequenceSettings
+              varName="next_order_number"
+              label="Order"
+              description="Configure the starting number for new orders. Existing orders keep their current numbers."
+            />
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (showInvoiceNumbering) {
+    return (
+      <div className="space-y-6">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Hash className="w-5 h-5" />
+                <CardTitle>Invoice Numbering System</CardTitle>
+              </div>
+              <Button variant="ghost" size="icon" onClick={() => setShowInvoiceNumbering(false)}>
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <NumberSequenceSettings
+              varName="next_invoice_number"
+              label="Invoice"
+              description="Configure the starting number for new invoices. Invoice numbers are independent from order numbers."
+            />
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {/* Quick Access Buttons */}
@@ -1825,6 +1974,30 @@ export default function AdminSettings() {
             >
               <Hash className="w-4 h-4 mr-2" />
               Quote Numbering
+            </Button>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <Button
+              onClick={() => setShowOrderNumbering(true)}
+              className="w-full"
+              variant="outline"
+            >
+              <Hash className="w-4 h-4 mr-2" />
+              Order Numbering
+            </Button>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <Button
+              onClick={() => setShowInvoiceNumbering(true)}
+              className="w-full"
+              variant="outline"
+            >
+              <Hash className="w-4 h-4 mr-2" />
+              Invoice Numbering
             </Button>
           </CardContent>
         </Card>
