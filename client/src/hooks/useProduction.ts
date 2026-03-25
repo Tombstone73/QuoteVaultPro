@@ -334,6 +334,8 @@ export function useCompleteProductionJob(jobId: string) {
     },
     onSuccess: () => {
       invalidateProduction(qc, jobId);
+      // Completing a job may route the line item to proofing — update proofing queue immediately.
+      qc.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
       toast({ title: "Job completed" });
     },
     onError: (e: Error) => {
@@ -357,6 +359,8 @@ export function useReopenProductionJob(jobId: string) {
     },
     onSuccess: () => {
       invalidateProduction(qc, jobId);
+      // Reopening pulls the job back from done/proofing into production boards.
+      qc.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
       toast({ title: "Job reopened" });
     },
     onError: (e: Error) => {
