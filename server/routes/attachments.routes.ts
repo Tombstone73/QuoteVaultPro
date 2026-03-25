@@ -41,6 +41,7 @@ import {
   type QuoteWorkflowState,
 } from "@shared/quoteWorkflow";
 import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage";
+import { getSignedUrlFromCache, setSignedUrlInCache } from "../lib/signedUrlCache";
 import {
   createRequestLogOnce,
   enrichAttachmentWithUrls,
@@ -701,7 +702,10 @@ export async function registerAttachmentRoutes(
         const supabaseService = new SupabaseStorageService(bucketParam || undefined);
         for (const keyToTry of candidateKeys) {
           try {
-            const signedUrl = await supabaseService.getSignedDownloadUrl(keyToTry, 3600);
+            const _dlBucket = supabaseService.bucketName;
+            const _dlCached = getSignedUrlFromCache(_dlBucket, keyToTry);
+            const signedUrl = _dlCached ?? await supabaseService.getSignedDownloadUrl(keyToTry, 3600);
+            if (!_dlCached) setSignedUrlInCache(_dlBucket, keyToTry, signedUrl);
             const upstream = await fetch(signedUrl);
             if (!upstream.ok) {
               throw new Error(`Upstream fetch failed: ${upstream.status} ${upstream.statusText}`);
@@ -1001,11 +1005,14 @@ export async function registerAttachmentRoutes(
           };
 
           try {
-            const signedUrl = await supabaseService.getSignedDownloadUrl(keyToTry, 3600);
+            const _bucket = supabaseService.bucketName;
+            const _cached = getSignedUrlFromCache(_bucket, keyToTry);
+            const signedUrl = _cached ?? await supabaseService.getSignedDownloadUrl(keyToTry, 3600);
+            if (!_cached) setSignedUrlInCache(_bucket, keyToTry, signedUrl);
 
             if (isDev) {
               const via = keyToTry === requestedKey ? "direct" : "fallback";
-              console.log(`[objects] resolved provider=supabase via=${via} key="${keyToTry}"`);
+              console.log(`[objects] resolved provider=supabase via=${via} key="${keyToTry}" cache=${_cached ? "hit" : "miss"}`);
             }
 
             // Always proxy bytes for Supabase so:

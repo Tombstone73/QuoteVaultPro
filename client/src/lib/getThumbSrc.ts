@@ -72,6 +72,13 @@ function coerceRenderableUrl(value: unknown): string | null {
 }
 
 function hasRenderableOriginalImage(obj: Record<string, unknown>): boolean {
+  // When a thumbnail is being generated (thumb_pending / uploaded), do NOT fall
+  // back to the full-size original. These are often print-resolution files and
+  // loading them as a thumbnail placeholder wastes significant Supabase egress.
+  // Return null instead so callers render a spinner/placeholder.
+  const ts = typeof obj.thumbStatus === "string" ? obj.thumbStatus : null;
+  if (ts === "thumb_pending" || ts === "uploaded") return false;
+
   const mimeType = typeof obj.mimeType === "string" ? obj.mimeType.toLowerCase() : "";
   if (mimeType.startsWith("image/")) {
     return !mimeType.includes("svg");
