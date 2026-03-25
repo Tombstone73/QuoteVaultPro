@@ -1,5 +1,6 @@
 import { type ChangeEvent, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { usePageVisible } from "@/hooks/usePageVisible";
 import { format } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -58,6 +59,7 @@ function formatFileSize(bytes: number | null | undefined): string {
 export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: string; locked?: boolean }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const isPageVisible = usePageVisible();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [attachmentToDelete, setAttachmentToDelete] = useState<OrderAttachment | null>(null);
@@ -103,6 +105,8 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
     },
     enabled: !!orderId,
     refetchInterval: (query) => {
+      if (!isPageVisible) return false;
+
       const MAX_POLL_MS = 60_000;
       const MAX_ATTEMPTS = 40;
       const POLL_INTERVAL_MS = 1500;

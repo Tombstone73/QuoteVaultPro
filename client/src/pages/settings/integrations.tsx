@@ -223,7 +223,7 @@ export default function SettingsIntegrations() {
       const data = query.state.data as { jobs: SyncJob[] } | undefined;
       const jobs = data?.jobs ?? [];
       const hasActiveJob = jobs.some((job) => job.status === 'pending' || job.status === 'processing');
-      return hasActiveJob ? 3_000 : 20_000;
+      return hasActiveJob ? 3_000 : false;
     },
   });
 
