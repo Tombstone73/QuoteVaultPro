@@ -501,6 +501,13 @@ async function persistQuoteAttachmentPageDerivatives(args: {
   const existingByIndex = new Map(existingPages.map((row) => [row.pageIndex, row]));
 
   for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+    const existingRow = existingByIndex.get(pageIndex) ?? null;
+
+    // Page already has derivatives — skip to avoid redundant uploads and Supabase ObjectRemoved/ObjectCreated churn.
+    if (existingRow?.thumbStatus === 'thumb_ready') {
+      continue;
+    }
+
     try {
       const page = await pdfDocument.getPage(pageIndex + 1);
       const viewport = page.getViewport({ scale: 2.0 });
@@ -589,8 +596,6 @@ async function persistQuoteAttachmentPageDerivatives(args: {
         throw new Error(`Page derivative missing after write pageIndex=${pageIndex}`);
       }
 
-      const existingRow = existingByIndex.get(pageIndex) ?? null;
-
       await db.transaction(async (tx) => {
         const thumbFileRecordId = await createCanonicalPageFileRecord({
           tx,
@@ -646,7 +651,6 @@ async function persistQuoteAttachmentPageDerivatives(args: {
     } catch (error: any) {
       console.warn(`[PdfProcessing] Failed to persist page derivative for attachment=${attachment.id} pageIndex=${pageIndex}:`, error?.message || error);
 
-      const existingRow = existingByIndex.get(pageIndex) ?? null;
       if (existingRow) {
         await db
           .update(quoteAttachmentPages)
@@ -772,6 +776,14 @@ export async function processPdfAttachmentDerivedData(args: {
 
     if (!attachment) {
       console.log(`[PdfProcessing] Attachment ${attachmentId} not found, skipping`);
+      return;
+    }
+
+    // State machine guard: thumb_ready is a terminal success state — never regenerate.
+    // Prevents upload-route + worker race from both executing; also prevents the status-reset
+    // block below from forcing a completed attachment back to thumb_pending.
+    if ((attachment as any).thumbStatus === 'thumb_ready') {
+      console.log(`[PdfProcessing] Skipping ${attachmentId}: already thumb_ready`);
       return;
     }
 
@@ -999,7 +1011,7 @@ export async function processPdfAttachmentDerivedData(args: {
           await db
             .update(baseTable)
             .set({
-              thumbKey: null,
+              thumbKey: thumbUploaded.storageKey,
               thumbStatus: 'thumb_ready',
               thumbError: null,
               thumbnailGeneratedAt: new Date(),
@@ -1022,13 +1034,14 @@ export async function processPdfAttachmentDerivedData(args: {
           const record = verification[0];
           const debugEnabled = process.env.DEBUG_THUMBNAILS === '1' || process.env.DEBUG_THUMBNAILS === 'true';
           
-          if (!record || record.thumbStatus !== 'thumb_ready' || !record.thumbnailGeneratedAt || record.thumbError !== null) {
+          if (!record || record.thumbStatus !== 'thumb_ready' || !record.thumbnailGeneratedAt || record.thumbError !== null || !record.thumbKey) {
             const issues: string[] = [];
             if (!record) issues.push('record not found');
             else {
               if (record.thumbStatus !== 'thumb_ready') issues.push(`thumbStatus is '${record.thumbStatus}' not 'thumb_ready'`);
               if (!record.thumbnailGeneratedAt) issues.push('thumbnailGeneratedAt is null');
               if (record.thumbError !== null) issues.push('thumbError is not null');
+              if (!record.thumbKey) issues.push('thumbKey is null');
             }
             console.error(`[PdfProcessing] ❌ INVARIANT VIOLATION for ${attachmentId}: ${issues.join(', ')}`);
             throw new Error(`Thumbnail success invariant violated: ${issues.join(', ')}`);
