@@ -4,6 +4,7 @@ import {
   ordersListQueryKey,
   orderTimelineQueryKey,
 } from "@/hooks/useOrders";
+import { invalidateCachedAssetUrl } from "@/lib/assetUrlCache";
 
 export const orderAttachmentsApiPath = (orderId: string) => `/api/orders/${orderId}/attachments`;
 export const orderAttachmentsQueryKey = (orderId: string) => [orderAttachmentsApiPath(orderId)] as const;
@@ -25,7 +26,8 @@ export function useDeleteOrderAttachment(orderId: string) {
 
       return true;
     },
-    onSuccess: () => {
+    onSuccess: (_, attachmentId) => {
+      invalidateCachedAssetUrl(attachmentId);
       queryClient.invalidateQueries({ queryKey: orderAttachmentsQueryKey(orderId) });
       queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
       queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
