@@ -210,6 +210,7 @@ export const ROUTES = {
     inventory: "/settings/inventory",
     notifications: "/settings/notifications",
     appearance: "/settings/appearance",
+    setup: "/settings/setup",
   },
 
   // TODO: These routes are referenced in nav but not implemented
