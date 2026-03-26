@@ -541,6 +541,7 @@ export class OrdersRepository {
         customerId: string;
         contactId?: string | null;
         quoteId?: string | null;
+        sourceQuoteNumber?: number | null;
         label?: string | null;
         status?: string;
         priority?: string;
@@ -575,6 +576,7 @@ export class OrdersRepository {
                 organizationId,
                 orderNumber,
                 quoteId: data.quoteId || null,
+                sourceQuoteNumber: data.sourceQuoteNumber ?? null,
                 customerId: data.customerId,
                 contactId: data.contactId || null,
                 label: data.label || null,
@@ -995,6 +997,7 @@ export class OrdersRepository {
             customerId: quote.customerId!,
             contactId: quote.contactId,
             quoteId: quote.id,
+            sourceQuoteNumber: quote.quoteNumber, // Immutable snapshot — survives quote deletion
             label: quote.label || null, // Copy jobLabel from quote
             status: 'new',
             priority: options?.priority || 'normal',

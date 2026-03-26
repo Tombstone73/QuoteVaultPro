@@ -2502,6 +2502,7 @@ export const orders = pgTable("orders", {
   poNumber: varchar("po_number", { length: 64 }), // Customer PO number
   label: text("label"), // Free-text label for categorization/notes
   quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: 'set null' }),
+  sourceQuoteNumber: integer("source_quote_number"), // Snapshot of quote number at time of conversion (immutable)
   customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }),
   contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: 'set null' }),
   status: varchar("status", { length: 50 }).notNull().default("new"), // new, in_production, on_hold, ready_for_shipment, completed, canceled [DEPRECATED: use state instead]
@@ -3358,6 +3359,7 @@ export const invoices = pgTable("invoices", {
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   invoiceNumber: integer("invoice_number").notNull(), // Sequential numeric per org
   orderId: varchar("order_id").references(() => orders.id, { onDelete: 'set null' }),
+  sourceOrderNumber: integer("source_order_number"), // Snapshot of order number at time of invoice creation (immutable)
   customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }),
   status: varchar("status", { length: 50 }).notNull().default('draft'), // MVP: draft | billed | paid | void (legacy values may exist)
   // Lightweight invoice versioning
