@@ -1,11 +1,7 @@
 -- Migration 0028: Repair numbering and snapshot columns
 --
--- This migration is a forward-only repair that ensures all four changes from
--- migrations 0026 and 0027 are definitively applied. All operations are
--- idempotent — safe to run even if partially applied previously.
---
--- Uses --> statement-breakpoint markers so the neon-serverless driver
--- executes each statement independently.
+-- Forward-only repair. All operations are idempotent.
+-- Ensures changes from 0026 and 0027 are definitively applied.
 
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS source_quote_number INTEGER;
 
