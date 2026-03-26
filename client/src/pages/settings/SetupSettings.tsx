@@ -14,7 +14,7 @@ const SEQUENCES = [
   { varName: "next_invoice_number", label: "Invoice Number" },
 ] as const;
 
-function NumberSequenceRow({ varName, label }: { varName: string; label: string }) {
+function NumberSequenceCard({ varName, label }: { varName: string; label: string }) {
   const { toast } = useToast();
   const [isEditing, setIsEditing] = useState(false);
   const [newValue, setNewValue] = useState("");
@@ -57,14 +57,14 @@ function NumberSequenceRow({ varName, label }: { varName: string; label: string 
   };
 
   return (
-    <div className="flex items-center gap-4 px-4 py-3 border-b border-border last:border-b-0">
+    <TitanCard className="flex items-center gap-3 px-4 py-0 h-14">
       {/* Label */}
-      <span className="w-40 shrink-0 text-sm text-muted-foreground">{label}</span>
+      <span className="text-xs text-muted-foreground whitespace-nowrap">{label}</span>
 
       {/* Value / Input */}
-      <div className="flex-1">
+      <div className="flex-1 flex justify-center">
         {isLoading ? (
-          <Skeleton className="h-5 w-16" />
+          <Skeleton className="h-4 w-12" />
         ) : isEditing ? (
           <Input
             type="number"
@@ -73,7 +73,7 @@ function NumberSequenceRow({ varName, label }: { varName: string; label: string 
             onChange={(e) => setNewValue(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={currentNumber?.toString() ?? "1001"}
-            className="h-7 w-28 text-sm"
+            className="h-7 w-24 text-sm text-center"
             autoFocus
           />
         ) : (
@@ -82,28 +82,26 @@ function NumberSequenceRow({ varName, label }: { varName: string; label: string 
       </div>
 
       {/* Actions */}
-      <div className="flex gap-2 shrink-0">
-        {isEditing ? (
-          <>
-            <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => { setIsEditing(false); setNewValue(""); }}>
-              Cancel
-            </Button>
-            <Button size="sm" className="h-7 px-3 text-xs" onClick={handleSave} disabled={updateMutation.isPending}>
-              {updateMutation.isPending ? "Saving…" : "Save"}
-            </Button>
-          </>
-        ) : (
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 px-3 text-xs"
-            onClick={() => { setIsEditing(true); setNewValue(currentNumber?.toString() ?? "1001"); }}
-          >
-            Change
+      {isEditing ? (
+        <div className="flex gap-1.5 shrink-0">
+          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => { setIsEditing(false); setNewValue(""); }}>
+            Cancel
           </Button>
-        )}
-      </div>
-    </div>
+          <Button size="sm" className="h-7 px-3 text-xs" onClick={handleSave} disabled={updateMutation.isPending}>
+            {updateMutation.isPending ? "Saving…" : "Save"}
+          </Button>
+        </div>
+      ) : (
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 px-3 text-xs shrink-0"
+          onClick={() => { setIsEditing(true); setNewValue(currentNumber?.toString() ?? "1001"); }}
+        >
+          Change
+        </Button>
+      )}
+    </TitanCard>
   );
 }
 
@@ -118,14 +116,11 @@ export default function SetupSettings() {
         </p>
       </TitanCard>
 
-      <TitanCard className="overflow-hidden p-0">
-        <div className="px-4 py-2 border-b border-border">
-          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Document Numbering</span>
-        </div>
+      <div className="grid grid-cols-3 gap-3">
         {SEQUENCES.map(({ varName, label }) => (
-          <NumberSequenceRow key={varName} varName={varName} label={label} />
+          <NumberSequenceCard key={varName} varName={varName} label={label} />
         ))}
-      </TitanCard>
+      </div>
     </div>
   );
 }
