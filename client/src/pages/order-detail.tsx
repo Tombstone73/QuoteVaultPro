@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -190,6 +190,7 @@ export default function OrderDetail() {
   const params = useParams();
   const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
   const { registerGuard, guardedNavigate } = useNavigationGuard();
   const { onSmartBack } = useSmartBack();
   const { toast } = useToast();
@@ -256,6 +257,10 @@ export default function OrderDetail() {
   const [showManualReservationsDialog, setShowManualReservationsDialog] = useState(false);
 
   const [showCustomerAddress, setShowCustomerAddress] = useState(true);
+  const lineItemsSectionRef = useRef<HTMLDivElement | null>(null);
+
+  const focusProduction = searchParams.get("focusProduction") === "1";
+  const focusProductionStatus = searchParams.get("productionStatus");
 
   // Auto-open pickers when entering edit mode
   useEffect(() => {
@@ -286,6 +291,49 @@ export default function OrderDetail() {
       ...pendingOrderPatch,
     } as OrderDetailOrder;
   }
+
+  const productionFocus = useMemo(() => {
+    if (!focusProduction || !order?.lineItems?.length) {
+      return {
+        highlightedIds: [] as string[],
+        prioritizedIds: [] as string[],
+      };
+    }
+
+    const productionRelevant = order.lineItems.filter((lineItem: any) => (lineItem?.product as any)?.requiresProductionJob === true);
+    const terminalStates = new Set(["completed", "canceled", "complete"]);
+    const readyStates = new Set(["ready_for_prepress", "ready_for_production"]);
+
+    const pending = productionRelevant.filter((lineItem: any) => {
+      const workflowState = String(lineItem.workflowState || lineItem.status || "").trim().toLowerCase();
+      if (terminalStates.has(workflowState)) return false;
+      if (!readyStates.has(workflowState)) return false;
+      return !lineItem.activeOwnerJobId;
+    });
+
+    const prioritized = focusProductionStatus === "needs_handoff"
+      ? pending
+      : [...pending, ...productionRelevant.filter((lineItem: any) => !pending.some((pendingItem) => pendingItem.id === lineItem.id))];
+
+    return {
+      highlightedIds: prioritized.map((lineItem: any) => String(lineItem.id)),
+      prioritizedIds: prioritized.map((lineItem: any) => String(lineItem.id)),
+    };
+  }, [focusProduction, focusProductionStatus, order]);
+
+  useEffect(() => {
+    if (!focusProduction || productionFocus.prioritizedIds.length === 0) return;
+
+    const targetId = productionFocus.prioritizedIds[0];
+    window.dispatchEvent(new CustomEvent("titanos:jump-to-line-item", { detail: { lineItemId: targetId } }));
+
+    const timer = window.setTimeout(() => {
+      lineItemsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
+
+    return () => window.clearTimeout(timer);
+  }, [focusProduction, productionFocus]);
+
   const deleteOrder = useDeleteOrder();
   const updateOrder = useUpdateOrder(orderId!);
   const transitionStatus = useTransitionOrderStatus(orderId!);
@@ -2122,12 +2170,14 @@ export default function OrderDetail() {
             </Card>
 
             {/* Line Items (Quote-style UI) */}
-            <div className="space-y-4">
+            <div className="space-y-4" ref={lineItemsSectionRef}>
               <OrderLineItemsSection
                 orderId={orderId!}
                 customerId={order.customerId}
                 readOnly={!(isAdminOrOwner && canEditLineItems)}
                 lineItems={order.lineItems as any}
+                productionFocusLineItemIds={productionFocus.highlightedIds}
+                productionPriorityLineItemIds={productionFocus.prioritizedIds}
                 onAfterLineItemsChange={recalculateOrderTotals}
               />
 
