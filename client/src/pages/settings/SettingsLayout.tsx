@@ -55,6 +55,7 @@ import {
   Mail,
   HardDrive,
   Wrench,
+  Hash,
   type LucideIcon,
 } from "lucide-react";
 
@@ -159,9 +160,15 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     icon: Palette,
     description: "UI theme and visual preferences"
   },
-  { 
-    label: "Admin Tools", 
-    path: "/settings/admin-tools", 
+  {
+    label: "Setup",
+    path: "/settings/setup",
+    icon: Hash,
+    description: "System initialization: document numbering sequences",
+  },
+  {
+    label: "Admin Tools",
+    path: "/settings/admin-tools",
     icon: Wrench,
     description: "Data portability and system administration"
   },
