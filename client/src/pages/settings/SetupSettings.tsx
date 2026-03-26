@@ -57,15 +57,33 @@ function NumberSequenceCard({ varName, label }: { varName: string; label: string
   };
 
   return (
-    <TitanCard className="px-3 py-0 h-14 overflow-hidden">
-      {/* Hard 3-column grid: label | value | action */}
-      <div className="grid items-center h-full" style={{ gridTemplateColumns: "minmax(0,1fr) 56px 84px" }}>
+    // noPadding: we own all padding inside the grid so nothing fights us
+    <TitanCard noPadding>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr) 56px 84px",
+          alignItems: "center",
+          height: "56px",
+          padding: "0 12px",
+          gap: "8px",
+        }}
+      >
+        {/* Col 1: Label — truncates, never pushes */}
+        <span
+          style={{
+            fontSize: "12px",
+            color: "var(--muted-foreground, #888)",
+            overflow: "hidden",
+            whiteSpace: "nowrap",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {label}
+        </span>
 
-        {/* Col 1: Label */}
-        <span className="text-xs text-muted-foreground truncate pr-2">{label}</span>
-
-        {/* Col 2: Value or input */}
-        <div className="flex items-center justify-center">
+        {/* Col 2: Value — fixed 56px, centered */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
           {isLoading ? (
             <Skeleton className="h-4 w-10" />
           ) : isEditing ? (
@@ -76,22 +94,37 @@ function NumberSequenceCard({ varName, label }: { varName: string; label: string
               onChange={(e) => setNewValue(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={currentNumber?.toString() ?? "1001"}
-              className="h-7 w-14 text-xs px-1.5 text-center"
+              className="h-7 text-xs text-center px-1"
+              style={{ width: "52px" }}
               autoFocus
             />
           ) : (
-            <span className="text-sm font-semibold tabular-nums">{currentNumber ?? "—"}</span>
+            <span style={{ fontSize: "13px", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+              {currentNumber ?? "—"}
+            </span>
           )}
         </div>
 
-        {/* Col 3: Action buttons */}
-        <div className="flex items-center justify-end gap-1">
+        {/* Col 3: Action — fixed 84px, right-aligned */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "4px" }}>
           {isEditing ? (
             <>
-              <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => { setIsEditing(false); setNewValue(""); }}>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-xs"
+                style={{ padding: "0 6px", minWidth: 0 }}
+                onClick={() => { setIsEditing(false); setNewValue(""); }}
+              >
                 Cancel
               </Button>
-              <Button size="sm" className="h-7 px-2 text-xs" onClick={handleSave} disabled={updateMutation.isPending}>
+              <Button
+                size="sm"
+                className="h-7 text-xs"
+                style={{ padding: "0 8px", minWidth: 0 }}
+                onClick={handleSave}
+                disabled={updateMutation.isPending}
+              >
                 {updateMutation.isPending ? "…" : "Save"}
               </Button>
             </>
@@ -99,14 +132,14 @@ function NumberSequenceCard({ varName, label }: { varName: string; label: string
             <Button
               size="sm"
               variant="outline"
-              className="h-7 w-full text-xs"
+              className="h-7 text-xs"
+              style={{ width: "80px" }}
               onClick={() => { setIsEditing(true); setNewValue(currentNumber?.toString() ?? "1001"); }}
             >
               Change
             </Button>
           )}
         </div>
-
       </div>
     </TitanCard>
   );
