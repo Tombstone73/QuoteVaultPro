@@ -45,6 +45,17 @@ import { resolveActiveProductionOwners } from "../services/productionOwnership";
 import { copyLineItemDesignSnapshotFields, materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
 import { productDesignConfigRepository } from "./productDesignConfig.repo";
 
+type ProductionSummaryStatus = "none" | "clear" | "needs_handoff" | "partial" | "in_production" | "complete";
+
+type OrderProductionSummary = {
+    requiredCount: number;
+    handedOffCount: number;
+    pendingHandoffCount: number;
+    inProductionCount: number;
+    completeCount: number;
+    status: ProductionSummaryStatus;
+};
+
 const ORDER_ATTACHMENT_SAFE_SELECT = {
     id: orderAttachments.id,
     fileRecordId: orderAttachments.fileRecordId,
@@ -89,6 +100,120 @@ type CreateOrderLineItemInput = Omit<InsertOrderLineItem, 'orderId' | 'requiresP
 
 export class OrdersRepository {
     constructor(private readonly dbInstance = db) { }
+
+    private normalizeWorkflowStateForSummary(value: unknown): string {
+        const normalized = String(value ?? "").trim().toLowerCase();
+        if (!normalized) return "new";
+
+        if (normalized === "complete") return "completed";
+        return normalized;
+    }
+
+    private async buildProductionSummaries(organizationId: string, orderIds: string[]) {
+        const summaries = new Map<string, OrderProductionSummary>();
+        if (!orderIds.length) return summaries;
+
+        const lineItems = await this.dbInstance
+            .select({
+                orderId: orderLineItems.orderId,
+                lineItemId: orderLineItems.id,
+                workflowState: orderLineItems.workflowState,
+                status: orderLineItems.status,
+                requiresProductionJob: products.requiresProductionJob,
+            })
+            .from(orderLineItems)
+            .innerJoin(products, eq(orderLineItems.productId, products.id))
+            .where(inArray(orderLineItems.orderId, orderIds));
+
+        const lineItemIds = lineItems.map((lineItem) => String(lineItem.lineItemId));
+        const activeOwners = lineItemIds.length > 0
+            ? await resolveActiveProductionOwners(this.dbInstance, {
+                organizationId,
+                lineItemIds,
+                debugLabel: "OrdersRepository.buildProductionSummaries",
+            })
+            : new Map<string, any>();
+
+        const terminalStates = new Set(["completed", "canceled"]);
+        const readyStates = new Set(["ready_for_prepress", "ready_for_production"]);
+        const activePipelineStates = new Set(["in_prepress", "in_production"]);
+
+        for (const orderId of orderIds) {
+            summaries.set(orderId, {
+                requiredCount: 0,
+                handedOffCount: 0,
+                pendingHandoffCount: 0,
+                inProductionCount: 0,
+                completeCount: 0,
+                status: "none",
+            });
+        }
+
+        for (const lineItem of lineItems) {
+            if (lineItem.requiresProductionJob !== true) continue;
+
+            const orderId = String(lineItem.orderId);
+            const summary = summaries.get(orderId);
+            if (!summary) continue;
+
+            summary.requiredCount += 1;
+
+            const workflowState = this.normalizeWorkflowStateForSummary(lineItem.workflowState ?? lineItem.status);
+            const hasActiveOwner = activeOwners.has(String(lineItem.lineItemId));
+
+            if (terminalStates.has(workflowState)) {
+                summary.completeCount += 1;
+                summary.handedOffCount += 1;
+                continue;
+            }
+
+            if (readyStates.has(workflowState)) {
+                if (hasActiveOwner) {
+                    summary.handedOffCount += 1;
+                    summary.inProductionCount += 1;
+                } else {
+                    summary.pendingHandoffCount += 1;
+                }
+                continue;
+            }
+
+            if (activePipelineStates.has(workflowState) && hasActiveOwner) {
+                summary.handedOffCount += 1;
+                summary.inProductionCount += 1;
+            }
+        }
+
+        for (const summary of Array.from(summaries.values())) {
+            if (summary.requiredCount === 0) {
+                summary.status = "none";
+                continue;
+            }
+
+            if (summary.completeCount === summary.requiredCount) {
+                summary.status = "complete";
+                continue;
+            }
+
+            if (summary.pendingHandoffCount > 0 && summary.handedOffCount === 0 && summary.inProductionCount === 0) {
+                summary.status = "needs_handoff";
+                continue;
+            }
+
+            if (summary.pendingHandoffCount > 0) {
+                summary.status = "partial";
+                continue;
+            }
+
+            if (summary.inProductionCount > 0) {
+                summary.status = "in_production";
+                continue;
+            }
+
+            summary.status = "clear";
+        }
+
+        return summaries;
+    }
 
     private async getDesignConfigMap(organizationId: string, productIds: string[], executor: any = this.dbInstance) {
         const configs = await productDesignConfigRepository.listByProductIds(organizationId, Array.from(new Set(productIds)), executor);
@@ -246,6 +371,7 @@ export class OrdersRepository {
             customer: any;
             contact: any;
             lineItemsCount: number;
+            productionSummary?: OrderProductionSummary;
             previewThumbnails?: string[];
             thumbsCount?: number;
             attachmentsSummary?: {
@@ -345,6 +471,7 @@ export class OrdersRepository {
             .offset(offset);
 
         const orderIds = rows.map((r) => r.order.id);
+        const productionSummaries = await this.buildProductionSummaries(organizationId, orderIds);
         let previewData = new Map<string, {
             thumbnails: string[];
             totalCount: number;
@@ -386,6 +513,14 @@ export class OrdersRepository {
             customer,
             contact,
             lineItemsCount,
+            productionSummary: productionSummaries.get(order.id) ?? {
+                requiredCount: 0,
+                handedOffCount: 0,
+                pendingHandoffCount: 0,
+                inProductionCount: 0,
+                completeCount: 0,
+                status: "none",
+            },
             previewThumbnails: previewData.get(order.id)?.thumbnails || [],
             thumbsCount: previewData.get(order.id)?.totalCount || 0,
             attachmentsSummary: previewData.get(order.id)
@@ -416,7 +551,7 @@ export class OrdersRepository {
         customerId?: string;
         startDate?: Date;
         endDate?: Date;
-    }): Promise<Order[]> {
+    }): Promise<Array<Order & { productionSummary?: OrderProductionSummary }>> {
         const conditions = [eq(orders.organizationId, organizationId)] as any[];
         if (filters?.search) {
             const pattern = `%${filters.search}%`;
@@ -437,6 +572,10 @@ export class OrdersRepository {
         query = query.where(and(...conditions));
         query = query.orderBy(desc(orders.createdAt));
         const rows = await query;
+        const productionSummaries = await this.buildProductionSummaries(
+            organizationId,
+            rows.map((order: Order) => order.id),
+        );
 
         // Enrich orders with customer and contact data
         const enrichedOrders = await Promise.all(rows.map(async (order: Order) => {
@@ -448,7 +587,19 @@ export class OrdersRepository {
                 ? await this.dbInstance.select().from(customerContacts).where(eq(customerContacts.id, order.contactId))
                 : [undefined];
 
-            return { ...order, customer, contact };
+            return {
+                ...order,
+                customer,
+                contact,
+                productionSummary: productionSummaries.get(order.id) ?? {
+                    requiredCount: 0,
+                    handedOffCount: 0,
+                    pendingHandoffCount: 0,
+                    inProductionCount: 0,
+                    completeCount: 0,
+                    status: "none",
+                },
+            };
         }));
 
         return enrichedOrders;

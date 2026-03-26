@@ -34,6 +34,49 @@ import { normalizeOrderFileRows } from "@/lib/attachments/orderFileRows";
 import BackNavControls from "@/components/BackNavControls";
 
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "paymentStatus";
+type ProductionFilterValue = "all" | "needs_handoff" | "partial" | "action_needed";
+
+function ProductionSummaryBadge({ summary }: { summary?: OrderRow["productionSummary"] }) {
+  const normalized = summary ?? {
+    requiredCount: 0,
+    handedOffCount: 0,
+    pendingHandoffCount: 0,
+    inProductionCount: 0,
+    completeCount: 0,
+    status: "none" as const,
+  };
+
+  const config: Record<NonNullable<OrderRow["productionSummary"]>["status"], { label: string; className: string }> = {
+    none: { label: "None", className: "bg-slate-100 text-slate-700 border-slate-200" },
+    clear: { label: "Clear", className: "bg-slate-100 text-slate-700 border-slate-200" },
+    needs_handoff: { label: "Needs Production", className: "bg-amber-100 text-amber-800 border-amber-200" },
+    partial: { label: "Partial", className: "bg-orange-100 text-orange-800 border-orange-200" },
+    in_production: { label: "In Production", className: "bg-blue-100 text-blue-800 border-blue-200" },
+    complete: { label: "Complete", className: "bg-green-100 text-green-800 border-green-200" },
+  };
+
+  const details = [
+    `Required: ${normalized.requiredCount}`,
+    `Handed Off: ${normalized.handedOffCount}`,
+    `Pending: ${normalized.pendingHandoffCount}`,
+    `Active: ${normalized.inProductionCount}`,
+    `Complete: ${normalized.completeCount}`,
+  ].join(" | ");
+
+  const countSuffix = normalized.pendingHandoffCount > 0 && (normalized.status === "needs_handoff" || normalized.status === "partial")
+    ? ` (${normalized.pendingHandoffCount})`
+    : "";
+
+  return (
+    <Badge
+      variant="outline"
+      className={`text-xs whitespace-nowrap ${config[normalized.status].className}`}
+      title={details}
+    >
+      {config[normalized.status].label}{countSuffix}
+    </Badge>
+  );
+}
 
 function OrderStatusPillCell({
   orderId,
@@ -115,6 +158,7 @@ const ORDER_COLUMNS: ColumnDefinition[] = [
   { key: "poNumber", label: "PO #", defaultVisible: true, defaultWidth: 120, minWidth: 80, maxWidth: 180, sortable: true },
   { key: "customer", label: "Customer", defaultVisible: true, defaultWidth: 180, minWidth: 120, maxWidth: 300, sortable: true },
   { key: "status", label: "Status", defaultVisible: true, defaultWidth: 130, minWidth: 100, maxWidth: 180, sortable: true },
+  { key: "production", label: "Production", defaultVisible: true, defaultWidth: 170, minWidth: 130, maxWidth: 220 },
   { key: "paymentStatus", label: "Payment", defaultVisible: false, defaultWidth: 110, minWidth: 90, maxWidth: 150, sortable: true },
   { key: "priority", label: "Priority", defaultVisible: true, defaultWidth: 100, minWidth: 80, maxWidth: 150, sortable: true },
   { key: "dueDate", label: "Due Date", defaultVisible: true, defaultWidth: 120, minWidth: 100, maxWidth: 180, sortable: true },
@@ -136,6 +180,7 @@ export default function Orders() {
   const [stateFilter, setStateFilter] = useState<OrderState | "all">("open"); // TitanOS: Default to open (WIP)
   const [statusPillFilter, setStatusPillFilter] = useState<string>("all");
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
+  const [productionFilter, setProductionFilter] = useState<ProductionFilterValue>("all");
   
   // Pagination + performance controls (persisted per org+user, matching Quotes)
   const [page, setPage] = useState(1);
@@ -257,6 +302,18 @@ export default function Orders() {
     // TitanOS: Filter by status pill within the active state scope
     if (pillFilterEnabled && statusPillFilter !== 'all') {
       filtered = filtered.filter((order: any) => (order.statusPillValue || null) === statusPillFilter);
+    }
+
+    if (productionFilter !== "all") {
+      filtered = filtered.filter((order: any) => {
+        const productionStatus = order.productionSummary?.status || "none";
+
+        if (productionFilter === "action_needed") {
+          return productionStatus === "needs_handoff" || productionStatus === "partial";
+        }
+
+        return productionStatus === productionFilter;
+      });
     }
     
     if (priorityFilter !== "all") {
@@ -712,6 +769,10 @@ export default function Orders() {
         );
       }
 
+      case "production": {
+        return <ProductionSummaryBadge summary={row.productionSummary} />;
+      }
+
       case "priority": {
         if (!isAdminOrOwner) {
           return <OrderPriorityBadge priority={row.priority} />;
@@ -902,6 +963,17 @@ export default function Orders() {
               <SelectItem value="rush">Rush</SelectItem>
               <SelectItem value="normal">Normal</SelectItem>
               <SelectItem value="low">Low</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={productionFilter} onValueChange={(value) => setProductionFilter(value as ProductionFilterValue)}>
+            <SelectTrigger className="w-[170px] h-9">
+              <SelectValue placeholder="All Production" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="needs_handoff">Needs Production</SelectItem>
+              <SelectItem value="partial">Partial</SelectItem>
+              <SelectItem value="action_needed">Action Needed</SelectItem>
             </SelectContent>
           </Select>
           <div className="flex items-center gap-3 whitespace-nowrap">
