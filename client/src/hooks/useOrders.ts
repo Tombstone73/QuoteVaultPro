@@ -54,6 +54,7 @@ export type Order = {
   id: string;
   orderNumber: string;
   quoteId: string | null;
+  sourceQuoteNumber: number | null;
   customerId: string;
   contactId: string | null;
   status: string;

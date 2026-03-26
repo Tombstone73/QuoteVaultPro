@@ -2880,18 +2880,23 @@ export default function OrderDetail() {
             </Card>
 
             {/* Source Quote */}
-            {order.quote && (
+            {(order.quote || order.sourceQuoteNumber) && (
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">Source Quote</CardTitle>
+                  <p className="text-sm text-muted-foreground">
+                    From Quote #{order.quote?.quoteNumber ?? order.sourceQuoteNumber}
+                  </p>
                 </CardHeader>
-                <CardContent>
-                  <Link to={`/quotes/${order.quoteId}`}>
-                    <Button variant="outline" size="sm" className="w-full text-titan-accent hover:text-titan-accent-hover">
-                      View Quote #{order.quote.quoteNumber}
-                    </Button>
-                  </Link>
-                </CardContent>
+                {order.quoteId && (
+                  <CardContent>
+                    <Link to={`/quotes/${order.quoteId}`}>
+                      <Button variant="outline" size="sm" className="w-full text-titan-accent hover:text-titan-accent-hover">
+                        View Quote #{order.quote?.quoteNumber ?? order.sourceQuoteNumber}
+                      </Button>
+                    </Link>
+                  </CardContent>
+                )}
               </Card>
             )}
 
