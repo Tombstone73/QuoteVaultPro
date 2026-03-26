@@ -61,52 +61,62 @@ function NumberSequenceCard({ varName, label }: { varName: string; label: string
     <TitanCard noPadding>
       <div
         style={{
-          display: "grid",
-          gridTemplateColumns: "minmax(0, 1fr) 56px 84px",
+          display: "flex",
           alignItems: "center",
           height: "56px",
           padding: "0 12px",
-          gap: "8px",
+          gap: "10px",
         }}
       >
-        {/* Col 1: Label — truncates, never pushes */}
+        {/* Label — left, muted, truncates */}
         <span
           style={{
             fontSize: "12px",
             color: "var(--muted-foreground, #888)",
-            overflow: "hidden",
             whiteSpace: "nowrap",
+            overflow: "hidden",
             textOverflow: "ellipsis",
+            flexShrink: 1,
+            minWidth: 0,
           }}
         >
           {label}
         </span>
 
-        {/* Col 2: Value — fixed 56px, centered */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-          {isLoading ? (
-            <Skeleton className="h-4 w-10" />
-          ) : isEditing ? (
-            <Input
-              type="number"
-              min="1"
-              value={newValue}
-              onChange={(e) => setNewValue(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={currentNumber?.toString() ?? "1001"}
-              className="h-7 text-xs text-center px-1"
-              style={{ width: "104px" }}
-              autoFocus
-            />
-          ) : (
-            <span style={{ fontSize: "13px", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
-              {currentNumber ?? "—"}
-            </span>
-          )}
-        </div>
+        {/* Value / Input — sits right next to label */}
+        {isLoading ? (
+          <Skeleton className="h-4 w-10 shrink-0" />
+        ) : isEditing ? (
+          <Input
+            type="number"
+            min="1"
+            value={newValue}
+            onChange={(e) => setNewValue(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={currentNumber?.toString() ?? "1001"}
+            className="h-7 text-xs px-1 shrink-0"
+            style={{ width: "104px", textAlign: "right" }}
+            autoFocus
+          />
+        ) : (
+          <span
+            style={{
+              fontSize: "13px",
+              fontWeight: 600,
+              fontVariantNumeric: "tabular-nums",
+              whiteSpace: "nowrap",
+              flexShrink: 0,
+            }}
+          >
+            {currentNumber ?? "—"}
+          </span>
+        )}
 
-        {/* Col 3: Action — fixed 84px, right-aligned */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "4px" }}>
+        {/* Spacer pushes button to the right */}
+        <div style={{ flex: 1 }} />
+
+        {/* Action — pinned right */}
+        <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
           {isEditing ? (
             <>
               <Button
