@@ -161,7 +161,7 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     description: "UI theme and visual preferences"
   },
   {
-    label: "Setup",
+    label: "System Setup",
     path: "/settings/setup",
     icon: Hash,
     description: "System initialization: document numbering sequences",
