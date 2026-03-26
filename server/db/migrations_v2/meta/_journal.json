@@ -197,6 +197,13 @@
       "when": 1774224000000,
       "tag": "0027_add_source_number_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1774569600000,
+      "tag": "0028_repair_numbering_and_snapshots",
+      "breakpoints": true
     }
   ]
 }
