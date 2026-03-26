@@ -57,50 +57,50 @@ function NumberSequenceCard({ varName, label }: { varName: string; label: string
   };
 
   return (
-    <TitanCard className="flex items-center gap-3 px-4 py-0 h-14">
+    <TitanCard className="flex items-center gap-2 px-3 py-0 h-10">
       {/* Label */}
-      <span className="text-xs text-muted-foreground whitespace-nowrap">{label}</span>
+      <span className="text-xs text-muted-foreground whitespace-nowrap w-28 shrink-0">{label}</span>
 
       {/* Value / Input */}
-      <div className="flex-1 flex justify-center">
-        {isLoading ? (
-          <Skeleton className="h-4 w-12" />
-        ) : isEditing ? (
-          <Input
-            type="number"
-            min="1"
-            value={newValue}
-            onChange={(e) => setNewValue(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={currentNumber?.toString() ?? "1001"}
-            className="h-7 w-24 text-sm text-center"
-            autoFocus
-          />
-        ) : (
-          <span className="text-sm font-semibold tabular-nums">{currentNumber ?? "—"}</span>
-        )}
-      </div>
+      {isLoading ? (
+        <Skeleton className="h-4 w-10 shrink-0" />
+      ) : isEditing ? (
+        <Input
+          type="number"
+          min="1"
+          value={newValue}
+          onChange={(e) => setNewValue(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={currentNumber?.toString() ?? "1001"}
+          className="h-6 w-20 text-xs px-2 shrink-0"
+          autoFocus
+        />
+      ) : (
+        <span className="text-xs font-semibold tabular-nums shrink-0">{currentNumber ?? "—"}</span>
+      )}
 
       {/* Actions */}
-      {isEditing ? (
-        <div className="flex gap-1.5 shrink-0">
-          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => { setIsEditing(false); setNewValue(""); }}>
-            Cancel
+      <div className="flex gap-1 ml-auto shrink-0">
+        {isEditing ? (
+          <>
+            <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => { setIsEditing(false); setNewValue(""); }}>
+              Cancel
+            </Button>
+            <Button size="sm" className="h-6 px-2 text-xs" onClick={handleSave} disabled={updateMutation.isPending}>
+              {updateMutation.isPending ? "Saving…" : "Save"}
+            </Button>
+          </>
+        ) : (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 px-2 text-xs"
+            onClick={() => { setIsEditing(true); setNewValue(currentNumber?.toString() ?? "1001"); }}
+          >
+            Change
           </Button>
-          <Button size="sm" className="h-7 px-3 text-xs" onClick={handleSave} disabled={updateMutation.isPending}>
-            {updateMutation.isPending ? "Saving…" : "Save"}
-          </Button>
-        </div>
-      ) : (
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 px-3 text-xs shrink-0"
-          onClick={() => { setIsEditing(true); setNewValue(currentNumber?.toString() ?? "1001"); }}
-        >
-          Change
-        </Button>
-      )}
+        )}
+      </div>
     </TitanCard>
   );
 }
@@ -116,7 +116,7 @@ export default function SetupSettings() {
         </p>
       </TitanCard>
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-3 gap-2 max-w-xl">
         {SEQUENCES.map(({ varName, label }) => (
           <NumberSequenceCard key={varName} varName={varName} label={label} />
         ))}
