@@ -20,6 +20,7 @@ import { ROUTES } from "@/config/routes";
 import { buildReferrer } from "@/lib/nav/smartBack";
 import { useSmartBack } from "@/hooks/useSmartBack";
 import { getDisplayOrderNumber } from "@/lib/orderUtils";
+import { cn } from "@/lib/utils";
 // TitanOS State Architecture
 import { Badge } from "@/components/ui/badge";
 import type { OrderState } from "@/hooks/useOrderState";
@@ -36,7 +37,13 @@ import BackNavControls from "@/components/BackNavControls";
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "paymentStatus";
 type ProductionFilterValue = "all" | "needs_handoff" | "partial" | "action_needed";
 
-function ProductionSummaryBadge({ summary }: { summary?: OrderRow["productionSummary"] }) {
+function ProductionSummaryBadge({
+  summary,
+  onClick,
+}: {
+  summary?: OrderRow["productionSummary"];
+  onClick?: () => void;
+}) {
   const normalized = summary ?? {
     requiredCount: 0,
     handedOffCount: 0,
@@ -48,11 +55,11 @@ function ProductionSummaryBadge({ summary }: { summary?: OrderRow["productionSum
 
   const config: Record<NonNullable<OrderRow["productionSummary"]>["status"], { label: string; className: string }> = {
     none: { label: "None", className: "bg-slate-200 text-slate-500 border-slate-300" },
-    clear: { label: "Clear", className: "bg-slate-100 text-slate-700 border-slate-300" },
-    needs_handoff: { label: "Needs Production", className: "bg-red-100 text-red-800 border-red-200" },
-    partial: { label: "Partial", className: "bg-orange-100 text-orange-800 border-orange-200" },
-    in_production: { label: "In Production", className: "bg-blue-100 text-blue-800 border-blue-200" },
-    complete: { label: "Complete", className: "bg-emerald-100 text-emerald-800 border-emerald-200" },
+    clear: { label: "Clear", className: "bg-stone-100 text-stone-700 border-stone-300" },
+    needs_handoff: { label: "Needs Production", className: "bg-red-200 text-red-950 border-red-300" },
+    partial: { label: "Partial", className: "bg-amber-200 text-amber-950 border-amber-300" },
+    in_production: { label: "In Production", className: "bg-sky-200 text-sky-950 border-sky-300" },
+    complete: { label: "Complete", className: "bg-emerald-100 text-emerald-900 border-emerald-300" },
   };
 
   const details = [
@@ -66,6 +73,7 @@ function ProductionSummaryBadge({ summary }: { summary?: OrderRow["productionSum
   const countSuffix = normalized.pendingHandoffCount > 0 && (normalized.status === "needs_handoff" || normalized.status === "partial")
     ? ` (${normalized.pendingHandoffCount})`
     : "";
+  const isActionable = normalized.status === "needs_handoff" || normalized.status === "partial";
 
   if (normalized.status === "none") {
     return (
@@ -75,15 +83,37 @@ function ProductionSummaryBadge({ summary }: { summary?: OrderRow["productionSum
     );
   }
 
-  return (
+  const badgeNode = (
     <Badge
       variant="outline"
-      className={`h-5 px-1.5 text-[11px] font-medium leading-none whitespace-nowrap ${config[normalized.status].className}`}
+      className={cn(
+        "h-5 px-1.5 text-[11px] font-semibold leading-none whitespace-nowrap shadow-[inset_0_0_0_0.5px_rgba(255,255,255,0.25)]",
+        config[normalized.status].className,
+        isActionable && onClick ? "cursor-pointer hover:brightness-95" : ""
+      )}
       title={details}
     >
       {config[normalized.status].label}{countSuffix}
     </Badge>
   );
+
+  if (isActionable && onClick) {
+    return (
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onClick();
+        }}
+        className="inline-flex items-center"
+        title={details}
+      >
+        {badgeNode}
+      </button>
+    );
+  }
+
+  return badgeNode;
 }
 
 function OrderStatusPillCell({
@@ -289,7 +319,7 @@ export default function Orders() {
   };
 
   // Filter orders by search, state, status, priority (client-side for Phase 1)
-  const filteredOrders = useMemo(() => {
+  const baseFilteredOrders = useMemo(() => {
     let filtered: OrderRow[] = orders || [];
     
     if (search) {
@@ -312,24 +342,40 @@ export default function Orders() {
       filtered = filtered.filter((order: any) => (order.statusPillValue || null) === statusPillFilter);
     }
 
-    if (productionFilter !== "all") {
-      filtered = filtered.filter((order: any) => {
-        const productionStatus = order.productionSummary?.status || "none";
-
-        if (productionFilter === "action_needed") {
-          return productionStatus === "needs_handoff" || productionStatus === "partial";
-        }
-
-        return productionStatus === productionFilter;
-      });
-    }
-    
     if (priorityFilter !== "all") {
       filtered = filtered.filter((order: any) => order.priority === priorityFilter);
     }
     
     return filtered;
   }, [orders, search, stateFilter, pillFilterEnabled, statusPillFilter, priorityFilter]);
+
+  const filteredOrders = useMemo(() => {
+    if (productionFilter === "all") {
+      return baseFilteredOrders;
+    }
+
+    return baseFilteredOrders.filter((order: any) => {
+      const productionStatus = order.productionSummary?.status || "none";
+
+      if (productionFilter === "action_needed") {
+        return productionStatus === "needs_handoff" || productionStatus === "partial";
+      }
+
+      return productionStatus === productionFilter;
+    });
+  }, [baseFilteredOrders, productionFilter]);
+
+  const actionNeededCount = useMemo(
+    () => baseFilteredOrders.filter((order) => {
+      const productionStatus = order.productionSummary?.status || "none";
+      return productionStatus === "needs_handoff" || productionStatus === "partial";
+    }).length,
+    [baseFilteredOrders]
+  );
+
+  const handleActionNeededCounterClick = () => {
+    setProductionFilter((current) => current === "action_needed" ? "all" : "action_needed");
+  };
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -778,7 +824,18 @@ export default function Orders() {
       }
 
       case "production": {
-        return <ProductionSummaryBadge summary={row.productionSummary} />;
+        return (
+          <ProductionSummaryBadge
+            summary={row.productionSummary}
+            onClick={
+              row.productionSummary?.status === "needs_handoff" || row.productionSummary?.status === "partial"
+                ? () => navigate(`${ROUTES.orders.detail(row.id)}?focusProduction=1&productionStatus=${row.productionSummary?.status}`, {
+                    state: { referrer: buildReferrer(location) },
+                  })
+                : undefined
+            }
+          />
+        );
       }
 
       case "priority": {
@@ -984,6 +1041,27 @@ export default function Orders() {
               <SelectItem value="action_needed">Action Needed</SelectItem>
             </SelectContent>
           </Select>
+          <button
+            type="button"
+            onClick={handleActionNeededCounterClick}
+            className={cn(
+              "inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium whitespace-nowrap transition-colors",
+              productionFilter === "action_needed"
+                ? "border-red-300 bg-red-100 text-red-950"
+                : "border-border bg-background/40 text-foreground hover:bg-accent"
+            )}
+            title="Show orders on this loaded list with production status Needs Production or Partial"
+          >
+            <span>Action Needed:</span>
+            <span className={cn(
+              "inline-flex min-w-5 items-center justify-center rounded-full px-1.5 text-[11px] font-semibold",
+              actionNeededCount > 0
+                ? "bg-red-200 text-red-950"
+                : "bg-muted text-muted-foreground"
+            )}>
+              {actionNeededCount}
+            </span>
+          </button>
           <div className="flex items-center gap-3 whitespace-nowrap">
             <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2">
               <Switch

@@ -451,12 +451,16 @@ export function OrderLineItemsSection({
   customerId,
   readOnly,
   lineItems,
+  productionFocusLineItemIds = [],
+  productionPriorityLineItemIds = [],
   onAfterLineItemsChange,
 }: {
   orderId: string;
   customerId?: string | null;
   readOnly: boolean;
   lineItems: OrderLineItem[];
+  productionFocusLineItemIds?: string[];
+  productionPriorityLineItemIds?: string[];
   onAfterLineItemsChange?: () => Promise<void>;
 }) {
   const { toast } = useToast();
@@ -668,8 +672,26 @@ export function OrderLineItemsSection({
   const orderedLineItems = useMemo(() => {
     if (!orderedKeys.length) return activeLineItems;
     const byId = new Map(activeLineItems.map((li) => [li.id, li] as const));
-    return orderedKeys.map((id) => byId.get(id)).filter(Boolean) as OrderLineItem[];
-  }, [activeLineItems, orderedKeys]);
+    const baseItems = orderedKeys.map((id) => byId.get(id)).filter(Boolean) as OrderLineItem[];
+
+    if (!productionPriorityLineItemIds.length) {
+      return baseItems;
+    }
+
+    const prioritySet = new Set(productionPriorityLineItemIds.map((id) => String(id)));
+    const priorityOrder = new Map(productionPriorityLineItemIds.map((id, index) => [String(id), index] as const));
+
+    return [...baseItems].sort((left, right) => {
+      const leftPriority = prioritySet.has(String(left.id));
+      const rightPriority = prioritySet.has(String(right.id));
+      if (leftPriority && rightPriority) {
+        return (priorityOrder.get(String(left.id)) ?? 0) - (priorityOrder.get(String(right.id)) ?? 0);
+      }
+      if (leftPriority) return -1;
+      if (rightPriority) return 1;
+      return 0;
+    });
+  }, [activeLineItems, orderedKeys, productionPriorityLineItemIds]);
 
   const sortableItems = useMemo(
     () => (orderedKeys.length ? orderedKeys : activeLineItems.map((li) => li.id)),
@@ -1589,6 +1611,7 @@ export function OrderLineItemsSection({
                   const productForItem = products.find((p) => p.id === item.productId);
                   const itemRequiresProduction = (productForItem as any)?.requiresProductionJob === true;
                   const isSelectedForProduction = selectedForProduction.has(item.id);
+                  const isProductionFocused = productionFocusLineItemIds.includes(String(item.id));
                   const expandedBriefDetail = isExpanded && expandedItem && expandedItem.id === item.id ? designBriefQuery.data : null;
                   const showDesignBriefEditor = Boolean(
                     expandedBriefDetail?.effectiveRequiresDesign ||
@@ -1601,6 +1624,7 @@ export function OrderLineItemsSection({
                         <div
                           className={cn(
                             "rounded-md overflow-x-hidden",
+                            isProductionFocused && "ring-1 ring-amber-300/80 bg-amber-50/40",
                             isOver && !isDragging && "ring-1 ring-ring/40",
                             isDragging && "opacity-60"
                           )}
