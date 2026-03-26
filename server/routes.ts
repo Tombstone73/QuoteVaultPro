@@ -225,6 +225,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Auth routes extracted to ./routes/auth.routes.ts (do NOT re-add here)
   registerAuthRoutes(app, { isAuthenticated });
 
+  // Attachment routes extracted to ./routes/attachments.routes.ts (do NOT re-add here)
+  await registerAttachmentRoutes(app, { isAuthenticated, tenantContext, isAdmin });
+
+  // Order routes extracted to ./routes/orders.routes.ts (do NOT re-add here)
+  await registerOrderRoutes(app, { isAuthenticated, tenantContext, isAdmin, isAdminOrOwner });
+
+  // MVP Invoicing + Payments routes extracted to ./routes/mvpInvoicing.routes.ts (do NOT re-add here)
+  await registerMvpInvoicingRoutes(app, { isAuthenticated, tenantContext });
+
+  // Bug report routes extracted to ./routes/bugReports.ts (do NOT re-add here)
+  registerBugReportRoutes(app, { isAuthenticated, tenantContext });
+
   // Admin Storage Settings routes extracted to ./routes/adminStorage.routes.ts (do NOT re-add here)
 
   // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
