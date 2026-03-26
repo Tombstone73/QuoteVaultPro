@@ -233,6 +233,14 @@ export type OrderRow = Order & {
   customer: any;
   contact?: any;
   lineItemsCount?: number;
+  productionSummary?: {
+    requiredCount: number;
+    handedOffCount: number;
+    pendingHandoffCount: number;
+    inProductionCount: number;
+    completeCount: number;
+    status: "none" | "clear" | "needs_handoff" | "partial" | "in_production" | "complete";
+  };
   listLabel?: string | null; // List-only note (always editable)
   previewThumbnails?: string[]; // GCS thumbnail keys
   thumbsCount?: number; // Total attachment count
