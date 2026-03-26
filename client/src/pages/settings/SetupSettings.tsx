@@ -95,7 +95,7 @@ function NumberSequenceCard({ varName, label }: { varName: string; label: string
               onKeyDown={handleKeyDown}
               placeholder={currentNumber?.toString() ?? "1001"}
               className="h-7 text-xs text-center px-1"
-              style={{ width: "52px" }}
+              style={{ width: "104px" }}
               autoFocus
             />
           ) : (
@@ -156,7 +156,23 @@ export default function SetupSettings() {
         </p>
       </TitanCard>
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-4 gap-3">
+        {/* Label card */}
+        <TitanCard noPadding>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              height: "56px",
+              padding: "0 12px",
+            }}
+          >
+            <span style={{ fontSize: "12px", color: "var(--muted-foreground, #888)", lineHeight: "1.4" }}>
+              Quote/Order/Invoice starting numbers
+            </span>
+          </div>
+        </TitanCard>
+
         {SEQUENCES.map(({ varName, label }) => (
           <NumberSequenceCard key={varName} varName={varName} label={label} />
         ))}
