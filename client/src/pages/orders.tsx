@@ -47,12 +47,12 @@ function ProductionSummaryBadge({ summary }: { summary?: OrderRow["productionSum
   };
 
   const config: Record<NonNullable<OrderRow["productionSummary"]>["status"], { label: string; className: string }> = {
-    none: { label: "None", className: "bg-slate-100 text-slate-700 border-slate-200" },
-    clear: { label: "Clear", className: "bg-slate-100 text-slate-700 border-slate-200" },
-    needs_handoff: { label: "Needs Production", className: "bg-amber-100 text-amber-800 border-amber-200" },
+    none: { label: "None", className: "bg-slate-200 text-slate-500 border-slate-300" },
+    clear: { label: "Clear", className: "bg-slate-100 text-slate-700 border-slate-300" },
+    needs_handoff: { label: "Needs Production", className: "bg-red-100 text-red-800 border-red-200" },
     partial: { label: "Partial", className: "bg-orange-100 text-orange-800 border-orange-200" },
     in_production: { label: "In Production", className: "bg-blue-100 text-blue-800 border-blue-200" },
-    complete: { label: "Complete", className: "bg-green-100 text-green-800 border-green-200" },
+    complete: { label: "Complete", className: "bg-emerald-100 text-emerald-800 border-emerald-200" },
   };
 
   const details = [
@@ -67,10 +67,18 @@ function ProductionSummaryBadge({ summary }: { summary?: OrderRow["productionSum
     ? ` (${normalized.pendingHandoffCount})`
     : "";
 
+  if (normalized.status === "none") {
+    return (
+      <span className="inline-flex h-5 items-center" title={details} aria-label="No production activity">
+        <span className="h-2 w-2 rounded-full border border-slate-300 bg-slate-200" />
+      </span>
+    );
+  }
+
   return (
     <Badge
       variant="outline"
-      className={`text-xs whitespace-nowrap ${config[normalized.status].className}`}
+      className={`h-5 px-1.5 text-[11px] font-medium leading-none whitespace-nowrap ${config[normalized.status].className}`}
       title={details}
     >
       {config[normalized.status].label}{countSuffix}
@@ -158,7 +166,7 @@ const ORDER_COLUMNS: ColumnDefinition[] = [
   { key: "poNumber", label: "PO #", defaultVisible: true, defaultWidth: 120, minWidth: 80, maxWidth: 180, sortable: true },
   { key: "customer", label: "Customer", defaultVisible: true, defaultWidth: 180, minWidth: 120, maxWidth: 300, sortable: true },
   { key: "status", label: "Status", defaultVisible: true, defaultWidth: 130, minWidth: 100, maxWidth: 180, sortable: true },
-  { key: "production", label: "Production", defaultVisible: true, defaultWidth: 170, minWidth: 130, maxWidth: 220 },
+  { key: "production", label: "Production", defaultVisible: true, defaultWidth: 160, minWidth: 120, maxWidth: 200 },
   { key: "paymentStatus", label: "Payment", defaultVisible: false, defaultWidth: 110, minWidth: 90, maxWidth: 150, sortable: true },
   { key: "priority", label: "Priority", defaultVisible: true, defaultWidth: 100, minWidth: 80, maxWidth: 150, sortable: true },
   { key: "dueDate", label: "Due Date", defaultVisible: true, defaultWidth: 120, minWidth: 100, maxWidth: 180, sortable: true },
