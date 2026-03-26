@@ -204,6 +204,13 @@
       "when": 1774569600000,
       "tag": "0028_repair_numbering_and_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1774656000000,
+      "tag": "0029_dedupe_numbering_seed_rows",
+      "breakpoints": true
     }
   ]
 }
