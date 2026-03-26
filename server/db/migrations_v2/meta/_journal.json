@@ -183,6 +183,20 @@
       "when": 1774051200000,
       "tag": "0025_product_requires_proof_approval",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1774137600000,
+      "tag": "0026_seed_order_invoice_numbering",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1774224000000,
+      "tag": "0027_add_source_number_snapshots",
+      "breakpoints": true
     }
   ]
 }
