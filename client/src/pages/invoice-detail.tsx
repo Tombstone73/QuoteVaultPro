@@ -1459,10 +1459,17 @@ export default function InvoiceDetailPage() {
                         <Link to={`/contacts/${linkedOrderContactId}`}>View Contact</Link>
                       </Button>
                     ) : null}
-                    {invoice.orderId ? (
-                      <Button variant="outline" size="sm" className="h-7 px-3 rounded-full" asChild>
-                        <Link to={`/orders/${invoice.orderId}`}>View Order</Link>
-                      </Button>
+                    {(invoice.orderId || invoice.sourceOrderNumber) ? (
+                      <>
+                        <span className="text-sm text-muted-foreground">
+                          From Order #{invoice.sourceOrderNumber ?? "—"}
+                        </span>
+                        {invoice.orderId ? (
+                          <Button variant="outline" size="sm" className="h-7 px-3 rounded-full" asChild>
+                            <Link to={`/orders/${invoice.orderId}`}>View Order</Link>
+                          </Button>
+                        ) : null}
+                      </>
                     ) : null}
                   </div>
                 </div>

@@ -109,10 +109,12 @@ async function createInvoiceFromOrderImpl(
     const taxCents = toCents(tax);
     const totalCents = Math.max(0, subtotalCents + taxCents + shippingCents);
 
+    const sourceOrderNumber = order.orderNumber ? parseInt(order.orderNumber, 10) || null : null;
     const invoiceInsert: InsertInvoice = {
       organizationId,
       invoiceNumber,
       orderId: order.id,
+      sourceOrderNumber: sourceOrderNumber as any, // Immutable snapshot — survives order deletion
       customerId: order.customerId,
       status: 'draft',
       terms: opts.terms as any,
