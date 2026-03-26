@@ -57,49 +57,56 @@ function NumberSequenceCard({ varName, label }: { varName: string; label: string
   };
 
   return (
-    <TitanCard className="flex items-center gap-2 px-3 py-0 h-10">
-      {/* Label */}
-      <span className="text-xs text-muted-foreground whitespace-nowrap w-28 shrink-0">{label}</span>
+    <TitanCard className="px-3 py-0 h-14 overflow-hidden">
+      {/* Hard 3-column grid: label | value | action */}
+      <div className="grid items-center h-full" style={{ gridTemplateColumns: "minmax(0,1fr) 56px 84px" }}>
 
-      {/* Value / Input */}
-      {isLoading ? (
-        <Skeleton className="h-4 w-10 shrink-0" />
-      ) : isEditing ? (
-        <Input
-          type="number"
-          min="1"
-          value={newValue}
-          onChange={(e) => setNewValue(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={currentNumber?.toString() ?? "1001"}
-          className="h-6 w-20 text-xs px-2 shrink-0"
-          autoFocus
-        />
-      ) : (
-        <span className="text-xs font-semibold tabular-nums shrink-0">{currentNumber ?? "—"}</span>
-      )}
+        {/* Col 1: Label */}
+        <span className="text-xs text-muted-foreground truncate pr-2">{label}</span>
 
-      {/* Actions */}
-      <div className="flex gap-1 ml-auto shrink-0">
-        {isEditing ? (
-          <>
-            <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => { setIsEditing(false); setNewValue(""); }}>
-              Cancel
+        {/* Col 2: Value or input */}
+        <div className="flex items-center justify-center">
+          {isLoading ? (
+            <Skeleton className="h-4 w-10" />
+          ) : isEditing ? (
+            <Input
+              type="number"
+              min="1"
+              value={newValue}
+              onChange={(e) => setNewValue(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={currentNumber?.toString() ?? "1001"}
+              className="h-7 w-14 text-xs px-1.5 text-center"
+              autoFocus
+            />
+          ) : (
+            <span className="text-sm font-semibold tabular-nums">{currentNumber ?? "—"}</span>
+          )}
+        </div>
+
+        {/* Col 3: Action buttons */}
+        <div className="flex items-center justify-end gap-1">
+          {isEditing ? (
+            <>
+              <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => { setIsEditing(false); setNewValue(""); }}>
+                Cancel
+              </Button>
+              <Button size="sm" className="h-7 px-2 text-xs" onClick={handleSave} disabled={updateMutation.isPending}>
+                {updateMutation.isPending ? "…" : "Save"}
+              </Button>
+            </>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 w-full text-xs"
+              onClick={() => { setIsEditing(true); setNewValue(currentNumber?.toString() ?? "1001"); }}
+            >
+              Change
             </Button>
-            <Button size="sm" className="h-6 px-2 text-xs" onClick={handleSave} disabled={updateMutation.isPending}>
-              {updateMutation.isPending ? "Saving…" : "Save"}
-            </Button>
-          </>
-        ) : (
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-6 px-2 text-xs"
-            onClick={() => { setIsEditing(true); setNewValue(currentNumber?.toString() ?? "1001"); }}
-          >
-            Change
-          </Button>
-        )}
+          )}
+        </div>
+
       </div>
     </TitanCard>
   );
@@ -116,7 +123,7 @@ export default function SetupSettings() {
         </p>
       </TitanCard>
 
-      <div className="grid grid-cols-3 gap-2 max-w-xl">
+      <div className="grid grid-cols-3 gap-3">
         {SEQUENCES.map(({ varName, label }) => (
           <NumberSequenceCard key={varName} varName={varName} label={label} />
         ))}
