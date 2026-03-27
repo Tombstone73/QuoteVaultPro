@@ -1,6 +1,7 @@
-import { ReactNode } from "react";
+import { ReactNode, useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -50,6 +51,7 @@ export type LineItemCardProps = {
   // Option chips for collapsed view
   optionChips?: Array<{ text: string; key: string }>;
   overflowCount?: number;
+  summaryFooter?: ReactNode;
 
   // Thumbnail
   thumbnail?: ReactNode;
@@ -106,6 +108,8 @@ export type LineItemCardProps = {
   // Expanded view - Artwork slot (right column, above description)
   artworkSlot?: ReactNode;
   detailsSide?: "left" | "right";
+  collapseSecondaryDetails?: boolean;
+  compactExpandedLayout?: boolean;
 
   // Actions
   isDirty?: boolean;
@@ -140,6 +144,7 @@ export function LineItemCard({
   showNoteLabel = true,
   optionChips = [],
   overflowCount = 0,
+  summaryFooter,
   thumbnail,
   dragHandleProps,
   showDragHandle = false,
@@ -174,6 +179,8 @@ export function LineItemCard({
   optionsSlot,
   artworkSlot,
   detailsSide = "left",
+  collapseSecondaryDetails = false,
+  compactExpandedLayout = false,
   isDirty = false,
   isSaving = false,
   isSaved = false,
@@ -187,6 +194,22 @@ export function LineItemCard({
   const hasProductionNotes = Boolean(productionNotes && productionNotes.trim());
   const dragDisabled = Boolean(dragHandleProps?.disabled);
   const detailsOnRight = detailsSide === "right";
+  const [secondaryDetailsOpen, setSecondaryDetailsOpen] = useState(false);
+
+  useEffect(() => {
+    if (!isExpanded) {
+      setSecondaryDetailsOpen(false);
+    }
+  }, [isExpanded]);
+
+  const secondaryDetailsSummary = useMemo(() => {
+    const parts: string[] = [];
+    if (artworkSlot) parts.push("Artwork");
+    if (description.trim()) parts.push("Description");
+    if (hasProductionNotes) parts.push("Notes");
+    if (!readOnly || requiresDesign || requiresPrepress !== null) parts.push("Setup");
+    return parts.length > 0 ? parts.join(" · ") : "Artwork, notes, and setup";
+  }, [artworkSlot, description, hasProductionNotes, readOnly, requiresDesign, requiresPrepress]);
 
   const detailsFields = (
     <>
@@ -317,6 +340,35 @@ export function LineItemCard({
     </>
   );
 
+  const secondaryDetailsContent = (
+    <>
+      {artworkSlot}
+      {detailsFields}
+    </>
+  );
+
+  const secondaryDetailsPanel = collapseSecondaryDetails ? (
+    <Collapsible open={secondaryDetailsOpen} onOpenChange={setSecondaryDetailsOpen}>
+      <div className="rounded-md border border-border/40 bg-background/60 p-2.5">
+        <CollapsibleTrigger asChild>
+          <button
+            type="button"
+            className="flex w-full items-center justify-between gap-3 text-left"
+          >
+            <div className="min-w-0">
+              <div className="text-sm font-medium">Details</div>
+              <div className="truncate text-xs text-muted-foreground">{secondaryDetailsSummary}</div>
+            </div>
+            <ChevronRight className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", secondaryDetailsOpen && "rotate-90")} />
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="space-y-3 pt-3">
+          {secondaryDetailsContent}
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
+  ) : secondaryDetailsContent;
+
   return (
     <div className={cn("rounded-lg border border-border/40 bg-background/30", isExpanded && "bg-background/40 border-border/60")}>
       {/* Collapsed Summary Row - Enterprise Dense Layout */}
@@ -412,6 +464,10 @@ export function LineItemCard({
           </div>
         </div>
 
+        {summaryFooter ? (
+          <div className="mt-1.5">{summaryFooter}</div>
+        ) : null}
+
         {/* Optional Meta Row (only if relevant) */}
         {(hasNote || hasOverride || hasProductionNotes) && (
           <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground/70">
@@ -435,7 +491,7 @@ export function LineItemCard({
       {/* Expanded Editor - When Expanded (edit mode OR view mode) */}
       {isExpanded && (
         <div id={contentId} className="px-3 pb-3">
-          <div className="rounded-md border border-border/40 bg-muted/20 p-3 min-h-[400px]">
+          <div className={cn("rounded-md border border-border/40 bg-muted/20 p-3", !compactExpandedLayout && "min-h-[400px]")}>
             {/* Top editing row */}
             <div className="flex flex-wrap items-end gap-3">
               <div className="flex items-center gap-2">
@@ -567,8 +623,7 @@ export function LineItemCard({
                   </div>
 
                   <div className="min-w-0 lg:w-[360px] lg:shrink-0">
-                    {artworkSlot}
-                    {detailsFields}
+                    {secondaryDetailsPanel}
                     {actionsRow}
                   </div>
                 </>
@@ -576,12 +631,12 @@ export function LineItemCard({
                 <>
                   <div className="min-w-0">
                     {optionsSlot}
-                    {detailsFields}
+                    {collapseSecondaryDetails ? secondaryDetailsPanel : detailsFields}
                     {actionsRow}
                   </div>
 
                   <div className="min-w-0 lg:w-[360px] lg:shrink-0">
-                    {artworkSlot}
+                    {!collapseSecondaryDetails ? artworkSlot : null}
                   </div>
                 </>
               )}

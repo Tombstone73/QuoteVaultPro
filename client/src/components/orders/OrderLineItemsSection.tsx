@@ -335,6 +335,37 @@ function getWorkflowActions(state: string | undefined) {
   }
 }
 
+function getOperationalNextStep(state: string | undefined, hasActiveOwner: boolean): string {
+  switch (state) {
+    case "new":
+      return "Review routing";
+    case "needs_design":
+      return "Start design";
+    case "in_design":
+      return "Finish design";
+    case "ready_for_prepress":
+      return "Start prepress";
+    case "in_prepress":
+      return "Finish prepress";
+    case "ready_for_production":
+      return hasActiveOwner ? "Production scheduled" : "Send to production";
+    case "in_production":
+      return "Production in progress";
+    case "completed":
+      return "None";
+    case "on_hold":
+      return "Review hold";
+    case "canceled":
+      return "None";
+    default:
+      return "Review item";
+  }
+}
+
+function needsOperationalAction(state: string | undefined): boolean {
+  return ["new", "needs_design", "ready_for_prepress", "ready_for_production", "on_hold"].includes(String(state || "new"));
+}
+
 function buildOneLineOptionsSummary(selectedOptions: any[] | undefined | null): string {
   if (!Array.isArray(selectedOptions) || selectedOptions.length === 0) return "";
 
@@ -1421,19 +1452,21 @@ export function OrderLineItemsSection({
     }).length;
   }, [activeLineItems, products]);
 
+  const actionNeededCount = useMemo(() => {
+    return activeLineItems.filter((item) => needsOperationalAction(String((item as any).workflowState || "new"))).length;
+  }, [activeLineItems]);
+
   return (
     <Card className="border-0 bg-transparent shadow-none">
       <CardHeader className="px-0 pt-0 pb-2">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <Badge variant="outline" className="border-border/60 text-xs">
-              {count} {count === 1 ? "item" : "items"}
-            </Badge>
-            {productionRequiredItemCount > 0 && !readOnly && (
-              <Badge variant="secondary" className="text-xs">
-                {productionRequiredItemCount} require production
-              </Badge>
-            )}
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/50 bg-muted/15 px-3 py-2.5">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold">Line Items</div>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span>{count} {count === 1 ? "item" : "items"}</span>
+              {productionRequiredItemCount > 0 && <span>{productionRequiredItemCount} require production</span>}
+              {actionNeededCount > 0 && <span>{actionNeededCount} need action</span>}
+            </div>
           </div>
           
           {!readOnly && productionRequiredItemCount > 0 && (
@@ -1617,6 +1650,44 @@ export function OrderLineItemsSection({
                     expandedBriefDetail?.effectiveRequiresDesign ||
                     hasAnyDesignBriefText(designBriefDraft)
                   );
+                  const workflowState = String((item as any).workflowState || "new");
+                  const hasActiveOwner = Boolean((item as any).activeOwnerStepKey || (item as any).activeOwnerStationKey || (item as any).activeOwnerJobId);
+                  const ownerLabel = (item as any).activeOwnerStepKey || (item as any).activeOwnerStationKey || null;
+                  const policy =
+                    productArtworkPolicy === "required" || productArtworkPolicy === "not_required"
+                      ? productArtworkPolicy
+                      : null;
+                  const suppressedEntry =
+                    itemSpecsJson?.flags?.suppressed && typeof itemSpecsJson.flags.suppressed === "object"
+                      ? (itemSpecsJson.flags.suppressed as any)?.missing_artwork
+                      : null;
+                  const suppressedReason = typeof suppressedEntry?.reason === "string" ? suppressedEntry.reason.trim() : "";
+                  const suppressedAt = typeof suppressedEntry?.at === "string" ? suppressedEntry.at.trim() : "";
+                  const isMissingArtworkSuppressed = Boolean(suppressedReason && suppressedAt);
+                  const canDeriveArtwork = lineItemAttachmentsAssociationKnown && lineItemAssetsKnownForItem;
+                  const hasAnyArtwork = attachmentsForThumb.length > 0 || assetCountForItem > 0;
+                  const missingArtworkActive = policy === "required" && canDeriveArtwork && !hasAnyArtwork && !isMissingArtworkSuppressed;
+                  const operationalStatusLabel = WORKFLOW_LABELS[workflowState] || workflowState;
+                  const operationalNextStep = getOperationalNextStep(workflowState, hasActiveOwner);
+
+                  let operationalWarning: string | null = null;
+                  let operationalWarningTone: "warning" | "danger" | null = null;
+
+                  if (missingArtworkActive) {
+                    operationalWarning = "Missing artwork";
+                    operationalWarningTone = "warning";
+                  } else if (workflowState === "on_hold") {
+                    operationalWarning = "On hold";
+                    operationalWarningTone = "danger";
+                  } else if (showDesignBriefEditor && expandedBriefDetail?.status === "required_missing") {
+                    operationalWarning = "Design brief incomplete";
+                    operationalWarningTone = "warning";
+                  } else if (calcError && isExpanded && expandedItem && expandedItem.id === item.id) {
+                    operationalWarning = calcError === "PBV2_SCHEMA_MISMATCH"
+                      ? "Pricing issue: outdated PBV2 config"
+                      : `Pricing issue: ${calcError}`;
+                    operationalWarningTone = "warning";
+                  }
 
                   return (
                     <SortableOrderLineItemWrapper key={itemKey} id={itemKey} disabled={reorderDisabled}>
@@ -1656,13 +1727,36 @@ export function OrderLineItemsSection({
                                   override: isOverride,
                                   internal: hasProductionNotes,
                                 }}
-                                showNoteLabel={true}
-                                descriptionPreview={persistedDescription || undefined}
+                                showNoteLabel={false}
+                                descriptionPreview={undefined}
                                 optionChips={optionChips.map((chip, index) => ({
                                   text: chip,
                                   key: `${itemKey}-chip-${index}`,
                                 }))}
                                 overflowCount={overflowCount}
+                                summaryFooter={
+                                  <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                                    <Badge variant={workflowBadgeVariant(workflowState)} className="h-5 px-1.5 text-[11px] font-medium">
+                                      {operationalStatusLabel}
+                                    </Badge>
+                                    <span className="text-muted-foreground">
+                                      Next: <span className="text-foreground">{operationalNextStep}</span>
+                                    </span>
+                                    {ownerLabel ? <span className="text-muted-foreground">Owner: {String(ownerLabel)}</span> : null}
+                                    {operationalWarning ? (
+                                      <span
+                                        className={cn(
+                                          "inline-flex items-center rounded px-1.5 py-0.5 font-medium",
+                                          operationalWarningTone === "danger"
+                                            ? "bg-red-100 text-red-800"
+                                            : "bg-amber-100 text-amber-800"
+                                        )}
+                                      >
+                                        {operationalWarning}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                }
                                 thumbnail={thumbnailNode}
                                 dragHandleProps={{
                                   attributes: dragAttributes,
@@ -2023,25 +2117,7 @@ export function OrderLineItemsSection({
                                     </div>
 
                                     {(() => {
-                                      const policy =
-                                        productArtworkPolicy === "required" || productArtworkPolicy === "not_required"
-                                          ? productArtworkPolicy
-                                          : null;
-
-                                      const suppressedEntry =
-                                        itemSpecsJson?.flags?.suppressed && typeof itemSpecsJson.flags.suppressed === "object"
-                                          ? (itemSpecsJson.flags.suppressed as any)?.missing_artwork
-                                          : null;
-                                      const suppressedReason =
-                                        typeof suppressedEntry?.reason === "string" ? suppressedEntry.reason.trim() : "";
-                                      const suppressedAt = typeof suppressedEntry?.at === "string" ? suppressedEntry.at.trim() : "";
-                                      const isSuppressed = Boolean(suppressedReason && suppressedAt);
-
-                                      if (policy !== "required" && !isSuppressed) return null;
-
-                                      const canDerive = lineItemAttachmentsAssociationKnown && lineItemAssetsKnownForItem;
-                                      const hasAnyArtwork = attachmentsForThumb.length > 0 || assetCountForItem > 0;
-                                      const isMissingActive = policy === "required" && canDerive && !hasAnyArtwork && !isSuppressed;
+                                      if (policy !== "required" && !isMissingArtworkSuppressed) return null;
 
                                       const suppress = async () => {
                                         if (readOnly) return;
@@ -2131,7 +2207,7 @@ export function OrderLineItemsSection({
                                               <div className="text-sm">Missing artwork</div>
 
                                               <div className="mt-1">
-                                                {isSuppressed ? (
+                                                {isMissingArtworkSuppressed ? (
                                                   <TooltipProvider delayDuration={150}>
                                                     <Tooltip>
                                                       <TooltipTrigger asChild>
@@ -2144,7 +2220,7 @@ export function OrderLineItemsSection({
                                                       </TooltipContent>
                                                     </Tooltip>
                                                   </TooltipProvider>
-                                                ) : isMissingActive ? (
+                                                ) : missingArtworkActive ? (
                                                   <Badge
                                                     variant="outline"
                                                     className="border-amber-500/30 bg-amber-500/10 text-amber-700 text-xs"
@@ -2156,7 +2232,7 @@ export function OrderLineItemsSection({
                                             </div>
 
                                             <div className="flex flex-col items-end gap-2">
-                                              {isSuppressed ? (
+                                              {isMissingArtworkSuppressed ? (
                                                 <Button
                                                   type="button"
                                                   variant="outline"
@@ -2198,6 +2274,8 @@ export function OrderLineItemsSection({
                                   </>
                                 }
                                 detailsSide="right"
+                                collapseSecondaryDetails={true}
+                                compactExpandedLayout={true}
                                 isDirty={isExpanded && expandedItem && expandedItem.id === item.id ? isDirty : false}
                                 isSaving={savingItemId === item.id}
                                 isSaved={!isDirty && (savedItemId === item.id || designBriefSavedAt === item.id)}
@@ -2208,63 +2286,38 @@ export function OrderLineItemsSection({
                               />
 
                               <div className="mt-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <span className="text-xs font-medium text-muted-foreground">Workflow</span>
-                                  <Badge variant={workflowBadgeVariant((item as any).workflowState)}>
-                                    {WORKFLOW_LABELS[String((item as any).workflowState || "new")] || String((item as any).workflowState || "new")}
-                                  </Badge>
-                                  {(item as any).activeOwnerStepKey && (
-                                    <Badge variant="secondary">
-                                      Owner: {String((item as any).activeOwnerStepKey || (item as any).activeOwnerStationKey || "unassigned")}
-                                    </Badge>
-                                  )}
-                                  {Boolean((item as any).requiresDesign) && (
-                                    <Badge variant="outline">Design</Badge>
-                                  )}
-                                  {Boolean((item as any).requiresPrepress) && (
-                                    <Badge variant="outline">Prepress</Badge>
-                                  )}
-                                </div>
-
-                                {!readOnly && isExpanded && expandedItem && expandedItem.id === item.id && (
-                                  <div className="mt-3 rounded-md border border-border/40 bg-background/70 p-3">
-                                    <div className="flex flex-wrap items-center justify-between gap-2">
-                                      <div>
-                                        <div className="text-sm font-medium">Intake routing</div>
-                                        <div className="text-xs text-muted-foreground">
-                                          Changes reseed workflow only before ownership or downstream work starts.
-                                        </div>
-                                      </div>
-                                      <div className="flex items-center gap-2 text-xs">
-                                        <span className="text-muted-foreground">Initial stage</span>
-                                        <Badge variant="outline">
-                                          {WORKFLOW_LABELS[getInitialWorkflowStateForFlags(requiresDesignInput, requiresPrepressInput)]}
-                                        </Badge>
-                                      </div>
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Status</span>
+                                      <Badge variant={workflowBadgeVariant(workflowState)}>
+                                        {operationalStatusLabel}
+                                      </Badge>
+                                      {operationalWarning ? (
+                                        <span
+                                          className={cn(
+                                            "inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium",
+                                            operationalWarningTone === "danger"
+                                              ? "bg-red-100 text-red-800"
+                                              : "bg-amber-100 text-amber-800"
+                                          )}
+                                        >
+                                          {operationalWarning}
+                                        </span>
+                                      ) : null}
                                     </div>
-
-                                    <div className="mt-3 flex flex-wrap gap-4">
-                                      <label className="flex items-center gap-2 text-sm text-foreground">
-                                        <Checkbox
-                                          checked={requiresDesignInput}
-                                          onCheckedChange={(checked) => setRequiresDesignInput(checked === true)}
-                                        />
-                                        Requires Design
-                                      </label>
-                                      <label className="flex items-center gap-2 text-sm text-foreground">
-                                        <Checkbox
-                                          checked={requiresPrepressInput}
-                                          onCheckedChange={(checked) => setRequiresPrepressInput(checked === true)}
-                                        />
-                                        Requires Prepress
-                                      </label>
+                                    <div className="mt-1 text-sm">
+                                      <span className="text-muted-foreground">Next step:</span>{" "}
+                                      <span className="font-medium text-foreground">{operationalNextStep}</span>
                                     </div>
+                                    {ownerLabel ? (
+                                      <div className="mt-1 text-xs text-muted-foreground">Owner: {String(ownerLabel)}</div>
+                                    ) : null}
                                   </div>
-                                )}
 
-                                {!readOnly && getWorkflowActions(String((item as any).workflowState || "new")).length > 0 && (
-                                  <div className="mt-2 flex flex-wrap gap-2">
-                                    {getWorkflowActions(String((item as any).workflowState || "new")).map((action, index) => (
+                                  {!readOnly && getWorkflowActions(workflowState).length > 0 && (
+                                    <div className="flex flex-wrap gap-2">
+                                      {getWorkflowActions(workflowState).map((action, index) => (
                                       <Button
                                         key={`${item.id}-${index}`}
                                         type="button"
@@ -2281,8 +2334,9 @@ export function OrderLineItemsSection({
                                         {action.label}
                                       </Button>
                                     ))}
-                                  </div>
-                                )}
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                             </div>
                           </div>

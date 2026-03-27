@@ -321,6 +321,27 @@ export default function OrderDetail() {
     };
   }, [focusProduction, focusProductionStatus, order]);
 
+  const orderOperationalSummary = useMemo(() => {
+    const lineItems = order?.lineItems ?? [];
+    const totalItems = lineItems.length;
+    const productionRequiredCount = lineItems.filter((lineItem: any) => (lineItem?.product as any)?.requiresProductionJob === true).length;
+    const actionNeededCount = lineItems.filter((lineItem: any) => {
+      const workflowState = String(lineItem?.workflowState || lineItem?.status || "new").trim().toLowerCase();
+      return ["new", "needs_design", "ready_for_prepress", "ready_for_production", "on_hold"].includes(workflowState);
+    }).length;
+    const inProgressCount = lineItems.filter((lineItem: any) => {
+      const workflowState = String(lineItem?.workflowState || lineItem?.status || "").trim().toLowerCase();
+      return ["in_design", "in_prepress", "in_production"].includes(workflowState);
+    }).length;
+
+    return {
+      totalItems,
+      productionRequiredCount,
+      actionNeededCount,
+      inProgressCount,
+    };
+  }, [order]);
+
   useEffect(() => {
     if (!focusProduction || productionFocus.prioritizedIds.length === 0) return;
 
@@ -2171,6 +2192,39 @@ export default function OrderDetail() {
 
             {/* Line Items (Quote-style UI) */}
             <div className="space-y-4" ref={lineItemsSectionRef}>
+              <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Operational Summary</span>
+                    <Badge variant="outline" className="h-6 px-2 text-xs">
+                      {orderOperationalSummary.totalItems} {orderOperationalSummary.totalItems === 1 ? "item" : "items"}
+                    </Badge>
+                    {orderOperationalSummary.productionRequiredCount > 0 ? (
+                      <Badge variant="secondary" className="h-6 px-2 text-xs">
+                        {orderOperationalSummary.productionRequiredCount} require production
+                      </Badge>
+                    ) : null}
+                    {orderOperationalSummary.actionNeededCount > 0 ? (
+                      <Badge className="h-6 px-2 text-xs bg-amber-100 text-amber-900 hover:bg-amber-100">
+                        {orderOperationalSummary.actionNeededCount} action needed
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="h-6 px-2 text-xs border-emerald-300 text-emerald-800">
+                        No immediate action needed
+                      </Badge>
+                    )}
+                    {orderOperationalSummary.inProgressCount > 0 ? (
+                      <Badge variant="outline" className="h-6 px-2 text-xs border-sky-300 text-sky-800">
+                        {orderOperationalSummary.inProgressCount} in progress
+                      </Badge>
+                    ) : null}
+                  </div>
+                  {isAdminOrOwner && canEditLineItems && orderOperationalSummary.productionRequiredCount > 0 ? (
+                    <div className="text-xs text-muted-foreground">Bulk production handoff is available below in Line Items.</div>
+                  ) : null}
+                </div>
+              </div>
+
               <OrderLineItemsSection
                 orderId={orderId!}
                 customerId={order.customerId}
