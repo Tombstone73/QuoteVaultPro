@@ -245,15 +245,30 @@ export function useScheduleOrderLineItemsForProduction(orderId: string) {
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
       qc.invalidateQueries({ queryKey: ["/api/orders", orderId] as any });
-      const firstDiagnostic = data?.data?.lineItemDiagnostics
-        ? Object.values(data.data.lineItemDiagnostics)[0]
-        : null;
+      const diagnostics = data?.data?.lineItemDiagnostics
+        ? Object.values(data.data.lineItemDiagnostics)
+        : [];
+      const proofBlocked = diagnostics.filter(
+        (diagnostic) => diagnostic.routingReason === "proof_approval_required_before_scheduling",
+      );
+      const firstDiagnostic = diagnostics[0] ?? null;
+      const hasScheduledJobs = (data?.data?.createdJobCount ?? 0) + (data?.data?.existingJobCount ?? 0) > 0;
+
+      if (!hasScheduledJobs && proofBlocked.length > 0) {
+        toast({
+          title: "Approved proof required",
+          description: data.message,
+          variant: "destructive",
+        });
+        return;
+      }
+
       const details = firstDiagnostic
-        ? `Routed by: ${firstDiagnostic.routingReason}${firstDiagnostic.idempotencyNote ? ` • ${firstDiagnostic.idempotencyNote}` : ""}`
+        ? `${data.message}${firstDiagnostic.idempotencyNote ? ` • ${firstDiagnostic.idempotencyNote}` : ""}`
         : data.message;
-      toast({ 
-        title: "Production scheduling complete", 
-        description: details
+      toast({
+        title: "Production scheduling complete",
+        description: details,
       });
     },
     onError: (e: Error) => {

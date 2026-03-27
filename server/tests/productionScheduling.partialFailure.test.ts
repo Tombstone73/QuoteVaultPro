@@ -30,6 +30,7 @@ describe("/api/orders/:orderId/production/schedule partial failure", () => {
                 lineItemRequiresDesignSnapshot: false,
                 lineItemRequiresProofApprovalSnapshot: false,
                 lineItemRequiresPrepressSnapshot: true,
+                approvedProofVersionId: null,
                 requiresProductionJob: true,
               },
               {
@@ -42,6 +43,7 @@ describe("/api/orders/:orderId/production/schedule partial failure", () => {
                 lineItemRequiresDesignSnapshot: false,
                 lineItemRequiresProofApprovalSnapshot: false,
                 lineItemRequiresPrepressSnapshot: false,
+                approvedProofVersionId: null,
                 requiresProductionJob: true,
               },
             ],
