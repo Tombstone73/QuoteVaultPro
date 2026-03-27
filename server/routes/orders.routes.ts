@@ -55,6 +55,7 @@ import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../ser
 import { getLineItemDesignBriefDetail, upsertLineItemDesignBrief } from "../services/lineItemDesignBriefService";
 import { addLineItemNote, addOrderInternalNote, listLineItemNotes, listOrderInternalNotes } from "../services/structuredOrderNotesService";
 import { findActiveJobForLineItem } from "../services/productionOwnership";
+import { autoSyncCanonicalProofForLineItem } from "../services/proofingService";
 import { materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
 import { productDesignConfigRepository } from "../storage/productDesignConfig.repo";
 import { pbv2ToChildItemProposals, pbv2ToMaterialEffects, pbv2ToPricingAddons } from "@shared/pbv2/pricingAdapter";
@@ -1382,6 +1383,21 @@ export async function registerOrderRoutes(
                 description: `Created order ${order.orderNumber}`,
                 newValues: order,
             });
+
+            if (Array.isArray((order as any).lineItems)) {
+                for (const lineItem of (order as any).lineItems) {
+                    try {
+                        await db.transaction((tx) => autoSyncCanonicalProofForLineItem(tx, {
+                            organizationId,
+                            lineItemId: String(lineItem.id),
+                            actorUserId: userId,
+                            reason: 'order_saved',
+                        }));
+                    } catch (proofSyncError) {
+                        console.error('[AutoProofSync:ORDER_CREATE] Failed (non-fatal):', proofSyncError);
+                    }
+                }
+            }
 
             res.json(order);
         } catch (error) {
@@ -3896,6 +3912,18 @@ export async function registerOrderRoutes(
             });
 
                 const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+                if (orderLineItemId) {
+                    try {
+                        await db.transaction((tx) => autoSyncCanonicalProofForLineItem(tx, {
+                            organizationId,
+                            lineItemId: String(orderLineItemId),
+                            actorUserId: userId,
+                            reason: 'artwork_saved',
+                        }));
+                    } catch (proofSyncError) {
+                        console.error('[AutoProofSync:ORDER_FILE_UPLOAD] Failed after upload-session persist (non-fatal):', proofSyncError);
+                    }
+                }
                 return res.json({ success: true, data: enrichedAttachment });
             }
 
@@ -4095,6 +4123,18 @@ export async function registerOrderRoutes(
 
             uploadStep = 'respond_success';
             const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+            if (resolvedLineItemId) {
+                try {
+                    await db.transaction((tx) => autoSyncCanonicalProofForLineItem(tx, {
+                        organizationId,
+                        lineItemId: String(resolvedLineItemId),
+                        actorUserId: userId,
+                        reason: 'artwork_saved',
+                    }));
+                } catch (proofSyncError) {
+                    console.error('[AutoProofSync:ORDER_FILE_UPLOAD] Failed after attachment persist (non-fatal):', proofSyncError);
+                }
+            }
             res.json({ success: true, data: enrichedAttachment });
         } catch (error: any) {
             console.error('[POST /api/orders/:id/files] Failed', {
@@ -4116,6 +4156,16 @@ export async function registerOrderRoutes(
     app.patch('/api/orders/:orderId/files/:fileId', isAuthenticated, async (req: any, res) => {
         try {
             const userId = getUserId(req.user);
+            const [order] = await db
+                .select({ organizationId: orders.organizationId })
+                .from(orders)
+                .where(eq(orders.id, req.params.orderId))
+                .limit(1);
+
+            if (!order?.organizationId) {
+                return res.status(404).json({ error: 'Order not found' });
+            }
+
             const { role, side, isPrimary, description } = req.body;
             const validRoles = ['artwork', 'proof', 'reference', 'customer_po', 'setup', 'output', 'other'];
             const validSides = ['front', 'back', 'na'];
@@ -4140,6 +4190,20 @@ export async function registerOrderRoutes(
                 note: `File metadata updated: ${updated.fileName}`,
                 metadata: { fileId: updated.id, updates } as any,
             });
+
+            if ((updated as any).orderLineItemId && userId) {
+                try {
+                    await db.transaction((tx) => autoSyncCanonicalProofForLineItem(tx, {
+                        organizationId: String(order.organizationId),
+                        lineItemId: String((updated as any).orderLineItemId),
+                        actorUserId: userId,
+                        reason: 'artwork_saved',
+                    }));
+                } catch (proofSyncError) {
+                    console.error('[AutoProofSync:ORDER_FILE_UPDATE] Failed (non-fatal):', proofSyncError);
+                }
+            }
+
             res.json({ success: true, data: updated });
         } catch (error) {
             res.status(500).json({ error: 'Failed to update file metadata' });
@@ -4575,6 +4639,19 @@ export async function registerOrderRoutes(
                 console.error('[AutoProductionSchedule:CREATE] Failed (non-fatal):', autoScheduleErr?.message ?? autoScheduleErr);
             }
 
+            if (userId) {
+                try {
+                    await db.transaction((tx) => autoSyncCanonicalProofForLineItem(tx, {
+                        organizationId,
+                        lineItemId: String(created.id),
+                        actorUserId: userId,
+                        reason: 'line_item_saved',
+                    }));
+                } catch (proofSyncError) {
+                    console.error('[AutoProofSync:LINE_ITEM_CREATE] Failed (non-fatal):', proofSyncError);
+                }
+            }
+
             res.json(created);
         } catch (error) {
             if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
@@ -4689,6 +4766,19 @@ export async function registerOrderRoutes(
             }
 
             const lineItem = await storage.updateOrderLineItem(lineItemId, updateData);
+
+            if (userId) {
+                try {
+                    await db.transaction((tx) => autoSyncCanonicalProofForLineItem(tx, {
+                        organizationId,
+                        lineItemId,
+                        actorUserId: userId,
+                        reason: 'line_item_saved',
+                    }));
+                } catch (proofSyncError) {
+                    console.error('[AutoProofSync:LINE_ITEM_UPDATE] Failed (non-fatal):', proofSyncError);
+                }
+            }
 
             // NOTE: PBV2 is recomputed explicitly via /pbv2/recompute.
             // Do not silently overwrite persisted snapshots/components during general edits.

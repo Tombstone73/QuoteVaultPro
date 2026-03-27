@@ -28,6 +28,7 @@ import {
   completeLineItemDesign,
   transitionLineItemWorkflowState,
 } from "../services/lineItemWorkflowService";
+import { autoSyncCanonicalProofForLineItem } from "../services/proofingService";
 import { getLatestProofFeedbackByLineItemId } from "../services/proofFeedbackProjectionService";
 import { syncDesignCostSummary } from "../services/designCostSummaryService";
 import {
@@ -718,13 +719,24 @@ export function registerDesignRoutes(
       }
 
       const result = await db.transaction(async (tx) => {
-        return completeLineItemDesign(tx, {
+        const completed = await completeLineItemDesign(tx, {
           organizationId,
           lineItemId,
           actorUserId: userId,
           note,
           metadata: { source: "api_design_complete" },
         });
+
+        if (completed.toState === "awaiting_proof_approval" && currentLineItem.requiresProofApproval) {
+          await autoSyncCanonicalProofForLineItem(tx, {
+            organizationId,
+            lineItemId,
+            actorUserId: userId,
+            reason: "design_completed",
+          });
+        }
+
+        return completed;
       });
 
       await db.insert(auditLogs).values({
