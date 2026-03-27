@@ -37,6 +37,7 @@ import { storageApplicationService } from "../services/storage/StorageApplicatio
 import { createLineItemFileRecord } from "../services/lineItemFileRecordService";
 import { deleteStoredObjectKeys } from "../services/storage/deleteStoredObjectKeys";
 import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
+import { autoSyncCanonicalProofForLineItem } from "../services/proofingService";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -457,6 +458,21 @@ export function registerOrderLineItemFileRoutes(
           console.warn('[OrderLineItemFiles:POST] audit log failed', err);
         }
       }
+      if (userId) {
+        try {
+          await db.transaction((tx) =>
+            autoSyncCanonicalProofForLineItem(tx, {
+              organizationId,
+              lineItemId,
+              actorUserId: userId,
+              reason: "artwork_saved",
+            }),
+          );
+        } catch (proofSyncError) {
+          console.error("[OrderLineItemFiles:POST] Auto proof sync failed (non-fatal)", proofSyncError);
+        }
+      }
+
       return res.json({
         success: true,
         data: [],
@@ -705,6 +721,22 @@ export function registerOrderLineItemFileRoutes(
           console.warn('[OrderLineItemFiles:DELETE] audit log failed', err);
         }
 
+        const userId = getUserId(req.user);
+        if (userId) {
+          try {
+            await db.transaction((tx) =>
+              autoSyncCanonicalProofForLineItem(tx, {
+                organizationId,
+                lineItemId,
+                actorUserId: userId,
+                reason: "artwork_deleted",
+              }),
+            );
+          } catch (proofSyncError) {
+            console.error("[OrderLineItemFiles:DELETE] Auto proof sync failed after attachment delete (non-fatal)", proofSyncError);
+          }
+        }
+
         return res.json({ success: true });
       }
 
@@ -809,6 +841,22 @@ export function registerOrderLineItemFileRoutes(
         });
       } catch (err) {
         console.warn('[OrderLineItemFiles:DELETE] audit log failed', err);
+      }
+
+      const unlinkUserId = getUserId(req.user);
+      if (unlinkUserId) {
+        try {
+          await db.transaction((tx) =>
+            autoSyncCanonicalProofForLineItem(tx, {
+              organizationId,
+              lineItemId,
+              actorUserId: unlinkUserId,
+              reason: "artwork_deleted",
+            }),
+          );
+        } catch (proofSyncError) {
+          console.error("[OrderLineItemFiles:DELETE] Auto proof sync failed after asset unlink (non-fatal)", proofSyncError);
+        }
       }
 
       return res.json({ success: true });

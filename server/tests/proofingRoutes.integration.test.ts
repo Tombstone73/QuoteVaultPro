@@ -33,10 +33,11 @@ jest.mock("../services/productionRoutingService", () => {
 
 import { db } from "../db";
 import { tenantContext, getRequestOrganizationId } from "../tenantContext";
-import { auditLogs, lineItemProofManualApprovalOverrides, orderLineItems } from "../../shared/schema";
+import { auditLogs, lineItemProofManualApprovalOverrides, orderAttachments, orderLineItems, productionJobs } from "../../shared/schema";
 import { proofingQueueResponseSchema, proofingReadModelSchema, type ProofVersionHistoryEntry } from "../../shared/proofing";
 import { createProofAccessToken, validateProofToken } from "../services/proofAccessTokenService";
 import {
+  autoSyncCanonicalProofForLineItem,
   createLineItemProofVersion,
   listProofingQueue,
   markProofVersionSent,
@@ -786,17 +787,22 @@ describe("proofing route integration", () => {
       requiresDesign?: boolean;
       requiresProofApproval?: boolean;
       requiresPrepress?: boolean;
+      attachProofFiles?: boolean;
+      addArtwork?: boolean;
     },
   ) {
     const lineItemId = `line_${name}_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
     const proofFileA = `proof_a_${name}_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
     const proofFileB = `proof_b_${name}_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+    const artworkFileId = `artwork_${name}_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
 
     const workflowState = options?.workflowState ?? "ready_for_prepress";
     const designStatus = options?.designStatus ?? null;
     const requiresDesign = options?.requiresDesign ?? false;
     const requiresProofApproval = options?.requiresProofApproval ?? false;
     const requiresPrepress = options?.requiresPrepress ?? true;
+    const attachProofFiles = options?.attachProofFiles ?? true;
+    const addArtwork = options?.addArtwork ?? false;
 
     await db.execute(sql`
       insert into order_line_items (
@@ -820,23 +826,44 @@ describe("proofing route integration", () => {
       )
     `);
 
-    await db.execute(sql`
-      insert into order_attachments (
-        id,
-        order_id,
-        order_line_item_id,
-        uploaded_by_user_id,
-        uploaded_by_name,
-        file_name,
-        file_url,
-        role
-      )
-      values
-        (${proofFileA}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-proof-a.pdf`}, ${`https://example.com/${proofFileA}.pdf`}, ${"proof"}),
-        (${proofFileB}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-proof-b.pdf`}, ${`https://example.com/${proofFileB}.pdf`}, ${"proof"})
-    `);
+    if (attachProofFiles) {
+      await db.execute(sql`
+        insert into order_attachments (
+          id,
+          order_id,
+          order_line_item_id,
+          uploaded_by_user_id,
+          uploaded_by_name,
+          file_name,
+          file_url,
+          role
+        )
+        values
+          (${proofFileA}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-proof-a.pdf`}, ${`https://example.com/${proofFileA}.pdf`}, ${"proof"}),
+          (${proofFileB}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-proof-b.pdf`}, ${`https://example.com/${proofFileB}.pdf`}, ${"proof"})
+      `);
+    }
 
-    return { lineItemId, proofFileA, proofFileB };
+    if (addArtwork) {
+      await db.execute(sql`
+        insert into order_attachments (
+          id,
+          order_id,
+          order_line_item_id,
+          uploaded_by_user_id,
+          uploaded_by_name,
+          file_name,
+          file_url,
+          role,
+          is_primary
+        )
+        values (
+          ${artworkFileId}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-artwork.pdf`}, ${`https://example.com/${artworkFileId}.pdf`}, ${"artwork"}, ${true}
+        )
+      `);
+    }
+
+    return { lineItemId, proofFileA, proofFileB, artworkFileId };
   }
 
   async function createAndSendProof(lineItemId: string, proofFileId: string) {
@@ -909,6 +936,43 @@ describe("proofing route integration", () => {
     expect(proofing.currentActionableProofVersion?.status).toBe("awaiting_response");
   });
 
+  test("auto-syncs a canonical proof from persisted artwork and exposes it in the proofing queue", async () => {
+    const { lineItemId, artworkFileId } = await createLineItemFixture("auto_sync", {
+      workflowState: "ready_for_prepress",
+      requiresProofApproval: true,
+      requiresPrepress: true,
+      attachProofFiles: false,
+      addArtwork: true,
+    });
+
+    const result = await db.transaction((tx) =>
+      autoSyncCanonicalProofForLineItem(tx, {
+        organizationId: orgId,
+        lineItemId,
+        actorUserId: userId,
+        reason: "artwork_saved",
+      }),
+    );
+
+    expect(result.status).toBe("created");
+
+    const truth = await resolveLineItemProofingTruth(db, {
+      organizationId: orgId,
+      lineItemId,
+    });
+
+    expect(truth.workflowState).toBe("awaiting_proof_approval");
+    expect(truth.currentActionableProofVersion?.status).toBe("awaiting_response");
+    expect(truth.currentActionableProofVersion?.proofFileId).not.toBe(artworkFileId);
+
+    const queue = await listProofingQueue(db, {
+      organizationId: orgId,
+      slice: "awaiting_approval",
+    });
+
+    expect(queue.rows.some((row) => row.lineItemId === lineItemId)).toBe(true);
+  });
+
   test("approves a proof, advances workflow, and rejects repeated approvals safely", async () => {
     const { lineItemId, proofFileA } = await createLineItemFixture("approve");
     const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
@@ -928,6 +992,14 @@ describe("proofing route integration", () => {
     expect(proofing.approvedNormally).toBe(true);
     expect(proofing.approvedByOverride).toBe(false);
     expect(proofing.blockedPendingProofApproval).toBe(false);
+
+    const [job] = await db
+      .select({ stationKey: productionJobs.stationKey, stepKey: productionJobs.stepKey, status: productionJobs.status })
+      .from(productionJobs)
+      .where(eq(productionJobs.lineItemId, lineItemId))
+      .limit(1);
+
+    expect(job).toMatchObject({ stationKey: "prepress", stepKey: "prepress", status: "queued" });
 
     const repeatRes = await request(app)
       .post(`/api/proofing/versions/${proofVersionId}/respond`)
@@ -956,6 +1028,71 @@ describe("proofing route integration", () => {
     const proofing = proofingReadModelSchema.parse(rejectRes.body?.data?.proofing);
     expect(proofing.approvedProofVersionId).toBeNull();
     expect(proofing.proofDecisionHistory[0]?.decision).toBe("rejected");
+  });
+
+  test("refreshes proof context when artwork changes after approval", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("refresh_after_art", {
+      workflowState: "ready_for_prepress",
+      requiresProofApproval: true,
+      requiresPrepress: true,
+      attachProofFiles: true,
+      addArtwork: false,
+    });
+
+    const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
+
+    await request(app)
+      .post(`/api/proofing/versions/${proofVersionId}/respond`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ decision: "approved", responseNotes: "approved before art change" })
+      .expect(200);
+
+    const replacementArtworkId = `artwork_refresh_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+    await db.execute(sql`
+      insert into order_attachments (
+        id,
+        order_id,
+        order_line_item_id,
+        uploaded_by_user_id,
+        uploaded_by_name,
+        file_name,
+        file_url,
+        role,
+        is_primary
+      )
+      values (
+        ${replacementArtworkId}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${"replacement-artwork.pdf"}, ${`https://example.com/${replacementArtworkId}.pdf`}, ${"artwork"}, ${true}
+      )
+    `);
+
+    const result = await db.transaction((tx) =>
+      autoSyncCanonicalProofForLineItem(tx, {
+        organizationId: orgId,
+        lineItemId,
+        actorUserId: userId,
+        reason: "artwork_saved",
+      }),
+    );
+
+    expect(result.status).toBe("refreshed");
+
+    const truth = await resolveLineItemProofingTruth(db, {
+      organizationId: orgId,
+      lineItemId,
+    });
+
+    expect(truth.approvedProofVersionId).toBeNull();
+    expect(truth.workflowState).toBe("awaiting_proof_approval");
+    expect(truth.currentActionableProofVersion?.status).toBe("awaiting_response");
+
+    const versions = await db
+      .select({ id: orderAttachments.id, role: orderAttachments.role })
+      .from(orderAttachments)
+      .where(eq(orderAttachments.orderLineItemId, lineItemId));
+
+    expect(versions.some((row) => row.role === "proof")).toBe(true);
   });
 
   test("blocks incomplete design from bypassing directly into prepress", async () => {

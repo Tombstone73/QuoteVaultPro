@@ -14,6 +14,8 @@ import type {
 } from "@shared/proofing";
 
 import {
+  assetLinks,
+  assets,
   customers,
   lineItemProofApprovals,
   lineItemProofManualApprovalOverrides,
@@ -28,6 +30,38 @@ import { transitionLineItemWorkflowState } from "./lineItemWorkflowService";
 
 type ProofDecision = "approved" | "rejected" | "revision_requested";
 type ProofVersionStatus = "draft" | "awaiting_response" | "approved" | "rejected" | "revision_requested" | "superseded";
+type ProofSyncReason = "order_saved" | "line_item_saved" | "artwork_saved" | "artwork_deleted" | "design_completed";
+
+type ArtworkProofSource = {
+  sourceType: "attachment" | "asset";
+  sourceId: string;
+  orderId: string;
+  orderLineItemId: string;
+  fileRecordId: string | null;
+  fileName: string;
+  fileUrl: string | null;
+  fileSize: number | null;
+  sizeBytes: number | null;
+  mimeType: string | null;
+  description: string | null;
+  originalFilename: string | null;
+  storedFilename: string | null;
+  relativePath: string | null;
+  storageProvider: string | null;
+  extension: string | null;
+  checksum: string | null;
+  thumbKey: string | null;
+  previewKey: string | null;
+  thumbnailRelativePath: string | null;
+  thumbnailGeneratedAt: Date | null;
+  thumbnailUrl: string | null;
+  uploadedByUserId: string | null;
+  uploadedByName: string | null;
+};
+
+type AutoSyncProofResult =
+  | { status: "not_required" | "no_source" | "already_current" }
+  | { status: "created" | "refreshed" | "invalidated"; proofVersionId?: string | null; proofFileId?: string | null; toState?: string | null };
 
 function throwProofingConflict(message: string) {
   throw Object.assign(new Error(message), { statusCode: 409 });
@@ -75,6 +109,22 @@ async function supersedeObsoleteDraftVersions(tx: any, args: { organizationId: s
         eq(lineItemProofVersions.organizationId, args.organizationId),
         eq(lineItemProofVersions.lineItemId, args.lineItemId),
         eq(lineItemProofVersions.status, "draft"),
+      ),
+    );
+}
+
+async function supersedeActionableProofVersions(tx: any, args: { organizationId: string; lineItemId: string }) {
+  await tx
+    .update(lineItemProofVersions)
+    .set({
+      status: "superseded",
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(lineItemProofVersions.organizationId, args.organizationId),
+        eq(lineItemProofVersions.lineItemId, args.lineItemId),
+        inArray(lineItemProofVersions.status, ["draft", "awaiting_response"]),
       ),
     );
 }
@@ -197,6 +247,374 @@ function maxIsoTimestamp(values: Array<string | null | undefined>): string {
 
 function formatProofVersionLabel(versionNumber: number): string {
   return `Proof v${versionNumber}`;
+}
+
+function logProofAutoSync(event: string, payload: Record<string, unknown>) {
+  console.info(`[ProofingAutoSync] ${event}`, payload);
+}
+
+async function loadLatestArtworkProofSource(tx: any, args: { organizationId: string; lineItemId: string }): Promise<ArtworkProofSource | null> {
+  const [attachmentSource] = await tx
+    .select({
+      sourceId: orderAttachments.id,
+      orderId: orderAttachments.orderId,
+      orderLineItemId: orderAttachments.orderLineItemId,
+      fileRecordId: orderAttachments.fileRecordId,
+      fileName: orderAttachments.fileName,
+      fileUrl: orderAttachments.fileUrl,
+      fileSize: orderAttachments.fileSize,
+      sizeBytes: orderAttachments.sizeBytes,
+      mimeType: orderAttachments.mimeType,
+      description: orderAttachments.description,
+      originalFilename: orderAttachments.originalFilename,
+      storedFilename: orderAttachments.storedFilename,
+      relativePath: orderAttachments.relativePath,
+      storageProvider: orderAttachments.storageProvider,
+      extension: orderAttachments.extension,
+      checksum: orderAttachments.checksum,
+      thumbKey: orderAttachments.thumbKey,
+      previewKey: orderAttachments.previewKey,
+      thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
+      thumbnailGeneratedAt: orderAttachments.thumbnailGeneratedAt,
+      thumbnailUrl: orderAttachments.thumbnailUrl,
+      uploadedByUserId: orderAttachments.uploadedByUserId,
+      uploadedByName: orderAttachments.uploadedByName,
+    })
+    .from(orderAttachments)
+    .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
+    .where(
+      and(
+        eq(orders.organizationId, args.organizationId),
+        eq(orderAttachments.orderLineItemId, args.lineItemId),
+        eq(orderAttachments.role, "artwork"),
+      ),
+    )
+    .orderBy(desc(orderAttachments.isPrimary), desc(orderAttachments.updatedAt), desc(orderAttachments.createdAt))
+    .limit(1);
+
+  if (attachmentSource) {
+    return {
+      sourceType: "attachment",
+      sourceId: attachmentSource.sourceId,
+      orderId: attachmentSource.orderId,
+      orderLineItemId: String(attachmentSource.orderLineItemId),
+      fileRecordId: attachmentSource.fileRecordId ?? null,
+      fileName: attachmentSource.fileName,
+      fileUrl: attachmentSource.fileUrl ?? null,
+      fileSize: attachmentSource.fileSize ?? null,
+      sizeBytes: attachmentSource.sizeBytes ?? null,
+      mimeType: attachmentSource.mimeType ?? null,
+      description: attachmentSource.description ?? null,
+      originalFilename: attachmentSource.originalFilename ?? null,
+      storedFilename: attachmentSource.storedFilename ?? null,
+      relativePath: attachmentSource.relativePath ?? null,
+      storageProvider: attachmentSource.storageProvider ?? null,
+      extension: attachmentSource.extension ?? null,
+      checksum: attachmentSource.checksum ?? null,
+      thumbKey: attachmentSource.thumbKey ?? null,
+      previewKey: attachmentSource.previewKey ?? null,
+      thumbnailRelativePath: attachmentSource.thumbnailRelativePath ?? null,
+      thumbnailGeneratedAt: attachmentSource.thumbnailGeneratedAt ?? null,
+      thumbnailUrl: attachmentSource.thumbnailUrl ?? null,
+      uploadedByUserId: attachmentSource.uploadedByUserId ?? null,
+      uploadedByName: attachmentSource.uploadedByName ?? null,
+    };
+  }
+
+  const [assetSource] = await tx
+    .select({
+      sourceId: assets.id,
+      orderId: orderLineItems.orderId,
+      orderLineItemId: orderLineItems.id,
+      fileRecordId: assets.fileRecordId,
+      fileName: assets.fileName,
+      fileUrl: assets.fileKey,
+      fileSize: sql<number | null>`null`,
+      sizeBytes: assets.sizeBytes,
+      mimeType: assets.mimeType,
+      description: sql<string | null>`null`,
+      originalFilename: sql<string | null>`null`,
+      storedFilename: sql<string | null>`null`,
+      relativePath: sql<string | null>`null`,
+      storageProvider: sql<string | null>`null`,
+      extension: sql<string | null>`null`,
+      checksum: sql<string | null>`null`,
+      thumbKey: assets.thumbKey,
+      previewKey: assets.previewKey,
+      thumbnailRelativePath: sql<string | null>`null`,
+      thumbnailGeneratedAt: sql<Date | null>`null`,
+      thumbnailUrl: sql<string | null>`null`,
+      uploadedByUserId: sql<string | null>`null`,
+      uploadedByName: sql<string | null>`null`,
+      role: assetLinks.role,
+    })
+    .from(assetLinks)
+    .innerJoin(assets, eq(assetLinks.assetId, assets.id))
+    .innerJoin(orderLineItems, eq(orderLineItems.id, assetLinks.parentId))
+    .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+    .where(
+      and(
+        eq(assetLinks.organizationId, args.organizationId),
+        eq(assetLinks.parentType, "order_line_item"),
+        eq(assetLinks.parentId, args.lineItemId),
+        inArray(assetLinks.role, ["primary", "attachment"]),
+      ),
+    )
+    .orderBy(sql`case when ${assetLinks.role} = 'primary' then 0 else 1 end`, desc(assetLinks.createdAt), desc(assets.updatedAt), desc(assets.createdAt))
+    .limit(1);
+
+  if (!assetSource) {
+    return null;
+  }
+
+  return {
+    sourceType: "asset",
+    sourceId: assetSource.sourceId,
+    orderId: assetSource.orderId,
+    orderLineItemId: assetSource.orderLineItemId,
+    fileRecordId: assetSource.fileRecordId ?? null,
+    fileName: assetSource.fileName,
+    fileUrl: assetSource.fileUrl ?? null,
+    fileSize: assetSource.fileSize ?? null,
+    sizeBytes: assetSource.sizeBytes ?? null,
+    mimeType: assetSource.mimeType ?? null,
+    description: assetSource.description ?? null,
+    originalFilename: assetSource.originalFilename ?? null,
+    storedFilename: assetSource.storedFilename ?? null,
+    relativePath: assetSource.relativePath ?? null,
+    storageProvider: assetSource.storageProvider ?? null,
+    extension: assetSource.extension ?? null,
+    checksum: assetSource.checksum ?? null,
+    thumbKey: assetSource.thumbKey ?? null,
+    previewKey: assetSource.previewKey ?? null,
+    thumbnailRelativePath: assetSource.thumbnailRelativePath ?? null,
+    thumbnailGeneratedAt: assetSource.thumbnailGeneratedAt ?? null,
+    thumbnailUrl: assetSource.thumbnailUrl ?? null,
+    uploadedByUserId: assetSource.uploadedByUserId ?? null,
+    uploadedByName: assetSource.uploadedByName ?? null,
+  };
+}
+
+async function ensureProofAttachmentForSource(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  source: ArtworkProofSource;
+}): Promise<string> {
+  const matchingWhere = args.source.fileRecordId
+    ? and(
+        eq(orderAttachments.orderId, args.source.orderId),
+        eq(orderAttachments.orderLineItemId, args.lineItemId),
+        eq(orderAttachments.role, "proof"),
+        eq(orderAttachments.fileRecordId, args.source.fileRecordId),
+      )
+    : and(
+        eq(orderAttachments.orderId, args.source.orderId),
+        eq(orderAttachments.orderLineItemId, args.lineItemId),
+        eq(orderAttachments.role, "proof"),
+        eq(orderAttachments.fileUrl, args.source.fileUrl ?? ""),
+      );
+
+  const [existing] = await tx
+    .select({ id: orderAttachments.id })
+    .from(orderAttachments)
+    .where(matchingWhere)
+    .orderBy(desc(orderAttachments.updatedAt), desc(orderAttachments.createdAt))
+    .limit(1);
+
+  if (existing) {
+    return existing.id;
+  }
+
+  const [created] = await tx
+    .insert(orderAttachments)
+    .values({
+      orderId: args.source.orderId,
+      orderLineItemId: args.lineItemId,
+      fileRecordId: args.source.fileRecordId,
+      uploadedByUserId: args.source.uploadedByUserId,
+      uploadedByName: args.source.uploadedByName,
+      fileName: args.source.fileName,
+      fileUrl: args.source.fileUrl,
+      fileSize: args.source.fileSize,
+      mimeType: args.source.mimeType,
+      description: args.source.description,
+      originalFilename: args.source.originalFilename,
+      storedFilename: args.source.storedFilename,
+      relativePath: args.source.relativePath,
+      storageProvider: args.source.storageProvider as any,
+      extension: args.source.extension,
+      sizeBytes: args.source.sizeBytes,
+      checksum: args.source.checksum,
+      thumbnailRelativePath: args.source.thumbnailRelativePath,
+      thumbnailGeneratedAt: args.source.thumbnailGeneratedAt,
+      thumbKey: args.source.thumbKey,
+      previewKey: args.source.previewKey,
+      thumbnailUrl: args.source.thumbnailUrl,
+      role: "proof",
+      side: "na",
+      isPrimary: true,
+      updatedAt: new Date(),
+    })
+    .returning({ id: orderAttachments.id });
+
+  return created.id;
+}
+
+async function invalidateApprovedProofContext(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  actorUserId?: string | null;
+  reason: ProofSyncReason;
+}) {
+  await supersedeActionableProofVersions(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+  });
+
+  await tx
+    .update(orderLineItems)
+    .set({
+      approvedProofVersionId: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(orderLineItems.id, args.lineItemId));
+
+  await appendProofingEvent(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+    eventType: "proof_invalidated",
+    actorUserId: args.actorUserId ?? null,
+    payload: {
+      source: args.reason,
+    },
+  });
+}
+
+export async function autoSyncCanonicalProofForLineItem(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  actorUserId: string;
+  reason: ProofSyncReason;
+}): Promise<AutoSyncProofResult> {
+  const lineItem = await loadProofLineItem(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+  });
+
+  if (!lineItem.requiresProofApproval) {
+    return { status: "not_required" };
+  }
+
+  const source = await loadLatestArtworkProofSource(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+  });
+
+  const truth = await resolveLineItemProofingTruth(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+  });
+
+  if (!source) {
+    if (truth.approvedProofVersionId || truth.currentActionableProofVersionId) {
+      await invalidateApprovedProofContext(tx, {
+        organizationId: args.organizationId,
+        lineItemId: args.lineItemId,
+        actorUserId: args.actorUserId,
+        reason: args.reason,
+      });
+
+      if (lineItem.workflowState !== "awaiting_proof_approval") {
+        const workflowTransition = await transitionLineItemWorkflowState(tx, {
+          organizationId: args.organizationId,
+          lineItemId: args.lineItemId,
+          toState: "awaiting_proof_approval",
+          actorUserId: args.actorUserId,
+          metadata: {
+            source: "proofing_auto_sync_missing_artwork",
+            reason: args.reason,
+          },
+        });
+
+        logProofAutoSync("invalidated_without_source", {
+          organizationId: args.organizationId,
+          lineItemId: args.lineItemId,
+          reason: args.reason,
+          toState: workflowTransition.toState,
+        });
+
+        return { status: "invalidated", toState: workflowTransition.toState };
+      }
+
+      logProofAutoSync("invalidated_without_source", {
+        organizationId: args.organizationId,
+        lineItemId: args.lineItemId,
+        reason: args.reason,
+        toState: lineItem.workflowState,
+      });
+
+      return { status: "invalidated", toState: lineItem.workflowState };
+    }
+
+    return { status: "no_source" };
+  }
+
+  const proofFileId = await ensureProofAttachmentForSource(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+    source,
+  });
+
+  const currentRelevantVersionId = truth.currentActionableProofVersionId || truth.approvedProofVersionId;
+  const currentRelevantVersion = currentRelevantVersionId
+    ? truth.proofVersionHistory.find((version) => version.id === currentRelevantVersionId) ?? null
+    : null;
+
+  if (currentRelevantVersion?.proofFileId === proofFileId) {
+    return { status: "already_current" };
+  }
+
+  await invalidateApprovedProofContext(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+    actorUserId: args.actorUserId,
+    reason: args.reason,
+  });
+
+  const proofVersion = await createLineItemProofVersion(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+    proofFileId,
+    createdByUserId: args.actorUserId,
+    internalNotes: `Auto-synced from persisted artwork (${args.reason})`,
+  });
+
+  const sendResult = await markProofVersionSent(tx, {
+    organizationId: args.organizationId,
+    proofVersionId: proofVersion.id,
+    actorUserId: args.actorUserId,
+    sentToName: null,
+    sentToEmail: null,
+    customerMessage: null,
+  });
+
+  logProofAutoSync(currentRelevantVersion ? "refreshed" : "created", {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+    reason: args.reason,
+    proofVersionId: proofVersion.id,
+    proofFileId,
+    workflowToState: sendResult.workflowTransition.toState,
+    sourceType: source.sourceType,
+    sourceId: source.sourceId,
+  });
+
+  return {
+    status: currentRelevantVersion ? "refreshed" : "created",
+    proofVersionId: proofVersion.id,
+    proofFileId,
+    toState: sendResult.workflowTransition.toState,
+  };
 }
 
 function normalizeProofingQueueSlice(value: unknown): ProofQueueSlice {
