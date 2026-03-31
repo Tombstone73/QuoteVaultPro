@@ -31,6 +31,52 @@ import {
   recordProofResponse,
   resolveLineItemProofingTruth,
 } from "../services/proofingService";
+import { createProofAccessToken } from "../services/proofAccessTokenService";
+import { emailService } from "../emailService";
+
+/** Matches the pattern used in platform.ts for invite link generation. */
+function getBaseUrl(req: any): string {
+  return (process.env.APP_URL ?? `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+}
+
+function buildProofEmailHtml(args: {
+  proofLink: string;
+  versionNumber: number;
+  sentToName: string | null;
+  customerMessage: string | null;
+  fromName: string;
+}): string {
+  const greeting = args.sentToName ? `Hi ${args.sentToName},` : "Hi,";
+  const customBody = args.customerMessage
+    ? `<p style="margin:0 0 16px 0;">${args.customerMessage.replace(/\n/g, "<br>")}</p>`
+    : "";
+
+  return `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="font-family:Arial,sans-serif;line-height:1.6;color:#333;max-width:600px;margin:0 auto;padding:20px;">
+  <p style="margin:0 0 16px 0;">${greeting}</p>
+  <p style="margin:0 0 16px 0;">A proof is ready for your review (Version ${args.versionNumber}). Please click the button below to view and respond.</p>
+  ${customBody}
+  <div style="text-align:center;margin:32px 0;">
+    <a href="${args.proofLink}"
+       style="display:inline-block;background-color:#2563eb;color:#fff;text-decoration:none;padding:14px 28px;border-radius:6px;font-size:16px;font-weight:600;">
+      Review Proof
+    </a>
+  </div>
+  <p style="margin:0 0 8px 0;font-size:13px;color:#666;">
+    If the button doesn't work, copy and paste this link into your browser:
+  </p>
+  <p style="margin:0 0 24px 0;font-size:13px;word-break:break-all;">
+    <a href="${args.proofLink}" style="color:#2563eb;">${args.proofLink}</a>
+  </p>
+  <hr style="border:none;border-top:1px solid #eee;margin:24px 0;">
+  <p style="margin:0;font-size:12px;color:#999;">
+    This link expires in 30 days. If you have questions, reply to this email or contact your account manager.
+  </p>
+</body>
+</html>`;
+}
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub ?? user?.id;
@@ -183,6 +229,16 @@ export function registerProofingRoutes(
       }
 
       const lineItemId = String(req.params.lineItemId);
+
+      // Captured inside the transaction so email fires only after commit.
+      let proofEmailPayload: {
+        to: string;
+        rawToken: string;
+        versionNumber: number;
+        sentToName: string | null;
+        customerMessage: string | null;
+      } | null = null;
+
       const result = await db.transaction(async (tx) => {
         const created = await createAndSendProofVersion(tx, {
           organizationId,
@@ -195,6 +251,25 @@ export function registerProofingRoutes(
           sentToEmail: parsed.data.sentToEmail ?? null,
           customerMessage: parsed.data.customerMessage ?? null,
         });
+
+        // Create portal access token whenever a recipient email is supplied.
+        // Token creation requires proof to be in awaiting_response (guaranteed above).
+        if (parsed.data.sentToEmail) {
+          const tokenResult = await createProofAccessToken(tx, {
+            organizationId,
+            lineItemId,
+            proofVersionId: created.proofVersion.id,
+            expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+            createdBy: userId,
+          });
+          proofEmailPayload = {
+            to: parsed.data.sentToEmail,
+            rawToken: tokenResult.rawToken,
+            versionNumber: created.proofVersion.versionNumber,
+            sentToName: parsed.data.sentToName ?? null,
+            customerMessage: parsed.data.customerMessage ?? null,
+          };
+        }
 
         await tx.insert(auditLogs).values({
           organizationId,
@@ -230,6 +305,28 @@ export function registerProofingRoutes(
         };
       });
 
+      // Send email after transaction commits. Failure is logged but does not
+      // roll back or block the API response — the proof state is already persisted.
+      if (proofEmailPayload) {
+        const baseUrl = getBaseUrl(req);
+        const proofLink = `${baseUrl}/portal/proof/${proofEmailPayload.rawToken}`;
+        emailService
+          .sendEmail(organizationId, {
+            to: proofEmailPayload.to,
+            subject: `Proof Ready for Review — Version ${proofEmailPayload.versionNumber}`,
+            html: buildProofEmailHtml({
+              proofLink,
+              versionNumber: proofEmailPayload.versionNumber,
+              sentToName: proofEmailPayload.sentToName,
+              customerMessage: proofEmailPayload.customerMessage,
+              fromName: req.user?.name || req.user?.email || "Your account manager",
+            }),
+          })
+          .catch((err: any) => {
+            console.error("[Proofing] Failed to send proof email after send-proof:", err?.message ?? err);
+          });
+      }
+
       return res.json({ success: true, data: result });
     } catch (error: any) {
       const status = error?.statusCode || 500;
@@ -256,6 +353,14 @@ export function registerProofingRoutes(
         return res.status(400).json({ error: fromZodError(parsed.error).message });
       }
 
+      let sendEmailPayload: {
+        to: string;
+        rawToken: string;
+        versionNumber: number;
+        sentToName: string | null;
+        customerMessage: string | null;
+      } | null = null;
+
       const result = await db.transaction(async (tx) => {
         const sendResult = await markProofVersionSent(tx, {
           organizationId,
@@ -265,6 +370,24 @@ export function registerProofingRoutes(
           sentToEmail: parsed.data.sentToEmail ?? null,
           customerMessage: parsed.data.customerMessage ?? null,
         });
+
+        // Create portal access token whenever a recipient email is supplied.
+        if (parsed.data.sentToEmail) {
+          const tokenResult = await createProofAccessToken(tx, {
+            organizationId,
+            lineItemId: sendResult.proofVersion.lineItemId,
+            proofVersionId: sendResult.proofVersion.id,
+            expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+            createdBy: userId,
+          });
+          sendEmailPayload = {
+            to: parsed.data.sentToEmail,
+            rawToken: tokenResult.rawToken,
+            versionNumber: sendResult.proofVersion.versionNumber,
+            sentToName: parsed.data.sentToName ?? null,
+            customerMessage: parsed.data.customerMessage ?? null,
+          };
+        }
 
         await tx.insert(auditLogs).values({
           organizationId,
@@ -299,6 +422,26 @@ export function registerProofingRoutes(
           proofing,
         };
       });
+
+      if (sendEmailPayload) {
+        const baseUrl = getBaseUrl(req);
+        const proofLink = `${baseUrl}/portal/proof/${sendEmailPayload.rawToken}`;
+        emailService
+          .sendEmail(organizationId, {
+            to: sendEmailPayload.to,
+            subject: `Proof Ready for Review — Version ${sendEmailPayload.versionNumber}`,
+            html: buildProofEmailHtml({
+              proofLink,
+              versionNumber: sendEmailPayload.versionNumber,
+              sentToName: sendEmailPayload.sentToName,
+              customerMessage: sendEmailPayload.customerMessage,
+              fromName: req.user?.name || req.user?.email || "Your account manager",
+            }),
+          })
+          .catch((err: any) => {
+            console.error("[Proofing] Failed to send proof email after versions/send:", err?.message ?? err);
+          });
+      }
 
       return res.json({ success: true, data: result });
     } catch (error: any) {
