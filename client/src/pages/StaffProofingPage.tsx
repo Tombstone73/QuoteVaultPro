@@ -496,6 +496,7 @@ export default function StaffProofingPage() {
   const versionHistoryRef = useRef<HTMLDivElement | null>(null);
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [createMode, setCreateMode] = useState<"generated" | "uploaded">("uploaded");
   const [selectedExistingAttachmentId, setSelectedExistingAttachmentId] = useState<string>("");
   const [createInternalNotes, setCreateInternalNotes] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -618,6 +619,8 @@ export default function StaffProofingPage() {
   const displayedFile = displayedVersion
     ? lineItemFiles.find((file) => file.id === displayedVersion.proofFileId) ?? null
     : null;
+  const currentSnapshot = detail?.currentProofInputSnapshot ?? null;
+  const currentArtifact = detail?.currentDisplayedProofArtifact ?? null;
   const previewUrl = getProofPreviewUrl(displayedFile);
   const downloadUrl = getDownloadUrl(displayedFile);
   const previewName = displayedFile?.originalFilename || displayedFile?.fileName || "Proof";
@@ -699,37 +702,49 @@ export default function StaffProofingPage() {
         throw new Error("Select a proofing queue row first");
       }
 
-      let proofFileId = selectedExistingAttachmentId;
+      let body: Record<string, unknown>;
 
-      if (uploadFile) {
-        const uploadResult = await uploadAttachmentViaChunked({
-          file: uploadFile,
-          purpose: "order-attachment",
-          parentId: selectedRow.orderId,
-          linkUrl: `/api/orders/${selectedRow.orderId}/files`,
-          linkBody: {
-            orderLineItemId: selectedRow.lineItemId,
-            role: "proof",
-            side: "na",
-          },
-        });
+      if (createMode === "generated") {
+        body = {
+          mode: "generated",
+          internalNotes: createInternalNotes.trim() || null,
+        };
+      } else {
+        let proofFileId = selectedExistingAttachmentId;
 
-        proofFileId = String(uploadResult.linkResponse?.data?.id || "").trim();
-      }
+        if (uploadFile) {
+          const uploadResult = await uploadAttachmentViaChunked({
+            file: uploadFile,
+            purpose: "order-attachment",
+            parentId: selectedRow.orderId,
+            linkUrl: `/api/orders/${selectedRow.orderId}/files`,
+            linkBody: {
+              orderLineItemId: selectedRow.lineItemId,
+              role: "proof",
+              side: "na",
+            },
+          });
 
-      if (!proofFileId) {
-        throw new Error("Select or upload a proof file before creating a version");
+          proofFileId = String(uploadResult.linkResponse?.data?.id || "").trim();
+        }
+
+        if (!proofFileId) {
+          throw new Error("Select or upload a proof file before sending");
+        }
+
+        body = {
+          mode: "uploaded",
+          proofFileId,
+          internalNotes: createInternalNotes.trim() || null,
+        };
       }
 
       const result = await readJson<JsonEnvelope<{ proofVersion: ProofVersionHistoryEntry; proofing: ProofingReadModel }>>(
-        `/api/proofing/line-item/${selectedRow.lineItemId}/versions`,
+        `/api/proofing/line-item/${selectedRow.lineItemId}/send-proof`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            proofFileId,
-            internalNotes: createInternalNotes.trim() || null,
-          }),
+          body: JSON.stringify(body),
         },
       );
 
@@ -739,16 +754,17 @@ export default function StaffProofingPage() {
       await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
       setSelectedVersionId(data.proofVersion.id);
       setCreateDialogOpen(false);
+      setCreateMode("uploaded");
       setSelectedExistingAttachmentId("");
       setCreateInternalNotes("");
       setUploadFile(null);
       toast({
-        title: "Proof version created",
-        description: `Version ${data.proofVersion.versionNumber} is ready to send.`,
+        title: createMode === "generated" ? "Generated proof sent" : "Proof sent",
+        description: `Version ${data.proofVersion.versionNumber} is now awaiting response.`,
       });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to create proof version", description: error.message, variant: "destructive" });
+      toast({ title: createMode === "generated" ? "Failed to generate proof" : "Failed to send proof", description: error.message, variant: "destructive" });
     },
   });
 
@@ -1151,6 +1167,48 @@ export default function StaffProofingPage() {
               </div>
 
               <div className="border-b border-[#232948] bg-[#141824]/20 p-6">
+                <h4 className="mb-4 text-[10px] font-bold uppercase tracking-widest text-slate-500">Proof Basis</h4>
+                {!currentSnapshot ? (
+                  <div className="text-sm text-slate-500">No persisted proof snapshot is available yet.</div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-x-2 gap-y-4">
+                    <div>
+                      <p className="text-[9px] font-bold uppercase text-slate-500">Artifact</p>
+                      <p className="text-xs font-bold text-slate-200">{currentArtifact ? currentArtifact.artifactKind.replace(/_/g, " ") : "Pending"}</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] font-bold uppercase text-slate-500">Preflight</p>
+                      <p className="text-xs font-bold text-slate-200">{currentSnapshot.preflightStatus.replace(/_/g, " ")}</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] font-bold uppercase text-slate-500">Source</p>
+                      <p className="text-xs font-bold text-slate-200">{currentSnapshot.sourceArtwork?.fileName || "No saved artwork"}</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] font-bold uppercase text-slate-500">Finished Size</p>
+                      <p className="text-xs font-bold text-slate-200">{currentSnapshot.displaySizeLabel || "Not specified"}</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] font-bold uppercase text-slate-500">Quantity</p>
+                      <p className="text-xs font-bold text-slate-200">{currentSnapshot.quantity ?? "Not specified"}</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] font-bold uppercase text-slate-500">Snapshot Basis</p>
+                      <p className="text-xs font-bold text-slate-200">{formatTimestamp(currentSnapshot.snapshotBasisAt)}</p>
+                    </div>
+                    <div className="col-span-2">
+                      <p className="text-[9px] font-bold uppercase text-slate-500">Finishing Facts</p>
+                      <p className="text-xs font-bold text-slate-200">
+                        {currentSnapshot.finishingSummary.length > 0
+                          ? currentSnapshot.finishingSummary.join(" • ")
+                          : "No finishing details are captured in persisted line-item data."}
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="border-b border-[#232948] bg-[#141824]/20 p-6">
                 <h4 className="mb-4 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-500">
                   <Lock className="h-4 w-4" />
                   Internal Staff Notes
@@ -1240,54 +1298,83 @@ export default function StaffProofingPage() {
           <DialogHeader>
             <DialogTitle>Create Proof Version</DialogTitle>
             <DialogDescription>
-              Upload a new proof file or reuse an existing proof file to create the next draft version.
+              Generate a basic proof from saved data or send a manually uploaded proof file through the canonical proof flow.
             </DialogDescription>
           </DialogHeader>
 
           <div className="grid gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="proof-upload-file">Upload new proof file</Label>
-              <Input
-                id="proof-upload-file"
-                type="file"
-                accept=".pdf,image/*"
-                onChange={(event) => setUploadFile(event.target.files?.[0] || null)}
-              />
-              <p className="text-xs text-muted-foreground">If you upload a file here, it will be used for the new draft proof version.</p>
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                type="button"
+                variant={createMode === "generated" ? "default" : "outline"}
+                onClick={() => setCreateMode("generated")}
+                disabled={createDraftMutation.isPending}
+              >
+                Generate Basic Proof
+              </Button>
+              <Button
+                type="button"
+                variant={createMode === "uploaded" ? "default" : "outline"}
+                onClick={() => setCreateMode("uploaded")}
+                disabled={createDraftMutation.isPending}
+              >
+                Manual Proof File
+              </Button>
             </div>
 
-            <div className="grid gap-2">
-              <Label>Select existing line-item file</Label>
-              <ScrollArea className="h-56 rounded-lg border p-3">
-                <div className="space-y-2">
-                  {selectableProofFiles.length === 0 ? (
-                    <div className="text-sm text-muted-foreground">No line-item files with a file record are available yet.</div>
-                  ) : (
-                    selectableProofFiles.map((file) => {
-                      const isSelected = selectedExistingAttachmentId === file.id;
-                      return (
-                        <button
-                          key={file.id}
-                          type="button"
-                          disabled={Boolean(uploadFile)}
-                          onClick={() => setSelectedExistingAttachmentId(file.id)}
-                          className={`w-full rounded-lg border p-3 text-left ${isSelected ? "border-primary bg-primary/5" : "border-border"}`}
-                        >
-                          <div className="flex items-center justify-between gap-3">
-                            <div>
-                              <p className="text-sm font-medium">{file.originalFilename || file.fileName}</p>
-                              <p className="text-xs text-muted-foreground">{file.role || "file"} • {formatTimestamp(file.createdAt)}</p>
-                            </div>
-                            <Badge variant="outline">{file.__source || "attachment"}</Badge>
-                          </div>
-                        </button>
-                      );
-                    })
-                  )}
+            {createMode === "generated" ? (
+              <div className="rounded-lg border p-4 text-sm text-muted-foreground">
+                <p className="font-medium text-foreground">Generated proof uses permanent saved data only.</p>
+                <p className="mt-2">It will build a normalized proof snapshot from the saved line item, use the latest saved artwork source, render a basic PDF artifact, create a canonical proof version, and send it immediately for approval.</p>
+                <p className="mt-2">Current source: {currentSnapshot?.sourceArtwork?.fileName || "No saved artwork source available"}</p>
+              </div>
+            ) : (
+              <>
+                <div className="grid gap-2">
+                  <Label htmlFor="proof-upload-file">Upload new proof file</Label>
+                  <Input
+                    id="proof-upload-file"
+                    type="file"
+                    accept=".pdf,image/*"
+                    onChange={(event) => setUploadFile(event.target.files?.[0] || null)}
+                  />
+                  <p className="text-xs text-muted-foreground">If you upload a file here, it will be attached as the proof artifact and sent immediately.</p>
                 </div>
-              </ScrollArea>
-              {uploadFile ? <p className="text-xs text-muted-foreground">Uploaded file will be used for the draft version.</p> : null}
-            </div>
+
+                <div className="grid gap-2">
+                  <Label>Select existing line-item proof file</Label>
+                  <ScrollArea className="h-56 rounded-lg border p-3">
+                    <div className="space-y-2">
+                      {selectableProofFiles.length === 0 ? (
+                        <div className="text-sm text-muted-foreground">No proof-role line-item files are available yet.</div>
+                      ) : (
+                        selectableProofFiles.map((file) => {
+                          const isSelected = selectedExistingAttachmentId === file.id;
+                          return (
+                            <button
+                              key={file.id}
+                              type="button"
+                              disabled={Boolean(uploadFile)}
+                              onClick={() => setSelectedExistingAttachmentId(file.id)}
+                              className={`w-full rounded-lg border p-3 text-left ${isSelected ? "border-primary bg-primary/5" : "border-border"}`}
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <p className="text-sm font-medium">{file.originalFilename || file.fileName}</p>
+                                  <p className="text-xs text-muted-foreground">{file.role || "file"} • {formatTimestamp(file.createdAt)}</p>
+                                </div>
+                                <Badge variant="outline">{file.__source || "attachment"}</Badge>
+                              </div>
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  </ScrollArea>
+                  {uploadFile ? <p className="text-xs text-muted-foreground">Uploaded file will be used instead of an existing proof attachment.</p> : null}
+                </div>
+              </>
+            )}
 
             <div className="grid gap-2">
               <Label htmlFor="proof-internal-notes">Internal notes</Label>
@@ -1307,10 +1394,14 @@ export default function StaffProofingPage() {
             </Button>
             <Button
               onClick={() => createDraftMutation.mutate()}
-              disabled={createDraftMutation.isPending || (!uploadFile && !selectedExistingAttachmentId)}
+              disabled={
+                createDraftMutation.isPending ||
+                (createMode === "uploaded" && !uploadFile && !selectedExistingAttachmentId) ||
+                (createMode === "generated" && !currentSnapshot?.sourceArtwork)
+              }
             >
               {createDraftMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
-              Create draft version
+              {createMode === "generated" ? "Generate & Send" : "Upload / Select & Send"}
             </Button>
           </DialogFooter>
         </DialogContent>

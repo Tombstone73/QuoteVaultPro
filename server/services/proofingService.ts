@@ -1,9 +1,14 @@
+import { promises as fsPromises } from "fs";
+import path from "path";
+
 import { and, desc, eq, inArray, isNotNull, ne, notInArray, or, sql } from "drizzle-orm";
 
 import type {
   ManualApprovalOverrideHistoryEntry,
   ProofApprovalSource,
+  ProofArtifactSummary,
   ProofDecisionHistoryEntry,
+  ProofInputSnapshot,
   ProofQueueSlice,
   ProofQueueStatus,
   ProofVersionHistoryEntry,
@@ -26,11 +31,18 @@ import {
   productionEvents,
   productionJobs,
 } from "@shared/schema";
+import { generateBasicProofPdfBytes } from "../lib/proofPdf";
+import { SupabaseStorageService } from "../supabaseStorage";
+import { canonicalFileReadResolver } from "./storage/CanonicalFileReadResolver";
+import { storageApplicationService } from "./storage/StorageApplicationService";
 import { transitionLineItemWorkflowState } from "./lineItemWorkflowService";
 
 type ProofDecision = "approved" | "rejected" | "revision_requested";
 type ProofVersionStatus = "draft" | "awaiting_response" | "approved" | "rejected" | "revision_requested" | "superseded";
 type ProofSyncReason = "order_saved" | "line_item_saved" | "artwork_saved" | "artwork_deleted" | "design_completed";
+type ProofSendMode = "generated" | "uploaded";
+
+const GENERATED_PROOF_DESCRIPTION_MARKER = "[proof-artifact:generated-basic]";
 
 type ArtworkProofSource = {
   sourceType: "attachment" | "asset";
@@ -57,6 +69,41 @@ type ArtworkProofSource = {
   thumbnailUrl: string | null;
   uploadedByUserId: string | null;
   uploadedByName: string | null;
+  updatedAt: Date | null;
+};
+
+type LoadedProofSnapshotLineItem = {
+  lineItemId: string;
+  orderId: string;
+  orderNumber: string | null;
+  lineItemLabel: string;
+  width: string | null;
+  height: string | null;
+  quantity: number;
+  specsJson: Record<string, any> | null;
+  selectedOptions: Array<{
+    optionId: string;
+    optionName: string;
+    value: string | number | boolean;
+    note?: string;
+    setupCost: number;
+    calculatedCost: number;
+  }>;
+  materialUsages: Array<{
+    materialId?: string;
+    materialName?: string;
+    quantityUsed?: number;
+    unitOfMeasure?: string;
+  }>;
+  updatedAt: Date;
+};
+
+type ProofArtifactAttachmentRow = {
+  id: string;
+  fileName: string;
+  mimeType: string | null;
+  description: string | null;
+  fileRecordId: string | null;
 };
 
 type AutoSyncProofResult =
@@ -249,6 +296,418 @@ function formatProofVersionLabel(versionNumber: number): string {
   return `Proof v${versionNumber}`;
 }
 
+function parseNullableNumber(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function buildDisplaySizeLabel(width: number | null, height: number | null): string | null {
+  if (width != null && height != null) {
+    return `${width}" x ${height}"`;
+  }
+  if (width != null) return `${width}" wide`;
+  if (height != null) return `${height}" high`;
+  return null;
+}
+
+function pickSpecValue(specsJson: Record<string, any> | null | undefined, candidates: string[]): string | null {
+  if (!specsJson || typeof specsJson !== "object") return null;
+  const lowered = new Map(Object.entries(specsJson).map(([key, value]) => [key.toLowerCase(), value]));
+  for (const candidate of candidates) {
+    const value = lowered.get(candidate.toLowerCase());
+    if (value == null) continue;
+    const normalized = String(value).trim();
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+function buildFinishingSummary(lineItem: LoadedProofSnapshotLineItem): string[] {
+  const facts: string[] = [];
+  const pushFact = (label: string, value: unknown) => {
+    const normalized = String(value ?? "").trim();
+    if (!normalized) return;
+    const fact = `${label}: ${normalized}`;
+    if (!facts.includes(fact)) facts.push(fact);
+  };
+
+  for (const option of Array.isArray(lineItem.selectedOptions) ? lineItem.selectedOptions : []) {
+    const optionName = String(option?.optionName ?? "").trim();
+    if (!optionName) continue;
+    const value = typeof option?.value === "boolean"
+      ? option.value ? "Yes" : "No"
+      : String(option?.value ?? "").trim();
+    if (!value || value === "false" || value === "0") continue;
+    pushFact(optionName, value);
+  }
+
+  for (const usage of Array.isArray(lineItem.materialUsages) ? lineItem.materialUsages : []) {
+    const materialName = String(usage?.materialName ?? "").trim();
+    if (!materialName) continue;
+    const qty = usage?.quantityUsed != null ? Number(usage.quantityUsed) : null;
+    const uom = String(usage?.unitOfMeasure ?? "").trim();
+    pushFact("Material", qty != null && Number.isFinite(qty) ? `${materialName} (${qty}${uom ? ` ${uom}` : ""})` : materialName);
+  }
+
+  pushFact("Laminate", pickSpecValue(lineItem.specsJson, ["laminate", "lamination", "laminateType"]));
+  pushFact("Cut", pickSpecValue(lineItem.specsJson, ["cut", "cutType", "trim", "trimType"]));
+  pushFact("Hem", pickSpecValue(lineItem.specsJson, ["hem", "hemming"]));
+  pushFact("Grommets", pickSpecValue(lineItem.specsJson, ["grommets", "grommetSpacing"]));
+  pushFact("Sides", pickSpecValue(lineItem.specsJson, ["sides", "printSides"]));
+
+  return facts.slice(0, 8);
+}
+
+async function loadProofSnapshotLineItem(tx: any, args: { organizationId: string; lineItemId: string }): Promise<LoadedProofSnapshotLineItem> {
+  const [row] = await tx
+    .select({
+      lineItemId: orderLineItems.id,
+      orderId: orderLineItems.orderId,
+      orderNumber: orders.orderNumber,
+      lineItemLabel: orderLineItems.description,
+      width: orderLineItems.width,
+      height: orderLineItems.height,
+      quantity: orderLineItems.quantity,
+      specsJson: orderLineItems.specsJson,
+      selectedOptions: orderLineItems.selectedOptions,
+      materialUsages: orderLineItems.materialUsages,
+      updatedAt: orderLineItems.updatedAt,
+    })
+    .from(orderLineItems)
+    .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+    .where(and(eq(orderLineItems.id, args.lineItemId), eq(orders.organizationId, args.organizationId)))
+    .limit(1);
+
+  if (!row) {
+    throw Object.assign(new Error("Line item not found"), { statusCode: 404 });
+  }
+
+  return {
+    ...row,
+    specsJson: (row.specsJson as Record<string, any> | null) ?? null,
+    selectedOptions: Array.isArray(row.selectedOptions) ? row.selectedOptions as LoadedProofSnapshotLineItem["selectedOptions"] : [],
+    materialUsages: Array.isArray(row.materialUsages) ? row.materialUsages as LoadedProofSnapshotLineItem["materialUsages"] : [],
+  };
+}
+
+export async function buildProofInputSnapshot(tx: any, args: { organizationId: string; lineItemId: string }): Promise<ProofInputSnapshot> {
+  const lineItem = await loadProofSnapshotLineItem(tx, args);
+  const source = await loadLatestArtworkProofSource(tx, args);
+  const finishedWidth = parseNullableNumber(lineItem.width);
+  const finishedHeight = parseNullableNumber(lineItem.height);
+  const snapshotBasisAt = maxIsoTimestamp([
+    toIsoString(lineItem.updatedAt),
+    toIsoString(source?.updatedAt ?? null),
+  ]);
+
+  return {
+    lineItemId: lineItem.lineItemId,
+    orderId: lineItem.orderId,
+    orderNumber: lineItem.orderNumber,
+    lineItemLabel: lineItem.lineItemLabel,
+    sourceArtwork: source
+      ? {
+          sourceType: source.sourceType,
+          sourceId: source.sourceId,
+          fileRecordId: source.fileRecordId ?? null,
+          fileName: source.originalFilename || source.fileName,
+          mimeType: source.mimeType ?? null,
+          fileUrl: source.fileUrl ?? null,
+        }
+      : null,
+    finishedWidth,
+    finishedHeight,
+    displaySizeLabel: buildDisplaySizeLabel(finishedWidth, finishedHeight),
+    quantity: Number.isFinite(lineItem.quantity) ? lineItem.quantity : null,
+    finishingSummary: buildFinishingSummary(lineItem),
+    snapshotBasisAt,
+    lineItemUpdatedAt: toIsoString(lineItem.updatedAt),
+    sourceUpdatedAt: toIsoString(source?.updatedAt ?? null),
+    preflightStatus: "not_run",
+  };
+}
+
+async function loadProofAttachment(tx: any, args: { organizationId: string; attachmentId: string }): Promise<ProofArtifactAttachmentRow> {
+  const [attachment] = await tx
+    .select({
+      id: orderAttachments.id,
+      fileName: orderAttachments.fileName,
+      mimeType: orderAttachments.mimeType,
+      description: orderAttachments.description,
+      fileRecordId: orderAttachments.fileRecordId,
+    })
+    .from(orderAttachments)
+    .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
+    .where(and(eq(orderAttachments.id, args.attachmentId), eq(orders.organizationId, args.organizationId)))
+    .limit(1);
+
+  if (!attachment) {
+    throw Object.assign(new Error("Proof attachment not found"), { statusCode: 404 });
+  }
+
+  return attachment;
+}
+
+function buildProofArtifactSummary(args: {
+  attachment: ProofArtifactAttachmentRow;
+  snapshot: ProofInputSnapshot | null;
+}): ProofArtifactSummary {
+  const normalizedDescription = String(args.attachment.description || "");
+  let artifactKind: ProofArtifactSummary["artifactKind"] = normalizedDescription.includes(GENERATED_PROOF_DESCRIPTION_MARKER)
+    ? "generated"
+    : "uploaded";
+
+  if (
+    artifactKind === "uploaded" &&
+    args.snapshot?.sourceArtwork?.fileRecordId &&
+    args.attachment.fileRecordId &&
+    args.snapshot.sourceArtwork.fileRecordId === args.attachment.fileRecordId
+  ) {
+    artifactKind = "promoted_artwork";
+  }
+
+  return {
+    attachmentId: args.attachment.id,
+    artifactKind,
+    fileName: args.attachment.fileName,
+    mimeType: args.attachment.mimeType ?? null,
+    generatedFromSnapshot: artifactKind === "generated",
+  };
+}
+
+async function downloadCanonicalFileBuffer(fileRecordId: string): Promise<Buffer | null> {
+  try {
+    const resolved = await canonicalFileReadResolver.resolveOriginal(fileRecordId);
+    if (resolved.status !== "available") return null;
+
+    if (resolved.localPathRef) {
+      return await fsPromises.readFile(resolved.localPathRef);
+    }
+
+    if (resolved.objectKey) {
+      const signedUrl = await new SupabaseStorageService().getSignedDownloadUrl(resolved.objectKey, 3600);
+      const response = await fetch(signedUrl);
+      if (!response.ok) return null;
+      return Buffer.from(await response.arrayBuffer());
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+async function downloadStorageKeyBuffer(fileKey: string): Promise<Buffer | null> {
+  const normalized = String(fileKey || "").trim().replace(/^\/objects\//, "").replace(/^\/+/, "");
+  if (!normalized) return null;
+
+  const localRoot = process.env.STORAGE_ROOT || "./storage";
+  const localPath = path.resolve(process.cwd(), localRoot, normalized.replace(/\//g, path.sep));
+  try {
+    return await fsPromises.readFile(localPath);
+  } catch {
+    // fall through
+  }
+
+  try {
+    const signedUrl = await new SupabaseStorageService().getSignedDownloadUrl(normalized, 3600);
+    const response = await fetch(signedUrl);
+    if (!response.ok) return null;
+    return Buffer.from(await response.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+async function tryLoadProofPreview(source: ArtworkProofSource | null): Promise<{ bytes: Buffer; mimeType: string | null; fileName: string } | null> {
+  if (!source) return null;
+
+  if (source.previewKey || source.thumbKey) {
+    const previewBytes = await downloadStorageKeyBuffer(source.previewKey || source.thumbKey || "");
+    if (previewBytes?.length) {
+      return {
+        bytes: previewBytes,
+        mimeType: "image/jpeg",
+        fileName: source.originalFilename || source.fileName,
+      };
+    }
+  }
+
+  const mime = String(source.mimeType || "").toLowerCase();
+  if (source.fileRecordId && (mime.startsWith("image/png") || mime.startsWith("image/jpeg") || mime.startsWith("image/jpg"))) {
+    const buffer = await downloadCanonicalFileBuffer(source.fileRecordId);
+    if (buffer?.length) {
+      return {
+        bytes: buffer,
+        mimeType: source.mimeType ?? null,
+        fileName: source.originalFilename || source.fileName,
+      };
+    }
+  }
+
+  return null;
+}
+
+async function createGeneratedProofAttachment(tx: any, args: {
+  organizationId: string;
+  actorUserId: string;
+  snapshot: ProofInputSnapshot;
+  source: ArtworkProofSource | null;
+}): Promise<ProofArtifactSummary> {
+  const preview = await tryLoadProofPreview(args.source);
+  const timestampToken = new Date().toISOString().replace(/[:.]/g, "-");
+  const safeLineItem = args.snapshot.lineItemLabel.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "line-item";
+  const fileName = `${safeLineItem}-proof-${timestampToken}.pdf`;
+  const pdfBytes = await generateBasicProofPdfBytes({
+    orderNumber: args.snapshot.orderNumber,
+    lineItemLabel: args.snapshot.lineItemLabel,
+    displaySizeLabel: args.snapshot.displaySizeLabel,
+    quantity: args.snapshot.quantity,
+    finishingSummary: args.snapshot.finishingSummary,
+    preflightStatus: args.snapshot.preflightStatus,
+    sourceFileName: args.snapshot.sourceArtwork?.fileName ?? null,
+    generatedAt: new Date(),
+    preview,
+  });
+
+  const stored = await storageApplicationService.finalizeUpload({
+    organizationId: args.organizationId,
+    createdByUserId: args.actorUserId,
+    resource: {
+      organizationId: args.organizationId,
+      resourceType: "order",
+      resourceId: args.snapshot.orderId,
+      lineItemId: args.snapshot.lineItemId,
+    },
+    source: {
+      kind: "buffer",
+      buffer: Buffer.from(pdfBytes),
+      originalFilename: fileName,
+      mimeType: "application/pdf",
+    },
+    persistLink: async (persistTx, storedResult) => {
+      const [created] = await persistTx
+        .insert(orderAttachments)
+        .values({
+          orderId: args.snapshot.orderId,
+          orderLineItemId: args.snapshot.lineItemId,
+          fileRecordId: storedResult.fileRecord.id,
+          uploadedByUserId: args.actorUserId,
+          fileName: storedResult.storedObject.originalFilename,
+          fileUrl: storedResult.legacyFileUrl,
+          fileSize: storedResult.storedObject.sizeBytes,
+          mimeType: "application/pdf",
+          description: `${GENERATED_PROOF_DESCRIPTION_MARKER} Generated basic proof from persisted line-item truth.`,
+          originalFilename: storedResult.storedObject.originalFilename,
+          storedFilename: storedResult.storedObject.storedFilename,
+          relativePath: storedResult.legacyRelativePath,
+          storageProvider: storedResult.legacyStorageProvider as any,
+          extension: "pdf",
+          sizeBytes: storedResult.storedObject.sizeBytes,
+          checksum: storedResult.storedObject.checksum,
+          role: "proof",
+          side: "na",
+          isPrimary: true,
+          updatedAt: new Date(),
+        })
+        .returning({
+          id: orderAttachments.id,
+          fileName: orderAttachments.fileName,
+          mimeType: orderAttachments.mimeType,
+          description: orderAttachments.description,
+          fileRecordId: orderAttachments.fileRecordId,
+        });
+
+      return created;
+    },
+  });
+
+  return buildProofArtifactSummary({
+    attachment: stored.linkedRecord,
+    snapshot: args.snapshot,
+  });
+}
+
+export async function createAndSendProofVersion(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  actorUserId: string;
+  mode: ProofSendMode;
+  proofFileId?: string | null;
+  internalNotes?: string | null;
+  sentToName?: string | null;
+  sentToEmail?: string | null;
+  customerMessage?: string | null;
+}) {
+  const snapshot = await buildProofInputSnapshot(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+  });
+
+  let proofFileId = trimNullable(args.proofFileId);
+  let artifact: ProofArtifactSummary;
+
+  if (args.mode === "generated") {
+    const source = await loadLatestArtworkProofSource(tx, {
+      organizationId: args.organizationId,
+      lineItemId: args.lineItemId,
+    });
+
+    if (!source) {
+      throw Object.assign(new Error("A saved artwork source is required before generating a proof"), { statusCode: 409 });
+    }
+
+    artifact = await createGeneratedProofAttachment(tx, {
+      organizationId: args.organizationId,
+      actorUserId: args.actorUserId,
+      snapshot,
+      source,
+    });
+    proofFileId = artifact.attachmentId;
+  } else {
+    if (!proofFileId) {
+      throwProofingBadRequest("Select or upload a proof file before sending");
+    }
+
+    const resolvedProofFileId = String(proofFileId);
+
+    const attachment = await loadProofAttachment(tx, {
+      organizationId: args.organizationId,
+      attachmentId: resolvedProofFileId,
+    });
+    artifact = buildProofArtifactSummary({ attachment, snapshot });
+  }
+
+  if (!proofFileId) {
+    throw Object.assign(new Error("Proof artifact resolution failed"), { statusCode: 500 });
+  }
+
+  const createdVersion = await createLineItemProofVersion(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+    proofFileId,
+    createdByUserId: args.actorUserId,
+    internalNotes: args.internalNotes ?? null,
+  });
+
+  const sendResult = await markProofVersionSent(tx, {
+    organizationId: args.organizationId,
+    proofVersionId: createdVersion.id,
+    actorUserId: args.actorUserId,
+    sentToName: args.sentToName ?? null,
+    sentToEmail: args.sentToEmail ?? null,
+    customerMessage: args.customerMessage ?? null,
+  });
+
+  return {
+    proofVersion: sendResult.proofVersion,
+    workflowTransition: sendResult.workflowTransition,
+    snapshot,
+    artifact,
+  };
+}
+
 function logProofAutoSync(event: string, payload: Record<string, unknown>) {
   console.info(`[ProofingAutoSync] ${event}`, payload);
 }
@@ -279,6 +738,7 @@ async function loadLatestArtworkProofSource(tx: any, args: { organizationId: str
       thumbnailUrl: orderAttachments.thumbnailUrl,
       uploadedByUserId: orderAttachments.uploadedByUserId,
       uploadedByName: orderAttachments.uploadedByName,
+      updatedAt: orderAttachments.updatedAt,
     })
     .from(orderAttachments)
     .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
@@ -318,6 +778,7 @@ async function loadLatestArtworkProofSource(tx: any, args: { organizationId: str
       thumbnailUrl: attachmentSource.thumbnailUrl ?? null,
       uploadedByUserId: attachmentSource.uploadedByUserId ?? null,
       uploadedByName: attachmentSource.uploadedByName ?? null,
+      updatedAt: attachmentSource.updatedAt ?? null,
     };
   }
 
@@ -346,6 +807,7 @@ async function loadLatestArtworkProofSource(tx: any, args: { organizationId: str
       thumbnailUrl: sql<string | null>`null`,
       uploadedByUserId: sql<string | null>`null`,
       uploadedByName: sql<string | null>`null`,
+      updatedAt: assets.updatedAt,
       role: assetLinks.role,
     })
     .from(assetLinks)
@@ -392,6 +854,7 @@ async function loadLatestArtworkProofSource(tx: any, args: { organizationId: str
     thumbnailUrl: assetSource.thumbnailUrl ?? null,
     uploadedByUserId: assetSource.uploadedByUserId ?? null,
     uploadedByName: assetSource.uploadedByName ?? null,
+    updatedAt: assetSource.updatedAt ?? null,
   };
 }
 
@@ -910,6 +1373,8 @@ async function resolveProofingTruthMap(tx: any, args: {
       currentActionableProofDecisionId,
       currentActionableProofVersion,
       approvedProofVersion,
+      currentProofInputSnapshot: null,
+      currentDisplayedProofArtifact: null,
       proofVersionHistory: versions,
       proofDecisionHistory: approvals,
       manualApprovalOverrideHistory: manualOverrides,
@@ -1530,5 +1995,25 @@ export async function resolveLineItemProofingTruth(tx: any, args: {
     throw Object.assign(new Error("Failed to resolve proofing truth"), { statusCode: 500 });
   }
 
-  return truth;
+  const currentProofInputSnapshot = await buildProofInputSnapshot(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+  });
+
+  const currentDisplayedVersion = truth.currentActionableProofVersion ?? truth.approvedProofVersion ?? truth.proofVersionHistory[0] ?? null;
+  const currentDisplayedProofArtifact = currentDisplayedVersion
+    ? buildProofArtifactSummary({
+        attachment: await loadProofAttachment(tx, {
+          organizationId: args.organizationId,
+          attachmentId: currentDisplayedVersion.proofFileId,
+        }),
+        snapshot: currentProofInputSnapshot,
+      })
+    : null;
+
+  return {
+    ...truth,
+    currentProofInputSnapshot,
+    currentDisplayedProofArtifact,
+  };
 }

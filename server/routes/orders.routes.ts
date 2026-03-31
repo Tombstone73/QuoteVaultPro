@@ -4557,6 +4557,7 @@ export async function registerOrderRoutes(
 
             // Server-authoritative pricing using PricingService
             const { priceLineItem } = await import("../services/pricing/PricingService");
+            const userId = getUserId(req.user);
             
             const pricingResult = await priceLineItem({
                 organizationId,
