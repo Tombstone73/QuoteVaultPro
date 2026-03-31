@@ -22,6 +22,22 @@ export const proofApprovalSourceValues = [
   "manual_override",
 ] as const;
 
+export const proofArtifactKindValues = [
+  "generated",
+  "uploaded",
+  "promoted_artwork",
+] as const;
+
+export const proofPreflightStatusValues = [
+  "not_run",
+  "queued",
+  "running",
+  "passed",
+  "warning",
+  "failed",
+  "superseded",
+] as const;
+
 export const proofQueueSliceValues = [
   "all",
   "awaiting_send",
@@ -43,8 +59,42 @@ export const proofQueueStatusValues = [
 export const proofVersionStatusSchema = z.enum(proofVersionStatusValues);
 export const proofDecisionSchema = z.enum(proofDecisionValues);
 export const proofApprovalSourceSchema = z.enum(proofApprovalSourceValues);
+export const proofArtifactKindSchema = z.enum(proofArtifactKindValues);
+export const proofPreflightStatusSchema = z.enum(proofPreflightStatusValues);
 export const proofQueueSliceSchema = z.enum(proofQueueSliceValues);
 export const proofQueueStatusSchema = z.enum(proofQueueStatusValues);
+
+export const proofInputSnapshotSchema = z.object({
+  lineItemId: z.string(),
+  orderId: z.string(),
+  orderNumber: z.string().nullable(),
+  lineItemLabel: z.string(),
+  sourceArtwork: z.object({
+    sourceType: z.enum(["attachment", "asset"]),
+    sourceId: z.string(),
+    fileRecordId: z.string().nullable(),
+    fileName: z.string(),
+    mimeType: z.string().nullable(),
+    fileUrl: z.string().nullable(),
+  }).nullable(),
+  finishedWidth: z.number().nullable(),
+  finishedHeight: z.number().nullable(),
+  displaySizeLabel: z.string().nullable(),
+  quantity: z.number().int().nullable(),
+  finishingSummary: z.array(z.string()),
+  snapshotBasisAt: z.string().datetime(),
+  lineItemUpdatedAt: z.string().datetime().nullable(),
+  sourceUpdatedAt: z.string().datetime().nullable(),
+  preflightStatus: proofPreflightStatusSchema,
+});
+
+export const proofArtifactSummarySchema = z.object({
+  attachmentId: z.string(),
+  artifactKind: proofArtifactKindSchema,
+  fileName: z.string(),
+  mimeType: z.string().nullable(),
+  generatedFromSnapshot: z.boolean(),
+});
 
 export const proofVersionHistoryEntrySchema = z.object({
   id: z.string(),
@@ -97,6 +147,8 @@ export const proofingReadModelSchema = z.object({
   currentActionableProofDecisionId: z.string().nullable(),
   currentActionableProofVersion: proofVersionHistoryEntrySchema.nullable(),
   approvedProofVersion: proofVersionHistoryEntrySchema.nullable(),
+  currentProofInputSnapshot: proofInputSnapshotSchema.nullable(),
+  currentDisplayedProofArtifact: proofArtifactSummarySchema.nullable(),
   proofVersionHistory: z.array(proofVersionHistoryEntrySchema),
   proofDecisionHistory: z.array(proofDecisionHistoryEntrySchema),
   manualApprovalOverrideHistory: z.array(manualApprovalOverrideHistoryEntrySchema),
@@ -146,8 +198,12 @@ export const proofingQueueResponseSchema = z.object({
 export type ProofVersionStatus = z.infer<typeof proofVersionStatusSchema>;
 export type ProofDecision = z.infer<typeof proofDecisionSchema>;
 export type ProofApprovalSource = z.infer<typeof proofApprovalSourceSchema>;
+export type ProofArtifactKind = z.infer<typeof proofArtifactKindSchema>;
+export type ProofPreflightStatus = z.infer<typeof proofPreflightStatusSchema>;
 export type ProofQueueSlice = z.infer<typeof proofQueueSliceSchema>;
 export type ProofQueueStatus = z.infer<typeof proofQueueStatusSchema>;
+export type ProofInputSnapshot = z.infer<typeof proofInputSnapshotSchema>;
+export type ProofArtifactSummary = z.infer<typeof proofArtifactSummarySchema>;
 export type ProofVersionHistoryEntry = z.infer<typeof proofVersionHistoryEntrySchema>;
 export type ProofDecisionHistoryEntry = z.infer<typeof proofDecisionHistoryEntrySchema>;
 export type ManualApprovalOverrideHistoryEntry = z.infer<typeof manualApprovalOverrideHistoryEntrySchema>;

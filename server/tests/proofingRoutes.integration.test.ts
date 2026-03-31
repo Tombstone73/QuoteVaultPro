@@ -38,6 +38,7 @@ import { proofingQueueResponseSchema, proofingReadModelSchema, type ProofVersion
 import { createProofAccessToken, validateProofToken } from "../services/proofAccessTokenService";
 import {
   autoSyncCanonicalProofForLineItem,
+  createAndSendProofVersion,
   createLineItemProofVersion,
   listProofingQueue,
   markProofVersionSent,
@@ -379,6 +380,67 @@ function createTestApp() {
       return res.json({ success: true, data: result });
     } catch (error: any) {
       return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to send proof version for review" });
+    }
+  });
+
+  app.post("/api/proofing/line-item/:lineItemId/send-proof", isAuthenticated, tenantContext, async (req: any, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.discriminatedUnion("mode", [
+        z.object({
+          mode: z.literal("uploaded"),
+          proofFileId: z.string().min(1),
+          internalNotes: z.string().optional().nullable(),
+          sentToName: z.string().optional().nullable(),
+          sentToEmail: z.string().optional().nullable(),
+          customerMessage: z.string().optional().nullable(),
+        }),
+        z.object({
+          mode: z.literal("generated"),
+          internalNotes: z.string().optional().nullable(),
+          sentToName: z.string().optional().nullable(),
+          sentToEmail: z.string().optional().nullable(),
+          customerMessage: z.string().optional().nullable(),
+        }),
+      ]).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const lineItemId = String(req.params.lineItemId);
+      const result = await db.transaction(async (tx) => {
+        const created = await createAndSendProofVersion(tx, {
+          organizationId,
+          lineItemId,
+          actorUserId: userId,
+          mode: parsed.data.mode,
+          proofFileId: "proofFileId" in parsed.data ? parsed.data.proofFileId : null,
+          internalNotes: parsed.data.internalNotes ?? null,
+          sentToName: parsed.data.sentToName ?? null,
+          sentToEmail: parsed.data.sentToEmail ?? null,
+          customerMessage: parsed.data.customerMessage ?? null,
+        });
+
+        const proofing = await resolveLineItemProofingTruth(tx, {
+          organizationId,
+          lineItemId,
+        });
+
+        return {
+          ...created,
+          proofing,
+        };
+      });
+
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to create and send proof" });
     }
   });
 
@@ -760,16 +822,26 @@ describe("proofing route integration", () => {
     await db.execute(sql`delete from audit_logs where organization_id = ${orgId} and entity_type in ('line_item_proof_version', 'line_item_proof_approval', 'line_item_proof_manual_approval_override')`);
     await db.execute(sql`delete from production_events where organization_id = ${orgId}`);
     await db.execute(sql`delete from production_jobs where organization_id = ${orgId}`);
+    await db.execute(sql`delete from storage_jobs where organization_id = ${orgId}`);
     await db.execute(sql`delete from proof_access_tokens where organization_id = ${orgId}`);
     await db.execute(sql`delete from line_item_proof_manual_approval_overrides where organization_id = ${orgId}`);
     await db.execute(sql`delete from line_item_proof_approvals where organization_id = ${orgId}`);
     await db.execute(sql`delete from line_item_proof_versions where organization_id = ${orgId}`);
     await db.execute(sql`delete from order_attachments where order_id = ${orderId}`);
     await db.execute(sql`delete from order_line_items where order_id = ${orderId}`);
+    await db.execute(sql`delete from file_derivatives where file_record_id in (select id from file_records where organization_id = ${orgId})`);
+    await db.execute(sql`delete from storage_placements where file_record_id in (select id from file_records where organization_id = ${orgId})`);
+    await db.execute(sql`delete from file_records where organization_id = ${orgId}`);
   });
 
   afterAll(async () => {
     await db.execute(sql`delete from orders where id = ${orderId}`);
+    await db.execute(sql`delete from storage_jobs where organization_id = ${orgId}`);
+    await db.execute(sql`delete from file_derivatives where file_record_id in (select id from file_records where organization_id = ${orgId})`);
+    await db.execute(sql`delete from storage_placements where file_record_id in (select id from file_records where organization_id = ${orgId})`);
+    await db.execute(sql`delete from file_records where organization_id = ${orgId}`);
+    await db.execute(sql`delete from organization_storage_profiles where organization_id = ${orgId}`);
+    await db.execute(sql`delete from storage_provider_configs where organization_id = ${orgId}`);
     await db.execute(sql`delete from production_station_steps where organization_id = ${orgId}`);
     await db.execute(sql`delete from stations where organization_id = ${orgId}`);
     await db.execute(sql`delete from products where id = ${productId}`);
@@ -934,6 +1006,83 @@ describe("proofing route integration", () => {
     expect(proofing.requiresProofApproval).toBe(true);
     expect(proofing.blockedPendingProofApproval).toBe(true);
     expect(proofing.currentActionableProofVersion?.status).toBe("awaiting_response");
+  });
+
+  test("uploads or selects a manual proof file and sends it through the canonical flow", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("manual_send");
+
+    const res = await request(app)
+      .post(`/api/proofing/line-item/${lineItemId}/send-proof`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ mode: "uploaded", proofFileId: proofFileA, internalNotes: "manual fallback" })
+      .expect(200);
+
+    expect(res.body?.data?.proofVersion?.status).toBe("awaiting_response");
+    const proofing = proofingReadModelSchema.parse(res.body?.data?.proofing);
+    expect(proofing.currentActionableProofVersion?.proofFileId).toBe(proofFileA);
+    expect(proofing.currentDisplayedProofArtifact?.artifactKind).toBe("uploaded");
+    expect(proofing.currentProofInputSnapshot?.lineItemId).toBe(lineItemId);
+  });
+
+  test("generates a basic proof from persisted artwork and sends it through the canonical flow", async () => {
+    const { lineItemId, artworkFileId } = await createLineItemFixture("generated_send", {
+      attachProofFiles: false,
+      addArtwork: true,
+      requiresProofApproval: true,
+      requiresPrepress: true,
+      workflowState: "awaiting_proof_approval",
+    });
+
+    const res = await request(app)
+      .post(`/api/proofing/line-item/${lineItemId}/send-proof`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ mode: "generated", internalNotes: "generated path" })
+      .expect(200);
+
+    expect(res.body?.data?.proofVersion?.status).toBe("awaiting_response");
+    expect(res.body?.data?.proofVersion?.proofFileId).not.toBe(artworkFileId);
+    const proofing = proofingReadModelSchema.parse(res.body?.data?.proofing);
+    expect(proofing.currentDisplayedProofArtifact?.artifactKind).toBe("generated");
+    expect(proofing.currentProofInputSnapshot?.sourceArtwork?.sourceId).toBe(artworkFileId);
+
+    const [generatedAttachment] = await db
+      .select({ mimeType: orderAttachments.mimeType, role: orderAttachments.role })
+      .from(orderAttachments)
+      .where(eq(orderAttachments.id, String(res.body?.data?.proofVersion?.proofFileId)))
+      .limit(1);
+
+    expect(generatedAttachment).toMatchObject({ mimeType: "application/pdf", role: "proof" });
+  });
+
+  test("fails clearly when generated proof is requested without a saved artwork source", async () => {
+    const { lineItemId } = await createLineItemFixture("generated_missing_art", {
+      attachProofFiles: false,
+      addArtwork: false,
+      requiresProofApproval: true,
+      requiresPrepress: true,
+      workflowState: "awaiting_proof_approval",
+    });
+
+    const res = await request(app)
+      .post(`/api/proofing/line-item/${lineItemId}/send-proof`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ mode: "generated" })
+      .expect(409);
+
+    expect(res.body?.error).toBe("A saved artwork source is required before generating a proof");
+
+    const truth = await resolveLineItemProofingTruth(db, {
+      organizationId: orgId,
+      lineItemId,
+    });
+
+    expect(truth.currentActionableProofVersionId).toBeNull();
   });
 
   test("auto-syncs a canonical proof from persisted artwork and exposes it in the proofing queue", async () => {
