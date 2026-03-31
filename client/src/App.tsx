@@ -38,6 +38,8 @@ import NotFound from "@/pages/not-found";
 import MyQuotes from "@/pages/portal/my-quotes";
 import MyOrders from "@/pages/portal/my-orders";
 import QuoteCheckout from "@/pages/portal/quote-checkout";
+import { PortalLayout } from "@/components/portal/PortalLayout";
+import PortalProofPage from "@/pages/portal/portal-proof";
 import ProductionBoard from "@/pages/production";
 import ProductionJobDetailPage from "@/pages/production-job-detail";
 import JobDetail from "@/pages/job-detail";
@@ -134,7 +136,8 @@ function Router() {
         {/* Legacy dashboard route compatibility */}
         <Route path="/dashboard" element={<Navigate to="/system/admin" replace />} />
 
-        {/* Portal routes (customer-facing) */}
+        {/* Legacy customer portal stubs — kept temporarily, will be removed once
+            portal pages are migrated to the /portal/* PortalLayout tree below */}
         <Route path="/portal/my-quotes" element={<MyQuotes />} />
         <Route path="/portal/my-orders" element={<MyOrders />} />
         <Route path="/portal/quotes/:id/checkout" element={<QuoteCheckout />} />
@@ -248,6 +251,14 @@ function Router() {
 
         {/* Public invite acceptance (accessible while authenticated too) */}
         <Route path="/accept-invite" element={<AcceptInvitePage />} />
+      </Route>
+
+      {/* Portal — completely isolated from AppLayout (staff shell).
+          proof/:token is public (no auth required — token IS the auth).
+          Other portal/* routes will be added here as pages are built. */}
+      <Route path="/portal" element={<PortalLayout />}>
+        <Route path="proof/:token" element={<PortalProofPage />} />
+        <Route path="dashboard" element={<div className="p-4 text-muted-foreground">Portal Dashboard — coming soon</div>} />
       </Route>
 
       {/* Catch-all not found */}
