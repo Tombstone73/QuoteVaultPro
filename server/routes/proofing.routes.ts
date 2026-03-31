@@ -23,6 +23,7 @@ import { fromZodError } from "zod-validation-error";
 import { proofQueueSliceSchema } from "@shared/proofing";
 import { getRequestOrganizationId } from "../tenantContext";
 import {
+  createAndSendProofVersion,
   createLineItemProofVersion,
   listProofingQueue,
   markProofVersionSent,
@@ -148,6 +149,92 @@ export function registerProofingRoutes(
       const status = error?.statusCode || 500;
       console.error("[Proofing] Error creating proof version:", error);
       return res.status(status).json({ error: error?.message || "Failed to create proof version" });
+    }
+  });
+
+  app.post("/api/proofing/line-item/:lineItemId/send-proof", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.discriminatedUnion("mode", [
+        z.object({
+          mode: z.literal("uploaded"),
+          proofFileId: z.string().min(1),
+          internalNotes: z.string().optional().nullable(),
+          sentToName: z.string().optional().nullable(),
+          sentToEmail: z.string().optional().nullable(),
+          customerMessage: z.string().optional().nullable(),
+        }),
+        z.object({
+          mode: z.literal("generated"),
+          internalNotes: z.string().optional().nullable(),
+          sentToName: z.string().optional().nullable(),
+          sentToEmail: z.string().optional().nullable(),
+          customerMessage: z.string().optional().nullable(),
+        }),
+      ]).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const lineItemId = String(req.params.lineItemId);
+      const result = await db.transaction(async (tx) => {
+        const created = await createAndSendProofVersion(tx, {
+          organizationId,
+          lineItemId,
+          actorUserId: userId,
+          mode: parsed.data.mode,
+          proofFileId: "proofFileId" in parsed.data ? parsed.data.proofFileId : null,
+          internalNotes: parsed.data.internalNotes ?? null,
+          sentToName: parsed.data.sentToName ?? null,
+          sentToEmail: parsed.data.sentToEmail ?? null,
+          customerMessage: parsed.data.customerMessage ?? null,
+        });
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "CREATE",
+          entityType: "line_item_proof_version",
+          entityId: created.proofVersion.id,
+          entityName: `Proof v${created.proofVersion.versionNumber}`,
+          description: `${parsed.data.mode === "generated" ? "Generated" : "Uploaded"} and sent proof version ${created.proofVersion.versionNumber} for line item ${lineItemId}`,
+          newValues: {
+            lineItemId,
+            proofFileId: created.proofVersion.proofFileId,
+            versionNumber: created.proofVersion.versionNumber,
+            status: created.proofVersion.status,
+            mode: parsed.data.mode,
+            snapshot: created.snapshot,
+            artifact: created.artifact,
+            workflowState: created.workflowTransition.toState,
+          },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        const proofing = await resolveLineItemProofingTruth(tx, {
+          organizationId,
+          lineItemId,
+        });
+
+        return {
+          ...created,
+          proofing,
+        };
+      });
+
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error creating and sending proof:", error);
+      return res.status(status).json({ error: error?.message || "Failed to create and send proof" });
     }
   });
 
