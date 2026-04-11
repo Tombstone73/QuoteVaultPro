@@ -975,6 +975,93 @@ export class SharedRepository {
         await this.dbInstance.delete(emailSettings).where(and(eq(emailSettings.id, id), eq(emailSettings.organizationId, organizationId)));
     }
 
+    /**
+     * Upsert the Gmail connection for an org after a successful OAuth callback.
+     * Only called after token exchange AND Gmail profile lookup both succeed — never before.
+     * Clears any legacy per-org client_id/client_secret (platform manages those now).
+     */
+    async upsertGmailConnection(organizationId: string, data: {
+        connectedEmail: string;
+        refreshToken: string;
+        fromName?: string;
+    }): Promise<EmailSettings> {
+        const existing = await this.getDefaultEmailSettings(organizationId);
+
+        const connectionData = {
+            provider: 'gmail' as const,
+            fromAddress: data.connectedEmail,
+            fromName: data.fromName || existing?.fromName || data.connectedEmail.split('@')[0],
+            refreshToken: data.refreshToken,
+            // Platform manages client credentials — never store per-org credentials
+            clientId: null as unknown as undefined,
+            clientSecret: null as unknown as undefined,
+            connectionStatus: 'connected' as const,
+            connectedAt: new Date(),
+            isActive: true,
+            isDefault: true,
+            updatedAt: new Date(),
+        };
+
+        if (existing) {
+            // Ensure this org's other records are not marked default
+            await this.dbInstance
+                .update(emailSettings)
+                .set({ isDefault: false, updatedAt: new Date() })
+                .where(and(
+                    eq(emailSettings.organizationId, organizationId),
+                    eq(emailSettings.isDefault, true),
+                ));
+            const [updated] = await this.dbInstance
+                .update(emailSettings)
+                .set(connectionData)
+                .where(and(
+                    eq(emailSettings.id, existing.id),
+                    eq(emailSettings.organizationId, organizationId),
+                ))
+                .returning();
+            return updated;
+        }
+
+        const [created] = await this.dbInstance
+            .insert(emailSettings)
+            .values({ ...connectionData, organizationId } as typeof emailSettings.$inferInsert)
+            .returning();
+        return created;
+    }
+
+    /**
+     * Disconnect the Gmail account for an org.
+     * Clears refresh token and marks status disconnected. Does NOT delete the record
+     * so fromName and other display settings are preserved for reconnection.
+     */
+    async disconnectGmailConnection(organizationId: string): Promise<void> {
+        await this.dbInstance
+            .update(emailSettings)
+            .set({
+                connectionStatus: 'disconnected',
+                refreshToken: null as unknown as undefined,
+                connectedAt: null as unknown as undefined,
+                updatedAt: new Date(),
+            })
+            .where(and(
+                eq(emailSettings.organizationId, organizationId),
+                eq(emailSettings.isDefault, true),
+            ));
+    }
+
+    /**
+     * Mark an org's email connection status (e.g. revoked_or_invalid after a send failure).
+     */
+    async markEmailConnectionStatus(organizationId: string, status: string): Promise<void> {
+        await this.dbInstance
+            .update(emailSettings)
+            .set({ connectionStatus: status, updatedAt: new Date() })
+            .where(and(
+                eq(emailSettings.organizationId, organizationId),
+                eq(emailSettings.isDefault, true),
+            ));
+    }
+
     // Company settings operations (tenant-scoped)
     async getCompanySettings(organizationId: string): Promise<CompanySettings | undefined> {
         const [settings] = await this.dbInstance.select().from(companySettings).where(eq(companySettings.organizationId, organizationId)).limit(1);

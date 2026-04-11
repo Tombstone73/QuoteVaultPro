@@ -175,6 +175,10 @@ export const getDefaultEmailSettings = sharedRepo.getDefaultEmailSettings.bind(s
 export const createEmailSettings = sharedRepo.createEmailSettings.bind(sharedRepo);
 export const updateEmailSettings = sharedRepo.updateEmailSettings.bind(sharedRepo);
 export const deleteEmailSettings = sharedRepo.deleteEmailSettings.bind(sharedRepo);
+// Platform Gmail OAuth connection operations (migration 0061)
+export const upsertGmailConnection = sharedRepo.upsertGmailConnection.bind(sharedRepo);
+export const disconnectGmailConnection = sharedRepo.disconnectGmailConnection.bind(sharedRepo);
+export const markEmailConnectionStatus = sharedRepo.markEmailConnectionStatus.bind(sharedRepo);
 
 // Company settings operations
 export const getCompanySettings = sharedRepo.getCompanySettings.bind(sharedRepo);
@@ -394,6 +398,9 @@ export const storage = {
     createEmailSettings,
     updateEmailSettings,
     deleteEmailSettings,
+    upsertGmailConnection,
+    disconnectGmailConnection,
+    markEmailConnectionStatus,
     getCompanySettings,
     createCompanySettings,
     updateCompanySettings,

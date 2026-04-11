@@ -142,7 +142,9 @@ class EmailService {
   }
 
   /**
-   * Get email configuration from database
+   * Get email configuration from database.
+   * Platform credentials (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET) take precedence
+   * over any per-org credentials that may have been stored in the legacy manual flow.
    */
   private async getEmailConfig(organizationId: string): Promise<EmailConfig | null> {
     const settings = await storage.getDefaultEmailSettings(organizationId);
@@ -151,23 +153,27 @@ class EmailService {
       return null;
     }
 
+    // Prefer platform-level credentials; fall back to legacy per-org credentials
+    const clientId = process.env.GOOGLE_CLIENT_ID || settings.clientId || undefined;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET || settings.clientSecret || undefined;
+
     console.log(`[EmailService] Loaded config for org ${organizationId}:`, {
       provider: settings.provider,
       fromAddress: settings.fromAddress,
       fromName: settings.fromName,
-      hasClientId: !!settings.clientId,
-      hasClientSecret: !!settings.clientSecret,
+      connectionStatus: settings.connectionStatus,
+      usingPlatformCredentials: !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
+      hasClientId: !!clientId,
+      hasClientSecret: !!clientSecret,
       hasRefreshToken: !!settings.refreshToken,
-      hasSmtpHost: !!settings.smtpHost,
-      hasSmtpPort: !!settings.smtpPort,
     });
 
     return {
       provider: settings.provider,
       fromAddress: settings.fromAddress,
       fromName: settings.fromName,
-      clientId: settings.clientId || undefined,
-      clientSecret: settings.clientSecret || undefined,
+      clientId,
+      clientSecret,
       refreshToken: settings.refreshToken || undefined,
       smtpHost: settings.smtpHost || undefined,
       smtpPort: settings.smtpPort || undefined,
@@ -186,10 +192,13 @@ class EmailService {
     });
 
     const OAuth2 = google.auth.OAuth2;
+    // redirect_uri is not used during refresh-token flows; set to the platform callback
+    const redirectUri = process.env.GOOGLE_OAUTH_REDIRECT_URI ||
+      `${(process.env.APP_URL ?? 'http://localhost:5000').replace(/\/$/, '')}/api/email/google/callback`;
     const oauth2Client = new OAuth2(
       config.clientId,
       config.clientSecret,
-      "https://developers.google.com/oauthplayground"
+      redirectUri,
     );
 
     oauth2Client.setCredentials({
@@ -297,8 +306,11 @@ class EmailService {
     }
     console.log('[EmailService] [STAGE: load-config] ✅ Config loaded successfully');
 
-    if (config.provider !== 'gmail' || !config.clientId || !config.clientSecret || !config.refreshToken) {
-      throw new Error('Gmail OAuth credentials are required. Please configure email settings.');
+    if (config.provider !== 'gmail' || !config.refreshToken) {
+      throw new Error('Gmail is not connected. Please connect your Gmail account in Settings → Email.');
+    }
+    if (!config.clientId || !config.clientSecret) {
+      throw new Error('Gmail OAuth app is not configured. Please contact your platform administrator to set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.');
     }
 
     const html = `
@@ -337,8 +349,11 @@ class EmailService {
       throw new Error("Email settings not configured. Please configure email settings in the admin panel.");
     }
 
-    if (config.provider !== 'gmail' || !config.clientId || !config.clientSecret || !config.refreshToken) {
-      throw new Error('Gmail OAuth credentials are required. Please configure email settings.');
+    if (config.provider !== 'gmail' || !config.refreshToken) {
+      throw new Error('Gmail is not connected. Please connect your Gmail account in Settings → Email.');
+    }
+    if (!config.clientId || !config.clientSecret) {
+      throw new Error('Gmail OAuth app is not configured. Please contact your platform administrator.');
     }
 
     // Get quote data
@@ -405,8 +420,11 @@ class EmailService {
 
     console.log('[EmailService] [STAGE: load-config] ✅ Config loaded');
 
-    if (config.provider !== 'gmail' || !config.clientId || !config.clientSecret || !config.refreshToken) {
-      throw new Error('Gmail OAuth credentials are required. Please configure email settings.');
+    if (config.provider !== 'gmail' || !config.refreshToken) {
+      throw new Error('Gmail is not connected. Please connect your Gmail account in Settings → Email.');
+    }
+    if (!config.clientId || !config.clientSecret) {
+      throw new Error('Gmail OAuth app is not configured. Please contact your platform administrator.');
     }
 
     // Convert nodemailer attachment format to Gmail API format
