@@ -1769,6 +1769,11 @@ export const emailSettings = pgTable("email_settings", {
 
   isActive: boolean("is_active").default(true).notNull(),
   isDefault: boolean("is_default").default(true).notNull(), // For multiple accounts
+
+  // Platform-managed OAuth connection state (migration 0061)
+  connectionStatus: varchar("connection_status", { length: 50 }).notNull().default("not_connected"),
+  connectedAt: timestamp("connected_at"),
+
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -1791,6 +1796,8 @@ export const insertEmailSettingsSchema = createInsertSchema(emailSettings).omit(
   smtpPort: z.number().int().positive().optional(),
   smtpUsername: z.string().optional(),
   smtpPassword: z.string().optional(),
+  connectionStatus: z.enum(["not_connected", "connected", "disconnected", "token_exchange_failed", "revoked_or_invalid"]).default("not_connected").optional(),
+  connectedAt: z.date().nullable().optional(),
 });
 
 export const updateEmailSettingsSchema = insertEmailSettingsSchema.partial().extend({

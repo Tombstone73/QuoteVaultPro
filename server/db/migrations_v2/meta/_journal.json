@@ -211,6 +211,13 @@
       "when": 1774656000000,
       "tag": "0029_dedupe_numbering_seed_rows",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1744416000000,
+      "tag": "0030_gmail_oauth_connection",
+      "breakpoints": true
     }
   ]
 }
