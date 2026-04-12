@@ -344,17 +344,15 @@ export function registerEmailRoutes(
 
     // --- Exchange code for tokens ---
     let refreshToken: string;
-    let accessToken: string;
     try {
       const { tokens } = await oauth2Client.getToken(code);
       if (!tokens.refresh_token) {
-        // This happens if the user already authorized the app and Google didn't re-issue a refresh token.
-        // Force prompt=consent in /start handles this, but catch it defensively.
+        // This happens if the user already authorized and Google didn't re-issue the refresh token.
+        // prompt=consent in /start should prevent this, but catch it defensively.
         console.error('[Gmail OAuth] /callback — no refresh_token in token response');
         return res.redirect(getSettingsRedirectUrl(req, 'error=no_refresh_token'));
       }
       refreshToken = tokens.refresh_token;
-      accessToken = tokens.access_token || '';
       oauth2Client.setCredentials(tokens);
     } catch (err) {
       console.error('[Gmail OAuth] /callback — token exchange failed:', err);
