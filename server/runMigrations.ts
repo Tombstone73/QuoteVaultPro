@@ -78,14 +78,73 @@ export async function runMigrations(): Promise<void> {
     await client.query(`SELECT pg_advisory_lock(${ADVISORY_LOCK_KEY})`);
     console.log("[Migrations] Advisory lock acquired");
 
+    // --- PRE-MIGRATION DIAGNOSTICS ---
+    // Log the database identity so we can confirm Railway is hitting the right DB.
+    try {
+      const identityRes = await client.query(
+        `SELECT current_database() AS db, current_user AS usr, inet_server_addr() AS addr`
+      );
+      const id = identityRes.rows[0] ?? {};
+      console.log(`[Migrations] DB identity: db=${id.db}, user=${id.usr}, addr=${id.addr ?? 'null'}`);
+    } catch (e: any) {
+      console.warn("[Migrations] DB identity query failed:", e?.message);
+    }
+
+    // Log which migrations are already applied so we can see the ledger state.
+    try {
+      const ledgerRes = await client.query(
+        `SELECT id, hash, created_at FROM public.${MIGRATIONS_TABLE} ORDER BY id DESC LIMIT 10`
+      );
+      if (ledgerRes.rows.length === 0) {
+        console.log(`[Migrations] Ledger (${MIGRATIONS_TABLE}): EMPTY — all migrations will be applied`);
+      } else {
+        const top = ledgerRes.rows[0];
+        console.log(`[Migrations] Ledger (${MIGRATIONS_TABLE}): ${ledgerRes.rows.length} rows, highest id=${top.id}, hash=${top.hash}`);
+        console.log(`[Migrations] Ledger last 5: ${ledgerRes.rows.slice(0, 5).map((r: any) => `id=${r.id}`).join(', ')}`);
+      }
+    } catch (e: any) {
+      // Table doesn't exist yet on a fresh DB — normal on first deploy.
+      console.log(`[Migrations] Ledger (${MIGRATIONS_TABLE}): not yet created (fresh database)`);
+    }
+
+    // Log whether the target column from migration 0030 already exists.
+    try {
+      const colRes = await client.query(
+        `SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'email_settings'
+           AND column_name IN ('connection_status', 'connected_at')`
+      );
+      const found = colRes.rows.map((r: any) => r.column_name);
+      console.log(`[Migrations] email_settings columns present before migrate(): [${found.join(', ') || 'none'}]`);
+    } catch (e: any) {
+      console.warn("[Migrations] Column pre-check failed:", e?.message);
+    }
+
     console.log("[Migrations] Calling drizzle migrate() now...");
     await migrate(db, {
       migrationsFolder,
       migrationsTable: MIGRATIONS_TABLE,
       migrationsSchema: MIGRATIONS_SCHEMA,
     });
-
     console.log("[Migrations] Complete — migrate() returned without error");
+
+    // --- POST-MIGRATION DIAGNOSTICS ---
+    // Confirm the columns now exist so we know 0030 landed.
+    try {
+      const colRes = await client.query(
+        `SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'email_settings'
+           AND column_name IN ('connection_status', 'connected_at')`
+      );
+      const found = colRes.rows.map((r: any) => r.column_name);
+      console.log(`[Migrations] email_settings columns present after migrate(): [${found.join(', ') || 'STILL MISSING'}]`);
+      if (found.length < 2) {
+        console.warn("[Migrations] ⚠️  connection_status / connected_at still missing — 0030 may have been skipped by ledger");
+      }
+    } catch (e: any) {
+      console.warn("[Migrations] Column post-check failed:", e?.message);
+    }
+
   } catch (err: any) {
     console.error("[Migrations] FAILED — error message:", err?.message);
     console.error("[Migrations] FAILED — stack:", err?.stack);
