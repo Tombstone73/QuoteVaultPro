@@ -3,6 +3,25 @@ import { storage } from "./storage";
 import type { EmailSettings } from "@shared/schema";
 
 /**
+ * Returns true for Google OAuth auth failures that indicate the refresh token
+ * is invalid or revoked and the organisation must reconnect.
+ * Covers: invalid_grant, token revocation, 401 UNAUTHENTICATED.
+ */
+function isGmailAuthError(err: any): boolean {
+  const msg = String(err?.message || err?.toString() || '').toLowerCase();
+  const code = err?.code ?? err?.status;
+  return (
+    msg.includes('invalid_grant') ||
+    msg.includes('token has been expired or revoked') ||
+    msg.includes('invalid credentials') ||
+    msg.includes('invalid_token') ||
+    msg.includes('unauthenticated') ||
+    code === 401 ||
+    code === 'invalid_grant'
+  );
+}
+
+/**
  * Utility to add timeout to promises with clear error messages
  */
 function withTimeout<T>(label: string, ms: number, promise: Promise<T>): Promise<T> {
@@ -222,6 +241,12 @@ class EmailService {
       if (error.message.includes('timed out')) {
         throw new Error('Timed out while contacting Google to fetch an access token. Please check your network connection and try again.');
       }
+      // Surface auth errors with a recognisable marker so callers can detect them
+      if (isGmailAuthError(error)) {
+        const authErr = new Error(`GMAIL_AUTH_ERROR: ${error.message}`);
+        (authErr as any).isGmailAuthError = true;
+        throw authErr;
+      }
       throw new Error(`Failed to authenticate with Gmail: ${error.message}`);
     }
 
@@ -286,6 +311,12 @@ class EmailService {
       if (error.message.includes('timed out')) {
         throw new Error('Timed out while sending email via Gmail API. Please check your network connection and try again.');
       }
+      // Re-surface tagged auth errors without wrapping
+      if ((error as any).isGmailAuthError || isGmailAuthError(error)) {
+        const authErr = new Error(`GMAIL_AUTH_ERROR: ${error.message}`);
+        (authErr as any).isGmailAuthError = true;
+        throw authErr;
+      }
       throw new Error(`Failed to send email via Gmail API: ${error.message}`);
     }
   }
@@ -326,7 +357,7 @@ class EmailService {
       </div>
     `;
 
-    await this.sendViaGmailAPI(config, {
+    await this.sendOrMarkRevoked(organizationId, config, {
       to: recipientEmail,
       subject: `Test Email from ${config.fromName}`,
       html,
@@ -386,7 +417,7 @@ class EmailService {
     // Generate full HTML email with quote details
     const htmlContent = this.generateQuoteEmailHTML(quote, bodyHtml);
 
-    await this.sendViaGmailAPI(config, {
+    await this.sendOrMarkRevoked(organizationId, config, {
       to: recipientEmail,
       subject,
       html: htmlContent,
@@ -437,13 +468,50 @@ class EmailService {
       }));
     }
 
-    return await this.sendViaGmailAPI(config, {
+    return await this.sendOrMarkRevoked(organizationId, config, {
       to: options.to,
       subject: options.subject,
       html: options.html,
       replyTo,
       attachments: gmailAttachments,
     });
+  }
+
+  /**
+   * Wraps sendViaGmailAPI: on Google auth failure, marks the org connection as
+   * revoked_or_invalid (best-effort), then rethrows a user-facing error.
+   * All other errors are re-thrown unchanged.
+   */
+  private async sendOrMarkRevoked(
+    organizationId: string,
+    config: EmailConfig,
+    options: {
+      to: string;
+      subject: string;
+      html: string;
+      replyTo?: string;
+      attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
+    },
+  ): Promise<string> {
+    try {
+      return await this.sendViaGmailAPI(config, options);
+    } catch (err: any) {
+      if ((err as any).isGmailAuthError) {
+        console.error(
+          `[EmailService] Gmail auth failure for org ${organizationId} — marking revoked_or_invalid. Error: ${err.message}`,
+        );
+        try {
+          await storage.markEmailConnectionStatus(organizationId, 'revoked_or_invalid');
+        } catch (dbErr) {
+          console.error('[EmailService] Failed to update connection status:', dbErr);
+        }
+        throw new Error(
+          'Gmail authentication failed — the connection has been revoked or expired. ' +
+          'Please go to Settings → Email and reconnect your Gmail account.',
+        );
+      }
+      throw err;
+    }
   }
 
   /**
