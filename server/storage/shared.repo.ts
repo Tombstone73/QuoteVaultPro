@@ -45,7 +45,6 @@ import {
     type UpdateFormulaTemplate,
     type EmailSettings,
     type InsertEmailSettings,
-    type UpdateEmailSettings,
     type CompanySettings,
     type InsertCompanySettings,
     type UpdateCompanySettings,
