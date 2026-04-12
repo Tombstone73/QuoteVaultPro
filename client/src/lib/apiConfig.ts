@@ -5,7 +5,9 @@
  * - `VITE_API_BASE_URL` optionally overrides `/api/*`
  * - `VITE_OBJECTS_BASE_URL` optionally overrides `/objects/*`
  *
- * Missing env vars preserve same-origin behavior.
+ * When these vars are unset the app uses same-origin paths, which on deployed
+ * environments are typically rewritten/proxied to the backend (e.g. Vercel →
+ * Railway). Unset vars do NOT imply a local environment.
  */
 
 export function checkApiConfig(): { isValid: boolean; error?: string } {
@@ -131,24 +133,21 @@ export function getApiUrl(path: string): string {
 }
 
 export function getApiEnvironmentLabel(): "dev" | "prod" | "local" | "custom" {
-  if (!apiBaseUrl) return "local";
+  // Resolve the hostname to classify. When VITE_API_BASE_URL is not set the
+  // app routes /api/* via Vercel rewrites or same-origin — "no explicit host"
+  // does NOT mean local. Use the page's own hostname as the fallback so the
+  // label reflects the real deployment environment.
+  const hostname = (() => {
+    if (apiBaseUrl) {
+      try { return new URL(apiBaseUrl).hostname.toLowerCase(); } catch { /* fall through */ }
+    }
+    return typeof window !== "undefined" ? window.location.hostname.toLowerCase() : "";
+  })();
 
-  try {
-    const hostname = new URL(apiBaseUrl).hostname.toLowerCase();
-    if (
-      hostname.includes("dev") ||
-      hostname.includes("staging") ||
-      hostname.includes("test")
-    ) {
-      return "dev";
-    }
-    if (hostname.includes("prod") || hostname.includes("production")) {
-      return "prod";
-    }
-    return "custom";
-  } catch {
-    return "custom";
-  }
+  if (!hostname || hostname === "localhost" || hostname === "127.0.0.1") return "local";
+  if (hostname.includes("dev") || hostname.includes("staging") || hostname.includes("test")) return "dev";
+  if (hostname.includes("prod") || hostname.includes("production")) return "prod";
+  return "custom";
 }
 
 export function getApiBaseUrlForDebug(): string {
