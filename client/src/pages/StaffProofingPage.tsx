@@ -451,8 +451,8 @@ function getVersionStatusBadgeClass(status: ProofVersionStatus) {
 }
 
 function getPrimaryActionLabel(canSendCurrentVersion: boolean, displayedVersion: ProofVersionHistoryEntry | null) {
-  if (!canSendCurrentVersion) return "New Proof";
-  return `Upload & Send v${displayedVersion?.versionNumber ?? "?"} Proof`;
+  if (!canSendCurrentVersion) return "New Proof Draft";
+  return `Send Draft v${displayedVersion?.versionNumber ?? "?"}`;
 }
 
 function getVersionStatusLabel(status: ProofVersionStatus | null | undefined) {
@@ -702,55 +702,61 @@ export default function StaffProofingPage() {
         throw new Error("Select a proofing queue row first");
       }
 
-      let body: Record<string, unknown>;
-
       if (createMode === "generated") {
-        body = {
-          mode: "generated",
-          internalNotes: createInternalNotes.trim() || null,
-        };
-      } else {
-        let proofFileId = selectedExistingAttachmentId;
+        // Generated mode: create + send in one step via send-proof.
+        // Returns the proof already in awaiting_response state.
+        const result = await readJson<JsonEnvelope<{ proofVersion: ProofVersionHistoryEntry; proofing: ProofingReadModel }>>(
+          `/api/proofing/line-item/${selectedRow.lineItemId}/send-proof`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              mode: "generated",
+              internalNotes: createInternalNotes.trim() || null,
+            }),
+          },
+        );
+        return { data: result.data, isDraft: false };
+      }
 
-        if (uploadFile) {
-          const uploadResult = await uploadAttachmentViaChunked({
-            file: uploadFile,
-            purpose: "order-attachment",
-            parentId: selectedRow.orderId,
-            linkUrl: `/api/orders/${selectedRow.orderId}/files`,
-            linkBody: {
-              orderLineItemId: selectedRow.lineItemId,
-              role: "proof",
-              side: "na",
-            },
-          });
+      // Uploaded mode: create draft only, then show send dialog.
+      let proofFileId = selectedExistingAttachmentId;
 
-          proofFileId = String(uploadResult.linkResponse?.data?.id || "").trim();
-        }
+      if (uploadFile) {
+        const uploadResult = await uploadAttachmentViaChunked({
+          file: uploadFile,
+          purpose: "order-attachment",
+          parentId: selectedRow.orderId,
+          linkUrl: `/api/orders/${selectedRow.orderId}/files`,
+          linkBody: {
+            orderLineItemId: selectedRow.lineItemId,
+            role: "proof",
+            side: "na",
+          },
+        });
 
-        if (!proofFileId) {
-          throw new Error("Select or upload a proof file before sending");
-        }
+        proofFileId = String(uploadResult.linkResponse?.data?.id || "").trim();
+      }
 
-        body = {
-          mode: "uploaded",
-          proofFileId,
-          internalNotes: createInternalNotes.trim() || null,
-        };
+      if (!proofFileId) {
+        throw new Error("Select or upload a proof file before creating draft");
       }
 
       const result = await readJson<JsonEnvelope<{ proofVersion: ProofVersionHistoryEntry; proofing: ProofingReadModel }>>(
-        `/api/proofing/line-item/${selectedRow.lineItemId}/send-proof`,
+        `/api/proofing/line-item/${selectedRow.lineItemId}/versions`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify({
+            proofFileId,
+            internalNotes: createInternalNotes.trim() || null,
+          }),
         },
       );
 
-      return result.data;
+      return { data: result.data, isDraft: true };
     },
-    onSuccess: async (data) => {
+    onSuccess: async ({ data, isDraft }) => {
       await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
       setSelectedVersionId(data.proofVersion.id);
       setCreateDialogOpen(false);
@@ -758,13 +764,28 @@ export default function StaffProofingPage() {
       setSelectedExistingAttachmentId("");
       setCreateInternalNotes("");
       setUploadFile(null);
-      toast({
-        title: createMode === "generated" ? "Generated proof sent" : "Proof sent",
-        description: `Version ${data.proofVersion.versionNumber} is now awaiting response.`,
-      });
+
+      if (isDraft) {
+        // Uploaded draft: open send dialog with recipient pre-filled from last sent version.
+        const prevSentEmail = data.proofing?.proofVersionHistory
+          ?.slice()
+          .reverse()
+          .find((v) => v.id !== data.proofVersion.id && v.sentToEmail)
+          ?.sentToEmail ?? "";
+        setSendToEmail(prevSentEmail);
+        setSendToName("");
+        setCustomerMessage("");
+        setSendDialogOpen(true);
+      } else {
+        // Generated proof was sent immediately.
+        toast({
+          title: "Generated proof sent",
+          description: `Version ${data.proofVersion.versionNumber} is now awaiting customer response.`,
+        });
+      }
     },
     onError: (error: Error) => {
-      toast({ title: createMode === "generated" ? "Failed to generate proof" : "Failed to send proof", description: error.message, variant: "destructive" });
+      toast({ title: createMode === "generated" ? "Failed to generate proof" : "Failed to create proof draft", description: error.message, variant: "destructive" });
     },
   });
 
@@ -1103,10 +1124,19 @@ export default function StaffProofingPage() {
                 <div>
                   <Button
                     className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#1337ec] text-sm font-bold text-white shadow-lg shadow-[#1337ec]/20 transition-all hover:bg-[#1a43ff]"
-                    onClick={() => (canSendCurrentVersion ? setSendDialogOpen(true) : setCreateDialogOpen(true))}
+                    onClick={() => {
+                      if (canSendCurrentVersion) {
+                        setSendToEmail(displayedVersion?.sentToEmail ?? "");
+                        setSendToName(displayedVersion?.sentToName ?? "");
+                        setCustomerMessage("");
+                        setSendDialogOpen(true);
+                      } else {
+                        setCreateDialogOpen(true);
+                      }
+                    }}
                     disabled={!selectedRow}
                   >
-                    <Upload className="h-4 w-4" />
+                    {canSendCurrentVersion ? <Send className="h-4 w-4" /> : <Upload className="h-4 w-4" />}
                     {primaryActionLabel}
                   </Button>
                   {latestCustomerFeedback ? (
@@ -1263,21 +1293,42 @@ export default function StaffProofingPage() {
                     <div className="space-y-3">
                       {detail.proofVersionHistory.map((version) => {
                         const isSelected = version.id === selectedVersionId;
+                        const canResend = version.status === "draft";
                         return (
-                          <button
-                            key={version.id}
-                            type="button"
-                            onClick={() => setSelectedVersionId(version.id)}
-                            className={`w-full rounded-lg border p-3 text-left transition-all ${isSelected ? "border-[#1337ec] bg-[#1337ec]/10" : "border-[#232948] bg-[#141824]/40 hover:border-slate-600"}`}
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <p className="text-sm font-medium text-white">Version {version.versionNumber}</p>
-                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${getVersionStatusBadgeClass(version.status)}`}>
-                                {getVersionStatusLabel(version.status)}
-                              </span>
-                            </div>
-                            <p className="mt-1 text-[11px] text-slate-500">Created {formatTimestamp(version.createdAt)}</p>
-                          </button>
+                          <div key={version.id} className="space-y-1">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedVersionId(version.id)}
+                              className={`w-full rounded-lg border p-3 text-left transition-all ${isSelected ? "border-[#1337ec] bg-[#1337ec]/10" : "border-[#232948] bg-[#141824]/40 hover:border-slate-600"}`}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-sm font-medium text-white">Version {version.versionNumber}</p>
+                                <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${getVersionStatusBadgeClass(version.status)}`}>
+                                  {getVersionStatusLabel(version.status)}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-[11px] text-slate-500">Created {formatTimestamp(version.createdAt)}</p>
+                              {version.sentToEmail ? (
+                                <p className="mt-0.5 text-[11px] text-slate-500">Sent to: {version.sentToEmail}</p>
+                              ) : null}
+                            </button>
+                            {canResend ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedVersionId(version.id);
+                                  setSendToEmail(version.sentToEmail ?? "");
+                                  setSendToName(version.sentToName ?? "");
+                                  setCustomerMessage("");
+                                  setSendDialogOpen(true);
+                                }}
+                                className="w-full rounded-lg border border-[#232948] bg-[#141824]/40 px-3 py-1.5 text-left text-[10px] font-bold uppercase tracking-wider text-[#1337ec] transition-all hover:border-[#1337ec] hover:bg-[#1337ec]/10"
+                              >
+                                <Send className="mr-1.5 inline h-3 w-3" />
+                                Send this draft
+                              </button>
+                            ) : null}
+                          </div>
                         );
                       })}
                     </div>
@@ -1296,9 +1347,9 @@ export default function StaffProofingPage() {
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Create Proof Version</DialogTitle>
+            <DialogTitle>Create Proof Draft</DialogTitle>
             <DialogDescription>
-              Generate a basic proof from saved data or send a manually uploaded proof file through the canonical proof flow.
+              Generate a proof from saved data or attach an uploaded file. You will confirm the recipient before it is sent.
             </DialogDescription>
           </DialogHeader>
 
@@ -1325,7 +1376,7 @@ export default function StaffProofingPage() {
             {createMode === "generated" ? (
               <div className="rounded-lg border p-4 text-sm text-muted-foreground">
                 <p className="font-medium text-foreground">Generated proof uses permanent saved data only.</p>
-                <p className="mt-2">It will build a normalized proof snapshot from the saved line item, use the latest saved artwork source, render a basic PDF artifact, create a canonical proof version, and send it immediately for approval.</p>
+                <p className="mt-2">It will build a normalized proof snapshot from the saved line item, use the latest saved artwork source, render a basic PDF artifact, and create a draft proof version. You will confirm the recipient before it is sent.</p>
                 <p className="mt-2">Current source: {currentSnapshot?.sourceArtwork?.fileName || "No saved artwork source available"}</p>
               </div>
             ) : (
@@ -1338,7 +1389,7 @@ export default function StaffProofingPage() {
                     accept=".pdf,image/*"
                     onChange={(event) => setUploadFile(event.target.files?.[0] || null)}
                   />
-                  <p className="text-xs text-muted-foreground">If you upload a file here, it will be attached as the proof artifact and sent immediately.</p>
+                  <p className="text-xs text-muted-foreground">If you upload a file here, it will be attached as the proof artifact. You will confirm the recipient before it is sent.</p>
                 </div>
 
                 <div className="grid gap-2">
@@ -1401,7 +1452,7 @@ export default function StaffProofingPage() {
               }
             >
               {createDraftMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
-              {createMode === "generated" ? "Generate & Send" : "Upload / Select & Send"}
+              {createMode === "generated" ? "Generate Draft" : "Create Draft"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1412,18 +1463,38 @@ export default function StaffProofingPage() {
           <DialogHeader>
             <DialogTitle>Send Proof for Review</DialogTitle>
             <DialogDescription>
-              Send the selected draft version to the customer for review. These fields are optional.
+              Review the proof details below, confirm the recipient, and send for customer approval.
             </DialogDescription>
           </DialogHeader>
 
           <div className="grid gap-4">
+            {displayedVersion ? (
+              <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+                <p className="font-medium">
+                  Version {displayedVersion.versionNumber}
+                  {displayedFile ? ` — ${displayedFile.originalFilename || displayedFile.fileName || "Proof file"}` : ""}
+                </p>
+                <p className="mt-0.5 text-xs text-muted-foreground">Status: {displayedVersion.status}</p>
+              </div>
+            ) : null}
             <div className="grid gap-2">
               <Label htmlFor="proof-send-name">Send to name</Label>
-              <Input id="proof-send-name" value={sendToName} onChange={(event) => setSendToName(event.target.value)} />
+              <Input id="proof-send-name" value={sendToName} onChange={(event) => setSendToName(event.target.value)} placeholder="Customer name (optional)" />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="proof-send-email">Send to email</Label>
-              <Input id="proof-send-email" value={sendToEmail} onChange={(event) => setSendToEmail(event.target.value)} />
+              <Label htmlFor="proof-send-email">
+                Send to email <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                id="proof-send-email"
+                type="email"
+                value={sendToEmail}
+                onChange={(event) => setSendToEmail(event.target.value)}
+                placeholder="customer@example.com"
+              />
+              {sendDialogOpen && !sendToEmail.trim() ? (
+                <p className="text-xs text-destructive">A recipient email is required to send the proof.</p>
+              ) : null}
             </div>
             <div className="grid gap-2">
               <Label htmlFor="proof-customer-message">Customer message</Label>
@@ -1441,7 +1512,10 @@ export default function StaffProofingPage() {
             <Button variant="outline" onClick={() => setSendDialogOpen(false)} disabled={sendMutation.isPending}>
               Cancel
             </Button>
-            <Button onClick={() => sendMutation.mutate()} disabled={sendMutation.isPending || displayedVersion?.status !== "draft"}>
+            <Button
+              onClick={() => sendMutation.mutate()}
+              disabled={sendMutation.isPending || displayedVersion?.status !== "draft" || !sendToEmail.trim()}
+            >
               {sendMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
               Send proof
             </Button>
