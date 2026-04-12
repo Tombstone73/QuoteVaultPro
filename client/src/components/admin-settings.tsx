@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Link } from "wouter";
@@ -372,16 +372,19 @@ function GmailConnectionCard() {
   const [fromNameValue, setFromNameValue] = useState("");
   const [isConnecting, setIsConnecting] = useState(false);
 
-  // Read ?connected=true or ?error=* from the URL after OAuth redirect
+  // Read ?connected=true or ?error=* from the URL after OAuth redirect.
+  // Runs once on mount only — the toast reference changing between renders
+  // must not re-trigger this, and the URL params are cleared immediately.
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const connected = params.get('connected');
     const error = params.get('error');
 
     if (connected === 'true') {
-      toast({ title: "Gmail connected", description: "Your Gmail account has been connected successfully." });
-      // Clean URL without reloading
       window.history.replaceState({}, '', window.location.pathname);
+      toastRef.current({ title: "Gmail connected", description: "Your Gmail account has been connected successfully." });
     } else if (error) {
       const messages: Record<string, string> = {
         cancelled: "Authorization was cancelled.",
@@ -393,17 +396,18 @@ function GmailConnectionCard() {
         platform_not_configured: "Gmail OAuth is not configured on this platform. Contact your administrator.",
         missing_code: "Authorization code missing. Please try again.",
       };
-      toast({
+      window.history.replaceState({}, '', window.location.pathname);
+      toastRef.current({
         title: "Gmail connection failed",
         description: messages[error] || `Unexpected error: ${error}`,
         variant: "destructive",
       });
-      window.history.replaceState({}, '', window.location.pathname);
     }
-  }, [toast]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Fetch current connection status
-  const { data: connection, isLoading, refetch } = useQuery<GmailConnectionData>({
+  const { data: connection, isLoading } = useQuery<GmailConnectionData>({
     queryKey: ["/api/email/connection"],
     queryFn: async () => {
       const res = await apiRequest("GET", "/api/email/connection");
@@ -527,22 +531,28 @@ function GmailConnectionCard() {
             </div>
           )}
 
-          {isConnected && connection?.connectedEmail && (
+          {/* Show account info when connected, disconnected, or revoked — so the user always
+               knows which Gmail address is (or was) in use and what action is needed. */}
+          {connection?.connectedEmail && (
             <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
               <div className="flex flex-col gap-1">
-                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Connected Account</span>
+                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  {isConnected ? 'Connected Account' : 'Previously Connected Account'}
+                </span>
                 <span className="font-medium">{connection.connectedEmail}</span>
-                {connection.connectedAt && (
+                {connection.connectedAt ? (
                   <span className="text-xs text-muted-foreground">
                     Connected {new Date(connection.connectedAt).toLocaleDateString()}
                   </span>
-                )}
+                ) : connection.status === 'disconnected' ? (
+                  <span className="text-xs text-muted-foreground">Disconnected</span>
+                ) : null}
               </div>
 
-              {/* Editable From Name */}
+              {/* Editable From Name — edit only available when connected */}
               <div className="flex flex-col gap-1">
                 <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Display Name</span>
-                {editingFromName ? (
+                {isConnected && editingFromName ? (
                   <div className="flex gap-2">
                     <Input
                       value={fromNameValue}
@@ -564,10 +574,12 @@ function GmailConnectionCard() {
                 ) : (
                   <div className="flex items-center gap-2">
                     <span className="text-sm">{connection.fromName || <span className="text-muted-foreground italic">Not set</span>}</span>
-                    <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => setEditingFromName(true)}>
-                      <Edit className="w-3 h-3 mr-1" />
-                      Edit
-                    </Button>
+                    {isConnected && (
+                      <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => setEditingFromName(true)}>
+                        <Edit className="w-3 h-3 mr-1" />
+                        Edit
+                      </Button>
+                    )}
                   </div>
                 )}
                 <span className="text-xs text-muted-foreground">The name shown in the "From" field of sent emails.</span>
