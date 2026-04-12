@@ -306,14 +306,36 @@ export function registerEmailRoutes(
    * GET /api/email/connection
    * Returns the current Gmail connection state for the org.
    * Never exposes tokens or client secrets.
+   * Must never return 500 — the UI depends on this for initial page render.
    */
   app.get("/api/email/connection", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    const platformConfigured = !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+
+    // Temporary diagnostics — logs boolean presence only, never values.
+    console.log('[Gmail OAuth] /connection — platform env check:', {
+      hasClientId: !!process.env.GOOGLE_CLIENT_ID,
+      hasClientSecret: !!process.env.GOOGLE_CLIENT_SECRET,
+      hasAppUrl: !!process.env.APP_URL,
+      appUrl: process.env.APP_URL || '(not set)',
+      nodeEnv: process.env.NODE_ENV || '(not set)',
+    });
+
     try {
       const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      if (!organizationId) {
+        console.error('[Gmail OAuth] /connection — missing organization context');
+        return res.json({
+          status: 'not_connected',
+          connected: false,
+          connectedEmail: null,
+          fromName: null,
+          settingsId: null,
+          connectedAt: null,
+          platformConfigured,
+        });
+      }
 
       const settings = await storage.getDefaultEmailSettings(organizationId);
-      const platformConfigured = !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
 
       if (!settings) {
         return res.json({
@@ -337,8 +359,17 @@ export function registerEmailRoutes(
         platformConfigured,
       });
     } catch (error) {
-      console.error('[Gmail OAuth] /connection error:', error);
-      res.status(500).json({ message: 'Failed to fetch connection status' });
+      // Log for Railway diagnostics but never crash the UI with a 500.
+      console.error('[Gmail OAuth] /connection — unexpected error:', error);
+      return res.json({
+        status: 'not_connected',
+        connected: false,
+        connectedEmail: null,
+        fromName: null,
+        settingsId: null,
+        connectedAt: null,
+        platformConfigured,
+      });
     }
   });
 
