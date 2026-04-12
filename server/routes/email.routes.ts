@@ -1,18 +1,13 @@
 /**
  * email.routes.ts
  *
- * Email Settings, Email Sending, and Gmail OAuth connection routes.
+ * Email sending and platform-managed Gmail OAuth connection routes.
  *
- * Existing routes:
- *   GET    /api/email-settings
- *   GET    /api/email-settings/default
- *   POST   /api/email-settings
- *   PATCH  /api/email-settings/:id
- *   DELETE /api/email-settings/:id
- *   POST   /api/email/test
- *   POST   /api/quotes/:id/email
+ * Send routes:
+ *   POST   /api/email/test              — send test email via connected Gmail account
+ *   POST   /api/quotes/:id/email        — send quote email to recipient
  *
- * New platform OAuth routes (migration 0061):
+ * Platform OAuth routes:
  *   GET    /api/email/google/start      — generate OAuth URL, redirect user to Google
  *   GET    /api/email/google/callback   — receive code, exchange tokens, store connection
  *   GET    /api/email/connection        — current connection status for the org
@@ -26,12 +21,9 @@
 import crypto from "crypto";
 import type { Express } from "express";
 import { google } from "googleapis";
-import { z } from "zod";
-import { fromZodError } from "zod-validation-error";
 import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
 import { emailService } from "../emailService";
-import { insertEmailSettingsSchema, updateEmailSettingsSchema } from "@shared/schema";
 
 // ---------------------------------------------------------------------------
 // OAuth state helpers — same pattern as quickbooksService.ts
@@ -101,86 +93,6 @@ export function registerEmailRoutes(
   },
 ): void {
   const { isAuthenticated, tenantContext, isAdmin } = middleware;
-
-  // ==================== Email Settings Routes ====================
-
-  app.get("/api/email-settings", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const settings = await storage.getAllEmailSettings(organizationId);
-      res.json(settings);
-    } catch (error) {
-      console.error("Error fetching email settings:", error);
-      res.status(500).json({ message: "Failed to fetch email settings" });
-    }
-  });
-
-  app.get("/api/email-settings/default", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const settings = await storage.getDefaultEmailSettings(organizationId);
-      if (!settings) {
-        return res.status(404).json({ message: "No default email settings found" });
-      }
-      res.json(settings);
-    } catch (error) {
-      console.error("Error fetching default email settings:", error);
-      res.status(500).json({ message: "Failed to fetch default email settings" });
-    }
-  });
-
-  app.post("/api/email-settings", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const settingsData = insertEmailSettingsSchema.parse(req.body);
-      const { organizationId: _orgId, ...settingsWithoutOrgId } =
-        settingsData as typeof settingsData & { organizationId?: string };
-      const settings = await storage.createEmailSettings(organizationId, settingsWithoutOrgId);
-      res.json(settings);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: fromZodError(error).message });
-      }
-      console.error("Error creating email settings:", error);
-      res.status(500).json({ message: "Failed to create email settings" });
-    }
-  });
-
-  app.patch("/api/email-settings/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const settingsData = updateEmailSettingsSchema.parse({
-        ...req.body,
-        id: req.params.id,
-      });
-      const { id, organizationId: _orgId, ...updateData } =
-        settingsData as typeof settingsData & { organizationId?: string };
-      const settings = await storage.updateEmailSettings(organizationId, req.params.id, updateData);
-      res.json(settings);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: fromZodError(error).message });
-      }
-      console.error("Error updating email settings:", error);
-      res.status(500).json({ message: "Failed to update email settings" });
-    }
-  });
-
-  app.delete("/api/email-settings/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      await storage.deleteEmailSettings(organizationId, req.params.id);
-      res.json({ message: "Email settings deleted successfully" });
-    } catch (error) {
-      console.error("Error deleting email settings:", error);
-      res.status(500).json({ message: "Failed to delete email settings" });
-    }
-  });
 
   // ==================== Email Sending Routes ====================
 

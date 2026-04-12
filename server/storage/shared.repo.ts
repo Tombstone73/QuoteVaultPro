@@ -911,22 +911,6 @@ export class SharedRepository {
     }
 
     // Email settings operations (tenant-scoped)
-    async getAllEmailSettings(organizationId: string): Promise<EmailSettings[]> {
-        return await this.dbInstance
-            .select()
-            .from(emailSettings)
-            .where(and(eq(emailSettings.organizationId, organizationId), eq(emailSettings.isActive, true)))
-            .orderBy(emailSettings.isDefault, emailSettings.createdAt);
-    }
-
-    async getEmailSettingsById(organizationId: string, id: string): Promise<EmailSettings | undefined> {
-        const [settings] = await this.dbInstance
-            .select()
-            .from(emailSettings)
-            .where(and(eq(emailSettings.id, id), eq(emailSettings.organizationId, organizationId)));
-        return settings;
-    }
-
     async getDefaultEmailSettings(organizationId: string): Promise<EmailSettings | undefined> {
         const [settings] = await this.dbInstance
             .select()
@@ -934,22 +918,6 @@ export class SharedRepository {
             .where(and(eq(emailSettings.organizationId, organizationId), eq(emailSettings.isActive, true), eq(emailSettings.isDefault, true)))
             .limit(1);
         return settings;
-    }
-
-    async createEmailSettings(organizationId: string, settings: Omit<InsertEmailSettings, 'organizationId'>): Promise<EmailSettings> {
-        // If this is set as default, unset all other defaults first within org
-        if (settings.isDefault) {
-            await this.dbInstance
-                .update(emailSettings)
-                .set({ isDefault: false, updatedAt: new Date() })
-                .where(and(eq(emailSettings.isDefault, true), eq(emailSettings.organizationId, organizationId)));
-        }
-
-        const [newSettings] = await this.dbInstance
-            .insert(emailSettings)
-            .values({ ...settings, organizationId } as typeof emailSettings.$inferInsert)
-            .returning();
-        return newSettings;
     }
 
     async updateEmailSettings(organizationId: string, id: string, settingsData: Partial<Omit<InsertEmailSettings, 'organizationId'>>): Promise<EmailSettings> {
@@ -969,10 +937,6 @@ export class SharedRepository {
             .where(and(eq(emailSettings.id, id), eq(emailSettings.organizationId, organizationId)))
             .returning();
         return updated;
-    }
-
-    async deleteEmailSettings(organizationId: string, id: string): Promise<void> {
-        await this.dbInstance.delete(emailSettings).where(and(eq(emailSettings.id, id), eq(emailSettings.organizationId, organizationId)));
     }
 
     /**
