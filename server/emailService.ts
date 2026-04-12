@@ -106,10 +106,6 @@ interface EmailConfig {
   clientId?: string;
   clientSecret?: string;
   refreshToken?: string;
-  smtpHost?: string;
-  smtpPort?: number;
-  smtpUsername?: string;
-  smtpPassword?: string;
 }
 
 interface EmailTemplates {
@@ -172,18 +168,16 @@ class EmailService {
       return null;
     }
 
-    // Prefer platform-level credentials; fall back to legacy per-org credentials
-    const clientId = process.env.GOOGLE_CLIENT_ID || settings.clientId || undefined;
-    const clientSecret = process.env.GOOGLE_CLIENT_SECRET || settings.clientSecret || undefined;
+    const clientId = process.env.GOOGLE_CLIENT_ID || undefined;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET || undefined;
 
     console.log(`[EmailService] Loaded config for org ${organizationId}:`, {
       provider: settings.provider,
       fromAddress: settings.fromAddress,
       fromName: settings.fromName,
       connectionStatus: settings.connectionStatus,
-      usingPlatformCredentials: !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
-      hasClientId: !!clientId,
-      hasClientSecret: !!clientSecret,
+      hasPlatformClientId: !!clientId,
+      hasPlatformClientSecret: !!clientSecret,
       hasRefreshToken: !!settings.refreshToken,
     });
 
@@ -194,10 +188,6 @@ class EmailService {
       clientId,
       clientSecret,
       refreshToken: settings.refreshToken || undefined,
-      smtpHost: settings.smtpHost || undefined,
-      smtpPort: settings.smtpPort || undefined,
-      smtpUsername: settings.smtpUsername || undefined,
-      smtpPassword: settings.smtpPassword || undefined,
     };
   }
 

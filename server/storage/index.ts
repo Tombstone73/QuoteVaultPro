@@ -169,13 +169,9 @@ export const deleteFormulaTemplate = sharedRepo.deleteFormulaTemplate.bind(share
 export const getProductsByFormulaTemplate = sharedRepo.getProductsByFormulaTemplate.bind(sharedRepo);
 
 // Email settings operations
-export const getAllEmailSettings = sharedRepo.getAllEmailSettings.bind(sharedRepo);
-export const getEmailSettingsById = sharedRepo.getEmailSettingsById.bind(sharedRepo);
 export const getDefaultEmailSettings = sharedRepo.getDefaultEmailSettings.bind(sharedRepo);
-export const createEmailSettings = sharedRepo.createEmailSettings.bind(sharedRepo);
 export const updateEmailSettings = sharedRepo.updateEmailSettings.bind(sharedRepo);
-export const deleteEmailSettings = sharedRepo.deleteEmailSettings.bind(sharedRepo);
-// Platform Gmail OAuth connection operations (migration 0061)
+// Platform Gmail OAuth connection operations
 export const upsertGmailConnection = sharedRepo.upsertGmailConnection.bind(sharedRepo);
 export const disconnectGmailConnection = sharedRepo.disconnectGmailConnection.bind(sharedRepo);
 export const markEmailConnectionStatus = sharedRepo.markEmailConnectionStatus.bind(sharedRepo);
@@ -392,12 +388,8 @@ export const storage = {
     updateFormulaTemplate,
     deleteFormulaTemplate,
     getProductsByFormulaTemplate,
-    getAllEmailSettings,
-    getEmailSettingsById,
     getDefaultEmailSettings,
-    createEmailSettings,
     updateEmailSettings,
-    deleteEmailSettings,
     upsertGmailConnection,
     disconnectGmailConnection,
     markEmailConnectionStatus,
