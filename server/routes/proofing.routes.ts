@@ -5,7 +5,8 @@
  *   GET  /api/proofing/queue                                          — list proofing queue
  *   GET  /api/proofing/line-item/:lineItemId                          — resolve line item proofing truth
  *   POST /api/proofing/line-item/:lineItemId/versions                 — create proof version
- *   POST /api/proofing/versions/:proofVersionId/send                  — mark proof sent for review
+ *   POST /api/proofing/versions/:proofVersionId/send                  — mark proof sent for review (draft only)
+ *   POST /api/proofing/versions/:proofVersionId/resend                — resend notification for awaiting_response version
  *   POST /api/proofing/versions/:proofVersionId/respond               — record proof response (staff)
  *   POST /api/proofing/line-item/:lineItemId/manual-approval-override — admin manual override
  *
@@ -24,11 +25,13 @@ import { proofQueueSliceSchema } from "@shared/proofing";
 import { getRequestOrganizationId } from "../tenantContext";
 import {
   createAndSendProofVersion,
+  createGeneratedDraftProofVersion,
   createLineItemProofVersion,
   listProofingQueue,
   markProofVersionSent,
   recordManualProofApprovalOverride,
   recordProofResponse,
+  resendProofVersion,
   resolveLineItemProofingTruth,
 } from "../services/proofingService";
 import { createProofAccessToken } from "../services/proofAccessTokenService";
@@ -144,10 +147,17 @@ export function registerProofingRoutes(
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ error: "User ID not found" });
 
-      const parsed = z.object({
-        proofFileId: z.string().min(1),
-        internalNotes: z.string().optional().nullable(),
-      }).safeParse(req.body);
+      const parsed = z.discriminatedUnion("mode", [
+        z.object({
+          mode: z.literal("uploaded"),
+          proofFileId: z.string().min(1),
+          internalNotes: z.string().optional().nullable(),
+        }),
+        z.object({
+          mode: z.literal("generated"),
+          internalNotes: z.string().optional().nullable(),
+        }),
+      ]).safeParse(req.body);
 
       if (!parsed.success) {
         return res.status(400).json({ error: fromZodError(parsed.error).message });
@@ -155,13 +165,31 @@ export function registerProofingRoutes(
 
       const lineItemId = String(req.params.lineItemId);
       const created = await db.transaction(async (tx) => {
-        const proofVersion = await createLineItemProofVersion(tx, {
-          organizationId,
-          lineItemId,
-          proofFileId: parsed.data.proofFileId,
-          createdByUserId: userId,
-          internalNotes: parsed.data.internalNotes ?? null,
-        });
+        let proofVersion: any;
+        let proofing: any;
+
+        if (parsed.data.mode === "generated") {
+          const result = await createGeneratedDraftProofVersion(tx, {
+            organizationId,
+            lineItemId,
+            actorUserId: userId,
+            internalNotes: parsed.data.internalNotes ?? null,
+          });
+          proofVersion = result.proofVersion;
+          proofing = result.proofing;
+        } else {
+          proofVersion = await createLineItemProofVersion(tx, {
+            organizationId,
+            lineItemId,
+            proofFileId: parsed.data.proofFileId,
+            createdByUserId: userId,
+            internalNotes: parsed.data.internalNotes ?? null,
+          });
+          proofing = await resolveLineItemProofingTruth(tx, {
+            organizationId,
+            lineItemId,
+          });
+        }
 
         await tx.insert(auditLogs).values({
           organizationId,
@@ -171,9 +199,10 @@ export function registerProofingRoutes(
           entityType: "line_item_proof_version",
           entityId: proofVersion.id,
           entityName: `Proof v${proofVersion.versionNumber}`,
-          description: `Created proof version ${proofVersion.versionNumber} for line item ${lineItemId}`,
+          description: `Created ${parsed.data.mode === "generated" ? "generated" : "uploaded"} proof draft v${proofVersion.versionNumber} for line item ${lineItemId}`,
           newValues: {
             lineItemId,
+            mode: parsed.data.mode,
             proofFileId: proofVersion.proofFileId,
             versionNumber: proofVersion.versionNumber,
             status: proofVersion.status,
@@ -181,11 +210,6 @@ export function registerProofingRoutes(
           ipAddress: req.ip || null,
           userAgent: req.headers["user-agent"] || null,
         } as any);
-
-        const proofing = await resolveLineItemProofingTruth(tx, {
-          organizationId,
-          lineItemId,
-        });
 
         return { proofVersion, proofing };
       });
@@ -230,16 +254,9 @@ export function registerProofingRoutes(
 
       const lineItemId = String(req.params.lineItemId);
 
-      // Captured inside the transaction so email fires only after commit.
-      let proofEmailPayload: {
-        to: string;
-        rawToken: string;
-        versionNumber: number;
-        sentToName: string | null;
-        customerMessage: string | null;
-      } | null = null;
+      type EmailPayload = { to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null };
 
-      const result = await db.transaction(async (tx) => {
+      const { emailPayload: proofEmailPayload, ...result } = await db.transaction(async (tx) => {
         const created = await createAndSendProofVersion(tx, {
           organizationId,
           lineItemId,
@@ -254,6 +271,7 @@ export function registerProofingRoutes(
 
         // Create portal access token whenever a recipient email is supplied.
         // Token creation requires proof to be in awaiting_response (guaranteed above).
+        let emailPayload: EmailPayload | null = null;
         if (parsed.data.sentToEmail) {
           const tokenResult = await createProofAccessToken(tx, {
             organizationId,
@@ -262,7 +280,7 @@ export function registerProofingRoutes(
             expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
             createdBy: userId,
           });
-          proofEmailPayload = {
+          emailPayload = {
             to: parsed.data.sentToEmail,
             rawToken: tokenResult.rawToken,
             versionNumber: created.proofVersion.versionNumber,
@@ -299,14 +317,10 @@ export function registerProofingRoutes(
           lineItemId,
         });
 
-        return {
-          ...created,
-          proofing,
-        };
+        return { ...created, proofing, emailPayload };
       });
 
-      // Send email after transaction commits. Failure is logged but does not
-      // roll back or block the API response — the proof state is already persisted.
+      // Send email after transaction commits — failure is logged but does not roll back.
       if (proofEmailPayload) {
         const baseUrl = getBaseUrl(req);
         const proofLink = `${baseUrl}/portal/proof/${proofEmailPayload.rawToken}`;
@@ -353,15 +367,9 @@ export function registerProofingRoutes(
         return res.status(400).json({ error: fromZodError(parsed.error).message });
       }
 
-      let sendEmailPayload: {
-        to: string;
-        rawToken: string;
-        versionNumber: number;
-        sentToName: string | null;
-        customerMessage: string | null;
-      } | null = null;
+      type SendEmailPayload = { to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null };
 
-      const result = await db.transaction(async (tx) => {
+      const { emailPayload: sendEmailPayload, ...result } = await db.transaction(async (tx) => {
         const sendResult = await markProofVersionSent(tx, {
           organizationId,
           proofVersionId: String(req.params.proofVersionId),
@@ -372,6 +380,7 @@ export function registerProofingRoutes(
         });
 
         // Create portal access token whenever a recipient email is supplied.
+        let emailPayload: SendEmailPayload | null = null;
         if (parsed.data.sentToEmail) {
           const tokenResult = await createProofAccessToken(tx, {
             organizationId,
@@ -380,7 +389,7 @@ export function registerProofingRoutes(
             expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
             createdBy: userId,
           });
-          sendEmailPayload = {
+          emailPayload = {
             to: parsed.data.sentToEmail,
             rawToken: tokenResult.rawToken,
             versionNumber: sendResult.proofVersion.versionNumber,
@@ -417,10 +426,7 @@ export function registerProofingRoutes(
           lineItemId: sendResult.proofVersion.lineItemId,
         });
 
-        return {
-          ...sendResult,
-          proofing,
-        };
+        return { ...sendResult, proofing, emailPayload };
       });
 
       if (sendEmailPayload) {
@@ -448,6 +454,113 @@ export function registerProofingRoutes(
       const status = error?.statusCode || 500;
       console.error("[Proofing] Error sending proof version for review:", error);
       return res.status(status).json({ error: error?.message || "Failed to send proof version for review" });
+    }
+  });
+
+  /**
+   * POST /api/proofing/versions/:proofVersionId/resend
+   * Re-send the proof notification for an already-sent (awaiting_response) version.
+   * Revokes old access tokens, creates a fresh one, and fires the email again.
+   * Does NOT create a new proof version or change the version's status.
+   */
+  app.post("/api/proofing/versions/:proofVersionId/resend", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.object({
+        sentToName: z.string().optional().nullable(),
+        sentToEmail: z.string().email().optional().nullable(),
+        customerMessage: z.string().optional().nullable(),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      type ResendEmailPayload = { to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null };
+
+      const { emailPayload: resendEmailPayload, ...result } = await db.transaction(async (tx) => {
+        const resendResult = await resendProofVersion(tx, {
+          organizationId,
+          proofVersionId: String(req.params.proofVersionId),
+          actorUserId: userId,
+          sentToName: parsed.data.sentToName ?? null,
+          sentToEmail: parsed.data.sentToEmail ?? null,
+          customerMessage: parsed.data.customerMessage ?? null,
+        });
+
+        let emailPayload: ResendEmailPayload | null = null;
+        if (parsed.data.sentToEmail) {
+          const tokenResult = await createProofAccessToken(tx, {
+            organizationId,
+            lineItemId: resendResult.proofVersion.lineItemId,
+            proofVersionId: resendResult.proofVersion.id,
+            expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+            createdBy: userId,
+          });
+          emailPayload = {
+            to: parsed.data.sentToEmail,
+            rawToken: tokenResult.rawToken,
+            versionNumber: resendResult.proofVersion.versionNumber,
+            sentToName: parsed.data.sentToName ?? null,
+            customerMessage: parsed.data.customerMessage ?? null,
+          };
+        }
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "UPDATE",
+          entityType: "line_item_proof_version",
+          entityId: resendResult.proofVersion.id,
+          entityName: `Proof v${resendResult.proofVersion.versionNumber}`,
+          description: `Resent proof notification for version ${resendResult.proofVersion.versionNumber}`,
+          newValues: {
+            sentToEmail: resendResult.proofVersion.sentToEmail,
+            sentAt: resendResult.proofVersion.sentAt,
+          },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        const proofing = await resolveLineItemProofingTruth(tx, {
+          organizationId,
+          lineItemId: resendResult.proofVersion.lineItemId,
+        });
+
+        return { ...resendResult, proofing, emailPayload };
+      });
+
+      if (resendEmailPayload) {
+        const baseUrl = getBaseUrl(req);
+        const proofLink = `${baseUrl}/portal/proof/${resendEmailPayload.rawToken}`;
+        emailService
+          .sendEmail(organizationId, {
+            to: resendEmailPayload.to,
+            subject: `Proof Ready for Review — Version ${resendEmailPayload.versionNumber}`,
+            html: buildProofEmailHtml({
+              proofLink,
+              versionNumber: resendEmailPayload.versionNumber,
+              sentToName: resendEmailPayload.sentToName,
+              customerMessage: resendEmailPayload.customerMessage,
+              fromName: req.user?.name || req.user?.email || "Your account manager",
+            }),
+          })
+          .catch((err: any) => {
+            console.error("[Proofing] Failed to send resend proof email:", err?.message ?? err);
+          });
+      }
+
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error resending proof notification:", error);
+      return res.status(status).json({ error: error?.message || "Failed to resend proof notification" });
     }
   });
 
