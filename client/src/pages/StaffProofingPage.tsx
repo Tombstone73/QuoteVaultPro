@@ -754,6 +754,7 @@ export default function StaffProofingPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            mode: "uploaded",
             proofFileId,
             internalNotes: createInternalNotes.trim() || null,
           }),
@@ -1088,9 +1089,28 @@ export default function StaffProofingPage() {
                     {!displayedVersion ? (
                       <div className="flex aspect-[1/1.414] items-center justify-center bg-slate-100 text-slate-500">No proof version selected.</div>
                     ) : !displayedFile ? (
-                      <div className="flex aspect-[1/1.414] items-center justify-center bg-slate-100 text-slate-500">This proof version has no resolved file.</div>
+                      <div className="flex aspect-[1/1.414] items-center justify-center bg-slate-100 text-slate-500">
+                        <div className="text-center">
+                          <AlertCircle className="mx-auto mb-3 h-10 w-10 opacity-50" />
+                          <p className="text-sm font-medium">Proof file not found</p>
+                          <p className="mt-1 text-xs text-slate-400">The file linked to this proof version is not accessible.<br />Try regenerating the proof.</p>
+                        </div>
+                      </div>
                     ) : previewIsPdf && embeddedPdfUrl ? (
-                      <iframe title={previewName} src={embeddedPdfUrl} className="aspect-[1/1.414] w-full bg-white" />
+                      <div className="relative aspect-[1/1.414] w-full">
+                        <iframe title={previewName} src={embeddedPdfUrl} className="h-full w-full bg-white" />
+                        {downloadUrl && (
+                          <a
+                            href={downloadUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="absolute bottom-3 right-3 flex items-center gap-1.5 rounded-md border border-slate-300 bg-white/90 px-2.5 py-1 text-[10px] font-medium text-slate-600 shadow-sm backdrop-blur-sm hover:bg-white"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            Open PDF
+                          </a>
+                        )}
+                      </div>
                     ) : previewIsImage && previewUrl ? (
                       <div className="aspect-[1/1.414] w-full overflow-hidden bg-slate-200">
                         <img
@@ -1104,14 +1124,38 @@ export default function StaffProofingPage() {
                       <div className="flex aspect-[1/1.414] items-center justify-center bg-slate-100 text-slate-500">
                         <div className="text-center">
                           <FileImage className="mx-auto mb-3 h-10 w-10 opacity-50" />
-                          Preview is not available inline for this file type.
+                          <p className="text-sm font-medium">Preview not available inline</p>
+                          <p className="mt-1 text-xs text-slate-400">This file type cannot be displayed in the browser.</p>
+                          {downloadUrl && (
+                            <a
+                              href={downloadUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                            >
+                              <ExternalLink className="h-3 w-3" />
+                              Open / Download
+                            </a>
+                          )}
                         </div>
                       </div>
                     ) : (
                       <div className="flex aspect-[1/1.414] items-center justify-center bg-slate-100 text-slate-500">
                         <div className="text-center">
                           <AlertCircle className="mx-auto mb-3 h-10 w-10 opacity-50" />
-                          No preview URL is available for the selected proof file.
+                          <p className="text-sm font-medium">Preview not available</p>
+                          <p className="mt-1 text-xs text-slate-400">No preview URL could be resolved for this proof file.</p>
+                          {downloadUrl && (
+                            <a
+                              href={downloadUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                            >
+                              <ExternalLink className="h-3 w-3" />
+                              Open / Download
+                            </a>
+                          )}
                         </div>
                       </div>
                     )}
