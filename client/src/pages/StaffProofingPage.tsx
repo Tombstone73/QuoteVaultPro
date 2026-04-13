@@ -1087,9 +1087,9 @@ export default function StaffProofingPage() {
                 <div className="flex flex-1 items-start justify-center overflow-auto bg-[radial-gradient(circle_at_center,_#141824,_#0b0e14)] p-8">
                   <div className="relative w-full max-w-3xl bg-white shadow-2xl">
                     {!displayedVersion ? (
-                      <div className="flex aspect-[1/1.414] items-center justify-center bg-slate-100 text-slate-500">No proof version selected.</div>
+                      <div className="flex min-h-64 items-center justify-center bg-slate-100 py-16 text-slate-500">No proof version selected.</div>
                     ) : !displayedFile ? (
-                      <div className="flex aspect-[1/1.414] items-center justify-center bg-slate-100 text-slate-500">
+                      <div className="flex min-h-64 items-center justify-center bg-slate-100 py-16 text-slate-500">
                         <div className="text-center">
                           <AlertCircle className="mx-auto mb-3 h-10 w-10 opacity-50" />
                           <p className="text-sm font-medium">Proof file not found</p>
@@ -1097,8 +1097,13 @@ export default function StaffProofingPage() {
                         </div>
                       </div>
                     ) : previewIsPdf && embeddedPdfUrl ? (
-                      <div className="relative aspect-[1/1.414] w-full">
-                        <iframe title={previewName} src={embeddedPdfUrl} className="h-full w-full bg-white" />
+                      <div className="relative w-full">
+                        <iframe
+                          title={previewName}
+                          src={embeddedPdfUrl}
+                          className="w-full bg-white"
+                          style={{ height: "80vh", minHeight: "36rem" }}
+                        />
                         {downloadUrl && (
                           <a
                             href={downloadUrl}
@@ -1121,7 +1126,7 @@ export default function StaffProofingPage() {
                         />
                       </div>
                     ) : previewUrl ? (
-                      <div className="flex aspect-[1/1.414] items-center justify-center bg-slate-100 text-slate-500">
+                      <div className="flex min-h-64 items-center justify-center bg-slate-100 py-16 text-slate-500">
                         <div className="text-center">
                           <FileImage className="mx-auto mb-3 h-10 w-10 opacity-50" />
                           <p className="text-sm font-medium">Preview not available inline</p>
@@ -1140,7 +1145,7 @@ export default function StaffProofingPage() {
                         </div>
                       </div>
                     ) : (
-                      <div className="flex aspect-[1/1.414] items-center justify-center bg-slate-100 text-slate-500">
+                      <div className="flex min-h-64 items-center justify-center bg-slate-100 py-16 text-slate-500">
                         <div className="text-center">
                           <AlertCircle className="mx-auto mb-3 h-10 w-10 opacity-50" />
                           <p className="text-sm font-medium">Preview not available</p>
