@@ -82,6 +82,9 @@ export const proofInputSnapshotSchema = z.object({
   displaySizeLabel: z.string().nullable(),
   quantity: z.number().int().nullable(),
   finishingSummary: z.array(z.string()),
+  // Flat map of every selected-option name → formatted value (not capped like finishingSummary).
+  // Used by the UI to look up specific options (contour cut, double sided, media, etc.) by name.
+  selectedOptionMap: z.record(z.string(), z.string()).optional(),
   snapshotBasisAt: z.string().datetime(),
   lineItemUpdatedAt: z.string().datetime().nullable(),
   sourceUpdatedAt: z.string().datetime().nullable(),

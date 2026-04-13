@@ -327,6 +327,18 @@ function formatDimensions(width: string | null | undefined, height: string | nul
   return `${width} × ${height}`;
 }
 
+/** Look up a value from the snapshot's selectedOptionMap by any of the supplied key variants (case-insensitive). */
+function getSnapshotOption(map: Record<string, string> | undefined, ...keys: string[]): string | null {
+  if (!map) return null;
+  for (const key of keys) {
+    const lower = key.toLowerCase();
+    for (const [k, v] of Object.entries(map)) {
+      if (k.toLowerCase() === lower) return v;
+    }
+  }
+  return null;
+}
+
 function getJobSpecificationRows(lineItem: any, row: ProofingQueueRow | undefined) {
   const selectedOptions = Array.isArray(lineItem?.specsJson?.selectedOptions)
     ? lineItem.specsJson.selectedOptions
@@ -1084,87 +1096,95 @@ export default function StaffProofingPage() {
                   </div>
                 </div>
 
-                <div className="flex flex-1 items-start justify-center overflow-auto bg-[radial-gradient(circle_at_center,_#141824,_#0b0e14)] p-8">
-                  <div className="relative w-full max-w-3xl bg-white shadow-2xl">
-                    {!displayedVersion ? (
-                      <div className="flex min-h-64 items-center justify-center bg-slate-100 py-16 text-slate-500">No proof version selected.</div>
-                    ) : !displayedFile ? (
-                      <div className="flex min-h-64 items-center justify-center bg-slate-100 py-16 text-slate-500">
-                        <div className="text-center">
-                          <AlertCircle className="mx-auto mb-3 h-10 w-10 opacity-50" />
-                          <p className="text-sm font-medium">Proof file not found</p>
-                          <p className="mt-1 text-xs text-slate-400">The file linked to this proof version is not accessible.<br />Try regenerating the proof.</p>
-                        </div>
+                {/* Proof render area — outer div scrolls when content overflows (zoom > fit).
+                    No max-width cap here; the proof fills the available pane. */}
+                <div className="flex flex-1 overflow-auto bg-[radial-gradient(circle_at_center,_#141824,_#0b0e14)]">
+                  {!displayedVersion ? (
+                    <div className="flex flex-1 items-center justify-center p-8 text-slate-500">
+                      <div className="w-full max-w-sm rounded-xl bg-slate-900/60 py-14 text-center">
+                        No proof version selected.
                       </div>
-                    ) : previewIsPdf && embeddedPdfUrl ? (
-                      <div className="relative w-full">
-                        <iframe
-                          title={previewName}
-                          src={embeddedPdfUrl}
-                          className="w-full bg-white"
-                          style={{ height: "80vh", minHeight: "36rem" }}
-                        />
+                    </div>
+                  ) : !displayedFile ? (
+                    <div className="flex flex-1 items-center justify-center p-8">
+                      <div className="w-full max-w-sm rounded-xl bg-slate-900/60 py-14 text-center text-slate-500">
+                        <AlertCircle className="mx-auto mb-3 h-10 w-10 opacity-40" />
+                        <p className="text-sm font-medium">Proof file not found</p>
+                        <p className="mt-1 text-xs text-slate-500">The file linked to this version is not accessible.<br />Try regenerating the proof.</p>
+                      </div>
+                    </div>
+                  ) : previewIsPdf && embeddedPdfUrl ? (
+                    /* PDF: fill 100% of the pane width; height driven by viewport. */
+                    <div className="relative flex-1">
+                      <iframe
+                        title={previewName}
+                        src={embeddedPdfUrl}
+                        className="h-full w-full bg-white"
+                        style={{ minHeight: "36rem" }}
+                      />
+                      {downloadUrl && (
+                        <a
+                          href={downloadUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="absolute bottom-4 right-4 flex items-center gap-1.5 rounded-md border border-slate-300 bg-white/90 px-2.5 py-1 text-[10px] font-medium text-slate-600 shadow-sm backdrop-blur-sm hover:bg-white"
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                          Open PDF
+                        </a>
+                      )}
+                    </div>
+                  ) : previewIsImage && previewUrl ? (
+                    /* Image: natural width is viewerZoom% of the pane; height auto.
+                       At 100% the image fills the full pane width. Zoom > 100 overflows
+                       horizontally so the outer div's overflow-auto allows panning. */
+                    <div className="flex-1 p-4">
+                      <img
+                        src={previewUrl}
+                        alt={previewName}
+                        className="block h-auto shadow-2xl"
+                        style={{ width: `${viewerZoom}%` }}
+                      />
+                    </div>
+                  ) : previewUrl ? (
+                    <div className="flex flex-1 items-center justify-center p-8">
+                      <div className="w-full max-w-sm rounded-xl bg-slate-900/60 py-14 text-center text-slate-500">
+                        <FileImage className="mx-auto mb-3 h-10 w-10 opacity-40" />
+                        <p className="text-sm font-medium">Preview not available inline</p>
+                        <p className="mt-1 text-xs text-slate-500">This file type cannot be displayed in the browser.</p>
                         {downloadUrl && (
                           <a
                             href={downloadUrl}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="absolute bottom-3 right-3 flex items-center gap-1.5 rounded-md border border-slate-300 bg-white/90 px-2.5 py-1 text-[10px] font-medium text-slate-600 shadow-sm backdrop-blur-sm hover:bg-white"
+                            className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700"
                           >
                             <ExternalLink className="h-3 w-3" />
-                            Open PDF
+                            Open / Download
                           </a>
                         )}
                       </div>
-                    ) : previewIsImage && previewUrl ? (
-                      <div className="w-full bg-slate-200 p-2">
-                        <img
-                          src={previewUrl}
-                          alt={previewName}
-                          className="block h-auto"
-                          style={{ width: `${viewerZoom}%` }}
-                        />
+                    </div>
+                  ) : (
+                    <div className="flex flex-1 items-center justify-center p-8">
+                      <div className="w-full max-w-sm rounded-xl bg-slate-900/60 py-14 text-center text-slate-500">
+                        <AlertCircle className="mx-auto mb-3 h-10 w-10 opacity-40" />
+                        <p className="text-sm font-medium">Preview not available</p>
+                        <p className="mt-1 text-xs text-slate-500">No preview URL could be resolved for this proof file.</p>
+                        {downloadUrl && (
+                          <a
+                            href={downloadUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            Open / Download
+                          </a>
+                        )}
                       </div>
-                    ) : previewUrl ? (
-                      <div className="flex min-h-64 items-center justify-center bg-slate-100 py-16 text-slate-500">
-                        <div className="text-center">
-                          <FileImage className="mx-auto mb-3 h-10 w-10 opacity-50" />
-                          <p className="text-sm font-medium">Preview not available inline</p>
-                          <p className="mt-1 text-xs text-slate-400">This file type cannot be displayed in the browser.</p>
-                          {downloadUrl && (
-                            <a
-                              href={downloadUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                            >
-                              <ExternalLink className="h-3 w-3" />
-                              Open / Download
-                            </a>
-                          )}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex min-h-64 items-center justify-center bg-slate-100 py-16 text-slate-500">
-                        <div className="text-center">
-                          <AlertCircle className="mx-auto mb-3 h-10 w-10 opacity-50" />
-                          <p className="text-sm font-medium">Preview not available</p>
-                          <p className="mt-1 text-xs text-slate-400">No preview URL could be resolved for this proof file.</p>
-                          {downloadUrl && (
-                            <a
-                              href={downloadUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                            >
-                              <ExternalLink className="h-3 w-3" />
-                              Open / Download
-                            </a>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
               </>
             )}
@@ -1322,6 +1342,99 @@ export default function StaffProofingPage() {
                   </div>
                 )}
               </div>
+
+              {currentSnapshot && (() => {
+                const optMap = currentSnapshot.selectedOptionMap;
+                const contourCut = getSnapshotOption(optMap, "Contour Cut", "Contour", "ContourCut", "Contour-Cut");
+                const doubleSided = getSnapshotOption(optMap, "Double Sided", "Double-Sided", "Two Sided", "2 Sided", "Sides", "Print Sides");
+                const media = getSnapshotOption(optMap, "Material", "Media", "Substrate", "Vinyl", "Material Type", "Fabric");
+                const knownKeys = new Set(
+                  [contourCut && "contour", doubleSided && "double", media && "material"]
+                    .filter(Boolean)
+                );
+                // Options not already surfaced as named fields — show as overflow pills
+                const otherOptions = Object.entries(optMap ?? {}).filter(([k]) => {
+                  const l = k.toLowerCase();
+                  return !knownKeys.has("contour") || !l.includes("contour")
+                    ? !knownKeys.has("double") || !l.includes("sided")
+                      ? !knownKeys.has("material") || !(l.includes("material") || l.includes("media") || l.includes("substrate") || l.includes("vinyl"))
+                      : true
+                    : true;
+                }).filter(([k]) => {
+                  const l = k.toLowerCase();
+                  if (contourCut && l.includes("contour")) return false;
+                  if (doubleSided && (l.includes("sided") || l.includes("sides") || l === "double sided" || l === "two sided")) return false;
+                  if (media && (l.includes("material") || l.includes("media") || l.includes("substrate") || l.includes("vinyl"))) return false;
+                  return true;
+                });
+
+                return (
+                  <div className="border-b border-[#232948] p-6">
+                    <h4 className="mb-4 text-[10px] font-bold uppercase tracking-widest text-slate-500">Proof Specs</h4>
+                    <div className="space-y-3">
+
+                      {/* Size comparison */}
+                      <div className="rounded-lg border border-[#232948] bg-[#0F1524] p-3">
+                        <div className="mb-2 flex items-center justify-between">
+                          <p className="text-[9px] font-bold uppercase text-slate-500">Size Check</p>
+                          <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[9px] font-bold text-slate-500">Artwork size not stored</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <p className="mb-0.5 text-[9px] text-slate-500">Ordered</p>
+                            <p className="text-xs font-bold text-slate-200">{currentSnapshot.displaySizeLabel || "Not specified"}</p>
+                          </div>
+                          <div>
+                            <p className="mb-0.5 text-[9px] text-slate-500">Detected</p>
+                            <p className="text-xs font-medium italic text-slate-600">Unavailable</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Quantity + key options */}
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-3">
+                        <div>
+                          <p className="text-[9px] font-bold uppercase text-slate-500">Quantity</p>
+                          <p className="text-xs font-bold text-slate-200">{currentSnapshot.quantity ?? "—"}</p>
+                        </div>
+                        {contourCut ? (
+                          <div>
+                            <p className="text-[9px] font-bold uppercase text-slate-500">Contour Cut</p>
+                            <p className={`text-xs font-bold ${contourCut.toLowerCase() === "yes" ? "text-amber-400" : "text-slate-200"}`}>{contourCut}</p>
+                          </div>
+                        ) : null}
+                        {doubleSided ? (
+                          <div>
+                            <p className="text-[9px] font-bold uppercase text-slate-500">Double Sided</p>
+                            <p className="text-xs font-bold text-slate-200">{doubleSided}</p>
+                          </div>
+                        ) : null}
+                        {media ? (
+                          <div className={!contourCut && !doubleSided ? "col-span-2" : ""}>
+                            <p className="text-[9px] font-bold uppercase text-slate-500">Media</p>
+                            <p className="text-xs font-bold text-slate-200">{media}</p>
+                          </div>
+                        ) : null}
+                      </div>
+
+                      {/* Remaining options as pills */}
+                      {otherOptions.length > 0 ? (
+                        <div>
+                          <p className="mb-1.5 text-[9px] font-bold uppercase text-slate-500">Other Options</p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {otherOptions.map(([k, v]) => (
+                              <span key={k} className="rounded border border-[#232948] bg-[#0F1524] px-2 py-0.5 text-[9px] text-slate-300">
+                                {k}: {v}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div className="border-b border-[#232948] bg-[#141824]/20 p-6">
                 <h4 className="mb-4 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-500">
