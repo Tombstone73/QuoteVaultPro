@@ -1,7 +1,7 @@
 import { promises as fsPromises } from "fs";
 import path from "path";
 
-import { and, desc, eq, inArray, isNotNull, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 
 import type {
   ManualApprovalOverrideHistoryEntry,
@@ -30,6 +30,7 @@ import {
   orders,
   productionEvents,
   productionJobs,
+  proofAccessTokens,
 } from "@shared/schema";
 import { generateBasicProofPdfBytes } from "../lib/proofPdf";
 import { SupabaseStorageService } from "../supabaseStorage";
@@ -706,6 +707,124 @@ export async function createAndSendProofVersion(tx: any, args: {
     snapshot,
     artifact,
   };
+}
+
+/**
+ * Create a generated proof version as a draft only — does NOT send or transition workflow state.
+ * Produces the same artifact as createAndSendProofVersion (mode=generated) but stops before
+ * markProofVersionSent, so staff must explicitly send via the /send endpoint.
+ */
+export async function createGeneratedDraftProofVersion(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  actorUserId: string;
+  internalNotes?: string | null;
+}) {
+  const snapshot = await buildProofInputSnapshot(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+  });
+
+  const source = await loadLatestArtworkProofSource(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+  });
+
+  if (!source) {
+    throw Object.assign(
+      new Error("A saved artwork source is required before generating a proof"),
+      { statusCode: 409 },
+    );
+  }
+
+  const artifact = await createGeneratedProofAttachment(tx, {
+    organizationId: args.organizationId,
+    actorUserId: args.actorUserId,
+    snapshot,
+    source,
+  });
+
+  const createdVersion = await createLineItemProofVersion(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+    proofFileId: artifact.attachmentId,
+    createdByUserId: args.actorUserId,
+    internalNotes: args.internalNotes ?? null,
+  });
+
+  const proofing = await resolveLineItemProofingTruth(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+  });
+
+  return { proofVersion: createdVersion, proofing };
+}
+
+/**
+ * Resend an already-sent proof notification for an awaiting_response version.
+ * Updates sentToEmail/sentToName/sentAt, revokes old access tokens for this version,
+ * and returns the updated version so the route layer can create a fresh access token
+ * and fire the email.
+ */
+export async function resendProofVersion(tx: any, args: {
+  organizationId: string;
+  proofVersionId: string;
+  actorUserId: string;
+  sentToName?: string | null;
+  sentToEmail?: string | null;
+  customerMessage?: string | null;
+}) {
+  const proofVersion = await loadProofVersion(tx, {
+    organizationId: args.organizationId,
+    proofVersionId: args.proofVersionId,
+  });
+
+  if (proofVersion.status !== "awaiting_response") {
+    throw Object.assign(
+      new Error("Only awaiting_response proof versions can be resent"),
+      { statusCode: 409 },
+    );
+  }
+
+  // Revoke all existing active tokens for this proof version so old links stop working.
+  await tx
+    .update(proofAccessTokens)
+    .set({ revokedAt: new Date() })
+    .where(
+      and(
+        eq(proofAccessTokens.proofVersionId, proofVersion.id),
+        eq(proofAccessTokens.organizationId, args.organizationId),
+        isNull(proofAccessTokens.revokedAt),
+      ),
+    );
+
+  const [updatedVersion] = await tx
+    .update(lineItemProofVersions)
+    .set({
+      sentToName: args.sentToName ?? null,
+      sentToEmail: args.sentToEmail ?? null,
+      customerMessage: args.customerMessage ?? null,
+      sentByUserId: args.actorUserId,
+      sentAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(lineItemProofVersions.id, proofVersion.id))
+    .returning();
+
+  await appendProofingEvent(tx, {
+    organizationId: args.organizationId,
+    lineItemId: proofVersion.lineItemId,
+    eventType: "proof_sent_for_review",
+    actorUserId: args.actorUserId,
+    payload: {
+      proofVersionId: proofVersion.id,
+      versionNumber: proofVersion.versionNumber,
+      resend: true,
+      sentToEmail: args.sentToEmail ?? null,
+    },
+  });
+
+  return { proofVersion: updatedVersion };
 }
 
 function logProofAutoSync(event: string, payload: Record<string, unknown>) {

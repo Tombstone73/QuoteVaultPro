@@ -502,6 +502,12 @@ export default function StaffProofingPage() {
   const [uploadFile, setUploadFile] = useState<File | null>(null);
 
   const [sendDialogOpen, setSendDialogOpen] = useState(false);
+  // "send" = send a draft for the first time; "resend" = re-notify for an awaiting_response version
+  const [sendDialogMode, setSendDialogMode] = useState<"send" | "resend">("send");
+  // versionIdForSend allows the resend flow to target a specific version without
+  // changing selectedVersionId (which drives the main preview panel).
+  const [versionIdForSend, setVersionIdForSend] = useState<string | null>(null);
+  const [sendEmailSource, setSendEmailSource] = useState<"prefilled" | "">("");
   const [sendToName, setSendToName] = useState("");
   const [sendToEmail, setSendToEmail] = useState("");
   const [customerMessage, setCustomerMessage] = useState("");
@@ -703,10 +709,10 @@ export default function StaffProofingPage() {
       }
 
       if (createMode === "generated") {
-        // Generated mode: create + send in one step via send-proof.
-        // Returns the proof already in awaiting_response state.
+        // Generated mode: create draft only via the versions endpoint.
+        // Staff must confirm recipient in the send dialog before the proof is dispatched.
         const result = await readJson<JsonEnvelope<{ proofVersion: ProofVersionHistoryEntry; proofing: ProofingReadModel }>>(
-          `/api/proofing/line-item/${selectedRow.lineItemId}/send-proof`,
+          `/api/proofing/line-item/${selectedRow.lineItemId}/versions`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -716,7 +722,7 @@ export default function StaffProofingPage() {
             }),
           },
         );
-        return { data: result.data, isDraft: false };
+        return { data: result.data, isDraft: true };
       }
 
       // Uploaded mode: create draft only, then show send dialog.
@@ -766,22 +772,19 @@ export default function StaffProofingPage() {
       setUploadFile(null);
 
       if (isDraft) {
-        // Uploaded draft: open send dialog with recipient pre-filled from last sent version.
-        const prevSentEmail = data.proofing?.proofVersionHistory
+        // Open send dialog — pre-fill recipient from most recent prior sent version if available.
+        const prevSentVersion = data.proofing?.proofVersionHistory
           ?.slice()
           .reverse()
-          .find((v) => v.id !== data.proofVersion.id && v.sentToEmail)
-          ?.sentToEmail ?? "";
+          .find((v) => v.id !== data.proofVersion.id && v.sentToEmail);
+        const prevSentEmail = prevSentVersion?.sentToEmail ?? "";
         setSendToEmail(prevSentEmail);
-        setSendToName("");
+        setSendToName(prevSentVersion?.sentToName ?? "");
+        setSendEmailSource(prevSentEmail ? "prefilled" : "");
         setCustomerMessage("");
+        setVersionIdForSend(data.proofVersion.id);
+        setSendDialogMode("send");
         setSendDialogOpen(true);
-      } else {
-        // Generated proof was sent immediately.
-        toast({
-          title: "Generated proof sent",
-          description: `Version ${data.proofVersion.versionNumber} is now awaiting customer response.`,
-        });
       }
     },
     onError: (error: Error) => {
@@ -791,8 +794,9 @@ export default function StaffProofingPage() {
 
   const sendMutation = useMutation({
     mutationFn: async () => {
-      if (!displayedVersion?.id) throw new Error("Select a draft proof version to send");
-      return readJson<JsonEnvelope<unknown>>(`/api/proofing/versions/${displayedVersion.id}/send`, {
+      const targetId = versionIdForSend ?? displayedVersion?.id;
+      if (!targetId) throw new Error("Select a draft proof version to send");
+      return readJson<JsonEnvelope<unknown>>(`/api/proofing/versions/${targetId}/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -805,6 +809,7 @@ export default function StaffProofingPage() {
     onSuccess: async () => {
       await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
       setSendDialogOpen(false);
+      setVersionIdForSend(null);
       setSendToName("");
       setSendToEmail("");
       setCustomerMessage("");
@@ -812,6 +817,33 @@ export default function StaffProofingPage() {
     },
     onError: (error: Error) => {
       toast({ title: "Failed to send proof", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const resendMutation = useMutation({
+    mutationFn: async () => {
+      if (!versionIdForSend) throw new Error("No proof version selected for resend");
+      return readJson<JsonEnvelope<unknown>>(`/api/proofing/versions/${versionIdForSend}/resend`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sentToName: sendToName.trim() || null,
+          sentToEmail: sendToEmail.trim() || null,
+          customerMessage: customerMessage.trim() || null,
+        }),
+      });
+    },
+    onSuccess: async () => {
+      await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
+      setSendDialogOpen(false);
+      setVersionIdForSend(null);
+      setSendToName("");
+      setSendToEmail("");
+      setCustomerMessage("");
+      toast({ title: "Proof notification resent", description: "The customer will receive a fresh proof review link." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to resend proof", description: error.message, variant: "destructive" });
     },
   });
 
@@ -1126,9 +1158,13 @@ export default function StaffProofingPage() {
                     className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#1337ec] text-sm font-bold text-white shadow-lg shadow-[#1337ec]/20 transition-all hover:bg-[#1a43ff]"
                     onClick={() => {
                       if (canSendCurrentVersion) {
-                        setSendToEmail(displayedVersion?.sentToEmail ?? "");
+                        const prefill = displayedVersion?.sentToEmail ?? "";
+                        setSendToEmail(prefill);
                         setSendToName(displayedVersion?.sentToName ?? "");
+                        setSendEmailSource(prefill ? "prefilled" : "");
                         setCustomerMessage("");
+                        setVersionIdForSend(displayedVersion?.id ?? null);
+                        setSendDialogMode("send");
                         setSendDialogOpen(true);
                       } else {
                         setCreateDialogOpen(true);
@@ -1293,7 +1329,8 @@ export default function StaffProofingPage() {
                     <div className="space-y-3">
                       {detail.proofVersionHistory.map((version) => {
                         const isSelected = version.id === selectedVersionId;
-                        const canResend = version.status === "draft";
+                        const isDraftVersion = version.status === "draft";
+                        const isAwaitingResponse = version.status === "awaiting_response";
                         return (
                           <div key={version.id} className="space-y-1">
                             <button
@@ -1308,24 +1345,51 @@ export default function StaffProofingPage() {
                                 </span>
                               </div>
                               <p className="mt-1 text-[11px] text-slate-500">Created {formatTimestamp(version.createdAt)}</p>
+                              {version.sentAt ? (
+                                <p className="mt-0.5 text-[11px] text-slate-500">Sent {formatTimestamp(version.sentAt)}</p>
+                              ) : null}
                               {version.sentToEmail ? (
-                                <p className="mt-0.5 text-[11px] text-slate-500">Sent to: {version.sentToEmail}</p>
+                                <p className="mt-0.5 text-[11px] text-slate-400">To: {version.sentToEmail}</p>
                               ) : null}
                             </button>
-                            {canResend ? (
+                            {isDraftVersion ? (
                               <button
                                 type="button"
                                 onClick={() => {
                                   setSelectedVersionId(version.id);
-                                  setSendToEmail(version.sentToEmail ?? "");
+                                  const prefill = version.sentToEmail ?? "";
+                                  setSendToEmail(prefill);
                                   setSendToName(version.sentToName ?? "");
+                                  setSendEmailSource(prefill ? "prefilled" : "");
                                   setCustomerMessage("");
+                                  setVersionIdForSend(version.id);
+                                  setSendDialogMode("send");
                                   setSendDialogOpen(true);
                                 }}
                                 className="w-full rounded-lg border border-[#232948] bg-[#141824]/40 px-3 py-1.5 text-left text-[10px] font-bold uppercase tracking-wider text-[#1337ec] transition-all hover:border-[#1337ec] hover:bg-[#1337ec]/10"
                               >
                                 <Send className="mr-1.5 inline h-3 w-3" />
                                 Send this draft
+                              </button>
+                            ) : null}
+                            {isAwaitingResponse ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedVersionId(version.id);
+                                  const prefill = version.sentToEmail ?? "";
+                                  setSendToEmail(prefill);
+                                  setSendToName(version.sentToName ?? "");
+                                  setSendEmailSource(prefill ? "prefilled" : "");
+                                  setCustomerMessage("");
+                                  setVersionIdForSend(version.id);
+                                  setSendDialogMode("resend");
+                                  setSendDialogOpen(true);
+                                }}
+                                className="w-full rounded-lg border border-[#232948] bg-[#141824]/40 px-3 py-1.5 text-left text-[10px] font-bold uppercase tracking-wider text-amber-400 transition-all hover:border-amber-500 hover:bg-amber-500/10"
+                              >
+                                <Send className="mr-1.5 inline h-3 w-3" />
+                                Resend notification
                               </button>
                             ) : null}
                           </div>
@@ -1458,67 +1522,126 @@ export default function StaffProofingPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={sendDialogOpen} onOpenChange={setSendDialogOpen}>
-        <DialogContent>
+      <Dialog open={sendDialogOpen} onOpenChange={(open) => {
+        if (!open) { setVersionIdForSend(null); setSendDialogMode("send"); }
+        setSendDialogOpen(open);
+      }}>
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Send Proof for Review</DialogTitle>
+            <DialogTitle>
+              {sendDialogMode === "resend" ? "Resend Proof Notification" : "Send Proof for Review"}
+            </DialogTitle>
             <DialogDescription>
-              Review the proof details below, confirm the recipient, and send for customer approval.
+              {sendDialogMode === "resend"
+                ? "Send a fresh review link to the customer. The existing proof version stays unchanged — only the notification email is resent."
+                : "Confirm the proof artifact and recipient, then send for customer approval."}
             </DialogDescription>
           </DialogHeader>
 
           <div className="grid gap-4">
+            {/* Proof artifact preview */}
             {displayedVersion ? (
-              <div className="rounded-lg border bg-muted/30 p-3 text-sm">
-                <p className="font-medium">
-                  Version {displayedVersion.versionNumber}
-                  {displayedFile ? ` — ${displayedFile.originalFilename || displayedFile.fileName || "Proof file"}` : ""}
-                </p>
-                <p className="mt-0.5 text-xs text-muted-foreground">Status: {displayedVersion.status}</p>
+              <div className="rounded-lg border bg-muted/30 p-3">
+                <div className="flex items-start gap-3">
+                  {previewIsImage && previewUrl ? (
+                    <img
+                      src={previewUrl}
+                      alt="Proof preview"
+                      className="h-16 w-16 shrink-0 rounded border object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded border bg-muted">
+                      <FileImage className="h-7 w-7 text-muted-foreground" />
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium leading-tight">
+                      Version {displayedVersion.versionNumber}
+                      {displayedFile ? ` — ${displayedFile.originalFilename || displayedFile.fileName || "Proof file"}` : ""}
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted-foreground capitalize">{displayedVersion.status.replace(/_/g, " ")}</p>
+                    {downloadUrl && displayedFile ? (
+                      <a
+                        href={downloadUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-1 inline-block text-xs text-primary underline underline-offset-2"
+                      >
+                        Open / Download
+                      </a>
+                    ) : null}
+                  </div>
+                </div>
               </div>
             ) : null}
+
+            {/* Recipient fields */}
             <div className="grid gap-2">
               <Label htmlFor="proof-send-name">Send to name</Label>
-              <Input id="proof-send-name" value={sendToName} onChange={(event) => setSendToName(event.target.value)} placeholder="Customer name (optional)" />
+              <Input
+                id="proof-send-name"
+                value={sendToName}
+                onChange={(event) => { setSendToName(event.target.value); setSendEmailSource(""); }}
+                placeholder="Customer name (optional)"
+              />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="proof-send-email">
-                Send to email <span className="text-destructive">*</span>
-              </Label>
+              <div className="flex items-baseline justify-between">
+                <Label htmlFor="proof-send-email">
+                  Send to email <span className="text-destructive">*</span>
+                </Label>
+                {sendEmailSource === "prefilled" && sendToEmail.trim() ? (
+                  <span className="text-[10px] text-muted-foreground">From previous send</span>
+                ) : null}
+              </div>
               <Input
                 id="proof-send-email"
                 type="email"
                 value={sendToEmail}
-                onChange={(event) => setSendToEmail(event.target.value)}
+                onChange={(event) => { setSendToEmail(event.target.value); setSendEmailSource(""); }}
                 placeholder="customer@example.com"
               />
               {sendDialogOpen && !sendToEmail.trim() ? (
-                <p className="text-xs text-destructive">A recipient email is required to send the proof.</p>
+                <p className="text-xs text-destructive">A recipient email is required.</p>
               ) : null}
             </div>
             <div className="grid gap-2">
               <Label htmlFor="proof-customer-message">Customer message</Label>
               <Textarea
                 id="proof-customer-message"
-                rows={4}
+                rows={3}
                 value={customerMessage}
                 onChange={(event) => setCustomerMessage(event.target.value)}
-                placeholder="Optional message included with the proof send"
+                placeholder="Optional message included with the proof email"
               />
             </div>
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setSendDialogOpen(false)} disabled={sendMutation.isPending}>
+            <Button
+              variant="outline"
+              onClick={() => setSendDialogOpen(false)}
+              disabled={sendMutation.isPending || resendMutation.isPending}
+            >
               Cancel
             </Button>
-            <Button
-              onClick={() => sendMutation.mutate()}
-              disabled={sendMutation.isPending || displayedVersion?.status !== "draft" || !sendToEmail.trim()}
-            >
-              {sendMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
-              Send proof
-            </Button>
+            {sendDialogMode === "resend" ? (
+              <Button
+                onClick={() => resendMutation.mutate()}
+                disabled={resendMutation.isPending || !sendToEmail.trim()}
+              >
+                {resendMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
+                Resend notification
+              </Button>
+            ) : (
+              <Button
+                onClick={() => sendMutation.mutate()}
+                disabled={sendMutation.isPending || !sendToEmail.trim()}
+              >
+                {sendMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
+                Send proof
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
