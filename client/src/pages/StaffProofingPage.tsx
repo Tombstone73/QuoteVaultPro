@@ -1112,12 +1112,12 @@ export default function StaffProofingPage() {
                         )}
                       </div>
                     ) : previewIsImage && previewUrl ? (
-                      <div className="aspect-[1/1.414] w-full overflow-hidden bg-slate-200">
+                      <div className="w-full bg-slate-200 p-2">
                         <img
                           src={previewUrl}
                           alt={previewName}
-                          className="h-full w-full object-cover"
-                          style={{ transform: `scale(${Math.max(viewerZoom, 85) / 100})` }}
+                          className="block h-auto"
+                          style={{ width: `${viewerZoom}%` }}
                         />
                       </div>
                     ) : previewUrl ? (
