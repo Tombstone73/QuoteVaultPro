@@ -392,6 +392,27 @@ async function loadProofSnapshotLineItem(tx: any, args: { organizationId: string
   };
 }
 
+function buildSelectedOptionMap(lineItem: LoadedProofSnapshotLineItem): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const option of Array.isArray(lineItem.selectedOptions) ? lineItem.selectedOptions : []) {
+    const name = String(option?.optionName ?? "").trim();
+    if (!name) continue;
+    const value = typeof option?.value === "boolean"
+      ? (option.value ? "Yes" : "No")
+      : String(option?.value ?? "").trim();
+    if (!value || value === "false" || value === "0") continue;
+    map[name] = value;
+  }
+  // Include material usages as "Material" entries when not already set by selectedOptions
+  for (const usage of Array.isArray(lineItem.materialUsages) ? lineItem.materialUsages : []) {
+    const materialName = String(usage?.materialName ?? "").trim();
+    if (!materialName) continue;
+    const key = "Material";
+    if (!map[key]) map[key] = materialName;
+  }
+  return map;
+}
+
 export async function buildProofInputSnapshot(tx: any, args: { organizationId: string; lineItemId: string }): Promise<ProofInputSnapshot> {
   const lineItem = await loadProofSnapshotLineItem(tx, args);
   const source = await loadLatestArtworkProofSource(tx, args);
@@ -422,6 +443,7 @@ export async function buildProofInputSnapshot(tx: any, args: { organizationId: s
     displaySizeLabel: buildDisplaySizeLabel(finishedWidth, finishedHeight),
     quantity: Number.isFinite(lineItem.quantity) ? lineItem.quantity : null,
     finishingSummary: buildFinishingSummary(lineItem),
+    selectedOptionMap: buildSelectedOptionMap(lineItem),
     snapshotBasisAt,
     lineItemUpdatedAt: toIsoString(lineItem.updatedAt),
     sourceUpdatedAt: toIsoString(source?.updatedAt ?? null),
