@@ -34,9 +34,9 @@ function ImageProofViewer({ attachment }: { attachment: PortalProofAttachment })
   const displayName = attachment.originalFilename ?? attachment.fileName;
 
   return (
-    <div className="space-y-2">
+    <div className="flex flex-col gap-2 md:flex-1 md:min-h-0">
       {/* Zoom toolbar */}
-      <div className="flex items-center gap-1 rounded-lg border bg-muted/30 px-2 py-1.5">
+      <div className="flex shrink-0 items-center gap-1 rounded-lg border bg-muted/30 px-2 py-1.5">
         <button
           type="button"
           onClick={() => setZoom((v) => Math.max(25, v - 10))}
@@ -67,7 +67,7 @@ function ImageProofViewer({ attachment }: { attachment: PortalProofAttachment })
       {/* Scroll / pan container */}
       <div
         ref={panRef}
-        className="max-h-[70vh] overflow-auto rounded border"
+        className="max-h-[65vh] overflow-auto rounded border md:max-h-none md:flex-1 md:min-h-0"
         style={{
           cursor: zoom > 100 ? (isDragging ? "grabbing" : "grab") : "default",
           userSelect: "none",
@@ -104,7 +104,7 @@ function ImageProofViewer({ attachment }: { attachment: PortalProofAttachment })
           href={attachment.downloadUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex items-center gap-1.5 text-sm text-primary hover:underline"
+          className="inline-flex shrink-0 items-center gap-1.5 text-sm text-primary hover:underline"
         >
           <Download className="h-3.5 w-3.5" />
           Download original
@@ -559,58 +559,81 @@ export default function PortalProofPage() {
   // ---- Already reviewed (GET returned non-pending status) ----
   if (data.status !== "pending") {
     return (
-      <ProofShell>
-        <ProofHeader
-          versionNumber={data.proofVersion.versionNumber}
-          createdAt={data.proofVersion.createdAt}
-        />
-        {primaryAttachment && (
-          primaryIsImage
-            ? <ImageProofViewer attachment={primaryAttachment} />
-            : <AttachmentPreview attachment={primaryAttachment} />
-        )}
-        {data.proofSpecs && <ProofSpecsSection specs={data.proofSpecs} />}
-        <AlreadyReviewedBanner status={data.status} />
-      </ProofShell>
+      <div className="flex min-h-screen flex-col bg-background md:h-screen md:flex-row md:overflow-hidden">
+        {/* Left: viewer */}
+        <div className="flex flex-col md:flex-1 md:min-h-0">
+          <div className="shrink-0 border-b px-4 py-4 md:px-6">
+            <ProofHeader
+              versionNumber={data.proofVersion.versionNumber}
+              createdAt={data.proofVersion.createdAt}
+            />
+          </div>
+          <div className="flex flex-col p-4 md:flex-1 md:min-h-0 md:overflow-y-auto md:p-6">
+            {primaryAttachment ? (
+              primaryIsImage
+                ? <ImageProofViewer attachment={primaryAttachment} />
+                : <AttachmentPreview attachment={primaryAttachment} />
+            ) : (
+              <div className="rounded border p-6 text-center text-sm text-muted-foreground">
+                No preview available. Contact your account manager.
+              </div>
+            )}
+          </div>
+        </div>
+        {/* Right: sidebar */}
+        <div className="border-t md:w-[360px] md:shrink-0 md:border-l md:border-t-0 md:overflow-y-auto">
+          <div className="space-y-4 p-4 md:p-5">
+            {data.proofSpecs && <ProofSpecsSection specs={data.proofSpecs} />}
+            <AlreadyReviewedBanner status={data.status} />
+          </div>
+        </div>
+      </div>
     );
   }
 
   // ---- Pending: ready for customer action ----
   return (
-    <ProofShell>
-      <ProofHeader
-        versionNumber={data.proofVersion.versionNumber}
-        createdAt={data.proofVersion.createdAt}
-      />
-
-      {/* Proof file */}
-      {primaryAttachment ? (
-        primaryIsImage
-          ? <ImageProofViewer attachment={primaryAttachment} />
-          : <AttachmentPreview attachment={primaryAttachment} />
-      ) : (
-        <div className="rounded border p-6 text-center text-sm text-muted-foreground">
-          No preview available. Contact your account manager.
+    <div className="flex min-h-screen flex-col bg-background md:h-screen md:flex-row md:overflow-hidden">
+      {/* Left: viewer */}
+      <div className="flex flex-col md:flex-1 md:min-h-0">
+        <div className="shrink-0 border-b px-4 py-4 md:px-6">
+          <ProofHeader
+            versionNumber={data.proofVersion.versionNumber}
+            createdAt={data.proofVersion.createdAt}
+          />
         </div>
-      )}
-
-      {/* Order specs */}
-      {data.proofSpecs && <ProofSpecsSection specs={data.proofSpecs} />}
-
-      {/* Mutation error (e.g. 409 race, 500) */}
-      {mutation.error && (
-        <div className="flex items-start gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3">
-          <AlertCircle className="h-4 w-4 mt-0.5 shrink-0 text-destructive" />
-          <p className="text-sm text-destructive">
-            {mutation.error?.message?.startsWith("409")
-              ? "This proof has already been reviewed. Please refresh the page."
-              : "Something went wrong. Please try again or contact your account manager."}
-          </p>
+        <div className="flex flex-col p-4 md:flex-1 md:min-h-0 md:overflow-y-auto md:p-6">
+          {primaryAttachment ? (
+            primaryIsImage
+              ? <ImageProofViewer attachment={primaryAttachment} />
+              : <AttachmentPreview attachment={primaryAttachment} />
+          ) : (
+            <div className="rounded border p-6 text-center text-sm text-muted-foreground">
+              No preview available. Contact your account manager.
+            </div>
+          )}
         </div>
-      )}
+      </div>
 
-      {/* Action panel */}
-      <ActionPanel isPending={mutation.isPending} onSubmit={handleSubmit} />
-    </ProofShell>
+      {/* Right: sidebar */}
+      <div className="border-t md:w-[360px] md:shrink-0 md:border-l md:border-t-0 md:overflow-y-auto">
+        <div className="space-y-4 p-4 md:p-5">
+          {data.proofSpecs && <ProofSpecsSection specs={data.proofSpecs} />}
+
+          {mutation.error && (
+            <div className="flex items-start gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3">
+              <AlertCircle className="h-4 w-4 mt-0.5 shrink-0 text-destructive" />
+              <p className="text-sm text-destructive">
+                {mutation.error?.message?.startsWith("409")
+                  ? "This proof has already been reviewed. Please refresh the page."
+                  : "Something went wrong. Please try again or contact your account manager."}
+              </p>
+            </div>
+          )}
+
+          <ActionPanel isPending={mutation.isPending} onSubmit={handleSubmit} />
+        </div>
+      </div>
+    </div>
   );
 }
