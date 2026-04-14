@@ -18,7 +18,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 import { validateProofToken } from "../services/proofAccessTokenService";
-import { recordProofResponse } from "../services/proofingService";
+import { buildProofInputSnapshot, recordProofResponse } from "../services/proofingService";
 import { enrichAttachmentWithUrls } from "../lib/supabaseObjectHelpers";
 
 export function registerPortalProofRoutes(app: Express): void {
@@ -52,6 +52,27 @@ export function registerPortalProofRoutes(app: Express): void {
 
       const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
 
+      // Build customer-safe proof specs from the line item snapshot.
+      // Catch and swallow errors so a snapshot failure never breaks the proof page.
+      let proofSpecs: {
+        displaySizeLabel: string | null;
+        quantity: number | null;
+        selectedOptionMap: Record<string, string>;
+      } | null = null;
+      try {
+        const snapshot = await buildProofInputSnapshot(db, {
+          organizationId: validation.tokenRecord.organizationId,
+          lineItemId: validation.tokenRecord.lineItemId,
+        });
+        proofSpecs = {
+          displaySizeLabel: snapshot.displaySizeLabel ?? null,
+          quantity: snapshot.quantity ?? null,
+          selectedOptionMap: snapshot.selectedOptionMap ?? {},
+        };
+      } catch {
+        // Non-critical — proof page still renders without specs
+      }
+
       return res.json({
         success: true,
         data: {
@@ -60,6 +81,7 @@ export function registerPortalProofRoutes(app: Express): void {
             versionNumber: validation.proofVersion.versionNumber,
             createdAt: new Date(validation.proofVersion.createdAt).toISOString(),
           },
+          proofSpecs,
           attachments: [
             {
               id: enrichedAttachment.id,
