@@ -1138,11 +1138,11 @@ export default function StaffProofingPage() {
                     /* Image: natural width is viewerZoom% of the pane; height auto.
                        At 100% the image fills the full pane width. Zoom > 100 overflows
                        horizontally so the outer div's overflow-auto allows panning. */
-                    <div className="flex-1 p-4">
+                    <div className="flex-1 overflow-auto p-4">
                       <img
                         src={previewUrl}
                         alt={previewName}
-                        className="block h-auto shadow-2xl"
+                        className="block h-auto max-w-none shadow-2xl"
                         style={{ width: `${viewerZoom}%` }}
                       />
                     </div>
