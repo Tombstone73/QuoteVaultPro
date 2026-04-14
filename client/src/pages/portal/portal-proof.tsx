@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   useProofToken,
   useSubmitProofAction,
   type ProofAction,
   type PortalProofAttachment,
+  type PortalProofSpecs,
 } from "@/hooks/portal/useProofToken";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -17,7 +18,154 @@ import {
   Loader2,
   RotateCcw,
   XCircle,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
+
+// ---- Image proof viewer (zoom + drag-to-pan) ------------------------------------
+
+function ImageProofViewer({ attachment }: { attachment: PortalProofAttachment }) {
+  const [zoom, setZoom] = useState(100);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number } | null>(null);
+  const panRef = useRef<HTMLDivElement | null>(null);
+
+  const src = attachment.previewUrl ?? attachment.originalUrl;
+  const displayName = attachment.originalFilename ?? attachment.fileName;
+
+  return (
+    <div className="space-y-2">
+      {/* Zoom toolbar */}
+      <div className="flex items-center gap-1 rounded-lg border bg-muted/30 px-2 py-1.5">
+        <button
+          type="button"
+          onClick={() => setZoom((v) => Math.max(25, v - 10))}
+          className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent"
+          title="Zoom out"
+        >
+          <ZoomOut className="h-4 w-4" />
+        </button>
+        <span className="w-12 text-center text-xs font-medium tabular-nums">{zoom}%</span>
+        <button
+          type="button"
+          onClick={() => setZoom((v) => Math.min(300, v + 10))}
+          className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent"
+          title="Zoom in"
+        >
+          <ZoomIn className="h-4 w-4" />
+        </button>
+        <div className="mx-1 h-3 w-px bg-border" />
+        <button
+          type="button"
+          onClick={() => setZoom(100)}
+          className="rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent"
+          title="Reset to 100%"
+        >
+          Reset
+        </button>
+      </div>
+      {/* Scroll / pan container */}
+      <div
+        ref={panRef}
+        className="max-h-[70vh] overflow-auto rounded border"
+        style={{
+          cursor: zoom > 100 ? (isDragging ? "grabbing" : "grab") : "default",
+          userSelect: "none",
+        }}
+        onMouseDown={(e) => {
+          if (zoom <= 100 || !panRef.current) return;
+          e.preventDefault();
+          dragRef.current = {
+            startX: e.clientX,
+            startY: e.clientY,
+            scrollLeft: panRef.current.scrollLeft,
+            scrollTop: panRef.current.scrollTop,
+          };
+          setIsDragging(true);
+        }}
+        onMouseMove={(e) => {
+          if (!isDragging || !dragRef.current || !panRef.current) return;
+          panRef.current.scrollLeft = dragRef.current.scrollLeft - (e.clientX - dragRef.current.startX);
+          panRef.current.scrollTop = dragRef.current.scrollTop - (e.clientY - dragRef.current.startY);
+        }}
+        onMouseUp={() => { setIsDragging(false); dragRef.current = null; }}
+        onMouseLeave={() => { setIsDragging(false); dragRef.current = null; }}
+      >
+        <img
+          src={src!}
+          alt={displayName}
+          className="block h-auto max-w-none"
+          style={{ width: `${zoom}%`, pointerEvents: isDragging ? "none" : "auto" }}
+          draggable={false}
+        />
+      </div>
+      {attachment.downloadUrl && (
+        <a
+          href={attachment.downloadUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 text-sm text-primary hover:underline"
+        >
+          <Download className="h-3.5 w-3.5" />
+          Download original
+        </a>
+      )}
+    </div>
+  );
+}
+
+// ---- Proof specs section -------------------------------------------------------
+
+function getSpecOption(map: Record<string, string>, ...keys: string[]): string | null {
+  for (const key of keys) {
+    const lower = key.toLowerCase();
+    for (const [k, v] of Object.entries(map)) {
+      if (k.toLowerCase() === lower) return v;
+    }
+  }
+  return null;
+}
+
+function ProofSpecsSection({ specs }: { specs: PortalProofSpecs }) {
+  const media = getSpecOption(specs.selectedOptionMap, "Material", "Media", "Substrate", "Vinyl", "Material Type", "Fabric");
+  const contourCut = getSpecOption(specs.selectedOptionMap, "Contour Cut", "Contour", "ContourCut", "Contour-Cut");
+  const doubleSided = getSpecOption(specs.selectedOptionMap, "Double Sided", "Double-Sided", "Two Sided", "2 Sided", "Sides", "Print Sides");
+
+  const rows: Array<{ label: string; value: React.ReactNode }> = [
+    {
+      label: "Ordered Size",
+      value: specs.displaySizeLabel ?? <span className="italic text-muted-foreground">Not specified</span>,
+    },
+    {
+      label: "Detected Artwork Size",
+      value: <span className="italic text-muted-foreground">Unavailable</span>,
+    },
+    {
+      label: "Quantity",
+      value: specs.quantity != null
+        ? specs.quantity
+        : <span className="italic text-muted-foreground">Not specified</span>,
+    },
+  ];
+
+  if (media) rows.push({ label: "Media", value: media });
+  if (contourCut) rows.push({ label: "Contour Cut", value: contourCut });
+  if (doubleSided) rows.push({ label: "Double Sided", value: doubleSided });
+
+  return (
+    <div className="rounded-lg border bg-card p-5 space-y-3">
+      <p className="text-sm font-medium">Order Specs</p>
+      <div className="space-y-2">
+        {rows.map(({ label, value }) => (
+          <div key={label} className="flex items-start justify-between gap-4 text-sm">
+            <span className="shrink-0 text-muted-foreground">{label}</span>
+            <span className="text-right font-medium">{value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // ---- Attachment preview --------------------------------------------------------
 
@@ -367,6 +515,8 @@ export default function PortalProofPage() {
   }
 
   const primaryAttachment = data.attachments[0] ?? null;
+  const primaryIsImage = (primaryAttachment?.mimeType?.startsWith("image/") ?? false)
+    && Boolean(primaryAttachment?.previewUrl ?? primaryAttachment?.originalUrl);
 
   // ---- Success confirmation ----
   if (successDecision !== null) {
@@ -414,7 +564,12 @@ export default function PortalProofPage() {
           versionNumber={data.proofVersion.versionNumber}
           createdAt={data.proofVersion.createdAt}
         />
-        {primaryAttachment && <AttachmentPreview attachment={primaryAttachment} />}
+        {primaryAttachment && (
+          primaryIsImage
+            ? <ImageProofViewer attachment={primaryAttachment} />
+            : <AttachmentPreview attachment={primaryAttachment} />
+        )}
+        {data.proofSpecs && <ProofSpecsSection specs={data.proofSpecs} />}
         <AlreadyReviewedBanner status={data.status} />
       </ProofShell>
     );
@@ -430,12 +585,17 @@ export default function PortalProofPage() {
 
       {/* Proof file */}
       {primaryAttachment ? (
-        <AttachmentPreview attachment={primaryAttachment} />
+        primaryIsImage
+          ? <ImageProofViewer attachment={primaryAttachment} />
+          : <AttachmentPreview attachment={primaryAttachment} />
       ) : (
         <div className="rounded border p-6 text-center text-sm text-muted-foreground">
           No preview available. Contact your account manager.
         </div>
       )}
+
+      {/* Order specs */}
+      {data.proofSpecs && <ProofSpecsSection specs={data.proofSpecs} />}
 
       {/* Mutation error (e.g. 409 race, 500) */}
       {mutation.error && (
