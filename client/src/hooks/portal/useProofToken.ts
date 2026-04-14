@@ -24,12 +24,19 @@ export type PortalProofAttachment = {
   }>;
 };
 
+export type PortalProofSpecs = {
+  displaySizeLabel: string | null;
+  quantity: number | null;
+  selectedOptionMap: Record<string, string>;
+};
+
 export type PortalProofData = {
   proofVersion: {
     id: string;
     versionNumber: number;
     createdAt: string;
   };
+  proofSpecs: PortalProofSpecs | null;
   attachments: PortalProofAttachment[];
   status: PortalProofStatus;
 };
