@@ -505,6 +505,9 @@ export default function StaffProofingPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [viewerZoom, setViewerZoom] = useState(85);
   const [viewerPage, setViewerPage] = useState(1);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number } | null>(null);
+  const imagePanRef = useRef<HTMLDivElement | null>(null);
   const versionHistoryRef = useRef<HTMLDivElement | null>(null);
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -1058,6 +1061,17 @@ export default function StaffProofingPage() {
                       >
                         <ZoomIn className="h-[18px] w-[18px]" />
                       </button>
+                      {previewIsImage && (
+                        <button
+                          type="button"
+                          className="rounded px-1.5 py-1 text-[10px] font-bold text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
+                          onClick={() => setViewerZoom(100)}
+                          disabled={!displayedFile}
+                          title="Reset zoom to 100%"
+                        >
+                          100%
+                        </button>
+                      )}
                       <div className="mx-1 h-3 w-px bg-[#232948]" />
                       <button
                         type="button"
@@ -1138,12 +1152,40 @@ export default function StaffProofingPage() {
                     /* Image: natural width is viewerZoom% of the pane; height auto.
                        At 100% the image fills the full pane width. Zoom > 100 overflows
                        horizontally so the outer div's overflow-auto allows panning. */
-                    <div className="flex-1 overflow-auto p-4">
+                    <div
+                      ref={imagePanRef}
+                      className="flex-1 overflow-auto p-4"
+                      style={{
+                        cursor: viewerZoom > 100 ? (isDragging ? "grabbing" : "grab") : "default",
+                        userSelect: "none",
+                      }}
+                      onMouseDown={(e) => {
+                        if (viewerZoom <= 100 || !imagePanRef.current) return;
+                        e.preventDefault();
+                        dragRef.current = {
+                          startX: e.clientX,
+                          startY: e.clientY,
+                          scrollLeft: imagePanRef.current.scrollLeft,
+                          scrollTop: imagePanRef.current.scrollTop,
+                        };
+                        setIsDragging(true);
+                      }}
+                      onMouseMove={(e) => {
+                        if (!isDragging || !dragRef.current || !imagePanRef.current) return;
+                        const dx = e.clientX - dragRef.current.startX;
+                        const dy = e.clientY - dragRef.current.startY;
+                        imagePanRef.current.scrollLeft = dragRef.current.scrollLeft - dx;
+                        imagePanRef.current.scrollTop = dragRef.current.scrollTop - dy;
+                      }}
+                      onMouseUp={() => { setIsDragging(false); dragRef.current = null; }}
+                      onMouseLeave={() => { setIsDragging(false); dragRef.current = null; }}
+                    >
                       <img
                         src={previewUrl}
                         alt={previewName}
                         className="block h-auto max-w-none shadow-2xl"
-                        style={{ width: `${viewerZoom}%` }}
+                        style={{ width: `${viewerZoom}%`, pointerEvents: isDragging ? "none" : "auto" }}
+                        draggable={false}
                       />
                     </div>
                   ) : previewUrl ? (
