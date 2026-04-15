@@ -6,6 +6,7 @@ import {
   type ProofAction,
   type PortalProofAttachment,
   type PortalProofSpecs,
+  type PortalProofText,
 } from "@/hooks/portal/useProofToken";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -175,6 +176,31 @@ function ProofSpecsSection({ specs }: { specs: PortalProofSpecs }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ---- Proof text section (customer note + disclaimer) --------------------------
+
+function ProofTextSection({ proofText }: { proofText: PortalProofText }) {
+  return (
+    <div className="space-y-3">
+      {proofText.customerNote && (
+        <div className="rounded-lg border bg-card p-4 space-y-1.5">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Proof Note
+          </p>
+          <p className="text-sm">{proofText.customerNote}</p>
+        </div>
+      )}
+      {proofText.disclaimer && (
+        <div className="rounded-lg border bg-muted/30 p-4 space-y-1.5">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Standard Approval Notice
+          </p>
+          <p className="text-sm text-muted-foreground">{proofText.disclaimer}</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -596,6 +622,9 @@ export default function PortalProofPage() {
         <div className="border-t md:w-[360px] md:shrink-0 md:border-l md:border-t-0 md:overflow-y-auto">
           <div className="space-y-4 p-4 md:p-5">
             {data.proofSpecs && <ProofSpecsSection specs={data.proofSpecs} />}
+            {data.proofText && (data.proofText.customerNote || data.proofText.disclaimer) && (
+              <ProofTextSection proofText={data.proofText} />
+            )}
             <AlreadyReviewedBanner status={data.status} />
           </div>
         </div>
@@ -631,6 +660,9 @@ export default function PortalProofPage() {
       <div className="border-t md:w-[360px] md:shrink-0 md:border-l md:border-t-0 md:overflow-y-auto">
         <div className="space-y-4 p-4 md:p-5">
           {data.proofSpecs && <ProofSpecsSection specs={data.proofSpecs} />}
+          {data.proofText && (data.proofText.customerNote || data.proofText.disclaimer) && (
+            <ProofTextSection proofText={data.proofText} />
+          )}
 
           {mutation.error && (
             <div className="flex items-start gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3">
