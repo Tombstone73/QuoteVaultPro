@@ -55,6 +55,7 @@ export function registerPortalProofRoutes(app: Express): void {
       // Build customer-safe proof specs from the line item snapshot.
       // Catch and swallow errors so a snapshot failure never breaks the proof page.
       let proofSpecs: {
+        orderNumber: string | null;
         displaySizeLabel: string | null;
         quantity: number | null;
         selectedOptionMap: Record<string, string>;
@@ -65,6 +66,7 @@ export function registerPortalProofRoutes(app: Express): void {
           lineItemId: validation.tokenRecord.lineItemId,
         });
         proofSpecs = {
+          orderNumber: snapshot.orderNumber ?? null,
           displaySizeLabel: snapshot.displaySizeLabel ?? null,
           quantity: snapshot.quantity ?? null,
           selectedOptionMap: snapshot.selectedOptionMap ?? {},
