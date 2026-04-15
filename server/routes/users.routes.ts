@@ -27,6 +27,10 @@ import { db } from "../db";
 import { users, userOrganizations, authIdentities } from "@shared/schema";
 import { getRequestOrganizationId } from "../tenantContext";
 import { emailService } from "../emailService";
+// NOTE: user_organizations.role is the authoritative org-scoped role.
+// users.role / users.is_admin are global identity fields and must NOT be used
+// for org invite / role-assignment permission checks.
+import { canAssignOrgRole } from "../lib/orgPermissions";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -38,13 +42,15 @@ export function registerUsersRoutes(
     isAuthenticated: any;
     tenantContext: any;
     requireOrgOwnerAdmin: any;
+    requireOrgCanInvite: any;
     isAdminOrOwner: any;
   },
 ): void {
-  const { isAuthenticated, tenantContext, requireOrgOwnerAdmin, isAdminOrOwner } = middleware;
+  const { isAuthenticated, tenantContext, requireOrgOwnerAdmin, requireOrgCanInvite, isAdminOrOwner } = middleware;
 
-  // User management routes - org-scoped (owner/admin only)
-  app.get("/api/users", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+  // User management routes - org-scoped
+  // GET is allowed for owner/admin/manager so managers can see the org list and use the invite UI
+  app.get("/api/users", isAuthenticated, tenantContext, requireOrgCanInvite, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
 
@@ -79,8 +85,10 @@ export function registerUsersRoutes(
     }
   });
 
-  // Invite a new user to the organization
-  app.post("/api/users/invite", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+  // Invite a new user to the organization.
+  // Allowed for: owner, admin, manager. member cannot invite.
+  // Role-assignment scope is enforced per actor role (canAssignOrgRole).
+  app.post("/api/users/invite", isAuthenticated, tenantContext, requireOrgCanInvite, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       const { email: rawEmail, orgRole = 'member' } = req.body;
@@ -91,9 +99,16 @@ export function registerUsersRoutes(
 
       const email = rawEmail.trim().toLowerCase();
 
-      // Validate org role
-      if (!['admin', 'manager', 'member'].includes(orgRole)) {
-        return res.status(400).json({ message: "Invalid org role. Must be admin, manager, or member." });
+      // Validate that the requested role is a known org role
+      if (!['owner', 'admin', 'manager', 'member'].includes(orgRole)) {
+        return res.status(400).json({ message: "Invalid org role. Must be owner, admin, manager, or member." });
+      }
+
+      // Enforce role-assignment scope: actor's org role determines which target
+      // roles they may assign. req.actorOrgRole is set by requireOrgCanInvite.
+      // This check runs server-side regardless of what the frontend sends.
+      if (!canAssignOrgRole(req.actorOrgRole, orgRole)) {
+        return res.status(403).json({ message: `Your role (${req.actorOrgRole}) is not permitted to assign the '${orgRole}' role.` });
       }
 
       // Check if user already exists
@@ -268,6 +283,14 @@ export function registerUsersRoutes(
       if (!['admin', 'manager', 'member'].includes(orgRole)) {
         console.log('[PATCH /api/users/:id] Error: Invalid org role:', orgRole);
         return res.status(400).json({ message: "Invalid org role" });
+      }
+
+      // Enforce role-assignment scope for the actor.
+      // req.actorOrgRole is set by requireOrgOwnerAdmin.
+      // This guards against future changes where lower roles might reach this handler.
+      if (!canAssignOrgRole(req.actorOrgRole, orgRole)) {
+        console.log('[PATCH /api/users/:id] Blocked: actor role cannot assign target role', { actorOrgRole: req.actorOrgRole, orgRole });
+        return res.status(403).json({ message: `Your role (${req.actorOrgRole}) is not permitted to assign the '${orgRole}' role.` });
       }
 
       // Update user's role in this organization
