@@ -13,7 +13,7 @@
 
 import type { Express } from "express";
 import { db } from "../db";
-import { auditLogs, orderAttachments } from "@shared/schema";
+import { auditLogs, orderAttachments, lineItemProofVersions } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
@@ -51,6 +51,16 @@ export function registerPortalProofRoutes(app: Express): void {
       }
 
       const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+
+      // Fetch customer-visible text fields snapshotted at send time.
+      const [proofVersionTexts] = await db
+        .select({
+          customerMessage: lineItemProofVersions.customerMessage,
+          customerVisibleDisclaimer: lineItemProofVersions.customerVisibleDisclaimer,
+        })
+        .from(lineItemProofVersions)
+        .where(eq(lineItemProofVersions.id, validation.proofVersion.id))
+        .limit(1);
 
       // Build customer-safe proof specs from the line item snapshot.
       // Catch and swallow errors so a snapshot failure never breaks the proof page.
@@ -105,6 +115,10 @@ export function registerPortalProofRoutes(app: Express): void {
             },
           ],
           status: validation.currentApprovalState.status,
+          proofText: {
+            customerNote: proofVersionTexts?.customerMessage?.trim() || null,
+            disclaimer: proofVersionTexts?.customerVisibleDisclaimer?.trim() || null,
+          },
         },
       });
     } catch (error: any) {

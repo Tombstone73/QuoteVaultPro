@@ -18,7 +18,8 @@
 
 import type { Express } from "express";
 import { db } from "../db";
-import { auditLogs } from "@shared/schema";
+import { eq } from "drizzle-orm";
+import { auditLogs, organizations } from "@shared/schema";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 import { proofQueueSliceSchema } from "@shared/proofing";
@@ -40,6 +41,17 @@ import { emailService } from "../emailService";
 /** Matches the pattern used in platform.ts for invite link generation. */
 function getBaseUrl(req: any): string {
   return (process.env.APP_URL ?? `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+}
+
+/** Load the org's active default proof disclaimer text (customer-safe). */
+async function loadOrgProofDisclaimer(organizationId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ settings: organizations.settings })
+    .from(organizations)
+    .where(eq(organizations.id, organizationId))
+    .limit(1);
+  const text = (row?.settings as any)?.preferences?.proofing?.defaultProofDisclaimerText;
+  return typeof text === "string" && text.trim() ? text.trim() : null;
 }
 
 function buildProofEmailHtml(args: {
@@ -253,6 +265,7 @@ export function registerProofingRoutes(
       }
 
       const lineItemId = String(req.params.lineItemId);
+      const customerVisibleDisclaimer = await loadOrgProofDisclaimer(organizationId);
 
       type EmailPayload = { to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null };
 
@@ -267,6 +280,7 @@ export function registerProofingRoutes(
           sentToName: parsed.data.sentToName ?? null,
           sentToEmail: parsed.data.sentToEmail ?? null,
           customerMessage: parsed.data.customerMessage ?? null,
+          customerVisibleDisclaimer,
         });
 
         // Create portal access token whenever a recipient email is supplied.
@@ -367,6 +381,7 @@ export function registerProofingRoutes(
         return res.status(400).json({ error: fromZodError(parsed.error).message });
       }
 
+      const customerVisibleDisclaimer = await loadOrgProofDisclaimer(organizationId);
       type SendEmailPayload = { to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null };
 
       const { emailPayload: sendEmailPayload, ...result } = await db.transaction(async (tx) => {
@@ -377,6 +392,7 @@ export function registerProofingRoutes(
           sentToName: parsed.data.sentToName ?? null,
           sentToEmail: parsed.data.sentToEmail ?? null,
           customerMessage: parsed.data.customerMessage ?? null,
+          customerVisibleDisclaimer,
         });
 
         // Create portal access token whenever a recipient email is supplied.
@@ -481,6 +497,7 @@ export function registerProofingRoutes(
         return res.status(400).json({ error: fromZodError(parsed.error).message });
       }
 
+      const customerVisibleDisclaimer = await loadOrgProofDisclaimer(organizationId);
       type ResendEmailPayload = { to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null };
 
       const { emailPayload: resendEmailPayload, ...result } = await db.transaction(async (tx) => {
@@ -491,6 +508,7 @@ export function registerProofingRoutes(
           sentToName: parsed.data.sentToName ?? null,
           sentToEmail: parsed.data.sentToEmail ?? null,
           customerMessage: parsed.data.customerMessage ?? null,
+          customerVisibleDisclaimer,
         });
 
         let emailPayload: ResendEmailPayload | null = null;
