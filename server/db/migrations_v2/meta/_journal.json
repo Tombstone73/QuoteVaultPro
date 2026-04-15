@@ -218,6 +218,13 @@
       "when": 1744416000000,
       "tag": "0030_gmail_oauth_connection",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1776215762998,
+      "tag": "0031_sudden_black_bolt",
+      "breakpoints": true
     }
   ]
 }
