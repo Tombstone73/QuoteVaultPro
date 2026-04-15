@@ -526,6 +526,7 @@ export default function StaffProofingPage() {
   const [sendToName, setSendToName] = useState("");
   const [sendToEmail, setSendToEmail] = useState("");
   const [customerMessage, setCustomerMessage] = useState("");
+  const [emailSubject, setEmailSubject] = useState("");
   const [internalNotesDraft, setInternalNotesDraft] = useState("");
   const [internalNotesDirty, setInternalNotesDirty] = useState(false);
 
@@ -798,6 +799,7 @@ export default function StaffProofingPage() {
         setSendToName(prevSentVersion?.sentToName ?? "");
         setSendEmailSource(prevSentEmail ? "prefilled" : "");
         setCustomerMessage("");
+        setEmailSubject(`Proof Ready for Review - Version ${data.proofVersion.versionNumber}`);
         setVersionIdForSend(data.proofVersion.id);
         setSendDialogMode("send");
         setSendDialogOpen(true);
@@ -819,6 +821,7 @@ export default function StaffProofingPage() {
           sentToName: sendToName.trim() || null,
           sentToEmail: sendToEmail.trim() || null,
           customerMessage: customerMessage.trim() || null,
+          subject: emailSubject.trim() || null,
         }),
       });
     },
@@ -829,6 +832,7 @@ export default function StaffProofingPage() {
       setSendToName("");
       setSendToEmail("");
       setCustomerMessage("");
+      setEmailSubject("");
       toast({ title: "Proof sent", description: "The selected proof version was sent for customer review." });
     },
     onError: (error: Error) => {
@@ -846,6 +850,7 @@ export default function StaffProofingPage() {
           sentToName: sendToName.trim() || null,
           sentToEmail: sendToEmail.trim() || null,
           customerMessage: customerMessage.trim() || null,
+          subject: emailSubject.trim() || null,
         }),
       });
     },
@@ -856,6 +861,7 @@ export default function StaffProofingPage() {
       setSendToName("");
       setSendToEmail("");
       setCustomerMessage("");
+      setEmailSubject("");
       toast({ title: "Proof notification resent", description: "The customer will receive a fresh proof review link." });
     },
     onError: (error: Error) => {
@@ -1274,6 +1280,7 @@ export default function StaffProofingPage() {
                         setSendToName(displayedVersion?.sentToName ?? "");
                         setSendEmailSource(prefill ? "prefilled" : "");
                         setCustomerMessage("");
+                        setEmailSubject(`Proof Ready for Review - Version ${displayedVersion?.versionNumber ?? ""}`);
                         setVersionIdForSend(displayedVersion?.id ?? null);
                         setSendDialogMode("send");
                         setSendDialogOpen(true);
@@ -1566,6 +1573,7 @@ export default function StaffProofingPage() {
                                   setSendToName(version.sentToName ?? "");
                                   setSendEmailSource(prefill ? "prefilled" : "");
                                   setCustomerMessage("");
+                                  setEmailSubject(`Proof Ready for Review - Version ${version.versionNumber}`);
                                   setVersionIdForSend(version.id);
                                   setSendDialogMode("send");
                                   setSendDialogOpen(true);
@@ -1586,6 +1594,7 @@ export default function StaffProofingPage() {
                                   setSendToName(version.sentToName ?? "");
                                   setSendEmailSource(prefill ? "prefilled" : "");
                                   setCustomerMessage("");
+                                  setEmailSubject(`Proof Ready for Review - Version ${version.versionNumber}`);
                                   setVersionIdForSend(version.id);
                                   setSendDialogMode("resend");
                                   setSendDialogOpen(true);
@@ -1727,7 +1736,7 @@ export default function StaffProofingPage() {
       </Dialog>
 
       <Dialog open={sendDialogOpen} onOpenChange={(open) => {
-        if (!open) { setVersionIdForSend(null); setSendDialogMode("send"); }
+        if (!open) { setVersionIdForSend(null); setSendDialogMode("send"); setEmailSubject(""); }
         setSendDialogOpen(open);
       }}>
         <DialogContent className="sm:max-w-lg">
@@ -1808,6 +1817,15 @@ export default function StaffProofingPage() {
               {sendDialogOpen && !sendToEmail.trim() ? (
                 <p className="text-xs text-destructive">A recipient email is required.</p>
               ) : null}
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="proof-email-subject">Email subject</Label>
+              <Input
+                id="proof-email-subject"
+                value={emailSubject}
+                onChange={(event) => setEmailSubject(event.target.value)}
+                placeholder="Proof Ready for Review - Version N"
+              />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="proof-customer-message">Customer note for this proof</Label>
