@@ -25,6 +25,7 @@ export type PortalProofAttachment = {
 };
 
 export type PortalProofSpecs = {
+  orderNumber: string | null;
   displaySizeLabel: string | null;
   quantity: number | null;
   selectedOptionMap: Record<string, string>;

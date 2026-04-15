@@ -127,14 +127,20 @@ function getSpecOption(map: Record<string, string>, ...keys: string[]): string |
 }
 
 function ProofSpecsSection({ specs }: { specs: PortalProofSpecs }) {
+  const na = <span className="italic text-muted-foreground">Not specified</span>;
+
   const media = getSpecOption(specs.selectedOptionMap, "Material", "Media", "Substrate", "Vinyl", "Material Type", "Fabric");
   const contourCut = getSpecOption(specs.selectedOptionMap, "Contour Cut", "Contour", "ContourCut", "Contour-Cut");
   const doubleSided = getSpecOption(specs.selectedOptionMap, "Double Sided", "Double-Sided", "Two Sided", "2 Sided", "Sides", "Print Sides");
 
   const rows: Array<{ label: string; value: React.ReactNode }> = [
     {
+      label: "Job Number",
+      value: specs.orderNumber ?? na,
+    },
+    {
       label: "Ordered Size",
-      value: specs.displaySizeLabel ?? <span className="italic text-muted-foreground">Not specified</span>,
+      value: specs.displaySizeLabel ?? na,
     },
     {
       label: "Detected Artwork Size",
@@ -142,15 +148,21 @@ function ProofSpecsSection({ specs }: { specs: PortalProofSpecs }) {
     },
     {
       label: "Quantity",
-      value: specs.quantity != null
-        ? specs.quantity
-        : <span className="italic text-muted-foreground">Not specified</span>,
+      value: specs.quantity != null ? specs.quantity : na,
+    },
+    {
+      label: "Media",
+      value: media ?? na,
+    },
+    {
+      label: "Contour Cut",
+      value: contourCut ?? na,
+    },
+    {
+      label: "Double Sided",
+      value: doubleSided ?? na,
     },
   ];
-
-  if (media) rows.push({ label: "Media", value: media });
-  if (contourCut) rows.push({ label: "Contour Cut", value: contourCut });
-  if (doubleSided) rows.push({ label: "Double Sided", value: doubleSided });
 
   return (
     <div className="rounded-lg border bg-card p-5 space-y-3">
