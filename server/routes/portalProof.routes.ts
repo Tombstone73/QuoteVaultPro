@@ -62,27 +62,33 @@ export function registerPortalProofRoutes(app: Express): void {
         .where(eq(lineItemProofVersions.id, validation.proofVersion.id))
         .limit(1);
 
-      // Build customer-safe proof specs from the line item snapshot.
-      // Catch and swallow errors so a snapshot failure never breaks the proof page.
-      let proofSpecs: {
-        orderNumber: string | null;
-        displaySizeLabel: string | null;
+      // Build the customer-facing line item display from the order-time snapshot.
+      // Uses line item description (product name snapshot) and the resolved selectedOptionMap.
+      // Catches and swallows errors so a snapshot failure never breaks the proof page.
+      let lineItemDisplay: {
+        productName: string | null;
+        orderedSize: string | null;
         quantity: number | null;
-        selectedOptionMap: Record<string, string>;
+        detectedArtworkSize: string | null;
+        orderNumber: string | null;
+        options: Array<{ label: string; value: string }>;
       } | null = null;
       try {
         const snapshot = await buildProofInputSnapshot(db, {
           organizationId: validation.tokenRecord.organizationId,
           lineItemId: validation.tokenRecord.lineItemId,
         });
-        proofSpecs = {
-          orderNumber: snapshot.orderNumber ?? null,
-          displaySizeLabel: snapshot.displaySizeLabel ?? null,
+        lineItemDisplay = {
+          productName: snapshot.lineItemLabel?.trim() || null,
+          orderedSize: snapshot.displaySizeLabel ?? null,
           quantity: snapshot.quantity ?? null,
-          selectedOptionMap: snapshot.selectedOptionMap ?? {},
+          detectedArtworkSize: null, // not yet derivable; placeholder for future preflight data
+          orderNumber: snapshot.orderNumber ?? null,
+          // Convert the already-filtered selectedOptionMap to an ordered array for direct rendering
+          options: Object.entries(snapshot.selectedOptionMap ?? {}).map(([label, value]) => ({ label, value })),
         };
       } catch {
-        // Non-critical — proof page still renders without specs
+        // Non-critical — proof page still renders without line item display
       }
 
       return res.json({
@@ -93,7 +99,7 @@ export function registerPortalProofRoutes(app: Express): void {
             versionNumber: validation.proofVersion.versionNumber,
             createdAt: new Date(validation.proofVersion.createdAt).toISOString(),
           },
-          proofSpecs,
+          lineItemDisplay,
           attachments: [
             {
               id: enrichedAttachment.id,
