@@ -54,6 +54,25 @@ async function loadOrgProofDisclaimer(organizationId: string): Promise<string | 
   return typeof text === "string" && text.trim() ? text.trim() : null;
 }
 
+/**
+ * Normalize an email subject to ASCII-safe punctuation so mail clients render it correctly.
+ * Replaces common non-ASCII typographic characters that cause UTF-8/Latin-1 mojibake.
+ * Must be applied to every outbound subject just before transport — do not mutate stored templates.
+ */
+function sanitizeEmailSubject(subject: string): string {
+  return subject
+    .replace(/[\u2013\u2014]/g, " - ")  // en dash, em dash → spaced hyphen
+    .replace(/[\u2018\u2019]/g, "'")     // smart single quotes → straight apostrophe
+    .replace(/[\u201C\u201D]/g, '"')     // smart double quotes → straight double quote
+    .replace(/ {2,}/g, " ")             // collapse multiple spaces
+    .trim();
+}
+
+/** Build the built-in default proof notification subject (ASCII-safe). */
+function buildDefaultProofEmailSubject(versionNumber: number): string {
+  return `Proof Ready for Review - Version ${versionNumber}`;
+}
+
 function buildProofEmailHtml(args: {
   proofLink: string;
   versionNumber: number;
@@ -250,6 +269,7 @@ export function registerProofingRoutes(
           sentToName: z.string().optional().nullable(),
           sentToEmail: z.string().optional().nullable(),
           customerMessage: z.string().optional().nullable(),
+          subject: z.string().optional().nullable(),
         }),
         z.object({
           mode: z.literal("generated"),
@@ -257,6 +277,7 @@ export function registerProofingRoutes(
           sentToName: z.string().optional().nullable(),
           sentToEmail: z.string().optional().nullable(),
           customerMessage: z.string().optional().nullable(),
+          subject: z.string().optional().nullable(),
         }),
       ]).safeParse(req.body);
 
@@ -267,7 +288,7 @@ export function registerProofingRoutes(
       const lineItemId = String(req.params.lineItemId);
       const customerVisibleDisclaimer = await loadOrgProofDisclaimer(organizationId);
 
-      type EmailPayload = { to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null };
+      type EmailPayload = { to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null; subject: string | null };
 
       const { emailPayload: proofEmailPayload, ...result } = await db.transaction(async (tx) => {
         const created = await createAndSendProofVersion(tx, {
@@ -300,6 +321,7 @@ export function registerProofingRoutes(
             versionNumber: created.proofVersion.versionNumber,
             sentToName: parsed.data.sentToName ?? null,
             customerMessage: parsed.data.customerMessage ?? null,
+            subject: parsed.data.subject?.trim() || null,
           };
         }
 
@@ -341,7 +363,7 @@ export function registerProofingRoutes(
         emailService
           .sendEmail(organizationId, {
             to: proofEmailPayload.to,
-            subject: `Proof Ready for Review — Version ${proofEmailPayload.versionNumber}`,
+            subject: sanitizeEmailSubject(proofEmailPayload.subject || buildDefaultProofEmailSubject(proofEmailPayload.versionNumber)),
             html: buildProofEmailHtml({
               proofLink,
               versionNumber: proofEmailPayload.versionNumber,
@@ -375,6 +397,7 @@ export function registerProofingRoutes(
         sentToName: z.string().optional().nullable(),
         sentToEmail: z.string().optional().nullable(),
         customerMessage: z.string().optional().nullable(),
+        subject: z.string().optional().nullable(),
       }).safeParse(req.body);
 
       if (!parsed.success) {
@@ -382,7 +405,7 @@ export function registerProofingRoutes(
       }
 
       const customerVisibleDisclaimer = await loadOrgProofDisclaimer(organizationId);
-      type SendEmailPayload = { to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null };
+      type SendEmailPayload = { to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null; subject: string | null };
 
       const { emailPayload: sendEmailPayload, ...result } = await db.transaction(async (tx) => {
         const sendResult = await markProofVersionSent(tx, {
@@ -411,6 +434,7 @@ export function registerProofingRoutes(
             versionNumber: sendResult.proofVersion.versionNumber,
             sentToName: parsed.data.sentToName ?? null,
             customerMessage: parsed.data.customerMessage ?? null,
+            subject: parsed.data.subject?.trim() || null,
           };
         }
 
@@ -451,7 +475,7 @@ export function registerProofingRoutes(
         emailService
           .sendEmail(organizationId, {
             to: sendEmailPayload.to,
-            subject: `Proof Ready for Review — Version ${sendEmailPayload.versionNumber}`,
+            subject: sanitizeEmailSubject(sendEmailPayload.subject || buildDefaultProofEmailSubject(sendEmailPayload.versionNumber)),
             html: buildProofEmailHtml({
               proofLink,
               versionNumber: sendEmailPayload.versionNumber,
@@ -491,6 +515,7 @@ export function registerProofingRoutes(
         sentToName: z.string().optional().nullable(),
         sentToEmail: z.string().email().optional().nullable(),
         customerMessage: z.string().optional().nullable(),
+        subject: z.string().optional().nullable(),
       }).safeParse(req.body);
 
       if (!parsed.success) {
@@ -498,7 +523,7 @@ export function registerProofingRoutes(
       }
 
       const customerVisibleDisclaimer = await loadOrgProofDisclaimer(organizationId);
-      type ResendEmailPayload = { to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null };
+      type ResendEmailPayload = { to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null; subject: string | null };
 
       const { emailPayload: resendEmailPayload, ...result } = await db.transaction(async (tx) => {
         const resendResult = await resendProofVersion(tx, {
@@ -526,6 +551,7 @@ export function registerProofingRoutes(
             versionNumber: resendResult.proofVersion.versionNumber,
             sentToName: parsed.data.sentToName ?? null,
             customerMessage: parsed.data.customerMessage ?? null,
+            subject: parsed.data.subject?.trim() || null,
           };
         }
 
@@ -560,7 +586,7 @@ export function registerProofingRoutes(
         emailService
           .sendEmail(organizationId, {
             to: resendEmailPayload.to,
-            subject: `Proof Ready for Review — Version ${resendEmailPayload.versionNumber}`,
+            subject: sanitizeEmailSubject(resendEmailPayload.subject || buildDefaultProofEmailSubject(resendEmailPayload.versionNumber)),
             html: buildProofEmailHtml({
               proofLink,
               versionNumber: resendEmailPayload.versionNumber,
