@@ -52,8 +52,6 @@ export default function UserManagement() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<"admin" | "manager" | "member">("member");
 
-  const isOwnerOrAdmin = currentUser?.role === "owner" || currentUser?.role === "admin";
-
   const { data: users = [], isLoading } = useQuery<OrgUser[]>({
     queryKey: ["/api/users"],
     queryFn: async () => {
@@ -62,6 +60,27 @@ export default function UserManagement() {
       return response.json();
     },
   });
+
+  // Derive the current user's org-scoped role from the fetched user list.
+  // user_organizations.role is the authoritative org-scoped role;
+  // currentUser.role (users.role) is a global identity field only and must NOT
+  // be used for org invite / role-assignment permission checks.
+  // TODO (future RBAC): Include org role in the auth session response so this
+  // derivation is not needed.
+  const currentOrgRole = users.find((u) => u.id === currentUser?.id)?.orgRole ?? "";
+  const canInvite = currentOrgRole === "owner" || currentOrgRole === "admin" || currentOrgRole === "manager";
+  const isOwnerOrAdmin = currentOrgRole === "owner" || currentOrgRole === "admin";
+
+  // Role options available to the current actor in the invite modal.
+  // Backend enforces the same policy; this just hides disallowed options from the UI.
+  const inviteableRoles: Array<{ value: "admin" | "manager" | "member"; label: string }> =
+    currentOrgRole === "owner"
+      ? [{ value: "admin", label: "Admin" }, { value: "manager", label: "Manager" }, { value: "member", label: "Member" }]
+      : currentOrgRole === "admin"
+      ? [{ value: "admin", label: "Admin" }, { value: "manager", label: "Manager" }, { value: "member", label: "Member" }]
+      : currentOrgRole === "manager"
+      ? [{ value: "manager", label: "Manager" }, { value: "member", label: "Member" }]
+      : [];
 
   const inviteUserMutation = useMutation({
     mutationFn: async ({ email, orgRole }: { email: string; orgRole: string }) => {
@@ -232,7 +251,7 @@ export default function UserManagement() {
                 Manage user roles and permissions for your organization
               </p>
             </div>
-            {isOwnerOrAdmin && (
+            {canInvite && (
               <Dialog open={inviteDialogOpen} onOpenChange={setInviteDialogOpen}>
                 <DialogTrigger asChild>
                   <Button>
@@ -265,9 +284,9 @@ export default function UserManagement() {
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="admin">Admin</SelectItem>
-                          <SelectItem value="manager">Manager</SelectItem>
-                          <SelectItem value="member">Member</SelectItem>
+                          {inviteableRoles.map((r) => (
+                            <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>
+                          ))}
                         </SelectContent>
                       </Select>
                       <p className="text-sm text-muted-foreground">
@@ -395,12 +414,12 @@ export default function UserManagement() {
           </CardContent>
         </Card>
 
-        {!isOwnerOrAdmin && (
+        {!canInvite && (
           <Card className="border-yellow-600 bg-yellow-50 dark:bg-yellow-950">
             <CardHeader>
               <CardTitle className="text-yellow-800 dark:text-yellow-200">View Only Access</CardTitle>
               <CardDescription className="text-yellow-700 dark:text-yellow-300">
-                Only users with Owner or Admin roles can invite users and modify permissions.
+                Only users with Owner, Admin, or Manager roles can invite users.
               </CardDescription>
             </CardHeader>
           </Card>
