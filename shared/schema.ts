@@ -5315,6 +5315,7 @@ export const lineItemProofVersions = pgTable("line_item_proof_versions", {
   status: lineItemProofVersionStatusEnum("status").notNull().default('draft'),
   internalNotes: text("internal_notes"),
   customerMessage: text("customer_message"),
+  customerVisibleDisclaimer: text("customer_visible_disclaimer"),
   sentToName: varchar("sent_to_name", { length: 255 }),
   sentToEmail: varchar("sent_to_email", { length: 255 }),
   sentByUserId: varchar("sent_by_user_id").references(() => users.id, { onDelete: 'set null' }),

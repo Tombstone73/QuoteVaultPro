@@ -1810,13 +1810,13 @@ export default function StaffProofingPage() {
               ) : null}
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="proof-customer-message">Customer message</Label>
+              <Label htmlFor="proof-customer-message">Customer note for this proof</Label>
               <Textarea
                 id="proof-customer-message"
                 rows={3}
                 value={customerMessage}
                 onChange={(event) => setCustomerMessage(event.target.value)}
-                placeholder="Optional message included with the proof email"
+                placeholder="Optional message shown to the customer on the proof review page, included with this proof send only"
               />
             </div>
           </div>

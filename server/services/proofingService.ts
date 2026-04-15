@@ -662,6 +662,7 @@ export async function createAndSendProofVersion(tx: any, args: {
   sentToName?: string | null;
   sentToEmail?: string | null;
   customerMessage?: string | null;
+  customerVisibleDisclaimer?: string | null;
 }) {
   const snapshot = await buildProofInputSnapshot(tx, {
     organizationId: args.organizationId,
@@ -721,6 +722,7 @@ export async function createAndSendProofVersion(tx: any, args: {
     sentToName: args.sentToName ?? null,
     sentToEmail: args.sentToEmail ?? null,
     customerMessage: args.customerMessage ?? null,
+    customerVisibleDisclaimer: args.customerVisibleDisclaimer ?? null,
   });
 
   return {
@@ -795,6 +797,7 @@ export async function resendProofVersion(tx: any, args: {
   sentToName?: string | null;
   sentToEmail?: string | null;
   customerMessage?: string | null;
+  customerVisibleDisclaimer?: string | null;
 }) {
   const proofVersion = await loadProofVersion(tx, {
     organizationId: args.organizationId,
@@ -826,6 +829,7 @@ export async function resendProofVersion(tx: any, args: {
       sentToName: args.sentToName ?? null,
       sentToEmail: args.sentToEmail ?? null,
       customerMessage: args.customerMessage ?? null,
+      customerVisibleDisclaimer: args.customerVisibleDisclaimer ?? null,
       sentByUserId: args.actorUserId,
       sentAt: new Date(),
       updatedAt: new Date(),
@@ -1764,6 +1768,7 @@ export async function markProofVersionSent(tx: any, args: {
   sentToName?: string | null;
   sentToEmail?: string | null;
   customerMessage?: string | null;
+  customerVisibleDisclaimer?: string | null;
 }) {
   try {
     const proofVersion = await loadProofVersion(tx, {
@@ -1808,6 +1813,7 @@ export async function markProofVersionSent(tx: any, args: {
         sentToName: args.sentToName ?? null,
         sentToEmail: args.sentToEmail ?? null,
         customerMessage: args.customerMessage ?? null,
+        customerVisibleDisclaimer: args.customerVisibleDisclaimer ?? null,
         sentByUserId: args.actorUserId,
         sentAt: new Date(),
         updatedAt: new Date(),

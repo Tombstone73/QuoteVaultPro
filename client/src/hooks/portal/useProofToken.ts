@@ -31,6 +31,11 @@ export type PortalProofSpecs = {
   selectedOptionMap: Record<string, string>;
 };
 
+export type PortalProofText = {
+  customerNote: string | null;
+  disclaimer: string | null;
+};
+
 export type PortalProofData = {
   proofVersion: {
     id: string;
@@ -40,6 +45,7 @@ export type PortalProofData = {
   proofSpecs: PortalProofSpecs | null;
   attachments: PortalProofAttachment[];
   status: PortalProofStatus;
+  proofText: PortalProofText | null;
 };
 
 export type PortalProofActionResult = {

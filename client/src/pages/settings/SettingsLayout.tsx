@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Table,
@@ -569,6 +570,13 @@ export function ProductionSettings() {
     isUpdating: isOrgPreferencesUpdating,
   } = useOrgPreferences();
   const [draft, setDraft] = React.useState<ProductionLineItemStatusRule[]>([]);
+  const [disclaimerDraft, setDisclaimerDraft] = React.useState(
+    preferences.proofing?.defaultProofDisclaimerText ?? ""
+  );
+  React.useEffect(() => {
+    setDisclaimerDraft(preferences.proofing?.defaultProofDisclaimerText ?? "");
+  }, [preferences.proofing?.defaultProofDisclaimerText]);
+  const savedDisclaimer = preferences.proofing?.defaultProofDisclaimerText ?? "";
   const workflow = useOrderWorkflow();
   const saveWorkflowDraft = useSaveOrderWorkflowDraft();
   const publishWorkflow = usePublishOrderWorkflow();
@@ -1194,6 +1202,45 @@ export function ProductionSettings() {
             </div>
           </div>
             </ProductionSettingsSection>
+
+          <div className="h-px bg-titan-border-subtle" />
+
+          <ProductionSettingsSection
+            title="Proof Defaults"
+            summary="Default disclaimer text shown to customers on every proof review page"
+          >
+            <div className="space-y-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="proof-disclaimer">Default proof disclaimer</Label>
+                <p className="text-xs text-titan-text-muted">
+                  Shown below the proof specs on the customer portal for every proof sent. Leave blank to show no disclaimer.
+                </p>
+                <Textarea
+                  id="proof-disclaimer"
+                  rows={4}
+                  value={disclaimerDraft}
+                  onChange={(e) => setDisclaimerDraft(e.target.value)}
+                  placeholder="e.g. Please review all text, colors, and dimensions carefully before approving. Approved proofs will proceed to production without further review."
+                  disabled={isOrgPreferencesUpdating}
+                />
+              </div>
+              <Button
+                size="sm"
+                onClick={() =>
+                  updatePreferences({
+                    ...preferences,
+                    proofing: {
+                      ...preferences.proofing,
+                      defaultProofDisclaimerText: disclaimerDraft.trim() || undefined,
+                    },
+                  })
+                }
+                disabled={isOrgPreferencesUpdating || disclaimerDraft.trim() === savedDisclaimer.trim()}
+              >
+                {isOrgPreferencesUpdating ? "Saving…" : "Save"}
+              </Button>
+            </div>
+          </ProductionSettingsSection>
         </div>
     </TitanCard>
     </TooltipProvider>
