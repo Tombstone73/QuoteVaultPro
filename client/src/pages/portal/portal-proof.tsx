@@ -5,7 +5,7 @@ import {
   useSubmitProofAction,
   type ProofAction,
   type PortalProofAttachment,
-  type PortalProofSpecs,
+  type LineItemDisplay,
   type PortalProofText,
 } from "@/hooks/portal/useProofToken";
 import { Button } from "@/components/ui/button";
@@ -115,65 +115,32 @@ function ImageProofViewer({ attachment }: { attachment: PortalProofAttachment })
   );
 }
 
-// ---- Proof specs section -------------------------------------------------------
+// ---- Order specs section -------------------------------------------------------
 
-function getSpecOption(map: Record<string, string>, ...keys: string[]): string | null {
-  for (const key of keys) {
-    const lower = key.toLowerCase();
-    for (const [k, v] of Object.entries(map)) {
-      if (k.toLowerCase() === lower) return v;
-    }
-  }
-  return null;
+function SpecRow({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-4 text-sm">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      <span className="text-right font-medium">{value}</span>
+    </div>
+  );
 }
 
-function ProofSpecsSection({ specs }: { specs: PortalProofSpecs }) {
+function ProofSpecsSection({ display }: { display: LineItemDisplay }) {
   const na = <span className="italic text-muted-foreground">Not specified</span>;
-
-  const media = getSpecOption(specs.selectedOptionMap, "Material", "Media", "Substrate", "Vinyl", "Material Type", "Fabric");
-  const contourCut = getSpecOption(specs.selectedOptionMap, "Contour Cut", "Contour", "ContourCut", "Contour-Cut");
-  const doubleSided = getSpecOption(specs.selectedOptionMap, "Double Sided", "Double-Sided", "Two Sided", "2 Sided", "Sides", "Print Sides");
-
-  const rows: Array<{ label: string; value: React.ReactNode }> = [
-    {
-      label: "Job Number",
-      value: specs.orderNumber ?? na,
-    },
-    {
-      label: "Ordered Size",
-      value: specs.displaySizeLabel ?? na,
-    },
-    {
-      label: "Detected Artwork Size",
-      value: <span className="italic text-muted-foreground">Unavailable</span>,
-    },
-    {
-      label: "Quantity",
-      value: specs.quantity != null ? specs.quantity : na,
-    },
-    {
-      label: "Media",
-      value: media ?? na,
-    },
-    {
-      label: "Contour Cut",
-      value: contourCut ?? na,
-    },
-    {
-      label: "Double Sided",
-      value: doubleSided ?? na,
-    },
-  ];
 
   return (
     <div className="rounded-lg border bg-card p-5 space-y-3">
       <p className="text-sm font-medium">Order Specs</p>
       <div className="space-y-2">
-        {rows.map(({ label, value }) => (
-          <div key={label} className="flex items-start justify-between gap-4 text-sm">
-            <span className="shrink-0 text-muted-foreground">{label}</span>
-            <span className="text-right font-medium">{value}</span>
-          </div>
+        {/* Core fixed rows */}
+        <SpecRow label="Job Number" value={display.orderNumber ?? na} />
+        <SpecRow label="Product" value={display.productName ?? na} />
+        <SpecRow label="Ordered Size" value={display.orderedSize ?? na} />
+        <SpecRow label="Quantity" value={display.quantity != null ? display.quantity : na} />
+        {/* Dynamic option rows — only rendered when values are present */}
+        {display.options.map(({ label, value }) => (
+          <SpecRow key={label} label={label} value={value} />
         ))}
       </div>
     </div>
@@ -621,7 +588,7 @@ export default function PortalProofPage() {
         {/* Right: sidebar */}
         <div className="border-t md:w-[360px] md:shrink-0 md:border-l md:border-t-0 md:overflow-y-auto">
           <div className="space-y-4 p-4 md:p-5">
-            {data.proofSpecs && <ProofSpecsSection specs={data.proofSpecs} />}
+            {data.lineItemDisplay && <ProofSpecsSection display={data.lineItemDisplay} />}
             {data.proofText && (data.proofText.customerNote || data.proofText.disclaimer) && (
               <ProofTextSection proofText={data.proofText} />
             )}
@@ -659,7 +626,7 @@ export default function PortalProofPage() {
       {/* Right: sidebar */}
       <div className="border-t md:w-[360px] md:shrink-0 md:border-l md:border-t-0 md:overflow-y-auto">
         <div className="space-y-4 p-4 md:p-5">
-          {data.proofSpecs && <ProofSpecsSection specs={data.proofSpecs} />}
+          {data.lineItemDisplay && <ProofSpecsSection display={data.lineItemDisplay} />}
           {data.proofText && (data.proofText.customerNote || data.proofText.disclaimer) && (
             <ProofTextSection proofText={data.proofText} />
           )}

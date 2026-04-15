@@ -24,11 +24,18 @@ export type PortalProofAttachment = {
   }>;
 };
 
-export type PortalProofSpecs = {
-  orderNumber: string | null;
-  displaySizeLabel: string | null;
+export type LineItemDisplayOption = {
+  label: string;
+  value: string;
+};
+
+export type LineItemDisplay = {
+  productName: string | null;
+  orderedSize: string | null;
   quantity: number | null;
-  selectedOptionMap: Record<string, string>;
+  detectedArtworkSize: string | null;
+  orderNumber: string | null;
+  options: LineItemDisplayOption[];
 };
 
 export type PortalProofText = {
@@ -42,7 +49,7 @@ export type PortalProofData = {
     versionNumber: number;
     createdAt: string;
   };
-  proofSpecs: PortalProofSpecs | null;
+  lineItemDisplay: LineItemDisplay | null;
   attachments: PortalProofAttachment[];
   status: PortalProofStatus;
   proofText: PortalProofText | null;
