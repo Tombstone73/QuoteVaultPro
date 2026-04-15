@@ -103,16 +103,22 @@ const isAdminOrOwner = (req: any, res: any, next: any) => {
   return res.status(403).json({ message: "Access denied. Admin or Owner role required." });
 };
 
-// Org-scoped owner/admin check - requires tenantContext middleware
+// Org-scoped permission helpers.
+// NOTE: user_organizations.role is the authoritative org-scoped role.
+// users.role / users.is_admin are global identity fields only.
+import { canInviteOrgUsers } from './lib/orgPermissions';
+
+// Org-scoped owner/admin check - requires tenantContext middleware.
+// Attaches req.actorOrgRole for use in downstream route handlers.
 const requireOrgOwnerAdmin = async (req: any, res: any, next: any) => {
   try {
     const userId = getUserId(req.user);
     const organizationId = getRequestOrganizationId(req);
-    
+
     if (!userId || !organizationId) {
       return res.status(403).json({ message: "Missing authentication or organization context" });
     }
-    
+
     const [membership] = await db
       .select()
       .from(userOrganizations)
@@ -123,14 +129,52 @@ const requireOrgOwnerAdmin = async (req: any, res: any, next: any) => {
         )
       )
       .limit(1);
-    
+
     if (!membership || !['owner', 'admin'].includes(membership.role)) {
       return res.status(403).json({ message: "Access denied. Organization Owner or Admin role required." });
     }
-    
+
+    // Attach org-scoped role for use in handlers without a second DB lookup
+    req.actorOrgRole = membership.role;
     next();
   } catch (error) {
     console.error('Error in requireOrgOwnerAdmin middleware:', error);
+    return res.status(500).json({ message: "Failed to verify permissions" });
+  }
+};
+
+// Org-scoped invite check: owner, admin, and manager may invite users.
+// member cannot. Fails closed for unknown roles.
+// Attaches req.actorOrgRole for downstream role-assignment guardrails.
+const requireOrgCanInvite = async (req: any, res: any, next: any) => {
+  try {
+    const userId = getUserId(req.user);
+    const organizationId = getRequestOrganizationId(req);
+
+    if (!userId || !organizationId) {
+      return res.status(403).json({ message: "Missing authentication or organization context" });
+    }
+
+    const [membership] = await db
+      .select()
+      .from(userOrganizations)
+      .where(
+        and(
+          eq(userOrganizations.userId, userId),
+          eq(userOrganizations.organizationId, organizationId)
+        )
+      )
+      .limit(1);
+
+    if (!membership || !canInviteOrgUsers(membership.role)) {
+      return res.status(403).json({ message: "Access denied. Organization Owner, Admin, or Manager role required." });
+    }
+
+    // Attach org-scoped role for role-assignment guardrails in the invite handler
+    req.actorOrgRole = membership.role;
+    next();
+  } catch (error) {
+    console.error('Error in requireOrgCanInvite middleware:', error);
     return res.status(500).json({ message: "Failed to verify permissions" });
   }
 };
@@ -366,7 +410,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerOrganizationRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
 
   // Users + Admin Users routes extracted to ./routes/users.routes.ts (do NOT re-add here)
-  registerUsersRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin, isAdminOrOwner });
+  registerUsersRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin, requireOrgCanInvite, isAdminOrOwner });
 
   // Company Settings routes extracted to ./routes/companySettings.routes.ts (do NOT re-add here)
   registerCompanySettingsRoutes(app, { isAuthenticated, tenantContext, isAdmin });
