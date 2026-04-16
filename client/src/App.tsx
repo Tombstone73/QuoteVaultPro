@@ -87,7 +87,7 @@ function Router() {
     );
   }
 
-  // If not authenticated, only show login route
+  // If not authenticated, only show login route (plus truly public routes)
   if (!isAuthenticated) {
     return (
       <Routes>
@@ -95,6 +95,8 @@ function Router() {
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/accept-invite" element={<AcceptInvitePage />} />
+        {/* Token-based proof review — no account required; the token IS the auth */}
+        <Route path="/portal/proof/:token" element={<PortalProofPage />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     );
@@ -253,11 +255,12 @@ function Router() {
         <Route path="/accept-invite" element={<AcceptInvitePage />} />
       </Route>
 
-      {/* Portal — completely isolated from AppLayout (staff shell).
-          proof/:token is public (no auth required — token IS the auth).
-          Other portal/* routes will be added here as pages are built. */}
+      {/* Proof review — standalone, no layout wrapper; token IS the auth.
+          Rendered consistently whether or not the viewer is logged in. */}
+      <Route path="/portal/proof/:token" element={<PortalProofPage />} />
+
+      {/* Portal shell (auth-required portal pages with sidebar layout) */}
       <Route path="/portal" element={<PortalLayout />}>
-        <Route path="proof/:token" element={<PortalProofPage />} />
         <Route path="dashboard" element={<div className="p-4 text-muted-foreground">Portal Dashboard — coming soon</div>} />
       </Route>
 
