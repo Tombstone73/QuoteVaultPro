@@ -413,7 +413,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerUsersRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin, requireOrgCanInvite, isAdminOrOwner });
 
   // Company Settings routes extracted to ./routes/companySettings.routes.ts (do NOT re-add here)
-  registerCompanySettingsRoutes(app, { isAuthenticated, tenantContext, isAdmin });
+  registerCompanySettingsRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
   registerCustomerRelationsRoutes(app, { isAuthenticated, tenantContext, isAdmin });
 
   // Customers + Enterprise Import Jobs routes extracted to ./routes/customers.routes.ts and ./routes/importJobs.routes.ts (do NOT re-add here)

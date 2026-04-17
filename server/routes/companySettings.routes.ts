@@ -24,13 +24,13 @@ export function registerCompanySettingsRoutes(
   middleware: {
     isAuthenticated: any;
     tenantContext: any;
-    isAdmin: any;
+    requireOrgOwnerAdmin: any;
   },
 ): void {
-  const { isAuthenticated, tenantContext, isAdmin } = middleware;
+  const { isAuthenticated, tenantContext, requireOrgOwnerAdmin } = middleware;
 
   // Company Settings routes
-  app.get("/api/company-settings", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+  app.get("/api/company-settings", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
@@ -45,7 +45,7 @@ export function registerCompanySettingsRoutes(
     }
   });
 
-  app.post("/api/company-settings", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+  app.post("/api/company-settings", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
@@ -63,7 +63,7 @@ export function registerCompanySettingsRoutes(
     }
   });
 
-  app.patch("/api/company-settings/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+  app.patch("/api/company-settings/:id", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
