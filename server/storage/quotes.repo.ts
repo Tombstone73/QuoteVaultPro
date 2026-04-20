@@ -537,7 +537,17 @@ export class QuotesRepository {
             organizationId,
             Array.from(new Set(newLineItems.map((item) => item.productId).filter(Boolean))),
         );
-        
+
+        // Snapshot requiresProofApproval from product so conversion is not sensitive to later product edits.
+        const newLineItemProductIds = Array.from(new Set(newLineItems.map((item) => item.productId).filter(Boolean)));
+        const proofApprovalRows = newLineItemProductIds.length > 0
+            ? await this.dbInstance
+                .select({ id: products.id, requiresProofApproval: products.requiresProofApproval })
+                .from(products)
+                .where(inArray(products.id, newLineItemProductIds as [string, ...string[]]))
+            : [];
+        const proofApprovalMap = new Map(proofApprovalRows.map((p) => [p.id, Boolean(p.requiresProofApproval)]));
+
         const lineItemsData = newLineItems.map((item, index) => ({
             ...materializeLineItemDesignSnapshot({
                 config: designConfigMap.get(item.productId) ?? null,
@@ -582,6 +592,8 @@ export class QuotesRepository {
                 requestedEffectiveRequiresDesign: typeof (item as any).requiresDesign === 'boolean' ? (item as any).requiresDesign : null,
             }).effectiveRequiresDesign,
             requiresPrepress: typeof (item as any).requiresPrepress === 'boolean' ? (item as any).requiresPrepress : null,
+            // Proof-approval snapshot (migration 0032): captured from product now so conversion is immune to later changes.
+            requiresProofApproval: proofApprovalMap.get(item.productId) ?? false,
         }));
 
         const createdLineItems = lineItemsData.length
@@ -611,6 +623,16 @@ export class QuotesRepository {
                     Array.from(new Set(existingLineItems.map((item) => item.productId).filter(Boolean))),
                 );
 
+                // Snapshot requiresProofApproval for the temp items being linked.
+                const existingProductIds = Array.from(new Set(existingLineItems.map((item) => item.productId).filter(Boolean)));
+                const existingProofApprovalRows = existingProductIds.length > 0
+                    ? await this.dbInstance
+                        .select({ id: products.id, requiresProofApproval: products.requiresProofApproval })
+                        .from(products)
+                        .where(inArray(products.id, existingProductIds as [string, ...string[]]))
+                    : [];
+                const existingProofApprovalMap = new Map(existingProofApprovalRows.map((p) => [p.id, Boolean(p.requiresProofApproval)]));
+
                 linkedLineItems = [];
                 for (const existingLineItem of existingLineItems) {
                     const designSnapshot = materializeLineItemDesignSnapshot({
@@ -634,6 +656,8 @@ export class QuotesRepository {
                             overageRateSnapshot: designSnapshot.overageRateSnapshot,
                             internalLaborRateSnapshot: designSnapshot.internalLaborRateSnapshot,
                             needsDesignOverride: designSnapshot.needsDesignOverride,
+                            // Proof-approval snapshot (migration 0032)
+                            requiresProofApproval: existingProofApprovalMap.get(existingLineItem.productId) ?? false,
                         })
                         .where(eq(quoteLineItems.id, existingLineItem.id))
                         .returning();
@@ -841,6 +865,14 @@ export class QuotesRepository {
             requestedEffectiveRequiresDesign: typeof (lineItem as any).requiresDesign === 'boolean' ? (lineItem as any).requiresDesign : null,
         });
 
+        // Snapshot requiresProofApproval from the live product so future product edits cannot mutate this line item.
+        const [proofProductRow] = await this.dbInstance
+            .select({ requiresProofApproval: products.requiresProofApproval })
+            .from(products)
+            .where(eq(products.id, lineItem.productId))
+            .limit(1);
+        const lineItemRequiresProofApproval = Boolean(proofProductRow?.requiresProofApproval);
+
         const lineItemData = {
             ...designSnapshot,
             quoteId,
@@ -875,6 +907,8 @@ export class QuotesRepository {
             // Canonical routing intent (migration 0015)
             requiresDesign: designSnapshot.effectiveRequiresDesign,
             requiresPrepress: typeof (lineItem as any).requiresPrepress === 'boolean' ? (lineItem as any).requiresPrepress : null,
+            // Proof-approval snapshot (migration 0032)
+            requiresProofApproval: lineItemRequiresProofApproval,
         };
 
         const [created] = await this.dbInstance.insert(quoteLineItems).values(lineItemData).returning();
