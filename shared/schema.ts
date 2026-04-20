@@ -1434,6 +1434,8 @@ export const quoteLineItems = pgTable("quote_line_items", {
   needsDesignOverride: boolean("needs_design_override"),
   requiresDesign: boolean("requires_design").notNull().default(false),
   requiresPrepress: boolean("requires_prepress"),
+  // Proof-approval snapshot (migration 0032). NULL = legacy row, falls back to live product on conversion.
+  requiresProofApproval: boolean("requires_proof_approval"),
 }, (table) => [
   index("quote_line_items_quote_id_idx").on(table.quoteId),
   index("quote_line_items_product_id_idx").on(table.productId),
