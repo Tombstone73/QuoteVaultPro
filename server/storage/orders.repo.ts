@@ -884,7 +884,11 @@ export class OrdersRepository {
                 const isTaxableSnapshotSafe = typeof isTaxableSnapshotRaw === "boolean" ? isTaxableSnapshotRaw : true;
                 const requiresDesignSafe = designSnapshot.effectiveRequiresDesign;
                 const requiresPrepressSafe = typeof (li as any).requiresPrepress === "boolean" ? (li as any).requiresPrepress : true;
-                const requiresProofApprovalSafe = productProofApprovalMap.get(li.productId) ?? false;
+                // Honor the snapshot value when explicitly provided (e.g. during quote-to-order conversion);
+                // only fall back to the live product when the caller did not pass a boolean.
+                const requiresProofApprovalSafe = typeof (li as any).requiresProofApproval === "boolean"
+                    ? (li as any).requiresProofApproval
+                    : (productProofApprovalMap.get(li.productId) ?? false);
                 const workflowStateSafe = getInitialWorkflowState({
                     requiresDesign: requiresDesignSafe,
                     requiresPrepress: requiresPrepressSafe,
@@ -931,8 +935,12 @@ export class OrdersRepository {
             return { order, lineItems: createdLineItems };
         });
 
-        // Auto-create jobs for each line item (if missing)
+        // Auto-create legacy job record only for line items that enter the production pipeline immediately.
+        // Items in pre-production workflow states (design, proof-approval, or unrouted) must NOT receive a
+        // job record until they operationally advance to prepress or production.
+        const PRE_PRODUCTION_STATES = new Set(["new", "needs_design", "in_design", "awaiting_proof_approval"]);
         await Promise.all(created.lineItems.map(async (li) => {
+            if (PRE_PRODUCTION_STATES.has(String(li.workflowState ?? "new"))) return;
             const [existing] = await this.dbInstance.select().from(jobs).where(eq(jobs.orderLineItemId as any, li.id));
             if (!existing) {
                 // Fetch product with productType relation

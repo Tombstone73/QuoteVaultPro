@@ -3,9 +3,11 @@ import { and, eq, sql } from "drizzle-orm";
 
 import { db } from "../db";
 import {
+  jobs,
   orderLineItems,
   orders,
   productDesignConfigs,
+  products,
   quoteLineItems,
   type LineItemWorkflowState,
 } from "@shared/schema";
@@ -546,5 +548,445 @@ describe("quote routing persistence and conversion contract", () => {
     expect(detail?.effectiveRequiresDesign).toBe(false);
     expect(detail?.designBriefRequired).toBe(false);
     expect(detail?.status).toBe("not_required");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Blocker #1: requiresProofApproval snapshot integrity
+// ─────────────────────────────────────────────────────────────────────────────
+describe("requiresProofApproval snapshot integrity", () => {
+  const proofProductId = `prod_proof_snapshot_${suffix}`;
+
+  beforeAll(async () => {
+    // Create a product with requiresProofApproval = true
+    await db.execute(sql`
+      insert into products (id, organization_id, name, description, requires_proof_approval)
+      values (${proofProductId}, ${organizationId}, ${"Proof Product"}, ${"proof snapshot test"}, ${true})
+      on conflict (id) do update set requires_proof_approval = excluded.requires_proof_approval
+    `);
+  });
+
+  afterAll(async () => {
+    await db.execute(sql`delete from products where id = ${proofProductId}`);
+  });
+
+  test("quote line item snapshots requiresProofApproval from product at creation time", async () => {
+    const quote = await quotesRepo.createQuote(organizationId, {
+      userId,
+      customerId,
+      contactId: null,
+      customerName: "Proof Snapshot Customer",
+      source: "internal",
+      status: "draft",
+      label: `ProofSnapshot ${suffix}`,
+      subtotal: 10,
+      taxAmount: 0,
+      taxableSubtotal: 10,
+      totalPrice: 10,
+      lineItems: [
+        {
+          productId: proofProductId,
+          productName: "Proof Product",
+          variantId: null,
+          variantName: null,
+          productType: "wide_roll",
+          width: 12,
+          height: 18,
+          quantity: 1,
+          selectedOptions: [],
+          linePrice: 10,
+          priceBreakdown: { basePrice: 10, optionsPrice: 0, total: 10, formula: "test" },
+          pbv2TreeVersionId: null,
+          pbv2SnapshotJson: {},
+          pricedAt: new Date(),
+          taxAmount: 0,
+          isTaxableSnapshot: true,
+          requiresDesign: false,
+          requiresPrepress: true,
+        } as any,
+      ],
+    } as any);
+
+    const qli = quote.lineItems[0] as any;
+    expect(qli.requiresProofApproval).toBe(true);
+  });
+
+  test("quote-to-order conversion uses snapshot, not live product, for requiresProofApproval", async () => {
+    // Create quote while product still has requiresProofApproval = true
+    const quote = await quotesRepo.createQuote(organizationId, {
+      userId,
+      customerId,
+      contactId: null,
+      customerName: "Proof Snapshot Customer",
+      source: "internal",
+      status: "draft",
+      label: `ProofConvert ${suffix}`,
+      subtotal: 10,
+      taxAmount: 0,
+      taxableSubtotal: 10,
+      totalPrice: 10,
+      lineItems: [
+        {
+          productId: proofProductId,
+          productName: "Proof Product",
+          variantId: null,
+          variantName: null,
+          productType: "wide_roll",
+          width: 12,
+          height: 18,
+          quantity: 1,
+          selectedOptions: [],
+          linePrice: 10,
+          priceBreakdown: { basePrice: 10, optionsPrice: 0, total: 10, formula: "test" },
+          pbv2TreeVersionId: null,
+          pbv2SnapshotJson: {},
+          pricedAt: new Date(),
+          taxAmount: 0,
+          isTaxableSnapshot: true,
+          requiresDesign: false,
+          requiresPrepress: true,
+        } as any,
+      ],
+    } as any);
+
+    // Mutate the product — disable proof approval AFTER quoting
+    await db
+      .update(products)
+      .set({ requiresProofApproval: false })
+      .where(eq(products.id, proofProductId));
+
+    // Convert: the order line item must reflect the SNAPSHOT (true), not the mutated product (false)
+    const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId);
+    const oli = createdOrder.lineItems[0] as any;
+
+    expect(oli.requiresProofApproval).toBe(true);
+    expect(oli.workflowState).toBe("awaiting_proof_approval");
+
+    // Restore product for subsequent tests
+    await db
+      .update(products)
+      .set({ requiresProofApproval: true })
+      .where(eq(products.id, proofProductId));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Blocker #2: proof gate enforcement
+// ─────────────────────────────────────────────────────────────────────────────
+describe("proof gate enforcement", () => {
+  const proofGateProductId = `prod_proof_gate_${suffix}`;
+
+  beforeAll(async () => {
+    await db.execute(sql`
+      insert into products (id, organization_id, name, description, requires_proof_approval)
+      values (${proofGateProductId}, ${organizationId}, ${"Proof Gate Product"}, ${"proof gate test"}, ${true})
+      on conflict (id) do update set requires_proof_approval = excluded.requires_proof_approval
+    `);
+  });
+
+  afterAll(async () => {
+    await db.execute(sql`delete from products where id = ${proofGateProductId}`);
+  });
+
+  test("proof-required line item starts in awaiting_proof_approval when design is not required", async () => {
+    const quote = await quotesRepo.createQuote(organizationId, {
+      userId,
+      customerId,
+      contactId: null,
+      customerName: "Proof Gate Customer",
+      source: "internal",
+      status: "draft",
+      label: `ProofGate ${suffix}`,
+      subtotal: 10,
+      taxAmount: 0,
+      taxableSubtotal: 10,
+      totalPrice: 10,
+      lineItems: [
+        {
+          productId: proofGateProductId,
+          productName: "Proof Gate Product",
+          variantId: null,
+          variantName: null,
+          productType: "wide_roll",
+          width: 12,
+          height: 18,
+          quantity: 1,
+          selectedOptions: [],
+          linePrice: 10,
+          priceBreakdown: { basePrice: 10, optionsPrice: 0, total: 10, formula: "test" },
+          pbv2TreeVersionId: null,
+          pbv2SnapshotJson: {},
+          pricedAt: new Date(),
+          taxAmount: 0,
+          isTaxableSnapshot: true,
+          requiresDesign: false,
+          requiresPrepress: true,
+        } as any,
+      ],
+    } as any);
+
+    const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId);
+    const oli = createdOrder.lineItems[0] as any;
+
+    expect(oli.requiresProofApproval).toBe(true);
+    expect(oli.workflowState).toBe("awaiting_proof_approval");
+    expect(oli.approvedProofVersionId).toBeNull();
+  });
+
+  test("transition to ready_for_prepress is blocked without approved proof", async () => {
+    const quote = await quotesRepo.createQuote(organizationId, {
+      userId,
+      customerId,
+      contactId: null,
+      customerName: "Proof Gate Customer",
+      source: "internal",
+      status: "draft",
+      label: `ProofBlock ${suffix}`,
+      subtotal: 10,
+      taxAmount: 0,
+      taxableSubtotal: 10,
+      totalPrice: 10,
+      lineItems: [
+        {
+          productId: proofGateProductId,
+          productName: "Proof Gate Product",
+          variantId: null,
+          variantName: null,
+          productType: "wide_roll",
+          width: 12,
+          height: 18,
+          quantity: 1,
+          selectedOptions: [],
+          linePrice: 10,
+          priceBreakdown: { basePrice: 10, optionsPrice: 0, total: 10, formula: "test" },
+          pbv2TreeVersionId: null,
+          pbv2SnapshotJson: {},
+          pricedAt: new Date(),
+          taxAmount: 0,
+          isTaxableSnapshot: true,
+          requiresDesign: false,
+          requiresPrepress: true,
+        } as any,
+      ],
+    } as any);
+
+    const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId);
+    const oli = createdOrder.lineItems[0] as any;
+    expect(oli.workflowState).toBe("awaiting_proof_approval");
+
+    // Attempt to advance without an approved proof — must throw
+    await expect(
+      db.transaction(async (tx) => {
+        await transitionLineItemWorkflowState(tx, {
+          organizationId,
+          lineItemId: String(oli.id),
+          toState: "ready_for_prepress" as LineItemWorkflowState,
+          actorUserId: userId,
+        });
+      }),
+    ).rejects.toThrow(/approved proof is required/i);
+  });
+
+  test("transition to ready_for_prepress succeeds after approvedProofVersionId is set", async () => {
+    const quote = await quotesRepo.createQuote(organizationId, {
+      userId,
+      customerId,
+      contactId: null,
+      customerName: "Proof Gate Customer",
+      source: "internal",
+      status: "draft",
+      label: `ProofApprove ${suffix}`,
+      subtotal: 10,
+      taxAmount: 0,
+      taxableSubtotal: 10,
+      totalPrice: 10,
+      lineItems: [
+        {
+          productId: proofGateProductId,
+          productName: "Proof Gate Product",
+          variantId: null,
+          variantName: null,
+          productType: "wide_roll",
+          width: 12,
+          height: 18,
+          quantity: 1,
+          selectedOptions: [],
+          linePrice: 10,
+          priceBreakdown: { basePrice: 10, optionsPrice: 0, total: 10, formula: "test" },
+          pbv2TreeVersionId: null,
+          pbv2SnapshotJson: {},
+          pricedAt: new Date(),
+          taxAmount: 0,
+          isTaxableSnapshot: true,
+          requiresDesign: false,
+          requiresPrepress: true,
+        } as any,
+      ],
+    } as any);
+
+    const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId);
+    const oli = createdOrder.lineItems[0] as any;
+
+    // Directly stamp a synthetic approvedProofVersionId to simulate proof approval
+    const syntheticProofId = `proof_synthetic_${suffix}`;
+    await db
+      .update(orderLineItems)
+      .set({ approvedProofVersionId: syntheticProofId })
+      .where(eq(orderLineItems.id, String(oli.id)));
+
+    // Now transition should succeed
+    await expect(
+      db.transaction(async (tx) => {
+        await transitionLineItemWorkflowState(tx, {
+          organizationId,
+          lineItemId: String(oli.id),
+          toState: "ready_for_prepress" as LineItemWorkflowState,
+          actorUserId: userId,
+        });
+      }),
+    ).resolves.toMatchObject({ toState: "ready_for_prepress" });
+
+    const [afterRow] = await db
+      .select({ workflowState: orderLineItems.workflowState })
+      .from(orderLineItems)
+      .where(eq(orderLineItems.id, String(oli.id)));
+    expect(afterRow?.workflowState).toBe("ready_for_prepress");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Blocker #3: production job creation rules
+// ─────────────────────────────────────────────────────────────────────────────
+describe("production job creation rules", () => {
+  const jobRulesProductId = `prod_job_rules_${suffix}`;
+
+  beforeAll(async () => {
+    await db.execute(sql`
+      insert into products (id, organization_id, name, description, requires_proof_approval, requires_production_job)
+      values (${jobRulesProductId}, ${organizationId}, ${"Job Rules Product"}, ${"job creation rules test"}, ${true}, ${true})
+      on conflict (id) do update
+        set requires_proof_approval = excluded.requires_proof_approval,
+            requires_production_job  = excluded.requires_production_job
+    `);
+  });
+
+  afterAll(async () => {
+    await db.execute(sql`delete from products where id = ${jobRulesProductId}`);
+  });
+
+  test("quote-to-order conversion does NOT create a legacy jobs record for proof-required items", async () => {
+    const quote = await quotesRepo.createQuote(organizationId, {
+      userId,
+      customerId,
+      contactId: null,
+      customerName: "Job Rules Customer",
+      source: "internal",
+      status: "draft",
+      label: `JobRulesProof ${suffix}`,
+      subtotal: 10,
+      taxAmount: 0,
+      taxableSubtotal: 10,
+      totalPrice: 10,
+      lineItems: [
+        {
+          productId: jobRulesProductId,
+          productName: "Job Rules Product",
+          variantId: null,
+          variantName: null,
+          productType: "wide_roll",
+          width: 12,
+          height: 18,
+          quantity: 1,
+          selectedOptions: [],
+          linePrice: 10,
+          priceBreakdown: { basePrice: 10, optionsPrice: 0, total: 10, formula: "test" },
+          pbv2TreeVersionId: null,
+          pbv2SnapshotJson: {},
+          pricedAt: new Date(),
+          taxAmount: 0,
+          isTaxableSnapshot: true,
+          requiresDesign: false,
+          requiresPrepress: true,
+        } as any,
+      ],
+    } as any);
+
+    const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId);
+    const oli = createdOrder.lineItems[0] as any;
+
+    expect(oli.workflowState).toBe("awaiting_proof_approval");
+
+    const legacyJobs = await db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.orderLineItemId as any, String(oli.id)));
+
+    expect(legacyJobs).toHaveLength(0);
+  });
+
+  test("quote-to-order conversion does NOT create a legacy jobs record for design-required items", async () => {
+    const quote = await createMixedRoutingQuote(`JobRulesDesign ${suffix}`);
+    const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId);
+
+    const designItem = createdOrder.lineItems.find((li: any) => li.workflowState === "needs_design");
+    expect(designItem).toBeDefined();
+
+    const legacyJobs = await db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.orderLineItemId as any, String(designItem!.id)));
+
+    expect(legacyJobs).toHaveLength(0);
+  });
+
+  test("quote-to-order conversion DOES create a legacy jobs record for immediately production-ready items", async () => {
+    const quote = await quotesRepo.createQuote(organizationId, {
+      userId,
+      customerId,
+      contactId: null,
+      customerName: "Job Rules Customer",
+      source: "internal",
+      status: "draft",
+      label: `JobRulesReady ${suffix}`,
+      subtotal: 10,
+      taxAmount: 0,
+      taxableSubtotal: 10,
+      totalPrice: 10,
+      lineItems: [
+        {
+          productId,
+          productName: "Ready Item",
+          variantId: null,
+          variantName: null,
+          productType: "wide_roll",
+          width: 12,
+          height: 18,
+          quantity: 1,
+          selectedOptions: [],
+          linePrice: 10,
+          priceBreakdown: { basePrice: 10, optionsPrice: 0, total: 10, formula: "test" },
+          pbv2TreeVersionId: null,
+          pbv2SnapshotJson: {},
+          pricedAt: new Date(),
+          taxAmount: 0,
+          isTaxableSnapshot: true,
+          requiresDesign: false,
+          requiresPrepress: false,
+        } as any,
+      ],
+    } as any);
+
+    const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId);
+    const oli = createdOrder.lineItems[0] as any;
+
+    expect(oli.workflowState).toBe("ready_for_production");
+
+    const legacyJobs = await db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.orderLineItemId as any, String(oli.id)));
+
+    expect(legacyJobs).toHaveLength(1);
+    expect(legacyJobs[0].statusKey).toBe("new");
   });
 });
