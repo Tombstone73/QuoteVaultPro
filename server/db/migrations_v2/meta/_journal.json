@@ -232,6 +232,13 @@
       "when": 1745625600000,
       "tag": "0032_quote_line_item_proof_approval_snapshot",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1745712000000,
+      "tag": "0033_migrations_v2_canary",
+      "breakpoints": true
     }
   ]
 }
