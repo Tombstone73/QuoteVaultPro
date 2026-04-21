@@ -60,7 +60,7 @@ export async function runMigrations(): Promise<void> {
   );
 
   console.log(`[Migrations] import.meta.url = ${import.meta.url}`);
-  console.log(`[Migrations] Starting — folder: ${migrationsFolder}`);
+  console.log(`[Migrations] Starting migrations_v2 — folder: ${migrationsFolder}`);
 
   // --- TEMP DIAGNOSTIC: check folder existence and contents ---
   const folderExists = fs.existsSync(migrationsFolder);
@@ -90,34 +90,14 @@ export async function runMigrations(): Promise<void> {
       console.warn("[Migrations] DB identity query failed:", e?.message);
     }
 
-    // Log which migrations are already applied so we can see the ledger state.
+    // Highest ledger id before migrate — -1 means table doesn't exist yet (fresh DB).
     try {
-      const ledgerRes = await client.query(
-        `SELECT id, hash, created_at FROM public.${MIGRATIONS_TABLE} ORDER BY id DESC LIMIT 10`
+      const preRes = await client.query(
+        `SELECT COALESCE(MAX(id), -1) AS max_id FROM public.${MIGRATIONS_TABLE}`
       );
-      if (ledgerRes.rows.length === 0) {
-        console.log(`[Migrations] Ledger (${MIGRATIONS_TABLE}): EMPTY — all migrations will be applied`);
-      } else {
-        const top = ledgerRes.rows[0];
-        console.log(`[Migrations] Ledger (${MIGRATIONS_TABLE}): ${ledgerRes.rows.length} rows, highest id=${top.id}, hash=${top.hash}`);
-        console.log(`[Migrations] Ledger last 5: ${ledgerRes.rows.slice(0, 5).map((r: any) => `id=${r.id}`).join(', ')}`);
-      }
+      console.log(`[Migrations] Ledger max_id before migrate: ${preRes.rows[0].max_id}`);
     } catch (e: any) {
-      // Table doesn't exist yet on a fresh DB — normal on first deploy.
-      console.log(`[Migrations] Ledger (${MIGRATIONS_TABLE}): not yet created (fresh database)`);
-    }
-
-    // Log whether the target column from migration 0030 already exists.
-    try {
-      const colRes = await client.query(
-        `SELECT column_name FROM information_schema.columns
-         WHERE table_schema = 'public' AND table_name = 'email_settings'
-           AND column_name IN ('connection_status', 'connected_at')`
-      );
-      const found = colRes.rows.map((r: any) => r.column_name);
-      console.log(`[Migrations] email_settings columns present before migrate(): [${found.join(', ') || 'none'}]`);
-    } catch (e: any) {
-      console.warn("[Migrations] Column pre-check failed:", e?.message);
+      console.log(`[Migrations] Ledger max_id before migrate: table not yet created (fresh database)`);
     }
 
     console.log("[Migrations] Calling drizzle migrate() now...");
@@ -126,27 +106,36 @@ export async function runMigrations(): Promise<void> {
       migrationsTable: MIGRATIONS_TABLE,
       migrationsSchema: MIGRATIONS_SCHEMA,
     });
-    console.log("[Migrations] Complete — migrate() returned without error");
+    console.log("[Migrations] Migrations_v2 complete — migrate() returned without error");
 
-    // --- POST-MIGRATION DIAGNOSTICS ---
-    // Confirm the columns now exist so we know 0030 landed.
+    // Highest ledger id after migrate.
     try {
-      const colRes = await client.query(
-        `SELECT column_name FROM information_schema.columns
-         WHERE table_schema = 'public' AND table_name = 'email_settings'
-           AND column_name IN ('connection_status', 'connected_at')`
+      const postRes = await client.query(
+        `SELECT COALESCE(MAX(id), -1) AS max_id FROM public.${MIGRATIONS_TABLE}`
       );
-      const found = colRes.rows.map((r: any) => r.column_name);
-      console.log(`[Migrations] email_settings columns present after migrate(): [${found.join(', ') || 'STILL MISSING'}]`);
-      if (found.length < 2) {
-        console.warn("[Migrations] ⚠️  connection_status / connected_at still missing — 0030 may have been skipped by ledger");
-      }
+      console.log(`[Migrations] Ledger max_id after migrate: ${postRes.rows[0].max_id}`);
     } catch (e: any) {
-      console.warn("[Migrations] Column post-check failed:", e?.message);
+      console.warn("[Migrations] Ledger max_id post-check failed:", e?.message);
+    }
+
+    // Canary check: migration 0033 creates _migrations_v2_canary with a sentinel row.
+    // If this table exists, DDL + DML reached this DB and all prior migrations ran.
+    try {
+      const canaryRes = await client.query(
+        `SELECT EXISTS (
+           SELECT 1
+           FROM information_schema.tables
+           WHERE table_schema = 'public'
+             AND table_name = '_migrations_v2_canary'
+         ) AS has_canary`
+      );
+      console.log(`[Migrations] _migrations_v2_canary exists: ${canaryRes.rows[0].has_canary}`);
+    } catch (e: any) {
+      console.warn("[Migrations] Canary post-check failed:", e?.message);
     }
 
   } catch (err: any) {
-    console.error("[Migrations] FAILED — error message:", err?.message);
+    console.error("[Migrations] Migrations_v2 failed — error message:", err?.message);
     console.error("[Migrations] FAILED — stack:", err?.stack);
     // Fail fast — do not start the server with a potentially partial schema.
     throw err;
