@@ -51,24 +51,35 @@ export async function runMigrations(): Promise<void> {
     return;
   }
 
-  // Resolve migrations folder relative to this file so it works both in dev
-  // (tsx resolves to server/) and in production (esbuild bundle resolves to dist/).
-  const migrationsFolder = path.join(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "db",
-    "migrations_v2"
-  );
+  // Resolve migrations folder relative to this file's runtime location.
+  //
+  // How it resolves:
+  //   dev  (tsx server/index.ts):    import.meta.url = file:///…/server/runMigrations.ts
+  //                                  → dirname = …/server
+  //                                  → folder  = …/server/db/migrations_v2
+  //
+  //   prod (esbuild → dist/index.js): import.meta.url = file:///app/dist/index.js
+  //                                  → dirname = /app/dist
+  //                                  → folder  = /app/dist/db/migrations_v2
+  //                                  (copied by scripts/copy-migrations.mjs during npm run build)
+  const thisFileDir = path.dirname(fileURLToPath(import.meta.url));
+  const migrationsFolder = path.join(thisFileDir, "db", "migrations_v2");
 
   console.log(`[Migrations] import.meta.url = ${import.meta.url}`);
+  console.log(`[Migrations] Resolved thisFileDir: ${thisFileDir}`);
   console.log(`[Migrations] Starting migrations_v2 — folder: ${migrationsFolder}`);
 
-  // --- TEMP DIAGNOSTIC: check folder existence and contents ---
   const folderExists = fs.existsSync(migrationsFolder);
   console.log(`[Migrations] Folder exists: ${folderExists}`);
-  if (folderExists) {
-    const files = fs.readdirSync(migrationsFolder).sort();
-    console.log(`[Migrations] Folder contents (${files.length}): ${files.join(", ")}`);
+  if (!folderExists) {
+    // Fail fast — migrate() silently applies nothing against a missing folder,
+    // which would mask the problem in deploy logs and leave the DB at the wrong schema.
+    console.error(`[Migrations] ERROR: migrations folder not found at resolved path: ${migrationsFolder}`);
+    console.error(`[Migrations] Expected: <dist_root>/db/migrations_v2 — verify scripts/copy-migrations.mjs ran during build`);
+    throw new Error(`Migrations folder not found: ${migrationsFolder}`);
   }
+  const files = fs.readdirSync(migrationsFolder).sort();
+  console.log(`[Migrations] Folder contents (${files.length}): ${files.join(", ")}`);
 
   // Acquire a session-level advisory lock on a dedicated connection so that
   // concurrent server instances do not run migrations simultaneously.
