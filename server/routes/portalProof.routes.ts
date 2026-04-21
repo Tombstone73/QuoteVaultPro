@@ -13,13 +13,14 @@
 
 import type { Express } from "express";
 import { db } from "../db";
-import { auditLogs, orderAttachments, lineItemProofVersions } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { auditLogs, orderAttachments, lineItemProofVersions, quoteAttachmentPages } from "@shared/schema";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 import { validateProofToken } from "../services/proofAccessTokenService";
 import { buildProofInputSnapshot, recordProofResponse } from "../services/proofingService";
-import { enrichAttachmentWithUrls } from "../lib/supabaseObjectHelpers";
+import { enrichAttachmentWithUrls, resolveOriginalFileAccess, resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
+import { isSupabaseConfigured, SupabaseStorageService } from "../supabaseStorage";
 
 export function registerPortalProofRoutes(app: Express): void {
   app.get("/api/portal/proof/:token", async (req: any, res) => {
@@ -51,6 +52,14 @@ export function registerPortalProofRoutes(app: Express): void {
       }
 
       const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+
+      // Remap all artifact URLs to the token-scoped portal file proxy so external
+      // recipients (no login session) can view and download without hitting the
+      // auth-guarded /objects/* routes.
+      const fileBase = `/api/portal/proof/${req.params.token}/file`;
+      const displayFilename = encodeURIComponent(
+        enrichedAttachment.originalFilename ?? enrichedAttachment.fileName ?? "download"
+      );
 
       // Fetch customer-visible text fields snapshotted at send time.
       const [proofVersionTexts] = await db
@@ -107,15 +116,15 @@ export function registerPortalProofRoutes(app: Express): void {
               originalFilename: enrichedAttachment.originalFilename ?? null,
               mimeType: enrichedAttachment.mimeType ?? null,
               createdAt: new Date(enrichedAttachment.createdAt).toISOString(),
-              originalUrl: enrichedAttachment.originalUrl ?? null,
-              downloadUrl: enrichedAttachment.downloadUrl ?? null,
-              previewUrl: enrichedAttachment.previewUrl ?? null,
-              thumbnailUrl: enrichedAttachment.thumbnailUrl ?? null,
+              originalUrl: enrichedAttachment.originalUrl ? fileBase : null,
+              downloadUrl: enrichedAttachment.downloadUrl ? `${fileBase}?download=1&filename=${displayFilename}` : null,
+              previewUrl: enrichedAttachment.previewUrl ? `${fileBase}?variant=preview` : null,
+              thumbnailUrl: enrichedAttachment.thumbnailUrl ? `${fileBase}?variant=thumb` : null,
               pages: Array.isArray(enrichedAttachment.pages)
                 ? enrichedAttachment.pages.map((page: any) => ({
                     pageIndex: page.pageIndex,
-                    thumbUrl: page.thumbUrl ?? null,
-                    previewUrl: page.previewUrl ?? null,
+                    thumbUrl: page.thumbUrl ? `${fileBase}?variant=page-thumb&pageIndex=${page.pageIndex}` : null,
+                    previewUrl: page.previewUrl ? `${fileBase}?variant=page-preview&pageIndex=${page.pageIndex}` : null,
                   }))
                 : [],
             },
@@ -131,6 +140,98 @@ export function registerPortalProofRoutes(app: Express): void {
       const status = error?.statusCode || 500;
       console.error("[PortalProof] Error resolving proof token:", error);
       return res.status(status).json({ error: error?.message || "Failed to resolve portal proof" });
+    }
+  });
+
+  /**
+   * GET /api/portal/proof/:token/file
+   * Token-scoped proof artifact endpoint for external (unauthenticated) recipients.
+   *
+   * Validates the proof token, resolves the artifact for the given variant, then
+   * redirects to a short-lived Supabase signed URL (1 hour TTL).
+   *
+   * Query params:
+   *   variant   — "original" (default) | "preview" | "thumb" | "page-thumb" | "page-preview"
+   *   pageIndex — required for page-thumb / page-preview (0-based)
+   *   download  — "1" to signal download intent (passed through; Supabase handles disposition)
+   *   filename  — suggested filename for downloads (informational)
+   *
+   * Access scope: only the proof artifact associated with this token's proofVersionId.
+   * Never exposes other files, buckets, or org assets.
+   */
+  app.get("/api/portal/proof/:token/file", async (req: any, res) => {
+    try {
+      const validation = await validateProofToken(db, String(req.params.token));
+      const variant = (req.query.variant as string) || "original";
+
+      const [attachment] = await db
+        .select({
+          id: orderAttachments.id,
+          fileRecordId: orderAttachments.fileRecordId,
+          fileName: orderAttachments.fileName,
+          originalFilename: orderAttachments.originalFilename,
+          mimeType: orderAttachments.mimeType,
+          fileUrl: orderAttachments.fileUrl,
+          thumbKey: orderAttachments.thumbKey,
+          previewKey: orderAttachments.previewKey,
+          thumbnailUrl: orderAttachments.thumbnailUrl,
+        })
+        .from(orderAttachments)
+        .where(eq(orderAttachments.id, validation.proofVersion.proofFileId))
+        .limit(1);
+
+      if (!attachment) {
+        return res.status(404).json({ error: "Proof artifact not found" });
+      }
+
+      let objectPath: string | null = null;
+
+      if (variant === "original") {
+        const access = await resolveOriginalFileAccess(attachment);
+        objectPath = access.objectPath;
+      } else if (variant === "preview") {
+        const access = await resolveDerivativeFileAccess(attachment, "preview");
+        objectPath = access.objectPath;
+      } else if (variant === "thumb") {
+        const access = await resolveDerivativeFileAccess(attachment, "thumbnail");
+        objectPath = access.objectPath;
+      } else if (variant === "page-thumb" || variant === "page-preview") {
+        const pageIndex = Math.max(0, parseInt(String(req.query.pageIndex ?? "0"), 10));
+        const [page] = await db
+          .select({
+            id: quoteAttachmentPages.id,
+            thumbFileRecordId: quoteAttachmentPages.thumbFileRecordId,
+            previewFileRecordId: quoteAttachmentPages.previewFileRecordId,
+          })
+          .from(quoteAttachmentPages)
+          .where(and(
+            eq(quoteAttachmentPages.attachmentId, attachment.id),
+            eq(quoteAttachmentPages.pageIndex, pageIndex),
+          ))
+          .limit(1);
+        if (!page) return res.status(404).json({ error: "Proof page not found" });
+        const fileRecordId = variant === "page-thumb" ? page.thumbFileRecordId : page.previewFileRecordId;
+        if (!fileRecordId) return res.status(404).json({ error: "Page variant not available" });
+        const access = await resolveOriginalFileAccess({ id: page.id, fileRecordId, mimeType: "image/jpeg" });
+        objectPath = access.objectPath;
+      }
+
+      if (!objectPath) {
+        return res.status(404).json({ error: "Proof file not available" });
+      }
+
+      if (!isSupabaseConfigured()) {
+        console.error("[PortalProof/file] Supabase not configured — cannot serve proof artifact without auth");
+        return res.status(503).json({ error: "File serving not available in this environment" });
+      }
+
+      const svc = new SupabaseStorageService();
+      const signedUrl = await svc.getSignedDownloadUrl(objectPath, 3600);
+      return res.redirect(302, signedUrl);
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[PortalProof/file] Error serving proof artifact:", error);
+      return res.status(status).json({ error: error?.message || "Failed to serve proof artifact" });
     }
   });
 
