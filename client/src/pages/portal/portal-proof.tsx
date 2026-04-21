@@ -497,8 +497,9 @@ export default function PortalProofPage() {
   // ---- Error loading proof ----
   if (error || !data) {
     const httpStatus = (error as any)?.status;
-    // 403 = invalid / expired / revoked token
-    // 409 = draft or superseded proof (internal state — not actionable by customer)
+    // 403 = invalid / expired / revoked token; 404 = not found
+    // 409 = draft proof (internal error — tokens should never be issued for drafts)
+    // Superseded proofs now return 200 with a resolved status, not 409.
     const isInvalidLink = !httpStatus || httpStatus === 403 || httpStatus === 404;
     return (
       <ProofShell>
