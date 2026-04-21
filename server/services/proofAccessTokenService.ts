@@ -75,6 +75,10 @@ function normalizePortalProofStatus(args: {
   if (args.proofVersionStatus === "approved") return "approved";
   if (args.proofVersionStatus === "rejected") return "rejected";
   if (args.proofVersionStatus === "revision_requested") return "revision_requested";
+  // A superseded proof version (staff sent a newer version) has no recorded decision
+  // against this version, but it is resolved from the customer's perspective.
+  // Show it as read-only "revision_requested" — the closest public-facing resolved state.
+  if (args.proofVersionStatus === "superseded") return "revision_requested";
   throwConflict("Proof token is not valid for the current proof state");
 }
 
@@ -209,9 +213,12 @@ export async function validateProofToken(tx: any, rawToken: string): Promise<Pro
     throwForbidden("Invalid proof token");
   }
 
-  if (proofContext.proofStatus === "draft" || proofContext.proofStatus === "superseded") {
+  if (proofContext.proofStatus === "draft") {
+    // Draft proofs should never have tokens; this is an internal consistency error.
     throwConflict("Proof token is not valid for the current proof state");
   }
+  // "superseded" is handled below in normalizePortalProofStatus → returns "revision_requested"
+  // so the page renders as read-only resolved instead of an error.
 
   const truth = await resolveLineItemProofingTruth(tx, {
     organizationId: proofContext.organizationId,
