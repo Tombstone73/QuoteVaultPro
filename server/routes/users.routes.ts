@@ -188,10 +188,11 @@ export function registerUsersRoutes(
 
       // Send invite email asynchronously (non-blocking)
       setImmediate(async () => {
+        console.log(`[Invite] Email attempted: to=${email} orgId=${organizationId}`);
         try {
           const appUrl = 'https://www.printershero.com';
 
-          await emailService.sendEmail(organizationId, {
+          const msgId = await emailService.sendEmail(organizationId, {
             to: email,
             subject: "You're invited to PrintersHero",
             html: `
@@ -217,8 +218,9 @@ export function registerUsersRoutes(
               </div>
             `,
           });
-        } catch (emailError) {
-          console.error('Failed to send invite email:', emailError);
+          console.log(`[Invite] Email sent: to=${email} messageId=${msgId}`);
+        } catch (emailError: any) {
+          console.error(`[Invite] Email failed: to=${email} error=${emailError?.message}`);
         }
       });
 
@@ -460,13 +462,16 @@ export function registerUsersRoutes(
         passwordHash: null, // DEPRECATED field, leave null
       });
 
-      // Create auth identity with password hash
+      // Create auth identity with temp password.
+      // passwordSetAt: null signals invited/temp state — enforcement middleware
+      // (getMustChangePassword) blocks all API routes until user sets a permanent password.
       await db.insert(authIdentities).values({
         userId: userId,
         provider: 'password',
         passwordHash: passwordHash,
-        passwordSetAt: new Date(),
+        passwordSetAt: null,
       });
+      console.log(`[Admin Invite] Auth identity created: userId=${userId} passwordSetAt=null (invited state)`);
 
       // Add user to organization
       await db.insert(userOrganizations).values({
@@ -478,10 +483,11 @@ export function registerUsersRoutes(
 
       // Send invite email asynchronously (non-blocking)
       setImmediate(async () => {
+        console.log(`[Admin Invite] Email attempted: to=${email} orgId=${organizationId}`);
         try {
           const appUrl = 'https://www.printershero.com';
 
-          await emailService.sendEmail(organizationId, {
+          const msgId = await emailService.sendEmail(organizationId, {
             to: email,
             subject: "You're invited to PrintersHero",
             html: `
@@ -500,7 +506,7 @@ export function registerUsersRoutes(
                 </p>
 
                 <p style="color: #ef4444; font-weight: bold;">
-                  âš ï¸ You will be prompted to set a new password after logging in.
+                  You will be prompted to set a new password after logging in.
                 </p>
 
                 <p style="color: #6b7280; font-size: 14px; margin-top: 24px;">
@@ -510,9 +516,9 @@ export function registerUsersRoutes(
             `,
           });
 
-          console.log(`[User Invite] Email sent successfully to ${email}`);
-        } catch (emailError) {
-          console.error(`[User Invite] Failed to send email to ${email}:`, emailError);
+          console.log(`[Admin Invite] Email sent: to=${email} messageId=${msgId}`);
+        } catch (emailError: any) {
+          console.error(`[Admin Invite] Email failed: to=${email} error=${emailError?.message}`);
           // Don't throw - user is already created
         }
       });
@@ -573,12 +579,14 @@ export function registerUsersRoutes(
       const bcrypt = await import('bcryptjs');
       const passwordHash = await bcrypt.hash(tempPassword, 10);
 
-      // Update auth identity with new password hash
+      // Reset auth identity to invited/temp state.
+      // passwordSetAt: null signals temp state — enforcement middleware blocks all API
+      // routes until the user sets a permanent password via /api/auth/complete-invite-password.
       await db
         .update(authIdentities)
         .set({
           passwordHash: passwordHash,
-          passwordSetAt: new Date(),
+          passwordSetAt: null,
         })
         .where(
           and(
@@ -586,6 +594,7 @@ export function registerUsersRoutes(
             eq(authIdentities.provider, 'password')
           )
         );
+      console.log(`[Admin Reset] Auth identity updated: userId=${id} passwordSetAt=null (invited state)`);
 
       // Set mustSetPassword flag
       await db
@@ -595,10 +604,11 @@ export function registerUsersRoutes(
 
       // Resend invite email asynchronously
       setImmediate(async () => {
+        console.log(`[Admin Reset] Email attempted: to=${user.email} orgId=${organizationId}`);
         try {
           const appUrl = 'https://www.printershero.com';
 
-          await emailService.sendEmail(organizationId, {
+          const msgId = await emailService.sendEmail(organizationId, {
             to: user.email!,
             subject: "Your PrintersHero Password Has Been Reset",
             html: `
@@ -617,15 +627,15 @@ export function registerUsersRoutes(
                 </p>
 
                 <p style="color: #ef4444; font-weight: bold;">
-                  âš ï¸ You will be prompted to set a new password after logging in.
+                  You will be prompted to set a new password after logging in.
                 </p>
               </div>
             `,
           });
 
-          console.log(`[Password Reset] Email sent successfully to ${user.email}`);
-        } catch (emailError) {
-          console.error(`[Password Reset] Failed to send email to ${user.email}:`, emailError);
+          console.log(`[Admin Reset] Email sent: to=${user.email} messageId=${msgId}`);
+        } catch (emailError: any) {
+          console.error(`[Admin Reset] Email failed: to=${user.email} error=${emailError?.message}`);
         }
       });
 
