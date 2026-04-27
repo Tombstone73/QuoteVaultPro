@@ -22,6 +22,10 @@ export const TERMINAL_WORKFLOW_STATES: LineItemWorkflowState[] = ["completed", "
 export const OWNERSHIP_REQUIRED_WORKFLOW_STATES: LineItemWorkflowState[] = [
   "needs_design",
   "in_design",
+  // Titan default: Prepress owns proof-required items during proof preparation so they
+  // are visible and actionable in the Prepress queue from the moment they are created.
+  // Production is still gated by approvedProofVersionId (see transitionLineItemWorkflowState).
+  "awaiting_proof_approval",
   "ready_for_prepress",
   "in_prepress",
   "ready_for_production",
@@ -30,7 +34,6 @@ export const OWNERSHIP_REQUIRED_WORKFLOW_STATES: LineItemWorkflowState[] = [
 
 export const OWNERLESS_WORKFLOW_STATES: LineItemWorkflowState[] = [
   "new",
-  "awaiting_proof_approval",
   "on_hold",
   "completed",
   "canceled",
@@ -269,7 +272,11 @@ async function resolveOwnershipRouteForState(tx: any, lineItem: LoadedLineItem, 
   }
 
   if (toState === "awaiting_proof_approval") {
-    return null;
+    // Titan default: Prepress owns proof-required items so they appear in the Prepress
+    // queue immediately. Staff can create and send the proof from there.
+    // The production gate (approvedProofVersionId check) still blocks routing to
+    // ready_for_production / in_production until the proof is approved.
+    return { stationKey: "prepress", stepKey: "prepress", reason: "proof_prep_prepress_ownership" };
   }
 
   if (toState === "ready_for_prepress" || toState === "in_prepress") {
