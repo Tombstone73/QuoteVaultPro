@@ -10,6 +10,8 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Table,
   TableBody,
@@ -25,7 +27,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Loader2 } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { AlertTriangle, ChevronDown, CircleHelp, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   useProductionLineItemStatusRules,
@@ -55,6 +58,7 @@ import {
   Mail,
   HardDrive,
   Wrench,
+  Hash,
   type LucideIcon,
 } from "lucide-react";
 
@@ -159,9 +163,15 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     icon: Palette,
     description: "UI theme and visual preferences"
   },
-  { 
-    label: "Admin Tools", 
-    path: "/settings/admin-tools", 
+  {
+    label: "System Setup",
+    path: "/settings/setup",
+    icon: Hash,
+    description: "System initialization: document numbering sequences",
+  },
+  {
+    label: "Admin Tools",
+    path: "/settings/admin-tools",
     icon: Wrench,
     description: "Data portability and system administration"
   },
@@ -304,7 +314,192 @@ type WorkflowDraftRow = {
   isActive: boolean;
 };
 
+type StationOption = {
+  key: string;
+  name: string;
+};
+
+type StationStepLike = {
+  key: string;
+  active?: boolean | null;
+};
+
 const normalizeWorkflowKey = (value: string) => value.trim().toLowerCase();
+
+function getRoutingRulesWarningCount(
+  routingRules: ProductionLineItemStatusRule[],
+  stations: StationOption[],
+  stationSteps: Record<string, StationStepLike[]> | undefined,
+): number {
+  const stationKeys = new Set(stations.map((station) => station.key));
+
+  return routingRules.filter((rule) => {
+    if (rule.sendToProduction !== true) return false;
+
+    const stationKey = String(rule.stationKey ?? "").trim();
+    if (!stationKey || !stationKeys.has(stationKey)) {
+      return true;
+    }
+
+    const stepKey = String(rule.stepKey ?? rule.defaultStepKey ?? "").trim();
+    if (!stepKey) return false;
+
+    const stepsForStation = stationSteps?.[stationKey] ?? [];
+    const step = stepsForStation.find((candidate) => String(candidate.key ?? "").trim() === stepKey);
+    return !step || step.active === false;
+  }).length;
+}
+
+function getWorkflowEditorWarningCount(
+  stations: StationOption[],
+  stationSteps: Record<string, StationStepLike[]> | undefined,
+  routingRules: ProductionLineItemStatusRule[],
+): number {
+  const stationKeys = new Set(stations.map((station) => station.key));
+  let issues = 0;
+
+  for (const rule of routingRules) {
+    if (rule.sendToProduction !== true) continue;
+
+    const stationKey = String(rule.stationKey ?? "").trim();
+    const stepKey = String(rule.stepKey ?? rule.defaultStepKey ?? "").trim();
+    if (!stationKey || !stepKey || !stationKeys.has(stationKey)) continue;
+
+    const stepsForStation = stationSteps?.[stationKey] ?? [];
+    const step = stepsForStation.find((candidate) => String(candidate.key ?? "").trim() === stepKey);
+    if (!step || step.active === false) {
+      issues += 1;
+    }
+  }
+
+  for (const station of stations) {
+    const duplicateKeys = new Set<string>();
+    const seenKeys = new Set<string>();
+    const stepsForStation = stationSteps?.[station.key] ?? [];
+
+    for (const step of stepsForStation) {
+      const key = String(step.key ?? "").trim();
+      if (!key) continue;
+      if (seenKeys.has(key)) {
+        duplicateKeys.add(key);
+      } else {
+        seenKeys.add(key);
+      }
+    }
+
+    issues += duplicateKeys.size;
+  }
+
+  return issues;
+}
+
+function getCustomerStatusesWarningCount(statuses: WorkflowDraftRow[]): number {
+  const seenKeys = new Set<string>();
+  const duplicateKeys = new Set<string>();
+
+  for (const status of statuses) {
+    const key = normalizeWorkflowKey(status.key);
+    if (!key) continue;
+    if (seenKeys.has(key)) {
+      duplicateKeys.add(key);
+    } else {
+      seenKeys.add(key);
+    }
+  }
+
+  return duplicateKeys.size;
+}
+
+function InlineHelp({ label }: { label: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex h-4 w-4 items-center justify-center rounded-sm text-titan-text-muted transition-colors hover:text-titan-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-titan-accent"
+          aria-label={label}
+        >
+          <CircleHelp className="h-3.5 w-3.5" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs text-xs leading-5">
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function SectionLabel({ title, help }: { title: string; help?: string }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span>{title}</span>
+      {help ? <InlineHelp label={help} /> : null}
+    </div>
+  );
+}
+
+function ProductionSettingsSection({
+  title,
+  summary,
+  help,
+  defaultOpen,
+  warningCount = 0,
+  actions,
+  children,
+}: React.PropsWithChildren<{
+  title: string;
+  summary: string;
+  help?: string;
+  defaultOpen?: boolean;
+  warningCount?: number;
+  actions?: React.ReactNode;
+}>) {
+  const [open, setOpen] = React.useState(Boolean(defaultOpen || warningCount > 0));
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <div className="rounded-titan-lg border border-titan-border-subtle bg-transparent overflow-hidden">
+        <div className={cn(
+          "flex flex-wrap items-start gap-3 px-4 py-3",
+          warningCount > 0 && "bg-amber-50/40"
+        )}>
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 items-start gap-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-titan-accent rounded-titan-md"
+              aria-label={`${open ? "Collapse" : "Expand"} ${title}`}
+            >
+              <ChevronDown className={cn("mt-0.5 h-4 w-4 shrink-0 text-titan-text-muted transition-transform", open && "rotate-180")} />
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-titan-md font-semibold text-titan-text-primary">{title}</h3>
+                  {help ? <InlineHelp label={help} /> : null}
+                </div>
+                <div className="mt-1 text-xs text-titan-text-muted">{summary}</div>
+              </div>
+            </button>
+          </CollapsibleTrigger>
+
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            {warningCount > 0 ? (
+              <Badge variant="outline" className="h-5 min-w-5 px-1.5 border-amber-300 bg-amber-100 text-amber-900">
+                <AlertTriangle className="mr-1 h-3 w-3" />
+                {warningCount}
+              </Badge>
+            ) : null}
+            {actions && open ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
+          </div>
+        </div>
+
+        <CollapsibleContent>
+          <div className="border-t border-titan-border-subtle px-4 py-4">
+            {children}
+          </div>
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
+  );
+}
 
 const dedupeWorkflowStatuses = (statuses: Array<{
   key: string;
@@ -375,6 +570,13 @@ export function ProductionSettings() {
     isUpdating: isOrgPreferencesUpdating,
   } = useOrgPreferences();
   const [draft, setDraft] = React.useState<ProductionLineItemStatusRule[]>([]);
+  const [disclaimerDraft, setDisclaimerDraft] = React.useState(
+    preferences.proofing?.defaultProofDisclaimerText ?? ""
+  );
+  React.useEffect(() => {
+    setDisclaimerDraft(preferences.proofing?.defaultProofDisclaimerText ?? "");
+  }, [preferences.proofing?.defaultProofDisclaimerText]);
+  const savedDisclaimer = preferences.proofing?.defaultProofDisclaimerText ?? "";
   const workflow = useOrderWorkflow();
   const saveWorkflowDraft = useSaveOrderWorkflowDraft();
   const publishWorkflow = usePublishOrderWorkflow();
@@ -584,14 +786,45 @@ export function ProductionSettings() {
     [draft],
   );
 
+  const routingWarningCount = React.useMemo(
+    () => getRoutingRulesWarningCount(routingRules, stationOptions, stationSteps),
+    [routingRules, stationOptions, stationSteps],
+  );
+
+  const workflowWarningCount = React.useMemo(
+    () => getWorkflowEditorWarningCount(stationOptions, stationSteps, routingRules),
+    [stationOptions, stationSteps, routingRules],
+  );
+
   const workflowStatuses = React.useMemo(
     () => [...workflowDraft].sort((a, b) => a.sortOrder - b.sortOrder || a.label.localeCompare(b.label)),
     [workflowDraft],
   );
 
+  const statusWarningCount = React.useMemo(
+    () => getCustomerStatusesWarningCount(workflowDraft),
+    [workflowDraft],
+  );
+
   const orderCategoryOptions: WorkflowDraftRow["category"][] = ["new", "active", "ready", "on_hold", "completed", "canceled"];
+  const workflowEditorSummary = React.useMemo(() => {
+    if (stationCards.length === 0) return "No active stations";
+    const preview = stationCards.slice(0, 3).map((station) => `${station.name}: ${station.activeSteps.length} steps`);
+    const overflow = stationCards.length - preview.length;
+    return overflow > 0 ? `${preview.join(", ")} +${overflow} more` : preview.join(", ");
+  }, [stationCards]);
+  const routingRulesSummary = React.useMemo(() => {
+    if (routingRules.length === 0) return "No routing rules configured";
+    return `${routingRules.length} rule${routingRules.length === 1 ? "" : "s"}, ${routingWarningCount} invalid`;
+  }, [routingRules, routingWarningCount]);
+  const customerStatusesSummary = React.useMemo(() => {
+    const activeCount = workflowStatuses.filter((row) => row.isActive).length;
+    return `${activeCount} active status${activeCount === 1 ? "" : "es"}`;
+  }, [workflowStatuses]);
+  const initialRoutingSummary = prepressDefaultEnabled ? "Default route: Prepress first" : "Default route: Direct to production";
 
   return (
+    <TooltipProvider delayDuration={150}>
     <TitanCard className="p-6">
       <div className="space-y-6">
         <div>
@@ -603,14 +836,12 @@ export function ProductionSettings() {
         
         <div className="h-px bg-titan-border-subtle" />
 
-        <div className="space-y-4">
-          <div>
-            <h3 className="text-titan-md font-semibold text-titan-text-primary">Initial Production Routing</h3>
-            <p className="text-titan-sm text-titan-text-muted mt-1">
-              Organization default routing. Product Type overrides can force or skip prepress.
-            </p>
-          </div>
-
+        <ProductionSettingsSection
+          title="Initial Production Routing"
+          summary={initialRoutingSummary}
+          help="Sets the organization-wide default intake path. Product-level rules can still override this."
+          defaultOpen={true}
+        >
           <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
             <div className="flex-1 space-y-1">
               <Label htmlFor="prepress-default-enabled" className="text-titan-sm font-medium text-titan-text-primary cursor-pointer">
@@ -627,15 +858,15 @@ export function ProductionSettings() {
               disabled={isOrgPreferencesLoading || isOrgPreferencesUpdating}
             />
           </div>
-        </div>
+        </ProductionSettingsSection>
 
-        <div className="space-y-4">
-          <div>
-            <h3 className="text-titan-md font-semibold text-titan-text-primary">Workflow Editor</h3>
-            <p className="text-titan-sm text-titan-text-muted mt-1">
-              Configure each station as a visual step lane. Reorder steps to match the real production flow.
-            </p>
-          </div>
+        <ProductionSettingsSection
+          title="Workflow Editor"
+          summary={workflowEditorSummary}
+          help="Defines how jobs move through each production station after a production job is created."
+          warningCount={workflowWarningCount}
+        >
+          <div className="space-y-4">
 
           {stationLoadError ? (
             <div className="text-xs text-red-600">Unable to load stations: {stationLoadError}</div>
@@ -662,26 +893,27 @@ export function ProductionSettings() {
               ))
             )}
           </div>
-        </div>
+          </div>
+        </ProductionSettingsSection>
 
         <div className="h-px bg-titan-border-subtle" />
 
-        <div className="space-y-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h3 className="text-titan-md font-semibold text-titan-text-primary">Routing Rules</h3>
-              <p className="text-titan-sm text-titan-text-muted mt-1">
-                Internal line-item statuses trigger production intake. Choose whether a status routes into production, then pick the station and starting step.
-              </p>
-            </div>
-
-            <div className="flex items-center gap-2">
+        <ProductionSettingsSection
+          title="Routing Rules"
+          summary={routingRulesSummary}
+          help="Controls which internal line-item statuses create or move production jobs, and which station step they start in."
+          defaultOpen={true}
+          warningCount={routingWarningCount}
+          actions={
+            <>
               <Button variant="outline" onClick={addRule}>Add routing rule</Button>
               <Button onClick={() => save.mutate(draft)} disabled={save.isPending || !validation.isValid}>
                 {save.isPending ? "Saving…" : "Save"}
               </Button>
-            </div>
-          </div>
+            </>
+          }
+        >
+          <div className="space-y-4">
 
           {isLoading ? (
             <div className="flex items-center gap-2 text-titan-sm text-titan-text-muted">
@@ -729,7 +961,7 @@ export function ProductionSettings() {
 
                     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                       <div className="space-y-2">
-                        <Label>Status ID</Label>
+                        <Label><SectionLabel title="Internal Trigger Status" help="The internal line-item status that should create or move a production job when reached." /></Label>
                         <Input value={(r.id ?? r.key ?? "") as any} onChange={(e) => setRule(idx, { id: e.target.value })} placeholder="prepress" />
                       </div>
                       <div className="space-y-2">
@@ -770,7 +1002,7 @@ export function ProductionSettings() {
 
                       <div className="grid gap-4 md:grid-cols-2">
                         <div className="space-y-2">
-                          <Label>Destination Station</Label>
+                          <Label><SectionLabel title="Destination Station" help="Which production station should receive the job when this rule fires." /></Label>
                           <Select
                             value={selectedStationKey || undefined}
                             onValueChange={(value) => setRuleStation(idx, value)}
@@ -788,7 +1020,7 @@ export function ProductionSettings() {
                         </div>
 
                         <div className="space-y-2">
-                          <Label>Starting Step</Label>
+                          <Label><SectionLabel title="Starting Step" help="The first managed step to place the job in for the selected station. Leave queued fallback if no specific step is needed." /></Label>
                           <Select
                             value={selectedStepKey || "__none__"}
                             onValueChange={(value) => setRule(idx, { stepKey: value === "__none__" ? null : value })}
@@ -823,35 +1055,36 @@ export function ProductionSettings() {
               })
             )}
           </div>
+          </div>
+        </ProductionSettingsSection>
 
           <div className="h-px bg-titan-border-subtle" />
 
+        <ProductionSettingsSection
+          title="Customer Order Statuses"
+          summary={customerStatusesSummary}
+          help="Customer-facing order statuses only. These do not control production routing."
+          warningCount={statusWarningCount}
+          actions={
+            <>
+              <Button variant="outline" onClick={addWorkflowRule}>Add status</Button>
+              <Button
+                variant="outline"
+                onClick={() => saveWorkflowDraft.mutate({ statuses: workflowDraft })}
+                disabled={saveWorkflowDraft.isPending || !workflowValidation.isValid}
+              >
+                {saveWorkflowDraft.isPending ? "Saving…" : "Save Draft"}
+              </Button>
+              <Button
+                onClick={() => publishWorkflow.mutate()}
+                disabled={publishWorkflow.isPending}
+              >
+                {publishWorkflow.isPending ? "Publishing…" : "Publish"}
+              </Button>
+            </>
+          }
+        >
           <div className="space-y-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h3 className="text-titan-md font-semibold text-titan-text-primary">Customer Order Statuses</h3>
-                <p className="text-titan-sm text-titan-text-muted mt-1">
-                  These are the statuses customers and staff see on orders. They are separate from internal production routing.
-                </p>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <Button variant="outline" onClick={addWorkflowRule}>Add status</Button>
-                <Button
-                  variant="outline"
-                  onClick={() => saveWorkflowDraft.mutate({ statuses: workflowDraft })}
-                  disabled={saveWorkflowDraft.isPending || !workflowValidation.isValid}
-                >
-                  {saveWorkflowDraft.isPending ? "Saving…" : "Save Draft"}
-                </Button>
-                <Button
-                  onClick={() => publishWorkflow.mutate()}
-                  disabled={publishWorkflow.isPending}
-                >
-                  {publishWorkflow.isPending ? "Publishing…" : "Publish"}
-                </Button>
-              </div>
-            </div>
 
             {workflow.isLoading ? (
               <div className="flex items-center gap-2 text-titan-sm text-titan-text-muted">
@@ -968,9 +1201,49 @@ export function ProductionSettings() {
               </Table>
             </div>
           </div>
+            </ProductionSettingsSection>
+
+          <div className="h-px bg-titan-border-subtle" />
+
+          <ProductionSettingsSection
+            title="Proof Defaults"
+            summary="Default disclaimer text shown to customers on every proof review page"
+          >
+            <div className="space-y-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="proof-disclaimer">Default proof disclaimer</Label>
+                <p className="text-xs text-titan-text-muted">
+                  Shown below the proof specs on the customer portal for every proof sent. Leave blank to show no disclaimer.
+                </p>
+                <Textarea
+                  id="proof-disclaimer"
+                  rows={4}
+                  value={disclaimerDraft}
+                  onChange={(e) => setDisclaimerDraft(e.target.value)}
+                  placeholder="e.g. Please review all text, colors, and dimensions carefully before approving. Approved proofs will proceed to production without further review."
+                  disabled={isOrgPreferencesUpdating}
+                />
+              </div>
+              <Button
+                size="sm"
+                onClick={() =>
+                  updatePreferences({
+                    ...preferences,
+                    proofing: {
+                      ...preferences.proofing,
+                      defaultProofDisclaimerText: disclaimerDraft.trim() || undefined,
+                    },
+                  })
+                }
+                disabled={isOrgPreferencesUpdating || disclaimerDraft.trim() === savedDisclaimer.trim()}
+              >
+                {isOrgPreferencesUpdating ? "Saving…" : "Save"}
+              </Button>
+            </div>
+          </ProductionSettingsSection>
         </div>
-      </div>
     </TitanCard>
+    </TooltipProvider>
   );
 }
 

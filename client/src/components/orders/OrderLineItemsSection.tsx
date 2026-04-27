@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Separator } from "@/components/ui/separator";
+import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -300,7 +301,7 @@ function getWorkflowActions(state: string | undefined) {
     case "in_design":
       return [
         { label: "Back to Needs Design", toState: "needs_design" as const },
-        { label: "Send to Prepress", toState: "ready_for_prepress" as const },
+        { label: "Complete Design", action: "complete-design" as const },
         { label: "Hold", toState: "on_hold" as const },
       ];
     case "ready_for_prepress":
@@ -332,6 +333,37 @@ function getWorkflowActions(state: string | undefined) {
     default:
       return [];
   }
+}
+
+function getOperationalNextStep(state: string | undefined, hasActiveOwner: boolean): string {
+  switch (state) {
+    case "new":
+      return "Review routing";
+    case "needs_design":
+      return "Start design";
+    case "in_design":
+      return "Finish design";
+    case "ready_for_prepress":
+      return "Start prepress";
+    case "in_prepress":
+      return "Finish prepress";
+    case "ready_for_production":
+      return hasActiveOwner ? "Production scheduled" : "Send to production";
+    case "in_production":
+      return "Production in progress";
+    case "completed":
+      return "None";
+    case "on_hold":
+      return "Review hold";
+    case "canceled":
+      return "None";
+    default:
+      return "Review item";
+  }
+}
+
+function needsOperationalAction(state: string | undefined): boolean {
+  return ["new", "needs_design", "ready_for_prepress", "ready_for_production", "on_hold"].includes(String(state || "new"));
 }
 
 function buildOneLineOptionsSummary(selectedOptions: any[] | undefined | null): string {
@@ -379,17 +411,87 @@ function buildOptionFlags(selectedOptions: any[] | undefined | null): string[] {
   return flags;
 }
 
+type LineItemDesignBriefStatus = "not_required" | "required_missing" | "captured";
+
+type LineItemDesignBriefDraft = {
+  keyInstructions: string;
+  designObjective: string;
+  requestedContent: string;
+  layoutNotes: string;
+  brandStyleNotes: string;
+  referenceNotes: string;
+  priorityNotes: string;
+};
+
+type LineItemDesignBriefDetail = LineItemDesignBriefDraft & {
+  id: string | null;
+  orderId: string;
+  orderLineItemId: string;
+  effectiveRequiresDesign: boolean;
+  designBriefRequired: boolean;
+  status: LineItemDesignBriefStatus;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+type LineItemScopedNote = {
+  id: string;
+  orderId: string;
+  lineItemId: string;
+  category: "internal" | "design_working";
+  noteText: string;
+  createdByUserId: string | null;
+  createdByUserName: string | null;
+  createdAt: string;
+};
+
+const EMPTY_DESIGN_BRIEF_DRAFT: LineItemDesignBriefDraft = {
+  keyInstructions: "",
+  designObjective: "",
+  requestedContent: "",
+  layoutNotes: "",
+  brandStyleNotes: "",
+  referenceNotes: "",
+  priorityNotes: "",
+};
+
+const DESIGN_BRIEF_STATUS_LABELS: Record<LineItemDesignBriefStatus, string> = {
+  not_required: "Not required",
+  required_missing: "Required missing",
+  captured: "Captured",
+};
+
+function toDesignBriefDraft(detail?: Partial<LineItemDesignBriefDetail> | null): LineItemDesignBriefDraft {
+  return {
+    keyInstructions: detail?.keyInstructions ?? "",
+    designObjective: detail?.designObjective ?? "",
+    requestedContent: detail?.requestedContent ?? "",
+    layoutNotes: detail?.layoutNotes ?? "",
+    brandStyleNotes: detail?.brandStyleNotes ?? "",
+    referenceNotes: detail?.referenceNotes ?? "",
+    priorityNotes: detail?.priorityNotes ?? "",
+  };
+}
+
+function hasAnyDesignBriefText(draft: LineItemDesignBriefDraft): boolean {
+  return Object.values(draft).some((value) => value.trim().length > 0);
+}
+
 export function OrderLineItemsSection({
   orderId,
   customerId,
   readOnly,
   lineItems,
+  productionFocusLineItemIds = [],
+  productionPriorityLineItemIds = [],
   onAfterLineItemsChange,
 }: {
   orderId: string;
   customerId?: string | null;
   readOnly: boolean;
   lineItems: OrderLineItem[];
+  productionFocusLineItemIds?: string[];
+  productionPriorityLineItemIds?: string[];
   onAfterLineItemsChange?: () => Promise<void>;
 }) {
   const { toast } = useToast();
@@ -601,8 +703,26 @@ export function OrderLineItemsSection({
   const orderedLineItems = useMemo(() => {
     if (!orderedKeys.length) return activeLineItems;
     const byId = new Map(activeLineItems.map((li) => [li.id, li] as const));
-    return orderedKeys.map((id) => byId.get(id)).filter(Boolean) as OrderLineItem[];
-  }, [activeLineItems, orderedKeys]);
+    const baseItems = orderedKeys.map((id) => byId.get(id)).filter(Boolean) as OrderLineItem[];
+
+    if (!productionPriorityLineItemIds.length) {
+      return baseItems;
+    }
+
+    const prioritySet = new Set(productionPriorityLineItemIds.map((id) => String(id)));
+    const priorityOrder = new Map(productionPriorityLineItemIds.map((id, index) => [String(id), index] as const));
+
+    return [...baseItems].sort((left, right) => {
+      const leftPriority = prioritySet.has(String(left.id));
+      const rightPriority = prioritySet.has(String(right.id));
+      if (leftPriority && rightPriority) {
+        return (priorityOrder.get(String(left.id)) ?? 0) - (priorityOrder.get(String(right.id)) ?? 0);
+      }
+      if (leftPriority) return -1;
+      if (rightPriority) return 1;
+      return 0;
+    });
+  }, [activeLineItems, orderedKeys, productionPriorityLineItemIds]);
 
   const sortableItems = useMemo(
     () => (orderedKeys.length ? orderedKeys : activeLineItems.map((li) => li.id)),
@@ -670,6 +790,101 @@ export function OrderLineItemsSection({
     return injectDerivedMaterialOptionIntoProductOptions(expandedProduct, base);
   }, [expandedProduct]);
 
+  const [designBriefDraft, setDesignBriefDraft] = useState<LineItemDesignBriefDraft>(EMPTY_DESIGN_BRIEF_DRAFT);
+  const [designBriefSavedAt, setDesignBriefSavedAt] = useState<string | null>(null);
+  const designBriefSnapshotRef = useRef<Record<string, LineItemDesignBriefDraft>>({});
+  const [lineItemInternalNoteDraft, setLineItemInternalNoteDraft] = useState("");
+
+  const designBriefQuery = useQuery<LineItemDesignBriefDetail>({
+    queryKey: ["orders", "lineItemDesignBrief", orderId, expandedItem?.id],
+    queryFn: async () => {
+      if (!expandedItem?.id) {
+        throw new Error("Line item ID is required");
+      }
+
+      const response = await fetch(`/api/orders/${orderId}/line-items/${expandedItem.id}/design-brief`, {
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.message || "Failed to fetch design brief");
+      }
+
+      const data = await response.json();
+      return data.data as LineItemDesignBriefDetail;
+    },
+    enabled: !!expandedItem?.id,
+  });
+
+  const saveDesignBrief = useMutation({
+    mutationFn: async ({ lineItemId, data }: { lineItemId: string; data: LineItemDesignBriefDraft }) => {
+      const response = await fetch(`/api/orders/${orderId}/line-items/${lineItemId}/design-brief`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.message || "Failed to save design brief");
+      }
+
+      const payload = await response.json();
+      return payload.data as LineItemDesignBriefDetail;
+    },
+    onSuccess: async (detail) => {
+      designBriefSnapshotRef.current[detail.orderLineItemId] = toDesignBriefDraft(detail);
+      setDesignBriefSavedAt(detail.orderLineItemId);
+      await queryClient.invalidateQueries({ queryKey: ["orders", "lineItemDesignBrief", orderId, detail.orderLineItemId] });
+    },
+  });
+
+  const lineItemInternalNotesQuery = useQuery<LineItemScopedNote[]>({
+    queryKey: ["orders", "lineItemNotes", orderId, expandedItem?.id, "internal"],
+    queryFn: async () => {
+      if (!expandedItem?.id) {
+        throw new Error("Line item ID is required");
+      }
+
+      const response = await fetch(`/api/orders/${orderId}/line-items/${expandedItem.id}/notes?category=internal`, {
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.message || "Failed to fetch line item internal notes");
+      }
+
+      const payload = await response.json();
+      return payload.data as LineItemScopedNote[];
+    },
+    enabled: !!expandedItem?.id,
+  });
+
+  const addLineItemInternalNote = useMutation({
+    mutationFn: async ({ lineItemId, noteText }: { lineItemId: string; noteText: string }) => {
+      const response = await fetch(`/api/orders/${orderId}/line-items/${lineItemId}/notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category: "internal", noteText }),
+        credentials: "include",
+      });
+
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(payload?.message || "Failed to add line item internal note");
+      }
+
+      return payload.data as LineItemScopedNote;
+    },
+    onSuccess: async (_note, variables) => {
+      setLineItemInternalNoteDraft("");
+      await queryClient.invalidateQueries({ queryKey: ["orders", "lineItemNotes", orderId, variables.lineItemId, "internal"] });
+    },
+  });
+
   // PBV2 snapshot from /calculate response (contains treeJson, visibleNodeIds, selections)
   const [pbv2SnapshotJson, setPbv2SnapshotJson] = useState<any>(null);
 
@@ -707,6 +922,32 @@ export function OrderLineItemsSection({
       }
     >
   >({});
+
+  useEffect(() => {
+    if (!expandedItem?.id) {
+      setDesignBriefDraft(EMPTY_DESIGN_BRIEF_DRAFT);
+      setLineItemInternalNoteDraft("");
+      return;
+    }
+
+    if (!designBriefQuery.data) {
+      const savedDraft = designBriefSnapshotRef.current[expandedItem.id];
+      if (savedDraft) {
+        setDesignBriefDraft(savedDraft);
+      } else {
+        setDesignBriefDraft(EMPTY_DESIGN_BRIEF_DRAFT);
+      }
+      return;
+    }
+
+    const nextDraft = toDesignBriefDraft(designBriefQuery.data);
+    setDesignBriefDraft(nextDraft);
+    designBriefSnapshotRef.current[expandedItem.id] = nextDraft;
+  }, [expandedItem?.id, designBriefQuery.data]);
+
+  useEffect(() => {
+    setLineItemInternalNoteDraft("");
+  }, [expandedItem?.id]);
 
   // Inline add product search
   const [searchOpen, setSearchOpen] = useState(false);
@@ -859,6 +1100,7 @@ export function OrderLineItemsSection({
     if (!expandedItem) return false;
     const saved = savedSnapshotRef.current[expandedItem.id];
     if (!saved) return true;
+    const savedBrief = designBriefSnapshotRef.current[expandedItem.id] ?? EMPTY_DESIGN_BRIEF_DRAFT;
 
     const currentNotes = notes || "";
     const savedNotes = saved.notes || "";
@@ -866,6 +1108,8 @@ export function OrderLineItemsSection({
     const savedProductionNotes = saved.productionNotes || "";
     const currentOptions = JSON.stringify(optionSelections || {});
     const savedOptions = JSON.stringify(saved.optionSelections || {});
+    const currentBrief = JSON.stringify(designBriefDraft);
+    const persistedBrief = JSON.stringify(savedBrief);
 
     return (
       Math.abs(widthNum - saved.width) > 0.01 ||
@@ -875,9 +1119,10 @@ export function OrderLineItemsSection({
       currentProductionNotes !== savedProductionNotes ||
       requiresDesignInput !== saved.requiresDesign ||
       requiresPrepressInput !== saved.requiresPrepress ||
-      currentOptions !== savedOptions
+      currentOptions !== savedOptions ||
+      currentBrief !== persistedBrief
     );
-  }, [expandedItem, widthNum, heightNum, qtyNum, notes, notesDraftById, optionSelections, requiresDesignInput, requiresPrepressInput]);
+  }, [expandedItem, widthNum, heightNum, qtyNum, notes, notesDraftById, optionSelections, requiresDesignInput, requiresPrepressInput, designBriefDraft]);
 
   // Debounced price calculation for expanded item
   useDebouncedEffect(
@@ -1016,6 +1261,16 @@ export function OrderLineItemsSection({
         },
       });
 
+      const shouldPersistDesignBrief = Boolean(designBriefQuery.data?.id)
+        || Boolean(designBriefQuery.data?.effectiveRequiresDesign)
+        || hasAnyDesignBriefText(designBriefDraft);
+      if (shouldPersistDesignBrief) {
+        await saveDesignBrief.mutateAsync({
+          lineItemId: itemId,
+          data: designBriefDraft,
+        });
+      }
+
       setSavedItemId(itemId);
 
       savedSnapshotRef.current[itemId] = {
@@ -1029,8 +1284,10 @@ export function OrderLineItemsSection({
         optionSelections,
         totalPrice,
       };
+      designBriefSnapshotRef.current[itemId] = designBriefDraft;
 
       setTimeout(() => setSavedItemId(null), 2000);
+      setTimeout(() => setDesignBriefSavedAt(null), 2000);
 
       if (onAfterLineItemsChange) {
         await onAfterLineItemsChange();
@@ -1195,19 +1452,21 @@ export function OrderLineItemsSection({
     }).length;
   }, [activeLineItems, products]);
 
+  const actionNeededCount = useMemo(() => {
+    return activeLineItems.filter((item) => needsOperationalAction(String((item as any).workflowState || "new"))).length;
+  }, [activeLineItems]);
+
   return (
     <Card className="border-0 bg-transparent shadow-none">
       <CardHeader className="px-0 pt-0 pb-2">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <Badge variant="outline" className="border-border/60 text-xs">
-              {count} {count === 1 ? "item" : "items"}
-            </Badge>
-            {productionRequiredItemCount > 0 && !readOnly && (
-              <Badge variant="secondary" className="text-xs">
-                {productionRequiredItemCount} require production
-              </Badge>
-            )}
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/50 bg-muted/15 px-3 py-2.5">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold">Line Items</div>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span>{count} {count === 1 ? "item" : "items"}</span>
+              {productionRequiredItemCount > 0 && <span>{productionRequiredItemCount} require production</span>}
+              {actionNeededCount > 0 && <span>{actionNeededCount} need action</span>}
+            </div>
           </div>
           
           {!readOnly && productionRequiredItemCount > 0 && (
@@ -1385,6 +1644,50 @@ export function OrderLineItemsSection({
                   const productForItem = products.find((p) => p.id === item.productId);
                   const itemRequiresProduction = (productForItem as any)?.requiresProductionJob === true;
                   const isSelectedForProduction = selectedForProduction.has(item.id);
+                  const isProductionFocused = productionFocusLineItemIds.includes(String(item.id));
+                  const expandedBriefDetail = isExpanded && expandedItem && expandedItem.id === item.id ? designBriefQuery.data : null;
+                  const showDesignBriefEditor = Boolean(
+                    expandedBriefDetail?.effectiveRequiresDesign ||
+                    hasAnyDesignBriefText(designBriefDraft)
+                  );
+                  const workflowState = String((item as any).workflowState || "new");
+                  const hasActiveOwner = Boolean((item as any).activeOwnerStepKey || (item as any).activeOwnerStationKey || (item as any).activeOwnerJobId);
+                  const ownerLabel = (item as any).activeOwnerStepKey || (item as any).activeOwnerStationKey || null;
+                  const policy =
+                    productArtworkPolicy === "required" || productArtworkPolicy === "not_required"
+                      ? productArtworkPolicy
+                      : null;
+                  const suppressedEntry =
+                    itemSpecsJson?.flags?.suppressed && typeof itemSpecsJson.flags.suppressed === "object"
+                      ? (itemSpecsJson.flags.suppressed as any)?.missing_artwork
+                      : null;
+                  const suppressedReason = typeof suppressedEntry?.reason === "string" ? suppressedEntry.reason.trim() : "";
+                  const suppressedAt = typeof suppressedEntry?.at === "string" ? suppressedEntry.at.trim() : "";
+                  const isMissingArtworkSuppressed = Boolean(suppressedReason && suppressedAt);
+                  const canDeriveArtwork = lineItemAttachmentsAssociationKnown && lineItemAssetsKnownForItem;
+                  const hasAnyArtwork = attachmentsForThumb.length > 0 || assetCountForItem > 0;
+                  const missingArtworkActive = policy === "required" && canDeriveArtwork && !hasAnyArtwork && !isMissingArtworkSuppressed;
+                  const operationalStatusLabel = WORKFLOW_LABELS[workflowState] || workflowState;
+                  const operationalNextStep = getOperationalNextStep(workflowState, hasActiveOwner);
+
+                  let operationalWarning: string | null = null;
+                  let operationalWarningTone: "warning" | "danger" | null = null;
+
+                  if (missingArtworkActive) {
+                    operationalWarning = "Missing artwork";
+                    operationalWarningTone = "warning";
+                  } else if (workflowState === "on_hold") {
+                    operationalWarning = "On hold";
+                    operationalWarningTone = "danger";
+                  } else if (showDesignBriefEditor && expandedBriefDetail?.status === "required_missing") {
+                    operationalWarning = "Design brief incomplete";
+                    operationalWarningTone = "warning";
+                  } else if (calcError && isExpanded && expandedItem && expandedItem.id === item.id) {
+                    operationalWarning = calcError === "PBV2_SCHEMA_MISMATCH"
+                      ? "Pricing issue: outdated PBV2 config"
+                      : `Pricing issue: ${calcError}`;
+                    operationalWarningTone = "warning";
+                  }
 
                   return (
                     <SortableOrderLineItemWrapper key={itemKey} id={itemKey} disabled={reorderDisabled}>
@@ -1392,6 +1695,7 @@ export function OrderLineItemsSection({
                         <div
                           className={cn(
                             "rounded-md overflow-x-hidden",
+                            isProductionFocused && "ring-1 ring-amber-300/80 bg-amber-50/40",
                             isOver && !isDragging && "ring-1 ring-ring/40",
                             isDragging && "opacity-60"
                           )}
@@ -1423,13 +1727,36 @@ export function OrderLineItemsSection({
                                   override: isOverride,
                                   internal: hasProductionNotes,
                                 }}
-                                showNoteLabel={true}
-                                descriptionPreview={persistedDescription || undefined}
+                                showNoteLabel={false}
+                                descriptionPreview={undefined}
                                 optionChips={optionChips.map((chip, index) => ({
                                   text: chip,
                                   key: `${itemKey}-chip-${index}`,
                                 }))}
                                 overflowCount={overflowCount}
+                                summaryFooter={
+                                  <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                                    <Badge variant={workflowBadgeVariant(workflowState)} className="h-5 px-1.5 text-[11px] font-medium">
+                                      {operationalStatusLabel}
+                                    </Badge>
+                                    <span className="text-muted-foreground">
+                                      Next: <span className="text-foreground">{operationalNextStep}</span>
+                                    </span>
+                                    {ownerLabel ? <span className="text-muted-foreground">Owner: {String(ownerLabel)}</span> : null}
+                                    {operationalWarning ? (
+                                      <span
+                                        className={cn(
+                                          "inline-flex items-center rounded px-1.5 py-0.5 font-medium",
+                                          operationalWarningTone === "danger"
+                                            ? "bg-red-100 text-red-800"
+                                            : "bg-amber-100 text-amber-800"
+                                        )}
+                                      >
+                                        {operationalWarning}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                }
                                 thumbnail={thumbnailNode}
                                 dragHandleProps={{
                                   attributes: dragAttributes,
@@ -1623,6 +1950,154 @@ export function OrderLineItemsSection({
                                         />
                                       </div>
                                     )}
+
+                                    {showDesignBriefEditor && (
+                                      <div className="mb-3 rounded-md border border-border/40 bg-muted/20 p-3">
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                          <div>
+                                            <div className="text-sm font-medium">Design brief</div>
+                                            <div className="text-xs text-muted-foreground">
+                                              Key Instructions and Design Objective are required when this item needs design.
+                                            </div>
+                                          </div>
+                                          <div className="flex items-center gap-2">
+                                            <Badge
+                                              variant={expandedBriefDetail?.status === "captured" ? "secondary" : "outline"}
+                                              className={cn(
+                                                expandedBriefDetail?.status === "required_missing" && "border-amber-500/30 bg-amber-500/10 text-amber-700"
+                                              )}
+                                            >
+                                              {DESIGN_BRIEF_STATUS_LABELS[expandedBriefDetail?.status ?? "required_missing"]}
+                                            </Badge>
+                                            {designBriefQuery.isFetching && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+                                          </div>
+                                        </div>
+
+                                        <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                          <div className="space-y-2">
+                                            <div className="text-xs font-medium text-muted-foreground">Key Instructions</div>
+                                            <Textarea
+                                              value={designBriefDraft.keyInstructions}
+                                              onChange={(e) => setDesignBriefDraft((prev) => ({ ...prev, keyInstructions: e.target.value }))}
+                                              placeholder="Critical copy, offer, CTA, or non-negotiable requirements"
+                                              className="min-h-24"
+                                              disabled={readOnly}
+                                            />
+                                          </div>
+                                          <div className="space-y-2">
+                                            <div className="text-xs font-medium text-muted-foreground">Design Objective</div>
+                                            <Textarea
+                                              value={designBriefDraft.designObjective}
+                                              onChange={(e) => setDesignBriefDraft((prev) => ({ ...prev, designObjective: e.target.value }))}
+                                              placeholder="What the design must accomplish"
+                                              className="min-h-24"
+                                              disabled={readOnly}
+                                            />
+                                          </div>
+                                          <div className="space-y-2">
+                                            <div className="text-xs font-medium text-muted-foreground">Requested Content</div>
+                                            <Textarea
+                                              value={designBriefDraft.requestedContent}
+                                              onChange={(e) => setDesignBriefDraft((prev) => ({ ...prev, requestedContent: e.target.value }))}
+                                              placeholder="Specific text, assets, or required elements"
+                                              className="min-h-20"
+                                              disabled={readOnly}
+                                            />
+                                          </div>
+                                          <div className="space-y-2">
+                                            <div className="text-xs font-medium text-muted-foreground">Layout Notes</div>
+                                            <Textarea
+                                              value={designBriefDraft.layoutNotes}
+                                              onChange={(e) => setDesignBriefDraft((prev) => ({ ...prev, layoutNotes: e.target.value }))}
+                                              placeholder="Sizing, hierarchy, or placement guidance"
+                                              className="min-h-20"
+                                              disabled={readOnly}
+                                            />
+                                          </div>
+                                          <div className="space-y-2">
+                                            <div className="text-xs font-medium text-muted-foreground">Brand / Style Notes</div>
+                                            <Textarea
+                                              value={designBriefDraft.brandStyleNotes}
+                                              onChange={(e) => setDesignBriefDraft((prev) => ({ ...prev, brandStyleNotes: e.target.value }))}
+                                              placeholder="Brand tone, color, or visual direction"
+                                              className="min-h-20"
+                                              disabled={readOnly}
+                                            />
+                                          </div>
+                                          <div className="space-y-2">
+                                            <div className="text-xs font-medium text-muted-foreground">Reference Notes</div>
+                                            <Textarea
+                                              value={designBriefDraft.referenceNotes}
+                                              onChange={(e) => setDesignBriefDraft((prev) => ({ ...prev, referenceNotes: e.target.value }))}
+                                              placeholder="Reference files, links, or examples"
+                                              className="min-h-20"
+                                              disabled={readOnly}
+                                            />
+                                          </div>
+                                          <div className="space-y-2 md:col-span-2">
+                                            <div className="text-xs font-medium text-muted-foreground">Priority Notes</div>
+                                            <Textarea
+                                              value={designBriefDraft.priorityNotes}
+                                              onChange={(e) => setDesignBriefDraft((prev) => ({ ...prev, priorityNotes: e.target.value }))}
+                                              placeholder="Rush notes, sequencing, or internal priorities"
+                                              className="min-h-20"
+                                              disabled={readOnly}
+                                            />
+                                          </div>
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    <div className="mb-3 rounded-md border border-border/40 bg-muted/20 p-3">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <div>
+                                          <div className="text-sm font-medium">Line Item Internal Notes</div>
+                                          <div className="text-xs text-muted-foreground">
+                                            Structured staff notes for this line item. Legacy production notes remain below for compatibility.
+                                          </div>
+                                        </div>
+                                        {lineItemInternalNotesQuery.isFetching && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+                                      </div>
+
+                                      <div className="mt-3 space-y-2">
+                                        {(lineItemInternalNotesQuery.data ?? []).length === 0 ? (
+                                          <div className="rounded-md border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
+                                            No structured line item internal notes yet.
+                                          </div>
+                                        ) : (
+                                          (lineItemInternalNotesQuery.data ?? []).map((note) => (
+                                            <div key={note.id} className="rounded-md border border-border/50 bg-background/80 p-3">
+                                              <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                                                <span>{note.createdByUserName || "Unknown user"}</span>
+                                                <span>{new Date(note.createdAt).toLocaleString()}</span>
+                                              </div>
+                                              <div className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{note.noteText}</div>
+                                            </div>
+                                          ))
+                                        )}
+
+                                        {!readOnly && isExpanded && expandedItem && expandedItem.id === item.id && (
+                                          <div className="space-y-2 pt-1">
+                                            <Textarea
+                                              value={lineItemInternalNoteDraft}
+                                              onChange={(e) => setLineItemInternalNoteDraft(e.target.value)}
+                                              placeholder="Add a structured internal note for this line item..."
+                                              className="min-h-24"
+                                            />
+                                            <div className="flex justify-end">
+                                              <Button
+                                                type="button"
+                                                size="sm"
+                                                onClick={() => addLineItemInternalNote.mutate({ lineItemId: item.id, noteText: lineItemInternalNoteDraft })}
+                                                disabled={addLineItemInternalNote.isPending || lineItemInternalNoteDraft.trim().length === 0}
+                                              >
+                                                {addLineItemInternalNote.isPending ? "Adding..." : "Add Line Item Internal Note"}
+                                              </Button>
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
                                   </>
                                 }
                                 artworkSlot={
@@ -1642,25 +2117,7 @@ export function OrderLineItemsSection({
                                     </div>
 
                                     {(() => {
-                                      const policy =
-                                        productArtworkPolicy === "required" || productArtworkPolicy === "not_required"
-                                          ? productArtworkPolicy
-                                          : null;
-
-                                      const suppressedEntry =
-                                        itemSpecsJson?.flags?.suppressed && typeof itemSpecsJson.flags.suppressed === "object"
-                                          ? (itemSpecsJson.flags.suppressed as any)?.missing_artwork
-                                          : null;
-                                      const suppressedReason =
-                                        typeof suppressedEntry?.reason === "string" ? suppressedEntry.reason.trim() : "";
-                                      const suppressedAt = typeof suppressedEntry?.at === "string" ? suppressedEntry.at.trim() : "";
-                                      const isSuppressed = Boolean(suppressedReason && suppressedAt);
-
-                                      if (policy !== "required" && !isSuppressed) return null;
-
-                                      const canDerive = lineItemAttachmentsAssociationKnown && lineItemAssetsKnownForItem;
-                                      const hasAnyArtwork = attachmentsForThumb.length > 0 || assetCountForItem > 0;
-                                      const isMissingActive = policy === "required" && canDerive && !hasAnyArtwork && !isSuppressed;
+                                      if (policy !== "required" && !isMissingArtworkSuppressed) return null;
 
                                       const suppress = async () => {
                                         if (readOnly) return;
@@ -1750,7 +2207,7 @@ export function OrderLineItemsSection({
                                               <div className="text-sm">Missing artwork</div>
 
                                               <div className="mt-1">
-                                                {isSuppressed ? (
+                                                {isMissingArtworkSuppressed ? (
                                                   <TooltipProvider delayDuration={150}>
                                                     <Tooltip>
                                                       <TooltipTrigger asChild>
@@ -1763,7 +2220,7 @@ export function OrderLineItemsSection({
                                                       </TooltipContent>
                                                     </Tooltip>
                                                   </TooltipProvider>
-                                                ) : isMissingActive ? (
+                                                ) : missingArtworkActive ? (
                                                   <Badge
                                                     variant="outline"
                                                     className="border-amber-500/30 bg-amber-500/10 text-amber-700 text-xs"
@@ -1775,7 +2232,7 @@ export function OrderLineItemsSection({
                                             </div>
 
                                             <div className="flex flex-col items-end gap-2">
-                                              {isSuppressed ? (
+                                              {isMissingArtworkSuppressed ? (
                                                 <Button
                                                   type="button"
                                                   variant="outline"
@@ -1817,9 +2274,11 @@ export function OrderLineItemsSection({
                                   </>
                                 }
                                 detailsSide="right"
+                                collapseSecondaryDetails={true}
+                                compactExpandedLayout={true}
                                 isDirty={isExpanded && expandedItem && expandedItem.id === item.id ? isDirty : false}
                                 isSaving={savingItemId === item.id}
-                                isSaved={!isDirty && savedItemId === item.id}
+                                isSaved={!isDirty && (savedItemId === item.id || designBriefSavedAt === item.id)}
                                 onSave={readOnly ? undefined : handleSaveItem}
                                 onDuplicate={readOnly ? undefined : () => void handleDuplicateItem(item)}
                                 onRemove={readOnly ? undefined : () => void handleRemoveItem(item.id)}
@@ -1827,77 +2286,57 @@ export function OrderLineItemsSection({
                               />
 
                               <div className="mt-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <span className="text-xs font-medium text-muted-foreground">Workflow</span>
-                                  <Badge variant={workflowBadgeVariant((item as any).workflowState)}>
-                                    {WORKFLOW_LABELS[String((item as any).workflowState || "new")] || String((item as any).workflowState || "new")}
-                                  </Badge>
-                                  {(item as any).activeOwnerStepKey && (
-                                    <Badge variant="secondary">
-                                      Owner: {String((item as any).activeOwnerStepKey || (item as any).activeOwnerStationKey || "unassigned")}
-                                    </Badge>
-                                  )}
-                                  {Boolean((item as any).requiresDesign) && (
-                                    <Badge variant="outline">Design</Badge>
-                                  )}
-                                  {Boolean((item as any).requiresPrepress) && (
-                                    <Badge variant="outline">Prepress</Badge>
-                                  )}
-                                </div>
-
-                                {!readOnly && isExpanded && expandedItem && expandedItem.id === item.id && (
-                                  <div className="mt-3 rounded-md border border-border/40 bg-background/70 p-3">
-                                    <div className="flex flex-wrap items-center justify-between gap-2">
-                                      <div>
-                                        <div className="text-sm font-medium">Intake routing</div>
-                                        <div className="text-xs text-muted-foreground">
-                                          Changes reseed workflow only before ownership or downstream work starts.
-                                        </div>
-                                      </div>
-                                      <div className="flex items-center gap-2 text-xs">
-                                        <span className="text-muted-foreground">Initial stage</span>
-                                        <Badge variant="outline">
-                                          {WORKFLOW_LABELS[getInitialWorkflowStateForFlags(requiresDesignInput, requiresPrepressInput)]}
-                                        </Badge>
-                                      </div>
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Status</span>
+                                      <Badge variant={workflowBadgeVariant(workflowState)}>
+                                        {operationalStatusLabel}
+                                      </Badge>
+                                      {operationalWarning ? (
+                                        <span
+                                          className={cn(
+                                            "inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium",
+                                            operationalWarningTone === "danger"
+                                              ? "bg-red-100 text-red-800"
+                                              : "bg-amber-100 text-amber-800"
+                                          )}
+                                        >
+                                          {operationalWarning}
+                                        </span>
+                                      ) : null}
                                     </div>
-
-                                    <div className="mt-3 flex flex-wrap gap-4">
-                                      <label className="flex items-center gap-2 text-sm text-foreground">
-                                        <Checkbox
-                                          checked={requiresDesignInput}
-                                          onCheckedChange={(checked) => setRequiresDesignInput(checked === true)}
-                                        />
-                                        Requires Design
-                                      </label>
-                                      <label className="flex items-center gap-2 text-sm text-foreground">
-                                        <Checkbox
-                                          checked={requiresPrepressInput}
-                                          onCheckedChange={(checked) => setRequiresPrepressInput(checked === true)}
-                                        />
-                                        Requires Prepress
-                                      </label>
+                                    <div className="mt-1 text-sm">
+                                      <span className="text-muted-foreground">Next step:</span>{" "}
+                                      <span className="font-medium text-foreground">{operationalNextStep}</span>
                                     </div>
+                                    {ownerLabel ? (
+                                      <div className="mt-1 text-xs text-muted-foreground">Owner: {String(ownerLabel)}</div>
+                                    ) : null}
                                   </div>
-                                )}
 
-                                {!readOnly && getWorkflowActions(String((item as any).workflowState || "new")).length > 0 && (
-                                  <div className="mt-2 flex flex-wrap gap-2">
-                                    {getWorkflowActions(String((item as any).workflowState || "new")).map((action) => (
+                                  {!readOnly && getWorkflowActions(workflowState).length > 0 && (
+                                    <div className="flex flex-wrap gap-2">
+                                      {getWorkflowActions(workflowState).map((action, index) => (
                                       <Button
-                                        key={`${item.id}-${action.toState}`}
+                                        key={`${item.id}-${index}`}
                                         type="button"
                                         variant="outline"
                                         size="sm"
                                         className="h-8"
                                         disabled={transitionWorkflow.isPending}
-                                        onClick={() => transitionWorkflow.mutate({ lineItemId: String(item.id), toState: action.toState })}
+                                        onClick={() => transitionWorkflow.mutate({
+                                          lineItemId: String(item.id),
+                                          toState: action.toState,
+                                          action: (action as any).action,
+                                        })}
                                       >
                                         {action.label}
                                       </Button>
                                     ))}
-                                  </div>
-                                )}
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                             </div>
                           </div>

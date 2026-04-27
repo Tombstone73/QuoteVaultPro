@@ -107,12 +107,12 @@ export function AppLayout() {
 
         {/* Scrollable page content */}
         <main
-          className="flex-1 overflow-y-auto bg-background"
+          className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-background"
           style={{
             ["--titan-order-right-col" as any]: orderRightCol,
           }}
         >
-          <div className="w-full">
+          <div className="flex min-h-full w-full flex-1 flex-col">
             <RouteErrorBoundary key={location.pathname}>
               <Outlet />
             </RouteErrorBoundary>

@@ -127,6 +127,125 @@
       "when": 1773872609328,
       "tag": "0017_line_item_proof_manual_approval_overrides",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1774047601000,
+      "tag": "0018_proof_access_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1774047602000,
+      "tag": "0019_line_item_design_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1774047603000,
+      "tag": "0020_product_design_configs",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1774047604000,
+      "tag": "0021_line_item_design_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1774047605000,
+      "tag": "0022_line_item_design_briefs",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1774047606000,
+      "tag": "0023_structured_order_notes",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1774047607000,
+      "tag": "0024_line_item_design_cost_summaries",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1774051200000,
+      "tag": "0025_product_requires_proof_approval",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1774137600000,
+      "tag": "0026_seed_order_invoice_numbering",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1774224000000,
+      "tag": "0027_add_source_number_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1774569600000,
+      "tag": "0028_repair_numbering_and_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1774656000000,
+      "tag": "0029_dedupe_numbering_seed_rows",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1744416000000,
+      "tag": "0030_gmail_oauth_connection",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1776215762998,
+      "tag": "0031_sudden_black_bolt",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1745625600000,
+      "tag": "0032_quote_line_item_proof_approval_snapshot",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1745712000000,
+      "tag": "0033_migrations_v2_canary",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1777248000000,
+      "tag": "0034_fulfillment_station",
+      "breakpoints": true
     }
   ]
 }

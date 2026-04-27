@@ -121,6 +121,7 @@ const ProductEditorPage = () => {
       nestingVolumePricing: { enabled: false, tiers: [] },
       isActive: true,
       requiresProductionJob: true,
+      requiresProofApproval: false,
       isTaxable: true,
     },
   });
@@ -162,6 +163,7 @@ const ProductEditorPage = () => {
         isActive: product.isActive ?? true,
         productTypeId: product.productTypeId || undefined,
         requiresProductionJob: product.requiresProductionJob ?? true,
+        requiresProofApproval: product.requiresProofApproval ?? false,
         isTaxable: product.isTaxable ?? true,
       };
       lastLoadedRef.current = nextValues;

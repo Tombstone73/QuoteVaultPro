@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -48,10 +48,12 @@ import {
   type ProductionJobListItem,
   type ProductionOrderArtworkSummary 
 } from "@/hooks/useProduction";
+import { useDesignQueue } from "@/hooks/useOrders";
 import { format, isPast, parseISO } from "date-fns";
 import { cn } from "@/lib/utils";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { ROUTES } from "@/config/routes";
+import type { ProofingQueueResponse } from "@shared/proofing";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { productionCardTheme, computeUrgency, statusColors } from "../theme/productionCardTheme";
 import {
@@ -116,7 +118,6 @@ const KANBAN_COLUMNS = [
 
 // Column width constraints for fit mode
 const MIN_COLUMN_WIDTH = 320;
-const MAX_COLUMN_WIDTH = 520;
 const DEFAULT_COLUMN_WIDTH = 420;
 const BOARD_GAP = 16; // gap-4 = 16px
 
@@ -180,6 +181,15 @@ type GlobalSearchResults = {
   quotes: SearchResult[];
   invoices: SearchResult[];
   jobs: SearchResult[];
+};
+
+type OperationalAreaCard = {
+  id: string;
+  label: string;
+  count: number | null;
+  detail: string;
+  href?: string;
+  kind: "queue" | "jobs";
 };
 
 /**
@@ -278,6 +288,25 @@ export default function ProductionOverviewPage() {
   // Fetch ALL production jobs (no station/status filter for overview)
   // This shows jobs across all production modules (flatbed, roll, apparel)
   const { data: allJobs, isLoading, error } = useProductionJobs({});
+  const { data: designQueue = [], isLoading: isDesignQueueLoading, error: designQueueError } = useDesignQueue();
+  const {
+    data: proofingQueueData,
+    isLoading: isProofingQueueLoading,
+    error: proofingQueueError,
+  } = useQuery<ProofingQueueResponse>({
+    queryKey: ["/api/proofing/queue", "all"],
+    queryFn: async () => {
+      const res = await fetch("/api/proofing/queue?slice=all", { credentials: "include" });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.error || "Failed to fetch proofing queue");
+      }
+      const json = await res.json();
+      return json.data as ProofingQueueResponse;
+    },
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
   
   // View mode toggle (persist in localStorage)
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
@@ -398,8 +427,12 @@ export default function ProductionOverviewPage() {
     const saved = localStorage.getItem("titan.production.board.fitColumns");
     return saved === "true";
   });
-  const [boardWidth, setBoardWidth] = useState<number>(0);
-  const boardContainerRef = useRef<HTMLDivElement>(null);
+  const [showThumbnails, setShowThumbnails] = useState<boolean>(() => {
+    const saved = localStorage.getItem("titan.production.overview.showThumbnails");
+    return saved !== "false";
+  });
+  const [boardViewportWidth, setBoardViewportWidth] = useState<number>(0);
+  const boardViewportRef = useRef<HTMLDivElement>(null);
 
   const toggleFitColumns = () => {
     const newValue = !fitColumns;
@@ -407,52 +440,79 @@ export default function ProductionOverviewPage() {
     localStorage.setItem("titan.production.board.fitColumns", String(newValue));
   };
 
-  // Measure board container width with ResizeObserver
-  useEffect(() => {
-    const container = boardContainerRef.current;
-    if (!container) return;
+  const toggleShowThumbnails = () => {
+    const nextValue = !showThumbnails;
+    setShowThumbnails(nextValue);
+    localStorage.setItem("titan.production.overview.showThumbnails", String(nextValue));
+  };
 
-    // Immediately measure on mount
-    const initialWidth = container.getBoundingClientRect().width;
-    setBoardWidth(initialWidth);
+  // Measure the visible board viewport width so fit-columns uses the actual
+  // usable content area instead of the flex track's content width.
+  useEffect(() => {
+    const viewport = boardViewportRef.current;
+    if (!viewport) return;
+
+    const measureViewport = () => {
+      const nextWidth = Math.floor(viewport.clientWidth || viewport.getBoundingClientRect().width || 0);
+      setBoardViewportWidth((prev) => (prev === nextWidth ? prev : nextWidth));
+    };
+
+    measureViewport();
 
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        // Use contentRect for the inner dimensions
-        const newWidth = entry.contentRect.width;
-        setBoardWidth(newWidth);
+        const nextWidth = Math.floor(entry.contentRect.width || viewport.clientWidth || 0);
+        setBoardViewportWidth((prev) => (prev === nextWidth ? prev : nextWidth));
         
         if (process.env.NODE_ENV === 'development') {
-          console.log('[ProductionBoard] Resize detected:', { newWidth, fitColumns });
+          console.log('[ProductionBoard] Viewport resize detected:', { nextWidth, fitColumns });
         }
       }
     });
 
-    resizeObserver.observe(container);
+    resizeObserver.observe(viewport);
 
     return () => {
       resizeObserver.disconnect();
     };
-  }, [fitColumns]);
+  }, [fitColumns, viewMode]);
 
   // Calculate column width when fit mode is enabled
   const visibleColumnsCount = useMemo(() => {
     return KANBAN_COLUMNS.filter(col => boardColumnVisibility[col.id] !== false).length;
   }, [boardColumnVisibility]);
 
+  const totalVisibleGapWidth = useMemo(() => {
+    return BOARD_GAP * Math.max(visibleColumnsCount - 1, 0);
+  }, [visibleColumnsCount]);
+
+  const minimumBoardWidth = useMemo(() => {
+    return (visibleColumnsCount * MIN_COLUMN_WIDTH) + totalVisibleGapWidth;
+  }, [totalVisibleGapWidth, visibleColumnsCount]);
+
   const calculatedColumnWidth = useMemo(() => {
-    if (!fitColumns || visibleColumnsCount === 0 || boardWidth === 0) {
+    if (!fitColumns || visibleColumnsCount === 0 || boardViewportWidth === 0) {
       return DEFAULT_COLUMN_WIDTH;
     }
 
-    // Available width = total width - gaps between columns
-    const totalGapWidth = BOARD_GAP * (visibleColumnsCount - 1);
-    const availableWidth = boardWidth - totalGapWidth;
-    
-    // Divide by number of columns and clamp
-    const width = availableWidth / visibleColumnsCount;
-    return Math.max(MIN_COLUMN_WIDTH, Math.min(MAX_COLUMN_WIDTH, Math.floor(width)));
-  }, [fitColumns, visibleColumnsCount, boardWidth]);
+    const availableWidth = Math.max(boardViewportWidth - totalVisibleGapWidth, 0);
+    const fittedWidth = Math.floor(availableWidth / visibleColumnsCount);
+
+    if (boardViewportWidth >= minimumBoardWidth) {
+      return Math.max(fittedWidth, MIN_COLUMN_WIDTH);
+    }
+
+    return MIN_COLUMN_WIDTH;
+  }, [fitColumns, visibleColumnsCount, boardViewportWidth, totalVisibleGapWidth, minimumBoardWidth]);
+
+  const boardTrackWidth = useMemo(() => {
+    if (!fitColumns || visibleColumnsCount === 0) {
+      return undefined;
+    }
+
+    const fittedTrackWidth = (calculatedColumnWidth * visibleColumnsCount) + totalVisibleGapWidth;
+    return Math.max(boardViewportWidth, fittedTrackWidth);
+  }, [fitColumns, visibleColumnsCount, calculatedColumnWidth, totalVisibleGapWidth, boardViewportWidth]);
 
   const resetBoardCardConfig = () => {
     saveBoardCardConfig(DEFAULT_BOARD_CARD_CONFIG);
@@ -807,6 +867,40 @@ export default function ProductionOverviewPage() {
 
   const jobs = useMemo(() => allJobs ?? [], [allJobs]);
 
+  const groupJobsByColumn = (inputJobs: ProductionJobListItem[]) => {
+    const grouped = new Map<string, ProductionJobListItem[]>();
+    KANBAN_COLUMNS.forEach((col) => grouped.set(col.id, []));
+
+    inputJobs.forEach((job) => {
+      const columnId = getJobColumn(job);
+      const column = grouped.get(columnId);
+      if (column) {
+        column.push(job);
+      }
+    });
+
+    grouped.forEach((columnJobs, columnId) => {
+      grouped.set(columnId, sortBoardJobs(columnJobs));
+    });
+
+    return grouped;
+  };
+
+  const designCounts = useMemo(() => {
+    let needsDesign = 0;
+    let inDesign = 0;
+
+    designQueue.forEach((item) => {
+      if (item.designStatus === "in_design") {
+        inDesign += 1;
+      } else {
+        needsDesign += 1;
+      }
+    });
+
+    return { needsDesign, inDesign, total: designQueue.length };
+  }, [designQueue]);
+
   // DEV-only: log sample preview URLs once
   const devLoggedSample = useRef(false);
   useEffect(() => {
@@ -892,29 +986,15 @@ export default function ProductionOverviewPage() {
     return "printing";
   };
 
+  const allJobsByStatus = useMemo(() => groupJobsByColumn(jobs), [jobs, boardSort]);
+
   // Group jobs by column (using stepKey-based routing)
   const jobsByStatus = useMemo(() => {
-    const grouped = new Map<string, ProductionJobListItem[]>();
-    KANBAN_COLUMNS.forEach(col => grouped.set(col.id, []));
-    
     // Apply search filter if production-only mode
     const filteredJobs = searchOnlyProduction && searchQuery 
       ? jobs.filter(job => matchesSearchQuery(job, searchQuery))
       : jobs;
-    
-    filteredJobs.forEach(job => {
-      const columnId = getJobColumn(job);
-      const column = grouped.get(columnId);
-      if (column) {
-        column.push(job);
-      }
-    });
-    
-    // Apply sorting within each column
-    grouped.forEach((columnJobs, columnId) => {
-      const sorted = sortBoardJobs(columnJobs);
-      grouped.set(columnId, sorted);
-    });
+    const grouped = groupJobsByColumn(filteredJobs);
     
     // Dev logging
     if (import.meta.env.DEV) {
@@ -931,6 +1011,77 @@ export default function ProductionOverviewPage() {
     
     return grouped;
   }, [jobs, searchQuery, searchOnlyProduction, boardSort]);
+
+  const operationalAreaCards = useMemo<OperationalAreaCard[]>(() => {
+    const proofingCounts = proofingQueueData?.counts;
+
+    return [
+      {
+        id: "design",
+        label: "Design",
+        count: isDesignQueueLoading ? null : designCounts.total,
+        detail: designQueueError
+          ? "Unable to load design queue"
+          : `${designCounts.needsDesign} needs design • ${designCounts.inDesign} in design`,
+        href: ROUTES.production.design,
+        kind: "queue",
+      },
+      {
+        id: "proofing",
+        label: "Proofing",
+        count: isProofingQueueLoading ? null : (proofingCounts?.all ?? 0),
+        detail: proofingQueueError
+          ? "Unable to load proofing queue"
+          : `${proofingCounts?.awaitingApproval ?? 0} awaiting approval • ${proofingCounts?.revisionRequested ?? 0} revisions • ${proofingCounts?.awaitingSend ?? 0} awaiting send`,
+        href: ROUTES.production.proofing,
+        kind: "queue",
+      },
+      {
+        id: "prepress",
+        label: "Prepress",
+        count: allJobsByStatus.get("prepress")?.length ?? 0,
+        detail: "Active production jobs",
+        href: ROUTES.production.prepress,
+        kind: "jobs",
+      },
+      {
+        id: "printing",
+        label: "Printing",
+        count: allJobsByStatus.get("printing")?.length ?? 0,
+        detail: "Active production jobs",
+        kind: "jobs",
+      },
+      {
+        id: "finishing",
+        label: "Finishing",
+        count: allJobsByStatus.get("finishing")?.length ?? 0,
+        detail: "Active production jobs",
+        kind: "jobs",
+      },
+      {
+        id: "fulfillment",
+        label: "Fulfillment",
+        count: allJobsByStatus.get("fulfillment")?.length ?? 0,
+        detail: "Active production jobs",
+        kind: "jobs",
+      },
+      {
+        id: "production_complete",
+        label: "Production Complete",
+        count: allJobsByStatus.get("production_complete")?.length ?? 0,
+        detail: "Completed jobs",
+        kind: "jobs",
+      },
+    ];
+  }, [
+    allJobsByStatus,
+    designCounts,
+    designQueueError,
+    isDesignQueueLoading,
+    isProofingQueueLoading,
+    proofingQueueData,
+    proofingQueueError,
+  ]);
 
   const activeJob = activeJobId ? jobs.find(j => j.id === activeJobId) : null;
 
@@ -1144,6 +1295,16 @@ export default function ProductionOverviewPage() {
                 </Tooltip>
               </TooltipProvider>
 
+              <Button
+                variant={showThumbnails ? "secondary" : "outline"}
+                size="sm"
+                onClick={toggleShowThumbnails}
+                className="gap-2 h-9"
+              >
+                {showThumbnails ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                Thumbnails
+              </Button>
+
               {/* Board settings dropdown */}
               <Popover>
               <PopoverTrigger asChild>
@@ -1210,6 +1371,25 @@ export default function ProductionOverviewPage() {
                       ))}
                     </div>
                   </div>
+
+                  <div className="space-y-3 pt-3 border-t">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-medium">Artwork</h4>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="production-show-thumbnails" className="text-sm cursor-pointer">
+                        Show thumbnails
+                      </Label>
+                      <Switch
+                        id="production-show-thumbnails"
+                        checked={showThumbnails}
+                        onCheckedChange={(checked) => {
+                          setShowThumbnails(checked);
+                          localStorage.setItem("titan.production.overview.showThumbnails", String(checked));
+                        }}
+                      />
+                    </div>
+                  </div>
                 </div>
               </PopoverContent>
             </Popover>
@@ -1272,6 +1452,32 @@ export default function ProductionOverviewPage() {
         </div>
       </div>
 
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-7">
+        {operationalAreaCards.map((area) => (
+          <Card key={area.id} className="border-border bg-card">
+            <CardContent className="p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{area.label}</p>
+                    <Badge variant="outline" className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      {area.kind}
+                    </Badge>
+                  </div>
+                  <p className="mt-2 text-2xl font-semibold text-foreground">{area.count == null ? "—" : area.count}</p>
+                  <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{area.detail}</p>
+                </div>
+                {area.href ? (
+                  <Button asChild variant="ghost" size="sm" className="h-8 shrink-0 px-2 text-xs">
+                    <Link to={area.href}>Open</Link>
+                  </Button>
+                ) : null}
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
       {/* Board view with drag and drop */}
       {viewMode === "board" && (
         <>
@@ -1311,28 +1517,28 @@ export default function ProductionOverviewPage() {
             onDragStart={handleDragStart}
             onDragEnd={handleDragEnd}
           >
-            <div 
-              ref={boardContainerRef}
-              className={cn(
-                "flex gap-4 pb-4",
-                fitColumns ? "overflow-x-hidden" : "overflow-x-auto"
-              )}
-            >
-              {KANBAN_COLUMNS.filter(col => boardColumnVisibility[col.id] !== false).map(column => {
-                const columnJobs = jobsByStatus.get(column.id) ?? [];
-                return (
-                  <KanbanColumn
-                    key={column.id}
-                    column={column}
-                    jobs={columnJobs}
-                    boardCardConfig={boardCardConfig}
-                    onArtworkClick={openArtworkModal}
-                    isCardExpanded={isCardExpanded}
-                    toggleCardExpanded={toggleCardExpanded}
-                    width={fitColumns ? calculatedColumnWidth : DEFAULT_COLUMN_WIDTH}
-                  />
-                );
-              })}
+            <div ref={boardViewportRef} className="overflow-x-auto">
+              <div
+                className="flex gap-4 pb-4"
+                style={boardTrackWidth ? { width: `${boardTrackWidth}px` } : undefined}
+              >
+                {KANBAN_COLUMNS.filter(col => boardColumnVisibility[col.id] !== false).map(column => {
+                  const columnJobs = jobsByStatus.get(column.id) ?? [];
+                  return (
+                    <KanbanColumn
+                      key={column.id}
+                      column={column}
+                      jobs={columnJobs}
+                      boardCardConfig={boardCardConfig}
+                      onArtworkClick={openArtworkModal}
+                      showThumbnails={showThumbnails}
+                      isCardExpanded={isCardExpanded}
+                      toggleCardExpanded={toggleCardExpanded}
+                      width={fitColumns ? calculatedColumnWidth : DEFAULT_COLUMN_WIDTH}
+                    />
+                  );
+                })}
+              </div>
             </div>
             <DragOverlay>
               {activeJob && (
@@ -1340,6 +1546,7 @@ export default function ProductionOverviewPage() {
                   job={activeJob}
                   boardCardConfig={boardCardConfig}
                   onArtworkClick={openArtworkModal}
+                  showThumbnails={showThumbnails}
                   isDragOverlay
                 />
               )}
@@ -1379,6 +1586,7 @@ export default function ProductionOverviewPage() {
                       key={job.id} 
                       job={job} 
                       visibleColumns={visibleColumns}
+                      showThumbnails={showThumbnails}
                       onArtworkClick={openArtworkModal}
                     />
                   ))
@@ -1516,6 +1724,7 @@ function KanbanColumn({
   jobs,
   boardCardConfig,
   onArtworkClick,
+  showThumbnails,
   isCardExpanded,
   toggleCardExpanded,
   width = DEFAULT_COLUMN_WIDTH,
@@ -1524,6 +1733,7 @@ function KanbanColumn({
   jobs: ProductionJobListItem[];
   boardCardConfig: BoardCardConfig;
   onArtworkClick: (job: ProductionJobListItem) => void;
+  showThumbnails: boolean;
   isCardExpanded: (jobId: string) => boolean;
   toggleCardExpanded: (jobId: string) => void;
   width?: number;
@@ -1555,6 +1765,7 @@ function KanbanColumn({
               job={job}
               boardCardConfig={boardCardConfig}
               onArtworkClick={onArtworkClick}
+              showThumbnails={showThumbnails}
               isExpanded={isCardExpanded(job.id)}
               toggleExpanded={() => toggleCardExpanded(job.id)}
             />
@@ -1803,6 +2014,7 @@ function JobCard({
   job, 
   boardCardConfig,
   onArtworkClick,
+  showThumbnails,
   isDragOverlay = false,
   isExpanded = true,
   toggleExpanded,
@@ -1810,6 +2022,7 @@ function JobCard({
   job: ProductionJobListItem; 
   boardCardConfig: BoardCardConfig;
   onArtworkClick: (job: ProductionJobListItem) => void;
+  showThumbnails: boolean;
   isDragOverlay?: boolean;
   isExpanded?: boolean;
   toggleExpanded?: () => void;
@@ -2035,20 +2248,21 @@ function JobCard({
 
         {/* Thumbnail + Badges Row */}
         <div className="flex items-center gap-2">
-          {/* Thumbnail */}
-          <button
-            type="button"
-            data-no-dnd="true"
-            onClick={(e) => {
-              e.stopPropagation();
-              onArtworkClick(job);
-            }}
-            onPointerDownCapture={(e) => e.stopPropagation()}
-            onMouseDownCapture={(e) => e.stopPropagation()}
-            className="shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
-          >
-            <ThumbnailGroup job={job} sides={sides} />
-          </button>
+          {showThumbnails ? (
+            <button
+              type="button"
+              data-no-dnd="true"
+              onClick={(e) => {
+                e.stopPropagation();
+                onArtworkClick(job);
+              }}
+              onPointerDownCapture={(e) => e.stopPropagation()}
+              onMouseDownCapture={(e) => e.stopPropagation()}
+              className="shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
+            >
+              <ThumbnailGroup job={job} sides={sides} />
+            </button>
+          ) : null}
 
           {/* Badges */}
           <div className="flex items-center flex-wrap gap-1.5">
@@ -2081,7 +2295,7 @@ function JobCard({
 }
 
 // Job row component for list view
-function JobRow({ job, visibleColumns, onArtworkClick }: { job: ProductionJobListItem; visibleColumns: ColumnConfig[]; onArtworkClick: (job: ProductionJobListItem) => void }) {
+function JobRow({ job, visibleColumns, showThumbnails, onArtworkClick }: { job: ProductionJobListItem; visibleColumns: ColumnConfig[]; showThumbnails: boolean; onArtworkClick: (job: ProductionJobListItem) => void }) {
   const navigate = useNavigate();
   const updateStatus = useUpdateProductionJobStatus(job.id);
   const sides = job.sides || "single";
@@ -2096,6 +2310,10 @@ function JobRow({ job, visibleColumns, onArtworkClick }: { job: ProductionJobLis
   const getCellContent = (colId: ColumnId) => {
     switch (colId) {
       case "artwork":
+        if (!showThumbnails) {
+          return <span className="text-xs text-muted-foreground">Hidden</span>;
+        }
+
         return (
           <div 
             onClick={(e) => {

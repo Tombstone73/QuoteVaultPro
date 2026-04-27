@@ -245,15 +245,30 @@ export function useScheduleOrderLineItemsForProduction(orderId: string) {
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
       qc.invalidateQueries({ queryKey: ["/api/orders", orderId] as any });
-      const firstDiagnostic = data?.data?.lineItemDiagnostics
-        ? Object.values(data.data.lineItemDiagnostics)[0]
-        : null;
+      const diagnostics = data?.data?.lineItemDiagnostics
+        ? Object.values(data.data.lineItemDiagnostics)
+        : [];
+      const proofBlocked = diagnostics.filter(
+        (diagnostic) => diagnostic.routingReason === "proof_approval_required_before_scheduling",
+      );
+      const firstDiagnostic = diagnostics[0] ?? null;
+      const hasScheduledJobs = (data?.data?.createdJobCount ?? 0) + (data?.data?.existingJobCount ?? 0) > 0;
+
+      if (!hasScheduledJobs && proofBlocked.length > 0) {
+        toast({
+          title: "Approved proof required",
+          description: data.message,
+          variant: "destructive",
+        });
+        return;
+      }
+
       const details = firstDiagnostic
-        ? `Routed by: ${firstDiagnostic.routingReason}${firstDiagnostic.idempotencyNote ? ` • ${firstDiagnostic.idempotencyNote}` : ""}`
+        ? `${data.message}${firstDiagnostic.idempotencyNote ? ` • ${firstDiagnostic.idempotencyNote}` : ""}`
         : data.message;
-      toast({ 
-        title: "Production scheduling complete", 
-        description: details
+      toast({
+        title: "Production scheduling complete",
+        description: details,
       });
     },
     onError: (e: Error) => {
@@ -332,9 +347,12 @@ export function useCompleteProductionJob(jobId: string) {
       if (!res.ok) throw new Error(json.error || "Failed to complete job");
       return json.data;
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       invalidateProduction(qc, jobId);
-      toast({ title: "Job completed" });
+      // Completing a job may route the line item to proofing — update proofing queue immediately.
+      qc.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
+      const isFulfillment = (data as any)?.stationKey === "fulfillment";
+      toast({ title: isFulfillment ? "Fulfillment complete — item marked done" : "Job completed" });
     },
     onError: (e: Error) => {
       toast({ title: "Complete failed", description: e.message, variant: "destructive" });
@@ -357,6 +375,8 @@ export function useReopenProductionJob(jobId: string) {
     },
     onSuccess: () => {
       invalidateProduction(qc, jobId);
+      // Reopening pulls the job back from done/proofing into production boards.
+      qc.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
       toast({ title: "Job reopened" });
     },
     onError: (e: Error) => {

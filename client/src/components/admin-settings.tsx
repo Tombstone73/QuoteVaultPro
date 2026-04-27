@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Link } from "wouter";
@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Copy, Download, Edit, Plus, Settings as SettingsIcon, Settings, Trash2, Upload, LayoutGrid, LayoutList, Users, Hash, X, Mail, Send, Link as LinkIcon } from "lucide-react";
+import { Copy, Download, Edit, Plus, Settings as SettingsIcon, Settings, Trash2, Upload, LayoutGrid, LayoutList, Users, Hash, X, Mail, Send, Link as LinkIcon, CheckCircle2, AlertCircle, RefreshCw, LogOut, WifiOff } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
@@ -37,9 +37,6 @@ import type {
   FormulaTemplate,
   InsertFormulaTemplate,
   UpdateFormulaTemplate,
-  EmailSettings,
-  InsertEmailSettings,
-  UpdateEmailSettings
 } from "@shared/schema";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -49,7 +46,6 @@ import {
   insertProductVariantSchema,
   insertGlobalVariableSchema,
   insertFormulaTemplateSchema,
-  insertEmailSettingsSchema
 } from "@shared/schema";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -322,486 +318,336 @@ function MediaLibraryTab() {
   );
 }
 
-function QuoteNumberSettings() {
-  const { toast } = useToast();
-  const [isEditing, setIsEditing] = useState(false);
-  const [newStartNumber, setNewStartNumber] = useState<string>("");
+// ---------------------------------------------------------------------------
+// Gmail Connection Card — platform-managed OAuth flow
+// ---------------------------------------------------------------------------
 
-  const { data: globalVariables, isLoading } = useQuery<GlobalVariable[]>({
-    queryKey: ["/api/global-variables"],
-  });
+interface GmailConnectionData {
+  status: 'not_connected' | 'connected' | 'disconnected' | 'token_exchange_failed' | 'revoked_or_invalid';
+  connected: boolean;
+  connectedEmail: string | null;
+  fromName: string | null;
+  settingsId: string | null;
+  connectedAt: string | null;
+  platformConfigured: boolean;
+}
 
-  const updateQuoteNumberMutation = useMutation({
-    mutationFn: async (newNumber: number) => {
-      const quoteNumberVar = globalVariables?.find(v => v.name === 'next_quote_number');
-      if (!quoteNumberVar) {
-        throw new Error('Quote numbering system not initialized');
-      }
-      return apiRequest("PATCH", `/api/global-variables/${quoteNumberVar.id}`, {
-        value: newNumber
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/global-variables"] });
-      setIsEditing(false);
-      setNewStartNumber("");
-      toast({
-        title: "Quote numbering updated",
-        description: "The next quote number has been updated successfully",
-      });
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Failed to update quote numbering",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
-
-  const quoteNumberVar = globalVariables?.find(v => v.name === 'next_quote_number');
-  const currentNextNumber = quoteNumberVar ? Math.floor(Number(quoteNumberVar.value)) : null;
-
-  const handleSave = () => {
-    const num = parseInt(newStartNumber);
-    if (isNaN(num) || num < 1) {
-      toast({
-        title: "Invalid number",
-        description: "Please enter a valid positive number",
-        variant: "destructive",
-      });
-      return;
-    }
-    updateQuoteNumberMutation.mutate(num);
-  };
-
-  if (isLoading) {
+function StatusBadge({ status }: { status: GmailConnectionData['status'] }) {
+  if (status === 'connected') {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Quote Numbering System</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Skeleton className="h-10 w-full" />
-        </CardContent>
-      </Card>
+      <Badge className="bg-green-100 text-green-800 border-green-200 gap-1">
+        <CheckCircle2 className="w-3 h-3" />
+        Connected
+      </Badge>
     );
   }
-
+  if (status === 'disconnected') {
+    return (
+      <Badge variant="outline" className="gap-1 text-muted-foreground">
+        <WifiOff className="w-3 h-3" />
+        Disconnected
+      </Badge>
+    );
+  }
+  if (status === 'token_exchange_failed' || status === 'revoked_or_invalid') {
+    return (
+      <Badge variant="destructive" className="gap-1">
+        <AlertCircle className="w-3 h-3" />
+        Needs Reconnect
+      </Badge>
+    );
+  }
   return (
-    <Card data-testid="card-quote-number-settings">
-      <CardHeader>
-        <CardTitle>Quote Numbering System</CardTitle>
-        <CardDescription>
-          Configure the starting number for new quotes. Current quotes will keep their existing numbers.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex items-center gap-4">
-          <div className="flex-1">
-            <Label htmlFor="next-quote-number" data-testid="label-next-quote-number">
-              Next Quote Number
-            </Label>
-            {isEditing ? (
-              <Input
-                id="next-quote-number"
-                type="number"
-                min="1"
-                value={newStartNumber}
-                onChange={(e) => setNewStartNumber(e.target.value)}
-                placeholder={currentNextNumber?.toString() || "1001"}
-                data-testid="input-next-quote-number"
-                className="mt-2"
-              />
-            ) : (
-              <div className="text-2xl font-bold mt-2" data-testid="text-current-quote-number">
-                {currentNextNumber || "Not set"}
-              </div>
-            )}
-            <p className="text-sm text-muted-foreground mt-2">
-              The next quote created will be assigned number {currentNextNumber || "N/A"}
-            </p>
-          </div>
-          <div className="flex gap-2">
-            {isEditing ? (
-              <>
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setIsEditing(false);
-                    setNewStartNumber("");
-                  }}
-                  data-testid="button-cancel-quote-number"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  onClick={handleSave}
-                  disabled={updateQuoteNumberMutation.isPending}
-                  data-testid="button-save-quote-number"
-                >
-                  {updateQuoteNumberMutation.isPending ? "Saving..." : "Save"}
-                </Button>
-              </>
-            ) : (
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setIsEditing(true);
-                  setNewStartNumber(currentNextNumber?.toString() || "1001");
-                }}
-                data-testid="button-edit-quote-number"
-              >
-                Change Starting Number
-              </Button>
-            )}
-          </div>
-        </div>
-      </CardContent>
-    </Card>
+    <Badge variant="outline" className="gap-1 text-muted-foreground">
+      <WifiOff className="w-3 h-3" />
+      Not Connected
+    </Badge>
   );
 }
 
-// Email Settings Tab Component (exported for use in settings page)
-export function EmailSettingsTab() {
+function GmailConnectionCard() {
   const { toast } = useToast();
-  const [isEditing, setIsEditing] = useState(false);
-  const [testEmailAddress, setTestEmailAddress] = useState("");
-  const [isSendingTest, setIsSendingTest] = useState(false);
+  const [testEmail, setTestEmail] = useState("");
+  const [editingFromName, setEditingFromName] = useState(false);
+  const [fromNameValue, setFromNameValue] = useState("");
+  const [isConnecting, setIsConnecting] = useState(false);
 
-  // Fetch email settings
-  const { data: emailSettings, isLoading } = useQuery<EmailSettings | null>({
-    queryKey: ["/api/email-settings/default"],
+  // Read ?connected=true or ?error=* from the URL after OAuth redirect.
+  // Runs once on mount only — the toast reference changing between renders
+  // must not re-trigger this, and the URL params are cleared immediately.
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const connected = params.get('connected');
+    const error = params.get('error');
+
+    if (connected === 'true') {
+      window.history.replaceState({}, '', window.location.pathname);
+      toastRef.current({ title: "Gmail connected", description: "Your Gmail account has been connected successfully." });
+    } else if (error) {
+      const messages: Record<string, string> = {
+        cancelled: "Authorization was cancelled.",
+        invalid_state: "Security check failed. Please try again.",
+        no_refresh_token: "Google did not return a refresh token. Please try connecting again.",
+        token_exchange_failed: "Failed to exchange the authorization code. Please try again.",
+        profile_lookup_failed: "Could not retrieve your Gmail address from Google. Please try again.",
+        storage_failed: "Failed to save the connection. Please try again.",
+        platform_not_configured: "Gmail OAuth is not configured on this platform. Contact your administrator.",
+        missing_code: "Authorization code missing. Please try again.",
+      };
+      window.history.replaceState({}, '', window.location.pathname);
+      toastRef.current({
+        title: "Gmail connection failed",
+        description: messages[error] || `Unexpected error: ${error}`,
+        variant: "destructive",
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Fetch current connection status
+  const { data: connection, isLoading } = useQuery<GmailConnectionData>({
+    queryKey: ["/api/email/connection"],
     queryFn: async () => {
-      try {
-        const response = await apiRequest("GET", "/api/email-settings/default");
-        return await response.json();
-      } catch (error: any) {
-        if (error.message?.includes("404")) {
-          return null; // No settings configured yet
-        }
-        throw error;
-      }
+      const res = await apiRequest("GET", "/api/email/connection");
+      return res.json();
     },
   });
 
-  // Form setup
-  const form = useForm<InsertEmailSettings>({
-    resolver: zodResolver(insertEmailSettingsSchema),
-    defaultValues: {
-      provider: "gmail",
-      fromAddress: "",
-      fromName: "",
-      clientId: "",
-      clientSecret: "",
-      refreshToken: "",
-      isActive: true,
-      isDefault: true,
-    },
-  });
-
-  // Update form when data loads
-  useState(() => {
-    if (emailSettings) {
-      form.reset({
-        provider: emailSettings.provider as "gmail" | "sendgrid" | "smtp",
-        fromAddress: emailSettings.fromAddress,
-        fromName: emailSettings.fromName,
-        clientId: emailSettings.clientId || "",
-        clientSecret: emailSettings.clientSecret || "",
-        refreshToken: emailSettings.refreshToken || "",
-        isActive: emailSettings.isActive,
-        isDefault: emailSettings.isDefault,
-      });
+  // Sync fromName into local edit state
+  useEffect(() => {
+    if (connection?.fromName && !editingFromName) {
+      setFromNameValue(connection.fromName);
     }
-  });
+  }, [connection?.fromName, editingFromName]);
 
-  // Create/Update mutation
-  const saveMutation = useMutation({
-    mutationFn: async (data: InsertEmailSettings) => {
-      if (emailSettings?.id) {
-        return apiRequest("PATCH", `/api/email-settings/${emailSettings.id}`, data);
-      } else {
-        return apiRequest("POST", "/api/email-settings", data);
-      }
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/email-settings/default"] });
-      toast({
-        title: "Success",
-        description: "Email settings saved successfully",
-      });
-      setIsEditing(false);
-    },
-    onError: (error: Error) => {
+  // Connect Gmail — gets OAuth URL and redirects the user
+  const handleConnect = async () => {
+    setIsConnecting(true);
+    try {
+      const res = await apiRequest("GET", "/api/email/google/start");
+      const { url } = await res.json();
+      window.location.href = url;
+    } catch (err: any) {
       toast({
         title: "Error",
-        description: error.message || "Failed to save email settings",
+        description: err.message || "Failed to start Gmail connection",
         variant: "destructive",
       });
-    },
-  });
-
-  // Test email mutation
-  const testEmailMutation = useMutation({
-    mutationFn: async (recipientEmail: string) => {
-      return apiRequest("POST", "/api/email/test", { recipientEmail });
-    },
-    onSuccess: () => {
-      toast({
-        title: "Success",
-        description: "Test email sent successfully! Check your inbox.",
-      });
-      setTestEmailAddress("");
-      setIsSendingTest(false);
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to send test email",
-        variant: "destructive",
-      });
-      setIsSendingTest(false);
-    },
-  });
-
-  const onSubmit = (data: InsertEmailSettings) => {
-    saveMutation.mutate(data);
+      setIsConnecting(false);
+    }
   };
 
-  const handleSendTest = () => {
-    if (!testEmailAddress) {
-      toast({
-        title: "Error",
-        description: "Please enter an email address",
-        variant: "destructive",
-      });
-      return;
-    }
-    testEmailMutation.mutate(testEmailAddress);
-  };
+  // Disconnect Gmail
+  const disconnectMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/email/disconnect"),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/email/connection"] });
+      toast({ title: "Disconnected", description: "Gmail account has been disconnected." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message || "Failed to disconnect", variant: "destructive" });
+    },
+  });
+
+  // Save From Name
+  const saveFromNameMutation = useMutation({
+    mutationFn: (name: string) => apiRequest("PATCH", "/api/email/from-name", { fromName: name }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/email/connection"] });
+      toast({ title: "Saved", description: "Display name updated." });
+      setEditingFromName(false);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message || "Failed to save", variant: "destructive" });
+    },
+  });
+
+  // Send test email
+  const testMutation = useMutation({
+    mutationFn: (recipient: string) => apiRequest("POST", "/api/email/test", { recipientEmail: recipient }),
+    onSuccess: () => {
+      toast({ title: "Test sent", description: "Check your inbox for the test email." });
+      setTestEmail("");
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message || "Failed to send test email", variant: "destructive" });
+    },
+  });
 
   if (isLoading) {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Email Settings</CardTitle>
-          <CardDescription>Loading...</CardDescription>
+          <CardTitle>Email Configuration</CardTitle>
+          <CardDescription>Loading…</CardDescription>
         </CardHeader>
         <CardContent>
-          <Skeleton className="h-64 w-full" />
+          <Skeleton className="h-32 w-full" />
         </CardContent>
       </Card>
     );
   }
 
+  const isConnected = connection?.connected ?? false;
+  const needsReconnect = connection?.status === 'token_exchange_failed' || connection?.status === 'revoked_or_invalid';
+  const platformConfigured = connection?.platformConfigured ?? false;
+
   return (
     <div className="space-y-4">
-      <GmailSetupGuide />
-      
+      {/* Main connection card */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Mail className="w-5 h-5" />
-            Email Configuration
-          </CardTitle>
-          <CardDescription>
-            Configure Gmail OAuth settings to send quote emails
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {!emailSettings && !isEditing ? (
-            <div className="text-center py-8">
-              <Mail className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-              <h3 className="text-lg font-semibold mb-2">No Email Settings Configured</h3>
-              <p className="text-muted-foreground mb-4">
-                Set up your Gmail OAuth credentials to start sending quote emails
-              </p>
-              <Button onClick={() => setIsEditing(true)}>
-                <Plus className="w-4 h-4 mr-2" />
-                Configure Email
-              </Button>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <Mail className="w-5 h-5" />
+                Gmail Connection
+              </CardTitle>
+              <CardDescription className="mt-1">
+                Connect the Gmail account TitanOS should use for quotes, proofs, invoices, and customer notifications.
+              </CardDescription>
             </div>
-          ) : null}
-
-          {(emailSettings || isEditing) && (
-            <Form {...form}>
-              <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-                <FormField
-                  control={form.control}
-                  name="fromAddress"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Gmail Address</FormLabel>
-                      <FormControl>
-                        <Input
-                          {...field}
-                          type="email"
-                          placeholder="your-email@gmail.com"
-                          disabled={!isEditing}
-                        />
-                      </FormControl>
-                      <FormDescription>
-                        The Gmail address that will send emails
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="fromName"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>From Name</FormLabel>
-                      <FormControl>
-                        <Input
-                          {...field}
-                          placeholder="Titan Graphics"
-                          disabled={!isEditing}
-                        />
-                      </FormControl>
-                      <FormDescription>
-                        The name that will appear in sent emails
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="clientId"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>OAuth Client ID</FormLabel>
-                      <FormControl>
-                        <Input
-                          {...field}
-                          type="password"
-                          placeholder="••••••••••••••••"
-                          disabled={!isEditing}
-                        />
-                      </FormControl>
-                      <FormDescription>
-                        From Google Cloud Console OAuth credentials
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="clientSecret"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>OAuth Client Secret</FormLabel>
-                      <FormControl>
-                        <Input
-                          {...field}
-                          type="password"
-                          placeholder="••••••••••••••••"
-                          disabled={!isEditing}
-                        />
-                      </FormControl>
-                      <FormDescription>
-                        From Google Cloud Console OAuth credentials
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="refreshToken"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>OAuth Refresh Token</FormLabel>
-                      <FormControl>
-                        <Textarea
-                          {...field}
-                          placeholder="1//••••••••••••••••"
-                          disabled={!isEditing}
-                          rows={3}
-                        />
-                      </FormControl>
-                      <FormDescription>
-                        From OAuth 2.0 Playground
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <div className="flex gap-2">
-                  {isEditing ? (
-                    <>
-                      <Button type="submit" disabled={saveMutation.isPending}>
-                        {saveMutation.isPending ? "Saving..." : "Save Settings"}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => {
-                          setIsEditing(false);
-                          if (emailSettings) {
-                            form.reset({
-                              provider: emailSettings.provider as "gmail" | "sendgrid" | "smtp",
-                              fromAddress: emailSettings.fromAddress,
-                              fromName: emailSettings.fromName,
-                              clientId: emailSettings.clientId || "",
-                              clientSecret: emailSettings.clientSecret || "",
-                              refreshToken: emailSettings.refreshToken || "",
-                              isActive: emailSettings.isActive,
-                              isDefault: emailSettings.isDefault,
-                            });
-                          }
-                        }}
-                      >
-                        Cancel
-                      </Button>
-                    </>
-                  ) : (
-                    <Button type="button" onClick={() => setIsEditing(true)}>
-                      <Edit className="w-4 h-4 mr-2" />
-                      Edit Settings
-                    </Button>
-                  )}
-                </div>
-              </form>
-            </Form>
+            {connection && <StatusBadge status={connection.status} />}
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          {!platformConfigured && (
+            <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm">
+              <AlertCircle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
+              <p className="text-amber-800">
+                <strong>Platform not configured.</strong> GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables are not set. Contact your administrator to enable the Gmail OAuth flow.
+              </p>
+            </div>
           )}
+
+          {needsReconnect && (
+            <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-sm">
+              <AlertCircle className="w-4 h-4 text-red-600 mt-0.5 shrink-0" />
+              <p className="text-red-800">
+                <strong>Connection issue.</strong> The Gmail connection is no longer valid. Reconnect to restore email sending.
+              </p>
+            </div>
+          )}
+
+          {/* Show account info when connected, disconnected, or revoked — so the user always
+               knows which Gmail address is (or was) in use and what action is needed. */}
+          {connection?.connectedEmail && (
+            <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
+              <div className="flex flex-col gap-1">
+                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  {isConnected ? 'Connected Account' : 'Previously Connected Account'}
+                </span>
+                <span className="font-medium">{connection.connectedEmail}</span>
+                {connection.connectedAt ? (
+                  <span className="text-xs text-muted-foreground">
+                    Connected {new Date(connection.connectedAt).toLocaleDateString()}
+                  </span>
+                ) : connection.status === 'disconnected' ? (
+                  <span className="text-xs text-muted-foreground">Disconnected</span>
+                ) : null}
+              </div>
+
+              {/* Editable From Name — edit only available when connected */}
+              <div className="flex flex-col gap-1">
+                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Display Name</span>
+                {isConnected && editingFromName ? (
+                  <div className="flex gap-2">
+                    <Input
+                      value={fromNameValue}
+                      onChange={(e) => setFromNameValue(e.target.value)}
+                      placeholder="e.g. Titan Graphics"
+                      className="h-8 text-sm"
+                    />
+                    <Button
+                      size="sm"
+                      disabled={saveFromNameMutation.isPending || !fromNameValue.trim()}
+                      onClick={() => saveFromNameMutation.mutate(fromNameValue)}
+                    >
+                      {saveFromNameMutation.isPending ? "Saving…" : "Save"}
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => { setEditingFromName(false); setFromNameValue(connection.fromName || ""); }}>
+                      Cancel
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm">{connection.fromName || <span className="text-muted-foreground italic">Not set</span>}</span>
+                    {isConnected && (
+                      <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => setEditingFromName(true)}>
+                        <Edit className="w-3 h-3 mr-1" />
+                        Edit
+                      </Button>
+                    )}
+                  </div>
+                )}
+                <span className="text-xs text-muted-foreground">The name shown in the "From" field of sent emails.</span>
+              </div>
+            </div>
+          )}
+
+          {/* Action buttons */}
+          <div className="flex flex-wrap gap-2">
+            {!isConnected && !needsReconnect && (
+              <Button onClick={handleConnect} disabled={isConnecting || !platformConfigured}>
+                {isConnecting ? (
+                  <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Connecting…</>
+                ) : (
+                  <><Mail className="w-4 h-4 mr-2" />Connect Gmail</>
+                )}
+              </Button>
+            )}
+
+            {(isConnected || needsReconnect) && (
+              <Button variant="outline" onClick={handleConnect} disabled={isConnecting || !platformConfigured}>
+                {isConnecting ? (
+                  <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Connecting…</>
+                ) : (
+                  <><RefreshCw className="w-4 h-4 mr-2" />Reconnect Gmail</>
+                )}
+              </Button>
+            )}
+
+            {isConnected && (
+              <Button
+                variant="ghost"
+                className="text-muted-foreground hover:text-destructive"
+                onClick={() => disconnectMutation.mutate()}
+                disabled={disconnectMutation.isPending}
+              >
+                <LogOut className="w-4 h-4 mr-2" />
+                {disconnectMutation.isPending ? "Disconnecting…" : "Disconnect"}
+              </Button>
+            )}
+          </div>
         </CardContent>
       </Card>
 
-      {emailSettings && (
+      {/* Test email — only shown when connected */}
+      {isConnected && (
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Send className="w-5 h-5" />
-              Test Email
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Send className="w-4 h-4" />
+              Send Test Email
             </CardTitle>
-            <CardDescription>
-              Send a test email to verify your configuration
-            </CardDescription>
+            <CardDescription>Verify that the connected Gmail account is working correctly.</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent>
             <div className="flex gap-2">
               <Input
                 type="email"
-                placeholder="test@example.com"
-                value={testEmailAddress}
-                onChange={(e) => setTestEmailAddress(e.target.value)}
-                disabled={isSendingTest}
+                placeholder="recipient@example.com"
+                value={testEmail}
+                onChange={(e) => setTestEmail(e.target.value)}
+                disabled={testMutation.isPending}
               />
               <Button
-                onClick={handleSendTest}
-                disabled={isSendingTest || !testEmailAddress}
+                onClick={() => testMutation.mutate(testEmail)}
+                disabled={testMutation.isPending || !testEmail}
               >
-                {isSendingTest ? "Sending..." : "Send Test"}
+                {testMutation.isPending ? "Sending…" : "Send Test"}
               </Button>
             </div>
           </CardContent>
@@ -811,163 +657,9 @@ export function EmailSettingsTab() {
   );
 }
 
-// Gmail Setup Guide Component
-function GmailSetupGuide() {
-  const [isExpanded, setIsExpanded] = useState(false);
-
-  return (
-    <Card className="border-blue-200 bg-blue-50/50">
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Mail className="h-5 w-5 text-blue-600" />
-            <CardTitle className="text-lg">Gmail OAuth Setup Guide</CardTitle>
-          </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setIsExpanded(!isExpanded)}
-          >
-            {isExpanded ? "Hide Guide" : "Show Guide"}
-          </Button>
-        </div>
-        <CardDescription>
-          Complete step-by-step instructions for configuring Gmail with OAuth2
-        </CardDescription>
-      </CardHeader>
-      {isExpanded && (
-        <CardContent className="space-y-6">
-          <div className="space-y-4">
-            <div className="rounded-lg border border-blue-200 bg-white p-4">
-              <h4 className="font-semibold text-blue-900 mb-2">Step 1: Create Google Cloud Project</h4>
-              <ol className="list-decimal list-inside space-y-2 text-sm text-gray-700">
-                <li>Go to <a href="https://console.cloud.google.com" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">Google Cloud Console</a></li>
-                <li>Click "Select a project" → "New Project"</li>
-                <li>Name your project (e.g., "QuoteVaultPro Email")</li>
-                <li>Click "Create" and wait for project creation</li>
-              </ol>
-            </div>
-
-            <div className="rounded-lg border border-blue-200 bg-white p-4">
-              <h4 className="font-semibold text-blue-900 mb-2">Step 2: Enable Gmail API</h4>
-              <ol className="list-decimal list-inside space-y-2 text-sm text-gray-700">
-                <li>In your project, go to "APIs & Services" → "Library"</li>
-                <li>Search for "Gmail API"</li>
-                <li>Click on "Gmail API" then click "Enable"</li>
-              </ol>
-            </div>
-
-            <div className="rounded-lg border border-blue-200 bg-white p-4">
-              <h4 className="font-semibold text-blue-900 mb-2">Step 3: Configure OAuth Consent Screen</h4>
-              <ol className="list-decimal list-inside space-y-2 text-sm text-gray-700">
-                <li>Go to "APIs & Services" → "OAuth consent screen"</li>
-                <li>Select "External" user type, click "Create"</li>
-                <li>Fill in required fields:
-                  <ul className="list-disc list-inside ml-4 mt-1">
-                    <li>App name: Your company name</li>
-                    <li>User support email: Your email</li>
-                    <li>Developer contact: Your email</li>
-                  </ul>
-                </li>
-                <li>Click "Save and Continue"</li>
-                <li>On "Scopes" page, click "Add or Remove Scopes"</li>
-                <li>Add <code className="bg-gray-100 px-1 rounded">https://mail.google.com/</code> scope</li>
-                <li>Click "Update" → "Save and Continue"</li>
-                <li>Add your email as a test user, click "Save and Continue"</li>
-              </ol>
-            </div>
-
-            <div className="rounded-lg border border-blue-200 bg-white p-4">
-              <h4 className="font-semibold text-blue-900 mb-2">Step 4: Create OAuth Credentials</h4>
-              <ol className="list-decimal list-inside space-y-2 text-sm text-gray-700">
-                <li>Go to "APIs & Services" → "Credentials"</li>
-                <li>Click "Create Credentials" → "OAuth client ID"</li>
-                <li>Application type: "Web application"</li>
-                <li>Name: "QuoteVaultPro Gmail Client"</li>
-                <li>Authorized redirect URIs: Add <code className="bg-gray-100 px-1 rounded">https://developers.google.com/oauthplayground</code></li>
-                <li>Click "Create"</li>
-                <li>Copy the <strong>Client ID</strong> and <strong>Client Secret</strong></li>
-              </ol>
-            </div>
-
-            <div className="rounded-lg border border-blue-200 bg-white p-4">
-              <h4 className="font-semibold text-blue-900 mb-2">Step 5: Generate Refresh Token</h4>
-              <ol className="list-decimal list-inside space-y-2 text-sm text-gray-700">
-                <li>Go to <a href="https://developers.google.com/oauthplayground" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">OAuth 2.0 Playground</a></li>
-                <li>Click the gear icon (⚙️) in the top right</li>
-                <li>Check "Use your own OAuth credentials"</li>
-                <li>Enter your Client ID and Client Secret from Step 4</li>
-                <li>In "Step 1: Select & authorize APIs":
-                  <ul className="list-disc list-inside ml-4 mt-1">
-                    <li>Input: <code className="bg-gray-100 px-1 rounded">https://mail.google.com/</code></li>
-                    <li>Click "Authorize APIs"</li>
-                  </ul>
-                </li>
-                <li>Sign in with the Gmail account you want to send from</li>
-                <li>Click "Allow" on the consent screen</li>
-                <li>In "Step 2: Exchange authorization code for tokens":
-                  <ul className="list-disc list-inside ml-4 mt-1">
-                    <li>Click "Exchange authorization code for tokens"</li>
-                  </ul>
-                </li>
-                <li>Copy the <strong>Refresh token</strong> (starts with "1//")</li>
-              </ol>
-            </div>
-
-            <div className="rounded-lg border border-blue-200 bg-white p-4">
-              <h4 className="font-semibold text-blue-900 mb-2">Step 6: Configure Email Settings</h4>
-              <ol className="list-decimal list-inside space-y-2 text-sm text-gray-700">
-                <li>Return to this form above</li>
-                <li>Fill in the following fields:
-                  <ul className="list-disc list-inside ml-4 mt-1">
-                    <li><strong>From Email:</strong> The Gmail address you authorized</li>
-                    <li><strong>From Name:</strong> Your company name</li>
-                    <li><strong>Client ID:</strong> From Step 4</li>
-                    <li><strong>Client Secret:</strong> From Step 4</li>
-                    <li><strong>Refresh Token:</strong> From Step 5</li>
-                  </ul>
-                </li>
-                <li>Click "Save Email Settings"</li>
-              </ol>
-            </div>
-
-            <div className="rounded-lg border border-blue-200 bg-white p-4">
-              <h4 className="font-semibold text-blue-900 mb-2">Step 7: Test Your Configuration</h4>
-              <ol className="list-decimal list-inside space-y-2 text-sm text-gray-700">
-                <li>Scroll down to the "Test Email Configuration" section</li>
-                <li>Enter a test email address</li>
-                <li>Click "Send Test"</li>
-                <li>Check the recipient inbox for the test email</li>
-                <li>If successful, you're all set! If not, see troubleshooting below</li>
-              </ol>
-            </div>
-
-            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
-              <h4 className="font-semibold text-amber-900 mb-2 flex items-center gap-2">
-                <Settings className="h-4 w-4" />
-                Troubleshooting
-              </h4>
-              <ul className="list-disc list-inside space-y-2 text-sm text-gray-700">
-                <li><strong>"invalid_grant" error:</strong> Your refresh token expired. Repeat Step 5 to generate a new one</li>
-                <li><strong>"insufficient permission" error:</strong> Ensure you added the correct scope (<code className="bg-gray-100 px-1 rounded">https://mail.google.com/</code>) in Step 3</li>
-                <li><strong>"Access blocked" error:</strong> Make sure you added your email as a test user in Step 3</li>
-                <li><strong>Test email not sending:</strong> Check that all fields are filled correctly with no extra spaces</li>
-                <li><strong>Still having issues?</strong> Verify the Gmail account has IMAP enabled and "Less secure app access" is not required (OAuth2 is secure)</li>
-              </ul>
-            </div>
-
-            <div className="rounded-lg border border-green-200 bg-green-50 p-4">
-              <h4 className="font-semibold text-green-900 mb-2">✓ Security Notes</h4>
-              <p className="text-sm text-gray-700">
-                OAuth2 is the most secure method for sending email. Your credentials are encrypted and stored securely. 
-                The refresh token allows this application to send emails on your behalf without storing your Gmail password.
-              </p>
-            </div>
-          </div>
-        </CardContent>
-      )}
-    </Card>
-  );
+// Email Settings Tab Component (exported for use in settings page)
+export function EmailSettingsTab() {
+  return <GmailConnectionCard />;
 }
 
 // Helper: validate URL is a proper http(s) string
@@ -977,7 +669,6 @@ const isValidHttpUrl = (v: unknown): v is string =>
 export default function AdminSettings() {
   const { toast } = useToast();
   const [showUserManagement, setShowUserManagement] = useState(false);
-  const [showQuoteNumbering, setShowQuoteNumbering] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [editingOption, setEditingOption] = useState<ProductOption | null>(null);
@@ -1734,7 +1425,7 @@ export default function AdminSettings() {
   });
 
   const filteredVariables = globalVariables
-    ?.filter((variable) => variable.name !== 'next_quote_number') // Exclude quote numbering system
+    ?.filter((variable) => !['next_quote_number', 'next_order_number', 'next_invoice_number'].includes(variable.name))
     ?.filter((variable) =>
       variable.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       variable.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -1773,33 +1464,6 @@ export default function AdminSettings() {
     );
   }
 
-  // Show quote numbering if requested
-  if (showQuoteNumbering) {
-    return (
-      <div className="space-y-6">
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Hash className="w-5 h-5" />
-                <CardTitle>Quote Numbering System</CardTitle>
-              </div>
-              <Button variant="ghost" size="icon" onClick={() => setShowQuoteNumbering(false)}>
-                <X className="w-4 h-4" />
-              </Button>
-            </div>
-            <CardDescription>
-              Configure the starting number for new quotes
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <QuoteNumberSettings />
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-6">
       {/* Quick Access Buttons */}
@@ -1813,18 +1477,6 @@ export default function AdminSettings() {
             >
               <Users className="w-4 h-4 mr-2" />
               Manage Users
-            </Button>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <Button
-              onClick={() => setShowQuoteNumbering(true)}
-              className="w-full"
-              variant="outline"
-            >
-              <Hash className="w-4 h-4 mr-2" />
-              Quote Numbering
             </Button>
           </CardContent>
         </Card>
