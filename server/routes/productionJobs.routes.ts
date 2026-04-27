@@ -35,9 +35,18 @@ import {
   resolveOriginalFileAccess,
 } from "../lib/supabaseObjectHelpers";
 import {
+  isDesignOwnershipJob,
   isPrepressOwnershipJob,
   resolveActiveProductionOwners,
 } from "../services/productionOwnership";
+import { routeLineItemToProduction } from "../services/productionRoutingService";
+
+/**
+ * Canonical station key for the Fulfillment station.
+ * Production jobs at non-prepress, non-design stations route here on completion.
+ * Fulfillment jobs route the line item to "completed" on completion.
+ */
+const FULFILLMENT_STATION_KEY = "fulfillment";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub ?? user?.id;
@@ -1702,30 +1711,82 @@ export function registerProductionJobsRoutes(
             .limit(1);
 
           if (lineItem && lineItem.workflowState !== "completed" && lineItem.workflowState !== "canceled") {
-            await tx
-              .update(orderLineItems)
-              .set({ workflowState: "completed", status: "complete", updatedAt: now })
-              .where(eq(orderLineItems.id, job.lineItemId));
+            const completingStationKey = String(job.stationKey ?? "").trim().toLowerCase();
+            const isFulfillmentStation = completingStationKey === FULFILLMENT_STATION_KEY;
+            const isPrepressStation = isPrepressOwnershipJob(job);
+            const isDesignStation = isDesignOwnershipJob(job);
 
-            await appendEvent({
-              tx,
-              organizationId,
-              productionJobId: jobId,
-              type: "note",
-              payload: {
-                eventType: "workflow_transition",
-                fromState: lineItem.workflowState,
-                toState: "completed",
-                lifecycleStatus: "complete",
-                ownerAction: "completed",
-                actorUserId: userId,
-                metadata: {
-                  source: "production_job_complete",
-                  skipProduction,
-                  previousLifecycleStatus: lineItem.status,
+            if (isFulfillmentStation) {
+              // Fulfillment done → complete the line item.
+              await tx
+                .update(orderLineItems)
+                .set({ workflowState: "completed", status: "complete", updatedAt: now })
+                .where(eq(orderLineItems.id, job.lineItemId));
+
+              await appendEvent({
+                tx,
+                organizationId,
+                productionJobId: jobId,
+                type: "note",
+                payload: {
+                  eventType: "workflow_transition",
+                  fromState: lineItem.workflowState,
+                  toState: "completed",
+                  lifecycleStatus: "complete",
+                  ownerAction: "completed",
+                  actorUserId: userId,
+                  metadata: {
+                    source: "fulfillment_job_complete",
+                    skipProduction,
+                    previousLifecycleStatus: lineItem.status,
+                  },
                 },
-              },
-            });
+              });
+            } else if (isPrepressStation || isDesignStation) {
+              // Prepress/Design jobs have dedicated handoff routes (send-to-print,
+              // design-complete). Completing the job record here does NOT advance the
+              // line-item workflow — callers must use those routes instead.
+              console.warn(
+                `[ProductionJobComplete] Station "${completingStationKey}" job ${jobId} completed via job-complete endpoint. ` +
+                `Line item workflow state unchanged (was: ${lineItem.workflowState}). ` +
+                `Use /prepress/.../send-to-print or design-complete routes for workflow advancement.`,
+              );
+            } else {
+              // Production station (Roll, Flatbed, CNC, Lamination, Fabrication, Finishing, etc.)
+              // done → route line item to Fulfillment station for packing/shipping.
+              // routeLineItemToProduction fails closed with a clear error if the
+              // "fulfillment" station does not exist in this org's stations table.
+              console.log(
+                `[ProductionJobComplete] Station "${completingStationKey}" job ${jobId} complete — routing line item ${job.lineItemId} to Fulfillment.`,
+              );
+              try {
+                await routeLineItemToProduction({
+                  tx,
+                  organizationId,
+                  orderId: job.orderId,
+                  lineItemId: job.lineItemId,
+                  stationKey: FULFILLMENT_STATION_KEY,
+                  stepKey: "queued",
+                  trigger: "line_item_status",
+                  actorUserId: userId,
+                  extraEventPayload: {
+                    routingReason: "production_station_complete",
+                    previousStationKey: completingStationKey,
+                    previousJobId: jobId,
+                  },
+                });
+              } catch (routeErr: any) {
+                // Re-throw with enriched context so the caller sees exactly what to fix.
+                throw Object.assign(
+                  new Error(
+                    `[ProductionJobComplete] Cannot route line item ${job.lineItemId} to Fulfillment after completing station "${completingStationKey}". ` +
+                    (routeErr?.message ?? String(routeErr)) +
+                    ` — ensure a station with key="${FULFILLMENT_STATION_KEY}" exists in Production Settings for this organisation.`,
+                  ),
+                  { statusCode: routeErr?.statusCode ?? 409, cause: routeErr },
+                );
+              }
+            }
           }
         }
 
