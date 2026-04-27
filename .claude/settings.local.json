@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs grep:*)",
+      "Bash(find c:Usersdale9DownloadsQuoteVaultPro/db -type f -name *.ts)",
+      "Bash(find server:*)"
+    ]
+  }
+}

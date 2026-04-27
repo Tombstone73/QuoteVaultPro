@@ -7,6 +7,8 @@ import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessa
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Separator } from "@/components/ui/separator";
 import { Label } from "@/components/ui/label";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { PRICING_PROFILES, type FlatGoodsConfig, getProfile, getDefaultFormula } from "@shared/pricingProfiles";
 import type { ShippingPolicy, WeightUnit, WeightBasis, ShippingConfig } from "@shared/optionTreeV2";
 import React, { useState, useEffect, useCallback, useRef } from "react";
@@ -15,6 +17,7 @@ import { useToast } from "@/hooks/use-toast";
 import { BasePricingEditor } from "@/components/pbv2/builder-v2/BasePricingEditor";
 import { PricingVariableHelper } from "@/components/pbv2/builder-v2/PricingVariableHelper";
 import { FormulaReferenceModal } from "@/components/pbv2/builder-v2/FormulaReferenceModal";
+import { CircleHelp } from "lucide-react";
 
 // Required field indicator component
 function RequiredIndicator() {
@@ -371,68 +374,82 @@ export const ProductForm = ({
       {/* Section 3: Base Pricing Model (left) + Advanced Settings (right) */}
       <div className="bg-[#1e293b] border border-slate-700 rounded-lg p-4" data-section="base-pricing">
         <div className="grid grid-cols-2 gap-6">
-        {/* LEFT: Base Pricing Model */}
-        <div>
-          <BasePricingEditor
-            pricingV2={pricingV2 || null}
-            onUpdateBase={onUpdatePricingV2Base!}
-            onUpdateUnitSystem={onUpdatePricingV2UnitSystem!}
-            onAddTier={onAddPricingV2Tier!}
-            onUpdateTier={onUpdatePricingV2Tier!}
-            onDeleteTier={onDeletePricingV2Tier!}
-          />
-        </div>
+          {/* LEFT: Base Pricing Model */}
+          <div>
+            <BasePricingEditor
+              pricingV2={pricingV2 || null}
+              onUpdateBase={onUpdatePricingV2Base!}
+              onUpdateUnitSystem={onUpdatePricingV2UnitSystem!}
+              onAddTier={onAddPricingV2Tier!}
+              onUpdateTier={onUpdatePricingV2Tier!}
+              onDeleteTier={onDeletePricingV2Tier!}
+            />
+          </div>
 
-        {/* RIGHT: Advanced Settings — toggles stacked vertically */}
-        <div className="space-y-3">
-          <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Advanced Settings</h3>
-
-          <div className="space-y-3">
-            <FormField
-              control={form.control}
-              name="isActive"
-              render={({ field }) => (
-                <FormItem>
-                  <div className="flex items-center gap-2">
-                    <FormControl>
-                      <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
-                    </FormControl>
-                    <FormLabel className="text-sm text-slate-300 !mt-0">Active</FormLabel>
-                  </div>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="requiresProductionJob"
-              render={({ field }) => (
-                <FormItem>
-                  <div className="flex items-center gap-2">
-                    <FormControl>
-                      <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
-                    </FormControl>
-                    <FormLabel className="text-sm text-slate-300 !mt-0">Requires Production Job</FormLabel>
-                  </div>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="isTaxable"
-              render={({ field }) => (
-                <FormItem>
-                  <div className="flex items-center gap-2">
-                    <FormControl>
-                      <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
-                    </FormControl>
-                    <FormLabel className="text-sm text-slate-300 !mt-0">Taxable Item</FormLabel>
-                  </div>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
+          {/* RIGHT: Advanced Settings + Finished Size Rules */}
+          <div className="flex flex-col gap-4 pt-0.5">
+            <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+              <FormField
+                control={form.control}
+                name="isActive"
+                render={({ field }) => (
+                  <FormItem className="min-h-9">
+                    <div className="flex items-center gap-2">
+                      <FormControl>
+                        <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
+                      </FormControl>
+                      <FormLabel className="text-sm text-slate-300 !mt-0">Active</FormLabel>
+                    </div>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="requiresProductionJob"
+                render={({ field }) => (
+                  <FormItem className="min-h-9">
+                    <div className="flex items-center gap-2">
+                      <FormControl>
+                        <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
+                      </FormControl>
+                      <FormLabel className="text-sm text-slate-300 !mt-0">Requires Production Job</FormLabel>
+                    </div>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="isTaxable"
+                render={({ field }) => (
+                  <FormItem className="min-h-9">
+                    <div className="flex items-center gap-2">
+                      <FormControl>
+                        <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
+                      </FormControl>
+                      <FormLabel className="text-sm text-slate-300 !mt-0">Taxable Item</FormLabel>
+                    </div>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="requiresProofApproval"
+                render={({ field }) => (
+                  <FormItem className="min-h-9">
+                    <div className="flex items-center gap-2">
+                      <FormControl>
+                        <Switch checked={field.value ?? false} onCheckedChange={field.onChange} />
+                      </FormControl>
+                      <FormLabel className="text-sm text-slate-300 !mt-0">Requires Proof Approval</FormLabel>
+                    </div>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
 
             <div className="rounded-md border border-slate-700 bg-slate-900/30 p-3 space-y-2">
               <h4 className="text-xs font-medium text-slate-300 uppercase tracking-wider">Finished Size Rules</h4>
@@ -481,7 +498,6 @@ export const ProductForm = ({
               <p className="text-[11px] text-slate-400">Adds to finished width/height to represent trimmed delivered size.</p>
             </div>
           </div>
-        </div>
         </div>
       </div>
     </form>
@@ -663,39 +679,46 @@ function PricingEngineRadioSection({
 
   return (
     <div className="space-y-3 min-w-0">
-      <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Pricing Engine</h3>
-
-      <div className="rounded-md border border-slate-700 bg-slate-900/30 p-2">
-        <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-2">PBV2 Pricing Mode</div>
-        <div className="grid grid-cols-2 gap-2">
-          <Button
-            type="button"
-            variant={pricingMode === "basic" ? "default" : "outline"}
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Pricing Engine</h3>
+        <div className="flex items-center gap-2">
+          <ToggleGroup
+            type="single"
+            value={pricingMode}
+            onValueChange={(value) => {
+              if (value === "basic" || value === "advanced") {
+                onPricingModeChange?.(value);
+              }
+            }}
+            variant="outline"
             size="sm"
-            onClick={() => onPricingModeChange?.("basic")}
-            className="h-8"
+            className="gap-0 rounded-md border border-slate-700 bg-slate-900/30 p-0.5"
           >
-            Basic
-          </Button>
-          <Button
-            type="button"
-            variant={pricingMode === "advanced" ? "default" : "outline"}
-            size="sm"
-            onClick={() => onPricingModeChange?.("advanced")}
-            className="h-8"
-          >
-            Advanced
-          </Button>
+            <ToggleGroupItem value="basic" className="h-7 rounded-sm border-0 px-2.5 text-[11px] text-slate-300 data-[state=on]:bg-slate-200 data-[state=on]:text-slate-950">
+              Basic
+            </ToggleGroupItem>
+            <ToggleGroupItem value="advanced" className="h-7 rounded-sm border-0 px-2.5 text-[11px] text-slate-300 data-[state=on]:bg-slate-200 data-[state=on]:text-slate-950">
+              Advanced
+            </ToggleGroupItem>
+          </ToggleGroup>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-sm border border-slate-700 bg-slate-900/30 text-slate-400 transition-colors hover:text-slate-200"
+                  aria-label="Pricing mode help"
+                >
+                  <CircleHelp className="h-3.5 w-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[260px] text-xs leading-relaxed">
+                <div>Basic: Uses the structured builder and generated canonical formula.</div>
+                <div>Advanced: Enables direct formula editing and advanced pricing control.</div>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
-        {pricingMode === "basic" ? (
-          <div className="mt-2 text-[11px] text-slate-400">
-            Structured builder only. Formula editor is locked; canonical formula is generated internally from finished geometry variables.
-          </div>
-        ) : (
-          <div className="mt-2 text-[11px] text-slate-400">
-            Full formula editor enabled. No automatic formula rewriting.
-          </div>
-        )}
       </div>
 
       <RadioGroup

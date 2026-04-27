@@ -11,11 +11,21 @@
  */
 
 import { objectsUrl, resolveObjectsPublicUrl } from "@/lib/apiConfig";
+import { getCachedAssetUrl, setCachedAssetUrl } from "@/lib/assetUrlCache";
 
 export function getThumbSrc(obj: unknown): string | null {
   if (!obj || typeof obj !== "object") return null;
 
   const o = obj as any;
+
+  // Session URL cache: reuse the previously resolved URL for this attachment within
+  // the same browser session. Falls through to full resolution on cache miss.
+  const attachId = typeof o.id === "string" ? o.id : null;
+  if (attachId) {
+    const cached = getCachedAssetUrl(attachId);
+    if (cached) return cached;
+  }
+
   const canUseOriginalImage = hasRenderableOriginalImage(o);
 
   // 1) Prefer explicit, already-renderable URLs (from API enrichment).
@@ -33,7 +43,10 @@ export function getThumbSrc(obj: unknown): string | null {
 
   for (const candidate of urlCandidates) {
     const resolved = coerceRenderableUrl(candidate);
-    if (resolved) return resolved;
+    if (resolved) {
+      if (attachId) setCachedAssetUrl(attachId, resolved);
+      return resolved;
+    }
   }
 
   // 2) If the object carries storage keys, we can deterministically build the /objects/* URL.
@@ -41,7 +54,10 @@ export function getThumbSrc(obj: unknown): string | null {
   const keyCandidates: unknown[] = [o.thumbKey, o.previewKey];
   for (const keyCandidate of keyCandidates) {
     const keyUrl = objectsUrlFromKey(keyCandidate);
-    if (keyUrl) return keyUrl;
+    if (keyUrl) {
+      if (attachId) setCachedAssetUrl(attachId, keyUrl);
+      return keyUrl;
+    }
   }
 
   return null;
@@ -72,6 +88,13 @@ function coerceRenderableUrl(value: unknown): string | null {
 }
 
 function hasRenderableOriginalImage(obj: Record<string, unknown>): boolean {
+  // When a thumbnail is being generated (thumb_pending / uploaded), do NOT fall
+  // back to the full-size original. These are often print-resolution files and
+  // loading them as a thumbnail placeholder wastes significant Supabase egress.
+  // Return null instead so callers render a spinner/placeholder.
+  const ts = typeof obj.thumbStatus === "string" ? obj.thumbStatus : null;
+  if (ts === "thumb_pending" || ts === "uploaded") return false;
+
   const mimeType = typeof obj.mimeType === "string" ? obj.mimeType.toLowerCase() : "";
   if (mimeType.startsWith("image/")) {
     return !mimeType.includes("svg");

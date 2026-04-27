@@ -14,9 +14,13 @@ import {
 
 describe("workflow contract policy", () => {
   test("ownership-required states match the stable contract", () => {
+    // awaiting_proof_approval is now ownership-required (Titan default):
+    // Prepress must own proof-required items so they appear in the Prepress
+    // queue immediately for proof creation and sending.
     expect(OWNERSHIP_REQUIRED_WORKFLOW_STATES).toEqual([
       "needs_design",
       "in_design",
+      "awaiting_proof_approval",
       "ready_for_prepress",
       "in_prepress",
       "ready_for_production",
@@ -25,9 +29,9 @@ describe("workflow contract policy", () => {
   });
 
   test("ownerless states match the stable contract", () => {
+    // awaiting_proof_approval removed: it is now owned by Prepress.
     expect(OWNERLESS_WORKFLOW_STATES).toEqual([
       "new",
-      "awaiting_proof_approval",
       "on_hold",
       "completed",
       "canceled",
@@ -50,10 +54,18 @@ describe("workflow contract policy", () => {
     expect(workflowStateRequiresActiveOwner(state)).toBe(false);
   });
 
+  test("awaiting_proof_approval requires an active owner (Prepress)", () => {
+    expect(workflowStateRequiresActiveOwner("awaiting_proof_approval")).toBe(true);
+    expect(workflowStateIsIntentionallyOwnerless("awaiting_proof_approval")).toBe(false);
+  });
+
   test("initial workflow state derives from routing truth", () => {
     expect(getInitialWorkflowState({ requiresDesign: true, requiresPrepress: true })).toBe("needs_design");
     expect(getInitialWorkflowState({ requiresDesign: false, requiresPrepress: true })).toBe("ready_for_prepress");
     expect(getInitialWorkflowState({ requiresDesign: false, requiresPrepress: false })).toBe("ready_for_production");
+    expect(getInitialWorkflowState({ requiresDesign: false, requiresProofApproval: true, requiresPrepress: true })).toBe("awaiting_proof_approval");
+    expect(getInitialWorkflowState({ requiresDesign: false, requiresProofApproval: true, requiresPrepress: false })).toBe("awaiting_proof_approval");
+    expect(getInitialWorkflowState({ requiresDesign: true, requiresProofApproval: true, requiresPrepress: true })).toBe("needs_design");
   });
 });
 
@@ -85,9 +97,11 @@ describe("routing edit guard", () => {
     },
   );
 
-  test("awaiting proof approval remains ownerless and blocks reroute edits", () => {
-    expect(workflowStateIsIntentionallyOwnerless("awaiting_proof_approval")).toBe(true);
-    expect(workflowStateRequiresActiveOwner("awaiting_proof_approval")).toBe(false);
+  test("awaiting_proof_approval is not intake-safe and blocks reroute edits", () => {
+    // awaiting_proof_approval is now owned by Prepress (not ownerless),
+    // and is still correctly blocked from routing edits.
+    expect(workflowStateRequiresActiveOwner("awaiting_proof_approval")).toBe(true);
+    expect(workflowStateIsIntentionallyOwnerless("awaiting_proof_approval")).toBe(false);
     expect(canEditLineItemRouting({ workflowState: "awaiting_proof_approval", hasActiveJob: false })).toBe(false);
   });
 });

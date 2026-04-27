@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { usePageVisible } from "@/hooks/usePageVisible";
 import { Link, useNavigate } from "react-router-dom";
 import { ROUTES } from "@/config/routes";
 import { useAuth } from "@/hooks/useAuth";
@@ -34,6 +35,8 @@ export default function Home() {
     return "admin";
   });
 
+  const isPageVisible = usePageVisible();
+
   // Check if user is owner
   const isOwner = user?.role === "owner";
 
@@ -57,7 +60,7 @@ export default function Home() {
     enabled: showApprovalsCard,
     staleTime: 60_000,
     refetchOnWindowFocus: false,
-    refetchInterval: 120_000,
+    refetchInterval: () => (isPageVisible ? 120_000 : false),
   });
 
   const pendingApprovalsCount = approvalsData?.count || 0;

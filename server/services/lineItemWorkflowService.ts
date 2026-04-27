@@ -1,5 +1,5 @@
 import { and, desc, eq } from "drizzle-orm";
-import { orderLineItems, orders, products, productionEvents, productionJobs, type LineItemWorkflowState } from "@shared/schema";
+import { orderLineItems, orders, products, productionEvents, productionJobs, type LineItemDesignStatus, type LineItemWorkflowState } from "@shared/schema";
 import { appendEvent } from "../productionHelpers";
 import { completeActiveJob, findActiveJobForLineItem, findAllActiveJobsForLineItem, transitionToStation } from "./productionOwnership";
 import { routeLineItemToProduction } from "./productionRoutingService";
@@ -22,6 +22,10 @@ export const TERMINAL_WORKFLOW_STATES: LineItemWorkflowState[] = ["completed", "
 export const OWNERSHIP_REQUIRED_WORKFLOW_STATES: LineItemWorkflowState[] = [
   "needs_design",
   "in_design",
+  // Titan default: Prepress owns proof-required items during proof preparation so they
+  // are visible and actionable in the Prepress queue from the moment they are created.
+  // Production is still gated by approvedProofVersionId (see transitionLineItemWorkflowState).
+  "awaiting_proof_approval",
   "ready_for_prepress",
   "in_prepress",
   "ready_for_production",
@@ -30,7 +34,6 @@ export const OWNERSHIP_REQUIRED_WORKFLOW_STATES: LineItemWorkflowState[] = [
 
 export const OWNERLESS_WORKFLOW_STATES: LineItemWorkflowState[] = [
   "new",
-  "awaiting_proof_approval",
   "on_hold",
   "completed",
   "canceled",
@@ -42,8 +45,8 @@ const VALID_TRANSITIONS: Record<LineItemWorkflowState, LineItemWorkflowState[]> 
   in_design: ["needs_design", "awaiting_proof_approval", "ready_for_prepress", "on_hold", "canceled"],
   awaiting_proof_approval: ["needs_design", "ready_for_prepress", "ready_for_production", "on_hold", "canceled"],
   ready_for_prepress: ["awaiting_proof_approval", "in_prepress", "ready_for_production", "on_hold", "canceled"],
-  in_prepress: ["ready_for_production", "in_design", "needs_design", "on_hold", "canceled"],
-  ready_for_production: ["in_production", "in_prepress", "on_hold", "canceled"],
+  in_prepress: ["awaiting_proof_approval", "ready_for_production", "in_design", "needs_design", "on_hold", "canceled"],
+  ready_for_production: ["awaiting_proof_approval", "in_production", "in_prepress", "on_hold", "canceled"],
   in_production: ["completed", "on_hold", "canceled"],
   completed: [],
   on_hold: [],
@@ -56,6 +59,7 @@ type LoadedLineItem = {
   organizationId: string;
   status: string;
   workflowState: string;
+  designStatus: LineItemDesignStatus | null;
   requiresDesign: boolean;
   requiresProofApproval: boolean;
   requiresPrepress: boolean;
@@ -63,6 +67,16 @@ type LoadedLineItem = {
   productType: string;
   productTypeId: string | null;
 };
+
+const DESIGN_INCOMPLETE_STATUSES: LineItemDesignStatus[] = ["needs_design", "in_design"];
+const DESIGN_COMPLETION_REQUIRED_TARGET_STATES: LineItemWorkflowState[] = [
+  "awaiting_proof_approval",
+  "ready_for_prepress",
+  "in_prepress",
+  "ready_for_production",
+  "in_production",
+  "completed",
+];
 
 type OwnershipRoute = {
   stationKey: string;
@@ -109,6 +123,33 @@ function normalizeWorkflowState(value: unknown): LineItemWorkflowState | null {
 
 function isTerminalWorkflowState(state: LineItemWorkflowState): boolean {
   return TERMINAL_WORKFLOW_STATES.includes(state);
+}
+
+function normalizeDesignStatus(value: unknown): LineItemDesignStatus | null {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) return null;
+  return (["needs_design", "in_design", "design_complete"] as const).includes(normalized as LineItemDesignStatus)
+    ? (normalized as LineItemDesignStatus)
+    : null;
+}
+
+function deriveEffectiveDesignStatus(args: { designStatus: LineItemDesignStatus | null; workflowState: string }) {
+  const explicit = normalizeDesignStatus(args.designStatus);
+  if (explicit) return explicit;
+
+  const workflowState = normalizeWorkflowState(args.workflowState);
+  if (workflowState === "needs_design") return "needs_design";
+  if (workflowState === "in_design") return "in_design";
+  return null;
+}
+
+function derivePersistedDesignStatus(args: {
+  currentDesignStatus: LineItemDesignStatus | null;
+  toState: LineItemWorkflowState;
+}) {
+  if (args.toState === "needs_design") return "needs_design" as const;
+  if (args.toState === "in_design") return "in_design" as const;
+  return args.currentDesignStatus;
 }
 
 export function workflowStateRequiresActiveOwner(state: LineItemWorkflowState): boolean {
@@ -177,6 +218,7 @@ async function loadLineItemForWorkflow(tx: any, args: { organizationId: string; 
       organizationId: orders.organizationId,
       status: orderLineItems.status,
       workflowState: orderLineItems.workflowState,
+      designStatus: orderLineItems.designStatus,
       requiresDesign: orderLineItems.requiresDesign,
       requiresProofApproval: orderLineItems.requiresProofApproval,
       requiresPrepress: orderLineItems.requiresPrepress,
@@ -230,7 +272,11 @@ async function resolveOwnershipRouteForState(tx: any, lineItem: LoadedLineItem, 
   }
 
   if (toState === "awaiting_proof_approval") {
-    return null;
+    // Titan default: Prepress owns proof-required items so they appear in the Prepress
+    // queue immediately. Staff can create and send the proof from there.
+    // The production gate (approvedProofVersionId check) still blocks routing to
+    // ready_for_production / in_production until the proof is approved.
+    return { stationKey: "prepress", stepKey: "prepress", reason: "proof_prep_prepress_ownership" };
   }
 
   if (toState === "ready_for_prepress" || toState === "in_prepress") {
@@ -419,6 +465,19 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
     lineItemId: args.lineItemId,
   });
 
+  const effectiveDesignStatus = deriveEffectiveDesignStatus({
+    designStatus: lineItem.designStatus,
+    workflowState: lineItem.workflowState,
+  });
+
+  if (
+    effectiveDesignStatus &&
+    DESIGN_INCOMPLETE_STATUSES.includes(effectiveDesignStatus) &&
+    DESIGN_COMPLETION_REQUIRED_TARGET_STATES.includes(args.toState)
+  ) {
+    throw Object.assign(new Error(`Design must be completed before transitioning to ${args.toState}`), { statusCode: 409 });
+  }
+
   const requiresApprovedProofForTarget = ["ready_for_prepress", "in_prepress", "ready_for_production", "in_production"].includes(args.toState);
   if (requiresApprovedProofForTarget && lineItem.requiresProofApproval && !lineItem.approvedProofVersionId) {
     throw Object.assign(new Error(`Approved proof is required before transitioning to ${args.toState}`), { statusCode: 409 });
@@ -490,6 +549,10 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
       .update(orderLineItems)
       .set({
         workflowState: args.toState,
+        designStatus: derivePersistedDesignStatus({
+          currentDesignStatus: lineItem.designStatus,
+          toState: args.toState,
+        }),
         status: lifecycleStatus as any,
         requiresDesign:
           args.toState === "needs_design" || args.toState === "in_design"
@@ -574,6 +637,10 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
     .update(orderLineItems)
     .set({
       workflowState: args.toState,
+      designStatus: derivePersistedDesignStatus({
+        currentDesignStatus: lineItem.designStatus,
+        toState: args.toState,
+      }),
       status: lifecycleStatus as any,
       requiresDesign:
         args.toState === "needs_design" || args.toState === "in_design"
@@ -623,8 +690,66 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
   };
 }
 
-export function getInitialWorkflowState(args: { requiresDesign: boolean; requiresPrepress: boolean }): LineItemWorkflowState {
+export function getInitialWorkflowState(args: {
+  requiresDesign: boolean;
+  requiresPrepress: boolean;
+  requiresProofApproval?: boolean;
+}): LineItemWorkflowState {
   if (args.requiresDesign) return "needs_design";
+  if (args.requiresProofApproval) return "awaiting_proof_approval";
   if (args.requiresPrepress) return "ready_for_prepress";
   return "ready_for_production";
+}
+
+export async function completeLineItemDesign(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  actorUserId?: string | null;
+  note?: string | null;
+  metadata?: Record<string, unknown>;
+}): Promise<WorkflowTransitionResult> {
+  const lineItem = await loadLineItemForWorkflow(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+  });
+
+  const effectiveDesignStatus = deriveEffectiveDesignStatus({
+    designStatus: lineItem.designStatus,
+    workflowState: lineItem.workflowState,
+  });
+
+  if (effectiveDesignStatus === "needs_design") {
+    throw Object.assign(new Error("Design must be started before it can be completed"), { statusCode: 409 });
+  }
+
+  if (effectiveDesignStatus !== "in_design") {
+    throw Object.assign(new Error("Line item is not currently in design"), { statusCode: 409 });
+  }
+
+  const targetState: LineItemWorkflowState = lineItem.requiresProofApproval
+    ? "awaiting_proof_approval"
+    : lineItem.requiresPrepress
+      ? "ready_for_prepress"
+      : "ready_for_production";
+
+  await tx
+    .update(orderLineItems)
+    .set({
+      designStatus: "design_complete",
+      updatedAt: new Date(),
+    })
+    .where(eq(orderLineItems.id, lineItem.id));
+
+  return transitionLineItemWorkflowState(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+    toState: targetState,
+    actorUserId: args.actorUserId,
+    note: args.note ?? null,
+    metadata: {
+      ...(args.metadata ?? {}),
+      source: "design_complete",
+      designCompletionTargetState: targetState,
+    },
+  });
 }

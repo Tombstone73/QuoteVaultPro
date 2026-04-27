@@ -438,6 +438,7 @@ export async function generateImageDerivatives(
         originalFilename: baseTable.originalFilename,
         thumbKey: baseTable.thumbKey,
         previewKey: baseTable.previewKey,
+        thumbStatus: baseTable.thumbStatus,
       })
       .from(baseTable)
       .where(eq(baseTable.id, attachmentId))
@@ -454,6 +455,15 @@ export async function generateImageDerivatives(
     // Check supported type using effective fileName (supports both mimeType and filename-based detection)
     if (!isSupportedImageType(mimeType, effectiveFileName)) {
       console.log(`[ThumbnailGenerator] Skipping ${attachmentId}: unsupported type ${mimeType}${effectiveFileName ? ` (filename: ${effectiveFileName})` : ''}`);
+      return;
+    }
+
+    // State machine guard: thumb_ready is a terminal success state — never regenerate.
+    // Primary defense against the upload-route + worker race: both callers read thumbKey=null
+    // before either writes thumb_ready, so the key-based check below cannot stop the second
+    // caller. This status check is the reliable gate.
+    if (attachment.thumbStatus === 'thumb_ready') {
+      console.log(`[ThumbnailGenerator] Skipping ${attachmentId}: already thumb_ready`);
       return;
     }
 
@@ -610,8 +620,8 @@ export async function generateImageDerivatives(
     await db
       .update(baseTable)
       .set({
-        thumbKey: null,
-        previewKey: null,
+        thumbKey: thumbUploaded.storageKey,
+        previewKey: previewUploaded.storageKey,
         thumbStatus: 'thumb_ready',
         thumbError: null,
         thumbnailGeneratedAt: new Date(),
@@ -634,13 +644,14 @@ export async function generateImageDerivatives(
     const record = verification[0];
     const debugEnabled = process.env.DEBUG_THUMBNAILS === '1' || process.env.DEBUG_THUMBNAILS === 'true';
     
-    if (!record || record.thumbStatus !== 'thumb_ready' || !record.thumbnailGeneratedAt || record.thumbError !== null) {
+    if (!record || record.thumbStatus !== 'thumb_ready' || !record.thumbnailGeneratedAt || record.thumbError !== null || !record.thumbKey) {
       const issues: string[] = [];
       if (!record) issues.push('record not found');
       else {
         if (record.thumbStatus !== 'thumb_ready') issues.push(`thumbStatus is '${record.thumbStatus}' not 'thumb_ready'`);
         if (!record.thumbnailGeneratedAt) issues.push('thumbnailGeneratedAt is null');
         if (record.thumbError !== null) issues.push('thumbError is not null');
+        if (!record.thumbKey) issues.push('thumbKey is null');
       }
       console.error(`[ThumbnailGenerator] ❌ INVARIANT VIOLATION for ${attachmentId}: ${issues.join(', ')}`);
       throw new Error(`Thumbnail success invariant violated: ${issues.join(', ')}`);

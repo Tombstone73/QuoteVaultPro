@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { usePageVisible } from "@/hooks/usePageVisible";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
@@ -103,6 +104,7 @@ type StripeStatusEnvelope = {
 export default function SettingsIntegrations() {
   const { user, isAdmin } = useAuth();
   const { toast } = useToast();
+  const isPageVisible = usePageVisible();
   const queryClient = useQueryClient();
   const [, setLocation] = useLocation();
   const [isSyncing, setIsSyncing] = useState(false);
@@ -172,7 +174,14 @@ export default function SettingsIntegrations() {
   const { data: qbQueue } = useQuery<QBSyncQueueEnvelope>({
     queryKey: ["/api/integrations/quickbooks/queue"],
     enabled: qbStatus?.connected === true,
-    refetchInterval: 30000,
+    refetchInterval: (query) => {
+      // Never poll in hidden tabs.
+      if (!isPageVisible) return false;
+      // Only poll while there is pending work to watch.
+      const d = (query.state.data as QBSyncQueueEnvelope | undefined)?.data;
+      const hasPending = (d?.invoices?.pending ?? 0) > 0 || (d?.payments?.pending ?? 0) > 0;
+      return hasPending ? 15_000 : false;
+    },
   });
 
   const qbFlushMutation = useMutation({
@@ -210,10 +219,11 @@ export default function SettingsIntegrations() {
     queryKey: ["/api/integrations/quickbooks/jobs"],
     enabled: qbStatus?.connected === true,
     refetchInterval: (query) => {
+      if (!isPageVisible) return false;
       const data = query.state.data as { jobs: SyncJob[] } | undefined;
       const jobs = data?.jobs ?? [];
       const hasActiveJob = jobs.some((job) => job.status === 'pending' || job.status === 'processing');
-      return hasActiveJob ? 3000 : 20000;
+      return hasActiveJob ? 3_000 : false;
     },
   });
 

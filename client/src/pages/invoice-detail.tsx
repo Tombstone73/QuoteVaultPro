@@ -59,6 +59,39 @@ type QuickBooksIntegrationStatus = {
   error?: string;
 };
 
+type OrderDesignBillingVisibilityItem = {
+  lineItemId: string;
+  orderId: string;
+  description: string | null;
+  quantity: number;
+  productName: string | null;
+  effectiveRequiresDesign: boolean;
+  designPricingModeSnapshot: string | null;
+  visibilityState: 'not_applicable' | 'no_summary' | 'available';
+  designCostState: 'not_applicable' | 'estimated' | 'accrued' | 'finalized' | null;
+  correctedTrackedMinutes: number | null;
+  soldDesignAmount: number | null;
+  billableDesignMinutes: number | null;
+  billableDesignAmount: number | null;
+  billingStatus: 'not_billable' | 'candidate' | 'approved_for_invoice' | 'invoiced' | 'waived' | null;
+  lastSyncedAt: string | null;
+};
+
+const DESIGN_BILLING_STATUS_LABELS: Record<NonNullable<OrderDesignBillingVisibilityItem['billingStatus']>, string> = {
+  not_billable: 'Not billable',
+  candidate: 'Candidate',
+  approved_for_invoice: 'Approved for invoice',
+  invoiced: 'Invoiced',
+  waived: 'Waived',
+};
+
+const DESIGN_COST_STATE_LABELS: Record<NonNullable<OrderDesignBillingVisibilityItem['designCostState']>, string> = {
+  not_applicable: 'Not applicable',
+  estimated: 'Estimated',
+  accrued: 'Accrued',
+  finalized: 'Finalized',
+};
+
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
 function SaveIndicator({ state }: { state: SaveState }) {
@@ -175,6 +208,20 @@ export default function InvoiceDetailPage() {
   const { data: orderRaw } = useOrder(orderId || undefined);
   const order: any = orderRaw as any;
   const linkedOrderContactId: string | null = order?.contact?.id || order?.contactId || null;
+  const orderDesignBillingVisibilityQuery = useQuery<OrderDesignBillingVisibilityItem[]>({
+    queryKey: ['orders', 'design-billing-visibility', orderId],
+    enabled: Boolean(orderId),
+    queryFn: async () => {
+      const response = await fetch(`/api/orders/${orderId}/design-billing-visibility`, { credentials: 'include' });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.message || 'Failed to load design billing visibility');
+      }
+
+      const payload = await response.json();
+      return payload.data as OrderDesignBillingVisibilityItem[];
+    },
+  });
 
   const invoiceStatus = String(invoice?.status || '').toLowerCase();
   const paymentRollup = invoice
@@ -602,6 +649,11 @@ export default function InvoiceDetailPage() {
   const stripeChargesEnabled = stripeIntegrationStatus?.data?.chargesEnabled === true;
 
   const qbConnected = quickbooksIntegrationStatus?.connected === true;
+  const allDesignBillingRows = orderDesignBillingVisibilityQuery.data ?? [];
+  const designBillingRows = allDesignBillingRows.filter((row) => row.effectiveRequiresDesign || row.visibilityState !== 'not_applicable');
+  const nonDesignBillingRowCount = Math.max(allDesignBillingRows.length - designBillingRows.length, 0);
+  const designBillingCandidateTotal = designBillingRows.reduce((sum, row) => sum + (row.billableDesignAmount ?? 0), 0);
+  const designBillingSoldTotal = designBillingRows.reduce((sum, row) => sum + (row.soldDesignAmount ?? 0), 0);
 
   // Transient QB outage banner (dismissible). Needs-reauth remains non-dismissible and is handled elsewhere.
   const showTransientQbBanner = qbAuthState === 'connected';
@@ -1407,10 +1459,17 @@ export default function InvoiceDetailPage() {
                         <Link to={`/contacts/${linkedOrderContactId}`}>View Contact</Link>
                       </Button>
                     ) : null}
-                    {invoice.orderId ? (
-                      <Button variant="outline" size="sm" className="h-7 px-3 rounded-full" asChild>
-                        <Link to={`/orders/${invoice.orderId}`}>View Order</Link>
-                      </Button>
+                    {(invoice.orderId || invoice.sourceOrderNumber) ? (
+                      <>
+                        <span className="text-sm text-muted-foreground">
+                          From Order #{invoice.sourceOrderNumber ?? "—"}
+                        </span>
+                        {invoice.orderId ? (
+                          <Button variant="outline" size="sm" className="h-7 px-3 rounded-full" asChild>
+                            <Link to={`/orders/${invoice.orderId}`}>View Order</Link>
+                          </Button>
+                        ) : null}
+                      </>
                     ) : null}
                   </div>
                 </div>
@@ -1475,6 +1534,100 @@ export default function InvoiceDetailPage() {
                     </TableBody>
                   </Table>
                 </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">Design Billing Visibility</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
+                  <div>
+                    Informational only. Candidate billable amounts are visibility-only and are not automatically invoiced.
+                  </div>
+                  {designBillingRows.length > 0 ? (
+                    <div>
+                      Candidate {formatCurrency(designBillingCandidateTotal)} • Sold {formatCurrency(designBillingSoldTotal)}
+                    </div>
+                  ) : null}
+                </div>
+
+                {!orderId ? (
+                  <div className="text-sm text-muted-foreground">
+                    Not available for this invoice because it is not linked to an order.
+                  </div>
+                ) : orderDesignBillingVisibilityQuery.isLoading ? (
+                  <div className="text-sm text-muted-foreground">Loading design billing visibility…</div>
+                ) : orderDesignBillingVisibilityQuery.isError ? (
+                  <div className="text-sm text-muted-foreground">
+                    {(orderDesignBillingVisibilityQuery.error as Error).message}
+                  </div>
+                ) : designBillingRows.length === 0 ? (
+                  <div className="text-sm text-muted-foreground">
+                    No design billing visibility is available for this linked order.
+                  </div>
+                ) : (
+                  <>
+                    {nonDesignBillingRowCount > 0 ? (
+                      <div className="text-xs text-muted-foreground">
+                        {nonDesignBillingRowCount} non-design line item{nonDesignBillingRowCount === 1 ? '' : 's'} omitted from this section.
+                      </div>
+                    ) : null}
+                    <div className="w-full overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Item</TableHead>
+                            <TableHead>Status</TableHead>
+                            <TableHead className="text-right">Tracked</TableHead>
+                            <TableHead className="text-right">Sold Design</TableHead>
+                            <TableHead className="text-right">Candidate Billable</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {designBillingRows.map((row) => {
+                            const statusLabel = row.visibilityState === 'no_summary'
+                              ? 'No summary yet'
+                              : row.billingStatus
+                                ? (DESIGN_BILLING_STATUS_LABELS[row.billingStatus] ?? row.billingStatus)
+                                : row.designCostState
+                                  ? (DESIGN_COST_STATE_LABELS[row.designCostState] ?? row.designCostState)
+                                  : 'Available';
+
+                            return (
+                              <TableRow key={row.lineItemId}>
+                                <TableCell>
+                                  <div className="font-medium">{row.description || row.productName || 'Line item'}</div>
+                                  <div className="text-xs text-muted-foreground">
+                                    Qty {row.quantity}{row.productName ? ` • ${row.productName}` : ''}
+                                  </div>
+                                </TableCell>
+                                <TableCell>
+                                  <Badge variant={row.visibilityState === 'available' ? 'outline' : 'secondary'}>
+                                    {statusLabel}
+                                  </Badge>
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  {row.correctedTrackedMinutes == null ? '—' : `${row.correctedTrackedMinutes}m`}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  {row.soldDesignAmount == null ? '—' : formatCurrency(row.soldDesignAmount)}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  {row.billableDesignAmount == null ? '—' : formatCurrency(row.billableDesignAmount)}
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Sold design amount reflects historical commercial truth when present. Candidate billable reflects tracked design visibility from the linked order and may not be invoiced on this invoice.
+                    </div>
+                  </>
+                )}
               </CardContent>
             </Card>
 

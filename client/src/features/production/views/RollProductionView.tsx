@@ -647,36 +647,47 @@ function ActionRail({
 
           {job.status !== "done" ? (
             <>
-              <Button
-                className="w-full justify-start bg-emerald-700 hover:bg-emerald-700/90 text-white"
-                onClick={() => {
-                  if (job.status === "queued") {
-                    setSkipCompleteOpen(true);
-                    return;
-                  }
-                  complete.mutate({ skipProduction: false });
-                }}
-                disabled={isBusy}
-              >
-                <CheckCircle2 className="w-4 h-4 mr-2" /> COMPLETE
-              </Button>
+              {job.stationKey === "prepress" || job.stationKey === "design" ? (
+                <div className="rounded-md border border-titan-border-subtle bg-titan-bg-subtle p-3 text-sm text-titan-text-muted">
+                  <span className="font-medium text-titan-text-primary">
+                    {job.stationKey === "prepress" ? "Use Send to Print or Complete Prepress" : "Use Complete Design"}
+                  </span>{" "}
+                  to advance this item.
+                </div>
+              ) : (
+                <>
+                  <Button
+                    className="w-full justify-start bg-emerald-700 hover:bg-emerald-700/90 text-white"
+                    onClick={() => {
+                      if (job.status === "queued") {
+                        setSkipCompleteOpen(true);
+                        return;
+                      }
+                      complete.mutate({ skipProduction: false });
+                    }}
+                    disabled={isBusy}
+                  >
+                    <CheckCircle2 className="w-4 h-4 mr-2" /> COMPLETE
+                  </Button>
 
-              <AlertDialog open={skipCompleteOpen} onOpenChange={setSkipCompleteOpen}>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Skip & complete?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      This job is still queued. This will mark it done without running production.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction onClick={() => complete.mutate({ skipProduction: true })}>
-                      Skip & Complete
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
+                  <AlertDialog open={skipCompleteOpen} onOpenChange={setSkipCompleteOpen}>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Skip & complete?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          This job is still queued. This will mark it done without running production.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={() => complete.mutate({ skipProduction: true })}>
+                          Skip & Complete
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </>
+              )}
             </>
           ) : (
             <Button className="w-full justify-start" variant="outline" onClick={() => reopen.mutate()} disabled={isBusy}>

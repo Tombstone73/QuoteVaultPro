@@ -13,14 +13,43 @@ const TERM_OFFSETS: Record<string, number> = {
   custom: 0,
 };
 
-export async function generateNextInvoiceNumber(tx?: any): Promise<number> {
+export async function generateNextInvoiceNumber(organizationId: string, tx?: any): Promise<number> {
   const dbConn = tx || db;
-  const result = await dbConn.execute(sql`SELECT * FROM ${globalVariables} WHERE ${globalVariables.name} = 'next_invoice_number' FOR UPDATE`);
-  const varRow: any = result.rows[0];
-  if (!varRow) throw new Error('Invoice numbering system not initialized');
+  let varRow = await dbConn
+    .select()
+    .from(globalVariables)
+    .where(and(eq(globalVariables.name, 'next_invoice_number'), eq(globalVariables.organizationId, organizationId)))
+    .limit(1)
+    .then((rows: any[]) => rows[0]);
+
+  if (!varRow) {
+    console.log(`[NUMBERING] Auto-initialized invoice numbering for org ${organizationId} with default sequence.`);
+    const [newVar] = await dbConn
+      .insert(globalVariables)
+      .values({
+        name: 'next_invoice_number',
+        value: '1000',
+        description: 'Next invoice number sequence (auto-initialized)',
+        category: 'numbering',
+        isActive: true,
+        organizationId,
+      })
+      .returning();
+    varRow = newVar;
+  }
+
   const current = Math.floor(Number(varRow.value));
-  await dbConn.update(globalVariables).set({ value: (current + 1).toString(), updatedAt: new Date() }).where(eq(globalVariables.id, varRow.id));
+  await dbConn.update(globalVariables).set({ value: (current + 1).toString(), updatedAt: new Date() }).where(and(eq(globalVariables.id, varRow.id), eq(globalVariables.organizationId, organizationId)));
   return current;
+}
+
+export async function getMaxInvoiceNumber(organizationId: string): Promise<number | null> {
+  const result = await db
+    .select({ maxNumber: sql<number>`MAX(${invoices.invoiceNumber})` })
+    .from(invoices)
+    .where(eq(invoices.organizationId, organizationId));
+  const val = result[0]?.maxNumber;
+  return val != null ? Number(val) : null;
 }
 
 function toCents(value: unknown): number {
@@ -66,7 +95,7 @@ async function createInvoiceFromOrderImpl(
       throw new Error('Invoice already exists for this order');
     }
 
-    const invoiceNumber = await generateNextInvoiceNumber(tx);
+    const invoiceNumber = await generateNextInvoiceNumber(organizationId, tx);
     const issueDate = new Date();
     const dueDate = calculateDueDate(issueDate, opts.terms, opts.customDueDate || null);
 
@@ -80,10 +109,12 @@ async function createInvoiceFromOrderImpl(
     const taxCents = toCents(tax);
     const totalCents = Math.max(0, subtotalCents + taxCents + shippingCents);
 
+    const sourceOrderNumber = order.orderNumber ? parseInt(order.orderNumber, 10) || null : null;
     const invoiceInsert: InsertInvoice = {
       organizationId,
       invoiceNumber,
       orderId: order.id,
+      sourceOrderNumber: sourceOrderNumber as any, // Immutable snapshot — survives order deletion
       customerId: order.customerId,
       status: 'draft',
       terms: opts.terms as any,

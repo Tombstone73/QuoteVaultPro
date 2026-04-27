@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "@jest/globals";
+import { afterAll, beforeAll, describe, expect, jest, test } from "@jest/globals";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { productionJobs } from "@shared/schema";
@@ -154,6 +154,48 @@ describe("production schedule routing diagnostics", () => {
       appendEvent: async () => {
         return;
       },
+      loadLineItemsForSchedulingFn: async () => ({
+        orderExists: true,
+        lineItemRecords: [
+          {
+            lineItemId: lineItemA,
+            productId: productA,
+            productTypeId: null,
+            materialId: null,
+            status: "new",
+            workflowState: "new",
+            lineItemRequiresDesignSnapshot: false,
+            lineItemRequiresProofApprovalSnapshot: false,
+            lineItemRequiresPrepressSnapshot: true,
+            approvedProofVersionId: null,
+            requiresProductionJob: true,
+          },
+        ],
+      }),
+      transactionRunner: {
+        transaction: async <T>(cb: (tx: any) => Promise<T>) => cb({
+          update: () => ({
+            set: () => ({
+              where: async () => undefined,
+            }),
+          }),
+        }),
+      },
+      resolveInitialProductionRouteFn: async () => ({
+        stationKey: "prepress",
+        stepKey: "prepress",
+        reason: "org_default_prepress_required",
+      }),
+      routeLineItemToProductionFn: async ({ lineItemId }: any) => ({
+        jobId: `job_${lineItemId}`,
+        outcome: "created",
+        stationKey: "prepress",
+        stepKey: "prepress",
+        status: "queued",
+        stationId: null,
+        ignoredDueToDone: false,
+        ignoredDueToExistingRouting: false,
+      }),
     });
 
     expect(result.success).toBe(true);
@@ -201,7 +243,11 @@ describe("production schedule routing diagnostics", () => {
             productTypeId: null,
             materialId: null,
             status: "new",
+            workflowState: "new",
+            lineItemRequiresDesignSnapshot: false,
+            lineItemRequiresProofApprovalSnapshot: false,
             lineItemRequiresPrepressSnapshot: true,
+            approvedProofVersionId: null,
             requiresProductionJob: true,
           },
           {
@@ -210,13 +256,23 @@ describe("production schedule routing diagnostics", () => {
             productTypeId: null,
             materialId: null,
             status: "new",
+            workflowState: "new",
+            lineItemRequiresDesignSnapshot: false,
+            lineItemRequiresProofApprovalSnapshot: false,
             lineItemRequiresPrepressSnapshot: true,
+            approvedProofVersionId: null,
             requiresProductionJob: true,
           },
         ],
       }),
       transactionRunner: {
-        transaction: async <T>(cb: (tx: any) => Promise<T>) => cb({}),
+        transaction: async <T>(cb: (tx: any) => Promise<T>) => cb({
+          update: () => ({
+            set: () => ({
+              where: async () => undefined,
+            }),
+          }),
+        }),
       },
       resolveInitialProductionRouteFn: async () => ({
         stationKey: "prepress",
@@ -249,5 +305,143 @@ describe("production schedule routing diagnostics", () => {
     expect(result.data.scheduled[0].lineItemId).toBe(okLineItemId);
     expect(result.data.failed).toHaveLength(1);
     expect(result.data.failed[0].lineItemId).toBe(failLineItemId);
+  });
+
+  test("skips scheduling while a proof-required line item is awaiting approval", async () => {
+    const routeLineItemToProductionFn = jest.fn(async () => ({
+      jobId: `job_${lineItemA}`,
+      outcome: "created" as const,
+      stationKey: "prepress",
+      stepKey: "prepress",
+      status: "queued",
+      stationId: null,
+      ignoredDueToDone: false,
+      ignoredDueToExistingRouting: false,
+    }));
+
+    const result = await scheduleOrderLineItemsForProduction({
+      organizationId: orgA,
+      orderId: orderA,
+      lineItemIds: [lineItemA],
+      loadRoutingRules: async () => ({ source: "test", rules: [] }),
+      appendEvent: async () => {
+        return;
+      },
+      loadLineItemsForSchedulingFn: async () => ({
+        orderExists: true,
+        lineItemRecords: [
+          {
+            lineItemId: lineItemA,
+            productId: productA,
+            productTypeId: null,
+            materialId: null,
+            status: "new",
+            workflowState: "awaiting_proof_approval",
+            lineItemRequiresDesignSnapshot: false,
+            lineItemRequiresProofApprovalSnapshot: true,
+            lineItemRequiresPrepressSnapshot: true,
+            approvedProofVersionId: null,
+            requiresProductionJob: true,
+          },
+        ],
+      }),
+      resolveInitialProductionRouteFn: async () => ({
+        stationKey: "prepress",
+        stepKey: "prepress",
+        reason: "org_default_prepress_required",
+      }),
+      routeLineItemToProductionFn,
+      transactionRunner: {
+        transaction: async <T>(cb: (tx: any) => Promise<T>) => cb({
+          update: () => ({
+            set: () => ({
+              where: async () => undefined,
+            }),
+          }),
+        }),
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.data.createdJobCount).toBe(0);
+    expect(result.data.existingJobCount).toBe(0);
+    expect(result.data.affectedLineItemIds).toEqual([]);
+    expect(result.data.failed).toEqual([]);
+    expect(result.data.lineItemDiagnostics[lineItemA]).toMatchObject({
+      stationKey: "proofing",
+      stepKey: "awaiting_proof_approval",
+      routingReason: "proof_approval_required_before_scheduling",
+    });
+    expect(routeLineItemToProductionFn).not.toHaveBeenCalled();
+  });
+
+  test("skips scheduling proof-required items that resolve past design without an approved proof", async () => {
+    const routeLineItemToProductionFn = jest.fn(async () => ({
+      jobId: `job_${lineItemA}`,
+      outcome: "created" as const,
+      stationKey: "prepress",
+      stepKey: "prepress",
+      status: "queued",
+      stationId: null,
+      ignoredDueToDone: false,
+      ignoredDueToExistingRouting: false,
+    }));
+
+    const result = await scheduleOrderLineItemsForProduction({
+      organizationId: orgA,
+      orderId: orderA,
+      lineItemIds: [lineItemA],
+      loadRoutingRules: async () => ({ source: "test", rules: [] }),
+      appendEvent: async () => {
+        return;
+      },
+      loadLineItemsForSchedulingFn: async () => ({
+        orderExists: true,
+        lineItemRecords: [
+          {
+            lineItemId: lineItemA,
+            productId: productA,
+            productTypeId: null,
+            materialId: null,
+            status: "new",
+            workflowState: "new",
+            lineItemRequiresDesignSnapshot: false,
+            lineItemRequiresProofApprovalSnapshot: true,
+            lineItemRequiresPrepressSnapshot: true,
+            approvedProofVersionId: null,
+            requiresProductionJob: true,
+          },
+        ],
+      }),
+      resolveInitialProductionRouteFn: async () => ({
+        stationKey: "prepress",
+        stepKey: "prepress",
+        reason: "org_default_prepress_required",
+      }),
+      routeLineItemToProductionFn,
+      transactionRunner: {
+        transaction: async <T>(cb: (tx: any) => Promise<T>) => cb({
+          update: () => ({
+            set: () => ({
+              where: async () => undefined,
+            }),
+          }),
+        }),
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain("Approved proof required before scheduling 1 item");
+    expect(result.data.createdJobCount).toBe(0);
+    expect(result.data.existingJobCount).toBe(0);
+    expect(result.data.affectedLineItemIds).toEqual([]);
+    expect(result.data.failed).toEqual([]);
+    expect(result.data.lineItemDiagnostics[lineItemA]).toMatchObject({
+      stationKey: "proofing",
+      stepKey: "approved_proof_required",
+      routingReason: "proof_approval_required_before_scheduling",
+    });
+    expect(result.data.lineItemDiagnostics[lineItemA].idempotencyNote).toContain("approved proof");
+    expect(routeLineItemToProductionFn).not.toHaveBeenCalled();
   });
 });

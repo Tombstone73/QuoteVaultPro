@@ -38,6 +38,8 @@ import NotFound from "@/pages/not-found";
 import MyQuotes from "@/pages/portal/my-quotes";
 import MyOrders from "@/pages/portal/my-orders";
 import QuoteCheckout from "@/pages/portal/quote-checkout";
+import { PortalLayout } from "@/components/portal/PortalLayout";
+import PortalProofPage from "@/pages/portal/portal-proof";
 import ProductionBoard from "@/pages/production";
 import ProductionJobDetailPage from "@/pages/production-job-detail";
 import JobDetail from "@/pages/job-detail";
@@ -45,6 +47,7 @@ import ProductTypesSettings from "@/pages/settings/product-types";
 import PricingFormulasSettings from "@/pages/settings/pricing-formulas";
 import SettingsIntegrations from "@/pages/settings/integrations";
 import AdminTools from "@/pages/settings/admin-tools";
+import SetupSettings from "@/pages/settings/SetupSettings";
 import StorageSettingsPage from "@/pages/settings/storage";
 import InvoicesListPage from "@/pages/invoices";
 import InvoiceDetailPage from "@/pages/invoice-detail";
@@ -84,7 +87,7 @@ function Router() {
     );
   }
 
-  // If not authenticated, only show login route
+  // If not authenticated, only show login route (plus truly public routes)
   if (!isAuthenticated) {
     return (
       <Routes>
@@ -92,6 +95,8 @@ function Router() {
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/accept-invite" element={<AcceptInvitePage />} />
+        {/* Token-based proof review — no account required; the token IS the auth */}
+        <Route path="/portal/proof/:token" element={<PortalProofPage />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     );
@@ -133,7 +138,8 @@ function Router() {
         {/* Legacy dashboard route compatibility */}
         <Route path="/dashboard" element={<Navigate to="/system/admin" replace />} />
 
-        {/* Portal routes (customer-facing) */}
+        {/* Legacy customer portal stubs — kept temporarily, will be removed once
+            portal pages are migrated to the /portal/* PortalLayout tree below */}
         <Route path="/portal/my-quotes" element={<MyQuotes />} />
         <Route path="/portal/my-orders" element={<MyOrders />} />
         <Route path="/portal/quotes/:id/checkout" element={<QuoteCheckout />} />
@@ -232,6 +238,7 @@ function Router() {
           <Route path="inventory" element={<InventorySettings />} />
           <Route path="notifications" element={<NotificationsSettings />} />
           <Route path="appearance" element={<AppearanceSettings />} />
+          <Route path="setup" element={<SetupSettings />} />
           <Route path="admin-tools" element={<AdminTools />} />
         </Route>
 
@@ -246,6 +253,15 @@ function Router() {
 
         {/* Public invite acceptance (accessible while authenticated too) */}
         <Route path="/accept-invite" element={<AcceptInvitePage />} />
+      </Route>
+
+      {/* Proof review — standalone, no layout wrapper; token IS the auth.
+          Rendered consistently whether or not the viewer is logged in. */}
+      <Route path="/portal/proof/:token" element={<PortalProofPage />} />
+
+      {/* Portal shell (auth-required portal pages with sidebar layout) */}
+      <Route path="/portal" element={<PortalLayout />}>
+        <Route path="dashboard" element={<div className="p-4 text-muted-foreground">Portal Dashboard — coming soon</div>} />
       </Route>
 
       {/* Catch-all not found */}
