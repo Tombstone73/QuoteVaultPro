@@ -178,17 +178,29 @@ export async function runMigrations(): Promise<void> {
   const files = fs.readdirSync(migrationsFolder).sort();
   console.log(`[Migrations] Folder contents (${files.length}): ${files.join(", ")}`);
 
-  // Log the highest journal idx from the PACKAGED migrations so Railway logs immediately
-  // reveal whether the build included the latest migrations (stale-dist diagnosis).
-  // If this shows a lower idx than expected, the build artifact is stale — re-run npm run build.
+  // Log the highest journal idx AND highest 'when' timestamp from the PACKAGED migrations.
+  //
+  // CRITICAL — Drizzle's migrator skips any migration whose 'when' (folderMillis) is ≤ the
+  // MAX(created_at) currently in the ledger. It is NOT index-based. If a future migration is
+  // authored with a 'when' value lower than a previously-applied migration's 'when', it will be
+  // silently skipped forever (e.g., 0034 was skipped because 0031 had when=2026-04-15 but 0034
+  // was manually authored with when=2025-04-28). Every new migration's 'when' MUST be strictly
+  // greater than the highest 'when' currently in the packaged journal.
+  //
+  // If the startup log shows a lower idx or lower maxWhen than expected:
+  //   → the build artifact is stale — re-run npm run build (Railway: clear cache and redeploy).
+  // If maxWhen in the journal < MAX(created_at) in the ledger:
+  //   → the next migration's 'when' is too low and it will be silently skipped.
   try {
     const journalPath = path.join(migrationsFolder, "meta", "_journal.json");
     const journal = JSON.parse(fs.readFileSync(journalPath, "utf8"));
-    const entries: Array<{ idx: number; tag: string }> = journal.entries ?? [];
+    const entries: Array<{ idx: number; tag: string; when: number }> = journal.entries ?? [];
     const maxIdx = entries.length > 0 ? Math.max(...entries.map((e) => e.idx)) : -1;
+    const maxWhen = entries.length > 0 ? Math.max(...entries.map((e) => e.when)) : -1;
     const lastEntry = entries.find((e) => e.idx === maxIdx);
+    const maxWhenEntry = entries.find((e) => e.when === maxWhen);
     console.log(
-      `[Migrations] Packaged journal: ${entries.length} entries, highest idx = ${maxIdx} (${lastEntry?.tag ?? "unknown"})`,
+      `[Migrations] Packaged journal: ${entries.length} entries, highest idx = ${maxIdx} (${lastEntry?.tag ?? "unknown"}), highest when = ${maxWhen} (${maxWhenEntry?.tag ?? "unknown"} — ${new Date(maxWhen).toISOString()})`,
     );
   } catch (e: any) {
     console.error(
@@ -217,14 +229,20 @@ export async function runMigrations(): Promise<void> {
       console.warn("[Migrations] DB identity query failed:", e?.message);
     }
 
-    // Highest ledger id before migrate — -1 means table doesn't exist yet (fresh DB).
+    // Highest ledger id and created_at before migrate.
+    // -1 means table doesn't exist yet (fresh DB).
+    // CRITICAL: Drizzle skips any migration whose journal 'when' ≤ MAX(created_at) in the ledger.
+    // If max_created_at here is higher than an upcoming migration's journal 'when', that migration
+    // will be silently skipped. Compare against the packaged journal's highest 'when' above.
     try {
       const preRes = await client.query(
-        `SELECT COALESCE(MAX(id), -1) AS max_id FROM public.${MIGRATIONS_TABLE}`
+        `SELECT COALESCE(MAX(id), -1) AS max_id, COALESCE(MAX(created_at), -1) AS max_created_at FROM public.${MIGRATIONS_TABLE}`
       );
-      console.log(`[Migrations] Ledger max_id before migrate: ${preRes.rows[0].max_id}`);
+      const { max_id, max_created_at } = preRes.rows[0];
+      const maxCreatedAtDate = max_created_at > 0 ? new Date(Number(max_created_at)).toISOString() : "n/a";
+      console.log(`[Migrations] Ledger before migrate: max_id=${max_id}, max_created_at=${max_created_at} (${maxCreatedAtDate})`);
     } catch (e: any) {
-      console.log(`[Migrations] Ledger max_id before migrate: table not yet created (fresh database)`);
+      console.log(`[Migrations] Ledger before migrate: table not yet created (fresh database)`);
     }
 
     console.log("[Migrations] Calling drizzle migrate() now...");
