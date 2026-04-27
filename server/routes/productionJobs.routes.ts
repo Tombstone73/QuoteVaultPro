@@ -1766,7 +1766,7 @@ export function registerProductionJobsRoutes(
                   orderId: job.orderId,
                   lineItemId: job.lineItemId,
                   stationKey: FULFILLMENT_STATION_KEY,
-                  stepKey: "queued",
+                  stepKey: "fulfillment",
                   trigger: "line_item_status",
                   actorUserId: userId,
                   extraEventPayload: {

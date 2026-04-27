@@ -347,11 +347,12 @@ export function useCompleteProductionJob(jobId: string) {
       if (!res.ok) throw new Error(json.error || "Failed to complete job");
       return json.data;
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       invalidateProduction(qc, jobId);
       // Completing a job may route the line item to proofing — update proofing queue immediately.
       qc.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
-      toast({ title: "Job completed" });
+      const isFulfillment = (data as any)?.stationKey === "fulfillment";
+      toast({ title: isFulfillment ? "Fulfillment complete — item marked done" : "Job completed" });
     },
     onError: (e: Error) => {
       toast({ title: "Complete failed", description: e.message, variant: "destructive" });
