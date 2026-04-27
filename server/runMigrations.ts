@@ -42,6 +42,12 @@ const RELEASE_CHECKS: ReleaseCheck[] = [
   // migration 0033 — DDL canary (proves DDL + DML execution reached this DB)
   { type: "table_exists", table: "_migrations_v2_canary", label: "_migrations_v2_canary table" },
   { type: "row_exists",   table: "_migrations_v2_canary", where: "id = 1", label: "_migrations_v2_canary row id=1" },
+  // migration 0034 — fulfillment station seeded.
+  // The ledger check (id >= 34) confirms Drizzle applied migration 0034 regardless of org count.
+  // The stations data check confirms at least one fulfillment station row exists; the
+  // OR clause handles zero-org DBs (migration inserts nothing from a cross join on zero rows).
+  { type: "row_exists", table: "__drizzle_migrations_v2", where: "id >= 34", label: "migration 0034_fulfillment_station recorded in ledger (id >= 34)" },
+  { type: "row_exists", table: "stations", where: "key = 'fulfillment' OR NOT EXISTS (SELECT 1 FROM organizations)", label: "stations.key='fulfillment' exists (migration 0034 data)" },
 ];
 
 async function runReleaseChecks(client: any): Promise<void> {
@@ -171,6 +177,25 @@ export async function runMigrations(): Promise<void> {
   }
   const files = fs.readdirSync(migrationsFolder).sort();
   console.log(`[Migrations] Folder contents (${files.length}): ${files.join(", ")}`);
+
+  // Log the highest journal idx from the PACKAGED migrations so Railway logs immediately
+  // reveal whether the build included the latest migrations (stale-dist diagnosis).
+  // If this shows a lower idx than expected, the build artifact is stale — re-run npm run build.
+  try {
+    const journalPath = path.join(migrationsFolder, "meta", "_journal.json");
+    const journal = JSON.parse(fs.readFileSync(journalPath, "utf8"));
+    const entries: Array<{ idx: number; tag: string }> = journal.entries ?? [];
+    const maxIdx = entries.length > 0 ? Math.max(...entries.map((e) => e.idx)) : -1;
+    const lastEntry = entries.find((e) => e.idx === maxIdx);
+    console.log(
+      `[Migrations] Packaged journal: ${entries.length} entries, highest idx = ${maxIdx} (${lastEntry?.tag ?? "unknown"})`,
+    );
+  } catch (e: any) {
+    console.error(
+      `[Migrations] WARNING: could not read packaged journal — ${e?.message}. ` +
+      `Verify scripts/copy-migrations.mjs ran during build and meta/_journal.json is present.`,
+    );
+  }
 
   // Acquire a session-level advisory lock on a dedicated connection so that
   // concurrent server instances do not run migrations simultaneously.
