@@ -271,19 +271,19 @@ export function StationStepEditor({ stationKey, stationLabel, steps, isLoading }
               <Zap className="h-4 w-4" /> Step Entry Triggers
             </div>
             <div className="text-xs text-titan-text-muted">
-              Triggers will run when a job enters this step. Configuration is reserved for Phase 2.
+              Triggers are not active in the current runtime. Proofing, routing, and workflow handoffs are controlled by dedicated services, not this section.
             </div>
             <div className="flex flex-wrap gap-2">
               {selectedStep.triggers.length === 0 ? (
-                <Badge variant="outline">No triggers configured</Badge>
+                <Badge variant="outline">No active triggers</Badge>
               ) : (
                 selectedStep.triggers.map((trigger, index) => (
-                  <Badge key={`${trigger.type}-${index}`} variant="secondary">{trigger.type}</Badge>
+                  <Badge key={`${trigger.type}-${index}`} variant="secondary">{trigger.type} (inactive)</Badge>
                 ))
               )}
             </div>
             <Button variant="outline" size="sm" disabled>
-              Add Trigger (Phase 2)
+              Triggers Unavailable (Phase 2)
             </Button>
           </div>
 

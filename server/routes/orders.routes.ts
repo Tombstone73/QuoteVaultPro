@@ -29,8 +29,11 @@ import {
     productTypes,
     insertOrderSchema,
     updateOrderSchema,
+    insertOrderInternalNoteSchema,
     insertOrderLineItemSchema,
+    insertOrderLineItemNoteSchema,
     updateOrderLineItemSchema,
+    updateLineItemDesignBriefSchema,
     insertMaterialSchema,
     updateMaterialSchema,
     insertInventoryAdjustmentSchema,
@@ -47,8 +50,14 @@ import { ensureCustomerForUser } from "../db/syncUsersToCustomers";
 import { updateOrderFulfillmentStatus } from "../fulfillmentService";
 import { portalContext, tenantContext, getPortalCustomer } from "../tenantContext";
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
+import { listOrderDesignBillingVisibility } from "../services/designCostSummaryService";
 import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
+import { getLineItemDesignBriefDetail, upsertLineItemDesignBrief } from "../services/lineItemDesignBriefService";
+import { addLineItemNote, addOrderInternalNote, listLineItemNotes, listOrderInternalNotes } from "../services/structuredOrderNotesService";
 import { findActiveJobForLineItem } from "../services/productionOwnership";
+import { autoSyncCanonicalProofForLineItem } from "../services/proofingService";
+import { materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
+import { productDesignConfigRepository } from "../storage/productDesignConfig.repo";
 import { pbv2ToChildItemProposals, pbv2ToMaterialEffects, pbv2ToPricingAddons } from "@shared/pbv2/pricingAdapter";
 import { computePbv2InputSignature } from "@shared/pbv2/pbv2InputSignature";
 import { pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
@@ -134,7 +143,10 @@ async function resolveEffectiveLineItemRouting(args: {
         .limit(1);
 
     const [productRow] = await db
-        .select({ requiresPrepressOverride: productTypes.requiresPrepressOverride })
+        .select({
+            requiresPrepressOverride: productTypes.requiresPrepressOverride,
+            requiresProofApproval: products.requiresProofApproval,
+        })
         .from(products)
         .leftJoin(productTypes, eq(products.productTypeId, productTypes.id))
         .where(eq(products.id, args.productId))
@@ -144,11 +156,13 @@ async function resolveEffectiveLineItemRouting(args: {
     const requiresPrepress = typeof args.requestedRequiresPrepress === "boolean"
         ? args.requestedRequiresPrepress
         : productRow?.requiresPrepressOverride ?? org?.prepressDefaultEnabled ?? true;
+    const requiresProofApproval = Boolean(productRow?.requiresProofApproval);
 
     return {
         requiresDesign,
         requiresPrepress,
-        workflowState: getInitialWorkflowState({ requiresDesign, requiresPrepress }),
+        requiresProofApproval,
+        workflowState: getInitialWorkflowState({ requiresDesign, requiresPrepress, requiresProofApproval }),
     };
 }
 
@@ -1043,9 +1057,9 @@ export async function registerOrderRoutes(
                                             const { enrichAssetPreviewUrls } = await import('../services/assets/enrichAssetWithUrls');
 
                                             const thumbByAssetId = new Map<string, string | null>();
-                                            for (const assetId of assetIds) {
+                                            await Promise.all(assetIds.map(async (assetId) => {
                                                 const asset = assetsById.get(assetId);
-                                                if (!asset) continue;
+                                                if (!asset) return;
                                                 const enriched = await enrichAssetPreviewUrls(asset);
                                                 const thumb =
                                                     (enriched as any).previewThumbnailUrl ??
@@ -1053,7 +1067,7 @@ export async function registerOrderRoutes(
                                                     (enriched as any).thumbUrl ??
                                                     null;
                                                 thumbByAssetId.set(assetId, typeof thumb === 'string' && thumb.length ? thumb : null);
-                                            }
+                                            }));
 
                                             const linksByOrderId: Record<string, Array<{ assetId: string; role: string }>> = {};
                                             for (const row of linkRows as any[]) {
@@ -1189,6 +1203,27 @@ export async function registerOrderRoutes(
         } catch (error) {
             console.error("Error fetching order:", error);
             res.status(500).json({ message: "Failed to fetch order" });
+        }
+    });
+
+    app.get("/api/orders/:id/design-billing-visibility", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const items = await listOrderDesignBillingVisibility({
+                organizationId,
+                orderId: String(req.params.id),
+            });
+
+            if (items === null) {
+                return res.status(404).json({ message: "Order not found" });
+            }
+
+            return res.json({ success: true, data: items, message: "Order design billing visibility loaded" });
+        } catch (error) {
+            console.error("[GET /api/orders/:id/design-billing-visibility] Failed", error);
+            return res.status(500).json({ message: "Failed to load order design billing visibility" });
         }
     });
 
@@ -1348,6 +1383,21 @@ export async function registerOrderRoutes(
                 description: `Created order ${order.orderNumber}`,
                 newValues: order,
             });
+
+            if (Array.isArray((order as any).lineItems)) {
+                for (const lineItem of (order as any).lineItems) {
+                    try {
+                        await db.transaction((tx) => autoSyncCanonicalProofForLineItem(tx, {
+                            organizationId,
+                            lineItemId: String(lineItem.id),
+                            actorUserId: userId,
+                            reason: 'order_saved',
+                        }));
+                    } catch (proofSyncError) {
+                        console.error('[AutoProofSync:ORDER_CREATE] Failed (non-fatal):', proofSyncError);
+                    }
+                }
+            }
 
             res.json(order);
         } catch (error) {
@@ -3553,6 +3603,106 @@ export async function registerOrderRoutes(
         }
     });
 
+    app.get('/api/orders/:orderId/internal-notes', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+            const notes = await listOrderInternalNotes({
+                organizationId,
+                orderId: String(req.params.orderId),
+            });
+
+            if (notes === null) {
+                return res.status(404).json({ message: 'Order not found' });
+            }
+
+            return res.json({ success: true, data: notes, message: 'Order internal notes loaded' });
+        } catch (error) {
+            console.error('[ORDER_INTERNAL_NOTES_GET] Error:', error);
+            return res.status(500).json({ message: 'Failed to fetch order internal notes' });
+        }
+    });
+
+    app.post('/api/orders/:orderId/internal-notes', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+            const userId = getUserId(req.user) ?? null;
+            const parsed = insertOrderInternalNoteSchema.parse(req.body ?? {});
+
+            const note = await addOrderInternalNote({
+                organizationId,
+                orderId: String(req.params.orderId),
+                userId,
+                values: parsed,
+            });
+
+            if (!note) {
+                return res.status(404).json({ message: 'Order not found' });
+            }
+
+            return res.status(201).json({ success: true, data: note, message: 'Order internal note added' });
+        } catch (error) {
+            if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            console.error('[ORDER_INTERNAL_NOTES_POST] Error:', error);
+            return res.status(500).json({ message: 'Failed to add order internal note' });
+        }
+    });
+
+    app.get('/api/orders/:orderId/line-items/:lineItemId/notes', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+            const notes = await listLineItemNotes({
+                organizationId,
+                orderId: String(req.params.orderId),
+                lineItemId: String(req.params.lineItemId),
+                category: typeof req.query.category === 'string' ? req.query.category : null,
+            });
+
+            if (notes === null) {
+                return res.status(404).json({ message: 'Order line item not found for this order' });
+            }
+
+            return res.json({ success: true, data: notes, message: 'Line item notes loaded' });
+        } catch (error) {
+            if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            console.error('[ORDER_LINE_ITEM_NOTES_GET] Error:', error);
+            return res.status(500).json({ message: 'Failed to fetch line item notes' });
+        }
+    });
+
+    app.post('/api/orders/:orderId/line-items/:lineItemId/notes', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+            const userId = getUserId(req.user) ?? null;
+            const parsed = insertOrderLineItemNoteSchema.parse(req.body ?? {});
+
+            const note = await addLineItemNote({
+                organizationId,
+                orderId: String(req.params.orderId),
+                lineItemId: String(req.params.lineItemId),
+                userId,
+                values: parsed,
+            });
+
+            if (!note) {
+                return res.status(404).json({ message: 'Order line item not found for this order' });
+            }
+
+            return res.status(201).json({ success: true, data: note, message: 'Line item note added' });
+        } catch (error) {
+            if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            console.error('[ORDER_LINE_ITEM_NOTES_POST] Error:', error);
+            return res.status(500).json({ message: 'Failed to add line item note' });
+        }
+    });
+
     app.post('/api/orders/:id/audit', isAuthenticated, async (req: any, res) => {
         try {
             const userId = getUserId(req.user);
@@ -3762,6 +3912,18 @@ export async function registerOrderRoutes(
             });
 
                 const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+                if (orderLineItemId) {
+                    try {
+                        await db.transaction((tx) => autoSyncCanonicalProofForLineItem(tx, {
+                            organizationId,
+                            lineItemId: String(orderLineItemId),
+                            actorUserId: userId,
+                            reason: 'artwork_saved',
+                        }));
+                    } catch (proofSyncError) {
+                        console.error('[AutoProofSync:ORDER_FILE_UPLOAD] Failed after upload-session persist (non-fatal):', proofSyncError);
+                    }
+                }
                 return res.json({ success: true, data: enrichedAttachment });
             }
 
@@ -3961,6 +4123,18 @@ export async function registerOrderRoutes(
 
             uploadStep = 'respond_success';
             const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
+            if (resolvedLineItemId) {
+                try {
+                    await db.transaction((tx) => autoSyncCanonicalProofForLineItem(tx, {
+                        organizationId,
+                        lineItemId: String(resolvedLineItemId),
+                        actorUserId: userId,
+                        reason: 'artwork_saved',
+                    }));
+                } catch (proofSyncError) {
+                    console.error('[AutoProofSync:ORDER_FILE_UPLOAD] Failed after attachment persist (non-fatal):', proofSyncError);
+                }
+            }
             res.json({ success: true, data: enrichedAttachment });
         } catch (error: any) {
             console.error('[POST /api/orders/:id/files] Failed', {
@@ -3982,6 +4156,16 @@ export async function registerOrderRoutes(
     app.patch('/api/orders/:orderId/files/:fileId', isAuthenticated, async (req: any, res) => {
         try {
             const userId = getUserId(req.user);
+            const [order] = await db
+                .select({ organizationId: orders.organizationId })
+                .from(orders)
+                .where(eq(orders.id, req.params.orderId))
+                .limit(1);
+
+            if (!order?.organizationId) {
+                return res.status(404).json({ error: 'Order not found' });
+            }
+
             const { role, side, isPrimary, description } = req.body;
             const validRoles = ['artwork', 'proof', 'reference', 'customer_po', 'setup', 'output', 'other'];
             const validSides = ['front', 'back', 'na'];
@@ -4006,6 +4190,20 @@ export async function registerOrderRoutes(
                 note: `File metadata updated: ${updated.fileName}`,
                 metadata: { fileId: updated.id, updates } as any,
             });
+
+            if ((updated as any).orderLineItemId && userId) {
+                try {
+                    await db.transaction((tx) => autoSyncCanonicalProofForLineItem(tx, {
+                        organizationId: String(order.organizationId),
+                        lineItemId: String((updated as any).orderLineItemId),
+                        actorUserId: userId,
+                        reason: 'artwork_saved',
+                    }));
+                } catch (proofSyncError) {
+                    console.error('[AutoProofSync:ORDER_FILE_UPDATE] Failed (non-fatal):', proofSyncError);
+                }
+            }
+
             res.json({ success: true, data: updated });
         } catch (error) {
             res.status(500).json({ error: 'Failed to update file metadata' });
@@ -4268,6 +4466,56 @@ export async function registerOrderRoutes(
         }
     });
 
+    app.get("/api/orders/:orderId/line-items/:lineItemId/design-brief", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const detail = await getLineItemDesignBriefDetail({
+                organizationId,
+                orderId: String(req.params.orderId),
+                orderLineItemId: String(req.params.lineItemId),
+            });
+
+            if (!detail) {
+                return res.status(404).json({ message: "Order line item not found" });
+            }
+
+            return res.json({ success: true, data: detail });
+        } catch (error) {
+            console.error("[LINE_ITEM_DESIGN_BRIEF_GET] Error:", error);
+            return res.status(500).json({ message: "Failed to fetch line item design brief" });
+        }
+    });
+
+    app.put("/api/orders/:orderId/line-items/:lineItemId/design-brief", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const userId = getUserId(req.user) ?? null;
+            const parsed = updateLineItemDesignBriefSchema.parse(req.body ?? {});
+
+            const detail = await upsertLineItemDesignBrief({
+                organizationId,
+                orderId: String(req.params.orderId),
+                orderLineItemId: String(req.params.lineItemId),
+                userId,
+                values: parsed,
+            });
+
+            if (!detail) {
+                return res.status(404).json({ message: "Order line item not found" });
+            }
+
+            return res.json({ success: true, data: detail, message: "Design brief saved" });
+        } catch (error) {
+            if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            console.error("[LINE_ITEM_DESIGN_BRIEF_PUT] Error:", error);
+            return res.status(500).json({ message: "Failed to save line item design brief" });
+        }
+    });
+
     app.post("/api/order-line-items", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
@@ -4309,6 +4557,7 @@ export async function registerOrderRoutes(
 
             // Server-authoritative pricing using PricingService
             const { priceLineItem } = await import("../services/pricing/PricingService");
+            const userId = getUserId(req.user);
             
             const pricingResult = await priceLineItem({
                 organizationId,
@@ -4323,10 +4572,18 @@ export async function registerOrderRoutes(
             // Structured logging for PBV2 pricing persistence
             console.log(`[PBV2_PRICE_PERSIST] orderId=${lineItemData.orderId} treeVersionId=${pricingResult.pbv2TreeVersionId} totalCents=${pricingResult.lineTotalCents} pricedAt=${new Date().toISOString()}`);
 
+            const designSnapshot = materializeLineItemDesignSnapshot({
+                config: await productDesignConfigRepository.getByProductId(organizationId, String(lineItemData.productId)),
+                requestedNeedsDesignOverride: Object.prototype.hasOwnProperty.call(lineItemData, 'needsDesignOverride')
+                    ? ((lineItemData as any).needsDesignOverride ?? null)
+                    : undefined,
+                requestedEffectiveRequiresDesign: typeof lineItemData.requiresDesign === "boolean" ? lineItemData.requiresDesign : null,
+            });
+
             const routing = await resolveEffectiveLineItemRouting({
                 organizationId,
                 productId: String(lineItemData.productId),
-                requestedRequiresDesign: lineItemData.requiresDesign,
+                requestedRequiresDesign: designSnapshot.effectiveRequiresDesign,
                 requestedRequiresPrepress: lineItemData.requiresPrepress,
             });
 
@@ -4335,7 +4592,18 @@ export async function registerOrderRoutes(
                 ...lineItemData,
                 status: "new",
                 workflowState: routing.workflowState,
+                requiresDesignSnapshot: designSnapshot.requiresDesignSnapshot,
+                designBriefRequiredSnapshot: designSnapshot.designBriefRequiredSnapshot,
+                estimatedDesignMinutesSnapshot: designSnapshot.estimatedDesignMinutesSnapshot,
+                includedDesignMinutesSnapshot: designSnapshot.includedDesignMinutesSnapshot,
+                designPricingModeSnapshot: designSnapshot.designPricingModeSnapshot,
+                flatFeeAmountSnapshot: designSnapshot.flatFeeAmountSnapshot,
+                hourlyRateSnapshot: designSnapshot.hourlyRateSnapshot,
+                overageRateSnapshot: designSnapshot.overageRateSnapshot,
+                internalLaborRateSnapshot: designSnapshot.internalLaborRateSnapshot,
+                needsDesignOverride: designSnapshot.needsDesignOverride,
                 requiresDesign: routing.requiresDesign,
+                requiresProofApproval: routing.requiresProofApproval,
                 requiresPrepress: routing.requiresPrepress,
                 pbv2TreeVersionId: pricingResult.pbv2TreeVersionId,
                 pbv2SnapshotJson: pricingResult.pbv2SnapshotJson as any,
@@ -4370,6 +4638,19 @@ export async function registerOrderRoutes(
                 }
             } catch (autoScheduleErr: any) {
                 console.error('[AutoProductionSchedule:CREATE] Failed (non-fatal):', autoScheduleErr?.message ?? autoScheduleErr);
+            }
+
+            if (userId) {
+                try {
+                    await db.transaction((tx) => autoSyncCanonicalProofForLineItem(tx, {
+                        organizationId,
+                        lineItemId: String(created.id),
+                        actorUserId: userId,
+                        reason: 'line_item_saved',
+                    }));
+                } catch (proofSyncError) {
+                    console.error('[AutoProofSync:LINE_ITEM_CREATE] Failed (non-fatal):', proofSyncError);
+                }
             }
 
             res.json(created);
@@ -4413,6 +4694,7 @@ export async function registerOrderRoutes(
             const requestedRequiresDesign = updateData.requiresDesign;
             const requestedRequiresPrepress = updateData.requiresPrepress;
             const hasRoutingChange =
+                updateData.productId !== undefined ||
                 (typeof requestedRequiresDesign === "boolean" && requestedRequiresDesign !== Boolean((oldLineItem as any).requiresDesign)) ||
                 (typeof requestedRequiresPrepress === "boolean" && requestedRequiresPrepress !== Boolean((oldLineItem as any).requiresPrepress));
 
@@ -4438,7 +4720,13 @@ export async function registerOrderRoutes(
                     requestedRequiresPrepress: typeof requestedRequiresPrepress === "boolean" ? requestedRequiresPrepress : Boolean((oldLineItem as any).requiresPrepress),
                 });
 
+                const snapshotRequiresDesign = Boolean((oldLineItem as any).requiresDesignSnapshot);
+                updateData.needsDesignOverride = routing.requiresDesign === snapshotRequiresDesign
+                    ? null
+                    : routing.requiresDesign;
+
                 updateData.requiresDesign = routing.requiresDesign;
+                updateData.requiresProofApproval = routing.requiresProofApproval;
                 updateData.requiresPrepress = routing.requiresPrepress;
                 updateData.workflowState = routing.workflowState;
                 updateData.status = "new";
@@ -4479,6 +4767,19 @@ export async function registerOrderRoutes(
             }
 
             const lineItem = await storage.updateOrderLineItem(lineItemId, updateData);
+
+            if (userId) {
+                try {
+                    await db.transaction((tx) => autoSyncCanonicalProofForLineItem(tx, {
+                        organizationId,
+                        lineItemId,
+                        actorUserId: userId,
+                        reason: 'line_item_saved',
+                    }));
+                } catch (proofSyncError) {
+                    console.error('[AutoProofSync:LINE_ITEM_UPDATE] Failed (non-fatal):', proofSyncError);
+                }
+            }
 
             // NOTE: PBV2 is recomputed explicitly via /pbv2/recompute.
             // Do not silently overwrite persisted snapshots/components during general edits.

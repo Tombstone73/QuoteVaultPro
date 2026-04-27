@@ -41,6 +41,7 @@ import {
   type QuoteWorkflowState,
 } from "@shared/quoteWorkflow";
 import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage";
+import { getSignedUrlFromCache, setSignedUrlInCache, getSignedUrlMeta, patchSignedUrlMeta } from "../lib/signedUrlCache";
 import {
   createRequestLogOnce,
   enrichAttachmentWithUrls,
@@ -701,7 +702,10 @@ export async function registerAttachmentRoutes(
         const supabaseService = new SupabaseStorageService(bucketParam || undefined);
         for (const keyToTry of candidateKeys) {
           try {
-            const signedUrl = await supabaseService.getSignedDownloadUrl(keyToTry, 3600);
+            const _dlBucket = supabaseService.bucketName;
+            const _dlCached = getSignedUrlFromCache(_dlBucket, keyToTry);
+            const signedUrl = _dlCached ?? await supabaseService.getSignedDownloadUrl(keyToTry, 3600);
+            if (!_dlCached) setSignedUrlInCache(_dlBucket, keyToTry, signedUrl);
             const upstream = await fetch(signedUrl);
             if (!upstream.ok) {
               throw new Error(`Upstream fetch failed: ${upstream.status} ${upstream.statusText}`);
@@ -1001,11 +1005,36 @@ export async function registerAttachmentRoutes(
           };
 
           try {
-            const signedUrl = await supabaseService.getSignedDownloadUrl(keyToTry, 3600);
+            const _bucket = supabaseService.bucketName;
+            const _cached = getSignedUrlFromCache(_bucket, keyToTry);
+            const signedUrl = _cached ?? await supabaseService.getSignedDownloadUrl(keyToTry, 3600);
+            if (!_cached) setSignedUrlInCache(_bucket, keyToTry, signedUrl);
 
             if (isDev) {
               const via = keyToTry === requestedKey ? "direct" : "fallback";
-              console.log(`[objects] resolved provider=supabase via=${via} key="${keyToTry}"`);
+              console.log(`[objects] resolved provider=supabase via=${via} key="${keyToTry}" cache=${_cached ? "hit" : "miss"}`);
+            }
+
+            // ETag: serve 304 Not Modified without an upstream fetch when the client's
+            // If-None-Match matches our cached upstream ETag for this object.
+            // Only applies to inline (non-download) responses which carry public Cache-Control.
+            if (!wantsDownload) {
+              const ifNoneMatch = ((req.headers["if-none-match"] as string) || "").trim();
+              if (ifNoneMatch && ifNoneMatch !== "*") {
+                const _meta = getSignedUrlMeta(_bucket, keyToTry);
+                if (_meta?.etag) {
+                  const clientTags = ifNoneMatch.split(",").map((t) => t.trim());
+                  if (clientTags.includes(_meta.etag)) {
+                    res.setHeader("ETag", _meta.etag);
+                    if (_meta.lastModified) res.setHeader("Last-Modified", _meta.lastModified);
+                    res.removeHeader("X-Frame-Options");
+                    const _304ancestors = getFrameAncestors(req);
+                    res.setHeader("Content-Security-Policy", `frame-ancestors ${_304ancestors.join(" ")};`);
+                    if (isDev) console.log(`[objects] 304 key="${keyToTry}" etag=${_meta.etag}`);
+                    return res.status(304).end();
+                  }
+                }
+              }
             }
 
             // Always proxy bytes for Supabase so:
@@ -1017,6 +1046,13 @@ export async function registerAttachmentRoutes(
               const e: any = new Error(`Upstream fetch failed: ${upstream.status} ${upstream.statusText}`);
               e.status = upstream.status;
               throw e;
+            }
+
+            // Capture upstream validators; patch cache entry so future requests can 304 without fetching.
+            const _upstreamETag = upstream.headers.get("etag") ?? undefined;
+            const _upstreamLastModified = upstream.headers.get("last-modified") ?? undefined;
+            if (_upstreamETag || _upstreamLastModified) {
+              patchSignedUrlMeta(_bucket, keyToTry, _upstreamETag, _upstreamLastModified);
             }
 
             const upstreamType = upstream.headers.get("content-type") || "";
@@ -1047,6 +1083,10 @@ export async function registerAttachmentRoutes(
               `${wantsDownload ? "attachment" : "inline"}; filename="${safeName}"`
             );
             res.setHeader("Cache-Control", wantsDownload ? "private, max-age=0, must-revalidate" : "public, max-age=86400");
+            if (!wantsDownload) {
+              if (_upstreamETag) res.setHeader("ETag", _upstreamETag);
+              if (_upstreamLastModified) res.setHeader("Last-Modified", _upstreamLastModified);
+            }
             res.removeHeader("X-Frame-Options");
             const ancestors = getFrameAncestors(req);
             res.setHeader("Content-Security-Policy", `frame-ancestors ${ancestors.join(" ")};`);

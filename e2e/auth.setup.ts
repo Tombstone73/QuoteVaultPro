@@ -18,15 +18,18 @@ import fs from "fs";
 
 const AUTH_FILE = path.join(process.cwd(), "e2e", ".auth", "user.json");
 
-setup("authenticate", async ({ page }) => {
-  const email = process.env.PLAYWRIGHT_EMAIL;
-  const password = process.env.PLAYWRIGHT_PASSWORD;
-
-  if (!email || !password) {
-    throw new Error(
-      "PLAYWRIGHT_EMAIL and PLAYWRIGHT_PASSWORD must be set in .env.playwright"
-    );
+function requireEnv(name: string) {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`${name} must be set in .env.playwright`);
   }
+  return value;
+}
+
+setup("authenticate", async ({ page }) => {
+  const baseUrl = requireEnv("PLAYWRIGHT_BASE_URL");
+  const email = requireEnv("PLAYWRIGHT_EMAIL");
+  const password = requireEnv("PLAYWRIGHT_PASSWORD");
 
   // Ensure the .auth directory exists before Playwright tries to write to it.
   const authDir = path.dirname(AUTH_FILE);
@@ -41,6 +44,11 @@ setup("authenticate", async ({ page }) => {
   await page.locator("#email").fill(email);
   await page.locator("#password").fill(password);
   await page.locator('button[type="submit"]').click();
+
+  await page.waitForURL((url) => {
+    const pathname = url.pathname.toLowerCase();
+    return url.origin === new URL(baseUrl).origin && pathname !== "/login";
+  }, { timeout: 30_000 });
 
   await expect
     .poll(

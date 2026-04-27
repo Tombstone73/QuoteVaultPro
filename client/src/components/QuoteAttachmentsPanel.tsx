@@ -1,5 +1,6 @@
 import { type ChangeEvent, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { usePageVisible } from "@/hooks/usePageVisible";
 import { format } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -7,6 +8,7 @@ import { isValidHttpUrl } from "@/lib/utils";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { getThumbSrc } from "@/lib/getThumbSrc";
+import { invalidateCachedAssetUrl } from "@/lib/assetUrlCache";
 import { getAttachmentPollingInterval, isAttachmentSettled } from "@/lib/attachments/attachmentStatus";
 import { toAttachmentViewerAttachment } from "@/lib/attachmentViewer";
 import {
@@ -57,6 +59,7 @@ function formatFileSize(bytes: number | null | undefined): string {
 export function QuoteAttachmentsPanel({ quoteId, locked = false }: { quoteId: string; locked?: boolean }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const isPageVisible = usePageVisible();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [attachmentToDelete, setAttachmentToDelete] = useState<QuoteAttachment | null>(null);
@@ -93,6 +96,7 @@ export function QuoteAttachmentsPanel({ quoteId, locked = false }: { quoteId: st
       return getAttachmentPollingInterval({
         attachments: data,
         guard: pollingGuardRef.current,
+        isVisible: isPageVisible,
         logLabel: attachmentsApiPath,
       });
     },
@@ -278,6 +282,7 @@ export function QuoteAttachmentsPanel({ quoteId, locked = false }: { quoteId: st
         throw new Error(json.error || "Failed to remove attachment");
       }
 
+      invalidateCachedAssetUrl(attachmentId);
       queryClient.invalidateQueries({ queryKey: [attachmentsApiPath] });
       toast({ title: "Removed", description: "Attachment removed from quote." });
       setAttachmentToDelete(null);

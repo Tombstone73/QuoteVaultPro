@@ -10,8 +10,11 @@ type SchedulingCandidateLineItem = {
   productTypeId: string | null;
   materialId: string | null;
   status: string;
+  workflowState: string | null;
   lineItemRequiresDesignSnapshot: boolean | null;
+  lineItemRequiresProofApprovalSnapshot: boolean | null;
   lineItemRequiresPrepressSnapshot: boolean | null;
+  approvedProofVersionId: string | null;
   requiresProductionJob: boolean;
 };
 
@@ -45,6 +48,32 @@ const toFailedItem = (lineItemId: string, traceId: string, step: string, error: 
   detail: typeof error?.detail === "string" ? error.detail : undefined,
   message: String(error?.message || "Unknown scheduling error"),
 });
+
+const WORKFLOW_STATES_REQUIRING_APPROVED_PROOF = new Set(["ready_for_prepress", "in_prepress", "ready_for_production", "in_production"]);
+
+function logProofSchedulingBlock(args: {
+  traceId: string;
+  orderId: string;
+  lineItemId: string;
+  currentWorkflowState: string;
+  targetWorkflowState?: string;
+  requiresProofApproval: boolean;
+  approvedProofVersionId: string | null;
+  routingReason?: string;
+  reason: "awaiting_proof_approval" | "missing_approved_proof";
+}) {
+  console.warn("[ProductionScheduling] blocked proof-gated handoff", {
+    traceId: args.traceId,
+    orderId: args.orderId,
+    lineItemId: args.lineItemId,
+    currentWorkflowState: args.currentWorkflowState,
+    targetWorkflowState: args.targetWorkflowState,
+    requiresProofApproval: args.requiresProofApproval,
+    approvedProofVersionId: args.approvedProofVersionId,
+    routingReason: args.routingReason,
+    reason: args.reason,
+  });
+}
 
 /**
  * scheduleOrderLineItemsForProduction
@@ -145,8 +174,11 @@ export async function scheduleOrderLineItemsForProduction(args: {
         productTypeId: products.productTypeId,
         materialId: orderLineItems.materialId,
         status: orderLineItems.status,
+        workflowState: orderLineItems.workflowState,
         lineItemRequiresDesignSnapshot: orderLineItems.requiresDesign,
+        lineItemRequiresProofApprovalSnapshot: orderLineItems.requiresProofApproval,
         lineItemRequiresPrepressSnapshot: orderLineItems.requiresPrepress,
+        approvedProofVersionId: orderLineItems.approvedProofVersionId,
         requiresProductionJob: products.requiresProductionJob,
       })
       .from(orderLineItems)
@@ -214,6 +246,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
 
   let createdCount = 0;
   let existingCount = 0;
+  let blockedByProofCount = 0;
   const affectedIds: string[] = [];
   const scheduled: ScheduledItem[] = [];
   const failed: FailedItem[] = [];
@@ -228,21 +261,75 @@ export async function scheduleOrderLineItemsForProduction(args: {
   for (const item of productionRequiredItems) {
     let step = "begin_item";
     try {
-      const scheduledItem = await txRunner.transaction(async (tx) => {
-        step = "resolve_initial_route";
-        const route = await resolveRoute({
-          organizationId,
-          productTypeId: item.productTypeId,
-          lineItemRequiresDesignSnapshot:
-            typeof item.lineItemRequiresDesignSnapshot === "boolean"
-              ? item.lineItemRequiresDesignSnapshot
-              : undefined,
-          lineItemRequiresPrepressSnapshot:
-            typeof item.lineItemRequiresPrepressSnapshot === "boolean"
-              ? item.lineItemRequiresPrepressSnapshot
-              : undefined,
+      const currentWorkflowState = String(item.workflowState || "").trim().toLowerCase();
+      if (currentWorkflowState === "awaiting_proof_approval") {
+        blockedByProofCount++;
+        lineItemDiagnostics[item.lineItemId] = {
+          stationKey: "proofing",
+          stepKey: "awaiting_proof_approval",
+          routingReason: "proof_approval_required_before_scheduling",
+          idempotencyNote: "Skipped scheduling while proof approval is still pending",
+        };
+        logProofSchedulingBlock({
+          traceId: requestTraceId,
+          orderId,
+          lineItemId: item.lineItemId,
+          currentWorkflowState,
+          requiresProofApproval: item.lineItemRequiresProofApprovalSnapshot === true,
+          approvedProofVersionId: item.approvedProofVersionId,
+          reason: "awaiting_proof_approval",
         });
+        continue;
+      }
 
+      step = "resolve_initial_route";
+      const route = await resolveRoute({
+        organizationId,
+        productTypeId: item.productTypeId,
+        lineItemRequiresDesignSnapshot:
+          typeof item.lineItemRequiresDesignSnapshot === "boolean"
+            ? item.lineItemRequiresDesignSnapshot
+            : undefined,
+        lineItemRequiresPrepressSnapshot:
+          typeof item.lineItemRequiresPrepressSnapshot === "boolean"
+            ? item.lineItemRequiresPrepressSnapshot
+            : undefined,
+      });
+
+      const targetWorkflowState =
+        route.stationKey === "design" || route.stepKey === "design"
+          ? "needs_design"
+          : route.stationKey === "prepress" || route.stepKey === "prepress"
+            ? "ready_for_prepress"
+            : "ready_for_production";
+
+      if (
+        item.lineItemRequiresProofApprovalSnapshot === true &&
+        !item.approvedProofVersionId &&
+        WORKFLOW_STATES_REQUIRING_APPROVED_PROOF.has(targetWorkflowState)
+      ) {
+        blockedByProofCount++;
+        lineItemDiagnostics[item.lineItemId] = {
+          stationKey: "proofing",
+          stepKey: "approved_proof_required",
+          routingReason: "proof_approval_required_before_scheduling",
+          idempotencyNote: `Blocked scheduling to ${route.stationKey}/${route.stepKey} until an approved proof is recorded`,
+        };
+        logProofSchedulingBlock({
+          traceId: requestTraceId,
+          orderId,
+          lineItemId: item.lineItemId,
+          currentWorkflowState,
+          targetWorkflowState,
+          requiresProofApproval: true,
+          approvedProofVersionId: item.approvedProofVersionId,
+          routingReason: route.reason,
+          reason: "missing_approved_proof",
+        });
+        continue;
+      }
+
+      const scheduledItem = await txRunner.transaction(async (tx) => {
         step = "route_line_item_to_production";
         const routingResult = await routeToProduction({
           tx,
@@ -260,13 +347,6 @@ export async function scheduleOrderLineItemsForProduction(args: {
             routingReason: route.reason,
           },
         });
-
-        const targetWorkflowState =
-          route.stationKey === "design" || route.stepKey === "design"
-            ? "needs_design"
-            : route.stationKey === "prepress" || route.stepKey === "prepress"
-              ? "ready_for_prepress"
-              : "ready_for_production";
 
         const targetLifecycleStatus = targetWorkflowState === "ready_for_production" ? "in_production" : "new";
 
@@ -341,12 +421,17 @@ export async function scheduleOrderLineItemsForProduction(args: {
     message = `Created ${createdCount} production job(s)`;
   } else if (existingCount > 0) {
     message = `${existingCount} item(s) already in production`;
+  } else if (blockedByProofCount > 0) {
+    message = `Approved proof required before scheduling ${blockedByProofCount} item(s)`;
   } else {
     message = "No jobs created (line items not routed to production)";
   }
 
   if (skippedCount > 0) {
     message += `. Skipped ${skippedCount} non-production item(s)`;
+  }
+  if (blockedByProofCount > 0 && createdCount + existingCount > 0) {
+    message += `. Blocked ${blockedByProofCount} proof-required item(s) without an approved proof`;
   }
   if (failed.length > 0) {
     message += `. Failed ${failed.length} item(s)`;

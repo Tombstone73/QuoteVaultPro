@@ -56,6 +56,7 @@ export function getSession() {
     createTableIfMissing: false,
     ttl: sessionTtl,
     tableName: "sessions",
+    disableTouch: true,  // prevent UPDATE on every session read; sessions expire by original TTL
   });
   
   const cookieConfig = getSessionCookieConfig(sessionTtl);
@@ -351,7 +352,9 @@ export async function setupAuth(app: Express) {
                                userMemberships[0]?.organizationId;
 
           if (!defaultOrgId) {
-            console.error('[Password Reset] No organization found for user');
+            // Token was created above but cannot be delivered — user has no org membership
+            // so there is no Gmail OAuth connection to send through.
+            console.error(`[Password Reset] No organization found for user ${user.id} — reset token created but email undeliverable`);
             return;
           }
 

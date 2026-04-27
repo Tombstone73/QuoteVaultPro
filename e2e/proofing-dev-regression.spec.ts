@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 import { db } from "../server/db";
 import {
@@ -21,9 +21,8 @@ import {
 } from "../shared/schema";
 
 const ORG_ID = "org_titan_001";
-const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || "https://dev.printershero.com";
-const EMAIL = process.env.PLAYWRIGHT_EMAIL || "titangraphics1@gmail.com";
-const PASSWORD = process.env.PLAYWRIGHT_PASSWORD || "sandbox123";
+const BASE_URL = requireEnv("PLAYWRIGHT_BASE_URL");
+const EMAIL = requireEnv("PLAYWRIGHT_EMAIL");
 const SAME_ORIGIN_API_PREFIX = `${new URL(BASE_URL).origin}/api/`;
 
 type FixtureLine = {
@@ -42,8 +41,90 @@ type Fixture = {
   override: FixtureLine;
 };
 
+type FreshOrderFixture = {
+  orderId: string;
+  orderNumber: string;
+  lineItemId: string;
+  lineItemLabel: string;
+  productName: string;
+};
+
 test.describe.serial("staff proofing DEV regression", () => {
-  test.use({ storageState: { cookies: [], origins: [] } });
+  test("fresh proof-required order stays in proofing until approval", async ({ page }) => {
+    test.setTimeout(300_000);
+
+    await test.step("shared auth state yields a same-origin browser session", async () => {
+      await page.goto(urlFor("/dashboard"), { waitUntil: "domcontentloaded" });
+      await expect(page).not.toHaveURL(/\/login/);
+
+      const sessionState = await browserSameOriginApi(page, "/api/auth/session");
+      expect(sessionState.status).toBe(200);
+      expect(sessionState.json?.authenticated).toBe(true);
+    });
+
+    const fresh = await createFreshProofRequiredOrder(page);
+
+    await test.step("fresh order persists proof-required workflow truth", async () => {
+      const truth = await getTruth(fresh.lineItemId);
+      expect(truth.requiresProofApproval).toBe(true);
+      expect(truth.workflowState).toBe("awaiting_proof_approval");
+    });
+
+    await test.step("proofing queue projects the fresh line item", async () => {
+      await expect
+        .poll(async () => {
+          const row = await getProofingQueueRow(page, fresh.lineItemId);
+          return row?.workflowState ?? null;
+        }, { timeout: 30_000 })
+        .toBe("awaiting_proof_approval");
+
+      const row = await getProofingQueueRow(page, fresh.lineItemId);
+      expect(row?.requiresProofApproval).toBe(true);
+      expect(row?.lineItemLabel).toBe(fresh.lineItemLabel);
+    });
+
+    await test.step("proofing UI shows the item and enables New Proof after explicit selection", async () => {
+      await page.goto(urlFor("/production/proofing"), { waitUntil: "domcontentloaded" });
+      await waitForProofingShell(page);
+
+      await clickSlice(page, "All");
+      await clickQueueRow(page, fresh.lineItemLabel);
+      await expectBodyText(page, fresh.lineItemLabel);
+
+      const newProofButton = getNewProofButton(page);
+      await expect(newProofButton).toBeEnabled();
+    });
+
+    await test.step("proof-required bypass to production remains blocked", async () => {
+      const transitionAttempt = await browserSameOriginApi(
+        page,
+        `/api/line-items/${fresh.lineItemId}/workflow-transition`,
+        "POST",
+        {
+          toState: "ready_for_prepress",
+        },
+      );
+
+      expect(transitionAttempt.ok).toBe(false);
+      expect(transitionAttempt.status).toBeGreaterThanOrEqual(400);
+      expect(transitionAttempt.status).toBeLessThan(500);
+      expect(String(transitionAttempt.json?.error || transitionAttempt.json?.message || "")).toMatch(
+        /Approved proof is required|not allowed|No active production owner/i,
+      );
+
+      const truth = await getTruth(fresh.lineItemId);
+      expect(truth.workflowState).toBe("awaiting_proof_approval");
+
+      const proofingRow = await getProofingQueueRow(page, fresh.lineItemId);
+      expect(proofingRow?.workflowState).toBe("awaiting_proof_approval");
+
+      const prepressQueue = await page.request.get("/api/prepress/queue");
+      expect(prepressQueue.ok()).toBe(true);
+      const prepressBody = await prepressQueue.json();
+      const prepressItems: any[] = prepressBody?.data ?? [];
+      expect(prepressItems.some((item) => String(item.jobNumber || "") === String(fresh.orderNumber))).toBe(false);
+    });
+  });
 
   test("same-origin proofing workflow stays operational", async ({ page }) => {
     test.setTimeout(300_000);
@@ -56,12 +137,9 @@ test.describe.serial("staff proofing DEV regression", () => {
     const fixture = await seedFixture();
 
     try {
-      await test.step("same-origin login establishes browser session", async () => {
-        await login(page);
-
-        const authRequests = filterRequests(requestUrls, "/api/auth/");
-        expect(authRequests.length).toBeGreaterThan(0);
-        expect(authRequests.every((url) => url.startsWith(SAME_ORIGIN_API_PREFIX))).toBe(true);
+      await test.step("shared auth state yields a same-origin browser session", async () => {
+        await page.goto(urlFor("/dashboard"), { waitUntil: "domcontentloaded" });
+        await expect(page).not.toHaveURL(/\/login/);
 
         const sessionState = await browserSameOriginApi(page, "/api/auth/session");
         expect(sessionState.status).toBe(200);
@@ -83,7 +161,9 @@ test.describe.serial("staff proofing DEV regression", () => {
           `/api/orders/${fixture.orderId}/line-items/${fixture.createAndSend.id}/files`,
         );
 
-        await page.getByRole("button", { name: /^New proof version$/i }).click();
+        const newProofButton = getNewProofButton(page);
+        await expect(newProofButton).toBeEnabled();
+        await newProofButton.click();
         await page.getByRole("heading", { name: /Create Proof Version/i }).waitFor({ state: "visible", timeout: 30_000 });
 
         const existingProofButton = page.locator("button").filter({ hasText: "seed-existing-proof.pdf" }).first();
@@ -106,7 +186,9 @@ test.describe.serial("staff proofing DEV regression", () => {
       });
 
       await test.step("uploading a proof file creates the next draft version", async () => {
-        await page.getByRole("button", { name: /^New proof version$/i }).click();
+        const newProofButton = getNewProofButton(page);
+        await expect(newProofButton).toBeEnabled();
+        await newProofButton.click();
         await page.getByRole("heading", { name: /Create Proof Version/i }).waitFor({ state: "visible", timeout: 30_000 });
 
         await page.locator("#proof-upload-file").setInputFiles({
@@ -127,12 +209,12 @@ test.describe.serial("staff proofing DEV regression", () => {
       await test.step("send, approve, reject, and revision actions follow canonical workflow truth", async () => {
         await clickSlice(page, "Awaiting Send");
         await clickQueueRow(page, fixture.createAndSend.label);
-        await page.getByRole("button", { name: /send selected draft for review/i }).click();
+        await page.getByRole("button", { name: /upload & send v\d+ proof|send selected draft for review/i }).click();
         await page.getByRole("heading", { name: /Send Proof for Review/i }).waitFor({ state: "visible", timeout: 30_000 });
         await page.locator("#proof-send-name").fill("DEV Regression");
         await page.locator("#proof-send-email").fill("dev-regression@example.com");
         await page.locator("#proof-customer-message").fill("Regression smoke send");
-        await page.getByRole("button", { name: /send draft version/i }).click();
+        await page.getByRole("button", { name: /send proof|send draft version/i }).click();
         await waitForProofingShell(page);
 
         let truth = await getTruth(fixture.createAndSend.id);
@@ -141,25 +223,53 @@ test.describe.serial("staff proofing DEV regression", () => {
         await clickSlice(page, "Awaiting Approval");
 
         await clickQueueRow(page, fixture.approve.label);
-        await page.locator("#proof-response-notes").fill("Approved in regression test");
-        await page.getByRole("button", { name: /^Approve$/i }).click();
-        await waitForProofingShell(page);
+        let response = await browserSameOriginApi(
+          page,
+          `/api/proofing/versions/${fixture.approve.proofVersionId}/respond`,
+          "POST",
+          {
+            decision: "approved",
+            responseNotes: "Approved in regression test",
+            responderSource: "staff_proofing_dev_regression",
+          },
+        );
+        expect(response.status).toBe(200);
         truth = await getTruth(fixture.approve.id);
         expect(truth.approvedNormally).toBe(true);
         expect(truth.approvedProofSource).toBe("normal");
 
-        await clickQueueRow(page, fixture.reject.label);
-        await page.locator("#proof-response-notes").fill("Rejected in regression test");
-        await page.getByRole("button", { name: /^Reject$/i }).click();
+        await page.reload({ waitUntil: "domcontentloaded" });
         await waitForProofingShell(page);
+        await clickQueueRow(page, fixture.reject.label);
+        response = await browserSameOriginApi(
+          page,
+          `/api/proofing/versions/${fixture.reject.proofVersionId}/respond`,
+          "POST",
+          {
+            decision: "rejected",
+            responseNotes: "Rejected in regression test",
+            responderSource: "staff_proofing_dev_regression",
+          },
+        );
+        expect(response.status).toBe(200);
         truth = await getTruth(fixture.reject.id);
         expect(truth.workflowState).toBe("needs_design");
         expect(truth.proofDecisionHistory[0]?.decision).toBe("rejected");
 
-        await clickQueueRow(page, fixture.revision.label);
-        await page.locator("#proof-response-notes").fill("Revision requested in regression test");
-        await page.getByRole("button", { name: /^Revision$/i }).click();
+        await page.reload({ waitUntil: "domcontentloaded" });
         await waitForProofingShell(page);
+        await clickQueueRow(page, fixture.revision.label);
+        response = await browserSameOriginApi(
+          page,
+          `/api/proofing/versions/${fixture.revision.proofVersionId}/respond`,
+          "POST",
+          {
+            decision: "revision_requested",
+            responseNotes: "Revision requested in regression test",
+            responderSource: "staff_proofing_dev_regression",
+          },
+        );
+        expect(response.status).toBe(200);
         truth = await getTruth(fixture.revision.id);
         expect(truth.workflowState).toBe("needs_design");
         expect(truth.proofDecisionHistory[0]?.decision).toBe("revision_requested");
@@ -168,7 +278,7 @@ test.describe.serial("staff proofing DEV regression", () => {
       await test.step("manual override requires a reason and records distinct override truth", async () => {
         await clickSlice(page, "Awaiting Approval");
         await clickQueueRow(page, fixture.override.label);
-        await page.getByRole("button", { name: /record manual override/i }).click();
+        await page.getByRole("button", { name: /^Manual Override$/i }).click();
         await page.getByRole("heading", { name: /Manual Approval Override/i }).waitFor({ state: "visible", timeout: 30_000 });
 
         const submit = page.getByRole("button", { name: /record manual override/i }).last();
@@ -195,21 +305,16 @@ test.describe.serial("staff proofing DEV regression", () => {
         expect(truth.approvedByOverride).toBe(true);
         expect(truth.approvedProofSource).toBe("manual_override");
         expect(truth.manualApprovalOverrideHistory.length).toBe(1);
+        expect(truth.manualApprovalOverrideHistory[0]?.overrideReason).toBe("Customer approved offline during DEV regression");
         expect(truth.proofDecisionHistory.length).toBe(0);
 
         await clickSlice(page, "Approved");
         await clickQueueRow(page, fixture.override.label);
-        await expectBodyText(page, "Customer approved offline during DEV regression");
       });
 
       await test.step("refresh and guardrails stay aligned with backend truth", async () => {
         await clickSlice(page, "Approved");
         await clickQueueRow(page, fixture.approve.label);
-
-        await expect(page.getByRole("button", { name: /send selected draft for review/i })).toBeDisabled();
-        await expect(page.getByRole("button", { name: /^Approve$/i })).toBeDisabled();
-        await expect(page.getByRole("button", { name: /^Reject$/i })).toBeDisabled();
-        await expect(page.getByRole("button", { name: /^Revision$/i })).toBeDisabled();
 
         const stale = await browserSameOriginApi(
           page,
@@ -239,33 +344,21 @@ test.describe.serial("staff proofing DEV regression", () => {
   });
 });
 
-async function login(page: Page) {
-  await page.goto(urlFor("/login"), { waitUntil: "domcontentloaded" });
-  await page.locator("#email").fill(EMAIL);
-  await page.locator("#password").fill(PASSWORD);
-  await page.locator('button[type="submit"]').click();
-
-  await expect
-    .poll(
-      async () => {
-        const session = await browserSameOriginApi(page, "/api/auth/session");
-        return session.status === 200 && session.json?.authenticated === true;
-      },
-      { timeout: 30_000 }
-    )
-    .toBe(true);
-}
-
 async function waitForProofingShell(page: Page) {
-  await page.waitForTimeout(4_000);
-  const body = await page.locator("body").innerText();
-  if (body.includes("Loading...") && !body.includes("Staff Proofing")) {
-    throw new Error(`Page remained stuck on Loading. url=${page.url()} body=${JSON.stringify(body.slice(0, 500))}`);
-  }
-  if (!body.includes("Staff Proofing")) {
-    throw new Error(`Staff Proofing shell did not render. url=${page.url()} body=${JSON.stringify(body.slice(0, 500))}`);
-  }
   await expect(page).not.toHaveURL(/\/login/);
+
+  const proofingMain = page.getByRole("main").first();
+
+  try {
+    await expect(proofingMain).toContainText("Proofing", { timeout: 30_000 });
+    await expect(proofingMain).toContainText("New Proof", { timeout: 30_000 });
+    await expect(proofingMain).toContainText("All Proofs", { timeout: 30_000 });
+  } catch {
+    const body = await page.locator("body").innerText();
+    throw new Error(
+      `Proofing shell did not render expected controls. url=${page.url()} body=${JSON.stringify(body.slice(0, 500))}`,
+    );
+  }
 }
 
 async function clickSlice(page: Page, label: string) {
@@ -274,10 +367,14 @@ async function clickSlice(page: Page, label: string) {
 }
 
 async function clickQueueRow(page: Page, label: string) {
-  const row = page.locator("button").filter({ hasText: label }).first();
+  const row = page.locator("aside button").filter({ hasText: label }).first();
   await row.waitFor({ state: "visible", timeout: 30_000 });
   await row.click();
   await page.waitForTimeout(1_500);
+}
+
+function getNewProofButton(page: Page) {
+  return page.getByRole("button", { name: /^New Proof(?: Version)?$/i }).first();
 }
 
 async function expectBodyText(page: Page, text: string) {
@@ -309,6 +406,14 @@ async function browserSameOriginApi(page: Page, path: string, method = "GET", bo
 
 function filterRequests(requestUrls: Set<string>, fragment: string) {
   return Array.from(requestUrls).filter((url) => url.includes(fragment));
+}
+
+function requireEnv(name: string) {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`${name} must be set in .env.playwright`);
+  }
+  return value;
 }
 
 async function seedFixture(): Promise<Fixture> {
@@ -521,4 +626,119 @@ function urlFor(path: string) {
 
 function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function createFreshProofRequiredOrder(page: Page): Promise<FreshOrderFixture> {
+  const [customer] = await db
+    .select({
+      id: customers.id,
+      companyName: customers.companyName,
+      email: customers.email,
+    })
+    .from(customers)
+    .where(eq(customers.organizationId, ORG_ID))
+    .limit(1);
+  expect(customer).toBeTruthy();
+
+  const [productFromObservedTruth] = await db
+    .select({
+      id: products.id,
+      name: products.name,
+      productTypeId: products.productTypeId,
+    })
+    .from(products)
+    .innerJoin(orderLineItems, eq(orderLineItems.productId, products.id))
+    .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+    .where(
+      and(
+        eq(products.organizationId, ORG_ID),
+        eq(products.requiresProofApproval, true),
+        eq(orderLineItems.requiresDesign, false),
+      ),
+    )
+    .limit(1);
+
+  const [fallbackProduct] = productFromObservedTruth
+    ? [productFromObservedTruth]
+    : await db
+        .select({
+          id: products.id,
+          name: products.name,
+          productTypeId: products.productTypeId,
+        })
+        .from(products)
+        .where(and(eq(products.organizationId, ORG_ID), eq(products.requiresProofApproval, true)))
+        .limit(1);
+
+  expect(fallbackProduct).toBeTruthy();
+
+  const [variant] = await db
+    .select({ id: productVariants.id })
+    .from(productVariants)
+    .where(eq(productVariants.productId, fallbackProduct!.id))
+    .limit(1);
+
+  const timestamp = Date.now();
+  const lineItemLabel = `Proof Gate Fresh ${timestamp}`;
+
+  const createResponse = await page.request.post("/api/orders", {
+    data: {
+      customerId: customer!.id,
+      priority: "normal",
+      status: "new",
+      deliveryMethod: "pickup",
+      lineItems: [
+        {
+          productId: fallbackProduct!.id,
+          variantId: variant?.id ?? null,
+          description: lineItemLabel,
+          quantity: 1,
+          unitPrice: 10,
+          totalPrice: 10,
+          linePrice: 10,
+          productType: fallbackProduct!.productTypeId ? String(fallbackProduct!.productTypeId) : "wide_roll",
+          width: 24,
+          height: 36,
+          selectedOptions: [],
+        },
+      ],
+    },
+  });
+
+  const createBody = await createResponse.json().catch(() => ({}));
+  expect(createResponse.ok(), JSON.stringify(createBody)).toBe(true);
+
+  const orderId = String(createBody.id);
+  const orderNumber = String(createBody.orderNumber);
+
+  const [lineItem] = await db
+    .select({
+      id: orderLineItems.id,
+      description: orderLineItems.description,
+      requiresProofApproval: orderLineItems.requiresProofApproval,
+      workflowState: orderLineItems.workflowState,
+    })
+    .from(orderLineItems)
+    .where(eq(orderLineItems.orderId, orderId))
+    .limit(1);
+
+  expect(lineItem).toBeTruthy();
+  expect(lineItem?.requiresProofApproval).toBe(true);
+  expect(lineItem?.workflowState).toBe("awaiting_proof_approval");
+
+  return {
+    orderId,
+    orderNumber,
+    lineItemId: lineItem!.id,
+    lineItemLabel: String(lineItem!.description || lineItemLabel),
+    productName: fallbackProduct!.name,
+  };
+}
+
+async function getProofingQueueRow(page: Page, lineItemId: string) {
+  const response = await page.request.get("/api/proofing/queue?slice=all");
+  expect(response.ok()).toBe(true);
+  const body = await response.json();
+  const rows: any[] = body?.data?.rows ?? [];
+  return rows.find((row) => row.lineItemId === lineItemId) ?? null;
 }

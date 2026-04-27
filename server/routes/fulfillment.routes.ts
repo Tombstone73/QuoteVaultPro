@@ -1,0 +1,349 @@
+/**
+ * fulfillment.routes.ts
+ *
+ * Fulfillment and shipment routes extracted from server/routes.ts.
+ *
+ * Routes:
+ *   GET    /api/fulfillment/queue
+ *   POST   /api/fulfillment/shipments
+ *   GET    /api/fulfillment/shipments/:shipmentId
+ *   PATCH  /api/fulfillment/shipments/:shipmentId
+ *   POST   /api/fulfillment/shipments/:shipmentId/mark-shipped
+ *   POST   /api/fulfillment/shipments/:shipmentId/void
+ *   POST   /api/fulfillment/pickup/:orderId
+ *   POST   /api/fulfillment/pickup/:ticketId/ready
+ *   POST   /api/fulfillment/pickup/:ticketId/picked-up
+ *   GET    /api/orders/:id/shipments
+ *   POST   /api/orders/:id/shipments           (legacy — blocked 409)
+ *   PATCH  /api/shipments/:id                  (legacy — blocked 409)
+ *   DELETE /api/shipments/:id                  (legacy — blocked 409)
+ *   PATCH  /api/orders/:id/fulfillment-status
+ *   POST   /api/orders/:id/send-shipping-email
+ *
+ * Placement: server/routes/fulfillment.routes.ts
+ * Registered by: server/routes.ts via registerFulfillmentRoutes
+ */
+
+import type { Express } from "express";
+import { and, eq } from "drizzle-orm";
+import { orders } from "@shared/schema";
+import { db } from "../db";
+import { getRequestOrganizationId } from "../tenantContext";
+import { storage } from "../storage";
+import { updateOrderFulfillmentStatus, sendShipmentEmail } from "../fulfillmentService";
+import {
+  createShipmentSchema as createFulfillmentShipmentSchema,
+  listQueueQuerySchema,
+  patchShipmentSchema as patchFulfillmentShipmentSchema,
+  pickupReadySchema,
+} from "../services/fulfillment/schemas";
+import { FulfillmentHttpError } from "../services/fulfillment/types";
+import { fulfillmentServiceV2 } from "../services/fulfillment/service";
+
+// Handles both Replit auth (claims.sub) and local auth (id) formats
+const getUserId = (user: any): string | undefined => user?.claims?.sub || user?.id;
+
+export function registerFulfillmentRoutes(
+  app: Express,
+  middleware: {
+    isAuthenticated: any;
+    tenantContext: any;
+  },
+): void {
+  const { isAuthenticated, tenantContext } = middleware;
+
+  // ===== SHIPMENT & FULFILLMENT ROUTES =====
+
+  // Fulfillment Queue Dashboard (backend-only; UI wiring follows separately)
+  app.get('/api/fulfillment/queue', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const parsed = listQueueQuerySchema.parse(req.query || {});
+
+      const data = await fulfillmentServiceV2.listQueue(organizationId, {
+        type: parsed.type,
+        status: parsed.status,
+        showArchived: parsed.showArchived,
+        overdueOnly: parsed.overdueOnly,
+        search: parsed.search,
+        page: parsed.page,
+        pageSize: parsed.pageSize,
+      });
+
+      return res.json({ success: true, data: { rows: data.rows, total: data.total } });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ success: false, message: 'Invalid query params', code: 'VALIDATION_ERROR' });
+      }
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] queue error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to fetch fulfillment queue' });
+    }
+  });
+
+  app.post('/api/fulfillment/shipments', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) || null;
+      const parsed = createFulfillmentShipmentSchema.parse(req.body || {});
+
+      const shipment = await fulfillmentServiceV2.createShipment(organizationId, {
+        scope: parsed.scope,
+        orderIds: parsed.orderIds,
+        primaryOrderId: parsed.primaryOrderId,
+        actorUserId,
+      });
+
+      return res.json({ success: true, data: { shipmentId: shipment.id, shipment } });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ success: false, message: 'Invalid shipment payload', code: 'VALIDATION_ERROR' });
+      }
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] create shipment error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to create shipment' });
+    }
+  });
+
+  app.get('/api/fulfillment/shipments/:shipmentId', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const shipment = await fulfillmentServiceV2.getShipment(organizationId, req.params.shipmentId);
+
+      if (!shipment) {
+        return res.status(404).json({ success: false, message: 'Shipment not found', code: 'NOT_FOUND' });
+      }
+
+      return res.json({ success: true, data: shipment });
+    } catch (error) {
+      console.error('[fulfillment] get shipment error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to fetch shipment' });
+    }
+  });
+
+  app.patch('/api/fulfillment/shipments/:shipmentId', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) || null;
+      const parsed = patchFulfillmentShipmentSchema.parse(req.body || {});
+
+      const shipment = await fulfillmentServiceV2.patchShipment(organizationId, req.params.shipmentId, {
+        carrier: parsed.carrier,
+        serviceLevel: parsed.serviceLevel,
+        trackingNumber: parsed.trackingNumber,
+        shipDate: parsed.shipDate,
+        boxCount: parsed.boxCount,
+        weight: parsed.weight,
+        dims: parsed.dims,
+        internalNotes: parsed.internalNotes,
+        shipmentItems: parsed.shipmentItems,
+        actorUserId,
+      });
+
+      return res.json({ success: true, data: shipment });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ success: false, message: 'Invalid shipment patch payload', code: 'VALIDATION_ERROR' });
+      }
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] patch shipment error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to update shipment' });
+    }
+  });
+
+  app.post('/api/fulfillment/shipments/:shipmentId/mark-shipped', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) || null;
+
+      const shipment = await fulfillmentServiceV2.markShipmentShipped(organizationId, req.params.shipmentId, actorUserId);
+      return res.json({ success: true, data: shipment });
+    } catch (error: any) {
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] mark shipped error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to mark shipment shipped' });
+    }
+  });
+
+  app.post('/api/fulfillment/shipments/:shipmentId/void', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) || null;
+
+      const shipment = await fulfillmentServiceV2.voidShipment(organizationId, req.params.shipmentId, actorUserId);
+      return res.json({ success: true, data: shipment });
+    } catch (error: any) {
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] void shipment error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to void shipment' });
+    }
+  });
+
+  app.post('/api/fulfillment/pickup/:orderId', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) || null;
+
+      const ticket = await fulfillmentServiceV2.createOrGetPickupTicket(organizationId, req.params.orderId, actorUserId);
+      return res.json({ success: true, data: ticket });
+    } catch (error: any) {
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] create pickup ticket error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to create pickup ticket' });
+    }
+  });
+
+  app.post('/api/fulfillment/pickup/:ticketId/ready', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) || null;
+      const actorUserRole = String(req.user?.role || '').trim().toLowerCase() || null;
+      const parsed = pickupReadySchema.parse(req.body || {});
+
+      const result = await fulfillmentServiceV2.markPickupReady(organizationId, req.params.ticketId, parsed, actorUserId, actorUserRole);
+      return res.json({
+        success: true,
+        data: {
+          ticket: result.ticket,
+          notification: result.notification,
+        },
+      });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ success: false, message: 'Invalid pickup ready payload', code: 'VALIDATION_ERROR' });
+      }
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] mark pickup ready error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to mark pickup ready' });
+    }
+  });
+
+  app.post('/api/fulfillment/pickup/:ticketId/picked-up', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) || null;
+
+      const ticket = await fulfillmentServiceV2.markPickupPickedUp(organizationId, req.params.ticketId, actorUserId);
+      return res.json({ success: true, data: ticket });
+    } catch (error: any) {
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] mark pickup picked-up error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to mark pickup picked-up' });
+    }
+  });
+
+  // Get all shipments for an order
+  app.get('/api/orders/:id/shipments', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const shipmentList = await storage.getShipmentsByOrder(organizationId, req.params.id);
+      res.json({ success: true, data: shipmentList });
+    } catch (error) {
+      console.error('Error fetching shipments:', error);
+      res.status(500).json({ error: 'Failed to fetch shipments' });
+    }
+  });
+
+  // Legacy shipment mutation path is intentionally blocked during fulfillment contract tightening.
+  app.post('/api/orders/:id/shipments', isAuthenticated, tenantContext, async (_req: any, res) => {
+    return res.status(409).json({
+      success: false,
+      code: 'FULFILLMENT_V2_REQUIRED',
+      message: 'Legacy shipment creation is disabled. Use the Fulfillment workspace shipment flow.',
+    });
+  });
+
+  app.patch('/api/shipments/:id', isAuthenticated, tenantContext, async (_req: any, res) => {
+    return res.status(409).json({
+      success: false,
+      code: 'FULFILLMENT_V2_REQUIRED',
+      message: 'Legacy shipment editing is disabled. Use the Fulfillment workspace shipment flow.',
+    });
+  });
+
+  app.delete('/api/shipments/:id', isAuthenticated, tenantContext, async (_req: any, res) => {
+    return res.status(409).json({
+      success: false,
+      code: 'FULFILLMENT_V2_REQUIRED',
+      message: 'Legacy shipment deletion is disabled. Use the Fulfillment workspace shipment flow.',
+    });
+  });
+
+  // Manually update order fulfillment status (override auto-status - manager+ only)
+  app.patch('/api/orders/:id/fulfillment-status', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+
+      if (!['owner', 'admin', 'manager'].includes(req.user?.role)) {
+        return res.status(403).json({ error: 'Manager, Admin, or Owner role required' });
+      }
+
+      const [order] = await db
+        .select({
+          id: orders.id,
+          state: orders.state,
+        })
+        .from(orders)
+        .where(and(eq(orders.id, req.params.id), eq(orders.organizationId, organizationId)))
+        .limit(1);
+
+      if (!order) {
+        return res.status(404).json({ error: 'Order not found' });
+      }
+
+      if (order.state === 'production_complete') {
+        return res.status(409).json({
+          error: 'Manual fulfillment status overrides are disabled for fulfillment-managed orders. Use shipment or pickup actions.',
+          code: 'FULFILLMENT_ARTIFACT_SYNC_REQUIRED',
+        });
+      }
+
+      const { status } = req.body;
+
+      if (!['pending', 'packed', 'shipped', 'delivered'].includes(status)) {
+        return res.status(400).json({ error: 'Invalid fulfillment status' });
+      }
+
+      await updateOrderFulfillmentStatus(req.params.id, status);
+
+      res.json({ success: true, message: 'Fulfillment status updated successfully' });
+    } catch (error) {
+      console.error('Error updating fulfillment status:', error);
+      res.status(500).json({ error: 'Failed to update fulfillment status' });
+    }
+  });
+
+  // Send shipment notification email
+  app.post('/api/orders/:id/send-shipping-email', isAuthenticated, async (req: any, res) => {
+    try {
+      const orderId = req.params.id;
+      const { shipmentId, subject, customMessage } = req.body;
+
+      if (!shipmentId) {
+        return res.status(400).json({ error: 'shipmentId is required' });
+      }
+
+      await sendShipmentEmail(orderId, shipmentId.toString(), subject, customMessage);
+      res.json({ success: true, message: 'Shipment email sent successfully' });
+    } catch (error) {
+      console.error('Error sending shipment email:', error);
+      res.status(500).json({ error: 'Failed to send shipment email' });
+    }
+  });
+}

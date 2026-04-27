@@ -169,12 +169,12 @@ export const deleteFormulaTemplate = sharedRepo.deleteFormulaTemplate.bind(share
 export const getProductsByFormulaTemplate = sharedRepo.getProductsByFormulaTemplate.bind(sharedRepo);
 
 // Email settings operations
-export const getAllEmailSettings = sharedRepo.getAllEmailSettings.bind(sharedRepo);
-export const getEmailSettingsById = sharedRepo.getEmailSettingsById.bind(sharedRepo);
 export const getDefaultEmailSettings = sharedRepo.getDefaultEmailSettings.bind(sharedRepo);
-export const createEmailSettings = sharedRepo.createEmailSettings.bind(sharedRepo);
 export const updateEmailSettings = sharedRepo.updateEmailSettings.bind(sharedRepo);
-export const deleteEmailSettings = sharedRepo.deleteEmailSettings.bind(sharedRepo);
+// Platform Gmail OAuth connection operations
+export const upsertGmailConnection = sharedRepo.upsertGmailConnection.bind(sharedRepo);
+export const disconnectGmailConnection = sharedRepo.disconnectGmailConnection.bind(sharedRepo);
+export const markEmailConnectionStatus = sharedRepo.markEmailConnectionStatus.bind(sharedRepo);
 
 // Company settings operations
 export const getCompanySettings = sharedRepo.getCompanySettings.bind(sharedRepo);
@@ -248,6 +248,7 @@ export const updateQuoteWorkflowState = quotesRepo.updateQuoteWorkflowState.bind
 // =============================
 // Orders Repository Exports
 // =============================
+export const getMaxOrderNumber = ordersRepo.getMaxOrderNumber.bind(ordersRepo);
 export const getAllOrders = ordersRepo.getAllOrders.bind(ordersRepo);
 export const getAllOrdersPaginated = ordersRepo.getAllOrdersPaginated.bind(ordersRepo);
 export const getOrderById = ordersRepo.getOrderById.bind(ordersRepo);
@@ -387,12 +388,11 @@ export const storage = {
     updateFormulaTemplate,
     deleteFormulaTemplate,
     getProductsByFormulaTemplate,
-    getAllEmailSettings,
-    getEmailSettingsById,
     getDefaultEmailSettings,
-    createEmailSettings,
     updateEmailSettings,
-    deleteEmailSettings,
+    upsertGmailConnection,
+    disconnectGmailConnection,
+    markEmailConnectionStatus,
     getCompanySettings,
     createCompanySettings,
     updateCompanySettings,
@@ -457,6 +457,7 @@ export const storage = {
     updateQuoteWorkflowState,
 
     // Orders
+    getMaxOrderNumber,
     getAllOrders,
     getAllOrdersPaginated,
     getOrderById,

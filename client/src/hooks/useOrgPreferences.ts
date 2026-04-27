@@ -38,6 +38,10 @@ export interface OrgPreferences {
   production?: {
     materialsOverrideMode?: "prepress_only" | "prepress_and_production";
   };
+
+  proofing?: {
+    defaultProofDisclaimerText?: string;
+  };
 }
 
 type InventoryPolicyPatch = {

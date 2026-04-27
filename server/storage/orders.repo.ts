@@ -42,6 +42,19 @@ import { eq, and, or, ilike, gte, lte, desc, sql, isNull, inArray } from "drizzl
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
 import { resolveActiveProductionOwners } from "../services/productionOwnership";
+import { copyLineItemDesignSnapshotFields, materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
+import { productDesignConfigRepository } from "./productDesignConfig.repo";
+
+type ProductionSummaryStatus = "none" | "clear" | "needs_handoff" | "partial" | "in_production" | "complete";
+
+type OrderProductionSummary = {
+    requiredCount: number;
+    handedOffCount: number;
+    pendingHandoffCount: number;
+    inProductionCount: number;
+    completeCount: number;
+    status: ProductionSummaryStatus;
+};
 
 const ORDER_ATTACHMENT_SAFE_SELECT = {
     id: orderAttachments.id,
@@ -88,6 +101,125 @@ type CreateOrderLineItemInput = Omit<InsertOrderLineItem, 'orderId' | 'requiresP
 export class OrdersRepository {
     constructor(private readonly dbInstance = db) { }
 
+    private normalizeWorkflowStateForSummary(value: unknown): string {
+        const normalized = String(value ?? "").trim().toLowerCase();
+        if (!normalized) return "new";
+
+        if (normalized === "complete") return "completed";
+        return normalized;
+    }
+
+    private async buildProductionSummaries(organizationId: string, orderIds: string[]) {
+        const summaries = new Map<string, OrderProductionSummary>();
+        if (!orderIds.length) return summaries;
+
+        const lineItems = await this.dbInstance
+            .select({
+                orderId: orderLineItems.orderId,
+                lineItemId: orderLineItems.id,
+                workflowState: orderLineItems.workflowState,
+                status: orderLineItems.status,
+                requiresProductionJob: products.requiresProductionJob,
+            })
+            .from(orderLineItems)
+            .innerJoin(products, eq(orderLineItems.productId, products.id))
+            .where(inArray(orderLineItems.orderId, orderIds));
+
+        const lineItemIds = lineItems.map((lineItem) => String(lineItem.lineItemId));
+        const activeOwners = lineItemIds.length > 0
+            ? await resolveActiveProductionOwners(this.dbInstance, {
+                organizationId,
+                lineItemIds,
+                debugLabel: "OrdersRepository.buildProductionSummaries",
+            })
+            : new Map<string, any>();
+
+        const terminalStates = new Set(["completed", "canceled"]);
+        const readyStates = new Set(["ready_for_prepress", "ready_for_production"]);
+        const activePipelineStates = new Set(["in_prepress", "in_production"]);
+
+        for (const orderId of orderIds) {
+            summaries.set(orderId, {
+                requiredCount: 0,
+                handedOffCount: 0,
+                pendingHandoffCount: 0,
+                inProductionCount: 0,
+                completeCount: 0,
+                status: "none",
+            });
+        }
+
+        for (const lineItem of lineItems) {
+            if (lineItem.requiresProductionJob !== true) continue;
+
+            const orderId = String(lineItem.orderId);
+            const summary = summaries.get(orderId);
+            if (!summary) continue;
+
+            summary.requiredCount += 1;
+
+            const workflowState = this.normalizeWorkflowStateForSummary(lineItem.workflowState ?? lineItem.status);
+            const hasActiveOwner = activeOwners.has(String(lineItem.lineItemId));
+
+            if (terminalStates.has(workflowState)) {
+                summary.completeCount += 1;
+                summary.handedOffCount += 1;
+                continue;
+            }
+
+            if (readyStates.has(workflowState)) {
+                if (hasActiveOwner) {
+                    summary.handedOffCount += 1;
+                    summary.inProductionCount += 1;
+                } else {
+                    summary.pendingHandoffCount += 1;
+                }
+                continue;
+            }
+
+            if (activePipelineStates.has(workflowState) && hasActiveOwner) {
+                summary.handedOffCount += 1;
+                summary.inProductionCount += 1;
+            }
+        }
+
+        for (const summary of Array.from(summaries.values())) {
+            if (summary.requiredCount === 0) {
+                summary.status = "none";
+                continue;
+            }
+
+            if (summary.completeCount === summary.requiredCount) {
+                summary.status = "complete";
+                continue;
+            }
+
+            if (summary.pendingHandoffCount > 0 && summary.handedOffCount === 0 && summary.inProductionCount === 0) {
+                summary.status = "needs_handoff";
+                continue;
+            }
+
+            if (summary.pendingHandoffCount > 0) {
+                summary.status = "partial";
+                continue;
+            }
+
+            if (summary.inProductionCount > 0) {
+                summary.status = "in_production";
+                continue;
+            }
+
+            summary.status = "clear";
+        }
+
+        return summaries;
+    }
+
+    private async getDesignConfigMap(organizationId: string, productIds: string[], executor: any = this.dbInstance) {
+        const configs = await productDesignConfigRepository.listByProductIds(organizationId, Array.from(new Set(productIds)), executor);
+        return new Map(configs.map((config) => [config.productId, config]));
+    }
+
     private async resolvePreviewThumbnailUrl(att: { fileRecordId?: string | null; thumbKey?: string | null; previewKey?: string | null }) {
         const previewAccess = await resolveDerivativeFileAccess(att, "preview");
         if (previewAccess.url) return previewAccess.url;
@@ -97,31 +229,47 @@ export class OrdersRepository {
     }
 
     private async generateNextOrderNumber(organizationId: string, tx?: any): Promise<string> {
-        // Try globalVariables first (pattern similar to quotes). If missing, fallback to MAX(order_number)+1
         const executor = tx || this.dbInstance;
-        try {
-            const result = await executor.execute(sql`
-        SELECT * FROM ${globalVariables}
-        WHERE ${globalVariables.name} = 'next_order_number'
-        AND ${globalVariables.organizationId} = ${organizationId}
-        FOR UPDATE
-      `);
-            const row = (result as any).rows?.[0];
-            if (row) {
-                const current = Math.floor(Number(row.value));
-                // Increment for next
-                await executor.update(globalVariables)
-                    .set({ value: (current + 1).toString(), updatedAt: new Date().toISOString() })
-                    .where(and(eq(globalVariables.id, row.id), eq(globalVariables.organizationId, organizationId)));
-                return current.toString();
-            }
-        } catch (e) {
-            // Ignore and fallback
+        let orderNumberVar = await executor
+            .select()
+            .from(globalVariables)
+            .where(and(
+                eq(globalVariables.name, 'next_order_number'),
+                eq(globalVariables.organizationId, organizationId)
+            ))
+            .limit(1)
+            .then((rows: any[]) => rows[0]);
+
+        if (!orderNumberVar) {
+            console.log(`[NUMBERING] Auto-initialized order numbering for org ${organizationId} with default sequence.`);
+            const [newVar] = await executor
+                .insert(globalVariables)
+                .values({
+                    name: 'next_order_number',
+                    value: '1000',
+                    description: 'Next order number sequence (auto-initialized)',
+                    category: 'numbering',
+                    isActive: true,
+                    organizationId,
+                })
+                .returning();
+            orderNumberVar = newVar;
         }
-        // Fallback: compute max existing numeric orderNumber within this organization
-        const maxResult = await this.dbInstance.execute(sql`SELECT MAX(CAST(order_number AS INTEGER)) AS max_num FROM orders WHERE order_number ~ '^[0-9]+$' AND organization_id = ${organizationId}`);
-        const maxNum = (maxResult as any).rows?.[0]?.max_num ? Number((maxResult as any).rows[0].max_num) : 999;
-        return (maxNum + 1).toString();
+
+        const current = Math.floor(Number(orderNumberVar.value));
+        await executor
+            .update(globalVariables)
+            .set({ value: (current + 1).toString(), updatedAt: new Date() })
+            .where(and(eq(globalVariables.id, orderNumberVar.id), eq(globalVariables.organizationId, organizationId)));
+        return current.toString();
+    }
+
+    async getMaxOrderNumber(organizationId: string): Promise<number | null> {
+        const result = await this.dbInstance.execute(
+            sql`SELECT MAX(CAST(order_number AS INTEGER)) AS max_num FROM orders WHERE order_number ~ '^[0-9]+$' AND organization_id = ${organizationId}`
+        );
+        const val = (result as any).rows?.[0]?.max_num;
+        return val != null ? Number(val) : null;
     }
 
     private async getPreviewThumbnailsForOrderIds(organizationId: string, orderIds: string[]) {
@@ -223,6 +371,7 @@ export class OrdersRepository {
             customer: any;
             contact: any;
             lineItemsCount: number;
+            productionSummary?: OrderProductionSummary;
             previewThumbnails?: string[];
             thumbsCount?: number;
             attachmentsSummary?: {
@@ -322,6 +471,7 @@ export class OrdersRepository {
             .offset(offset);
 
         const orderIds = rows.map((r) => r.order.id);
+        const productionSummaries = await this.buildProductionSummaries(organizationId, orderIds);
         let previewData = new Map<string, {
             thumbnails: string[];
             totalCount: number;
@@ -363,6 +513,14 @@ export class OrdersRepository {
             customer,
             contact,
             lineItemsCount,
+            productionSummary: productionSummaries.get(order.id) ?? {
+                requiredCount: 0,
+                handedOffCount: 0,
+                pendingHandoffCount: 0,
+                inProductionCount: 0,
+                completeCount: 0,
+                status: "none",
+            },
             previewThumbnails: previewData.get(order.id)?.thumbnails || [],
             thumbsCount: previewData.get(order.id)?.totalCount || 0,
             attachmentsSummary: previewData.get(order.id)
@@ -393,7 +551,7 @@ export class OrdersRepository {
         customerId?: string;
         startDate?: Date;
         endDate?: Date;
-    }): Promise<Order[]> {
+    }): Promise<Array<Order & { productionSummary?: OrderProductionSummary }>> {
         const conditions = [eq(orders.organizationId, organizationId)] as any[];
         if (filters?.search) {
             const pattern = `%${filters.search}%`;
@@ -414,6 +572,10 @@ export class OrdersRepository {
         query = query.where(and(...conditions));
         query = query.orderBy(desc(orders.createdAt));
         const rows = await query;
+        const productionSummaries = await this.buildProductionSummaries(
+            organizationId,
+            rows.map((order: Order) => order.id),
+        );
 
         // Enrich orders with customer and contact data
         const enrichedOrders = await Promise.all(rows.map(async (order: Order) => {
@@ -425,7 +587,19 @@ export class OrdersRepository {
                 ? await this.dbInstance.select().from(customerContacts).where(eq(customerContacts.id, order.contactId))
                 : [undefined];
 
-            return { ...order, customer, contact };
+            return {
+                ...order,
+                customer,
+                contact,
+                productionSummary: productionSummaries.get(order.id) ?? {
+                    requiredCount: 0,
+                    handedOffCount: 0,
+                    pendingHandoffCount: 0,
+                    inProductionCount: 0,
+                    completeCount: 0,
+                    status: "none",
+                },
+            };
         }));
 
         return enrichedOrders;
@@ -518,6 +692,7 @@ export class OrdersRepository {
         customerId: string;
         contactId?: string | null;
         quoteId?: string | null;
+        sourceQuoteNumber?: number | null;
         label?: string | null;
         status?: string;
         priority?: string;
@@ -552,6 +727,7 @@ export class OrdersRepository {
                 organizationId,
                 orderNumber,
                 quoteId: data.quoteId || null,
+                sourceQuoteNumber: data.sourceQuoteNumber ?? null,
                 customerId: data.customerId,
                 contactId: data.contactId || null,
                 label: data.label || null,
@@ -651,7 +827,41 @@ export class OrdersRepository {
                 }
             }
 
+            const lineItemsWithSnapshots = await Promise.all(data.lineItems.map(async (li) => {
+                const existingSnapshot = (li as any).quoteLineItemId != null ||
+                    (li as any).requiresDesignSnapshot !== undefined ||
+                    (li as any).designPricingModeSnapshot !== undefined;
+
+                if (existingSnapshot) {
+                    return copyLineItemDesignSnapshotFields(li as any);
+                }
+
+                return materializeLineItemDesignSnapshot({
+                    config: await productDesignConfigRepository.getByProductId(organizationId, li.productId, tx),
+                    requestedNeedsDesignOverride: Object.prototype.hasOwnProperty.call(li as any, 'needsDesignOverride')
+                        ? ((li as any).needsDesignOverride ?? null)
+                        : undefined,
+                    requestedEffectiveRequiresDesign: typeof (li as any).requiresDesign === 'boolean' ? (li as any).requiresDesign : null,
+                });
+            }));
+
+            const productIds = Array.from(new Set(data.lineItems.map((li) => li.productId)));
+            const productProofRows = productIds.length > 0
+                ? await tx
+                    .select({
+                        productId: products.id,
+                        requiresProofApproval: products.requiresProofApproval,
+                    })
+                    .from(products)
+                    .where(inArray(products.id, productIds as [string, ...string[]]))
+                : [];
+            const productProofApprovalMap = new Map<string, boolean>();
+            for (const row of productProofRows) {
+                productProofApprovalMap.set(row.productId, Boolean(row.requiresProofApproval));
+            }
+
             const lineItemsData = data.lineItems.map((li, index) => {
+                const designSnapshot = lineItemsWithSnapshots[index];
                 const unitRaw = (li as any).unitPrice ?? (li as any).unit_price;
                 const totalRaw =
                     (li as any).totalPrice ??
@@ -672,11 +882,17 @@ export class OrdersRepository {
                 const taxAmountSafe = Number.isFinite(Number(taxAmountRaw)) ? Number(taxAmountRaw) : 0;
                 const isTaxableSnapshotRaw = (li as any).isTaxableSnapshot;
                 const isTaxableSnapshotSafe = typeof isTaxableSnapshotRaw === "boolean" ? isTaxableSnapshotRaw : true;
-                const requiresDesignSafe = Boolean((li as any).requiresDesign);
+                const requiresDesignSafe = designSnapshot.effectiveRequiresDesign;
                 const requiresPrepressSafe = typeof (li as any).requiresPrepress === "boolean" ? (li as any).requiresPrepress : true;
+                // Honor the snapshot value when explicitly provided (e.g. during quote-to-order conversion);
+                // only fall back to the live product when the caller did not pass a boolean.
+                const requiresProofApprovalSafe = typeof (li as any).requiresProofApproval === "boolean"
+                    ? (li as any).requiresProofApproval
+                    : (productProofApprovalMap.get(li.productId) ?? false);
                 const workflowStateSafe = getInitialWorkflowState({
                     requiresDesign: requiresDesignSafe,
                     requiresPrepress: requiresPrepressSafe,
+                    requiresProofApproval: requiresProofApprovalSafe,
                 });
                 return {
                     orderId: order.id,
@@ -693,7 +909,18 @@ export class OrdersRepository {
                     totalPrice: totalSafe.toString(),
                     status: 'new',
                     workflowState: workflowStateSafe,
+                    requiresDesignSnapshot: designSnapshot.requiresDesignSnapshot,
+                    designBriefRequiredSnapshot: designSnapshot.designBriefRequiredSnapshot,
+                    estimatedDesignMinutesSnapshot: designSnapshot.estimatedDesignMinutesSnapshot,
+                    includedDesignMinutesSnapshot: designSnapshot.includedDesignMinutesSnapshot,
+                    designPricingModeSnapshot: designSnapshot.designPricingModeSnapshot,
+                    flatFeeAmountSnapshot: designSnapshot.flatFeeAmountSnapshot,
+                    hourlyRateSnapshot: designSnapshot.hourlyRateSnapshot,
+                    overageRateSnapshot: designSnapshot.overageRateSnapshot,
+                    internalLaborRateSnapshot: designSnapshot.internalLaborRateSnapshot,
+                    needsDesignOverride: designSnapshot.needsDesignOverride,
                     requiresDesign: requiresDesignSafe,
+                    requiresProofApproval: requiresProofApprovalSafe,
                     requiresPrepress: requiresPrepressSafe,
                     specsJson: (li as any).specsJson || null,
                     selectedOptions: selectedOptionsSafe,
@@ -708,8 +935,12 @@ export class OrdersRepository {
             return { order, lineItems: createdLineItems };
         });
 
-        // Auto-create jobs for each line item (if missing)
+        // Auto-create legacy job record only for line items that enter the production pipeline immediately.
+        // Items in pre-production workflow states (design, proof-approval, or unrouted) must NOT receive a
+        // job record until they operationally advance to prepress or production.
+        const PRE_PRODUCTION_STATES = new Set(["new", "needs_design", "in_design", "awaiting_proof_approval"]);
         await Promise.all(created.lineItems.map(async (li) => {
+            if (PRE_PRODUCTION_STATES.has(String(li.workflowState ?? "new"))) return;
             const [existing] = await this.dbInstance.select().from(jobs).where(eq(jobs.orderLineItemId as any, li.id));
             if (!existing) {
                 // Fetch product with productType relation
@@ -828,23 +1059,28 @@ export class OrdersRepository {
 
         // Fetch product types for prepress override logic (migration 0051)
         const productIds = Array.from(new Set(quoteLines.map(ql => ql.productId)));
-        const productsWithTypes = await this.dbInstance
-            .select({
-                productId: products.id,
-                productTypeId: products.productTypeId,
-                requiresPrepressOverride: productTypes.requiresPrepressOverride,
-            })
-            .from(products)
-            .leftJoin(productTypes, eq(products.productTypeId, productTypes.id))
-            .where(inArray(products.id, productIds as [string, ...string[]]));
+        const productsWithTypes = productIds.length > 0
+            ? await this.dbInstance
+                .select({
+                    productId: products.id,
+                    productTypeId: products.productTypeId,
+                    requiresPrepressOverride: productTypes.requiresPrepressOverride,
+                    requiresProofApproval: products.requiresProofApproval,
+                })
+                .from(products)
+                .leftJoin(productTypes, eq(products.productTypeId, productTypes.id))
+                .where(inArray(products.id, productIds as [string, ...string[]]))
+            : [];
         
         const productPrepressMap = new Map<string, boolean>();
+        const productProofApprovalMap = new Map<string, boolean>();
         for (const p of productsWithTypes) {
             // requiresPrepress = productType.requiresPrepressOverride ?? org.prepressDefaultEnabled
             const requiresPrepress = p.requiresPrepressOverride !== null 
                 ? p.requiresPrepressOverride 
                 : orgPrepressDefault;
             productPrepressMap.set(p.productId, requiresPrepress);
+            productProofApprovalMap.set(p.productId, Boolean(p.requiresProofApproval));
         }
 
         // Convert quote line items to order line items
@@ -857,11 +1093,16 @@ export class OrdersRepository {
             const requiresPrepress: boolean = typeof qlAny.requiresPrepress === 'boolean'
                 ? qlAny.requiresPrepress
                 : (productPrepressMap.get(ql.productId) ?? orgPrepressDefault);
+            const requiresProofApproval: boolean = typeof qlAny.requiresProofApproval === 'boolean'
+                ? qlAny.requiresProofApproval
+                : (productProofApprovalMap.get(ql.productId) ?? false);
+            const designSnapshot = copyLineItemDesignSnapshotFields(qlAny);
             // Line item lifecycle: new → in_production → complete | canceled
             const initialStatus = 'new' as unknown as InsertOrderLineItem['status'];
             const workflowState = getInitialWorkflowState({
-                requiresDesign,
+                requiresDesign: designSnapshot.effectiveRequiresDesign,
                 requiresPrepress,
+                requiresProofApproval,
             });
 
             const lineItemData: CreateOrderLineItemInput = {
@@ -878,8 +1119,19 @@ export class OrdersRepository {
                 totalPrice: parseFloat(ql.linePrice),
                 status: initialStatus,
                 workflowState,
-                requiresDesign, // From quote line item routing truth (migration 0015)
-                requiresProofApproval: false,
+                designStatus: designSnapshot.effectiveRequiresDesign ? "needs_design" : null,
+                requiresDesignSnapshot: designSnapshot.requiresDesignSnapshot,
+                designBriefRequiredSnapshot: designSnapshot.designBriefRequiredSnapshot,
+                estimatedDesignMinutesSnapshot: designSnapshot.estimatedDesignMinutesSnapshot,
+                includedDesignMinutesSnapshot: designSnapshot.includedDesignMinutesSnapshot,
+                designPricingModeSnapshot: designSnapshot.designPricingModeSnapshot,
+                flatFeeAmountSnapshot: designSnapshot.flatFeeAmountSnapshot == null ? null : Number(designSnapshot.flatFeeAmountSnapshot),
+                hourlyRateSnapshot: designSnapshot.hourlyRateSnapshot == null ? null : Number(designSnapshot.hourlyRateSnapshot),
+                overageRateSnapshot: designSnapshot.overageRateSnapshot == null ? null : Number(designSnapshot.overageRateSnapshot),
+                internalLaborRateSnapshot: designSnapshot.internalLaborRateSnapshot == null ? null : Number(designSnapshot.internalLaborRateSnapshot),
+                needsDesignOverride: designSnapshot.needsDesignOverride,
+                requiresDesign: designSnapshot.effectiveRequiresDesign,
+                requiresProofApproval,
                 requiresPrepress, // Snapshot prepress requirement (TEMP→PERMANENT)
                 specsJson: ql.specsJson,
                 selectedOptions: ql.selectedOptions,
@@ -904,6 +1156,7 @@ export class OrdersRepository {
             customerId: quote.customerId!,
             contactId: quote.contactId,
             quoteId: quote.id,
+            sourceQuoteNumber: quote.quoteNumber, // Immutable snapshot — survives quote deletion
             label: quote.label || null, // Copy jobLabel from quote
             status: 'new',
             priority: options?.priority || 'normal',
@@ -1122,6 +1375,29 @@ export class OrdersRepository {
     }
 
     async createOrderLineItem(lineItem: InsertOrderLineItem): Promise<OrderLineItem> {
+        const [orderRow] = await this.dbInstance
+            .select({ organizationId: orders.organizationId })
+            .from(orders)
+            .where(eq(orders.id, lineItem.orderId))
+            .limit(1);
+
+        if (!orderRow) {
+            throw new Error(`Order ${lineItem.orderId} not found`);
+        }
+
+        const existingSnapshot = (lineItem as any).quoteLineItemId != null ||
+            (lineItem as any).requiresDesignSnapshot !== undefined ||
+            (lineItem as any).designPricingModeSnapshot !== undefined;
+        const designSnapshot = existingSnapshot
+            ? copyLineItemDesignSnapshotFields(lineItem as any)
+            : materializeLineItemDesignSnapshot({
+                config: await productDesignConfigRepository.getByProductId(orderRow.organizationId, lineItem.productId),
+                requestedNeedsDesignOverride: Object.prototype.hasOwnProperty.call(lineItem as any, 'needsDesignOverride')
+                    ? ((lineItem as any).needsDesignOverride ?? null)
+                    : undefined,
+                requestedEffectiveRequiresDesign: typeof (lineItem as any).requiresDesign === 'boolean' ? (lineItem as any).requiresDesign : null,
+            });
+
         type SelectedOptionsInsert = typeof orderLineItems.$inferInsert["selectedOptions"];
         type SelectedOptionInsert = SelectedOptionsInsert extends Array<infer T> ? T : never;
         type NestingConfigInsert = typeof orderLineItems.$inferInsert["nestingConfigSnapshot"];
@@ -1140,6 +1416,13 @@ export class OrdersRepository {
             if (value === null) return null;
             return typeof value === "object" ? (value as T) : undefined;
         };
+
+        const [productProofRow] = await this.dbInstance
+            .select({ requiresProofApproval: products.requiresProofApproval })
+            .from(products)
+            .where(eq(products.id, lineItem.productId))
+            .limit(1);
+        const requiresProofApprovalSafe = Boolean(productProofRow?.requiresProofApproval);
 
         // JSON/array fields often come from Zod/JSON sources as unknown; narrow them to the Drizzle column types.
         const selectedOptions = asArrayOrUndefined<SelectedOptionInsert>(lineItem.selectedOptions) as SelectedOptionsInsert | undefined;
@@ -1163,10 +1446,22 @@ export class OrdersRepository {
             totalPrice: lineItem.totalPrice.toString(),
             status: lineItem.status,
             workflowState: lineItem.workflowState ?? getInitialWorkflowState({
-                requiresDesign: Boolean(lineItem.requiresDesign),
+                requiresDesign: designSnapshot.effectiveRequiresDesign,
                 requiresPrepress: typeof lineItem.requiresPrepress === "boolean" ? lineItem.requiresPrepress : true,
+                requiresProofApproval: requiresProofApprovalSafe,
             }),
-            requiresDesign: lineItem.requiresDesign ?? false,
+            requiresDesignSnapshot: designSnapshot.requiresDesignSnapshot,
+            designBriefRequiredSnapshot: designSnapshot.designBriefRequiredSnapshot,
+            estimatedDesignMinutesSnapshot: designSnapshot.estimatedDesignMinutesSnapshot,
+            includedDesignMinutesSnapshot: designSnapshot.includedDesignMinutesSnapshot,
+            designPricingModeSnapshot: designSnapshot.designPricingModeSnapshot,
+            flatFeeAmountSnapshot: designSnapshot.flatFeeAmountSnapshot,
+            hourlyRateSnapshot: designSnapshot.hourlyRateSnapshot,
+            overageRateSnapshot: designSnapshot.overageRateSnapshot,
+            internalLaborRateSnapshot: designSnapshot.internalLaborRateSnapshot,
+            needsDesignOverride: designSnapshot.needsDesignOverride,
+            requiresDesign: designSnapshot.effectiveRequiresDesign,
+            requiresProofApproval: requiresProofApprovalSafe,
             requiresPrepress: lineItem.requiresPrepress ?? true,
             specsJson: lineItem.specsJson ?? undefined,
             selectedOptions,

@@ -55,6 +55,64 @@ export const lineItemWorkflowStateValues = [
 export const lineItemWorkflowStateSchema = z.enum(lineItemWorkflowStateValues);
 export type LineItemWorkflowState = (typeof lineItemWorkflowStateValues)[number];
 
+export const lineItemDesignStatusValues = [
+  "needs_design",
+  "in_design",
+  "design_complete",
+] as const;
+
+export const lineItemDesignStatusSchema = z.enum(lineItemDesignStatusValues);
+export type LineItemDesignStatus = (typeof lineItemDesignStatusValues)[number];
+
+export const productDesignPricingModeValues = [
+  "none",
+  "flat_fee",
+  "included_minutes_plus_overage",
+  "hourly",
+  "manual_quote",
+] as const;
+
+export const productDesignPricingModeSchema = z.enum(productDesignPricingModeValues);
+export type ProductDesignPricingMode = (typeof productDesignPricingModeValues)[number];
+
+export const lineItemDesignBriefStatusValues = [
+  "not_required",
+  "required_missing",
+  "captured",
+] as const;
+
+export const lineItemDesignBriefStatusSchema = z.enum(lineItemDesignBriefStatusValues);
+export type LineItemDesignBriefStatus = (typeof lineItemDesignBriefStatusValues)[number];
+
+export const orderLineItemNoteCategoryValues = [
+  "internal",
+  "design_working",
+] as const;
+
+export const orderLineItemNoteCategorySchema = z.enum(orderLineItemNoteCategoryValues);
+export type OrderLineItemNoteCategory = (typeof orderLineItemNoteCategoryValues)[number];
+
+export const designCostStateValues = [
+  "not_applicable",
+  "estimated",
+  "accrued",
+  "finalized",
+] as const;
+
+export const designCostStateSchema = z.enum(designCostStateValues);
+export type DesignCostState = (typeof designCostStateValues)[number];
+
+export const lineItemDesignBillingStatusValues = [
+  "not_billable",
+  "candidate",
+  "approved_for_invoice",
+  "invoiced",
+  "waived",
+] as const;
+
+export const lineItemDesignBillingStatusSchema = z.enum(lineItemDesignBillingStatusValues);
+export type LineItemDesignBillingStatus = (typeof lineItemDesignBillingStatusValues)[number];
+
 // ============================================================
 // MULTI-TENANT ORGANIZATION SYSTEM
 // ============================================================
@@ -623,6 +681,7 @@ export const products = pgTable("products", {
   }>().default(sql`'{"enabled":false,"tiers":[]}'::jsonb`).notNull(),
   // Production workflow flag
   requiresProductionJob: boolean("requires_production_job").default(true).notNull(),
+  requiresProofApproval: boolean("requires_proof_approval").default(false).notNull(),
   // Tax system
   isTaxable: boolean("is_taxable").default(true).notNull(),
   isActive: boolean("is_active").default(true).notNull(),
@@ -633,6 +692,44 @@ export const products = pgTable("products", {
   index("products_primary_material_id_idx").on(table.primaryMaterialId),
   index("products_pricing_formula_id_idx").on(table.pricingFormulaId),
   index("products_pbv2_active_tree_version_id_idx").on(table.pbv2ActiveTreeVersionId),
+]);
+
+export const productDesignConfigs = pgTable("product_design_configs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  productId: varchar("product_id")
+    .notNull()
+    .references(() => products.id, { onDelete: 'cascade' }),
+  requiresDesign: boolean("requires_design").notNull().default(false),
+  designBriefRequired: boolean("design_brief_required").notNull().default(false),
+  useKeyInstructions: boolean("use_key_instructions").notNull().default(true),
+  useDesignObjective: boolean("use_design_objective").notNull().default(true),
+  useRequestedContent: boolean("use_requested_content").notNull().default(false),
+  useLayoutNotes: boolean("use_layout_notes").notNull().default(false),
+  useBrandStyleNotes: boolean("use_brand_style_notes").notNull().default(false),
+  useReferenceNotes: boolean("use_reference_notes").notNull().default(false),
+  usePriorityNotes: boolean("use_priority_notes").notNull().default(false),
+  requireKeyInstructions: boolean("require_key_instructions").notNull().default(false),
+  requireDesignObjective: boolean("require_design_objective").notNull().default(false),
+  estimatedDesignMinutes: integer("estimated_design_minutes"),
+  includedDesignMinutes: integer("included_design_minutes"),
+  allowDesignStartWhenBriefMissing: boolean("allow_design_start_when_brief_missing").notNull().default(false),
+  designPricingMode: varchar("design_pricing_mode", { length: 50 })
+    .$type<ProductDesignPricingMode>()
+    .notNull()
+    .default("none"),
+  flatFeeAmount: decimal("flat_fee_amount", { precision: 10, scale: 2 }),
+  hourlyRate: decimal("hourly_rate", { precision: 10, scale: 2 }),
+  overageRate: decimal("overage_rate", { precision: 10, scale: 2 }),
+  internalLaborRate: decimal("internal_labor_rate", { precision: 10, scale: 2 }),
+  costTrackingEnabled: boolean("cost_tracking_enabled").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("product_design_configs_product_id_unique").on(table.productId),
+  index("product_design_configs_organization_id_idx").on(table.organizationId),
 ]);
 
 // ============================================================
@@ -895,6 +992,28 @@ export const updateProductSchema = createInsertSchema(products).omit({
 export type InsertProduct = z.infer<typeof insertProductSchema>;
 export type UpdateProduct = z.infer<typeof updateProductSchema>;
 export type Product = typeof products.$inferSelect;
+
+export const insertProductDesignConfigSchema = createInsertSchema(productDesignConfigs).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  organizationId: true,
+  productId: true,
+}).extend({
+  estimatedDesignMinutes: z.coerce.number().int().nonnegative().optional().nullable(),
+  includedDesignMinutes: z.coerce.number().int().nonnegative().optional().nullable(),
+  designPricingMode: productDesignPricingModeSchema.default("none"),
+  flatFeeAmount: z.coerce.number().nonnegative().optional().nullable(),
+  hourlyRate: z.coerce.number().nonnegative().optional().nullable(),
+  overageRate: z.coerce.number().nonnegative().optional().nullable(),
+  internalLaborRate: z.coerce.number().nonnegative().optional().nullable(),
+});
+
+export const updateProductDesignConfigSchema = insertProductDesignConfigSchema.partial();
+
+export type ProductDesignConfig = typeof productDesignConfigs.$inferSelect;
+export type InsertProductDesignConfig = typeof productDesignConfigs.$inferInsert;
+export type UpdateProductDesignConfig = z.infer<typeof updateProductDesignConfigSchema>;
 
 // Product Variants table
 export const productVariants = pgTable("product_variants", {
@@ -1300,8 +1419,23 @@ export const quoteLineItems = pgTable("quote_line_items", {
   //   requiresPrepress = true  → ready_for_prepress (after design, if any)
   //   requiresPrepress = false → ready_for_production (skip prepress)
   //   requiresPrepress = null  → fall back to productType / org default at conversion time
+  requiresDesignSnapshot: boolean("requires_design_snapshot").notNull().default(false),
+  designBriefRequiredSnapshot: boolean("design_brief_required_snapshot").notNull().default(false),
+  estimatedDesignMinutesSnapshot: integer("estimated_design_minutes_snapshot"),
+  includedDesignMinutesSnapshot: integer("included_design_minutes_snapshot"),
+  designPricingModeSnapshot: varchar("design_pricing_mode_snapshot", { length: 50 })
+    .$type<ProductDesignPricingMode>()
+    .notNull()
+    .default("none"),
+  flatFeeAmountSnapshot: decimal("flat_fee_amount_snapshot", { precision: 10, scale: 2 }),
+  hourlyRateSnapshot: decimal("hourly_rate_snapshot", { precision: 10, scale: 2 }),
+  overageRateSnapshot: decimal("overage_rate_snapshot", { precision: 10, scale: 2 }),
+  internalLaborRateSnapshot: decimal("internal_labor_rate_snapshot", { precision: 10, scale: 2 }),
+  needsDesignOverride: boolean("needs_design_override"),
   requiresDesign: boolean("requires_design").notNull().default(false),
   requiresPrepress: boolean("requires_prepress"),
+  // Proof-approval snapshot (migration 0032). NULL = legacy row, falls back to live product on conversion.
+  requiresProofApproval: boolean("requires_proof_approval"),
 }, (table) => [
   index("quote_line_items_quote_id_idx").on(table.quoteId),
   index("quote_line_items_product_id_idx").on(table.productId),
@@ -1349,6 +1483,14 @@ export const insertQuoteLineItemSchema = createInsertSchema(quoteLineItems).omit
   linePrice: z.coerce.number().positive(),
   displayOrder: z.coerce.number().int(),
   specsJson: z.record(z.any()).optional().nullable(),
+  estimatedDesignMinutesSnapshot: z.coerce.number().int().nonnegative().optional().nullable(),
+  includedDesignMinutesSnapshot: z.coerce.number().int().nonnegative().optional().nullable(),
+  designPricingModeSnapshot: productDesignPricingModeSchema.optional(),
+  flatFeeAmountSnapshot: z.coerce.number().nonnegative().optional().nullable(),
+  hourlyRateSnapshot: z.coerce.number().nonnegative().optional().nullable(),
+  overageRateSnapshot: z.coerce.number().nonnegative().optional().nullable(),
+  internalLaborRateSnapshot: z.coerce.number().nonnegative().optional().nullable(),
+  needsDesignOverride: z.boolean().optional().nullable(),
 });
 
 export type InsertQuote = z.infer<typeof insertQuoteSchema>;
@@ -1629,6 +1771,11 @@ export const emailSettings = pgTable("email_settings", {
 
   isActive: boolean("is_active").default(true).notNull(),
   isDefault: boolean("is_default").default(true).notNull(), // For multiple accounts
+
+  // Platform-managed OAuth connection state (migration 0061)
+  connectionStatus: varchar("connection_status", { length: 50 }).notNull().default("not_connected"),
+  connectedAt: timestamp("connected_at"),
+
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -1651,6 +1798,8 @@ export const insertEmailSettingsSchema = createInsertSchema(emailSettings).omit(
   smtpPort: z.number().int().positive().optional(),
   smtpUsername: z.string().optional(),
   smtpPassword: z.string().optional(),
+  connectionStatus: z.enum(["not_connected", "connected", "disconnected", "token_exchange_failed", "revoked_or_invalid"]).default("not_connected").optional(),
+  connectedAt: z.date().nullable().optional(),
 });
 
 export const updateEmailSettingsSchema = insertEmailSettingsSchema.partial().extend({
@@ -2362,6 +2511,7 @@ export const orders = pgTable("orders", {
   poNumber: varchar("po_number", { length: 64 }), // Customer PO number
   label: text("label"), // Free-text label for categorization/notes
   quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: 'set null' }),
+  sourceQuoteNumber: integer("source_quote_number"), // Snapshot of quote number at time of conversion (immutable)
   customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }),
   contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: 'set null' }),
   status: varchar("status", { length: 50 }).notNull().default("new"), // new, in_production, on_hold, ready_for_shipment, completed, canceled [DEPRECATED: use state instead]
@@ -2585,6 +2735,20 @@ export const orderLineItems = pgTable("order_line_items", {
   requiresInventory: boolean("requires_inventory").notNull().default(true), // flag if inventory tracking is needed
   sortOrder: integer("sort_order").notNull().default(0), // Display order in UI (for drag-and-drop reordering)
   workflowState: varchar("workflow_state", { length: 50 }).notNull().default("new"),
+  designStatus: varchar("design_status", { length: 50 }).$type<LineItemDesignStatus | null>(),
+  requiresDesignSnapshot: boolean("requires_design_snapshot").notNull().default(false),
+  designBriefRequiredSnapshot: boolean("design_brief_required_snapshot").notNull().default(false),
+  estimatedDesignMinutesSnapshot: integer("estimated_design_minutes_snapshot"),
+  includedDesignMinutesSnapshot: integer("included_design_minutes_snapshot"),
+  designPricingModeSnapshot: varchar("design_pricing_mode_snapshot", { length: 50 })
+    .$type<ProductDesignPricingMode>()
+    .notNull()
+    .default("none"),
+  flatFeeAmountSnapshot: decimal("flat_fee_amount_snapshot", { precision: 10, scale: 2 }),
+  hourlyRateSnapshot: decimal("hourly_rate_snapshot", { precision: 10, scale: 2 }),
+  overageRateSnapshot: decimal("overage_rate_snapshot", { precision: 10, scale: 2 }),
+  internalLaborRateSnapshot: decimal("internal_labor_rate_snapshot", { precision: 10, scale: 2 }),
+  needsDesignOverride: boolean("needs_design_override"),
   requiresDesign: boolean("requires_design").notNull().default(false),
   requiresProofApproval: boolean("requires_proof_approval").notNull().default(false),
   // Prepress requirement snapshot (migration 0051 - TEMP→PERMANENT contract)
@@ -2607,12 +2771,117 @@ export const orderLineItems = pgTable("order_line_items", {
   index("order_line_items_product_id_idx").on(table.productId),
   index("order_line_items_status_idx").on(table.status),
   index("order_line_items_workflow_state_idx").on(table.workflowState),
+  index("order_line_items_design_status_idx").on(table.designStatus),
   index("order_line_items_requires_design_idx").on(table.requiresDesign),
   index("order_line_items_requires_proof_approval_idx").on(table.requiresProofApproval),
   index("order_line_items_requires_prepress_idx").on(table.requiresPrepress),
   index("order_line_items_approved_proof_version_idx").on(table.approvedProofVersionId),
   index("order_line_items_product_type_idx").on(table.productType),
   index("order_line_items_pbv2_tree_version_id_idx").on(table.pbv2TreeVersionId),
+]);
+
+export const lineItemDesignBriefs = pgTable("line_item_design_briefs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id")
+    .notNull()
+    .references(() => orders.id, { onDelete: 'cascade' }),
+  orderLineItemId: varchar("order_line_item_id")
+    .notNull()
+    .references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  keyInstructions: text("key_instructions"),
+  designObjective: text("design_objective"),
+  requestedContent: text("requested_content"),
+  layoutNotes: text("layout_notes"),
+  brandStyleNotes: text("brand_style_notes"),
+  referenceNotes: text("reference_notes"),
+  priorityNotes: text("priority_notes"),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  updatedByUserId: varchar("updated_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("line_item_design_briefs_line_item_id_unique").on(table.orderLineItemId),
+  index("line_item_design_briefs_org_id_idx").on(table.organizationId),
+  index("line_item_design_briefs_order_id_idx").on(table.orderId),
+]);
+
+export const lineItemDesignCostSummaries = pgTable("line_item_design_cost_summaries", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id")
+    .notNull()
+    .references(() => orders.id, { onDelete: 'cascade' }),
+  lineItemId: varchar("line_item_id")
+    .notNull()
+    .references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  designCostState: varchar("design_cost_state", { length: 50 })
+    .$type<DesignCostState>()
+    .notNull()
+    .default("not_applicable"),
+  actualTrackedMinutes: decimal("actual_tracked_minutes", { precision: 10, scale: 2 }).notNull().default("0.00"),
+  correctedTrackedMinutes: decimal("corrected_tracked_minutes", { precision: 10, scale: 2 }).notNull().default("0.00"),
+  internalDesignCostCalculated: decimal("internal_design_cost_calculated", { precision: 10, scale: 2 }),
+  quotedDesignAmount: decimal("quoted_design_amount", { precision: 10, scale: 2 }),
+  soldDesignAmount: decimal("sold_design_amount", { precision: 10, scale: 2 }),
+  billableDesignMinutes: decimal("billable_design_minutes", { precision: 10, scale: 2 }),
+  billableDesignAmount: decimal("billable_design_amount", { precision: 10, scale: 2 }),
+  billingStatus: varchar("billing_status", { length: 50 })
+    .$type<LineItemDesignBillingStatus>()
+    .notNull()
+    .default("not_billable"),
+  lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }).defaultNow().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("line_item_design_cost_summaries_line_item_id_unique").on(table.lineItemId),
+  index("line_item_design_cost_summaries_org_id_idx").on(table.organizationId),
+  index("line_item_design_cost_summaries_order_id_idx").on(table.orderId),
+  index("line_item_design_cost_summaries_billing_status_idx").on(table.billingStatus),
+]);
+
+export const orderInternalNotes = pgTable("order_internal_notes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id")
+    .notNull()
+    .references(() => orders.id, { onDelete: 'cascade' }),
+  noteText: text("note_text").notNull(),
+  audienceTags: jsonb("audience_tags").$type<string[] | null>(),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("order_internal_notes_order_created_idx").on(table.orderId, table.createdAt),
+  index("order_internal_notes_org_order_idx").on(table.organizationId, table.orderId),
+]);
+
+export const orderLineItemNotes = pgTable("order_line_item_notes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id")
+    .notNull()
+    .references(() => orders.id, { onDelete: 'cascade' }),
+  lineItemId: varchar("line_item_id")
+    .notNull()
+    .references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  category: varchar("category", { length: 50 })
+    .$type<OrderLineItemNoteCategory>()
+    .notNull(),
+  noteText: text("note_text").notNull(),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("order_line_item_notes_order_created_idx").on(table.orderId, table.createdAt),
+  index("order_line_item_notes_line_category_created_idx").on(table.lineItemId, table.category, table.createdAt),
+  index("order_line_item_notes_org_line_idx").on(table.organizationId, table.lineItemId),
 ]);
 
 // Order Line Item Components (PBV2 child item acceptance)
@@ -2662,8 +2931,17 @@ export const insertOrderLineItemSchema = createInsertSchema(orderLineItems).omit
   width: z.coerce.number().positive().optional().nullable(),
   height: z.coerce.number().positive().optional().nullable(),
   sqft: z.coerce.number().positive().optional().nullable(),
+  estimatedDesignMinutesSnapshot: z.coerce.number().int().nonnegative().optional().nullable(),
+  includedDesignMinutesSnapshot: z.coerce.number().int().nonnegative().optional().nullable(),
+  designPricingModeSnapshot: productDesignPricingModeSchema.optional(),
+  flatFeeAmountSnapshot: z.coerce.number().nonnegative().optional().nullable(),
+  hourlyRateSnapshot: z.coerce.number().nonnegative().optional().nullable(),
+  overageRateSnapshot: z.coerce.number().nonnegative().optional().nullable(),
+  internalLaborRateSnapshot: z.coerce.number().nonnegative().optional().nullable(),
+  needsDesignOverride: z.boolean().optional().nullable(),
   status: z.enum(["new", "in_production", "complete", "canceled"]).default("new"),
   workflowState: lineItemWorkflowStateSchema.default("new"),
+  designStatus: lineItemDesignStatusSchema.optional().nullable().default(null),
   requiresDesign: z.boolean().default(false),
   requiresProofApproval: z.boolean().default(false),
   specsJson: z.record(z.any()).optional().nullable(),
@@ -2752,6 +3030,84 @@ export const updateOrderLineItemSchema = insertOrderLineItemSchema.partial().ext
 export type InsertOrderLineItem = z.infer<typeof insertOrderLineItemSchema>;
 export type UpdateOrderLineItem = z.infer<typeof updateOrderLineItemSchema>;
 export type OrderLineItem = typeof orderLineItems.$inferSelect;
+
+export const insertLineItemDesignCostSummarySchema = createInsertSchema(lineItemDesignCostSummaries).omit({
+  id: true,
+  organizationId: true,
+  orderId: true,
+  lineItemId: true,
+  lastSyncedAt: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  designCostState: designCostStateSchema,
+  actualTrackedMinutes: z.coerce.number().nonnegative(),
+  correctedTrackedMinutes: z.coerce.number().nonnegative(),
+  internalDesignCostCalculated: z.coerce.number().nonnegative().optional().nullable(),
+  quotedDesignAmount: z.coerce.number().nonnegative().optional().nullable(),
+  soldDesignAmount: z.coerce.number().nonnegative().optional().nullable(),
+  billableDesignMinutes: z.coerce.number().nonnegative().optional().nullable(),
+  billableDesignAmount: z.coerce.number().nonnegative().optional().nullable(),
+  billingStatus: lineItemDesignBillingStatusSchema,
+});
+
+export type LineItemDesignCostSummary = typeof lineItemDesignCostSummaries.$inferSelect;
+export type InsertLineItemDesignCostSummary = typeof lineItemDesignCostSummaries.$inferInsert;
+
+export const insertLineItemDesignBriefSchema = createInsertSchema(lineItemDesignBriefs).omit({
+  id: true,
+  organizationId: true,
+  orderId: true,
+  orderLineItemId: true,
+  createdByUserId: true,
+  updatedByUserId: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  keyInstructions: z.string().trim().optional().nullable(),
+  designObjective: z.string().trim().optional().nullable(),
+  requestedContent: z.string().trim().optional().nullable(),
+  layoutNotes: z.string().trim().optional().nullable(),
+  brandStyleNotes: z.string().trim().optional().nullable(),
+  referenceNotes: z.string().trim().optional().nullable(),
+  priorityNotes: z.string().trim().optional().nullable(),
+});
+
+export const updateLineItemDesignBriefSchema = insertLineItemDesignBriefSchema.partial();
+
+export type LineItemDesignBrief = typeof lineItemDesignBriefs.$inferSelect;
+export type InsertLineItemDesignBrief = typeof lineItemDesignBriefs.$inferInsert;
+export type UpdateLineItemDesignBrief = z.infer<typeof updateLineItemDesignBriefSchema>;
+
+export const insertOrderInternalNoteSchema = createInsertSchema(orderInternalNotes).omit({
+  id: true,
+  organizationId: true,
+  orderId: true,
+  createdByUserId: true,
+  createdAt: true,
+}).extend({
+  noteText: z.string().trim().min(1).max(4000),
+  audienceTags: z.array(z.string().trim().min(1).max(100)).max(20).optional().nullable(),
+});
+
+export const insertOrderLineItemNoteSchema = createInsertSchema(orderLineItemNotes).omit({
+  id: true,
+  organizationId: true,
+  orderId: true,
+  lineItemId: true,
+  createdByUserId: true,
+  createdAt: true,
+}).extend({
+  category: orderLineItemNoteCategorySchema,
+  noteText: z.string().trim().min(1).max(4000),
+});
+
+export type OrderInternalNote = typeof orderInternalNotes.$inferSelect;
+export type InsertOrderInternalNote = typeof orderInternalNotes.$inferInsert;
+export type CreateOrderInternalNote = z.infer<typeof insertOrderInternalNoteSchema>;
+export type OrderLineItemNote = typeof orderLineItemNotes.$inferSelect;
+export type InsertOrderLineItemNote = typeof orderLineItemNotes.$inferInsert;
+export type CreateOrderLineItemNote = z.infer<typeof insertOrderLineItemNoteSchema>;
 
 // ============================================================
 // Order Workflow Status System (Per-Org, Configurable)
@@ -3012,6 +3368,7 @@ export const invoices = pgTable("invoices", {
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   invoiceNumber: integer("invoice_number").notNull(), // Sequential numeric per org
   orderId: varchar("order_id").references(() => orders.id, { onDelete: 'set null' }),
+  sourceOrderNumber: integer("source_order_number"), // Snapshot of order number at time of invoice creation (immutable)
   customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }),
   status: varchar("status", { length: 50 }).notNull().default('draft'), // MVP: draft | billed | paid | void (legacy values may exist)
   // Lightweight invoice versioning
@@ -3757,6 +4114,7 @@ export const ordersRelations = relations(orders, ({ one, many }) => ({
     fields: [orders.createdByUserId],
     references: [users.id],
   }),
+  internalNotes: many(orderInternalNotes),
   lineItems: many(orderLineItems),
 }));
 
@@ -3777,7 +4135,49 @@ export const orderLineItemsRelations = relations(orderLineItems, ({ one, many })
     fields: [orderLineItems.quoteLineItemId],
     references: [quoteLineItems.id],
   }),
+  designCostSummary: one(lineItemDesignCostSummaries, {
+    fields: [orderLineItems.id],
+    references: [lineItemDesignCostSummaries.lineItemId],
+  }),
+  notes: many(orderLineItemNotes),
   jobs: many(jobs),
+}));
+
+export const lineItemDesignCostSummariesRelations = relations(lineItemDesignCostSummaries, ({ one }) => ({
+  order: one(orders, {
+    fields: [lineItemDesignCostSummaries.orderId],
+    references: [orders.id],
+  }),
+  lineItem: one(orderLineItems, {
+    fields: [lineItemDesignCostSummaries.lineItemId],
+    references: [orderLineItems.id],
+  }),
+}));
+
+export const orderInternalNotesRelations = relations(orderInternalNotes, ({ one }) => ({
+  order: one(orders, {
+    fields: [orderInternalNotes.orderId],
+    references: [orders.id],
+  }),
+  createdByUser: one(users, {
+    fields: [orderInternalNotes.createdByUserId],
+    references: [users.id],
+  }),
+}));
+
+export const orderLineItemNotesRelations = relations(orderLineItemNotes, ({ one }) => ({
+  order: one(orders, {
+    fields: [orderLineItemNotes.orderId],
+    references: [orders.id],
+  }),
+  lineItem: one(orderLineItems, {
+    fields: [orderLineItemNotes.lineItemId],
+    references: [orderLineItems.id],
+  }),
+  createdByUser: one(users, {
+    fields: [orderLineItemNotes.createdByUserId],
+    references: [users.id],
+  }),
 }));
 
 // Jobs relations
@@ -4917,6 +5317,7 @@ export const lineItemProofVersions = pgTable("line_item_proof_versions", {
   status: lineItemProofVersionStatusEnum("status").notNull().default('draft'),
   internalNotes: text("internal_notes"),
   customerMessage: text("customer_message"),
+  customerVisibleDisclaimer: text("customer_visible_disclaimer"),
   sentToName: varchar("sent_to_name", { length: 255 }),
   sentToEmail: varchar("sent_to_email", { length: 255 }),
   sentByUserId: varchar("sent_by_user_id").references(() => users.id, { onDelete: 'set null' }),
@@ -4977,6 +5378,24 @@ export const lineItemProofManualApprovalOverrides = pgTable("line_item_proof_man
   uniqueIndex("line_item_proof_manual_approval_overrides_version_uidx").on(table.proofVersionId),
 ]);
 
+export const proofAccessTokens = pgTable("proof_access_tokens", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  proofVersionId: varchar("proof_version_id").notNull().references(() => lineItemProofVersions.id, { onDelete: 'cascade' }),
+  token: varchar("token", { length: 128 }).notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  createdBy: varchar("created_by", { length: 255 }).notNull(),
+}, (table) => [
+  index("proof_access_tokens_org_idx").on(table.organizationId),
+  index("proof_access_tokens_line_item_idx").on(table.lineItemId),
+  index("proof_access_tokens_proof_version_idx").on(table.proofVersionId),
+  index("proof_access_tokens_expires_at_idx").on(table.expiresAt),
+  uniqueIndex("proof_access_tokens_token_uidx").on(table.token),
+]);
+
 // Zod schemas
 export const insertPrepressSessionSchema = createInsertSchema(prepressSessions).omit({
   id: true,
@@ -5028,6 +5447,16 @@ export const updateLineItemProofManualApprovalOverrideSchema = insertLineItemPro
   id: z.string(),
 });
 
+export const insertProofAccessTokenSchema = createInsertSchema(proofAccessTokens).omit({
+  id: true,
+  revokedAt: true,
+  createdAt: true,
+});
+
+export const updateProofAccessTokenSchema = insertProofAccessTokenSchema.partial().extend({
+  id: z.string(),
+});
+
 // Types
 export type PrepressSession = typeof prepressSessions.$inferSelect;
 export type InsertPrepressSession = z.infer<typeof insertPrepressSessionSchema>;
@@ -5048,6 +5477,10 @@ export type UpdateLineItemProofApproval = z.infer<typeof updateLineItemProofAppr
 export type LineItemProofManualApprovalOverride = typeof lineItemProofManualApprovalOverrides.$inferSelect;
 export type InsertLineItemProofManualApprovalOverride = z.infer<typeof insertLineItemProofManualApprovalOverrideSchema>;
 export type UpdateLineItemProofManualApprovalOverride = z.infer<typeof updateLineItemProofManualApprovalOverrideSchema>;
+
+export type ProofAccessToken = typeof proofAccessTokens.$inferSelect;
+export type InsertProofAccessToken = z.infer<typeof insertProofAccessTokenSchema>;
+export type UpdateProofAccessToken = z.infer<typeof updateProofAccessTokenSchema>;
 
 // ============================================================
 // REPRINT REQUESTS

@@ -3,6 +3,25 @@ import { storage } from "./storage";
 import type { EmailSettings } from "@shared/schema";
 
 /**
+ * Returns true for Google OAuth auth failures that indicate the refresh token
+ * is invalid or revoked and the organisation must reconnect.
+ * Covers: invalid_grant, token revocation, 401 UNAUTHENTICATED.
+ */
+function isGmailAuthError(err: any): boolean {
+  const msg = String(err?.message || err?.toString() || '').toLowerCase();
+  const code = err?.code ?? err?.status;
+  return (
+    msg.includes('invalid_grant') ||
+    msg.includes('token has been expired or revoked') ||
+    msg.includes('invalid credentials') ||
+    msg.includes('invalid_token') ||
+    msg.includes('unauthenticated') ||
+    code === 401 ||
+    code === 'invalid_grant'
+  );
+}
+
+/**
  * Utility to add timeout to promises with clear error messages
  */
 function withTimeout<T>(label: string, ms: number, promise: Promise<T>): Promise<T> {
@@ -87,10 +106,6 @@ interface EmailConfig {
   clientId?: string;
   clientSecret?: string;
   refreshToken?: string;
-  smtpHost?: string;
-  smtpPort?: number;
-  smtpUsername?: string;
-  smtpPassword?: string;
 }
 
 interface EmailTemplates {
@@ -142,7 +157,9 @@ class EmailService {
   }
 
   /**
-   * Get email configuration from database
+   * Get email configuration from database.
+   * Platform credentials (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET) take precedence
+   * over any per-org credentials that may have been stored in the legacy manual flow.
    */
   private async getEmailConfig(organizationId: string): Promise<EmailConfig | null> {
     const settings = await storage.getDefaultEmailSettings(organizationId);
@@ -151,28 +168,26 @@ class EmailService {
       return null;
     }
 
+    const clientId = process.env.GOOGLE_CLIENT_ID || undefined;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET || undefined;
+
     console.log(`[EmailService] Loaded config for org ${organizationId}:`, {
       provider: settings.provider,
       fromAddress: settings.fromAddress,
       fromName: settings.fromName,
-      hasClientId: !!settings.clientId,
-      hasClientSecret: !!settings.clientSecret,
+      connectionStatus: settings.connectionStatus,
+      hasPlatformClientId: !!clientId,
+      hasPlatformClientSecret: !!clientSecret,
       hasRefreshToken: !!settings.refreshToken,
-      hasSmtpHost: !!settings.smtpHost,
-      hasSmtpPort: !!settings.smtpPort,
     });
 
     return {
       provider: settings.provider,
       fromAddress: settings.fromAddress,
       fromName: settings.fromName,
-      clientId: settings.clientId || undefined,
-      clientSecret: settings.clientSecret || undefined,
+      clientId,
+      clientSecret,
       refreshToken: settings.refreshToken || undefined,
-      smtpHost: settings.smtpHost || undefined,
-      smtpPort: settings.smtpPort || undefined,
-      smtpUsername: settings.smtpUsername || undefined,
-      smtpPassword: settings.smtpPassword || undefined,
     };
   }
 
@@ -186,10 +201,13 @@ class EmailService {
     });
 
     const OAuth2 = google.auth.OAuth2;
+    // redirect_uri is not used during refresh-token flows; set to the platform callback
+    const redirectUri = process.env.GOOGLE_OAUTH_REDIRECT_URI ||
+      `${(process.env.APP_URL ?? 'http://localhost:5000').replace(/\/$/, '')}/api/email/google/callback`;
     const oauth2Client = new OAuth2(
       config.clientId,
       config.clientSecret,
-      "https://developers.google.com/oauthplayground"
+      redirectUri,
     );
 
     oauth2Client.setCredentials({
@@ -212,6 +230,12 @@ class EmailService {
       });
       if (error.message.includes('timed out')) {
         throw new Error('Timed out while contacting Google to fetch an access token. Please check your network connection and try again.');
+      }
+      // Surface auth errors with a recognisable marker so callers can detect them
+      if (isGmailAuthError(error)) {
+        const authErr = new Error(`GMAIL_AUTH_ERROR: ${error.message}`);
+        (authErr as any).isGmailAuthError = true;
+        throw authErr;
       }
       throw new Error(`Failed to authenticate with Gmail: ${error.message}`);
     }
@@ -277,6 +301,12 @@ class EmailService {
       if (error.message.includes('timed out')) {
         throw new Error('Timed out while sending email via Gmail API. Please check your network connection and try again.');
       }
+      // Re-surface tagged auth errors without wrapping
+      if ((error as any).isGmailAuthError || isGmailAuthError(error)) {
+        const authErr = new Error(`GMAIL_AUTH_ERROR: ${error.message}`);
+        (authErr as any).isGmailAuthError = true;
+        throw authErr;
+      }
       throw new Error(`Failed to send email via Gmail API: ${error.message}`);
     }
   }
@@ -297,8 +327,11 @@ class EmailService {
     }
     console.log('[EmailService] [STAGE: load-config] ✅ Config loaded successfully');
 
-    if (config.provider !== 'gmail' || !config.clientId || !config.clientSecret || !config.refreshToken) {
-      throw new Error('Gmail OAuth credentials are required. Please configure email settings.');
+    if (config.provider !== 'gmail' || !config.refreshToken) {
+      throw new Error('Gmail is not connected. Please connect your Gmail account in Settings → Email.');
+    }
+    if (!config.clientId || !config.clientSecret) {
+      throw new Error('Gmail OAuth app is not configured. Please contact your platform administrator to set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.');
     }
 
     const html = `
@@ -314,7 +347,7 @@ class EmailService {
       </div>
     `;
 
-    await this.sendViaGmailAPI(config, {
+    await this.sendOrMarkRevoked(organizationId, config, {
       to: recipientEmail,
       subject: `Test Email from ${config.fromName}`,
       html,
@@ -337,8 +370,11 @@ class EmailService {
       throw new Error("Email settings not configured. Please configure email settings in the admin panel.");
     }
 
-    if (config.provider !== 'gmail' || !config.clientId || !config.clientSecret || !config.refreshToken) {
-      throw new Error('Gmail OAuth credentials are required. Please configure email settings.');
+    if (config.provider !== 'gmail' || !config.refreshToken) {
+      throw new Error('Gmail is not connected. Please connect your Gmail account in Settings → Email.');
+    }
+    if (!config.clientId || !config.clientSecret) {
+      throw new Error('Gmail OAuth app is not configured. Please contact your platform administrator.');
     }
 
     // Get quote data
@@ -371,7 +407,7 @@ class EmailService {
     // Generate full HTML email with quote details
     const htmlContent = this.generateQuoteEmailHTML(quote, bodyHtml);
 
-    await this.sendViaGmailAPI(config, {
+    await this.sendOrMarkRevoked(organizationId, config, {
       to: recipientEmail,
       subject,
       html: htmlContent,
@@ -405,8 +441,11 @@ class EmailService {
 
     console.log('[EmailService] [STAGE: load-config] ✅ Config loaded');
 
-    if (config.provider !== 'gmail' || !config.clientId || !config.clientSecret || !config.refreshToken) {
-      throw new Error('Gmail OAuth credentials are required. Please configure email settings.');
+    if (config.provider !== 'gmail' || !config.refreshToken) {
+      throw new Error('Gmail is not connected. Please connect your Gmail account in Settings → Email.');
+    }
+    if (!config.clientId || !config.clientSecret) {
+      throw new Error('Gmail OAuth app is not configured. Please contact your platform administrator.');
     }
 
     // Convert nodemailer attachment format to Gmail API format
@@ -419,13 +458,50 @@ class EmailService {
       }));
     }
 
-    return await this.sendViaGmailAPI(config, {
+    return await this.sendOrMarkRevoked(organizationId, config, {
       to: options.to,
       subject: options.subject,
       html: options.html,
       replyTo,
       attachments: gmailAttachments,
     });
+  }
+
+  /**
+   * Wraps sendViaGmailAPI: on Google auth failure, marks the org connection as
+   * revoked_or_invalid (best-effort), then rethrows a user-facing error.
+   * All other errors are re-thrown unchanged.
+   */
+  private async sendOrMarkRevoked(
+    organizationId: string,
+    config: EmailConfig,
+    options: {
+      to: string;
+      subject: string;
+      html: string;
+      replyTo?: string;
+      attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
+    },
+  ): Promise<string> {
+    try {
+      return await this.sendViaGmailAPI(config, options);
+    } catch (err: any) {
+      if ((err as any).isGmailAuthError) {
+        console.error(
+          `[EmailService] Gmail auth failure for org ${organizationId} — marking revoked_or_invalid. Error: ${err.message}`,
+        );
+        try {
+          await storage.markEmailConnectionStatus(organizationId, 'revoked_or_invalid');
+        } catch (dbErr) {
+          console.error('[EmailService] Failed to update connection status:', dbErr);
+        }
+        throw new Error(
+          'Gmail authentication failed — the connection has been revoked or expired. ' +
+          'Please go to Settings → Email and reconnect your Gmail account.',
+        );
+      }
+      throw err;
+    }
   }
 
   /**

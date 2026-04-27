@@ -16,6 +16,7 @@ import { formatDistanceToNow } from "date-fns";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
 import type { PrepressQueueItem, PrepressQueueWorkflowState } from "@/hooks/useOrders";
+import { usePageVisible } from "@/hooks/usePageVisible";
 
 type LineItemFile = {
   id: string;
@@ -224,6 +225,7 @@ function getPrepressLineItemQueryKey(lineItemId: string | null) {
 export default function PrepressProductionPageV2() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const isPageVisible = usePageVisible();
   const fileInputRef = useRef<HTMLInputElement>(null);
   
   // UI State
@@ -301,11 +303,14 @@ export default function PrepressProductionPageV2() {
       return data.data as PrepressQueueItem[];
     },
     staleTime: 0,
-    refetchInterval: 10000,
-    refetchIntervalInBackground: true,
-    refetchOnWindowFocus: true,
-    refetchOnMount: "always",
-    refetchOnReconnect: true,
+    refetchInterval: (query) => {
+      // Never poll in hidden tabs — no one is watching.
+      if (!isPageVisible) return false;
+      // Stop polling when the queue is empty; rely on manual refresh (refreshPrepressQueue) for new arrivals.
+      const items = (query.state.data as PrepressQueueItem[]) ?? [];
+      return items.length > 0 ? 10_000 : false;
+    },
+    refetchOnWindowFocus: false,
   });
 
   // Line Item Files Query
@@ -1309,150 +1314,6 @@ export default function PrepressProductionPageV2() {
               </div>
             </div>
 
-            <div className="mt-4 bg-[#1a232e] p-5 border border-[#2d3748] rounded-lg shadow-sm">
-              <div className="flex items-center justify-between mb-2 gap-3">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Materials Needed</p>
-                  <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-slate-600 text-slate-300 bg-slate-700/40">
-                    Effective (including overrides)
-                  </span>
-                  {materialsAvailabilityLoading ? (
-                    <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-slate-600 text-slate-300 bg-slate-700/40">
-                      Checking Stock...
-                    </span>
-                  ) : (
-                    <span
-                      className={cn(
-                        "text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border",
-                        materialsAllAvailable
-                          ? "border-emerald-500 text-emerald-300 bg-emerald-900/20"
-                          : "border-amber-500 text-amber-300 bg-amber-900/20"
-                      )}
-                    >
-                      {materialsAllAvailable ? "Stock Available" : "Stock Shortage"}
-                    </span>
-                  )}
-                  {pricingReviewRequired ? (
-                    <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-amber-500 text-amber-300 bg-amber-900/20">
-                      Pricing Review Required
-                    </span>
-                  ) : null}
-                </div>
-                <div className="flex items-center gap-2">
-                  {materialsEffectiveLoading ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={!overrideAllowed || !selectedItem}
-                    onClick={() => openMaterialOverrideModal({ mode: "add" })}
-                  >
-                    Add Material
-                  </Button>
-                </div>
-              </div>
-
-              {effectiveMaterials.length > 0 ? (
-                <ul className="space-y-2 text-sm">
-                  {effectiveMaterials.map((material, index) => (
-                    <li key={`${material.materialId}-${material.uom}-${index}`} className="flex items-center justify-between gap-3 border border-slate-700 rounded p-2">
-                      <div className="flex flex-col gap-1">
-                        <span className="font-medium text-slate-200 flex items-center gap-2">
-                          {material.materialName || `Material ${material.materialId}`}
-                          {material.isOverridden ? (
-                            <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-cyan-500 text-cyan-300 bg-cyan-900/20">
-                              Overridden
-                            </span>
-                          ) : null}
-                        </span>
-                        <span className="text-xs text-slate-500">ID: {material.materialId}</span>
-                        {(() => {
-                          const availability = materialsAvailability.find(
-                            (a) => a.materialId === material.materialId && a.uom === material.uom
-                          );
-                          if (!availability) return null;
-                          return (
-                            <span
-                              className={cn(
-                                "text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border w-fit",
-                                availability.isAvailable
-                                  ? "border-emerald-600 text-emerald-300 bg-emerald-950/40"
-                                  : "border-amber-600 text-amber-300 bg-amber-950/40"
-                              )}
-                            >
-                              {availability.isAvailable
-                                ? `In Stock (${availability.availableQty} ${availability.uom})`
-                                : `Short ${availability.shortageQty} ${availability.uom}`}
-                            </span>
-                          );
-                        })()}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-slate-300 font-mono min-w-[90px] text-right">
-                          {material.qty} {material.uom}
-                        </span>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={!overrideAllowed}
-                          onClick={() => openMaterialOverrideModal({ mode: "replace", materialId: material.materialId, uom: material.uom })}
-                        >
-                          Swap
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={!overrideAllowed}
-                          onClick={() => openMaterialOverrideModal({ mode: "adjust_qty", materialId: material.materialId, uom: material.uom, qty: material.qty })}
-                        >
-                          Adjust Qty
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={!overrideAllowed}
-                          onClick={() => openMaterialOverrideModal({ mode: "remove", materialId: material.materialId })}
-                        >
-                          Remove
-                        </Button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <div className="space-y-1">
-                  <p className="text-sm text-slate-400">No materials computed</p>
-                  <p className="text-xs text-slate-500">Add inventory materials to PBV2 choices or set size/options</p>
-                </div>
-              )}
-
-              {plannedMaterials.length > 0 ? (
-                <details className="mt-3">
-                  <summary className="text-xs text-slate-400 cursor-pointer">View planned baseline materials ({plannedMaterials.length})</summary>
-                  <ul className="mt-2 space-y-1.5 text-xs">
-                    {plannedMaterials.map((material, index) => (
-                      <li key={`planned-${material.materialId}-${material.basis}-${index}`} className="flex items-center justify-between gap-2 text-slate-300">
-                        <span>{material.materialName || `Material ${material.materialId}`}</span>
-                        <span className="font-mono">{material.qty} {material.uom}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-              ) : null}
-
-              {!overrideAllowed ? (
-                <p className="text-xs text-amber-300 mt-2">
-                  Overrides are disabled by policy ({overrideMode}). {overrideBlockedReason || "Status is beyond allowed stage."}
-                </p>
-              ) : null}
-
-              {plannedMaterialsMessage ? (
-                <p className="text-xs text-amber-300 mt-2">{plannedMaterialsMessage}</p>
-              ) : null}
-
-              {effectiveFingerprint ? (
-                <p className="text-[10px] text-slate-500 mt-2">Fingerprint: {effectiveFingerprint.slice(0, 12)}…</p>
-              ) : null}
-            </div>
           </section>
 
           {/* Section 2: Original Customer Files */}
@@ -1723,7 +1584,155 @@ export default function PrepressProductionPageV2() {
             </div>
           </section>
 
-          {/* Section 4: Prepress Notes + QC Flagging */}
+          {/* Section 4: Materials Needed */}
+          <section>
+            <div className="bg-[#1a232e]/70 p-5 border border-[#2d3748]/80 rounded-lg shadow-sm">
+              <div className="flex items-center justify-between mb-2 gap-3">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Materials Needed</p>
+                  <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-slate-600 text-slate-300 bg-slate-700/40">
+                    Effective (including overrides)
+                  </span>
+                  {materialsAvailabilityLoading ? (
+                    <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-slate-600 text-slate-300 bg-slate-700/40">
+                      Checking Stock...
+                    </span>
+                  ) : (
+                    <span
+                      className={cn(
+                        "text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border",
+                        materialsAllAvailable
+                          ? "border-emerald-500 text-emerald-300 bg-emerald-900/20"
+                          : "border-amber-500 text-amber-300 bg-amber-900/20"
+                      )}
+                    >
+                      {materialsAllAvailable ? "Stock Available" : "Stock Shortage"}
+                    </span>
+                  )}
+                  {pricingReviewRequired ? (
+                    <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-amber-500 text-amber-300 bg-amber-900/20">
+                      Pricing Review Required
+                    </span>
+                  ) : null}
+                </div>
+                <div className="flex items-center gap-2">
+                  {materialsEffectiveLoading ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!overrideAllowed || !selectedItem}
+                    onClick={() => openMaterialOverrideModal({ mode: "add" })}
+                  >
+                    Add Material
+                  </Button>
+                </div>
+              </div>
+
+              {effectiveMaterials.length > 0 ? (
+                <ul className="space-y-2 text-sm">
+                  {effectiveMaterials.map((material, index) => (
+                    <li key={`${material.materialId}-${material.uom}-${index}`} className="flex items-center justify-between gap-3 border border-slate-700 rounded p-2">
+                      <div className="flex flex-col gap-1">
+                        <span className="font-medium text-slate-200 flex items-center gap-2">
+                          {material.materialName || `Material ${material.materialId}`}
+                          {material.isOverridden ? (
+                            <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-cyan-500 text-cyan-300 bg-cyan-900/20">
+                              Overridden
+                            </span>
+                          ) : null}
+                        </span>
+                        <span className="text-xs text-slate-500">ID: {material.materialId}</span>
+                        {(() => {
+                          const availability = materialsAvailability.find(
+                            (a) => a.materialId === material.materialId && a.uom === material.uom
+                          );
+                          if (!availability) return null;
+                          return (
+                            <span
+                              className={cn(
+                                "text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border w-fit",
+                                availability.isAvailable
+                                  ? "border-emerald-600 text-emerald-300 bg-emerald-950/40"
+                                  : "border-amber-600 text-amber-300 bg-amber-950/40"
+                              )}
+                            >
+                              {availability.isAvailable
+                                ? `In Stock (${availability.availableQty} ${availability.uom})`
+                                : `Short ${availability.shortageQty} ${availability.uom}`}
+                            </span>
+                          );
+                        })()}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-slate-300 font-mono min-w-[90px] text-right">
+                          {material.qty} {material.uom}
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!overrideAllowed}
+                          onClick={() => openMaterialOverrideModal({ mode: "replace", materialId: material.materialId, uom: material.uom })}
+                        >
+                          Swap
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!overrideAllowed}
+                          onClick={() => openMaterialOverrideModal({ mode: "adjust_qty", materialId: material.materialId, uom: material.uom, qty: material.qty })}
+                        >
+                          Adjust Qty
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!overrideAllowed}
+                          onClick={() => openMaterialOverrideModal({ mode: "remove", materialId: material.materialId })}
+                        >
+                          Remove
+                        </Button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="space-y-1">
+                  <p className="text-sm text-slate-400">No materials computed</p>
+                  <p className="text-xs text-slate-500">Add inventory materials to PBV2 choices or set size/options</p>
+                </div>
+              )}
+
+              {plannedMaterials.length > 0 ? (
+                <details className="mt-3">
+                  <summary className="text-xs text-slate-400 cursor-pointer">View planned baseline materials ({plannedMaterials.length})</summary>
+                  <ul className="mt-2 space-y-1.5 text-xs">
+                    {plannedMaterials.map((material, index) => (
+                      <li key={`planned-${material.materialId}-${material.basis}-${index}`} className="flex items-center justify-between gap-2 text-slate-300">
+                        <span>{material.materialName || `Material ${material.materialId}`}</span>
+                        <span className="font-mono">{material.qty} {material.uom}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
+
+              {!overrideAllowed ? (
+                <p className="text-xs text-amber-300 mt-2">
+                  Overrides are disabled by policy ({overrideMode}). {overrideBlockedReason || "Status is beyond allowed stage."}
+                </p>
+              ) : null}
+
+              {plannedMaterialsMessage ? (
+                <p className="text-xs text-amber-300 mt-2">{plannedMaterialsMessage}</p>
+              ) : null}
+
+              {effectiveFingerprint ? (
+                <p className="text-[10px] text-slate-500 mt-2">Fingerprint: {effectiveFingerprint.slice(0, 12)}…</p>
+              ) : null}
+            </div>
+          </section>
+
+          {/* Section 5: Prepress Notes + QC Flagging */}
           <section>
             <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4 flex items-center gap-2">
               <AlertCircle className="w-4 h-4" /> Prepress Notes + QC Flagging

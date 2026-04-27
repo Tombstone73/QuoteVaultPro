@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { usePageVisible } from "@/hooks/usePageVisible";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { Paperclip, Upload, Download, X, Loader2, Image, FileText, File, ChevronDown, ChevronUp, Sparkles, Eye } from "lucide-react";
@@ -106,6 +107,7 @@ export function LineItemAttachmentsPanel({
 }: LineItemAttachmentsPanelProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const isPageVisible = usePageVisible();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
@@ -212,6 +214,7 @@ export function LineItemAttachmentsPanel({
       return getAttachmentPollingInterval({
         attachments: data,
         guard: pollingGuardRef.current,
+        isVisible: isPageVisible,
         maxPollMs: MAX_POLL_MS,
         maxAttempts: MAX_ATTEMPTS,
         intervalMs: POLL_INTERVAL_MS,

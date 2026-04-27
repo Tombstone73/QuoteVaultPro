@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -118,6 +118,57 @@ type OrderAddressSnapshotFields = {
 type OrderDetailOrder = HookOrderWithRelations & OrderAddressSnapshotFields;
 type OrderDetailLineItem = HookOrderWithRelations["lineItems"][number];
 
+type OrderInternalNoteRow = {
+  id: string;
+  orderId: string;
+  noteText: string;
+  audienceTags: string[] | null;
+  createdByUserId: string | null;
+  createdByUserName: string | null;
+  createdAt: string;
+};
+
+type OrderDesignBillingVisibilityItem = {
+  lineItemId: string;
+  orderId: string;
+  description: string | null;
+  quantity: number;
+  productName: string | null;
+  effectiveRequiresDesign: boolean;
+  designPricingModeSnapshot: string | null;
+  visibilityState: "not_applicable" | "no_summary" | "available";
+  designCostState: "not_applicable" | "estimated" | "accrued" | "finalized" | null;
+  correctedTrackedMinutes: number | null;
+  soldDesignAmount: number | null;
+  billableDesignMinutes: number | null;
+  billableDesignAmount: number | null;
+  billingStatus: "not_billable" | "candidate" | "approved_for_invoice" | "invoiced" | "waived" | null;
+  lastSyncedAt: string | null;
+};
+
+const DESIGN_BILLING_STATUS_LABELS: Record<NonNullable<OrderDesignBillingVisibilityItem["billingStatus"]>, string> = {
+  not_billable: "Not billable",
+  candidate: "Candidate",
+  approved_for_invoice: "Approved for invoice",
+  invoiced: "Invoiced",
+  waived: "Waived",
+};
+
+const DESIGN_COST_STATE_LABELS: Record<NonNullable<OrderDesignBillingVisibilityItem["designCostState"]>, string> = {
+  not_applicable: "Not applicable",
+  estimated: "Estimated",
+  accrued: "Accrued",
+  finalized: "Finalized",
+};
+
+const DESIGN_PRICING_MODE_LABELS: Record<string, string> = {
+  none: "None",
+  flat_fee: "Flat fee",
+  hourly: "Hourly",
+  included_minutes_plus_overage: "Included minutes + overage",
+  manual_quote: "Manual quote",
+};
+
 const fulfillmentMethods = ["pickup", "ship", "deliver"] as const;
 type FulfillmentMethod = (typeof fulfillmentMethods)[number];
 const isFulfillmentMethod = (value: string): value is FulfillmentMethod =>
@@ -139,6 +190,7 @@ export default function OrderDetail() {
   const params = useParams();
   const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
   const { registerGuard, guardedNavigate } = useNavigationGuard();
   const { onSmartBack } = useSmartBack();
   const { toast } = useToast();
@@ -205,6 +257,10 @@ export default function OrderDetail() {
   const [showManualReservationsDialog, setShowManualReservationsDialog] = useState(false);
 
   const [showCustomerAddress, setShowCustomerAddress] = useState(true);
+  const lineItemsSectionRef = useRef<HTMLDivElement | null>(null);
+
+  const focusProduction = searchParams.get("focusProduction") === "1";
+  const focusProductionStatus = searchParams.get("productionStatus");
 
   // Auto-open pickers when entering edit mode
   useEffect(() => {
@@ -235,6 +291,70 @@ export default function OrderDetail() {
       ...pendingOrderPatch,
     } as OrderDetailOrder;
   }
+
+  const productionFocus = useMemo(() => {
+    if (!focusProduction || !order?.lineItems?.length) {
+      return {
+        highlightedIds: [] as string[],
+        prioritizedIds: [] as string[],
+      };
+    }
+
+    const productionRelevant = order.lineItems.filter((lineItem: any) => (lineItem?.product as any)?.requiresProductionJob === true);
+    const terminalStates = new Set(["completed", "canceled", "complete"]);
+    const readyStates = new Set(["ready_for_prepress", "ready_for_production"]);
+
+    const pending = productionRelevant.filter((lineItem: any) => {
+      const workflowState = String(lineItem.workflowState || lineItem.status || "").trim().toLowerCase();
+      if (terminalStates.has(workflowState)) return false;
+      if (!readyStates.has(workflowState)) return false;
+      return !lineItem.activeOwnerJobId;
+    });
+
+    const prioritized = focusProductionStatus === "needs_handoff"
+      ? pending
+      : [...pending, ...productionRelevant.filter((lineItem: any) => !pending.some((pendingItem) => pendingItem.id === lineItem.id))];
+
+    return {
+      highlightedIds: prioritized.map((lineItem: any) => String(lineItem.id)),
+      prioritizedIds: prioritized.map((lineItem: any) => String(lineItem.id)),
+    };
+  }, [focusProduction, focusProductionStatus, order]);
+
+  const orderOperationalSummary = useMemo(() => {
+    const lineItems = order?.lineItems ?? [];
+    const totalItems = lineItems.length;
+    const productionRequiredCount = lineItems.filter((lineItem: any) => (lineItem?.product as any)?.requiresProductionJob === true).length;
+    const actionNeededCount = lineItems.filter((lineItem: any) => {
+      const workflowState = String(lineItem?.workflowState || lineItem?.status || "new").trim().toLowerCase();
+      return ["new", "needs_design", "ready_for_prepress", "ready_for_production", "on_hold"].includes(workflowState);
+    }).length;
+    const inProgressCount = lineItems.filter((lineItem: any) => {
+      const workflowState = String(lineItem?.workflowState || lineItem?.status || "").trim().toLowerCase();
+      return ["in_design", "in_prepress", "in_production"].includes(workflowState);
+    }).length;
+
+    return {
+      totalItems,
+      productionRequiredCount,
+      actionNeededCount,
+      inProgressCount,
+    };
+  }, [order]);
+
+  useEffect(() => {
+    if (!focusProduction || productionFocus.prioritizedIds.length === 0) return;
+
+    const targetId = productionFocus.prioritizedIds[0];
+    window.dispatchEvent(new CustomEvent("titanos:jump-to-line-item", { detail: { lineItemId: targetId } }));
+
+    const timer = window.setTimeout(() => {
+      lineItemsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
+
+    return () => window.clearTimeout(timer);
+  }, [focusProduction, productionFocus]);
+
   const deleteOrder = useDeleteOrder();
   const updateOrder = useUpdateOrder(orderId!);
   const transitionStatus = useTransitionOrderStatus(orderId!);
@@ -255,6 +375,60 @@ export default function OrderDetail() {
       const res = await fetch(`/api/orders/${orderId}/pbv2/rollup`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to load PBV2 rollup");
       return res.json();
+    },
+  });
+
+  const [orderInternalNoteDraft, setOrderInternalNoteDraft] = useState("");
+
+  const orderInternalNotesQuery = useQuery<OrderInternalNoteRow[]>({
+    queryKey: ["orders", "internalNotes", orderId],
+    enabled: Boolean(orderId),
+    queryFn: async () => {
+      const response = await fetch(`/api/orders/${orderId}/internal-notes`, { credentials: "include" });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.message || "Failed to load order internal notes");
+      }
+      const payload = await response.json();
+      return payload.data as OrderInternalNoteRow[];
+    },
+  });
+
+  const orderDesignBillingVisibilityQuery = useQuery<OrderDesignBillingVisibilityItem[]>({
+    queryKey: ["orders", "design-billing-visibility", orderId],
+    enabled: Boolean(orderId),
+    queryFn: async () => {
+      const response = await fetch(`/api/orders/${orderId}/design-billing-visibility`, { credentials: "include" });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.message || "Failed to load design billing visibility");
+      }
+      const payload = await response.json();
+      return payload.data as OrderDesignBillingVisibilityItem[];
+    },
+  });
+
+  const addOrderInternalNoteMutation = useMutation({
+    mutationFn: async (noteText: string) => {
+      const response = await fetch(`/api/orders/${orderId}/internal-notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ noteText }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(payload?.message || "Failed to add order internal note");
+      }
+      return payload.data as OrderInternalNoteRow;
+    },
+    onSuccess: async () => {
+      setOrderInternalNoteDraft("");
+      await queryClient.invalidateQueries({ queryKey: ["orders", "internalNotes", orderId] });
+      toast({ title: "Order internal note added" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to add order internal note", description: error.message, variant: "destructive" });
     },
   });
 
@@ -1127,12 +1301,11 @@ export default function OrderDetail() {
   if (isLoading) {
     return (
       <Page>
-        <div className="flex items-center justify-center min-h-[400px]">
-          <div className="flex items-center gap-2">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-titan-accent"></div>
-            <span className="text-titan-text-secondary">Loading order...</span>
-          </div>
-        </div>
+        <ContentLayout>
+          <DataCard className="bg-titan-bg-card border-titan-border-subtle">
+            <div className="py-16 text-center text-sm text-titan-text-muted">Loading order...</div>
+          </DataCard>
+        </ContentLayout>
       </Page>
     );
   }
@@ -1166,6 +1339,10 @@ export default function OrderDetail() {
   const billingOverrideActive = Boolean((order as any).billingReadyOverride);
   const billingOverrideNoteValue = String((order as any).billingReadyOverrideNote || '');
   const billingReadyAtValue = (order as any).billingReadyAt as string | null | undefined;
+  const designBillingRows = orderDesignBillingVisibilityQuery.data ?? [];
+  const designBillingCandidateTotal = designBillingRows.reduce((sum, row) => sum + (row.billableDesignAmount ?? 0), 0);
+  const designBillingSoldTotal = designBillingRows.reduce((sum, row) => sum + (row.soldDesignAmount ?? 0), 0);
+  const designBillingUnsyncedCount = designBillingRows.filter((row) => row.visibilityState === "no_summary").length;
   const billingBadgeVariant: "default" | "secondary" | "outline" =
     billingStatus === 'ready' ? 'default' : billingStatus === 'billed' ? 'secondary' : 'outline';
   const billingLabel =
@@ -2002,7 +2179,7 @@ export default function OrderDetail() {
 
                 {order.notesInternal && (
                   <div>
-                    <label className="text-sm font-medium text-muted-foreground">Internal Notes</label>
+                    <label className="text-sm font-medium text-muted-foreground">Legacy Order Internal Notes (text blob)</label>
                     <div className="mt-1 text-sm p-3 bg-muted rounded-md whitespace-pre-wrap">
                       {order.notesInternal}
                     </div>
@@ -2014,12 +2191,47 @@ export default function OrderDetail() {
             </Card>
 
             {/* Line Items (Quote-style UI) */}
-            <div className="space-y-4">
+            <div className="space-y-4" ref={lineItemsSectionRef}>
+              <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Operational Summary</span>
+                    <Badge variant="outline" className="h-6 px-2 text-xs">
+                      {orderOperationalSummary.totalItems} {orderOperationalSummary.totalItems === 1 ? "item" : "items"}
+                    </Badge>
+                    {orderOperationalSummary.productionRequiredCount > 0 ? (
+                      <Badge variant="secondary" className="h-6 px-2 text-xs">
+                        {orderOperationalSummary.productionRequiredCount} require production
+                      </Badge>
+                    ) : null}
+                    {orderOperationalSummary.actionNeededCount > 0 ? (
+                      <Badge className="h-6 px-2 text-xs bg-amber-100 text-amber-900 hover:bg-amber-100">
+                        {orderOperationalSummary.actionNeededCount} action needed
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="h-6 px-2 text-xs border-emerald-300 text-emerald-800">
+                        No immediate action needed
+                      </Badge>
+                    )}
+                    {orderOperationalSummary.inProgressCount > 0 ? (
+                      <Badge variant="outline" className="h-6 px-2 text-xs border-sky-300 text-sky-800">
+                        {orderOperationalSummary.inProgressCount} in progress
+                      </Badge>
+                    ) : null}
+                  </div>
+                  {isAdminOrOwner && canEditLineItems && orderOperationalSummary.productionRequiredCount > 0 ? (
+                    <div className="text-xs text-muted-foreground">Bulk production handoff is available below in Line Items.</div>
+                  ) : null}
+                </div>
+              </div>
+
               <OrderLineItemsSection
                 orderId={orderId!}
                 customerId={order.customerId}
                 readOnly={!(isAdminOrOwner && canEditLineItems)}
                 lineItems={order.lineItems as any}
+                productionFocusLineItemIds={productionFocus.highlightedIds}
+                productionPriorityLineItemIds={productionFocus.prioritizedIds}
                 onAfterLineItemsChange={recalculateOrderTotals}
               />
 
@@ -2614,6 +2826,87 @@ export default function OrderDetail() {
                 </div>
 
                 <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-sm font-medium">Design billing visibility</div>
+                    {designBillingRows.length > 0 && (
+                      <div className="text-xs text-muted-foreground">
+                        Candidate {formatCurrency(designBillingCandidateTotal)} • Sold {formatCurrency(designBillingSoldTotal)}
+                      </div>
+                    )}
+                  </div>
+                  <div className="text-sm text-muted-foreground">
+                    Visibility only. This does not create invoice rows or change order totals.
+                    {designBillingUnsyncedCount > 0 ? ` ${designBillingUnsyncedCount} line item${designBillingUnsyncedCount === 1 ? '' : 's'} still have no synced design summary.` : ''}
+                  </div>
+                  {orderDesignBillingVisibilityQuery.isLoading ? (
+                    <div className="text-sm text-muted-foreground">Loading design billing visibility…</div>
+                  ) : orderDesignBillingVisibilityQuery.isError ? (
+                    <div className="text-sm text-destructive">{(orderDesignBillingVisibilityQuery.error as Error).message}</div>
+                  ) : designBillingRows.length === 0 ? (
+                    <div className="text-sm text-muted-foreground">No line items available for design billing visibility.</div>
+                  ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Line Item</TableHead>
+                          <TableHead>Pricing</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead className="text-right">Tracked</TableHead>
+                          <TableHead className="text-right">Sold</TableHead>
+                          <TableHead className="text-right">Candidate</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {designBillingRows.map((row) => {
+                          const title = row.description || row.productName || "Line item";
+                          const pricingLabel = row.designPricingModeSnapshot
+                            ? (DESIGN_PRICING_MODE_LABELS[row.designPricingModeSnapshot] ?? row.designPricingModeSnapshot)
+                            : "—";
+                          const statusLabel = row.visibilityState === "not_applicable"
+                            ? "Not applicable"
+                            : row.visibilityState === "no_summary"
+                              ? "No summary yet"
+                              : row.billingStatus
+                                ? (DESIGN_BILLING_STATUS_LABELS[row.billingStatus] ?? row.billingStatus)
+                                : row.designCostState
+                                  ? (DESIGN_COST_STATE_LABELS[row.designCostState] ?? row.designCostState)
+                                  : "Available";
+
+                          return (
+                            <TableRow key={row.lineItemId}>
+                              <TableCell>
+                                <div className="font-medium">{title}</div>
+                                <div className="text-xs text-muted-foreground">
+                                  Qty {row.quantity}{row.productName ? ` • ${row.productName}` : ""}
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <div>{pricingLabel}</div>
+                                {row.lastSyncedAt && (
+                                  <div className="text-xs text-muted-foreground">Synced {formatDate(row.lastSyncedAt)}</div>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant={row.visibilityState === "available" ? "outline" : "secondary"}>{statusLabel}</Badge>
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {row.correctedTrackedMinutes == null ? "—" : `${row.correctedTrackedMinutes}m`}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {row.soldDesignAmount == null ? "—" : formatCurrency(row.soldDesignAmount)}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {row.billableDesignAmount == null ? "—" : formatCurrency(row.billableDesignAmount)}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  )}
+                </div>
+
+                <div className="space-y-2">
                   <div className="text-sm font-medium">Invoices</div>
                   {isInvoicesLoading ? (
                     <div className="text-sm text-muted-foreground">Loading invoices…</div>
@@ -2691,18 +2984,23 @@ export default function OrderDetail() {
             </Card>
 
             {/* Source Quote */}
-            {order.quote && (
+            {(order.quote || order.sourceQuoteNumber) && (
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">Source Quote</CardTitle>
+                  <p className="text-sm text-muted-foreground">
+                    From Quote #{order.quote?.quoteNumber ?? order.sourceQuoteNumber}
+                  </p>
                 </CardHeader>
-                <CardContent>
-                  <Link to={`/quotes/${order.quoteId}`}>
-                    <Button variant="outline" size="sm" className="w-full text-titan-accent hover:text-titan-accent-hover">
-                      View Quote #{order.quote.quoteNumber}
-                    </Button>
-                  </Link>
-                </CardContent>
+                {order.quoteId && (
+                  <CardContent>
+                    <Link to={`/quotes/${order.quoteId}`}>
+                      <Button variant="outline" size="sm" className="w-full text-titan-accent hover:text-titan-accent-hover">
+                        View Quote #{order.quote?.quoteNumber ?? order.sourceQuoteNumber}
+                      </Button>
+                    </Link>
+                  </CardContent>
+                )}
               </Card>
             )}
 

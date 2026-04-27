@@ -54,6 +54,7 @@ export type Order = {
   id: string;
   orderNumber: string;
   quoteId: string | null;
+  sourceQuoteNumber: number | null;
   customerId: string;
   contactId: string | null;
   status: string;
@@ -100,6 +101,7 @@ export type OrderLineItem = {
   totalPrice: string;
   status: string;
   workflowState?: string;
+  designStatus?: "needs_design" | "in_design" | "design_complete" | null;
   requiresDesign?: boolean;
   requiresPrepress?: boolean;
   nestingConfigSnapshot: any;
@@ -147,6 +149,7 @@ export type DesignQueueItem = {
   dueDate: string | null;
   status: string;
   workflowState: DesignQueueWorkflowState;
+  designStatus: DesignQueueWorkflowState;
   designStage: DesignQueueWorkflowState;
   rush: boolean;
   quantity: number;
@@ -154,6 +157,7 @@ export type DesignQueueItem = {
   height: number | null;
   sqFootage: number | null;
   requiresDesign: boolean | null;
+  requiresProofApproval: boolean | null;
   requiresPrepress: boolean | null;
   activeOwnerJobId: string | null;
   activeOwnerStationKey: string | null;
@@ -229,6 +233,14 @@ export type OrderRow = Order & {
   customer: any;
   contact?: any;
   lineItemsCount?: number;
+  productionSummary?: {
+    requiredCount: number;
+    handedOffCount: number;
+    pendingHandoffCount: number;
+    inProductionCount: number;
+    completeCount: number;
+    status: "none" | "clear" | "needs_handoff" | "partial" | "in_production" | "complete";
+  };
   listLabel?: string | null; // List-only note (always editable)
   previewThumbnails?: string[]; // GCS thumbnail keys
   thumbsCount?: number; // Total attachment count
@@ -879,11 +891,29 @@ export function useTransitionLineItemWorkflow(orderId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ lineItemId, toState, note }: { lineItemId: string; toState: LineItemWorkflowState; note?: string }) => {
-      const response = await fetch(`/api/line-items/${lineItemId}/workflow-transition`, {
+    mutationFn: async ({
+      lineItemId,
+      toState,
+      note,
+      action,
+    }: {
+      lineItemId: string;
+      toState?: LineItemWorkflowState;
+      note?: string;
+      action?: "complete-design";
+    }) => {
+      const endpoint = action === "complete-design"
+        ? `/api/design/line-item/${lineItemId}/complete`
+        : `/api/line-items/${lineItemId}/workflow-transition`;
+
+      const body = action === "complete-design"
+        ? { note }
+        : { toState, note };
+
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ toState, note }),
+        body: JSON.stringify(body),
         credentials: "include",
       });
       const data = await response.json().catch(() => ({}));
@@ -989,13 +1019,16 @@ export function useTransitionOrderStatus(orderId: string) {
       queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
       queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
       
-      // BUGFIX: Invalidate production queries so scheduled jobs appear immediately
+      // Invalidate all queue domains — order status transitions (cancel, hold, etc.)
+      // remove items from production, prepress, and proofing queues simultaneously.
       queryClient.invalidateQueries({
         predicate: (query) => {
           const key = query.queryKey;
           return Array.isArray(key) && key[0] === "/api/production/jobs";
         },
       });
+      queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
       
       // Show success message with any warnings
       const warnings = response.warnings?.length ? `\n\nWarnings: ${response.warnings.join(', ')}` : '';
