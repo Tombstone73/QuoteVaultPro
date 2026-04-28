@@ -127,6 +127,9 @@ export function FormulaReferenceModal({ open, onOpenChange, onInsertText }: Form
       <DialogContent className="max-h-[85vh] w-[min(900px,95vw)] flex flex-col overflow-hidden">
         <DialogHeader className="shrink-0">
           <DialogTitle>Formula Reference</DialogTitle>
+          <div className="text-sm text-muted-foreground">
+            Use lowercase variable names such as w, h, q, sqft, total_sqft, and base_price. Use formula functions like ceil(...), round(...), and max(...), not Math.ceil(...).
+          </div>
         </DialogHeader>
 
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "variables" | "functions")} className="w-full flex-1 min-h-0 flex flex-col">
