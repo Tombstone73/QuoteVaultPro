@@ -71,9 +71,46 @@ const STATUS_META: Record<MaterialInventoryStatus, { label: string; className: s
   inactive: { label: "Inactive", className: "bg-slate-100 text-slate-700 border-slate-200" },
 };
 
-function getVendorName(material: Material, vendors: Array<{ id: string; name: string }>) {
+type VendorSummary = {
+  id: string;
+  name: string;
+  salesRepName?: string | null;
+  salesRepEmail?: string | null;
+  salesRepPhone?: string | null;
+  leadTimeText?: string | null;
+  defaultLeadTimeDays?: number | null;
+};
+
+function getVendorRecord(vendorId: string | null | undefined, vendors: VendorSummary[]) {
+  if (!vendorId) return null;
+  return vendors.find((vendor) => vendor.id === vendorId) || null;
+}
+
+function formatVendorLeadTime(vendor: VendorSummary | null) {
+  if (!vendor) return null;
+  if (vendor.leadTimeText?.trim()) return vendor.leadTimeText.trim();
+  if (vendor.defaultLeadTimeDays) return `${vendor.defaultLeadTimeDays} days`;
+  return null;
+}
+
+function getVendorName(material: Material, vendors: VendorSummary[]) {
   if (!material.preferredVendorId) return "Unassigned";
   return vendors.find((vendor) => vendor.id === material.preferredVendorId)?.name || "Unassigned";
+}
+
+function renderVendorSummary(vendor: VendorSummary | null) {
+  if (!vendor) return <span>Unassigned</span>;
+
+  const secondary = [vendor.salesRepName, vendor.salesRepEmail || vendor.salesRepPhone, formatVendorLeadTime(vendor)]
+    .filter(Boolean)
+    .join(" | ");
+
+  return (
+    <div className="space-y-1">
+      <div className="font-medium text-titan-text-primary">{vendor.name}</div>
+      {secondary ? <div className="text-xs text-titan-text-muted">{secondary}</div> : null}
+    </div>
+  );
 }
 
 function formatRequestedBy(request: MaterialReorderRequest) {
@@ -341,7 +378,7 @@ export function MaterialsSettingsPanel() {
                     <Badge variant="outline" className={statusMeta.className}>{statusMeta.label}</Badge>
                     {openRequestCount > 1 ? <div className="mt-1 text-xs text-titan-text-muted">{openRequestCount} open requests</div> : null}
                   </TitanTableCell>
-                  <TitanTableCell>{getVendorName(material, vendors)}</TitanTableCell>
+                  <TitanTableCell>{renderVendorSummary(getVendorRecord(material.preferredVendorId, vendors))}</TitanTableCell>
                   <TitanTableCell>
                     <div className="flex flex-wrap gap-1" onClick={(event) => event.stopPropagation()}>
                       <TitanIconButton icon={Pencil} variant="ghost" onClick={() => setEditMaterial(material)} title="Edit material" />
@@ -399,7 +436,7 @@ export function MaterialsSettingsPanel() {
                       {request.status}
                     </Badge>
                   </TitanTableCell>
-                  <TitanTableCell>{request.vendorName || "Unassigned"}</TitanTableCell>
+                  <TitanTableCell>{renderVendorSummary(getVendorRecord(request.vendorId, vendors))}</TitanTableCell>
                   <TitanTableCell>{new Date(request.requestedAt).toLocaleDateString()}</TitanTableCell>
                   <TitanTableCell>{formatRequestedBy(request)}</TitanTableCell>
                   <TitanTableCell>

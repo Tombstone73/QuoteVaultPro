@@ -4627,10 +4627,15 @@ export const vendors = pgTable('vendors', {
   name: varchar('name', { length: 255 }).notNull(),
   email: varchar('email', { length: 255 }),
   phone: varchar('phone', { length: 50 }),
+  salesRepName: varchar('sales_rep_name', { length: 255 }),
+  salesRepEmail: varchar('sales_rep_email', { length: 255 }),
+  salesRepPhone: varchar('sales_rep_phone', { length: 50 }),
   website: varchar('website', { length: 255 }),
   notes: text('notes'),
+  additionalContactInfo: text('additional_contact_info'),
   paymentTerms: varchar('payment_terms', { length: 50 }).notNull().default('due_on_receipt'),
   defaultLeadTimeDays: integer('default_lead_time_days'),
+  leadTimeText: varchar('lead_time_text', { length: 120 }),
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
@@ -4648,6 +4653,11 @@ export const insertVendorSchema = createInsertSchema(vendors).omit({
 }).extend({
   paymentTerms: z.enum(['due_on_receipt','net_15','net_30','net_45','custom']).default('due_on_receipt'),
   defaultLeadTimeDays: z.number().int().positive().optional(),
+  leadTimeText: z.string().trim().max(120).optional(),
+  salesRepName: z.string().trim().max(255).optional(),
+  salesRepEmail: z.string().trim().email().optional(),
+  salesRepPhone: z.string().trim().max(50).optional(),
+  additionalContactInfo: z.string().trim().optional(),
   isActive: z.boolean().optional().default(true),
 });
 export const updateVendorSchema = insertVendorSchema.partial();

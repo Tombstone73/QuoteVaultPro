@@ -13,10 +13,15 @@ const vendorSchema = z.object({
   name: z.string().min(1, "Name required"),
   email: z.string().email().optional().or(z.literal("")),
   phone: z.string().optional().or(z.literal("")),
+  salesRepName: z.string().optional().or(z.literal("")),
+  salesRepEmail: z.string().email().optional().or(z.literal("")),
+  salesRepPhone: z.string().optional().or(z.literal("")),
   website: z.string().url().optional().or(z.literal("")),
   notes: z.string().optional().or(z.literal("")),
+  additionalContactInfo: z.string().optional().or(z.literal("")),
   paymentTerms: z.enum(['due_on_receipt','net_15','net_30','net_45','custom']).default('due_on_receipt'),
   defaultLeadTimeDays: z.coerce.number().int().positive().optional().or(z.nan()).transform(v => isNaN(v as any) ? undefined : v),
+  leadTimeText: z.string().max(120).optional().or(z.literal("")),
   isActive: z.boolean().default(true),
 });
 
@@ -34,19 +39,29 @@ export function VendorForm({ open, onOpenChange, vendor }: Props) {
       name: vendor.name,
       email: vendor.email || "",
       phone: vendor.phone || "",
+      salesRepName: vendor.salesRepName || "",
+      salesRepEmail: vendor.salesRepEmail || "",
+      salesRepPhone: vendor.salesRepPhone || "",
       website: vendor.website || "",
       notes: vendor.notes || "",
+      additionalContactInfo: vendor.additionalContactInfo || "",
       paymentTerms: vendor.paymentTerms as any,
       defaultLeadTimeDays: vendor.defaultLeadTimeDays || undefined,
+      leadTimeText: vendor.leadTimeText || "",
       isActive: vendor.isActive,
     } : {
       name: "",
       email: "",
       phone: "",
+      salesRepName: "",
+      salesRepEmail: "",
+      salesRepPhone: "",
       website: "",
       notes: "",
+      additionalContactInfo: "",
       paymentTerms: 'due_on_receipt',
       defaultLeadTimeDays: undefined,
+      leadTimeText: "",
       isActive: true,
     }
   });
@@ -56,9 +71,14 @@ export function VendorForm({ open, onOpenChange, vendor }: Props) {
       ...values,
       email: values.email || undefined,
       phone: values.phone || undefined,
+      salesRepName: values.salesRepName || undefined,
+      salesRepEmail: values.salesRepEmail || undefined,
+      salesRepPhone: values.salesRepPhone || undefined,
       website: values.website || undefined,
       notes: values.notes || undefined,
+      additionalContactInfo: values.additionalContactInfo || undefined,
       defaultLeadTimeDays: values.defaultLeadTimeDays,
+      leadTimeText: values.leadTimeText || undefined,
     };
     try {
       if (vendor) {
@@ -96,6 +116,18 @@ export function VendorForm({ open, onOpenChange, vendor }: Props) {
               <Input {...form.register("phone")}/>
             </div>
             <div>
+              <label className="text-sm font-medium">Sales Rep Name</label>
+              <Input {...form.register("salesRepName")}/>
+            </div>
+            <div>
+              <label className="text-sm font-medium">Sales Rep Email</label>
+              <Input type="email" {...form.register("salesRepEmail")}/>
+            </div>
+            <div>
+              <label className="text-sm font-medium">Sales Rep Phone</label>
+              <Input {...form.register("salesRepPhone")}/>
+            </div>
+            <div>
               <label className="text-sm font-medium">Website</label>
               <Input {...form.register("website")}/>
             </div>
@@ -117,8 +149,16 @@ export function VendorForm({ open, onOpenChange, vendor }: Props) {
               <Input type="number" {...form.register("defaultLeadTimeDays", { valueAsNumber: true })}/>
             </div>
             <div className="col-span-2">
+              <label className="text-sm font-medium">Lead Time Notes</label>
+              <Input placeholder="Same day, 2-4 days, call rep first" {...form.register("leadTimeText")}/>
+            </div>
+            <div className="col-span-2">
               <label className="text-sm font-medium">Notes</label>
               <Textarea rows={3} {...form.register("notes")}/>
+            </div>
+            <div className="col-span-2">
+              <label className="text-sm font-medium">Additional Contact Info</label>
+              <Textarea rows={3} {...form.register("additionalContactInfo")}/>
             </div>
             <div>
               <label className="text-sm font-medium">Active?</label>
