@@ -78,6 +78,19 @@ type PricingPreviewResponse = {
       finished_height?: number;
     };
     pricing?: { basePrice: number; optionsPrice: number; unitPrice: number; totalPrice: number };
+    weight?: {
+      baseWeightInput?: number | string | null;
+      baseWeightSource?: "meta.baseWeightOz" | "shippingConfig.baseWeight" | "none";
+      baseWeightOz?: number | null;
+      shippingConfigBaseWeight?: number | string | null;
+      shippingConfigWeightUnit?: string | null;
+      shippingConfigWeightBasis?: string | null;
+      selectedWeightFields?: Array<{ label: string; oz: number }>;
+      computedShippingWeightOz?: number | null;
+      warningCode?: string;
+      errorCode?: string;
+      errorMessage?: string;
+    };
   };
 };
 
@@ -396,6 +409,24 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
       return a[0].localeCompare(b[0]);
     });
   }, [formulaDebug]);
+  const previewMeta = (treeForPreview as any)?.meta && typeof (treeForPreview as any).meta === "object" ? (treeForPreview as any).meta : {};
+  const previewShippingConfig = previewMeta?.shippingConfig && typeof previewMeta.shippingConfig === "object" ? previewMeta.shippingConfig : null;
+  const weightDebug = result?.debug?.weight ?? formulaDebug?.weight ?? null;
+  const weightFinding = findings.find((finding) => finding.code === "PBV2_W_WEIGHT_MISSING" || finding.code === "PBV2_E_WEIGHT_NEGATIVE") ?? null;
+  const shouldShowWeightDebug = Boolean(weightDebug || previewShippingConfig || previewMeta?.baseWeightOz != null || weightFinding);
+  const selectedWeightFields = Array.isArray(weightDebug?.selectedWeightFields) ? weightDebug.selectedWeightFields : [];
+
+  const displayDebugValue = (value: unknown) => {
+    if (value === null || typeof value === "undefined") return "—";
+    if (typeof value === "string") return value.trim().length > 0 ? value : "—";
+    if (typeof value === "number") return Number.isFinite(value) ? String(value) : "—";
+    return String(value);
+  };
+
+  const displayWeightOz = (value: unknown) => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+    return `${value.toFixed(2)} oz`;
+  };
 
   useEffect(() => {
     if (!treeForPreview || typeof treeForPreview !== "object") {
@@ -618,7 +649,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                         <span className="font-mono text-base text-slate-100">{billedSqftPost.toFixed(0)}</span>
                       </div>
                       <div className="flex items-center justify-between text-sm mt-1">
-                        <span className="text-slate-300">Rate used (base_price / basePricePerSqft)</span>
+                        <span className="text-slate-300">Rate used (base_price / p)</span>
                         <span className="font-mono text-slate-100">{baseRateUsed != null ? currencyFormatter.format(baseRateUsed) : "—"}</span>
                       </div>
                       <div className="text-[11px] text-slate-400 mt-1">
@@ -733,6 +764,46 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     </AccordionContent>
                   </AccordionItem>
                 </Accordion>
+              ) : null}
+
+              {shouldShowWeightDebug ? (
+                <div className="mt-3 rounded border border-slate-700/70 bg-slate-900/40 p-3 text-xs text-slate-300 space-y-2">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-200">Weight Debug</div>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                    <div className="text-slate-400">Base weight input</div>
+                    <div className="font-mono">{displayDebugValue(weightDebug?.baseWeightInput ?? previewShippingConfig?.baseWeight ?? previewMeta?.baseWeightOz ?? null)}</div>
+                    <div className="text-slate-400">baseWeightOz canonical</div>
+                    <div className="font-mono">{displayWeightOz(weightDebug?.baseWeightOz ?? (typeof previewMeta?.baseWeightOz === "number" ? previewMeta.baseWeightOz : null))}</div>
+                    <div className="text-slate-400">shippingConfig.baseWeight</div>
+                    <div className="font-mono">{displayDebugValue(weightDebug?.shippingConfigBaseWeight ?? previewShippingConfig?.baseWeight ?? null)}</div>
+                    <div className="text-slate-400">shippingConfig.weightUnit</div>
+                    <div className="font-mono">{displayDebugValue(weightDebug?.shippingConfigWeightUnit ?? previewShippingConfig?.weightUnit ?? null)}</div>
+                    <div className="text-slate-400">shippingConfig.weightBasis</div>
+                    <div className="font-mono">{displayDebugValue(weightDebug?.shippingConfigWeightBasis ?? previewShippingConfig?.weightBasis ?? null)}</div>
+                    <div className="text-slate-400">Computed shipping weight</div>
+                    <div className="font-mono">{displayWeightOz(weightDebug?.computedShippingWeightOz ?? null)}</div>
+                    <div className="text-slate-400">Weight code</div>
+                    <div className="font-mono">{displayDebugValue(weightDebug?.errorCode ?? weightDebug?.warningCode ?? weightFinding?.code ?? null)}</div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="text-slate-400">Selected material weight fields</div>
+                    {selectedWeightFields.length === 0 ? (
+                      <div className="font-mono">—</div>
+                    ) : (
+                      <div className="rounded border border-slate-700/70 bg-slate-950/40 p-2 space-y-1">
+                        {selectedWeightFields.map((entry, index) => (
+                          <div key={`${entry.label}-${index}`} className="flex items-center justify-between gap-2">
+                            <span>{entry.label}</span>
+                            <span className="font-mono">{displayWeightOz(entry.oz)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {weightDebug?.errorMessage ? <div className="text-red-300">{weightDebug.errorMessage}</div> : null}
+                </div>
               ) : null}
             </div>
           </div>

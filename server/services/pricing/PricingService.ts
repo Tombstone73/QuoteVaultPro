@@ -9,7 +9,7 @@ import { db } from '../../db';
 import { products, pbv2TreeVersions } from '../../../shared/schema';
 import { eq, and } from 'drizzle-orm';
 import { evaluate } from 'mathjs';
-import { evaluateOptionTreeV2 } from '../optionTreeV2Evaluator';
+import { evaluateOptionTreeV2, pbv2ToWeightTotal } from '../optionTreeV2Evaluator';
 import { buildFlatGoodsInput, flatGoodsCalculator, getProfile, type FlatGoodsConfig } from '../../../shared/pricingProfiles';
 import type { 
   OptionTreeV2, 
@@ -19,7 +19,7 @@ import { PBV2_PRICING_VARIABLES, type PricingVariableDefinition } from '../../..
 // @ts-ignore - NestingCalculator.js is plain JS without exported TS types
 import NestingCalculator from '../../NestingCalculator.js';
 
-export const PBV2_PREVIEW_FALLBACK_FORMULA = 'sqft * p * q';
+export const PBV2_PREVIEW_FALLBACK_FORMULA = 'sqft * base_price * q';
 
 // ============================================================================
 // Types
@@ -135,6 +135,19 @@ export type PricingPreviewEvaluationResult = {
       optionsPrice: number;
       unitPrice: number;
       totalPrice: number;
+    };
+    weight?: {
+      baseWeightInput?: number | string | null;
+      baseWeightSource?: 'meta.baseWeightOz' | 'shippingConfig.baseWeight' | 'none';
+      baseWeightOz?: number | null;
+      shippingConfigBaseWeight?: number | string | null;
+      shippingConfigWeightUnit?: string | null;
+      shippingConfigWeightBasis?: string | null;
+      selectedWeightFields?: Array<{ label: string; oz: number }>;
+      computedShippingWeightOz?: number | null;
+      warningCode?: string;
+      errorCode?: string;
+      errorMessage?: string;
     };
   };
 };
@@ -411,6 +424,11 @@ export function evaluatePricingPreviewFromTree(input: {
     throw new Error("optionSelectionsJson must be an object mapping optionId -> selection");
   }
 
+  const selectionsV2: LineItemOptionSelectionsV2 = {
+    schemaVersion: 2,
+    selected: pbv2ExplicitSelections,
+  };
+
   const baseDetails = calculateBasePriceDetails(input.treeJson, {
     widthIn,
     heightIn,
@@ -450,24 +468,42 @@ export function evaluatePricingPreviewFromTree(input: {
     linearFeet: baseDetails.linearFeet,
     usedFallbackFormula,
   });
+  const weightDebug = buildPricingPreviewWeightDebug({
+    treeJson: input.treeJson,
+    selections: selectionsV2,
+    widthIn,
+    heightIn,
+    quantity,
+  });
 
   if (profileUsesFormula) {
-    const formulaEvaluation = evaluatePreviewFormulaToCents({
-      formula: formulaToUse,
-      orderedWidthIn: baseDetails.orderedWidthIn,
-      orderedHeightIn: baseDetails.orderedHeightIn,
-      trimAllowanceX: baseDetails.trimAllowanceX,
-      trimAllowanceY: baseDetails.trimAllowanceY,
-      finishedWidthIn: baseDetails.finishedWidthIn,
-      finishedHeightIn: baseDetails.finishedHeightIn,
-      quantity,
-      baseRatePerSqft: baseDetails.perSqftCents / 100,
-      sqftPerItem: baseDetails.sqftPerItem,
-      totalSqft: baseDetails.totalSqft,
-      linearFeet: baseDetails.linearFeet,
-      usedFallbackFormula,
-      fallbackFormula: PBV2_PREVIEW_FALLBACK_FORMULA,
-    });
+    let formulaEvaluation;
+    try {
+      formulaEvaluation = evaluatePreviewFormulaToCents({
+        formula: formulaToUse,
+        orderedWidthIn: baseDetails.orderedWidthIn,
+        orderedHeightIn: baseDetails.orderedHeightIn,
+        trimAllowanceX: baseDetails.trimAllowanceX,
+        trimAllowanceY: baseDetails.trimAllowanceY,
+        finishedWidthIn: baseDetails.finishedWidthIn,
+        finishedHeightIn: baseDetails.finishedHeightIn,
+        quantity,
+        baseRatePerSqft: baseDetails.perSqftCents / 100,
+        sqftPerItem: baseDetails.sqftPerItem,
+        totalSqft: baseDetails.totalSqft,
+        linearFeet: baseDetails.linearFeet,
+        usedFallbackFormula,
+        fallbackFormula: PBV2_PREVIEW_FALLBACK_FORMULA,
+      });
+    } catch (error: any) {
+      if (error?.code === 'PBV2_FORMULA_ERROR' && error?.debug) {
+        error.debug = {
+          ...error.debug,
+          weight: weightDebug,
+        };
+      }
+      throw error;
+    }
     formulaDebug.formulaResolved = formulaEvaluation.formulaResolved;
     formulaDebug.resultValue = formulaEvaluation.resultValue;
     formulaDebug.appliedAs = formulaEvaluation.appliedAs;
@@ -481,11 +517,6 @@ export function evaluatePricingPreviewFromTree(input: {
       ? formulaValueCents * quantity
       : formulaValueCents;
   }
-
-  const selectionsV2: LineItemOptionSelectionsV2 = {
-    schemaVersion: 2,
-    selected: pbv2ExplicitSelections,
-  };
 
   const evalResult = evaluateOptionTreeV2({
     tree: input.treeJson,
@@ -567,6 +598,7 @@ export function evaluatePricingPreviewFromTree(input: {
         unitPrice: quantity > 0 ? totalCents / 100 / quantity : 0,
         totalPrice: totalCents / 100,
       },
+      weight: weightDebug,
     } : undefined,
   };
 }
@@ -1139,6 +1171,126 @@ function buildBaseFormulaDebugContext(input: {
     postCeilSqftTotal: null,
     baseRateUsed: input.baseRatePerSqft,
   };
+}
+
+function parseWeightInput(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function convertWeightToOz(value: number, unit: unknown): number {
+  switch (unit) {
+    case 'lb':
+      return value * 16;
+    case 'g':
+      return value * 0.03527396195;
+    case 'kg':
+      return value * 35.27396195;
+    case 'oz':
+    default:
+      return value;
+  }
+}
+
+function buildPricingPreviewWeightDebug(input: {
+  treeJson: any;
+  selections: LineItemOptionSelectionsV2;
+  widthIn: number;
+  heightIn: number;
+  quantity: number;
+}): NonNullable<PricingPreviewEvaluationResult['debug']>['weight'] {
+  const meta = input.treeJson?.meta && typeof input.treeJson.meta === 'object' ? input.treeJson.meta : {};
+  const shippingConfig = meta?.shippingConfig && typeof meta.shippingConfig === 'object' ? meta.shippingConfig : {};
+  const rawMetaBaseWeightOz = typeof meta?.baseWeightOz === 'number' && Number.isFinite(meta.baseWeightOz) ? meta.baseWeightOz : null;
+  const shippingConfigBaseWeight = shippingConfig?.baseWeight ?? null;
+  const shippingConfigWeightUnit = typeof shippingConfig?.weightUnit === 'string' ? shippingConfig.weightUnit : null;
+  const shippingConfigWeightBasis = typeof shippingConfig?.weightBasis === 'string' ? shippingConfig.weightBasis : null;
+  const parsedShippingConfigBaseWeight = parseWeightInput(shippingConfigBaseWeight);
+  const convertedShippingBaseWeightOz = parsedShippingConfigBaseWeight !== null
+    ? convertWeightToOz(parsedShippingConfigBaseWeight, shippingConfigWeightUnit || 'oz')
+    : null;
+
+  let errorCode: string | undefined;
+  let errorMessage: string | undefined;
+  if (rawMetaBaseWeightOz !== null && rawMetaBaseWeightOz < 0) {
+    errorCode = 'PBV2_E_WEIGHT_NEGATIVE';
+    errorMessage = 'meta.baseWeightOz is negative.';
+  } else if (parsedShippingConfigBaseWeight !== null && parsedShippingConfigBaseWeight < 0) {
+    errorCode = 'PBV2_E_WEIGHT_NEGATIVE';
+    errorMessage = 'shippingConfig.baseWeight is negative.';
+  }
+
+  let baseWeightSource: 'meta.baseWeightOz' | 'shippingConfig.baseWeight' | 'none' = 'none';
+  let baseWeightInput: number | string | null = null;
+  let baseWeightOz: number | null = null;
+  let baseWeightContributionOz = 0;
+
+  if (rawMetaBaseWeightOz !== null && rawMetaBaseWeightOz > 0) {
+    baseWeightSource = 'meta.baseWeightOz';
+    baseWeightInput = rawMetaBaseWeightOz;
+    baseWeightOz = rawMetaBaseWeightOz;
+    baseWeightContributionOz = rawMetaBaseWeightOz;
+  } else if (convertedShippingBaseWeightOz !== null && convertedShippingBaseWeightOz > 0) {
+    const basis = shippingConfigWeightBasis || 'per_item';
+    const totalSqft = (input.widthIn * input.heightIn) / 144;
+    baseWeightSource = 'shippingConfig.baseWeight';
+    baseWeightInput = shippingConfigBaseWeight;
+    baseWeightOz = convertedShippingBaseWeightOz;
+    if (basis === 'per_sqft') {
+      baseWeightContributionOz = convertedShippingBaseWeightOz * totalSqft;
+    } else if (basis === 'per_order') {
+      baseWeightContributionOz = convertedShippingBaseWeightOz;
+    } else {
+      baseWeightContributionOz = convertedShippingBaseWeightOz * input.quantity;
+    }
+  }
+
+  try {
+    const rawWeightResult = pbv2ToWeightTotal({
+      tree: input.treeJson,
+      selections: input.selections,
+      widthIn: input.widthIn,
+      heightIn: input.heightIn,
+      quantity: input.quantity,
+    });
+
+    const selectedWeightFields = rawWeightResult.breakdown.filter((entry) => entry.label !== 'Base weight');
+    const computedShippingWeightOz = baseWeightSource === 'shippingConfig.baseWeight'
+      ? rawWeightResult.totalOz + baseWeightContributionOz
+      : rawWeightResult.totalOz;
+    const warningCode = !errorCode && computedShippingWeightOz <= 0 ? 'PBV2_W_WEIGHT_MISSING' : undefined;
+
+    return {
+      baseWeightInput,
+      baseWeightSource,
+      baseWeightOz,
+      shippingConfigBaseWeight,
+      shippingConfigWeightUnit,
+      shippingConfigWeightBasis,
+      selectedWeightFields,
+      computedShippingWeightOz,
+      warningCode,
+      errorCode,
+      errorMessage,
+    };
+  } catch (error: any) {
+    return {
+      baseWeightInput,
+      baseWeightSource,
+      baseWeightOz,
+      shippingConfigBaseWeight,
+      shippingConfigWeightUnit,
+      shippingConfigWeightBasis,
+      selectedWeightFields: [],
+      computedShippingWeightOz: baseWeightContributionOz || null,
+      errorCode: errorCode || 'PBV2_WEIGHT_DEBUG_UNAVAILABLE',
+      errorMessage: errorMessage || (typeof error?.message === 'string' ? error.message : 'Weight debug unavailable'),
+    };
+  }
 }
 
 function buildFormulaScope(input: {
