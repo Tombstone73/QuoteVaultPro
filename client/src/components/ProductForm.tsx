@@ -530,7 +530,7 @@ function PricingEngineRadioSection({
   trimAllowanceY?: number;
 }) {
   type PricingEngineMode = "formulaLibrary" | "pricingProfile" | "pricingFormula";
-  const BASIC_CANONICAL_FORMULA = "ceil(total_sqft) * p";
+  const BASIC_CANONICAL_FORMULA = "ceil(total_sqft) * base_price";
   const DEFAULT_FLAT_GOODS_CONFIG: FlatGoodsConfig = {
     sheetWidth: 48,
     sheetHeight: 96,
@@ -949,13 +949,13 @@ function PricingEngineRadioSection({
                     </FormControl>
                     {!String(field.value || "").trim() ? (
                       <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400">
-                        <span>No formula set. Preview will use recommended formula: total_sqft * p</span>
+                        <span>No formula set. Preview will use recommended formula: ceil(total_sqft) * base_price</span>
                         <Button
                           type="button"
                           variant="outline"
                           size="sm"
                           className="h-6 px-2 text-[10px]"
-                          onClick={() => form.setValue("pricingFormula", "ceil(total_sqft) * p", { shouldDirty: true })}
+                          onClick={() => form.setValue("pricingFormula", BASIC_CANONICAL_FORMULA, { shouldDirty: true })}
                         >
                           Insert default formula
                         </Button>
@@ -970,13 +970,16 @@ function PricingEngineRadioSection({
                             variant="outline"
                             size="sm"
                             className="h-6 px-2 text-[10px]"
-                            onClick={() => form.setValue("pricingFormula", "ceil(total_sqft) * p", { shouldDirty: true })}
+                            onClick={() => form.setValue("pricingFormula", BASIC_CANONICAL_FORMULA, { shouldDirty: true })}
                           >
                             Fix formula
                           </Button>
                         </div>
                       </div>
                     ) : null}
+                    <div className="text-[11px] text-slate-400">
+                      Use lowercase variable names such as w, h, q, sqft, total_sqft, and base_price. Use formula functions such as ceil(...), round(...), and max(...), not Math.ceil(...).
+                    </div>
                     <PricingVariableHelper />
                     <FormMessage />
                   </FormItem>

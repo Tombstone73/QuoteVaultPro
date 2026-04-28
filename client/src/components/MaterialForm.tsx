@@ -29,6 +29,7 @@ const materialSchema = z
   name: z.string().min(1, "Name required"),
   sku: z.string().min(1, "SKU required"),
   type: z.enum(["sheet", "roll", "ink", "consumable"]),
+  category: z.string().trim().optional(),
   unitOfMeasure: z.enum(["sheet", "sqft", "linear_ft", "ml", "ea"]),
   costPerUnit: z.coerce.number().nonnegative(),
   // Tiered pricing fields
@@ -38,6 +39,7 @@ const materialSchema = z
   retailMinCharge: optionalNumber(z.coerce.number().nonnegative()),
   stockQuantity: z.coerce.number().nonnegative().default(0),
   minStockAlert: z.coerce.number().nonnegative().default(0),
+  isActive: z.boolean().default(true),
   width: optionalNumber(z.coerce.number().nonnegative()),
   height: optionalNumber(z.coerce.number().nonnegative()),
   thickness: optionalNumber(z.coerce.number().nonnegative()),
@@ -106,6 +108,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       name: isDuplicate ? `${material.name} (Copy)` : material.name,
       sku: isDuplicate ? `${material.sku}-COPY` : material.sku,
       type: material.type,
+      category: material.category || "",
       unitOfMeasure: material.unitOfMeasure as any,
       costPerUnit: parseFloat(material.costPerUnit),
       // Tiered pricing fields
@@ -115,6 +118,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       retailMinCharge: material.retailMinCharge ? parseFloat(material.retailMinCharge) : undefined,
       stockQuantity: isDuplicate ? 0 : parseFloat(material.stockQuantity),
       minStockAlert: parseFloat(material.minStockAlert),
+      isActive: isDuplicate ? true : material.isActive !== false,
       width: material.width ? parseFloat(material.width) : undefined,
       height: material.height ? parseFloat(material.height) : undefined,
       thickness: material.thickness ? parseFloat(material.thickness) : undefined,
@@ -134,6 +138,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       name: "",
       sku: "",
       type: "sheet",
+      category: "",
       unitOfMeasure: "sheet",
       costPerUnit: 0,
       // Tiered pricing fields
@@ -143,6 +148,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       retailMinCharge: undefined,
       stockQuantity: 0,
       minStockAlert: 0,
+      isActive: true,
       width: undefined,
       height: undefined,
       thickness: undefined,
@@ -168,6 +174,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
   async function onSubmit(values: MaterialFormValues) {
     const payload: any = {
       ...values,
+      category: values.category?.trim() || undefined,
       costPerUnit: values.costPerUnit.toString(),
       // Tiered pricing fields
       wholesaleBaseRate: values.wholesaleBaseRate !== undefined ? values.wholesaleBaseRate.toString() : undefined,
@@ -176,6 +183,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       retailMinCharge: values.retailMinCharge !== undefined ? values.retailMinCharge.toString() : undefined,
       stockQuantity: values.stockQuantity.toString(),
       minStockAlert: values.minStockAlert.toString(),
+      isActive: values.isActive,
       width: values.width !== undefined ? values.width.toString() : undefined,
       height: values.height !== undefined ? values.height.toString() : undefined,
       thickness: values.thickness !== undefined ? values.thickness.toString() : undefined,
@@ -246,7 +254,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
           <DialogDescription>
             {isDuplicate 
               ? `Creating a copy of "${material?.name}". Modify the details below and save.`
-              : "Manage material metadata and stock thresholds."}
+              : "Manage full material metadata, supplier data, and inventory thresholds."}
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
@@ -258,6 +266,10 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
             <div>
               <label className="text-sm font-medium">SKU <span className="text-destructive">*</span></label>
               <Input {...form.register("sku")}/>
+            </div>
+            <div>
+              <label className="text-sm font-medium">Category / Group</label>
+              <Input {...form.register("category")} placeholder="e.g. Rigid, Vinyl, Ink" />
             </div>
             <div>
               <label className="text-sm font-medium">Type <span className="text-destructive">*</span></label>
@@ -281,6 +293,19 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
                   <SelectItem value="linear_ft">Linear Ft</SelectItem>
                   <SelectItem value="ml">mL</SelectItem>
                   <SelectItem value="ea">Each</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-sm font-medium">Status</label>
+              <Select
+                onValueChange={(value) => form.setValue("isActive", value === "active")}
+                value={form.watch("isActive") ? "active" : "inactive"}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="inactive">Inactive</SelectItem>
                 </SelectContent>
               </Select>
             </div>

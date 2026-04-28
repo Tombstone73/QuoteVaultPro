@@ -1802,7 +1802,7 @@ export default function AdminSettings() {
                                   />
                                 </FormControl>
                                 <FormDescription>
-                                  Use: w (width), h (height), q (quantity), sqft, p (price/sqft). Example: sqft * p * q
+                                  Use lowercase variables such as w, h, q, sqft, and base_price. Use functions like ceil(...), round(...), and max(...). Example: ceil((((w + 0.25) * (h + 0.25)) * q) / 144) * base_price
                                 </FormDescription>
                                 <FormMessage />
                               </FormItem>
@@ -2410,7 +2410,7 @@ export default function AdminSettings() {
                                                 <Input {...field} value={field.value || ""} data-testid={`input-edit-formula-${product.id}`} />
                                               </FormControl>
                                               <FormDescription>
-                                                Use: w (width), h (height), q (quantity), sqft, p (price/sqft)
+                                                Use lowercase variables such as w, h, q, sqft, and base_price. Use functions like ceil(...), round(...), and max(...).
                                               </FormDescription>
                                               <FormMessage />
                                             </FormItem>
@@ -3621,7 +3621,7 @@ export default function AdminSettings() {
                                                           />
                                                         </FormControl>
                                                         <FormDescription className="text-xs">
-                                                          JavaScript expression. Available: w, h, q, sqft, setupCost
+                                                          Formula expression. Available: w, h, q, sqft, total_sqft, base_price
                                                         </FormDescription>
                                                         <FormMessage />
                                                       </FormItem>
@@ -4158,14 +4158,15 @@ export default function AdminSettings() {
                         These variables are automatically available in all formulas:
                       </p>
                       <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
-                        <li><code className="bg-muted px-1 rounded">width</code> or <code className="bg-muted px-1 rounded">w</code> - Product width in inches</li>
-                        <li><code className="bg-muted px-1 rounded">height</code> or <code className="bg-muted px-1 rounded">h</code> - Product height in inches</li>
-                        <li><code className="bg-muted px-1 rounded">quantity</code> or <code className="bg-muted px-1 rounded">q</code> - Number of items</li>
-                        <li><code className="bg-muted px-1 rounded">sqft</code> - Square footage (width × height ÷ 144)</li>
-                        <li><code className="bg-muted px-1 rounded">basePricePerSqft</code> or <code className="bg-muted px-1 rounded">p</code> - Price per sq ft from variant</li>
+                        <li><code className="bg-muted px-1 rounded">w</code> - Ordered width in inches</li>
+                        <li><code className="bg-muted px-1 rounded">h</code> - Ordered height in inches</li>
+                        <li><code className="bg-muted px-1 rounded">q</code> - Quantity</li>
+                        <li><code className="bg-muted px-1 rounded">sqft</code> - Square feet per item</li>
+                        <li><code className="bg-muted px-1 rounded">total_sqft</code> - Total square feet for the order</li>
+                        <li><code className="bg-muted px-1 rounded">base_price</code> - Effective base price rate used by the evaluator</li>
                       </ul>
                       <p className="text-xs text-muted-foreground mt-2 italic">
-                        💡 Tip: Use single letters (w, h, q, p) for shorter formulas!
+                        💡 Tip: Use lowercase keys and formula functions such as <code className="bg-muted px-1 rounded">ceil(...)</code>, <code className="bg-muted px-1 rounded">round(...)</code>, and <code className="bg-muted px-1 rounded">max(...)</code>.
                       </p>
                       <p className="text-xs text-muted-foreground mt-2 font-semibold">
                         ⚠️ Note: Set price per sq ft in Product Variants, not in the formula!
@@ -4192,20 +4193,20 @@ export default function AdminSettings() {
                       <h4 className="font-medium mb-2">Example Formulas:</h4>
                       <div className="space-y-2 text-sm">
                         <div className="bg-muted p-2 rounded">
-                          <code className="font-mono">sqft * p * q</code>
-                          <p className="text-muted-foreground mt-1">Simple: sqft × price per sqft × quantity</p>
+                          <code className="font-mono">ceil((((w + 0.25) * (h + 0.25)) * q) / 144) * base_price</code>
+                          <p className="text-muted-foreground mt-1">Finished-size billing with a 0.25&quot; trim allowance and whole-square-foot rounding.</p>
                         </div>
                         <div className="bg-muted p-2 rounded">
-                          <code className="font-mono">(sqft * p * q) + SETUP_FEE</code>
-                          <p className="text-muted-foreground mt-1">With setup fee from global variable</p>
+                          <code className="font-mono">sqft * base_price * q</code>
+                          <p className="text-muted-foreground mt-1">Simple area pricing using lowercase evaluator variables.</p>
                         </div>
                         <div className="bg-muted p-2 rounded">
-                          <code className="font-mono">max(MIN_ORDER, sqft * p * q)</code>
+                          <code className="font-mono">max(25, sqft * base_price * q)</code>
                           <p className="text-muted-foreground mt-1">Minimum order price</p>
                         </div>
                         <div className="bg-muted p-2 rounded">
-                          <code className="font-mono">sqft * p * q * (q &gt; 100 ? 0.9 : 1)</code>
-                          <p className="text-muted-foreground mt-1">10% discount for orders over 100</p>
+                          <code className="font-mono">round(sqft * base_price * q)</code>
+                          <p className="text-muted-foreground mt-1">Round the evaluated total using supported formula functions.</p>
                         </div>
                       </div>
                     </div>
