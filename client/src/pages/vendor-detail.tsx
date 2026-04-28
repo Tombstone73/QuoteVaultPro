@@ -9,6 +9,12 @@ import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@
 import { Badge } from "@/components/ui/badge";
 import { Link } from "wouter";
 
+function formatLeadTime(leadTimeText?: string | null, defaultLeadTimeDays?: number | null) {
+  if (leadTimeText?.trim()) return leadTimeText.trim();
+  if (defaultLeadTimeDays) return `${defaultLeadTimeDays} days`;
+  return "-";
+}
+
 export default function VendorDetailPage() {
   const [match, params] = useRoute("/vendors/:id");
   const vendorId = params?.id;
@@ -36,11 +42,15 @@ export default function VendorDetailPage() {
         <CardContent className="grid grid-cols-2 gap-4 text-sm">
           <div><span className="font-medium">Email:</span> {vendor.email || '-'} </div>
           <div><span className="font-medium">Phone:</span> {vendor.phone || '-'} </div>
+          <div><span className="font-medium">Sales Rep:</span> {vendor.salesRepName || '-'} </div>
+          <div><span className="font-medium">Rep Email:</span> {vendor.salesRepEmail || '-'} </div>
+          <div><span className="font-medium">Rep Phone:</span> {vendor.salesRepPhone || '-'} </div>
           <div><span className="font-medium">Website:</span> {vendor.website ? <a href={vendor.website} target="_blank" className="underline text-primary">{vendor.website}</a> : '-'} </div>
           <div><span className="font-medium">Payment Terms:</span> {vendor.paymentTerms} </div>
-          <div><span className="font-medium">Lead Time:</span> {vendor.defaultLeadTimeDays || '-'} days</div>
+          <div><span className="font-medium">Lead Time:</span> {formatLeadTime(vendor.leadTimeText, vendor.defaultLeadTimeDays)}</div>
           <div><span className="font-medium">Status:</span> {vendor.isActive ? <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">Active</Badge> : <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200">Inactive</Badge>}</div>
           <div className="col-span-2"><span className="font-medium">Notes:</span> {vendor.notes || '-'} </div>
+          <div className="col-span-2"><span className="font-medium">Additional Contact Info:</span> {vendor.additionalContactInfo || '-'} </div>
         </CardContent>
       </Card>
 
