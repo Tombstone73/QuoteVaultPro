@@ -2877,7 +2877,7 @@ export async function registerOrderRoutes(
             }
 
             // Search mode: compact payload for dropdowns/search selectors
-            if (search || req.query.limit !== undefined || req.query.includeInactive !== undefined) {
+            if (search || req.query.limit !== undefined) {
                 const materialsList = list
                     .slice(0, limit)
                     .map((m: any) => ({

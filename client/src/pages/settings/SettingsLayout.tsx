@@ -1,10 +1,13 @@
 import * as React from "react";
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { TitanCard } from "@/components/titan";
 import { PageHeader } from "@/components/titan";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
+import { useLowStockAlerts } from "@/hooks/useMaterials";
+import { useVendors } from "@/hooks/useVendors";
+import { MaterialsSettingsPanel } from "@/features/materials/MaterialsSettingsPanel";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -1248,25 +1251,85 @@ export function ProductionSettings() {
 }
 
 export function InventorySettings() {
+  const { data: lowStockMaterials = [] } = useLowStockAlerts();
+  const { data: vendors = [] } = useVendors({ isActive: undefined });
+
   return (
-    <TitanCard className="p-6">
-      <div className="space-y-6">
-        <div>
-          <h2 className="text-titan-lg font-semibold text-titan-text-primary">Inventory & Procurement</h2>
-          <p className="text-titan-sm text-titan-text-secondary mt-1">
-            Manage inventory settings and procurement preferences
-          </p>
-        </div>
-        
-        <div className="h-px bg-titan-border-subtle" />
-        
+    <div className="space-y-6">
+      <TitanCard className="p-6">
         <div className="space-y-4">
-          <p className="text-titan-sm text-titan-text-muted">
-            Inventory settings UI will be implemented here
+          <div>
+            <h2 className="text-titan-lg font-semibold text-titan-text-primary">Inventory & Procurement</h2>
+            <p className="mt-1 text-titan-sm text-titan-text-secondary">
+              Permanent admin home for material catalog, supplier assignments, stock thresholds, and purchasing follow-through.
+            </p>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="rounded-titan-md border border-titan-border-subtle bg-titan-bg-card-elevated p-4">
+              <p className="text-xs uppercase tracking-wide text-titan-text-muted">Materials Needing Attention</p>
+              <p className="mt-2 text-2xl font-semibold text-titan-text-primary">{lowStockMaterials.length}</p>
+              <p className="mt-1 text-sm text-titan-text-secondary">Materials at or below their configured reorder threshold.</p>
+            </div>
+            <div className="rounded-titan-md border border-titan-border-subtle bg-titan-bg-card-elevated p-4">
+              <p className="text-xs uppercase tracking-wide text-titan-text-muted">Suppliers</p>
+              <p className="mt-2 text-2xl font-semibold text-titan-text-primary">{vendors.length}</p>
+              <p className="mt-1 text-sm text-titan-text-secondary">Vendor records available for preferred supplier assignments and purchasing.</p>
+            </div>
+            <div className="rounded-titan-md border border-titan-border-subtle bg-titan-bg-card-elevated p-4">
+              <p className="text-xs uppercase tracking-wide text-titan-text-muted">Quick Create Guardrail</p>
+              <p className="mt-2 text-sm text-titan-text-primary">Product-level “Add material” remains a shortcut only.</p>
+              <p className="mt-1 text-sm text-titan-text-secondary">Full inventory and procurement data must be completed here, not in product setup.</p>
+            </div>
+          </div>
+        </div>
+      </TitanCard>
+
+      <TitanCard className="p-6">
+        <div className="mb-4 space-y-1">
+          <h3 className="text-base font-semibold text-titan-text-primary">Materials</h3>
+          <p className="text-sm text-titan-text-secondary">
+            Create, edit, activate, deactivate, and adjust permanent material records without leaving settings.
           </p>
         </div>
+        <MaterialsSettingsPanel />
+      </TitanCard>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <TitanCard className="p-6">
+          <div className="space-y-3">
+            <div>
+              <h3 className="text-base font-semibold text-titan-text-primary">Suppliers / Purchasing</h3>
+              <p className="mt-1 text-sm text-titan-text-secondary">
+                Vendor records and purchase orders remain the permanent homes for supplier management and purchasing workflows.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button asChild variant="outline" size="sm">
+                <Link to="/vendors">Open Vendors</Link>
+              </Button>
+              <Button asChild variant="outline" size="sm">
+                <Link to="/purchase-orders">Open Purchase Orders</Link>
+              </Button>
+            </div>
+          </div>
+        </TitanCard>
+
+        <TitanCard className="p-6">
+          <div className="space-y-3">
+            <div>
+              <h3 className="text-base font-semibold text-titan-text-primary">Reorder Rules</h3>
+              <p className="mt-1 text-sm text-titan-text-secondary">
+                Reorder behavior currently derives from each material’s on-hand quantity and minimum stock alert. There is no separate archived or reorder-workflow state in the current schema.
+              </p>
+            </div>
+            <p className="text-sm text-titan-text-muted">
+              Use the Materials section above to maintain stock quantity, reorder threshold, vendor SKU, vendor cost, and preferred supplier.
+            </p>
+          </div>
+        </TitanCard>
       </div>
-    </TitanCard>
+    </div>
   );
 }
 
