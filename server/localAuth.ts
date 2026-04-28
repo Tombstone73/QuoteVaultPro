@@ -293,11 +293,13 @@ export async function setupAuth(app: Express) {
   app.post("/api/auth/forgot-password", async (req, res) => {
     try {
       const { email } = req.body;
+      console.log(`[Forgot Password] request received email=${email ? email.substring(0, 3) + '***' : '(missing)'}`);
 
       if (!email || typeof email !== 'string') {
-        return res.status(400).json({ 
-          success: false, 
-          message: "Email is required" 
+        console.log(`[Forgot Password] response returned status=400 reason=email_missing`);
+        return res.status(400).json({
+          success: false,
+          message: "Email is required"
         });
       }
 
@@ -305,9 +307,10 @@ export async function setupAuth(app: Express) {
       const genericMessage = "If an account exists for that email, a reset link has been sent.";
 
       // Respond immediately - don't wait for email send
-      res.json({ 
-        success: true, 
-        message: genericMessage 
+      console.log(`[Forgot Password] response returned status=200 (generic)`);
+      res.json({
+        success: true,
+        message: genericMessage
       });
 
       // Background work: send email asynchronously (fire-and-forget)
@@ -359,7 +362,13 @@ export async function setupAuth(app: Express) {
           }
 
           console.log(`[Password Reset] Attempting to send email via org ${defaultOrgId}`);
-          console.log(`[Password Reset] Reset URL: ${resetUrl}`);
+          // Log domain+path only — never log token in URL
+          try {
+            const u = new URL(resetUrl);
+            console.log(`[Password Reset] Reset link domain: ${u.origin}/reset-password (token omitted)`);
+          } catch {
+            console.log(`[Password Reset] Reset link generated (domain could not be parsed)`);
+          }
           
           try {
             const emailResult = await emailService.sendEmail(defaultOrgId, {

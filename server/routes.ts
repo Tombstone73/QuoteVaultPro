@@ -269,6 +269,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Auth routes extracted to ./routes/auth.routes.ts (do NOT re-add here)
   registerAuthRoutes(app, { isAuthenticated });
 
+  // Public invite routes (no auth required — new-user accept-invite flow)
+  registerInviteRoutes(app);
+
+  // Platform-admin routes (step-up auth; org creation + bootstrap)
+  registerPlatformRoutes(app);
+
+  // Me routes (authenticated, not org-scoped — org list + active-org selection)
+  registerMeRoutes(app);
+
   // Attachment routes extracted to ./routes/attachments.routes.ts (do NOT re-add here)
   await registerAttachmentRoutes(app, { isAuthenticated, tenantContext, isAdmin });
 
