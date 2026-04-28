@@ -22,7 +22,15 @@ export class AccountingRepository {
         const conditions: any[] = [eq(vendors.organizationId, organizationId)];
         if (filters?.search) {
             const s = `%${filters.search}%`;
-            conditions.push(or(ilike(vendors.name, s), ilike(vendors.email, s), ilike(vendors.phone, s)));
+            conditions.push(or(
+                ilike(vendors.name, s),
+                ilike(vendors.email, s),
+                ilike(vendors.phone, s),
+                ilike(vendors.salesRepName, s),
+                ilike(vendors.salesRepEmail, s),
+                ilike(vendors.salesRepPhone, s),
+                ilike(vendors.leadTimeText, s),
+            ));
         }
         if (typeof filters?.isActive === 'boolean') {
             conditions.push(eq(vendors.isActive, filters.isActive));

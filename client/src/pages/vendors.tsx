@@ -23,6 +23,17 @@ import {
   StatusPill,
 } from "@/components/titan";
 
+function formatLeadTime(vendor: Vendor) {
+  if (vendor.leadTimeText?.trim()) return vendor.leadTimeText.trim();
+  if (vendor.defaultLeadTimeDays) return `${vendor.defaultLeadTimeDays} days`;
+  return "-";
+}
+
+function formatRep(vendor: Vendor) {
+  const parts = [vendor.salesRepName, vendor.salesRepEmail, vendor.salesRepPhone].filter(Boolean);
+  return parts.length ? parts.join(" | ") : "-";
+}
+
 export default function VendorsPage() {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
@@ -60,6 +71,7 @@ export default function VendorsPage() {
                 <TitanTableHead>Name</TitanTableHead>
                 <TitanTableHead>Email</TitanTableHead>
                 <TitanTableHead>Phone</TitanTableHead>
+                <TitanTableHead>Sales Rep</TitanTableHead>
                 <TitanTableHead>Terms</TitanTableHead>
                 <TitanTableHead>Lead Time</TitanTableHead>
                 <TitanTableHead>Status</TitanTableHead>
@@ -67,11 +79,11 @@ export default function VendorsPage() {
               </TitanTableRow>
             </TitanTableHeader>
             <TitanTableBody>
-              {isLoading && <TitanTableLoading colSpan={7} message="Loading vendors..." />}
+              {isLoading && <TitanTableLoading colSpan={8} message="Loading vendors..." />}
               
               {!isLoading && vendors.length === 0 && (
                 <TitanTableEmpty
-                  colSpan={7}
+                  colSpan={8}
                   icon={<Building2 className="w-12 h-12" />}
                   message="No vendors found"
                   action={
@@ -90,8 +102,9 @@ export default function VendorsPage() {
                   </TitanTableCell>
                   <TitanTableCell>{v.email || '-'}</TitanTableCell>
                   <TitanTableCell>{v.phone || '-'}</TitanTableCell>
+                  <TitanTableCell>{formatRep(v)}</TitanTableCell>
                   <TitanTableCell>{v.paymentTerms}</TitanTableCell>
-                  <TitanTableCell>{v.defaultLeadTimeDays || '-'}</TitanTableCell>
+                  <TitanTableCell>{formatLeadTime(v)}</TitanTableCell>
                   <TitanTableCell>
                     <StatusPill variant={v.isActive ? "success" : "error"}>
                       {v.isActive ? "Active" : "Inactive"}

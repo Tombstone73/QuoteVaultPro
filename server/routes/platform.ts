@@ -16,6 +16,7 @@
 
 import { Router, type RequestHandler } from "express";
 import type { Request, Response, NextFunction } from "express";
+import { getPublicWebOrigin } from "../lib/appRuntimeConfig";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
@@ -43,9 +44,21 @@ function getUserId(user: any): string | undefined {
   return user?.claims?.sub ?? user?.id;
 }
 
-/** Base URL for invite links: prefer APP_URL env var, then fall back to request origin. */
+/**
+ * Base URL for invite links — must resolve to the FRONTEND (Vercel), not the backend.
+ * Priority: APP_PUBLIC_WEB_ORIGIN → APP_URL (legacy) → request origin (last resort only).
+ * On Railway, set APP_PUBLIC_WEB_ORIGIN to the Vercel frontend URL, e.g.
+ *   APP_PUBLIC_WEB_ORIGIN=https://dev.printershero.com
+ */
 function getBaseUrl(req: Request): string {
-  return (process.env.APP_URL ?? `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+  const configured = getPublicWebOrigin() ?? (process.env.APP_URL ?? "").replace(/\/$/, "");
+  if (configured) {
+    console.log(`[platform/getBaseUrl] Using configured origin: ${configured}`);
+    return configured;
+  }
+  const fallback = `${req.protocol}://${req.get("host")}`.replace(/\/$/, "");
+  console.warn(`[platform/getBaseUrl] WARNING: APP_PUBLIC_WEB_ORIGIN not set — falling back to request host ${fallback}. Invite links may point to the backend instead of the frontend.`);
+  return fallback;
 }
 
 function isBootstrapModeEnabled(): boolean {
@@ -335,6 +348,8 @@ export function registerPlatformRoutes(app: import("express").Express): void {
         });
 
         const inviteLink = `${getBaseUrl(req)}/accept-invite?token=${result.inviteToken}`;
+        // Log domain+path only — never log the raw token
+        console.log(`[platform/orgs] Invite link generated: ${getBaseUrl(req)}/accept-invite (token omitted)`);
 
         await writePlatformAuditLog({
           action: "org.create",

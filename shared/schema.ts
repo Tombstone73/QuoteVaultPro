@@ -17,7 +17,12 @@ import {
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+import { normalizeOptionalWebsite } from "./vendorWebsite";
 import { PRICING_PROFILE_KEYS, type FlatGoodsConfig } from "./pricingProfiles";
+import {
+  inventoryMovementTypeValues,
+  materialReorderRequestStatusValues,
+} from "./materialInventory";
 
 // ============================================================
 // DOWNLOAD INTENT (Future-proofing for preflight/print variants)
@@ -4499,19 +4504,102 @@ export function calculateRollDerivedValues(
 }
 
 // Inventory Adjustments table - logs all inventory changes
+export const materialReorderRequests = pgTable("material_reorder_requests", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  materialId: varchar("material_id").notNull().references(() => materials.id, { onDelete: 'cascade' }),
+  vendorId: varchar("vendor_id").references(() => vendors.id, { onDelete: 'set null' }),
+  status: varchar("status", { length: 20 }).notNull().default("requested"),
+  requestedQuantity: decimal("requested_quantity", { precision: 10, scale: 2 }).notNull(),
+  receivedQuantity: decimal("received_quantity", { precision: 10, scale: 2 }),
+  currentStockQuantity: decimal("current_stock_quantity", { precision: 10, scale: 2 }),
+  minStockAlert: decimal("min_stock_alert", { precision: 10, scale: 2 }),
+  notes: text("notes"),
+  requestedByUserId: varchar("requested_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
+  orderedByUserId: varchar("ordered_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  orderedAt: timestamp("ordered_at", { withTimezone: true }),
+  receivedByUserId: varchar("received_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  receivedAt: timestamp("received_at", { withTimezone: true }),
+  cancelledByUserId: varchar("cancelled_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("material_reorder_requests_org_idx").on(table.organizationId),
+  index("material_reorder_requests_material_idx").on(table.materialId),
+  index("material_reorder_requests_status_idx").on(table.status),
+  index("material_reorder_requests_vendor_idx").on(table.vendorId),
+  index("material_reorder_requests_requested_at_idx").on(table.requestedAt),
+]);
+
+export const insertMaterialReorderRequestSchema = createInsertSchema(materialReorderRequests).omit({
+  id: true,
+  organizationId: true,
+  status: true,
+  requestedByUserId: true,
+  requestedAt: true,
+  orderedByUserId: true,
+  orderedAt: true,
+  receivedByUserId: true,
+  receivedAt: true,
+  cancelledByUserId: true,
+  cancelledAt: true,
+  createdAt: true,
+  updatedAt: true,
+  receivedQuantity: true,
+}).extend({
+  requestedQuantity: z.coerce.number().positive(),
+  currentStockQuantity: z.coerce.number().optional().nullable(),
+  minStockAlert: z.coerce.number().optional().nullable(),
+  vendorId: z.string().optional().nullable(),
+  notes: z.string().trim().optional().nullable(),
+});
+
+export const updateMaterialReorderRequestSchema = createInsertSchema(materialReorderRequests).omit({
+  id: true,
+  organizationId: true,
+  materialId: true,
+  requestedByUserId: true,
+  requestedAt: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  status: z.enum(materialReorderRequestStatusValues),
+  requestedQuantity: z.coerce.number().positive().optional(),
+  receivedQuantity: z.coerce.number().positive().optional().nullable(),
+  currentStockQuantity: z.coerce.number().optional().nullable(),
+  minStockAlert: z.coerce.number().optional().nullable(),
+  vendorId: z.string().optional().nullable(),
+  notes: z.string().trim().optional().nullable(),
+}).partial();
+
+export type InsertMaterialReorderRequest = z.infer<typeof insertMaterialReorderRequestSchema>;
+export type UpdateMaterialReorderRequest = z.infer<typeof updateMaterialReorderRequestSchema>;
+export type MaterialReorderRequest = typeof materialReorderRequests.$inferSelect;
+
 export const inventoryAdjustments = pgTable("inventory_adjustments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").references(() => organizations.id, { onDelete: 'cascade' }),
   materialId: varchar("material_id").notNull().references(() => materials.id, { onDelete: 'cascade' }),
+  movementType: varchar("movement_type", { length: 20 }).notNull().default("adjustment"),
   type: varchar("type", { length: 50 }).notNull(), // manual_increase, manual_decrease, waste, shrinkage, job_usage
   quantityChange: decimal("quantity_change", { precision: 10, scale: 2 }).notNull(), // positive or negative
+  quantityBefore: decimal("quantity_before", { precision: 10, scale: 2 }),
+  quantityAfter: decimal("quantity_after", { precision: 10, scale: 2 }),
   reason: text("reason"),
+  notes: text("notes"),
   orderId: varchar("order_id").references(() => orders.id, { onDelete: 'set null' }), // nullable, for job usage tracking
+  reorderRequestId: varchar("reorder_request_id").references(() => materialReorderRequests.id, { onDelete: 'set null' }),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
+  index("inventory_adjustments_organization_id_idx").on(table.organizationId),
   index("inventory_adjustments_material_id_idx").on(table.materialId),
+  index("inventory_adjustments_movement_type_idx").on(table.movementType),
   index("inventory_adjustments_type_idx").on(table.type),
   index("inventory_adjustments_order_id_idx").on(table.orderId),
+  index("inventory_adjustments_reorder_request_id_idx").on(table.reorderRequestId),
   index("inventory_adjustments_created_at_idx").on(table.createdAt),
 ]);
 
@@ -4519,8 +4607,13 @@ export const insertInventoryAdjustmentSchema = createInsertSchema(inventoryAdjus
   id: true,
   createdAt: true,
 }).extend({
+  movementType: z.enum(inventoryMovementTypeValues).default("adjustment"),
   type: z.enum(["manual_increase", "manual_decrease", "waste", "shrinkage", "job_usage", "purchase_receipt"]),
   quantityChange: z.coerce.number(),
+  quantityBefore: z.coerce.number().optional().nullable(),
+  quantityAfter: z.coerce.number().optional().nullable(),
+  notes: z.string().trim().optional().nullable(),
+  reorderRequestId: z.string().optional().nullable(),
 });
 
 export type InsertInventoryAdjustment = z.infer<typeof insertInventoryAdjustmentSchema>;
@@ -4535,10 +4628,15 @@ export const vendors = pgTable('vendors', {
   name: varchar('name', { length: 255 }).notNull(),
   email: varchar('email', { length: 255 }),
   phone: varchar('phone', { length: 50 }),
+  salesRepName: varchar('sales_rep_name', { length: 255 }),
+  salesRepEmail: varchar('sales_rep_email', { length: 255 }),
+  salesRepPhone: varchar('sales_rep_phone', { length: 50 }),
   website: varchar('website', { length: 255 }),
   notes: text('notes'),
+  additionalContactInfo: text('additional_contact_info'),
   paymentTerms: varchar('payment_terms', { length: 50 }).notNull().default('due_on_receipt'),
   defaultLeadTimeDays: integer('default_lead_time_days'),
+  leadTimeText: varchar('lead_time_text', { length: 120 }),
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
@@ -4548,14 +4646,38 @@ export const vendors = pgTable('vendors', {
   index('vendors_is_active_idx').on(table.isActive)
 ]);
 
+const normalizeOptionalVendorString = (value: unknown) => {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : undefined;
+};
+
 export const insertVendorSchema = createInsertSchema(vendors).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
   organizationId: true,
 }).extend({
+  email: z.preprocess(normalizeOptionalVendorString, z.string().email().optional()),
+  phone: z.preprocess(normalizeOptionalVendorString, z.string().max(50).optional()),
+  website: z.preprocess(
+    (value) => {
+      const normalized = normalizeOptionalWebsite(value);
+      return normalized ?? normalizeOptionalVendorString(value);
+    },
+    z.string().max(255).url('Website must be a valid domain or URL').optional(),
+  ),
+  notes: z.preprocess(normalizeOptionalVendorString, z.string().optional()),
   paymentTerms: z.enum(['due_on_receipt','net_15','net_30','net_45','custom']).default('due_on_receipt'),
   defaultLeadTimeDays: z.number().int().positive().optional(),
+  leadTimeText: z.preprocess(normalizeOptionalVendorString, z.string().max(120).optional()),
+  salesRepName: z.preprocess(normalizeOptionalVendorString, z.string().max(255).optional()),
+  salesRepEmail: z.preprocess(normalizeOptionalVendorString, z.string().email().optional()),
+  salesRepPhone: z.preprocess(normalizeOptionalVendorString, z.string().max(50).optional()),
+  additionalContactInfo: z.preprocess(normalizeOptionalVendorString, z.string().optional()),
   isActive: z.boolean().optional().default(true),
 });
 export const updateVendorSchema = insertVendorSchema.partial();
@@ -4849,9 +4971,14 @@ export const fulfillmentEventsRelations = relations(fulfillmentEvents, ({ one })
 export const materialsRelations = relations(materials, ({ many }) => ({
   adjustments: many(inventoryAdjustments),
   orderUsages: many(orderMaterialUsage),
+  reorderRequests: many(materialReorderRequests),
 }));
 
 export const inventoryAdjustmentsRelations = relations(inventoryAdjustments, ({ one }) => ({
+  organization: one(organizations, {
+    fields: [inventoryAdjustments.organizationId],
+    references: [organizations.id],
+  }),
   material: one(materials, {
     fields: [inventoryAdjustments.materialId],
     references: [materials.id],
@@ -4864,6 +4991,42 @@ export const inventoryAdjustmentsRelations = relations(inventoryAdjustments, ({ 
     fields: [inventoryAdjustments.userId],
     references: [users.id],
   }),
+  reorderRequest: one(materialReorderRequests, {
+    fields: [inventoryAdjustments.reorderRequestId],
+    references: [materialReorderRequests.id],
+  }),
+}));
+
+export const materialReorderRequestsRelations = relations(materialReorderRequests, ({ one, many }) => ({
+  organization: one(organizations, {
+    fields: [materialReorderRequests.organizationId],
+    references: [organizations.id],
+  }),
+  material: one(materials, {
+    fields: [materialReorderRequests.materialId],
+    references: [materials.id],
+  }),
+  vendor: one(vendors, {
+    fields: [materialReorderRequests.vendorId],
+    references: [vendors.id],
+  }),
+  requestedByUser: one(users, {
+    fields: [materialReorderRequests.requestedByUserId],
+    references: [users.id],
+  }),
+  orderedByUser: one(users, {
+    fields: [materialReorderRequests.orderedByUserId],
+    references: [users.id],
+  }),
+  receivedByUser: one(users, {
+    fields: [materialReorderRequests.receivedByUserId],
+    references: [users.id],
+  }),
+  cancelledByUser: one(users, {
+    fields: [materialReorderRequests.cancelledByUserId],
+    references: [users.id],
+  }),
+  adjustments: many(inventoryAdjustments),
 }));
 
 export const orderMaterialUsageRelations = relations(orderMaterialUsage, ({ one }) => ({

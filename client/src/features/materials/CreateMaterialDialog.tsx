@@ -3,6 +3,7 @@ import { z } from "zod";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
+import { Link } from "react-router-dom";
 
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -196,8 +197,19 @@ export function CreateMaterialDialog({
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>Create Material</DialogTitle>
-          <DialogDescription>Quick add a material, then select it for this product.</DialogDescription>
+          <DialogDescription>
+            Quick add a base material for product setup. Full inventory, supplier, and reorder configuration belongs in Settings &gt; Inventory &amp; Procurement.
+          </DialogDescription>
         </DialogHeader>
+
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          This shortcut creates a permanent catalog material with only the basics needed for product setup. It does not configure supplier assignments, reorder thresholds, or operational inventory behavior.
+          <div className="mt-2">
+            <Button asChild type="button" variant="link" size="sm" className="h-auto px-0 text-amber-900">
+              <Link to="/settings/inventory">Manage full material inventory settings in Settings &gt; Inventory &amp; Procurement.</Link>
+            </Button>
+          </div>
+        </div>
 
         <Form {...form}>
           <form

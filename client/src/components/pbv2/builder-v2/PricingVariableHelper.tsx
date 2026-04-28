@@ -86,6 +86,8 @@ export function PricingVariableHelper() {
     }
   };
 
+  const helperText = "Use lowercase variable names such as w, h, q, sqft, total_sqft, and base_price. Use ceil(...), round(...), and max(...), not Math.ceil(...).";
+
   return (
     <div className="min-w-0 w-full rounded-md border border-slate-700 bg-slate-800/40 px-2 py-1">
       <Accordion type="single" collapsible className="w-full min-w-0">
@@ -94,6 +96,9 @@ export function PricingVariableHelper() {
             Available Pricing Variables
           </AccordionTrigger>
           <AccordionContent className="pt-1">
+            <div className="px-1 pb-2 text-[11px] text-slate-400">
+              {helperText}
+            </div>
             <div
               className="max-h-[220px] overflow-y-auto overscroll-contain pr-1"
               tabIndex={0}
@@ -148,7 +153,7 @@ export function PricingVariableHelper() {
                                 <TooltipContent className="max-w-[280px] text-xs">
                                   <div>{variable.description}</div>
                                   {typeof variable.example !== "undefined" ? (
-                                    <div className="mt-1 text-[11px] opacity-80">Example: {String(variable.example)}</div>
+                                    <div className="mt-1 text-[11px] opacity-80">Example value: {String(variable.example)}</div>
                                   ) : null}
                                 </TooltipContent>
                               </Tooltip>

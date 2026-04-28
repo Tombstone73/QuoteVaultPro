@@ -87,6 +87,16 @@ export function getAllowedCorsOrigins(): string[] {
     allowed.add(publicWebOrigin);
   }
 
+  // APP_EXTRA_ORIGINS: comma-separated list of additional allowed CORS origins.
+  // Use this on Railway DEV to allow Vercel preview URLs or other non-canonical
+  // frontend origins without changing APP_PUBLIC_WEB_ORIGIN.
+  // Example: APP_EXTRA_ORIGINS=https://quotevaultpro-dev.vercel.app,https://quotevaultpro-git-dev.vercel.app
+  const extraRaw = (process.env.APP_EXTRA_ORIGINS ?? "").split(",");
+  for (const raw of extraRaw) {
+    const normalized = normalizeOrigin(raw.trim());
+    if (normalized) allowed.add(normalized);
+  }
+
   if (getAppEnv() !== "production") {
     allowed.add("http://localhost:5173");
     allowed.add("http://127.0.0.1:5173");
@@ -120,5 +130,7 @@ export function getRuntimeConfigLogLine(): string {
   const secure = shouldUseSecureCookies();
   const corsOrigins = getAllowedCorsOrigins();
   const corsSummary = corsOrigins.length > 0 ? corsOrigins.join(",") : "(none)";
-  return `[RuntimeConfig] env=${appEnv} webOrigin=${publicWebOrigin} cookieDomain=${cookieDomain} sameSite=${sameSite} secure=${secure} corsAllowed=${corsSummary}`;
+  const extraOriginsRaw = (process.env.APP_EXTRA_ORIGINS ?? "").trim();
+  const extraSummary = extraOriginsRaw ? ` extraOrigins=${extraOriginsRaw}` : "";
+  return `[RuntimeConfig] env=${appEnv} webOrigin=${publicWebOrigin} cookieDomain=${cookieDomain} sameSite=${sameSite} secure=${secure} corsAllowed=${corsSummary}${extraSummary}`;
 }
