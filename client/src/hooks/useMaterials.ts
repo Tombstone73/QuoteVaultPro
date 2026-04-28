@@ -7,6 +7,7 @@ export interface Material {
   name: string;
   sku: string;
   type: "sheet" | "roll" | "ink" | "consumable";
+  category?: string | null;
   unitOfMeasure: string;
   width?: string | null;
   height?: string | null;
@@ -14,8 +15,13 @@ export interface Material {
   thicknessUnit?: "in" | "mm" | "mil" | "gauge" | null;
   color?: string | null;
   costPerUnit: string;
+  wholesaleBaseRate?: string | null;
+  wholesaleMinCharge?: string | null;
+  retailBaseRate?: string | null;
+  retailMinCharge?: string | null;
   stockQuantity: string;
   minStockAlert: string;
+  isActive: boolean;
   vendorId?: string | null; // legacy placeholder
   preferredVendorId?: string | null;
   vendorSku?: string | null;
@@ -89,6 +95,7 @@ interface MaterialFilters {
   search?: string;
   type?: string;
   lowStockOnly?: boolean;
+  includeInactive?: boolean;
 }
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
@@ -141,7 +148,11 @@ export function useMaterials(filters?: MaterialFilters) {
   return useQuery<Material[]>({
     queryKey: ["/api/materials", filters],
     queryFn: async () => {
-      const response = await fetch("/api/materials", { credentials: "include" });
+      const params = new URLSearchParams();
+      if (filters?.includeInactive) params.set("includeInactive", "true");
+
+      const url = params.toString() ? `/api/materials?${params.toString()}` : "/api/materials";
+      const response = await fetch(url, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch materials");
       const json = await response.json();
       const payload = json?.success ? json.data : json;
@@ -156,7 +167,7 @@ export function useMaterials(filters?: MaterialFilters) {
         if (filters?.lowStockOnly) {
           const stock = parseFloat(m.stockQuantity || "0");
           const min = parseFloat(m.minStockAlert || "0");
-            if (!(stock < min)) return false;
+            if (!(stock <= min && min > 0)) return false;
         }
         return true;
       });
