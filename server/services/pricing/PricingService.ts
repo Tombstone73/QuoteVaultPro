@@ -987,6 +987,68 @@ function evaluatePreviewFormulaToCents(input: {
     { label: 'p(base_rate_per_sqft)', value: input.baseRatePerSqft },
   ];
 
+  // Pre-validate: reject JavaScript-style Math.xxx function calls before they hit mathjs
+  const mathDotUsages = detectMathDotUsage(input.formula);
+  if (mathDotUsages.length > 0) {
+    const examples = mathDotUsages.map((m) => {
+      const fnName = m.replace('Math.', '').toLowerCase();
+      return `${m} is not supported. Use ${fnName}(...) instead.`;
+    });
+    const message = examples.join(' ');
+    const formulaError = new Error(`Formula error: ${message}`) as PricingPreviewFormulaError;
+    formulaError.code = 'PBV2_FORMULA_ERROR';
+    formulaError.details = examples.map((msg, i) => ({
+      code: 'PBV2_FORMULA_JS_MATH_UNSUPPORTED',
+      message: msg,
+      location: undefined,
+    }));
+    formulaError.debug = {
+      formulaRaw: input.formula,
+      formulaResolved,
+      variables: scope,
+      appliedAs,
+      steps,
+      errors: formulaError.details,
+      usedFallbackFormula: input.usedFallbackFormula,
+      fallbackFormula: input.usedFallbackFormula ? input.fallbackFormula : undefined,
+      preCeilSqftTotal,
+      postCeilSqftTotal,
+      baseRateUsed: input.baseRatePerSqft,
+    };
+    throw formulaError;
+  }
+
+  // Pre-validate: reject bracket-style variable references like [W], [H], [Q]
+  const bracketVars = detectBracketVariables(input.formula);
+  if (bracketVars.length > 0) {
+    const examples = bracketVars.map((b) => {
+      const inner = b.slice(1, -1).toLowerCase();
+      return `${b} is not a valid variable. Use ${inner} instead (e.g., w, h, q).`;
+    });
+    const message = examples.join(' ');
+    const formulaError = new Error(`Formula error: ${message}`) as PricingPreviewFormulaError;
+    formulaError.code = 'PBV2_FORMULA_ERROR';
+    formulaError.details = examples.map((msg) => ({
+      code: 'PBV2_FORMULA_MISSING_VARIABLE',
+      message: msg,
+      location: undefined,
+    }));
+    formulaError.debug = {
+      formulaRaw: input.formula,
+      formulaResolved,
+      variables: scope,
+      appliedAs,
+      steps,
+      errors: formulaError.details,
+      usedFallbackFormula: input.usedFallbackFormula,
+      fallbackFormula: input.usedFallbackFormula ? input.fallbackFormula : undefined,
+      preCeilSqftTotal,
+      postCeilSqftTotal,
+      baseRateUsed: input.baseRatePerSqft,
+    };
+    throw formulaError;
+  }
+
   try {
     const evaluated = evaluate(input.formula, evalScope);
     const value = Number(evaluated);
@@ -1150,9 +1212,40 @@ function resolveFormulaAliases(formula: string): string {
 
 function inferFormulaErrorCode(message: string): string {
   const lower = message.toLowerCase();
+  if (lower.includes('math.') || lower.includes('unsupported javascript-style')) return 'PBV2_FORMULA_JS_MATH_UNSUPPORTED';
   if (lower.includes('undefined symbol') || lower.includes('undefined variable')) return 'PBV2_FORMULA_MISSING_VARIABLE';
   if (lower.includes('non-numeric') || lower.includes('nan') || lower.includes('infinity')) return 'PBV2_FORMULA_NON_FINITE';
   return 'PBV2_FORMULA_PARSE_ERROR';
+}
+
+/**
+ * Detect JavaScript-style Math.xxx function calls in a formula string.
+ * Returns a list of unsupported references found (e.g. "Math.ceil", "Math.round").
+ */
+function detectMathDotUsage(formula: string): string[] {
+  const matches: string[] = [];
+  const re = /\bMath\.([a-zA-Z]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(formula)) !== null) {
+    const full = m[0]; // e.g. "Math.ceil"
+    if (!matches.includes(full)) matches.push(full);
+  }
+  return matches;
+}
+
+/**
+ * Detect bracket-style variable references like [W], [H], [Q] which are NOT
+ * supported by the formula evaluator. Returns found bracket tokens.
+ */
+function detectBracketVariables(formula: string): string[] {
+  const matches: string[] = [];
+  const re = /\[([A-Za-z_][A-Za-z0-9_]*)\]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(formula)) !== null) {
+    const full = m[0]; // e.g. "[W]"
+    if (!matches.includes(full)) matches.push(full);
+  }
+  return matches;
 }
 
 function extractMathErrorLocation(message: string): number | undefined {

@@ -1891,12 +1891,26 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
   // Weight validation: check for negative weights (ERROR)
   const negativeWeights: Array<{ path: string; value: number; label?: string }> = [];
 
-  // Check base weight
+  // Check base weight (canonical field)
   const meta = asRecord((t as any).meta);
   if (meta) {
     const baseWeightOz = meta.baseWeightOz;
     if (typeof baseWeightOz === "number" && baseWeightOz < 0) {
       negativeWeights.push({ path: "tree.meta.baseWeightOz", value: baseWeightOz, label: "Base weight" });
+    }
+    // Also check shippingConfig.baseWeight for negative values
+    const shippingConfig = asRecord(meta.shippingConfig);
+    if (shippingConfig) {
+      const rawWeight = shippingConfig.baseWeight;
+      let numWeight: number | null = null;
+      if (typeof rawWeight === "number" && !isNaN(rawWeight)) numWeight = rawWeight;
+      else if (typeof rawWeight === "string") {
+        const p = parseFloat(rawWeight);
+        if (!isNaN(p)) numWeight = p;
+      }
+      if (numWeight !== null && numWeight < 0) {
+        negativeWeights.push({ path: "tree.meta.shippingConfig.baseWeight", value: numWeight, label: "Base weight (shipping config)" });
+      }
     }
   }
 
@@ -1956,11 +1970,32 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
   // Weight validation: check for missing weight (WARNING)
   let hasWeight = false;
 
-  // Check base weight
+  // Check base weight from meta.baseWeightOz (canonical field)
   if (meta) {
     const baseWeightOz = meta.baseWeightOz;
-    if (typeof baseWeightOz === "number" && baseWeightOz !== 0) {
+    if (typeof baseWeightOz === "number" && baseWeightOz > 0) {
       hasWeight = true;
+    }
+  }
+
+  // Check base weight from meta.shippingConfig.baseWeight (form-managed field)
+  // The product editor stores weight here: { baseWeight: 0.9, weightUnit: "oz" | "lb", ... }
+  if (!hasWeight && meta) {
+    const shippingConfig = asRecord(meta.shippingConfig);
+    if (shippingConfig) {
+      const rawWeight = shippingConfig.baseWeight;
+      const weightUnit = typeof shippingConfig.weightUnit === "string" ? shippingConfig.weightUnit : "oz";
+      let weightOz: number | null = null;
+      if (typeof rawWeight === "number" && !isNaN(rawWeight)) {
+        weightOz = rawWeight;
+      } else if (typeof rawWeight === "string" && rawWeight.trim().length > 0) {
+        const parsed = parseFloat(rawWeight);
+        if (!isNaN(parsed)) weightOz = parsed;
+      }
+      if (weightOz !== null && weightOz > 0) {
+        // Convert lbs to oz if needed for comparison (any positive weight satisfies the check)
+        hasWeight = weightUnit === "lb" ? weightOz > 0 : weightOz > 0;
+      }
     }
   }
 
