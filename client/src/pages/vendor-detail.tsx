@@ -8,6 +8,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/com
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Link } from "wouter";
+import { normalizeOptionalWebsite } from "@shared/vendorWebsite";
 
 function formatLeadTime(leadTimeText?: string | null, defaultLeadTimeDays?: number | null) {
   if (leadTimeText?.trim()) return leadTimeText.trim();
@@ -21,6 +22,7 @@ export default function VendorDetailPage() {
   const { data: vendor } = useVendor(vendorId);
   const { data: pos = [] } = usePurchaseOrders({ vendorId });
   const [showEdit, setShowEdit] = useState(false);
+  const normalizedWebsite = normalizeOptionalWebsite(vendor?.website);
 
   if (!vendor) return <div>Loading vendor...</div>;
 
@@ -45,7 +47,7 @@ export default function VendorDetailPage() {
           <div><span className="font-medium">Sales Rep:</span> {vendor.salesRepName || '-'} </div>
           <div><span className="font-medium">Rep Email:</span> {vendor.salesRepEmail || '-'} </div>
           <div><span className="font-medium">Rep Phone:</span> {vendor.salesRepPhone || '-'} </div>
-          <div><span className="font-medium">Website:</span> {vendor.website ? <a href={vendor.website} target="_blank" className="underline text-primary">{vendor.website}</a> : '-'} </div>
+          <div><span className="font-medium">Website:</span> {vendor.website ? <a href={normalizedWebsite || vendor.website} target="_blank" rel="noopener noreferrer" className="underline text-primary">{vendor.website}</a> : '-'} </div>
           <div><span className="font-medium">Payment Terms:</span> {vendor.paymentTerms} </div>
           <div><span className="font-medium">Lead Time:</span> {formatLeadTime(vendor.leadTimeText, vendor.defaultLeadTimeDays)}</div>
           <div><span className="font-medium">Status:</span> {vendor.isActive ? <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">Active</Badge> : <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200">Inactive</Badge>}</div>

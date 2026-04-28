@@ -8,6 +8,7 @@ import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useCreateVendor, useUpdateVendor, Vendor } from "@/hooks/useVendors";
 import { useToast } from "@/hooks/use-toast";
+import { normalizeOptionalWebsite } from "@shared/vendorWebsite";
 
 function normalizeOptionalString(value: unknown) {
   if (typeof value !== "string") {
@@ -16,16 +17,6 @@ function normalizeOptionalString(value: unknown) {
 
   const trimmed = value.trim();
   return trimmed.length ? trimmed : undefined;
-}
-
-function isValidWebsite(value: string) {
-  try {
-    const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `https://${value}`;
-    const parsed = new URL(candidate);
-    return Boolean(parsed.hostname) && parsed.hostname.includes(".");
-  } catch {
-    return false;
-  }
 }
 
 const optionalEmailSchema = z.preprocess(
@@ -41,10 +32,13 @@ const optionalTextSchema = (maxLength?: number) => z.preprocess(
 );
 
 const optionalWebsiteSchema = z.preprocess(
-  normalizeOptionalString,
+  (value) => {
+    const normalized = normalizeOptionalWebsite(value);
+    return normalized ?? normalizeOptionalString(value);
+  },
   z.string()
     .max(255, "Website must be 255 characters or fewer")
-    .refine(isValidWebsite, "Enter a valid website like example.com or https://example.com")
+    .url("Enter a valid website like example.com or https://example.com")
     .optional(),
 );
 
