@@ -22,7 +22,6 @@ import {
     auditLogs,
     customerVisibleProducts,
     materials,
-    inventoryAdjustments,
     orderMaterialUsage,
     inventoryReservations,
     productionJobs,
@@ -36,7 +35,7 @@ import {
     updateLineItemDesignBriefSchema,
     insertMaterialSchema,
     updateMaterialSchema,
-    insertInventoryAdjustmentSchema,
+    insertMaterialReorderRequestSchema,
     type InsertOrder
 } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray, or, sql } from "drizzle-orm";
@@ -103,6 +102,7 @@ import { storageApplicationService } from "../services/storage/StorageApplicatio
 import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
 import { deleteStoredObjectKeys } from "../services/storage/deleteStoredObjectKeys";
 import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
+import { buildManualInventoryAdjustment } from "../services/materialInventoryLogic";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -113,6 +113,32 @@ function getUserId(user: any): string | undefined {
 function getRequestOrganizationId(req: any): string | undefined {
     return req.organizationId || req.headers['x-organization-id'] as string;
 }
+
+const manualInventoryAdjustmentSchema = z.object({
+    adjustmentMode: z.enum(["set_quantity", "add_quantity", "subtract_quantity"]),
+    quantity: z.coerce.number(),
+    reason: z.enum(["damage", "miscount", "scrap", "correction", "received_outside_reorder", "other"]),
+    otherReason: z.string().trim().optional(),
+    notes: z.string().trim().optional(),
+}).superRefine((value, ctx) => {
+    if (!Number.isFinite(value.quantity)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["quantity"], message: "Quantity must be numeric" });
+    }
+    if ((value.adjustmentMode === "add_quantity" || value.adjustmentMode === "subtract_quantity") && value.quantity <= 0) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["quantity"], message: "Quantity must be greater than zero" });
+    }
+    if (value.adjustmentMode === "set_quantity" && value.quantity < 0) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["quantity"], message: "Quantity cannot be negative" });
+    }
+    if (value.reason === "other" && !value.otherReason?.trim()) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["otherReason"], message: "Other reason is required" });
+    }
+});
+
+const materialReorderReceiveSchema = z.object({
+    receivedQuantity: z.coerce.number().positive(),
+    notes: z.string().trim().optional(),
+});
 
 const productionLineItemStatusRuleSchema = z
     .object({
@@ -3122,6 +3148,18 @@ export async function registerOrderRoutes(
         }
     });
 
+    app.get('/api/material-reorder-requests', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const requests = await storage.listMaterialReorderRequests(organizationId);
+            res.json({ success: true, data: requests });
+        } catch (err) {
+            console.error('Error fetching material reorder requests', err);
+            res.status(500).json({ error: 'Failed to fetch material reorder requests' });
+        }
+    });
+
     app.get('/api/materials/:id', isAuthenticated, tenantContext, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
@@ -3268,20 +3306,129 @@ export async function registerOrderRoutes(
             if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
             const material = await storage.getMaterialById(organizationId, req.params.id);
             if (!material) return res.status(404).json({ error: 'Material not found' });
-            const parsed = insertInventoryAdjustmentSchema.parse({ ...req.body, materialId: req.params.id });
+            const parsed = manualInventoryAdjustmentSchema.parse(req.body);
             const userId = getUserId(req.user);
             if (!userId) return res.status(401).json({ error: 'Not authenticated' });
-            const adjustment = await storage.adjustInventory(organizationId, parsed.materialId, parsed.type as any, parsed.quantityChange, userId, parsed.reason || undefined, parsed.orderId || undefined);
-            res.json({ success: true, data: adjustment });
+
+            const movement = buildManualInventoryAdjustment({
+                currentQuantity: Number(material.stockQuantity || 0),
+                adjustmentMode: parsed.adjustmentMode,
+                quantity: parsed.quantity,
+                reason: parsed.reason,
+                otherReason: parsed.otherReason,
+                notes: parsed.notes,
+            });
+
+            const adjustment = await storage.adjustInventory(
+                organizationId,
+                material.id,
+                movement.detailType,
+                movement.quantityDelta,
+                userId,
+                movement.reason || undefined,
+                undefined,
+                { notes: movement.notes || undefined, movementType: movement.movementType }
+            );
+
+            res.json({ success: true, data: adjustment, message: 'Inventory adjusted' });
         } catch (err) {
             if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
+            if ((err as any)?.message === 'Adjustment would make stock negative') {
+                return res.status(400).json({ error: 'Adjustment would make stock negative' });
+            }
             res.status(500).json({ error: 'Failed to adjust inventory' });
+        }
+    });
+
+    app.post('/api/materials/:id/reorder-requests', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const material = await storage.getMaterialById(organizationId, req.params.id);
+            if (!material) return res.status(404).json({ error: 'Material not found' });
+            if (material.isActive === false) return res.status(400).json({ error: 'Cannot create reorder request for an inactive material' });
+
+            const parsed = insertMaterialReorderRequestSchema.parse({ ...req.body, materialId: req.params.id });
+            const userId = getUserId(req.user);
+            const created = await storage.createMaterialReorderRequest(organizationId, {
+                ...parsed,
+                requestedByUserId: userId || null,
+            });
+            res.json({ success: true, data: created, message: 'Reorder request created' });
+        } catch (err) {
+            if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
+            if ((err as any)?.message === 'Open reorder request already exists for this material') {
+                return res.status(409).json({ error: 'Open reorder request already exists for this material' });
+            }
+            console.error('Error creating material reorder request', err);
+            res.status(500).json({ error: 'Failed to create reorder request' });
+        }
+    });
+
+    app.post('/api/material-reorder-requests/:id/mark-ordered', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+            const updated = await storage.markMaterialReorderRequestOrdered(organizationId, req.params.id, userId);
+            res.json({ success: true, data: updated, message: 'Reorder request marked ordered' });
+        } catch (err) {
+            const message = String((err as any)?.message || 'Failed to mark reorder request ordered');
+            if (message.includes('not found')) return res.status(404).json({ error: message });
+            if (message.includes('Only requested')) return res.status(400).json({ error: message });
+            console.error('Error marking material reorder request ordered', err);
+            res.status(500).json({ error: 'Failed to mark reorder request ordered' });
+        }
+    });
+
+    app.post('/api/material-reorder-requests/:id/cancel', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+            const updated = await storage.cancelMaterialReorderRequest(organizationId, req.params.id, userId);
+            res.json({ success: true, data: updated, message: 'Reorder request cancelled' });
+        } catch (err) {
+            const message = String((err as any)?.message || 'Failed to cancel reorder request');
+            if (message.includes('not found')) return res.status(404).json({ error: message });
+            if (message.includes('Only requested or ordered')) return res.status(400).json({ error: message });
+            console.error('Error cancelling material reorder request', err);
+            res.status(500).json({ error: 'Failed to cancel reorder request' });
+        }
+    });
+
+    app.post('/api/material-reorder-requests/:id/receive', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+            const parsed = materialReorderReceiveSchema.parse(req.body);
+            const result = await storage.receiveMaterialReorderRequest(
+                organizationId,
+                req.params.id,
+                parsed.receivedQuantity,
+                userId,
+                parsed.notes || undefined,
+            );
+            res.json({ success: true, data: result, message: 'Reorder request received' });
+        } catch (err) {
+            if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
+            const message = String((err as any)?.message || 'Failed to receive reorder request');
+            if (message.includes('not found')) return res.status(404).json({ error: message });
+            if (message.includes('Only requested or ordered')) return res.status(400).json({ error: message });
+            console.error('Error receiving material reorder request', err);
+            res.status(500).json({ error: 'Failed to receive reorder request' });
         }
     });
 
     app.get('/api/materials/:id/adjustments', isAuthenticated, tenantContext, async (req: any, res) => {
         try {
-            const adjustments = await storage.getInventoryAdjustments(req.params.id);
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const adjustments = await storage.getInventoryAdjustments(organizationId, req.params.id);
             res.json({ success: true, data: adjustments });
         } catch (err) {
             res.status(500).json({ error: 'Failed to fetch adjustments' });
