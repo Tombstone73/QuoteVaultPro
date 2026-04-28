@@ -68,6 +68,13 @@ export const getMaterialLowStockAlerts = inventoryRepo.getMaterialLowStockAlerts
 
 export const adjustInventory = inventoryRepo.adjustInventory.bind(inventoryRepo);
 export const getInventoryAdjustments = inventoryRepo.getInventoryAdjustments.bind(inventoryRepo);
+export const getOpenReorderRequestForMaterial = inventoryRepo.getOpenReorderRequestForMaterial.bind(inventoryRepo);
+export const listMaterialReorderRequests = inventoryRepo.listMaterialReorderRequests.bind(inventoryRepo);
+export const createMaterialReorderRequest = inventoryRepo.createMaterialReorderRequest.bind(inventoryRepo);
+export const getMaterialReorderRequestById = inventoryRepo.getMaterialReorderRequestById.bind(inventoryRepo);
+export const markMaterialReorderRequestOrdered = inventoryRepo.markMaterialReorderRequestOrdered.bind(inventoryRepo);
+export const cancelMaterialReorderRequest = inventoryRepo.cancelMaterialReorderRequest.bind(inventoryRepo);
+export const receiveMaterialReorderRequest = inventoryRepo.receiveMaterialReorderRequest.bind(inventoryRepo);
 
 export const recordMaterialUsage = inventoryRepo.recordMaterialUsage.bind(inventoryRepo);
 export const getMaterialUsageByOrder = inventoryRepo.getMaterialUsageByOrder.bind(inventoryRepo);
@@ -315,6 +322,13 @@ export const storage = {
     getMaterialLowStockAlerts,
     adjustInventory,
     getInventoryAdjustments,
+    getOpenReorderRequestForMaterial,
+    listMaterialReorderRequests,
+    createMaterialReorderRequest,
+    getMaterialReorderRequestById,
+    markMaterialReorderRequestOrdered,
+    cancelMaterialReorderRequest,
+    receiveMaterialReorderRequest,
     recordMaterialUsage,
     getMaterialUsageByOrder,
     getMaterialUsageByLineItem,
