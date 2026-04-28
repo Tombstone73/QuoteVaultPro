@@ -371,4 +371,150 @@ describe("pbv2/validator/validatePublish", () => {
     const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
     expect(result.warnings.some((f) => f.code === "PBV2_W_WEIGHT_MISSING")).toBe(false);
   });
+
+  // --- shippingConfig.baseWeight tests ---
+
+  const baseNode = {
+    id: "root",
+    type: "INPUT",
+    status: "ENABLED",
+    key: "root",
+    input: { selectionKey: "root", valueType: "BOOLEAN" },
+  };
+
+  test("shippingConfig.baseWeight = 0.9 oz => no missing weight warning", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["root"],
+      nodes: [baseNode],
+      edges: [],
+      meta: {
+        shippingConfig: { baseWeight: 0.9, weightUnit: "oz", weightBasis: "per_sqft" },
+      },
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.warnings.some((f) => f.code === "PBV2_W_WEIGHT_MISSING")).toBe(false);
+  });
+
+  test("shippingConfig.baseWeight string '0.9' parses correctly => no missing weight warning", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["root"],
+      nodes: [baseNode],
+      edges: [],
+      meta: {
+        shippingConfig: { baseWeight: "0.9", weightUnit: "oz" },
+      },
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.warnings.some((f) => f.code === "PBV2_W_WEIGHT_MISSING")).toBe(false);
+  });
+
+  test("shippingConfig.baseWeight = 0 => missing weight warning (zero treated as absent)", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["root"],
+      nodes: [baseNode],
+      edges: [],
+      meta: {
+        shippingConfig: { baseWeight: 0, weightUnit: "oz" },
+      },
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.warnings.some((f) => f.code === "PBV2_W_WEIGHT_MISSING")).toBe(true);
+  });
+
+  test("shippingConfig.baseWeight = null => missing weight warning", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["root"],
+      nodes: [baseNode],
+      edges: [],
+      meta: {
+        shippingConfig: { baseWeight: null, weightUnit: "oz" },
+      },
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.warnings.some((f) => f.code === "PBV2_W_WEIGHT_MISSING")).toBe(true);
+  });
+
+  test("shippingConfig.baseWeight = undefined => missing weight warning", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["root"],
+      nodes: [baseNode],
+      edges: [],
+      meta: {
+        shippingConfig: { weightUnit: "oz" },
+      },
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.warnings.some((f) => f.code === "PBV2_W_WEIGHT_MISSING")).toBe(true);
+  });
+
+  test("shippingConfig.baseWeight empty string => missing weight warning", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["root"],
+      nodes: [baseNode],
+      edges: [],
+      meta: {
+        shippingConfig: { baseWeight: "", weightUnit: "oz" },
+      },
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.warnings.some((f) => f.code === "PBV2_W_WEIGHT_MISSING")).toBe(true);
+  });
+
+  test("shippingConfig.baseWeight in lbs (0.5 lb) => no missing weight warning", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["root"],
+      nodes: [baseNode],
+      edges: [],
+      meta: {
+        shippingConfig: { baseWeight: 0.5, weightUnit: "lb" },
+      },
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.warnings.some((f) => f.code === "PBV2_W_WEIGHT_MISSING")).toBe(false);
+  });
+
+  test("meta.baseWeightOz overrides missing shippingConfig.baseWeight => no missing weight warning", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["root"],
+      nodes: [baseNode],
+      edges: [],
+      meta: {
+        baseWeightOz: 4,
+        shippingConfig: {},
+      },
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.warnings.some((f) => f.code === "PBV2_W_WEIGHT_MISSING")).toBe(false);
+  });
+
+  test("shippingConfig.baseWeight negative value => negative weight error", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["root"],
+      nodes: [baseNode],
+      edges: [],
+      meta: {
+        shippingConfig: { baseWeight: -1, weightUnit: "oz" },
+      },
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.errors.some((f) => f.code === "PBV2_E_WEIGHT_NEGATIVE")).toBe(true);
+  });
 });
