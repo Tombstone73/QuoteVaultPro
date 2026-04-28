@@ -65,12 +65,11 @@ const VARIABLE_LIBRARY: VariableSection[] = [
   {
     section: "Line Item Variables",
     variables: [
-      { key: "width", label: "Width", description: "Item width in inches" },
-      { key: "w", label: "Width (short)", description: "Alias for width" },
-      { key: "height", label: "Height", description: "Item height in inches" },
-      { key: "h", label: "Height (short)", description: "Alias for height" },
-      { key: "quantity", label: "Quantity", description: "Number of items" },
-      { key: "q", label: "Quantity (short)", description: "Alias for quantity" },
+      { key: "w", label: "Width", description: "Ordered item width in inches" },
+      { key: "ordered_width", label: "Ordered Width", description: "Explicit ordered width before finished-size adjustments" },
+      { key: "h", label: "Height", description: "Ordered item height in inches" },
+      { key: "ordered_height", label: "Ordered Height", description: "Explicit ordered height before finished-size adjustments" },
+      { key: "q", label: "Quantity", description: "Number of items" },
       { key: "sides", label: "Sides", description: "Number of printed sides" },
       { key: "copies", label: "Copies", description: "Number of copies per original" },
     ],
@@ -80,8 +79,8 @@ const VARIABLE_LIBRARY: VariableSection[] = [
     variables: [
       { key: "sqft", label: "Square Feet", description: "Calculated from width × height / 144" },
       { key: "total_sqft", label: "Total Square Feet", description: "sqft × quantity" },
-      { key: "basePricePerSqft", label: "Base Price/SqFt", description: "From volume pricing tier" },
-      { key: "p", label: "Price (short)", description: "Alias for basePricePerSqft" },
+      { key: "base_price", label: "Base Price Rate", description: "Effective base rate used by the evaluator" },
+      { key: "p", label: "Price Alias", description: "Alias for base_price" },
     ],
   },
 ];
@@ -209,6 +208,8 @@ export default function PricingFormulasSettings() {
         h: testValues.height,
         q: testValues.quantity,
         sqft: (testValues.width * testValues.height) / 144,
+        total_sqft: ((testValues.width * testValues.height) / 144) * testValues.quantity,
+        base_price: 1.0,
         basePricePerSqft: 1.0, // Default for testing
         p: 1.0,
       };

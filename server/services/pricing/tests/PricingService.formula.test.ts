@@ -14,7 +14,7 @@ import { evaluatePricingPreviewFromTree } from "../PricingService";
 // Minimal valid tree for evaluatePricingPreviewFromTree.
 // Uses the optionTreeV2Schema-compatible structure (nodes as Record<id, node>,
 // schemaVersion: 2, required node fields: id, kind, label).
-function makeTree(formula?: string) {
+function makeTree(formula?: string, metaOverrides?: Record<string, unknown>) {
   return {
     schemaVersion: 2 as const,
     rootNodeIds: ["root"],
@@ -32,6 +32,7 @@ function makeTree(formula?: string) {
           perSqftCents: 100, // $1.00/sqft
         },
       },
+      ...(metaOverrides ?? {}),
       ...(formula !== undefined ? { pricingFormula: formula } : {}),
     },
   };
@@ -185,5 +186,51 @@ describe("PricingService formula evaluation", () => {
     expect(typeof err.debug?.variables?.w).toBe("number");
     expect(typeof err.debug?.variables?.h).toBe("number");
     expect(typeof err.debug?.variables?.q).toBe("number");
+  });
+
+  test("preview debug normalizes shippingConfig base weight and computes shipping weight", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeTree(undefined, {
+        shippingConfig: {
+          baseWeight: 0.5,
+          weightUnit: "lb",
+          weightBasis: "per_item",
+        },
+      }),
+      widthIn: 24,
+      heightIn: 36,
+      quantity: 2,
+      pricingFormulaOverride: "sqft * base_price * q",
+      debug: true,
+    });
+
+    expect(result.debug?.weight?.baseWeightSource).toBe("shippingConfig.baseWeight");
+    expect(result.debug?.weight?.baseWeightOz).toBeCloseTo(8, 4);
+    expect(result.debug?.weight?.computedShippingWeightOz).toBeCloseTo(16, 4);
+    expect(result.debug?.weight?.warningCode).toBeUndefined();
+  });
+
+  test("formula error debug still includes weight debug details", () => {
+    try {
+      evaluatePricingPreviewFromTree({
+        treeJson: makeTree(undefined, {
+          shippingConfig: {
+            baseWeight: 1,
+            weightUnit: "oz",
+            weightBasis: "per_order",
+          },
+        }),
+        widthIn: 24,
+        heightIn: 36,
+        quantity: 1,
+        pricingFormulaOverride: "Math.ceil(sqft)",
+        debug: true,
+      });
+      throw new Error("Expected formula error");
+    } catch (error: any) {
+      expect(error.code).toBe("PBV2_FORMULA_ERROR");
+      expect(error.debug?.weight?.baseWeightOz).toBeCloseTo(1, 4);
+      expect(error.debug?.weight?.computedShippingWeightOz).toBeCloseTo(1, 4);
+    }
   });
 });
