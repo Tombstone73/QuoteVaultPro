@@ -17,6 +17,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+import { normalizeOptionalWebsite } from "./vendorWebsite";
 import { PRICING_PROFILE_KEYS, type FlatGoodsConfig } from "./pricingProfiles";
 import {
   inventoryMovementTypeValues,
@@ -4654,16 +4655,6 @@ const normalizeOptionalVendorString = (value: unknown) => {
   return trimmed.length ? trimmed : undefined;
 };
 
-const isValidVendorWebsite = (value: string) => {
-  try {
-    const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `https://${value}`;
-    const parsed = new URL(candidate);
-    return Boolean(parsed.hostname) && parsed.hostname.includes('.');
-  } catch {
-    return false;
-  }
-};
-
 export const insertVendorSchema = createInsertSchema(vendors).omit({
   id: true,
   createdAt: true,
@@ -4673,8 +4664,11 @@ export const insertVendorSchema = createInsertSchema(vendors).omit({
   email: z.preprocess(normalizeOptionalVendorString, z.string().email().optional()),
   phone: z.preprocess(normalizeOptionalVendorString, z.string().max(50).optional()),
   website: z.preprocess(
-    normalizeOptionalVendorString,
-    z.string().max(255).refine(isValidVendorWebsite, 'Website must be a valid domain or URL').optional(),
+    (value) => {
+      const normalized = normalizeOptionalWebsite(value);
+      return normalized ?? normalizeOptionalVendorString(value);
+    },
+    z.string().max(255).url('Website must be a valid domain or URL').optional(),
   ),
   notes: z.preprocess(normalizeOptionalVendorString, z.string().optional()),
   paymentTerms: z.enum(['due_on_receipt','net_15','net_30','net_45','custom']).default('due_on_receipt'),
