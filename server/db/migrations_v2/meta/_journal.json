@@ -267,6 +267,13 @@
       "when": 1777939200000,
       "tag": "0037_invoice_email_tracking_and_reminders",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1778025600000,
+      "tag": "0038_invoice_reminder_settings_extended",
+      "breakpoints": true
     }
   ]
 }
