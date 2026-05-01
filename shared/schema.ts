@@ -3536,6 +3536,10 @@ export const invoiceReminderSettings = pgTable("invoice_reminder_settings", {
   firstReminderDaysAfterDue: integer("first_reminder_days_after_due"),
   repeatIntervalDays: integer("repeat_interval_days"),
   maxReminders: integer("max_reminders"),
+  // Added in migration 0038
+  sendCopyToInternalEmail: boolean("send_copy_to_internal_email").notNull().default(false),
+  internalCopyEmail: text("internal_copy_email"),
+  pauseForManualBillingCustomers: boolean("pause_for_manual_billing_customers").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
@@ -3551,6 +3555,9 @@ export const insertInvoiceReminderSettingsSchema = createInsertSchema(invoiceRem
   firstReminderDaysAfterDue: z.number().int().optional().nullable(),
   repeatIntervalDays: z.number().int().optional().nullable(),
   maxReminders: z.number().int().optional().nullable(),
+  sendCopyToInternalEmail: z.boolean().optional().default(false),
+  internalCopyEmail: z.string().email().optional().nullable(),
+  pauseForManualBillingCustomers: z.boolean().optional().default(false),
 });
 
 export const updateInvoiceReminderSettingsSchema = insertInvoiceReminderSettingsSchema.partial();

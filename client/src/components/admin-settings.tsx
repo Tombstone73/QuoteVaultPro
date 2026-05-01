@@ -39,6 +39,7 @@ import type {
   UpdateFormulaTemplate,
 } from "@shared/schema";
 import { useForm } from "react-hook-form";
+import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import {
   insertProductSchema,
@@ -660,6 +661,438 @@ function GmailConnectionCard() {
 // Email Settings Tab Component (exported for use in settings page)
 export function EmailSettingsTab() {
   return <GmailConnectionCard />;
+}
+
+// ---------------------------------------------------------------------------
+// Invoice Reminders Tab
+// ---------------------------------------------------------------------------
+
+const reminderSettingsFormSchema = z.object({
+  enabled: z.boolean().default(false),
+  firstReminderDaysAfterDue: z.coerce.number().int().min(1).nullable().optional(),
+  repeatIntervalDays: z.coerce.number().int().min(1).nullable().optional(),
+  maxReminders: z.coerce.number().int().min(1).nullable().optional(),
+  sendCopyToInternalEmail: z.boolean().default(false),
+  internalCopyEmail: z.string().email().nullable().optional().or(z.literal("")),
+  pauseForManualBillingCustomers: z.boolean().default(false),
+});
+
+type ReminderSettingsFormValues = z.infer<typeof reminderSettingsFormSchema>;
+
+type ReminderEligibilityStatus =
+  | "eligible"
+  | "settings_disabled"
+  | "not_billed"
+  | "not_overdue"
+  | "no_due_date"
+  | "paid"
+  | "void"
+  | "max_reminders_reached"
+  | "too_soon";
+
+interface InvoiceReminderEligibility {
+  invoiceId: string;
+  invoiceNumber: number;
+  customerName: string;
+  dueDate: string | null;
+  daysOverdue: number | null;
+  balanceDueCents: number;
+  remindersSentCount: number;
+  lastReminderSentAt: string | null;
+  nextReminderDueAt: string | null;
+  status: ReminderEligibilityStatus;
+}
+
+interface ReminderPreviewData {
+  settings: ReminderSettingsFormValues | null;
+  eligible: InvoiceReminderEligibility[];
+  blocked: InvoiceReminderEligibility[];
+}
+
+function eligibilityStatusLabel(status: ReminderEligibilityStatus): string {
+  switch (status) {
+    case "eligible": return "Ready to send";
+    case "settings_disabled": return "Reminders disabled";
+    case "not_billed": return "Not yet billed";
+    case "not_overdue": return "Not overdue";
+    case "no_due_date": return "No due date";
+    case "paid": return "Paid";
+    case "void": return "Voided";
+    case "max_reminders_reached": return "Max reminders reached";
+    case "too_soon": return "Too soon to re-send";
+  }
+}
+
+function ReminderPreviewPanel() {
+  const { data: previewResp, isLoading, refetch } = useQuery<{ success: boolean; data: ReminderPreviewData }>({
+    queryKey: ["/api/invoices/reminder-preview"],
+    queryFn: () => apiRequest("GET", "/api/invoices/reminder-preview").then((r) => r.json()),
+  });
+
+  const preview = previewResp?.data;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="font-medium text-sm">Eligibility Preview</h3>
+          <p className="text-xs text-muted-foreground">
+            Read-only. Shows which open invoices would receive a reminder right now.
+            No emails are sent from this panel.
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => refetch()}>
+          Refresh
+        </Button>
+      </div>
+
+      {isLoading && (
+        <div className="space-y-2">
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+        </div>
+      )}
+
+      {!isLoading && preview && (
+        <>
+          {preview.eligible.length === 0 && preview.blocked.length === 0 && (
+            <p className="text-sm text-muted-foreground py-4 text-center">
+              No open overdue invoices found.
+            </p>
+          )}
+
+          {preview.eligible.length > 0 && (
+            <div>
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-green-700 mb-2">
+                Would receive a reminder ({preview.eligible.length})
+              </h4>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Invoice</TableHead>
+                    <TableHead>Customer</TableHead>
+                    <TableHead>Days Overdue</TableHead>
+                    <TableHead>Reminders Sent</TableHead>
+                    <TableHead>Next Due</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {preview.eligible.map((inv) => (
+                    <TableRow key={inv.invoiceId}>
+                      <TableCell>#{inv.invoiceNumber}</TableCell>
+                      <TableCell>{inv.customerName}</TableCell>
+                      <TableCell>{inv.daysOverdue ?? "—"}</TableCell>
+                      <TableCell>{inv.remindersSentCount}</TableCell>
+                      <TableCell>
+                        {inv.nextReminderDueAt
+                          ? new Date(inv.nextReminderDueAt).toLocaleDateString()
+                          : "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+
+          {preview.blocked.length > 0 && (
+            <div>
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                Skipped ({preview.blocked.length})
+              </h4>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Invoice</TableHead>
+                    <TableHead>Customer</TableHead>
+                    <TableHead>Days Overdue</TableHead>
+                    <TableHead>Reason</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {preview.blocked.map((inv) => (
+                    <TableRow key={inv.invoiceId} className="opacity-60">
+                      <TableCell>#{inv.invoiceNumber}</TableCell>
+                      <TableCell>{inv.customerName}</TableCell>
+                      <TableCell>{inv.daysOverdue ?? "—"}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="text-xs">
+                          {eligibilityStatusLabel(inv.status)}
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+export function InvoiceRemindersTab() {
+  const { toast } = useToast();
+
+  const { data: settingsResp, isLoading } = useQuery<{ success: boolean; data: ReminderSettingsFormValues | null }>({
+    queryKey: ["/api/invoices/reminder-settings"],
+    queryFn: () => apiRequest("GET", "/api/invoices/reminder-settings").then((r) => r.json()),
+  });
+
+  const form = useForm<ReminderSettingsFormValues>({
+    resolver: zodResolver(reminderSettingsFormSchema),
+    defaultValues: {
+      enabled: false,
+      firstReminderDaysAfterDue: null,
+      repeatIntervalDays: null,
+      maxReminders: null,
+      sendCopyToInternalEmail: false,
+      internalCopyEmail: null,
+      pauseForManualBillingCustomers: false,
+    },
+  });
+
+  // Populate form once data loads
+  const { reset } = form;
+  const loadedSettings = settingsResp?.data;
+  useState(() => {
+    if (loadedSettings) reset(loadedSettings);
+  });
+
+  // Reset form when data is fetched
+  const [initialized, setInitialized] = useState(false);
+  if (!initialized && loadedSettings !== undefined) {
+    if (loadedSettings) reset(loadedSettings);
+    setInitialized(true);
+  }
+
+  const saveMutation = useMutation({
+    mutationFn: (values: ReminderSettingsFormValues) =>
+      apiRequest("PUT", "/api/invoices/reminder-settings", values).then((r) => r.json()),
+    onSuccess: (data) => {
+      if (data.success) {
+        queryClient.invalidateQueries({ queryKey: ["/api/invoices/reminder-settings"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/invoices/reminder-preview"] });
+        toast({ title: "Reminder settings saved" });
+      } else {
+        toast({ title: "Failed to save", description: data.error, variant: "destructive" });
+      }
+    },
+    onError: () => {
+      toast({ title: "Failed to save reminder settings", variant: "destructive" });
+    },
+  });
+
+  const enabled = form.watch("enabled");
+  const sendCopy = form.watch("sendCopyToInternalEmail");
+
+  if (isLoading) {
+    return (
+      <div className="space-y-3">
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="h-8 w-full" />
+        <Skeleton className="h-8 w-full" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-base font-semibold">Invoice Reminder Settings</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Configure automatic payment reminders for overdue invoices.{" "}
+          <span className="font-medium text-amber-600">
+            Automatic sending is not active yet — these settings will be used when the reminder
+            job is enabled.
+          </span>
+        </p>
+      </div>
+
+      <Form {...form}>
+        <form onSubmit={form.handleSubmit((v) => saveMutation.mutate(v))} className="space-y-6">
+          {/* Enable toggle */}
+          <FormField
+            control={form.control}
+            name="enabled"
+            render={({ field }) => (
+              <FormItem className="flex items-center justify-between rounded-lg border p-4">
+                <div>
+                  <FormLabel className="text-base">Enable Reminders</FormLabel>
+                  <FormDescription>
+                    When enabled, qualifying overdue invoices will receive automated reminders.
+                  </FormDescription>
+                </div>
+                <FormControl>
+                  <Switch checked={field.value} onCheckedChange={field.onChange} />
+                </FormControl>
+              </FormItem>
+            )}
+          />
+
+          {/* Timing fields */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <FormField
+              control={form.control}
+              name="firstReminderDaysAfterDue"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>First Reminder (days after due)</FormLabel>
+                  <FormControl>
+                    <Input
+                      type="number"
+                      min={1}
+                      placeholder="e.g. 3"
+                      value={field.value ?? ""}
+                      onChange={(e) =>
+                        field.onChange(e.target.value === "" ? null : Number(e.target.value))
+                      }
+                      disabled={!enabled}
+                    />
+                  </FormControl>
+                  <FormDescription>Days after due date to send the first reminder.</FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="repeatIntervalDays"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Repeat Interval (days)</FormLabel>
+                  <FormControl>
+                    <Input
+                      type="number"
+                      min={1}
+                      placeholder="e.g. 7"
+                      value={field.value ?? ""}
+                      onChange={(e) =>
+                        field.onChange(e.target.value === "" ? null : Number(e.target.value))
+                      }
+                      disabled={!enabled}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    How many days between follow-up reminders. Leave blank for no repeats.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="maxReminders"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Max Reminders</FormLabel>
+                  <FormControl>
+                    <Input
+                      type="number"
+                      min={1}
+                      placeholder="e.g. 5"
+                      value={field.value ?? ""}
+                      onChange={(e) =>
+                        field.onChange(e.target.value === "" ? null : Number(e.target.value))
+                      }
+                      disabled={!enabled}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    Maximum reminders per invoice. Leave blank for unlimited.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+
+          {/* Internal copy */}
+          <div className="space-y-3 rounded-lg border p-4">
+            <FormField
+              control={form.control}
+              name="sendCopyToInternalEmail"
+              render={({ field }) => (
+                <FormItem className="flex items-center gap-3 space-y-0">
+                  <FormControl>
+                    <Switch
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                      disabled={!enabled}
+                    />
+                  </FormControl>
+                  <div>
+                    <FormLabel>Send copy to internal email</FormLabel>
+                    <FormDescription>
+                      CC an internal address on every reminder sent.
+                    </FormDescription>
+                  </div>
+                </FormItem>
+              )}
+            />
+
+            {sendCopy && (
+              <FormField
+                control={form.control}
+                name="internalCopyEmail"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Internal copy email</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="email"
+                        placeholder="billing@yourshop.com"
+                        value={field.value ?? ""}
+                        onChange={(e) =>
+                          field.onChange(e.target.value === "" ? null : e.target.value)
+                        }
+                        disabled={!enabled}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            )}
+          </div>
+
+          {/* Pause for manual billing */}
+          <FormField
+            control={form.control}
+            name="pauseForManualBillingCustomers"
+            render={({ field }) => (
+              <FormItem className="flex items-center justify-between rounded-lg border p-4">
+                <div>
+                  <FormLabel>Pause for manual-billing customers</FormLabel>
+                  <FormDescription>
+                    Skip reminders for customers flagged as manual billing.
+                  </FormDescription>
+                </div>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                    disabled={!enabled}
+                  />
+                </FormControl>
+              </FormItem>
+            )}
+          />
+
+          <Button type="submit" disabled={saveMutation.isPending}>
+            {saveMutation.isPending ? "Saving…" : "Save Reminder Settings"}
+          </Button>
+        </form>
+      </Form>
+
+      <hr />
+
+      <ReminderPreviewPanel />
+    </div>
+  );
 }
 
 // Helper: validate URL is a proper http(s) string
@@ -1522,6 +1955,7 @@ export default function AdminSettings() {
               <TabsTrigger value="formulas" data-testid="tab-formulas">Formula Templates</TabsTrigger>
               <TabsTrigger value="email" data-testid="tab-email">Email Settings</TabsTrigger>
               <TabsTrigger value="workflow" data-testid="tab-workflow">Workflow</TabsTrigger>
+              <TabsTrigger value="invoice-reminders" data-testid="tab-invoice-reminders">Invoice Reminders</TabsTrigger>
             </TabsList>
 
             <TabsContent value="products" className="space-y-4">
@@ -4823,6 +5257,9 @@ export default function AdminSettings() {
             </TabsContent>
             <TabsContent value="workflow" className="space-y-4">
               <JobStatusSettings />
+            </TabsContent>
+            <TabsContent value="invoice-reminders" className="space-y-4">
+              <InvoiceRemindersTab />
             </TabsContent>
           </Tabs>
         </CardContent>
