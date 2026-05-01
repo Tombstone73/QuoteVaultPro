@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Search, Plus, FileText, DollarSign } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useInvoices } from "@/hooks/useInvoices";
+import { useInvoices, type InvoiceEmailStatus } from "@/hooks/useInvoices";
 import { format } from "date-fns";
 import { ROUTES } from "@/config/routes";
 import {
@@ -35,6 +35,12 @@ const statusLabels: Record<string, string> = {
   overdue: "Overdue",
   billed: "Billed",
   void: "Void",
+};
+
+const emailStatusMeta: Record<InvoiceEmailStatus, { label: string; variant: "muted" | "info" | "warning" }> = {
+  not_sent: { label: "Not Sent", variant: "muted" },
+  sent: { label: "Sent", variant: "info" },
+  outdated: { label: "Outdated", variant: "warning" },
 };
 
 export default function InvoicesListPage() {
@@ -161,6 +167,7 @@ export default function InvoicesListPage() {
                 <TitanTableHead>Issue Date</TitanTableHead>
                 <TitanTableHead>Due Date</TitanTableHead>
                 <TitanTableHead>Status</TitanTableHead>
+                <TitanTableHead>Last Sent</TitanTableHead>
                 <TitanTableHead className="text-right">Total</TitanTableHead>
                 <TitanTableHead className="text-right">Paid</TitanTableHead>
                 <TitanTableHead className="text-right">Balance</TitanTableHead>
@@ -168,11 +175,11 @@ export default function InvoicesListPage() {
               </TitanTableRow>
             </TitanTableHeader>
             <TitanTableBody>
-              {isLoading && <TitanTableLoading colSpan={8} message="Loading invoices..." />}
+              {isLoading && <TitanTableLoading colSpan={9} message="Loading invoices..." />}
               
               {!isLoading && filteredInvoices.length === 0 && (
                 <TitanTableEmpty
-                  colSpan={8}
+                  colSpan={9}
                   icon={<FileText className="w-12 h-12" />}
                   message="No invoices found"
                   action={
@@ -205,6 +212,14 @@ export default function InvoicesListPage() {
                     <StatusPill variant={getStatusVariant(invoice.status)}>
                       {statusLabels[invoice.status]}
                     </StatusPill>
+                  </TitanTableCell>
+                  <TitanTableCell>
+                    <div className="space-y-1">
+                      <div>{invoice.lastSentAt ? formatDate(invoice.lastSentAt) : "—"}</div>
+                      <StatusPill variant={emailStatusMeta[invoice.emailStatus].variant}>
+                        {emailStatusMeta[invoice.emailStatus].label}
+                      </StatusPill>
+                    </div>
                   </TitanTableCell>
                   <TitanTableCell className="text-right">{formatCurrency(invoice.total)}</TitanTableCell>
                   <TitanTableCell className="text-right">{formatCurrency(invoice.amountPaid)}</TitanTableCell>
