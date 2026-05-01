@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, companySettings, customers, invoiceLineItems, invoices, orders, organizations, payments, paymentWebhookEvents, users, manualPaymentMethodSchema } from "../../shared/schema";
-import { applyPayment, createInvoiceFromOrder, getInvoiceWithRelations, refreshInvoiceStatus } from "../invoicesService";
+import { applyPayment, createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, refreshInvoiceStatus } from "../invoicesService";
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
 import { getValidAccessTokenForOrganization, syncSingleInvoiceToQuickBooksForOrganization, syncSinglePaymentToQuickBooksForOrganization } from "../quickbooksService";
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "../../shared/rollups/invoicePaymentRollup";
@@ -1177,7 +1177,18 @@ export async function registerMvpInvoicingRoutes(
         .offset(offset)
         .orderBy(desc(invoices.issueDate));
 
-      res.json({ success: true, data: rows });
+      const emailStatuses = await getInvoiceEmailStatuses(
+        rows.map((row) => ({ id: row.id, updatedAt: row.updatedAt })),
+        organizationId,
+      );
+
+      res.json({
+        success: true,
+        data: rows.map((row) => ({
+          ...row,
+          ...(emailStatuses.get(row.id) || { lastSentAt: null, emailStatus: 'not_sent' as const }),
+        })),
+      });
     } catch (error: any) {
       console.error("Error fetching invoices:", error);
       res.status(500).json({ error: error.message || "Failed to fetch invoices" });
@@ -1193,7 +1204,9 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ error: "Invoice not found" });
       if ((rel.invoice as any).organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
 
-      res.json({ success: true, data: rel });
+      const emailTracking = await getInvoiceEmailStatus(req.params.id);
+
+      res.json({ success: true, data: { ...rel, invoice: { ...(rel.invoice as any), ...emailTracking } } });
     } catch (error: any) {
       console.error("Error fetching invoice:", error);
       res.status(500).json({ error: error.message || "Failed to fetch invoice" });
@@ -1959,30 +1972,50 @@ export async function registerMvpInvoicingRoutes(
 
       // Send email via email service
       console.log(`[Invoice Send] Sending email to ${recipientEmail} with PDF attachment...`);
-      await emailService.sendEmail(organizationId, {
-        to: recipientEmail,
-        subject: `Invoice #${invoiceNumber} from ${companyName}`,
-        html: emailHtml,
-        attachments: [
-          {
-            filename,
-            content: pdfBase64,
-            encoding: 'base64',
-            contentType: 'application/pdf',
-          },
-        ] as any,
-      });
+      const now = new Date();
+      let messageId: string | null = null;
+      try {
+        messageId = await emailService.sendEmail(organizationId, {
+          to: recipientEmail,
+          subject: `Invoice #${invoiceNumber} from ${companyName}`,
+          html: emailHtml,
+          attachments: [
+            {
+              filename,
+              content: pdfBase64,
+              encoding: 'base64',
+              contentType: 'application/pdf',
+            },
+          ] as any,
+        });
+
+        await createInvoiceEmailLog({
+          organizationId,
+          invoiceId: id,
+          recipientEmail,
+          status: 'sent',
+          messageId,
+          sentAt: now,
+        });
+      } catch (sendError: any) {
+        try {
+          await createInvoiceEmailLog({
+            organizationId,
+            invoiceId: id,
+            recipientEmail,
+            status: 'failed',
+            messageId: null,
+            sentAt: now,
+          });
+        } catch (logError) {
+          console.error('[Invoice Send] Failed to write failed email log:', logError);
+        }
+        throw sendError;
+      }
 
       console.log(`[Invoice Send] ✅ Email sent successfully to ${recipientEmail}`);
 
-      // Mark invoice as sent
-      const now = new Date();
       const invoiceVersion = Number(inv.invoiceVersion || 1);
-
-      await db
-        .update(invoices)
-        .set({ lastSentAt: now, lastSentVia: 'email', lastSentVersion: invoiceVersion, updatedAt: now } as any)
-        .where(eq(invoices.id, id));
 
       // Audit log
       try {
@@ -1995,7 +2028,7 @@ export async function registerMvpInvoicingRoutes(
           entityId: id,
           entityName: String(inv.invoiceNumber),
           description: `Invoice sent via email to ${recipientEmail}`,
-          newValues: { via: 'email', invoiceVersion, recipientEmail } as any,
+          newValues: { via: 'email', invoiceVersion, recipientEmail, messageId } as any,
           createdAt: now,
         } as any);
       } catch (auditError) {
@@ -2045,11 +2078,6 @@ export async function registerMvpInvoicingRoutes(
 
       const now = new Date();
       const invoiceVersion = Number(inv.invoiceVersion || 1);
-
-      await db
-        .update(invoices)
-        .set({ lastSentAt: now, lastSentVia: via, lastSentVersion: invoiceVersion, updatedAt: now } as any)
-        .where(eq(invoices.id, id));
 
       try {
         await db.insert(auditLogs).values({

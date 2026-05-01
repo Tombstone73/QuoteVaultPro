@@ -1,7 +1,7 @@
 import { db } from './db';
-import { invoices, invoiceLineItems, payments, orders, orderLineItems, globalVariables } from '../shared/schema';
-import { eq, and, sql } from 'drizzle-orm';
-import { InsertInvoice, InsertInvoiceLineItem, InsertPayment } from '../shared/schema';
+import { invoices, invoiceEmailLogs, invoiceLineItems, payments, orders, orderLineItems, globalVariables } from '../shared/schema';
+import { eq, and, inArray, sql } from 'drizzle-orm';
+import { InsertInvoice, InsertInvoiceEmailLog, InsertInvoiceLineItem, InsertPayment } from '../shared/schema';
 import { computeInvoicePaymentRollup } from '../shared/rollups/invoicePaymentRollup';
 
 // Map payment terms to days offset
@@ -12,6 +12,87 @@ const TERM_OFFSETS: Record<string, number> = {
   net_45: 45,
   custom: 0,
 };
+
+export type InvoiceEmailStatus = 'not_sent' | 'sent' | 'outdated';
+
+export function deriveInvoiceEmailStatus(updatedAt: Date | string | null | undefined, lastSentAt: Date | string | null | undefined): InvoiceEmailStatus {
+  if (!lastSentAt) {
+    return 'not_sent';
+  }
+
+  const updatedAtMs = updatedAt ? new Date(updatedAt).getTime() : 0;
+  const lastSentAtMs = new Date(lastSentAt).getTime();
+  return updatedAtMs > lastSentAtMs ? 'outdated' : 'sent';
+}
+
+export async function createInvoiceEmailLog(input: InsertInvoiceEmailLog): Promise<void> {
+  await db.insert(invoiceEmailLogs).values(input as any);
+}
+
+export async function getInvoiceEmailStatus(invoiceId: string): Promise<{ lastSentAt: Date | null; emailStatus: InvoiceEmailStatus }> {
+  const [invoice] = await db
+    .select({ updatedAt: invoices.updatedAt })
+    .from(invoices)
+    .where(eq(invoices.id, invoiceId))
+    .limit(1);
+
+  if (!invoice) {
+    throw new Error('Invoice not found');
+  }
+
+  const [latestSent] = await db
+    .select({ lastSentAt: sql<Date>`MAX(${invoiceEmailLogs.sentAt})` })
+    .from(invoiceEmailLogs)
+    .where(and(eq(invoiceEmailLogs.invoiceId, invoiceId), eq(invoiceEmailLogs.status, 'sent')));
+
+  const lastSentAt = latestSent?.lastSentAt ? new Date(latestSent.lastSentAt) : null;
+  return {
+    lastSentAt,
+    emailStatus: deriveInvoiceEmailStatus(invoice.updatedAt, lastSentAt),
+  };
+}
+
+export async function getInvoiceEmailStatuses(
+  invoiceRows: Array<{ id: string; updatedAt: Date | string | null | undefined }>,
+  organizationId?: string,
+): Promise<Map<string, { lastSentAt: Date | null; emailStatus: InvoiceEmailStatus }>> {
+  const result = new Map<string, { lastSentAt: Date | null; emailStatus: InvoiceEmailStatus }>();
+  if (invoiceRows.length === 0) {
+    return result;
+  }
+
+  const invoiceIds = invoiceRows.map((row) => row.id);
+  const conditions: any[] = [
+    inArray(invoiceEmailLogs.invoiceId, invoiceIds),
+    eq(invoiceEmailLogs.status, 'sent'),
+  ];
+  if (organizationId) {
+    conditions.push(eq(invoiceEmailLogs.organizationId, organizationId));
+  }
+
+  const latestSentRows = await db
+    .select({
+      invoiceId: invoiceEmailLogs.invoiceId,
+      lastSentAt: sql<Date>`MAX(${invoiceEmailLogs.sentAt})`,
+    })
+    .from(invoiceEmailLogs)
+    .where(and(...conditions))
+    .groupBy(invoiceEmailLogs.invoiceId);
+
+  const lastSentByInvoiceId = new Map(
+    latestSentRows.map((row) => [row.invoiceId, row.lastSentAt ? new Date(row.lastSentAt) : null]),
+  );
+
+  for (const row of invoiceRows) {
+    const lastSentAt = lastSentByInvoiceId.get(row.id) ?? null;
+    result.set(row.id, {
+      lastSentAt,
+      emailStatus: deriveInvoiceEmailStatus(row.updatedAt, lastSentAt),
+    });
+  }
+
+  return result;
+}
 
 export async function generateNextInvoiceNumber(organizationId: string, tx?: any): Promise<number> {
   const dbConn = tx || db;
@@ -216,7 +297,8 @@ export async function getInvoiceWithRelations(id: string) {
     .select()
     .from(payments)
     .where(and(eq(payments.invoiceId, id), eq(payments.organizationId, (invoice as any).organizationId)));
-  return { invoice, lineItems, payments: paymentRows };
+  const emailTracking = await getInvoiceEmailStatus(id);
+  return { invoice: { ...invoice, ...emailTracking }, lineItems, payments: paymentRows };
 }
 
 export async function applyPayment(invoiceId: string, userId: string, data: { amount: number; method: string; notes?: string }) {
