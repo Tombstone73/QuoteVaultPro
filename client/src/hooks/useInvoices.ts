@@ -1,8 +1,20 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Invoice, Payment, InvoiceLineItem } from '@shared/schema';
 
+export type InvoiceEmailStatus = 'not_sent' | 'sent' | 'outdated';
+
+export interface InvoiceListItem extends Omit<Invoice, 'lastSentAt'> {
+  lastSentAt: string | null;
+  emailStatus: InvoiceEmailStatus;
+}
+
+export interface InvoiceWithEmailTracking extends Omit<Invoice, 'lastSentAt'> {
+  lastSentAt?: string | null;
+  emailStatus?: InvoiceEmailStatus;
+}
+
 interface InvoiceWithRelations {
-  invoice: Invoice;
+  invoice: InvoiceWithEmailTracking;
   lineItems: InvoiceLineItem[];
   payments: Payment[];
 }
@@ -13,7 +25,7 @@ export interface InvoicePaymentWithCreatedBy extends Payment {
 
 // List invoices
 export function useInvoices(filters?: { status?: string; customerId?: string; orderId?: string }) {
-  return useQuery({
+  return useQuery<InvoiceListItem[]>({
     queryKey: ['invoices', filters],
     queryFn: async () => {
       const params = new URLSearchParams();
@@ -23,7 +35,7 @@ export function useInvoices(filters?: { status?: string; customerId?: string; or
       const res = await fetch(`/api/invoices?${params}`, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch invoices');
       const data = await res.json();
-      return data.data as Invoice[];
+      return data.data as InvoiceListItem[];
     },
   });
 }

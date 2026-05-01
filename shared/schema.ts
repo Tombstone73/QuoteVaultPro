@@ -3480,6 +3480,84 @@ export type InsertInvoice = z.infer<typeof insertInvoiceSchema>;
 export type UpdateInvoice = z.infer<typeof updateInvoiceSchema>;
 export type Invoice = typeof invoices.$inferSelect;
 
+export const invoiceEmailLogs = pgTable("invoice_email_logs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: 'cascade' }),
+  recipientEmail: text("recipient_email").notNull(),
+  status: text("status").notNull().default('sent'),
+  messageId: text("message_id"),
+  sentAt: timestamp("sent_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("invoice_email_logs_organization_id_idx").on(table.organizationId),
+  index("invoice_email_logs_invoice_id_idx").on(table.invoiceId),
+  index("invoice_email_logs_invoice_sent_at_idx").on(table.invoiceId, table.sentAt),
+  index("invoice_email_logs_org_invoice_idx").on(table.organizationId, table.invoiceId),
+]);
+
+export const insertInvoiceEmailLogSchema = createInsertSchema(invoiceEmailLogs).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  status: z.enum(['sent', 'failed']).default('sent'),
+  sentAt: z.preprocess((val) => val ? new Date(val as any) : new Date(), z.date()),
+});
+
+export type InsertInvoiceEmailLog = z.infer<typeof insertInvoiceEmailLogSchema>;
+export type InvoiceEmailLog = typeof invoiceEmailLogs.$inferSelect;
+
+export const invoiceReminderLogs = pgTable("invoice_reminder_logs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: 'cascade' }),
+  reminderNumber: integer("reminder_number").notNull(),
+  sentAt: timestamp("sent_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("invoice_reminder_logs_invoice_sent_at_idx").on(table.invoiceId, table.sentAt),
+]);
+
+export const insertInvoiceReminderLogSchema = createInsertSchema(invoiceReminderLogs).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  reminderNumber: z.number().int().positive(),
+  sentAt: z.preprocess((val) => val ? new Date(val as any) : new Date(), z.date()),
+});
+
+export type InsertInvoiceReminderLog = z.infer<typeof insertInvoiceReminderLogSchema>;
+export type InvoiceReminderLog = typeof invoiceReminderLogs.$inferSelect;
+
+export const invoiceReminderSettings = pgTable("invoice_reminder_settings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  enabled: boolean("enabled").notNull().default(false),
+  firstReminderDaysAfterDue: integer("first_reminder_days_after_due"),
+  repeatIntervalDays: integer("repeat_interval_days"),
+  maxReminders: integer("max_reminders"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("invoice_reminder_settings_organization_id_uidx").on(table.organizationId),
+]);
+
+export const insertInvoiceReminderSettingsSchema = createInsertSchema(invoiceReminderSettings).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  enabled: z.boolean().optional().default(false),
+  firstReminderDaysAfterDue: z.number().int().optional().nullable(),
+  repeatIntervalDays: z.number().int().optional().nullable(),
+  maxReminders: z.number().int().optional().nullable(),
+});
+
+export const updateInvoiceReminderSettingsSchema = insertInvoiceReminderSettingsSchema.partial();
+export type InsertInvoiceReminderSettings = z.infer<typeof insertInvoiceReminderSettingsSchema>;
+export type UpdateInvoiceReminderSettings = z.infer<typeof updateInvoiceReminderSettingsSchema>;
+export type InvoiceReminderSettings = typeof invoiceReminderSettings.$inferSelect;
+
 // Invoice Line Items snapshot table
 export const invoiceLineItems = pgTable("invoice_line_items", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -4853,8 +4931,24 @@ export const invoicesRelations = relations(invoices, ({ one, many }) => ({
     fields: [invoices.createdByUserId],
     references: [users.id],
   }),
+  emailLogs: many(invoiceEmailLogs),
+  reminderLogs: many(invoiceReminderLogs),
   lineItems: many(invoiceLineItems),
   payments: many(payments),
+}));
+
+export const invoiceEmailLogsRelations = relations(invoiceEmailLogs, ({ one }) => ({
+  invoice: one(invoices, {
+    fields: [invoiceEmailLogs.invoiceId],
+    references: [invoices.id],
+  }),
+}));
+
+export const invoiceReminderLogsRelations = relations(invoiceReminderLogs, ({ one }) => ({
+  invoice: one(invoices, {
+    fields: [invoiceReminderLogs.invoiceId],
+    references: [invoices.id],
+  }),
 }));
 
 export const invoiceLineItemsRelations = relations(invoiceLineItems, ({ one }) => ({
