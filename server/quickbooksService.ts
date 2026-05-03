@@ -2105,6 +2105,8 @@ export type QBInvoicePreviewRow = {
   localInvoiceId: string | null;
   canImport: boolean;
   cannotImportReason?: string;
+  customerPoNumber: string | null;
+  customerPoSource: string | null;
 };
 
 /**
@@ -2112,6 +2114,89 @@ export type QBInvoicePreviewRow = {
  */
 function classifyQBInvoice(qbInvoice: any): 'open_ar' | 'historical' {
   return Number(qbInvoice.Balance ?? 0) > 0 ? 'open_ar' : 'historical';
+}
+
+/**
+ * Custom field names that indicate a customer PO number.
+ * Checked case-insensitively and after normalizing internal whitespace.
+ */
+const QB_PO_FIELD_NAMES = new Set([
+  'po', 'p.o.', 'po number', 'p.o. number',
+  'purchase order', 'purchase order number',
+  'customer po', 'customer po number',
+  'client po', 'buyer po',
+]);
+
+/**
+ * Conservative regex for extracting a PO value from free-text fields.
+ *
+ * Matches: PO, P.O., Purchase Order [Number], Customer PO [Number], Client PO, Buyer PO
+ * Separator: colon, hash, or whitespace (e.g. "PO: 123", "PO# 123", "PO 123")
+ * Value: alphanumeric, hyphens, slashes — 1-50 chars
+ *
+ * Does NOT match bare numbers or non-PO-labelled text.
+ */
+const QB_PO_TEXT_PATTERN = /(?:PO|P\.O\.|Purchase\s+Order(?:\s+Number)?|Customer\s+PO(?:\s+Number)?|Client\s+PO|Buyer\s+PO)\s*[:#\s]\s*([A-Za-z0-9\-\/]{1,50})/i;
+
+/**
+ * Extract a customer PO number from a QB invoice.
+ *
+ * Extraction order:
+ *   A. CustomField array  — look for fields with PO-matching names
+ *   B. PrivateNote        — conservative regex on free text
+ *   C. CustomerMemo       — conservative regex on free text
+ *   D. Line descriptions  — conservative regex; last resort only
+ *
+ * Returns { poNumber, source } or { null, null } if nothing found.
+ * Never logs raw invoice payloads; logs only the extracted value in debug mode.
+ */
+export function extractQBInvoiceCustomerPo(qbInvoice: any): { poNumber: string | null; source: string | null } {
+  // A. CustomField
+  if (Array.isArray(qbInvoice.CustomField)) {
+    for (const field of qbInvoice.CustomField) {
+      const name = String(field.Name ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+      if (QB_PO_FIELD_NAMES.has(name)) {
+        const value = String(field.StringValue ?? '').trim();
+        if (value) {
+          return { poNumber: value.slice(0, 100), source: 'custom_field' };
+        }
+      }
+    }
+  }
+
+  // B. PrivateNote
+  const privateNote = String(qbInvoice.PrivateNote ?? '').trim();
+  if (privateNote) {
+    const m = privateNote.match(QB_PO_TEXT_PATTERN);
+    if (m?.[1]) {
+      return { poNumber: m[1].trim().slice(0, 100), source: 'private_note' };
+    }
+  }
+
+  // C. CustomerMemo
+  const customerMemoValue = qbInvoice.CustomerMemo?.value ?? qbInvoice.CustomerMemo ?? '';
+  const customerMemo = String(customerMemoValue).trim();
+  if (customerMemo) {
+    const m = customerMemo.match(QB_PO_TEXT_PATTERN);
+    if (m?.[1]) {
+      return { poNumber: m[1].trim().slice(0, 100), source: 'customer_memo' };
+    }
+  }
+
+  // D. Line descriptions (last resort — only explicit PO labels)
+  if (Array.isArray(qbInvoice.Line)) {
+    for (const line of qbInvoice.Line) {
+      const desc = String(line.Description ?? line.SalesItemLineDetail?.ServiceDate ?? '').trim();
+      if (desc) {
+        const m = desc.match(QB_PO_TEXT_PATTERN);
+        if (m?.[1]) {
+          return { poNumber: m[1].trim().slice(0, 100), source: 'line_description' };
+        }
+      }
+    }
+  }
+
+  return { poNumber: null, source: null };
 }
 
 /**
@@ -2150,6 +2235,7 @@ export async function fetchQBInvoicesForPreview(organizationId: string): Promise
     const localCustomer = qbCustomerRefId ? (customerByQBId.get(qbCustomerRefId) ?? null) : null;
     const alreadyImported = invoiceByQBId.has(qbInvoice.Id);
     const classification = classifyQBInvoice(qbInvoice);
+    const { poNumber: customerPoNumber, source: customerPoSource } = extractQBInvoiceCustomerPo(qbInvoice);
 
     let canImport = true;
     let cannotImportReason: string | undefined;
@@ -2174,6 +2260,8 @@ export async function fetchQBInvoicesForPreview(organizationId: string): Promise
       localInvoiceId: invoiceByQBId.get(qbInvoice.Id) ?? null,
       canImport,
       cannotImportReason,
+      customerPoNumber,
+      customerPoSource,
     };
   });
 }
@@ -2188,6 +2276,11 @@ export async function fetchQBInvoicesForPreview(organizationId: string): Promise
  *   - Line items are NOT imported into invoice_line_items (production-coupled table);
  *     the raw QB Line array is stored as qbLineItemsSnapshot on the invoice row.
  *   - createdByUserId must be supplied by the caller (the admin user from req.user).
+ *
+ * PO preservation rules on update:
+ *   - If existing invoice has a manually-entered PO (importSource != 'quickbooks') → keep it.
+ *   - If existing invoice is QB-imported and QB now provides a PO → update it.
+ *   - If existing invoice is QB-imported and QB provides null PO → leave existing PO as-is.
  */
 export async function importQBInvoicesByIds(
   organizationId: string,
@@ -2218,6 +2311,7 @@ export async function importQBInvoicesByIds(
       const taxAmt = Number(qbInvoice.TxnTaxDetail?.TotalTax ?? 0);
       const qbCustomerRefId: string | null = qbInvoice.CustomerRef?.value ?? null;
       const lineItemsSnapshot: any[] | null = Array.isArray(qbInvoice.Line) ? qbInvoice.Line : null;
+      const { poNumber: extractedPo, source: extractedPoSource } = extractQBInvoiceCustomerPo(qbInvoice);
 
       // Find local customer (org-scoped)
       let localCustomerId: string | null = null;
@@ -2245,8 +2339,9 @@ export async function importQBInvoicesByIds(
       const lockedReason = isHistorical ? 'historical_import' : null;
 
       // Check for existing invoice (by QB Invoice Id, org-scoped)
+      // Fetch customerPoNumber and importSource to apply PO preservation rules.
       const [existing] = await db
-        .select({ id: invoices.id })
+        .select({ id: invoices.id, customerPoNumber: invoices.customerPoNumber, importSource: invoices.importSource })
         .from(invoices)
         .where(and(
           eq(invoices.organizationId, organizationId),
@@ -2255,6 +2350,13 @@ export async function importQBInvoicesByIds(
         .limit(1);
 
       if (existing) {
+        // PO preservation: only update PO if QB has a value AND (invoice is QB-imported OR had no PO before)
+        const isQBImported = existing.importSource === 'quickbooks';
+        const existingHasPo = !!existing.customerPoNumber;
+        const shouldUpdatePo = extractedPo !== null && (isQBImported || !existingHasPo);
+        const newPoNumber = shouldUpdatePo ? extractedPo : existing.customerPoNumber ?? null;
+        const newPoSource = shouldUpdatePo ? extractedPoSource : null;
+
         await db
           .update(invoices)
           .set({
@@ -2272,6 +2374,8 @@ export async function importQBInvoicesByIds(
             qbDocNumber: qbInvoice.DocNumber ?? null,
             qbLineItemsSnapshot: lineItemsSnapshot,
             lockedReason,
+            customerPoNumber: newPoNumber,
+            qbPoSource: newPoSource,
             updatedAt: new Date(),
           })
           .where(eq(invoices.id, existing.id));
@@ -2306,6 +2410,8 @@ export async function importQBInvoicesByIds(
           qbDocNumber: qbInvoice.DocNumber ?? null,
           qbLineItemsSnapshot: lineItemsSnapshot,
           lockedReason,
+          customerPoNumber: extractedPo,
+          qbPoSource: extractedPoSource,
           createdByUserId,
         });
         result.created++;

@@ -302,6 +302,13 @@
       "when": 1778371200000,
       "tag": "0042_invoice_import_flags",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1778457600000,
+      "tag": "0043_invoice_customer_po_number",
+      "breakpoints": true
     }
   ]
 }

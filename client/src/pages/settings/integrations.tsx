@@ -118,6 +118,8 @@ type QBInvoicePreviewRow = {
   localInvoiceId: string | null;
   canImport: boolean;
   cannotImportReason?: string;
+  customerPoNumber: string | null;
+  customerPoSource: string | null;
 };
 
 type QBInvoiceImportResult = {
@@ -777,6 +779,7 @@ export default function SettingsIntegrations() {
                             <TableHead className="text-xs">Date</TableHead>
                             <TableHead className="text-xs">Total</TableHead>
                             <TableHead className="text-xs">Balance</TableHead>
+                            <TableHead className="text-xs">Customer PO</TableHead>
                             <TableHead className="text-xs">Type</TableHead>
                             <TableHead className="text-xs">Status</TableHead>
                           </TableRow>
@@ -810,6 +813,12 @@ export default function SettingsIntegrations() {
                               <TableCell className="text-xs">{row.txnDate}</TableCell>
                               <TableCell className="text-xs">${row.totalAmt.toFixed(2)}</TableCell>
                               <TableCell className="text-xs">${row.balance.toFixed(2)}</TableCell>
+                              <TableCell className="text-xs">
+                                {row.customerPoNumber
+                                  ? <span title={`Source: ${row.customerPoSource ?? 'unknown'}`}>{row.customerPoNumber}</span>
+                                  : <span className="text-muted-foreground italic">No PO detected</span>
+                                }
+                              </TableCell>
                               <TableCell className="text-xs">
                                 <Badge variant={row.classification === 'open_ar' ? 'default' : 'secondary'} className="text-xs">
                                   {row.classification === 'open_ar' ? 'Open A/R' : 'Historical'}
