@@ -3513,9 +3513,16 @@ export const invoiceReminderLogs = pgTable("invoice_reminder_logs", {
   invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: 'cascade' }),
   reminderNumber: integer("reminder_number").notNull(),
   sentAt: timestamp("sent_at", { withTimezone: true }).notNull(),
+  // Added in migration 0039
+  status: text("status").notNull().default('sent'), // 'sent' | 'failed'
+  recipientEmail: text("recipient_email"),
+  messageId: text("message_id"),
+  failureReason: text("failure_reason"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   index("invoice_reminder_logs_invoice_sent_at_idx").on(table.invoiceId, table.sentAt),
+  index("invoice_reminder_logs_org_sent_at_idx").on(table.organizationId, table.sentAt),
+  index("invoice_reminder_logs_status_idx").on(table.organizationId, table.invoiceId, table.status),
 ]);
 
 export const insertInvoiceReminderLogSchema = createInsertSchema(invoiceReminderLogs).omit({
@@ -3524,6 +3531,10 @@ export const insertInvoiceReminderLogSchema = createInsertSchema(invoiceReminder
 }).extend({
   reminderNumber: z.number().int().positive(),
   sentAt: z.preprocess((val) => val ? new Date(val as any) : new Date(), z.date()),
+  status: z.enum(['sent', 'failed']).default('sent'),
+  recipientEmail: z.string().optional().nullable(),
+  messageId: z.string().optional().nullable(),
+  failureReason: z.string().optional().nullable(),
 });
 
 export type InsertInvoiceReminderLog = z.infer<typeof insertInvoiceReminderLogSchema>;
