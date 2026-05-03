@@ -2,9 +2,10 @@ import OAuthClient from 'intuit-oauth';
 import crypto from 'crypto';
 import { db } from './db';
 import { oauthConnections, accountingSyncJobs, customers, customerContacts, invoices, orders, payments, invoiceLineItems, type OAuthConnection } from '../shared/schema';
-import { eq, and, desc, or, isNull, sql } from 'drizzle-orm';
+import { eq, and, desc, or, isNull, isNotNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
 import { DEFAULT_ORGANIZATION_ID } from './tenantContext';
+import { generateNextInvoiceNumber } from './invoicesService';
 
 // Initialize QuickBooks OAuth client
 const getOAuthClient = (): any => {
@@ -2084,4 +2085,240 @@ export async function processPushOrders(jobId: string): Promise<void> {
       .where(eq(accountingSyncJobs.id, jobId));
     throw error;
   }
+}
+
+// ==================== QB Invoice Preview & Import ====================
+
+export type QBInvoicePreviewRow = {
+  qbInvoiceId: string;
+  qbDocNumber: string;
+  customerRefName: string;
+  qbCustomerRefId: string | null;
+  localCustomerId: string | null;
+  localCustomerName: string | null;
+  txnDate: string;
+  dueDate: string | null;
+  totalAmt: number;
+  balance: number;
+  classification: 'open_ar' | 'historical';
+  alreadyImported: boolean;
+  localInvoiceId: string | null;
+  canImport: boolean;
+  cannotImportReason?: string;
+};
+
+/**
+ * Classify a QB invoice as open A/R or historical based on its balance.
+ */
+function classifyQBInvoice(qbInvoice: any): 'open_ar' | 'historical' {
+  return Number(qbInvoice.Balance ?? 0) > 0 ? 'open_ar' : 'historical';
+}
+
+/**
+ * Fetch all QB invoices and return a preview with local match status.
+ * Read-only — no writes to any table.
+ */
+export async function fetchQBInvoicesForPreview(organizationId: string): Promise<QBInvoicePreviewRow[]> {
+  const query = 'SELECT * FROM Invoice MAXRESULTS 1000';
+  const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
+  const qbInvoices: any[] = response.QueryResponse?.Invoice || [];
+
+  // All QB-linked local customers for this org
+  const localCustomers = await db
+    .select({ id: customers.id, companyName: customers.companyName, externalAccountingId: customers.externalAccountingId })
+    .from(customers)
+    .where(and(
+      eq(customers.organizationId, organizationId),
+      isNotNull(customers.externalAccountingId),
+    ));
+
+  const customerByQBId = new Map(localCustomers.map(c => [c.externalAccountingId!, c]));
+
+  // All QB-linked local invoices for this org
+  const localInvoices = await db
+    .select({ id: invoices.id, externalAccountingId: invoices.externalAccountingId })
+    .from(invoices)
+    .where(and(
+      eq(invoices.organizationId, organizationId),
+      isNotNull(invoices.externalAccountingId),
+    ));
+
+  const invoiceByQBId = new Map(localInvoices.map(i => [i.externalAccountingId!, i.id]));
+
+  return qbInvoices.map((qbInvoice): QBInvoicePreviewRow => {
+    const qbCustomerRefId: string | null = qbInvoice.CustomerRef?.value ?? null;
+    const localCustomer = qbCustomerRefId ? (customerByQBId.get(qbCustomerRefId) ?? null) : null;
+    const alreadyImported = invoiceByQBId.has(qbInvoice.Id);
+    const classification = classifyQBInvoice(qbInvoice);
+
+    let canImport = true;
+    let cannotImportReason: string | undefined;
+    if (!localCustomer) {
+      canImport = false;
+      cannotImportReason = 'No matching local customer — pull customers first';
+    }
+
+    return {
+      qbInvoiceId: qbInvoice.Id,
+      qbDocNumber: qbInvoice.DocNumber ?? '',
+      customerRefName: qbInvoice.CustomerRef?.name ?? '',
+      qbCustomerRefId,
+      localCustomerId: localCustomer?.id ?? null,
+      localCustomerName: localCustomer?.companyName ?? null,
+      txnDate: qbInvoice.TxnDate ?? '',
+      dueDate: qbInvoice.DueDate ?? null,
+      totalAmt: Number(qbInvoice.TotalAmt ?? 0),
+      balance: Number(qbInvoice.Balance ?? 0),
+      classification,
+      alreadyImported,
+      localInvoiceId: invoiceByQBId.get(qbInvoice.Id) ?? null,
+      canImport,
+      cannotImportReason,
+    };
+  });
+}
+
+/**
+ * Import a list of QB invoices (identified by QB Invoice Id) into TitanOS.
+ *
+ * Safety contract:
+ *   - Does NOT create orders, production jobs, or any workflow records.
+ *   - Does NOT trigger invoice email send or reminder logic.
+ *   - Does NOT enqueue a QB push sync for the imported invoices.
+ *   - Line items are NOT imported into invoice_line_items (production-coupled table);
+ *     the raw QB Line array is stored as qbLineItemsSnapshot on the invoice row.
+ *   - createdByUserId must be supplied by the caller (the admin user from req.user).
+ */
+export async function importQBInvoicesByIds(
+  organizationId: string,
+  qbInvoiceIds: string[],
+  mode: 'auto' | 'open_ar' | 'historical',
+  createdByUserId: string,
+): Promise<{ created: number; updated: number; skipped: number; errors: string[] }> {
+  const result = { created: 0, updated: 0, skipped: 0, errors: [] as string[] };
+
+  if (qbInvoiceIds.length === 0) return result;
+
+  // Fetch the specified invoices from QB (QB query API supports WHERE Id IN (...))
+  const idList = qbInvoiceIds.map(id => `'${String(id).replace(/'/g, '')}'`).join(', ');
+  const query = `SELECT * FROM Invoice WHERE Id IN (${idList}) MAXRESULTS 200`;
+  const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
+  const qbInvoices: any[] = response.QueryResponse?.Invoice || [];
+
+  if (qbLogsEnabled()) {
+    console.log(`[QB Import Invoices] Requested ${qbInvoiceIds.length} IDs, QB returned ${qbInvoices.length}`, { organizationId });
+  }
+
+  for (const qbInvoice of qbInvoices) {
+    try {
+      const classification: 'open_ar' | 'historical' = mode === 'auto' ? classifyQBInvoice(qbInvoice) : mode;
+      const isHistorical = classification === 'historical';
+      const balance = Number(qbInvoice.Balance ?? 0);
+      const totalAmt = Number(qbInvoice.TotalAmt ?? 0);
+      const taxAmt = Number(qbInvoice.TxnTaxDetail?.TotalTax ?? 0);
+      const qbCustomerRefId: string | null = qbInvoice.CustomerRef?.value ?? null;
+      const lineItemsSnapshot: any[] | null = Array.isArray(qbInvoice.Line) ? qbInvoice.Line : null;
+
+      // Find local customer (org-scoped)
+      let localCustomerId: string | null = null;
+      if (qbCustomerRefId) {
+        const [match] = await db
+          .select({ id: customers.id })
+          .from(customers)
+          .where(and(
+            eq(customers.organizationId, organizationId),
+            eq(customers.externalAccountingId, qbCustomerRefId),
+          ))
+          .limit(1);
+        localCustomerId = match?.id ?? null;
+      }
+
+      if (!localCustomerId) {
+        result.skipped++;
+        result.errors.push(`Invoice ${qbInvoice.DocNumber ?? qbInvoice.Id}: no local customer for QB customer ${qbCustomerRefId}`);
+        continue;
+      }
+
+      const status = isHistorical ? 'paid' : (balance > 0 ? 'billed' : 'paid');
+      const issueDate = qbInvoice.TxnDate ? new Date(qbInvoice.TxnDate) : new Date();
+      const dueDate = qbInvoice.DueDate ? new Date(qbInvoice.DueDate) : null;
+      const lockedReason = isHistorical ? 'historical_import' : null;
+
+      // Check for existing invoice (by QB Invoice Id, org-scoped)
+      const [existing] = await db
+        .select({ id: invoices.id })
+        .from(invoices)
+        .where(and(
+          eq(invoices.organizationId, organizationId),
+          eq(invoices.externalAccountingId, qbInvoice.Id),
+        ))
+        .limit(1);
+
+      if (existing) {
+        await db
+          .update(invoices)
+          .set({
+            customerId: localCustomerId,
+            status,
+            issueDate,
+            dueDate,
+            subtotal: totalAmt.toFixed(2),
+            tax: taxAmt.toFixed(2),
+            total: totalAmt.toFixed(2),
+            balanceDue: balance.toFixed(2),
+            importSource: 'quickbooks',
+            isHistorical,
+            qbImportBalanceDue: balance.toFixed(2),
+            qbDocNumber: qbInvoice.DocNumber ?? null,
+            qbLineItemsSnapshot: lineItemsSnapshot,
+            lockedReason,
+            updatedAt: new Date(),
+          })
+          .where(eq(invoices.id, existing.id));
+        result.updated++;
+      } else {
+        const invoiceNumber = await generateNextInvoiceNumber(organizationId);
+
+        await db.insert(invoices).values({
+          organizationId,
+          invoiceNumber,
+          customerId: localCustomerId,
+          status,
+          issueDate,
+          dueDate,
+          subtotal: totalAmt.toFixed(2),
+          tax: taxAmt.toFixed(2),
+          total: totalAmt.toFixed(2),
+          subtotalCents: Math.round(totalAmt * 100),
+          taxCents: Math.round(taxAmt * 100),
+          totalCents: Math.round(totalAmt * 100),
+          currency: 'USD',
+          balanceDue: balance.toFixed(2),
+          externalAccountingId: qbInvoice.Id,
+          qbInvoiceId: qbInvoice.Id,
+          // Already in QB — do not enqueue a push back to QB
+          qbSyncStatus: 'synced',
+          syncStatus: 'synced',
+          importSource: 'quickbooks',
+          isHistorical,
+          qbImportBalanceDue: balance.toFixed(2),
+          importedAt: new Date(),
+          qbDocNumber: qbInvoice.DocNumber ?? null,
+          qbLineItemsSnapshot: lineItemsSnapshot,
+          lockedReason,
+          createdByUserId,
+        });
+        result.created++;
+      }
+    } catch (error: any) {
+      console.error(`[QB Import Invoices] Error on invoice ${qbInvoice.DocNumber ?? qbInvoice.Id}:`, {
+        organizationId,
+        message: error.message,
+      });
+      result.errors.push(`Invoice ${qbInvoice.DocNumber ?? qbInvoice.Id}: ${error.message}`);
+    }
+  }
+
+  console.log(`[QB Import Invoices] Done — created: ${result.created}, updated: ${result.updated}, skipped: ${result.skipped}, errors: ${result.errors.length}`, { organizationId });
+  return result;
 }

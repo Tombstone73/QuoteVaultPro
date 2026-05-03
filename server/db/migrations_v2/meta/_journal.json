@@ -295,6 +295,13 @@
       "when": 1778284800000,
       "tag": "0041_contact_qb_source_tracking",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1778371200000,
+      "tag": "0042_invoice_import_flags",
+      "breakpoints": true
     }
   ]
 }

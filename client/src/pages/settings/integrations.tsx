@@ -102,6 +102,31 @@ type StripeStatusEnvelope = {
   error?: string;
 };
 
+type QBInvoicePreviewRow = {
+  qbInvoiceId: string;
+  qbDocNumber: string;
+  customerRefName: string;
+  qbCustomerRefId: string | null;
+  localCustomerId: string | null;
+  localCustomerName: string | null;
+  txnDate: string;
+  dueDate: string | null;
+  totalAmt: number;
+  balance: number;
+  classification: 'open_ar' | 'historical';
+  alreadyImported: boolean;
+  localInvoiceId: string | null;
+  canImport: boolean;
+  cannotImportReason?: string;
+};
+
+type QBInvoiceImportResult = {
+  created: number;
+  updated: number;
+  skipped: number;
+  errors: string[];
+};
+
 export default function SettingsIntegrations() {
   const { user, isAdmin } = useAuth();
   const { toast } = useToast();
@@ -123,6 +148,12 @@ export default function SettingsIntegrations() {
   const [importCsvText, setImportCsvText] = useState<string>('');
   const [importFilename, setImportFilename] = useState<string>('');
   const [lastImportJobId, setLastImportJobId] = useState<string>('');
+
+  // QB invoice preview/import state
+  const [invoicePreview, setInvoicePreview] = useState<QBInvoicePreviewRow[] | null>(null);
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+  const [selectedQBIds, setSelectedQBIds] = useState<Set<string>>(new Set());
+  const [isImportingInvoices, setIsImportingInvoices] = useState(false);
 
   const handleImportFile = async (file: File | null) => {
     if (!file) return;
@@ -354,6 +385,63 @@ export default function SettingsIntegrations() {
 
   const handleSync = (direction: 'pull' | 'push', resources: string[]) => {
     syncMutation.mutate({ direction, resources });
+  };
+
+  const handlePreviewInvoices = async () => {
+    setIsLoadingPreview(true);
+    setInvoicePreview(null);
+    setSelectedQBIds(new Set());
+    try {
+      const response = await fetch('/api/integrations/quickbooks/import-preview/invoices', {
+        credentials: 'include',
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data?.success === false) {
+        throw new Error(data?.error || 'Failed to fetch invoice preview');
+      }
+      const rows: QBInvoicePreviewRow[] = data.data ?? [];
+      setInvoicePreview(rows);
+      // Auto-select all importable, not-yet-imported rows
+      const autoSelected = new Set<string>(
+        rows.filter(r => r.canImport && !r.alreadyImported).map(r => r.qbInvoiceId)
+      );
+      setSelectedQBIds(autoSelected);
+    } catch (error: any) {
+      toast({ title: 'Preview failed', description: error.message, variant: 'destructive' });
+    } finally {
+      setIsLoadingPreview(false);
+    }
+  };
+
+  const handleImportInvoices = async (mode: 'open_ar' | 'historical') => {
+    if (selectedQBIds.size === 0) {
+      toast({ title: 'Nothing selected', description: 'Select invoices to import first.', variant: 'destructive' });
+      return;
+    }
+    setIsImportingInvoices(true);
+    try {
+      const response = await fetch('/api/integrations/quickbooks/import/invoices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ quickBooksInvoiceIds: Array.from(selectedQBIds), mode }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data?.success === false) {
+        throw new Error(data?.error || 'Import failed');
+      }
+      const r: QBInvoiceImportResult = data.data ?? { created: 0, updated: 0, skipped: 0, errors: [] };
+      toast({
+        title: 'Invoice import complete',
+        description: `Created: ${r.created}, Updated: ${r.updated}, Skipped: ${r.skipped}${r.errors.length > 0 ? `, Errors: ${r.errors.length}` : ''}`,
+      });
+      // Refresh preview to reflect newly-imported status
+      await handlePreviewInvoices();
+    } catch (error: any) {
+      toast({ title: 'Import failed', description: error.message, variant: 'destructive' });
+    } finally {
+      setIsImportingInvoices(false);
+    }
   };
 
   const validateImportMutation = useMutation({
@@ -598,7 +686,7 @@ export default function SettingsIntegrations() {
               <div>
                 <h3 className="font-semibold mb-1">Import from QuickBooks</h3>
                 <p className="text-xs text-muted-foreground mb-3">
-                  Each action queues a separate pull job. Only customer import is available in this pass.
+                  Pull customers first, then preview and import invoices. Invoice import creates read-only records with no production workflow side-effects.
                 </p>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {/* Pull Customers — enabled */}
@@ -611,39 +699,140 @@ export default function SettingsIntegrations() {
                     Pull Customers
                   </Button>
 
-                  {/* Preview Invoices — blocked until invoice import pass */}
+                  {/* Preview Invoices — enabled */}
                   <Button
-                    disabled
+                    onClick={handlePreviewInvoices}
+                    disabled={isLoadingPreview || isImportingInvoices}
                     variant="outline"
-                    title="Invoice import requires the historical/open invoice migration and importer pass before use."
                   >
-                    <Lock className="w-4 h-4 mr-2" />
+                    {isLoadingPreview
+                      ? <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      : <Download className="w-4 h-4 mr-2" />}
                     Preview Invoices
                   </Button>
 
-                  {/* Import Open Invoices — blocked until invoice import pass */}
+                  {/* Import Open Invoices — enabled when preview is loaded */}
                   <Button
-                    disabled
+                    onClick={() => handleImportInvoices('open_ar')}
+                    disabled={!invoicePreview || selectedQBIds.size === 0 || isImportingInvoices || isLoadingPreview}
                     variant="outline"
-                    title="Invoice import requires the historical/open invoice migration and importer pass before use."
+                    title={!invoicePreview ? 'Preview invoices first' : undefined}
                   >
-                    <Lock className="w-4 h-4 mr-2" />
-                    Import Open Invoices
+                    {isImportingInvoices
+                      ? <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      : <Download className="w-4 h-4 mr-2" />}
+                    Import as Open A/R
                   </Button>
 
-                  {/* Import Historical Invoices — blocked until invoice import pass */}
+                  {/* Import Historical Invoices — enabled when preview is loaded */}
                   <Button
-                    disabled
+                    onClick={() => handleImportInvoices('historical')}
+                    disabled={!invoicePreview || selectedQBIds.size === 0 || isImportingInvoices || isLoadingPreview}
                     variant="outline"
-                    title="Invoice import requires the historical/open invoice migration and importer pass before use."
+                    title={!invoicePreview ? 'Preview invoices first' : undefined}
                   >
-                    <Lock className="w-4 h-4 mr-2" />
-                    Import Historical Invoices
+                    {isImportingInvoices
+                      ? <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      : <Download className="w-4 h-4 mr-2" />}
+                    Import as Historical
                   </Button>
                 </div>
-                <p className="text-xs text-muted-foreground mt-2">
-                  Invoice import requires the historical/open invoice migration and importer pass before use.
-                </p>
+
+                {/* Invoice Preview Table */}
+                {invoicePreview && (
+                  <div className="mt-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-sm font-medium">
+                        QB Invoices ({invoicePreview.length} total, {selectedQBIds.size} selected)
+                      </p>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-xs"
+                          onClick={() => {
+                            const importable = invoicePreview.filter(r => r.canImport && !r.alreadyImported);
+                            setSelectedQBIds(new Set(importable.map(r => r.qbInvoiceId)));
+                          }}
+                        >
+                          Select New
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-xs"
+                          onClick={() => setSelectedQBIds(new Set())}
+                        >
+                          Clear
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="border rounded-md overflow-auto max-h-80">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="w-8"></TableHead>
+                            <TableHead className="text-xs">QB #</TableHead>
+                            <TableHead className="text-xs">Customer</TableHead>
+                            <TableHead className="text-xs">Date</TableHead>
+                            <TableHead className="text-xs">Total</TableHead>
+                            <TableHead className="text-xs">Balance</TableHead>
+                            <TableHead className="text-xs">Type</TableHead>
+                            <TableHead className="text-xs">Status</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {invoicePreview.map(row => (
+                            <TableRow
+                              key={row.qbInvoiceId}
+                              className={!row.canImport ? 'opacity-50' : undefined}
+                            >
+                              <TableCell className="w-8 pr-0">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedQBIds.has(row.qbInvoiceId)}
+                                  disabled={!row.canImport}
+                                  onChange={e => {
+                                    setSelectedQBIds(prev => {
+                                      const next = new Set(prev);
+                                      if (e.target.checked) next.add(row.qbInvoiceId);
+                                      else next.delete(row.qbInvoiceId);
+                                      return next;
+                                    });
+                                  }}
+                                  className="cursor-pointer"
+                                />
+                              </TableCell>
+                              <TableCell className="text-xs font-mono">{row.qbDocNumber || row.qbInvoiceId}</TableCell>
+                              <TableCell className="text-xs">
+                                {row.localCustomerName ?? <span className="text-muted-foreground italic">{row.customerRefName}</span>}
+                              </TableCell>
+                              <TableCell className="text-xs">{row.txnDate}</TableCell>
+                              <TableCell className="text-xs">${row.totalAmt.toFixed(2)}</TableCell>
+                              <TableCell className="text-xs">${row.balance.toFixed(2)}</TableCell>
+                              <TableCell className="text-xs">
+                                <Badge variant={row.classification === 'open_ar' ? 'default' : 'secondary'} className="text-xs">
+                                  {row.classification === 'open_ar' ? 'Open A/R' : 'Historical'}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-xs">
+                                {row.alreadyImported
+                                  ? <Badge variant="outline" className="text-xs">Imported</Badge>
+                                  : row.canImport
+                                    ? <Badge variant="secondary" className="text-xs">New</Badge>
+                                    : <span className="text-muted-foreground text-xs" title={row.cannotImportReason}>No match</span>
+                                }
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      "Import as Open A/R" or "Import as Historical" applies the chosen classification to all selected rows. Historical invoices are read-only records and do not trigger production workflows.
+                    </p>
+                  </div>
+                )}
               </div>
 
               <Separator />
