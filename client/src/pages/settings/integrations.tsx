@@ -24,6 +24,7 @@ import {
   ExternalLink,
   CreditCard,
   Loader2,
+  Lock,
 } from "lucide-react";
 import {
   Table,
@@ -593,35 +594,78 @@ export default function SettingsIntegrations() {
 
               <Separator />
 
-              {/* Sync Controls */}
+              {/* Pull from QuickBooks — explicit per-resource actions */}
               <div>
-                <h3 className="font-semibold mb-3">Sync Data</h3>
+                <h3 className="font-semibold mb-1">Import from QuickBooks</h3>
+                <p className="text-xs text-muted-foreground mb-3">
+                  Each action queues a separate pull job. Only customer import is available in this pass.
+                </p>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {/* Pull Customers — enabled */}
                   <Button
-                    onClick={() => handleSync('pull', ['customers', 'invoices', 'orders'])}
+                    onClick={() => handleSync('pull', ['customers'])}
                     disabled={syncMutation.isPending || isSyncing}
                     variant="outline"
                   >
                     <Download className="w-4 h-4 mr-2" />
-                    Pull from QuickBooks
+                    Pull Customers
                   </Button>
+
+                  {/* Preview Invoices — blocked until invoice import pass */}
                   <Button
-                    onClick={() => handleSync('push', ['customers'])}
-                    disabled={syncMutation.isPending || isSyncing || qbPushDisabled}
+                    disabled
                     variant="outline"
-                    title={qbPushDisabled ? 'Disabled by org syncPolicy=queue_only (use QuickBooks Sync Queue instead).' : undefined}
+                    title="Invoice import requires the historical/open invoice migration and importer pass before use."
                   >
-                    <Upload className="w-4 h-4 mr-2" />
-                    Push to QuickBooks
+                    <Lock className="w-4 h-4 mr-2" />
+                    Preview Invoices
+                  </Button>
+
+                  {/* Import Open Invoices — blocked until invoice import pass */}
+                  <Button
+                    disabled
+                    variant="outline"
+                    title="Invoice import requires the historical/open invoice migration and importer pass before use."
+                  >
+                    <Lock className="w-4 h-4 mr-2" />
+                    Import Open Invoices
+                  </Button>
+
+                  {/* Import Historical Invoices — blocked until invoice import pass */}
+                  <Button
+                    disabled
+                    variant="outline"
+                    title="Invoice import requires the historical/open invoice migration and importer pass before use."
+                  >
+                    <Lock className="w-4 h-4 mr-2" />
+                    Import Historical Invoices
                   </Button>
                 </div>
                 <p className="text-xs text-muted-foreground mt-2">
-                  Pull: Import customers, invoices, and orders from QuickBooks<br />
-                  Push: {qbPushDisabled ? 'Disabled by org syncPolicy=queue_only (use QuickBooks Sync Queue / Sync now).' : 'Send local customers to QuickBooks'}
+                  Invoice import requires the historical/open invoice migration and importer pass before use.
                 </p>
               </div>
 
               <Separator />
+
+              {/* Push to QuickBooks — unchanged */}
+              <div>
+                <h3 className="font-semibold mb-3">Push to QuickBooks</h3>
+                <Button
+                  onClick={() => handleSync('push', ['customers'])}
+                  disabled={syncMutation.isPending || isSyncing || qbPushDisabled}
+                  variant="outline"
+                  title={qbPushDisabled ? 'Disabled by org syncPolicy=queue_only (use QuickBooks Sync Queue instead).' : undefined}
+                >
+                  <Upload className="w-4 h-4 mr-2" />
+                  Push to QuickBooks
+                </Button>
+                <p className="text-xs text-muted-foreground mt-2">
+                  {qbPushDisabled
+                    ? 'Disabled by org syncPolicy=queue_only (use QuickBooks Sync Queue / Sync now).'
+                    : 'Send local customers to QuickBooks'}
+                </p>
+              </div>
 
               <div className="flex gap-2">
                 <Button
