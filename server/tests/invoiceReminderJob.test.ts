@@ -22,6 +22,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import {
   customers,
+  invoiceEmailLogs,
   invoiceReminderLogs,
   invoiceReminderSettings,
   invoices,
@@ -30,6 +31,7 @@ import {
 } from '../../shared/schema';
 import {
   runInvoiceReminderJob,
+  sendManualInvoiceReminder,
   type ReminderJobDeps,
 } from '../invoiceReminderJob';
 import { upsertInvoiceReminderSettingsForOrg } from '../invoiceReminderService';
@@ -180,6 +182,7 @@ afterEach(async () => {
     for (const orgId of cleanupOrgIds) {
       try {
         await db.delete(invoiceReminderLogs).where(eq(invoiceReminderLogs.organizationId, orgId));
+        await db.delete(invoiceEmailLogs).where(eq(invoiceEmailLogs.organizationId, orgId));
         await db.delete(invoiceReminderSettings).where(eq(invoiceReminderSettings.organizationId, orgId));
         await db.delete(invoices).where(eq(invoices.organizationId, orgId));
         await db.delete(customers).where(eq(customers.organizationId, orgId));
@@ -475,6 +478,199 @@ describe('runInvoiceReminderJob', () => {
     const summary = await runInvoiceReminderJob(new Date(), deps);
 
     expect(summary.remindersSent).toBe(0);
+    expect(deps.sentEmails).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sendManualInvoiceReminder
+// ---------------------------------------------------------------------------
+
+describe('sendManualInvoiceReminder', () => {
+  const CALLER = { userId: 'test-user-id', userName: 'Test User' };
+
+  test('success: sends reminder, writes reminder log and email log', async () => {
+    const org = await createTestOrg('manual-ok');
+    const user = await createTestUser(org.id, 'mok');
+    const customer = await createTestCustomer(org.id);
+    const inv = await createTestInvoice({ orgId: org.id, customerId: customer.id, userId: user.id });
+    cleanupOrgIds.push(org.id);
+    cleanupUserIds.push(user.id);
+
+    const deps = makeMockDeps();
+    const result = await sendManualInvoiceReminder({
+      invoiceId: inv.id,
+      organizationId: org.id,
+      ...CALLER,
+      deps,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.reminderCount).toBe(1);
+    expect(result.lastReminderSentAt).toBeInstanceOf(Date);
+
+    // Reminder log written
+    const rLogs = await db
+      .select()
+      .from(invoiceReminderLogs)
+      .where(and(eq(invoiceReminderLogs.invoiceId, inv.id), eq(invoiceReminderLogs.status, 'sent')));
+    expect(rLogs).toHaveLength(1);
+    expect(rLogs[0].reminderNumber).toBe(1);
+    expect(rLogs[0].recipientEmail).toBe(customer.email);
+
+    // Email log written with type = 'reminder_send'
+    const eLogs = await db
+      .select()
+      .from(invoiceEmailLogs)
+      .where(and(eq(invoiceEmailLogs.invoiceId, inv.id), eq(invoiceEmailLogs.status, 'sent')));
+    expect(eLogs).toHaveLength(1);
+    expect((eLogs[0] as any).type).toBe('reminder_send');
+  });
+
+  test('blocked for paid invoice: returns success=false', async () => {
+    const org = await createTestOrg('manual-paid');
+    const user = await createTestUser(org.id, 'mpd');
+    const customer = await createTestCustomer(org.id);
+    const inv = await createTestInvoice({ orgId: org.id, customerId: customer.id, userId: user.id, status: 'paid' });
+    cleanupOrgIds.push(org.id);
+    cleanupUserIds.push(user.id);
+
+    const deps = makeMockDeps();
+    const result = await sendManualInvoiceReminder({
+      invoiceId: inv.id,
+      organizationId: org.id,
+      ...CALLER,
+      deps,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/paid/i);
+    expect(deps.sentEmails).toHaveLength(0);
+  });
+
+  test('blocked for void invoice: returns success=false', async () => {
+    const org = await createTestOrg('manual-void');
+    const user = await createTestUser(org.id, 'mvd');
+    const customer = await createTestCustomer(org.id);
+    const inv = await createTestInvoice({ orgId: org.id, customerId: customer.id, userId: user.id, status: 'void' });
+    cleanupOrgIds.push(org.id);
+    cleanupUserIds.push(user.id);
+
+    const deps = makeMockDeps();
+    const result = await sendManualInvoiceReminder({
+      invoiceId: inv.id,
+      organizationId: org.id,
+      ...CALLER,
+      deps,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/void/i);
+    expect(deps.sentEmails).toHaveLength(0);
+  });
+
+  test('idempotency: blocks rapid duplicate send within 5 minutes', async () => {
+    const org = await createTestOrg('manual-idem');
+    const user = await createTestUser(org.id, 'mid');
+    const customer = await createTestCustomer(org.id);
+    const inv = await createTestInvoice({ orgId: org.id, customerId: customer.id, userId: user.id });
+    cleanupOrgIds.push(org.id);
+    cleanupUserIds.push(user.id);
+
+    const deps = makeMockDeps();
+    // First send succeeds
+    const first = await sendManualInvoiceReminder({ invoiceId: inv.id, organizationId: org.id, ...CALLER, deps });
+    expect(first.success).toBe(true);
+
+    // Immediate second send should be blocked
+    const second = await sendManualInvoiceReminder({ invoiceId: inv.id, organizationId: org.id, ...CALLER, deps });
+    expect(second.success).toBe(false);
+    expect(second.message).toMatch(/recently sent/i);
+    // Email not sent a second time
+    expect(deps.sentEmails).toHaveLength(1);
+  });
+
+  test('reminder number increments with each successful send', async () => {
+    const org = await createTestOrg('manual-num');
+    const user = await createTestUser(org.id, 'mn');
+    const customer = await createTestCustomer(org.id);
+    const inv = await createTestInvoice({ orgId: org.id, customerId: customer.id, userId: user.id });
+    cleanupOrgIds.push(org.id);
+    cleanupUserIds.push(user.id);
+
+    // Pre-seed a successful reminder log from 10 minutes ago (outside idempotency window)
+    await db.insert(invoiceReminderLogs).values({
+      organizationId: org.id,
+      invoiceId: inv.id,
+      reminderNumber: 1,
+      sentAt: new Date(Date.now() - 10 * 60 * 1000),
+      status: 'sent',
+      recipientEmail: customer.email ?? null,
+      messageId: 'prior-msg',
+      failureReason: null,
+    });
+
+    const deps = makeMockDeps();
+    const result = await sendManualInvoiceReminder({ invoiceId: inv.id, organizationId: org.id, ...CALLER, deps });
+    expect(result.success).toBe(true);
+    expect(result.reminderCount).toBe(2);
+
+    const rLogs = await db
+      .select()
+      .from(invoiceReminderLogs)
+      .where(and(eq(invoiceReminderLogs.invoiceId, inv.id), eq(invoiceReminderLogs.status, 'sent')));
+    expect(rLogs).toHaveLength(2);
+    const numbers = rLogs.map((l) => l.reminderNumber).sort();
+    expect(numbers).toEqual([1, 2]);
+  });
+
+  test('failed send: writes failed reminder log, returns success=false', async () => {
+    const org = await createTestOrg('manual-fail');
+    const user = await createTestUser(org.id, 'mf');
+    const customer = await createTestCustomer(org.id);
+    const inv = await createTestInvoice({ orgId: org.id, customerId: customer.id, userId: user.id });
+    cleanupOrgIds.push(org.id);
+    cleanupUserIds.push(user.id);
+
+    const deps = makeMockDeps({
+      sendEmail: async () => { throw new Error('SMTP timeout'); },
+    });
+    const result = await sendManualInvoiceReminder({ invoiceId: inv.id, organizationId: org.id, ...CALLER, deps });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/SMTP timeout|Failed/i);
+
+    // Failed reminder log should have been written
+    const rLogs = await db
+      .select()
+      .from(invoiceReminderLogs)
+      .where(and(eq(invoiceReminderLogs.invoiceId, inv.id), eq(invoiceReminderLogs.status, 'failed')));
+    expect(rLogs).toHaveLength(1);
+    expect(rLogs[0].failureReason).toBeTruthy();
+
+    // Failed log does NOT count toward the idempotency window
+    const sent = await db
+      .select()
+      .from(invoiceReminderLogs)
+      .where(and(eq(invoiceReminderLogs.invoiceId, inv.id), eq(invoiceReminderLogs.status, 'sent')));
+    expect(sent).toHaveLength(0);
+  });
+
+  test('invoice not found: returns success=false without crash', async () => {
+    const org = await createTestOrg('manual-404');
+    const user = await createTestUser(org.id, 'm404');
+    cleanupOrgIds.push(org.id);
+    cleanupUserIds.push(user.id);
+
+    const deps = makeMockDeps();
+    const result = await sendManualInvoiceReminder({
+      invoiceId: 'nonexistent-id',
+      organizationId: org.id,
+      ...CALLER,
+      deps,
+    });
+
+    expect(result.success).toBe(false);
     expect(deps.sentEmails).toHaveLength(0);
   });
 });

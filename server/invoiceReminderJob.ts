@@ -25,6 +25,7 @@ import {
   createInvoiceReminderLog,
   getAllEnabledReminderSettings,
   getCandidateInvoicesForReminderRun,
+  getInvoiceReminderSettingsForOrg,
   getSuccessfulReminderLogsForInvoice,
   type CandidateInvoice,
 } from './invoiceReminderService';
@@ -34,6 +35,7 @@ import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from '../sh
 import {
   auditLogs,
   companySettings,
+  customers,
   invoiceLineItems,
   invoices,
   invoiceReminderLogs,
@@ -286,6 +288,187 @@ async function sendReminderForInvoice(opts: {
   }
 
   return { sent: true, messageId };
+}
+
+// ---------------------------------------------------------------------------
+// Manual per-invoice reminder send (called by the API endpoint, not the job)
+// ---------------------------------------------------------------------------
+
+export interface ManualReminderResult {
+  success: boolean;
+  message?: string;
+  lastReminderSentAt?: Date;
+  reminderCount?: number;
+}
+
+/**
+ * Send a reminder for a single invoice triggered by a user action.
+ *
+ * Safety rules (same as the job):
+ * - Append-only writes — no invoice mutations.
+ * - Idempotency window: block if a successful reminder was sent within the last
+ *   5 minutes (prevents double-click spam).
+ * - Paid / void invoices are blocked.
+ * - Both sent and failed outcomes are logged.
+ * - The userId is written to the audit log.
+ */
+export async function sendManualInvoiceReminder(opts: {
+  invoiceId: string;
+  organizationId: string;
+  userId: string;
+  userName: string;
+  deps?: ReminderJobDeps;
+}): Promise<ManualReminderResult> {
+  const { invoiceId, organizationId, userId, userName } = opts;
+  const deps = opts.deps ?? makeDefaultDeps();
+  const now = new Date();
+
+  // --- Load invoice + customer -------------------------------------------------
+  const [fullInv] = await db
+    .select()
+    .from(invoices)
+    .where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, organizationId)));
+
+  if (!fullInv) {
+    return { success: false, message: 'Invoice not found' };
+  }
+
+  if (fullInv.status === 'paid') {
+    return { success: false, message: 'Invoice is already paid — no reminder needed' };
+  }
+  if (fullInv.status === 'void') {
+    return { success: false, message: 'Invoice is void — reminders cannot be sent' };
+  }
+
+  // Resolve recipient email from customer record
+  const [customer] = await db
+    .select({ email: customers.email, companyName: customers.companyName })
+    .from(customers)
+    .where(and(eq(customers.id, fullInv.customerId), eq(customers.organizationId, organizationId)));
+
+  const recipientEmail = customer?.email ?? null;
+  if (!recipientEmail) {
+    return { success: false, message: 'No email address on customer record' };
+  }
+
+  // --- Idempotency: block if sent within the last 5 minutes -------------------
+  const successfulLogs = await getSuccessfulReminderLogsForInvoice(invoiceId, organizationId);
+  const lastLog = successfulLogs.length > 0
+    ? successfulLogs.reduce((a, b) => new Date(a.sentAt) > new Date(b.sentAt) ? a : b)
+    : null;
+
+  if (lastLog) {
+    const msSinceLastSend = now.getTime() - new Date(lastLog.sentAt).getTime();
+    const IDEMPOTENCY_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+    if (msSinceLastSend < IDEMPOTENCY_WINDOW_MS) {
+      return {
+        success: false,
+        message: 'A reminder was recently sent. Please wait a few minutes before sending again.',
+        lastReminderSentAt: new Date(lastLog.sentAt),
+        reminderCount: successfulLogs.length,
+      };
+    }
+  }
+
+  const reminderNumber = successfulLogs.length + 1;
+
+  // Build a CandidateInvoice-shaped object for sendReminderForInvoice
+  const balanceDueCents = fullInv.balanceDue != null
+    ? Math.round(parseFloat(String(fullInv.balanceDue)) * 100)
+    : Number(fullInv.totalCents ?? 0);
+
+  // Load org reminder settings (best-effort — non-fatal if missing)
+  const orgSettings = await getInvoiceReminderSettingsForOrg(organizationId).catch(() => null);
+
+  const settingsForSend: InvoiceReminderSettings = orgSettings ?? {
+    id: '',
+    organizationId,
+    enabled: true,
+    firstReminderDaysAfterDue: null,
+    repeatIntervalDays: null,
+    maxReminders: null,
+    sendCopyToInternalEmail: false,
+    internalCopyEmail: null,
+    pauseForManualBillingCustomers: false,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const candidate: CandidateInvoice = {
+    id: fullInv.id,
+    invoiceNumber: fullInv.invoiceNumber ?? 0,
+    status: fullInv.status,
+    dueDate: fullInv.dueDate ? new Date(fullInv.dueDate) : null,
+    totalCents: Number(fullInv.totalCents ?? 0),
+    balanceDueCents,
+    balanceDue: fullInv.balanceDue ?? null,
+    customerId: fullInv.customerId,
+    customerName: customer?.companyName ?? recipientEmail,
+    recipientEmail,
+  };
+
+  // --- Send -------------------------------------------------------------------
+  const result = await sendReminderForInvoice({
+    inv: candidate,
+    organizationId,
+    settings: settingsForSend,
+    reminderNumber,
+    now,
+    deps,
+  });
+
+  if (result.sent) {
+    await createInvoiceReminderLog({
+      organizationId,
+      invoiceId,
+      reminderNumber,
+      sentAt: now,
+      status: 'sent',
+      recipientEmail,
+      messageId: result.messageId,
+      failureReason: null,
+    });
+
+    try {
+      await db.insert(auditLogs).values({
+        organizationId,
+        userId,
+        userName,
+        actionType: 'invoice.reminder_sent',
+        entityType: 'invoice',
+        entityId: invoiceId,
+        entityName: String(fullInv.invoiceNumber ?? invoiceId),
+        description: `Manual reminder #${reminderNumber} sent to ${recipientEmail}`,
+        newValues: { reminderNumber, recipientEmail, messageId: result.messageId, triggeredBy: 'manual' } as any,
+        createdAt: now,
+      } as any);
+    } catch (auditErr) {
+      console.error('[ManualReminder] Audit log failed:', auditErr);
+    }
+
+    const freshCount = reminderNumber; // we just sent this one
+    console.log(`[ManualReminder] ✅ Reminder #${reminderNumber} sent for invoice ${fullInv.invoiceNumber} (${invoiceId}) → ${recipientEmail} by user ${userId}`);
+    return { success: true, lastReminderSentAt: now, reminderCount: freshCount };
+  } else {
+    // Log failure but do not throw — endpoint returns success: false with message
+    try {
+      await createInvoiceReminderLog({
+        organizationId,
+        invoiceId,
+        reminderNumber,
+        sentAt: now,
+        status: 'failed',
+        recipientEmail,
+        messageId: null,
+        failureReason: result.failureReason ?? 'Unknown send failure',
+      });
+    } catch (logErr) {
+      console.error('[ManualReminder] Failed to write failure log:', logErr);
+    }
+
+    console.warn(`[ManualReminder] ⚠️ Reminder failed for invoice ${fullInv.invoiceNumber} (${invoiceId}): ${result.failureReason}`);
+    return { success: false, message: result.failureReason ?? 'Failed to send reminder email' };
+  }
 }
 
 // ---------------------------------------------------------------------------
