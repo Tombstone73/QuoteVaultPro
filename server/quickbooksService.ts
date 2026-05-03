@@ -755,7 +755,7 @@ function mapQBCustomerToContact(
   return { customerId, firstName, lastName, email, phone, mobile, isPrimary: true };
 }
 
-type ContactUpsertOutcome = 'created' | 'updated' | 'skipped';
+type ContactUpsertOutcome = 'created' | 'updated';
 
 /**
  * Idempotent upsert of a primary contact for a QB-imported customer.
@@ -1386,7 +1386,7 @@ export async function processPullCustomers(jobId: string, organizationId: string
             if (outcome === 'created') {
               contactsCreated++;
               console.log(`[QB Pull Customers] Created contact for: ${localData.companyName}`);
-            } else {
+            } else if (outcome === 'updated') {
               contactsUpdated++;
             }
           } catch (contactErr: any) {
