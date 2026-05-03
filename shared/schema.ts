@@ -3431,6 +3431,9 @@ export const invoices = pgTable("invoices", {
   lockedReason: text("locked_reason"),                               // e.g. 'historical_import'
   qbDocNumber: text("qb_doc_number"),                                // QB DocNumber (human-readable invoice #)
   qbLineItemsSnapshot: jsonb("qb_line_items_snapshot").$type<any[]>(), // raw QB Line array snapshot
+  // Customer PO tracking (migration 0043)
+  customerPoNumber: varchar("customer_po_number", { length: 100 }),  // Customer PO/reference number
+  qbPoSource: varchar("qb_po_source", { length: 50 }),               // QB field PO was extracted from: 'custom_field' | 'private_note' | 'customer_memo' | 'line_description'
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -3443,6 +3446,7 @@ export const invoices = pgTable("invoices", {
   index("invoices_sync_status_idx").on(table.syncStatus),
   index("invoices_import_source_org_idx").on(table.organizationId, table.importSource),
   index("invoices_is_historical_org_idx").on(table.organizationId, table.isHistorical),
+  index("invoices_customer_po_number_org_idx").on(table.organizationId, table.customerPoNumber),
 ]);
 
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({
@@ -3503,6 +3507,8 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   lockedReason: z.string().optional().nullable(),
   qbDocNumber: z.string().optional().nullable(),
   qbLineItemsSnapshot: z.array(z.any()).optional().nullable(),
+  customerPoNumber: z.string().max(100).optional().nullable(),
+  qbPoSource: z.string().max(50).optional().nullable(),
 });
 
 export const updateInvoiceSchema = insertInvoiceSchema.partial().extend({
