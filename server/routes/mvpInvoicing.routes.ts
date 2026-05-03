@@ -4,6 +4,7 @@ import { db } from "../db";
 import { auditLogs, companySettings, customers, invoiceLineItems, invoices, orders, organizations, payments, paymentWebhookEvents, users, manualPaymentMethodSchema } from "../../shared/schema";
 import { applyPayment, createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, refreshInvoiceStatus } from "../invoicesService";
 import { getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
+import { runInvoiceReminderJob } from "../invoiceReminderJob";
 import { updateInvoiceReminderSettingsSchema } from "../../shared/schema";
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
 import { getValidAccessTokenForOrganization, syncSingleInvoiceToQuickBooksForOrganization, syncSinglePaymentToQuickBooksForOrganization } from "../quickbooksService";
@@ -96,9 +97,10 @@ export async function registerMvpInvoicingRoutes(
   deps: {
     isAuthenticated: any;
     tenantContext: any;
+    isAdmin?: any;
   }
 ) {
-  const { isAuthenticated, tenantContext } = deps;
+  const { isAuthenticated, tenantContext, isAdmin } = deps;
 
   // ------------------------------------------------------------
   // Stripe: Create PaymentIntent for invoice (full payment only)
@@ -2254,6 +2256,33 @@ export async function registerMvpInvoicingRoutes(
     } catch (error) {
       console.error("Error generating reminder preview:", error);
       return res.status(500).json({ success: false, error: "Failed to generate reminder preview" });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Admin: Manual reminder job trigger (testing / ops use only)
+  // ---------------------------------------------------------------------------
+
+  // POST /api/invoices/reminders/run
+  // Runs the reminder job once for the current organization.
+  // Requires admin role. Returns the job summary.
+  // Do not expose a frontend button for this unless a safe admin tools area exists.
+  const adminMiddlewares = isAdmin
+    ? [isAuthenticated, tenantContext, isAdmin]
+    : [isAuthenticated, tenantContext];
+
+  app.post("/api/invoices/reminders/run", ...adminMiddlewares, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      console.log(`[InvoiceReminders] Manual run triggered by user ${getUserId(req.user)} for org ${organizationId}`);
+
+      const summary = await runInvoiceReminderJob();
+      return res.json({ success: true, data: summary });
+    } catch (error: any) {
+      console.error("Error running reminder job:", error);
+      return res.status(500).json({ success: false, error: "Reminder job failed", details: error?.message });
     }
   });
 }
