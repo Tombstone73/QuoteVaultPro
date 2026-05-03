@@ -3489,11 +3489,16 @@ export const invoiceEmailLogs = pgTable("invoice_email_logs", {
   messageId: text("message_id"),
   sentAt: timestamp("sent_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  // 'invoice_send' = original invoice email; 'reminder_send' = automated reminder.
+  // Filters in getInvoiceEmailStatuses() must use type = 'invoice_send' so reminder
+  // sends do not falsely mark an invoice as sent_current.
+  type: text("type").notNull().default('invoice_send'),
 }, (table) => [
   index("invoice_email_logs_organization_id_idx").on(table.organizationId),
   index("invoice_email_logs_invoice_id_idx").on(table.invoiceId),
   index("invoice_email_logs_invoice_sent_at_idx").on(table.invoiceId, table.sentAt),
   index("invoice_email_logs_org_invoice_idx").on(table.organizationId, table.invoiceId),
+  index("invoice_email_logs_type_idx").on(table.organizationId, table.type, table.sentAt),
 ]);
 
 export const insertInvoiceEmailLogSchema = createInsertSchema(invoiceEmailLogs).omit({
@@ -3501,6 +3506,7 @@ export const insertInvoiceEmailLogSchema = createInsertSchema(invoiceEmailLogs).
   createdAt: true,
 }).extend({
   status: z.enum(['sent', 'failed']).default('sent'),
+  type: z.enum(['invoice_send', 'reminder_send']).default('invoice_send'),
   sentAt: z.preprocess((val) => val ? new Date(val as any) : new Date(), z.date()),
 });
 
