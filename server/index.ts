@@ -10,6 +10,7 @@ import { assetPreviewWorker } from "./workers/assetPreviewWorker";
 import { assertStripeServerConfig } from "./lib/stripe";
 import { listQuickBooksConnectedOrganizationIds, runQuickBooksSyncWorkerForOrg } from "./services/quickbooksSyncQueueWorker";
 import { isWorkerEnabled, logWorkerStatus, getWorkerIntervalOverride, logWorkerTick } from "./workers/workerGates";
+import { runInvoiceReminderJob } from "./invoiceReminderJob";
 import { runMigrations } from "./runMigrations";
 import { getAllowedCorsOrigins, getRuntimeConfigLogLine } from "./lib/appRuntimeConfig";
 
@@ -314,6 +315,44 @@ process.on('uncaughtException', (error) => {
       } else {
         logWorkerStatus('QuickBooks Sync', false, undefined, 'no QB credentials');
         logWorkerStatus('QuickBooks Queue', false, undefined, 'no QB credentials');
+      }
+
+      // Invoice Reminder Worker
+      // Default: DISABLED in all environments — must be explicitly opted in.
+      // Enable via: WORKER_INVOICE_REMINDERS_ENABLED=true (or legacy INVOICE_REMINDER_JOB_ENABLED=true)
+      const invoiceReminderJobLegacy = (process.env.INVOICE_REMINDER_JOB_ENABLED ?? '').toLowerCase() === 'true';
+      const invoiceReminderEnabled =
+        isWorkerEnabled('INVOICE_REMINDERS', false) || invoiceReminderJobLegacy;
+      const invoiceReminderInterval = getWorkerIntervalOverride(
+        'INVOICE_REMINDERS',
+        60 * 60 * 1000,       // production default: 1 hour
+        60 * 60 * 1000,       // non-production default: 1 hour (but gate keeps it off)
+      );
+      logWorkerStatus(
+        'Invoice Reminders',
+        invoiceReminderEnabled,
+        invoiceReminderEnabled ? invoiceReminderInterval : undefined,
+      );
+
+      if (invoiceReminderEnabled) {
+        console.log('[Server] Invoice reminder automation ENABLED. Emails will be sent automatically.');
+        setInterval(async () => {
+          const tickStart = Date.now();
+          try {
+            const summary = await runInvoiceReminderJob();
+            if (summary.remindersSent > 0 || summary.remindersFailed > 0) {
+              console.log(
+                `[ReminderTick] sent=${summary.remindersSent} failed=${summary.remindersFailed} skipped=${summary.skipped} orgs=${summary.organizationsChecked}`,
+              );
+            }
+          } catch (e) {
+            console.error('[ReminderTick] Unexpected error:', e);
+          } finally {
+            logWorkerTick('invoice_reminders', Date.now() - tickStart);
+          }
+        }, invoiceReminderInterval);
+      } else {
+        console.log('[Server] Invoice reminder automation DISABLED. No reminder emails will be sent automatically. Enable with WORKER_INVOICE_REMINDERS_ENABLED=true.');
       }
     });
 
