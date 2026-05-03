@@ -409,6 +409,56 @@ export function useDeletePayment() {
   });
 }
 
+// ---- Reminder hooks --------------------------------------------------------
+
+export interface ReminderLogEntry {
+  id: string;
+  sentAt: string;
+  recipientEmail: string | null;
+  status: 'sent' | 'failed';
+  reminderNumber: number;
+  messageId: string | null;
+  failureReason: string | null;
+}
+
+// Fetch reminder history for one invoice
+export function useInvoiceReminderHistory(invoiceId: string | undefined) {
+  return useQuery<ReminderLogEntry[]>({
+    queryKey: ['invoiceReminderHistory', invoiceId],
+    queryFn: async () => {
+      if (!invoiceId) return [];
+      const res = await fetch(`/api/invoices/${invoiceId}/reminder-history`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed to fetch reminder history');
+      const data = await res.json();
+      return (data.data || []) as ReminderLogEntry[];
+    },
+    enabled: !!invoiceId,
+  });
+}
+
+// Manually send a reminder for one invoice
+export function useSendInvoiceReminder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (invoiceId: string) => {
+      const res = await fetch(`/api/invoices/${invoiceId}/send-reminder`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Failed to send reminder');
+      }
+      return data as { success: true; lastReminderSentAt: string | null; reminderCount: number };
+    },
+    onSuccess: (_, invoiceId) => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices', invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ['invoiceReminderHistory', invoiceId] });
+    },
+  });
+}
+
 // Refresh invoice status
 export function useRefreshInvoiceStatus() {
   const queryClient = useQueryClient();
