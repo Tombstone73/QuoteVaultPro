@@ -1,10 +1,10 @@
 import type { Express } from "express";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db";
-import { auditLogs, companySettings, customers, invoiceLineItems, invoices, orders, organizations, payments, paymentWebhookEvents, users, manualPaymentMethodSchema } from "../../shared/schema";
+import { auditLogs, companySettings, customers, invoiceLineItems, invoiceReminderLogs, invoices, orders, organizations, payments, paymentWebhookEvents, users, manualPaymentMethodSchema } from "../../shared/schema";
 import { applyPayment, createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, refreshInvoiceStatus } from "../invoicesService";
 import { getInvoiceListReminderInfo, getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
-import { runInvoiceReminderJob } from "../invoiceReminderJob";
+import { runInvoiceReminderJob, sendManualInvoiceReminder } from "../invoiceReminderJob";
 import { updateInvoiceReminderSettingsSchema } from "../../shared/schema";
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
 import { getValidAccessTokenForOrganization, syncSingleInvoiceToQuickBooksForOrganization, syncSinglePaymentToQuickBooksForOrganization } from "../quickbooksService";
@@ -2312,6 +2312,95 @@ export async function registerMvpInvoicingRoutes(
     } catch (error: any) {
       console.error("Error running reminder job:", error);
       return res.status(500).json({ success: false, error: "Reminder job failed", details: error?.message });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // POST /api/invoices/:id/send-reminder
+  // Manually send a reminder for a single invoice.
+  // Same auth as invoice send. Returns success, lastReminderSentAt, reminderCount.
+  // ---------------------------------------------------------------------------
+  app.post("/api/invoices/:id/send-reminder", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const invoiceId = req.params.id;
+      const userId = getUserId(req.user);
+      const userName = `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email || 'Unknown';
+
+      if (!userId) return res.status(401).json({ success: false, error: "Missing user context" });
+
+      console.log(`[SendReminder] User ${userId} sending manual reminder for invoice ${invoiceId} org ${organizationId}`);
+
+      const result = await sendManualInvoiceReminder({
+        invoiceId,
+        organizationId,
+        userId,
+        userName,
+      });
+
+      if (!result.success) {
+        // Return 409 for idempotency blocks or business-rule blocks; 400 for other failures
+        const status = result.message?.includes('recently sent') ? 409 : 400;
+        return res.status(status).json({ success: false, error: result.message });
+      }
+
+      return res.json({
+        success: true,
+        lastReminderSentAt: result.lastReminderSentAt,
+        reminderCount: result.reminderCount,
+      });
+    } catch (error: any) {
+      console.error("[SendReminder] Unexpected error:", error);
+      return res.status(500).json({ success: false, error: "Failed to send reminder" });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/invoices/:id/reminder-history
+  // Returns all reminder log entries for an invoice (sent + failed), newest first.
+  // ---------------------------------------------------------------------------
+  app.get("/api/invoices/:id/reminder-history", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const invoiceId = req.params.id;
+
+      // Verify the invoice belongs to this org
+      const [inv] = await db
+        .select({ id: invoices.id })
+        .from(invoices)
+        .where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, organizationId)))
+        .limit(1);
+
+      if (!inv) return res.status(404).json({ success: false, error: "Invoice not found" });
+
+      const logs = await db
+        .select({
+          id: invoiceReminderLogs.id,
+          sentAt: invoiceReminderLogs.sentAt,
+          recipientEmail: invoiceReminderLogs.recipientEmail,
+          status: invoiceReminderLogs.status,
+          reminderNumber: invoiceReminderLogs.reminderNumber,
+          messageId: invoiceReminderLogs.messageId,
+          failureReason: invoiceReminderLogs.failureReason,
+        })
+        .from(invoiceReminderLogs)
+        .where(
+          and(
+            eq(invoiceReminderLogs.invoiceId, invoiceId),
+            eq(invoiceReminderLogs.organizationId, organizationId),
+          ),
+        )
+        .orderBy(desc(invoiceReminderLogs.sentAt))
+        .limit(50);
+
+      return res.json({ success: true, data: logs });
+    } catch (error: any) {
+      console.error("[ReminderHistory] Error:", error);
+      return res.status(500).json({ success: false, error: "Failed to fetch reminder history" });
     }
   });
 }

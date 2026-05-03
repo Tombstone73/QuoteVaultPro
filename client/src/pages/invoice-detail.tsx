@@ -26,7 +26,7 @@ import {
 import { ArrowLeft, Mail, DollarSign, Trash2, RefreshCw, CreditCard, HandCoins, AlertCircle, ExternalLink } from "lucide-react";
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "@shared/rollups/invoicePaymentRollup";
 import { useAuth } from "@/hooks/useAuth";
-import { useInvoice, useBillInvoice, useRetryInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment } from "@/hooks/useInvoices";
+import { useInvoice, useBillInvoice, useRetryInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInvoiceReminderHistory, useSendInvoiceReminder } from "@/hooks/useInvoices";
 import { useOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
 import { Page } from "@/components/titan/Page";
@@ -174,6 +174,8 @@ export default function InvoiceDetailPage() {
   const invoicePayments = useInvoicePayments(invoiceId);
   const recordManualPayment = useRecordManualInvoicePayment();
   const voidInvoicePayment = useVoidInvoicePayment();
+  const reminderHistory = useInvoiceReminderHistory(invoiceId);
+  const sendReminder = useSendInvoiceReminder();
 
   const [addPaymentDialogOpen, setAddPaymentDialogOpen] = useState(false);
   const [stripePayOpen, setStripePayOpen] = useState(false);
@@ -312,7 +314,7 @@ export default function InvoiceDetailPage() {
   const [taxDraft, setTaxDraft] = useState<string>('');
   const [shippingDraft, setShippingDraft] = useState<string>('');
 
-  const [bottomPanel, setBottomPanel] = useState<"collapsed" | "timeline" | "payments" | "material">("timeline");
+  const [bottomPanel, setBottomPanel] = useState<"collapsed" | "timeline" | "payments" | "material" | "reminders">("timeline");
 
   const formatCurrency = (amount: string | number) => {
     return new Intl.NumberFormat("en-US", {
@@ -1726,6 +1728,25 @@ export default function InvoiceDetailPage() {
                   >
                     Material Usage
                   </button>
+
+                  <div className="h-4 w-px bg-muted-foreground/30" aria-hidden="true" />
+
+                  <button
+                    type="button"
+                    onClick={() => setBottomPanel(prev => prev === "reminders" ? "collapsed" : "reminders")}
+                    className={
+                      `text-lg font-medium transition-colors hover:text-foreground cursor-pointer ${
+                        bottomPanel === "reminders" ? "text-foreground" : "text-muted-foreground"
+                      }`
+                    }
+                  >
+                    Reminders
+                    {reminderHistory.data && reminderHistory.data.filter(l => l.status === 'sent').length > 0 && (
+                      <span className="ml-1.5 text-sm font-normal text-muted-foreground">
+                        ({reminderHistory.data.filter(l => l.status === 'sent').length})
+                      </span>
+                    )}
+                  </button>
                 </div>
               </CardHeader>
 
@@ -1994,6 +2015,94 @@ export default function InvoiceDetailPage() {
                   {bottomPanel === "material" && (
                     <div className="text-sm text-muted-foreground">
                       Material usage is tracked on Orders. Coming soon for invoices.
+                    </div>
+                  )}
+
+                  {bottomPanel === "reminders" && (
+                    <div className="space-y-4">
+                      {/* Summary + send button */}
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="text-sm text-muted-foreground">
+                          {reminderHistory.data && reminderHistory.data.filter(l => l.status === 'sent').length > 0 ? (
+                            <>
+                              Last reminder sent:{" "}
+                              <span className="text-foreground font-medium">
+                                {format(new Date(reminderHistory.data.filter(l => l.status === 'sent')[0].sentAt), "MMM d, yyyy 'at' h:mm a")}
+                              </span>
+                              <span className="mx-2 text-muted-foreground/50">•</span>
+                              Total sent:{" "}
+                              <span className="text-foreground font-medium">
+                                {reminderHistory.data.filter(l => l.status === 'sent').length}
+                              </span>
+                            </>
+                          ) : (
+                            "No reminders have been sent for this invoice."
+                          )}
+                        </div>
+                        {isStaffUser && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={
+                              invoiceStatus === 'paid' ||
+                              invoiceStatus === 'void' ||
+                              sendReminder.isPending
+                            }
+                            onClick={() => {
+                              if (!invoiceId) return;
+                              sendReminder.mutate(invoiceId, {
+                                onSuccess: () => {
+                                  toast({ title: "Reminder sent", description: "The customer has been emailed." });
+                                },
+                                onError: (err: any) => {
+                                  toast({ title: "Could not send reminder", description: err?.message || "An error occurred.", variant: "destructive" });
+                                },
+                              });
+                            }}
+                          >
+                            <Mail className="mr-2 h-4 w-4" />
+                            {sendReminder.isPending ? "Sending…" : "Send Reminder"}
+                          </Button>
+                        )}
+                      </div>
+
+                      {/* Reminder history table */}
+                      {reminderHistory.isLoading ? (
+                        <div className="text-sm text-muted-foreground">Loading reminder history…</div>
+                      ) : !reminderHistory.data || reminderHistory.data.length === 0 ? (
+                        <div className="text-center py-8 text-muted-foreground">No reminder history yet</div>
+                      ) : (
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>#</TableHead>
+                              <TableHead>Date</TableHead>
+                              <TableHead>Recipient</TableHead>
+                              <TableHead>Status</TableHead>
+                              <TableHead>Failure Reason</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {reminderHistory.data.map((log) => (
+                              <TableRow key={log.id} className={log.status === 'failed' ? 'opacity-60' : undefined}>
+                                <TableCell className="font-medium">#{log.reminderNumber}</TableCell>
+                                <TableCell>{format(new Date(log.sentAt), "MMM d, yyyy 'at' h:mm a")}</TableCell>
+                                <TableCell className="text-sm">{log.recipientEmail ?? "—"}</TableCell>
+                                <TableCell>
+                                  {log.status === 'sent' ? (
+                                    <Badge variant="secondary">Sent</Badge>
+                                  ) : (
+                                    <Badge variant="destructive">Failed</Badge>
+                                  )}
+                                </TableCell>
+                                <TableCell className="text-sm text-muted-foreground">
+                                  {log.failureReason ?? "—"}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      )}
                     </div>
                   )}
                 </CardContent>
