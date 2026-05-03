@@ -3423,6 +3423,14 @@ export const invoices = pgTable("invoices", {
   qbSyncStatus: varchar("qb_sync_status", { length: 20 }).notNull().default('pending'), // pending | synced | failed
   qbLastError: text("qb_last_error"),
   modifiedAfterBilling: boolean("modified_after_billing").notNull().default(false),
+  // QB import tracking (migration 0042)
+  importSource: varchar("import_source", { length: 30 }),            // 'quickbooks' | null
+  isHistorical: boolean("is_historical").notNull().default(false),   // true = closed/paid, read-only A/R record
+  qbImportBalanceDue: decimal("qb_import_balance_due", { precision: 10, scale: 2 }), // QB Balance snapshot at import time
+  importedAt: timestamp("imported_at", { withTimezone: true }),
+  lockedReason: text("locked_reason"),                               // e.g. 'historical_import'
+  qbDocNumber: text("qb_doc_number"),                                // QB DocNumber (human-readable invoice #)
+  qbLineItemsSnapshot: jsonb("qb_line_items_snapshot").$type<any[]>(), // raw QB Line array snapshot
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -3433,6 +3441,8 @@ export const invoices = pgTable("invoices", {
   index("invoices_status_idx").on(table.status),
   index("invoices_due_date_idx").on(table.dueDate),
   index("invoices_sync_status_idx").on(table.syncStatus),
+  index("invoices_import_source_org_idx").on(table.organizationId, table.importSource),
+  index("invoices_is_historical_org_idx").on(table.organizationId, table.isHistorical),
 ]);
 
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({
@@ -3481,6 +3491,18 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   qbSyncStatus: z.enum(['pending','synced','failed','needs_resync']).default('pending'),
   qbLastError: z.string().optional().nullable(),
   modifiedAfterBilling: z.boolean().default(false),
+  importSource: z.string().max(30).optional().nullable(),
+  isHistorical: z.boolean().default(false).optional(),
+  qbImportBalanceDue: z.coerce.number().optional().nullable(),
+  importedAt: z.preprocess((val) => {
+    if (!val) return null;
+    if (val instanceof Date) return val;
+    if (typeof val === 'string') return new Date(val);
+    return val;
+  }, z.date().nullable().optional()),
+  lockedReason: z.string().optional().nullable(),
+  qbDocNumber: z.string().optional().nullable(),
+  qbLineItemsSnapshot: z.array(z.any()).optional().nullable(),
 });
 
 export const updateInvoiceSchema = insertInvoiceSchema.partial().extend({
