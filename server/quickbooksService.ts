@@ -1,7 +1,7 @@
 import OAuthClient from 'intuit-oauth';
 import crypto from 'crypto';
 import { db } from './db';
-import { oauthConnections, accountingSyncJobs, customers, invoices, orders, payments, invoiceLineItems, type OAuthConnection } from '../shared/schema';
+import { oauthConnections, accountingSyncJobs, customers, customerContacts, invoices, orders, payments, invoiceLineItems, type OAuthConnection } from '../shared/schema';
 import { eq, and, desc, or, isNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
 import { DEFAULT_ORGANIZATION_ID } from './tenantContext';
@@ -688,6 +688,154 @@ function mapQBCustomerToLocal(qbCustomer: any): Partial<Customer> {
   };
 }
 
+// ==================== QB Contact Mapping Helpers ====================
+
+/**
+ * Derive a contact person name from QuickBooks Customer fields.
+ * Returns null when no person-level name can be identified.
+ */
+function deriveQBContactName(
+  qbCustomer: any,
+): { firstName: string; lastName: string } | null {
+  const givenName = String(qbCustomer.GivenName || '').trim();
+  const familyName = String(qbCustomer.FamilyName || '').trim();
+
+  if (givenName || familyName) {
+    // Prefer structured name fields; fill missing half with a safe default
+    return {
+      firstName: givenName || 'Contact',
+      lastName: familyName || '',
+    };
+  }
+
+  // Fall back to DisplayName only when it is not identical to the company name
+  const displayName = String(qbCustomer.DisplayName || '').trim();
+  const companyName = String(qbCustomer.CompanyName || '').trim();
+
+  if (displayName && displayName.toLowerCase() !== companyName.toLowerCase()) {
+    return { firstName: displayName, lastName: '' };
+  }
+
+  return null;
+}
+
+type QBContactPayload = {
+  customerId: string;
+  firstName: string;
+  lastName: string;
+  email: string | null;
+  phone: string | null;
+  mobile: string | null;
+  isPrimary: boolean;
+};
+
+/**
+ * Build a TitanOS contact payload from a QuickBooks Customer.
+ * Returns null when there is no useful contact-level data to store
+ * (no email, phone, mobile, or person name).
+ */
+function mapQBCustomerToContact(
+  qbCustomer: any,
+  customerId: string,
+): QBContactPayload | null {
+  const email = String(qbCustomer.PrimaryEmailAddr?.Address || '').trim() || null;
+  const phone = String(qbCustomer.PrimaryPhone?.FreeFormNumber || '').trim() || null;
+  const mobile = String(qbCustomer.Mobile?.FreeFormNumber || '').trim() || null;
+
+  const name = deriveQBContactName(qbCustomer);
+
+  // Only create a contact if there is something useful to store
+  if (!email && !phone && !mobile && !name) {
+    return null;
+  }
+
+  // If we have useful data but no name, fall back to "Primary Contact"
+  const { firstName, lastName } = name ?? { firstName: 'Primary Contact', lastName: '' };
+
+  return { customerId, firstName, lastName, email, phone, mobile, isPrimary: true };
+}
+
+type ContactUpsertOutcome = 'created' | 'updated' | 'skipped';
+
+/**
+ * Idempotent upsert of a primary contact for a QB-imported customer.
+ *
+ * Dedup order:
+ *   1. customerId + email (case-insensitive, trimmed) — update phone/mobile only
+ *   2. customerId + firstName + lastName (case-insensitive, trimmed) — update email/phone/mobile
+ *   3. No match — create new contact
+ */
+async function upsertQBContact(payload: QBContactPayload): Promise<ContactUpsertOutcome> {
+  const { customerId, firstName, lastName, email, phone, mobile, isPrimary } = payload;
+
+  // 1. Match by customerId + email
+  if (email) {
+    const [byEmail] = await db
+      .select()
+      .from(customerContacts)
+      .where(
+        and(
+          eq(customerContacts.customerId, customerId),
+          sql`LOWER(TRIM(${customerContacts.email})) = LOWER(TRIM(${email}))`,
+        ),
+      )
+      .limit(1);
+
+    if (byEmail) {
+      // Email already right — conservatively update only phone/mobile (name may be Titan-edited)
+      await db
+        .update(customerContacts)
+        .set({
+          phone: phone ?? byEmail.phone,
+          mobile: mobile ?? byEmail.mobile,
+          updatedAt: new Date(),
+        })
+        .where(eq(customerContacts.id, byEmail.id));
+      return 'updated';
+    }
+  }
+
+  // 2. Match by customerId + normalized name
+  const [byName] = await db
+    .select()
+    .from(customerContacts)
+    .where(
+      and(
+        eq(customerContacts.customerId, customerId),
+        sql`LOWER(TRIM(${customerContacts.firstName})) = LOWER(${firstName.trim()})`,
+        sql`LOWER(TRIM(${customerContacts.lastName})) = LOWER(${lastName.trim()})`,
+      ),
+    )
+    .limit(1);
+
+  if (byName) {
+    // Name matched — update email/phone/mobile; preserve existing values when QB has null
+    await db
+      .update(customerContacts)
+      .set({
+        email: email ?? byName.email,
+        phone: phone ?? byName.phone,
+        mobile: mobile ?? byName.mobile,
+        isPrimary: isPrimary || byName.isPrimary,
+        updatedAt: new Date(),
+      })
+      .where(eq(customerContacts.id, byName.id));
+    return 'updated';
+  }
+
+  // 3. No existing contact — create
+  await db.insert(customerContacts).values({
+    customerId,
+    firstName,
+    lastName,
+    email,
+    phone,
+    mobile,
+    isPrimary,
+  });
+  return 'created';
+}
+
 /**
  * Map local Customer to QuickBooks Customer format
  */
@@ -1142,7 +1290,8 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
 // ==================== Customer Sync Processors ====================
 
 /**
- * Process pull sync: Fetch customers from QuickBooks and upsert into local DB
+ * Process pull sync: Fetch customers from QuickBooks and upsert into local DB.
+ * Also creates or updates a primary contact record when QB provides contact-level data.
  */
 export async function processPullCustomers(jobId: string, organizationId: string): Promise<void> {
   try {
@@ -1167,14 +1316,18 @@ export async function processPullCustomers(jobId: string, organizationId: string
     const qbCustomers = response.QueryResponse?.Customer || [];
     console.log(`[QB Pull Customers] Found ${qbCustomers.length} customers in QuickBooks`);
 
-    let syncedCount = 0;
+    let customersCreated = 0;
+    let customersUpdated = 0;
+    let contactsCreated = 0;
+    let contactsUpdated = 0;
+    let skippedContacts = 0;
     let errorCount = 0;
 
     for (const qbCustomer of qbCustomers) {
       try {
         const localData = mapQBCustomerToLocal(qbCustomer);
 
-        // Check if customer exists by external ID or email
+        // Check if customer exists by external ID or email (org-scoped)
         const [existing] = await db
           .select()
           .from(customers)
@@ -1186,10 +1339,12 @@ export async function processPullCustomers(jobId: string, organizationId: string
           )
           .limit(1);
 
+        let customerId: string;
+
         if (existing) {
           const overrides: Record<string, boolean> = (existing as any).qbFieldOverrides || {};
           const filteredLocalData: any = { ...localData };
-          // QB wins by default, unless overridden.
+          // QB wins by default, unless the field is Titan-overridden.
           if (overrides.email) delete filteredLocalData.email;
           if (overrides.phone) delete filteredLocalData.phone;
           if (overrides.website) delete filteredLocalData.website;
@@ -1197,32 +1352,56 @@ export async function processPullCustomers(jobId: string, organizationId: string
           if (overrides.shippingAddress) delete filteredLocalData.shippingAddress;
           if (overrides.notes) delete filteredLocalData.notes;
 
-          // Update existing customer
           await db
             .update(customers)
-            .set({
-              ...filteredLocalData,
-              updatedAt: new Date(),
-            })
+            .set({ ...filteredLocalData, updatedAt: new Date() })
             .where(eq(customers.id, existing.id));
+
+          customerId = existing.id;
+          customersUpdated++;
           console.log(`[QB Pull Customers] Updated customer: ${localData.companyName}`);
         } else {
-          // Create new customer
-          await db.insert(customers).values({
-            ...localData,
-            customerType: 'business',
-            status: 'active',
-            organizationId,
-          } as any);
+          const [created] = await db
+            .insert(customers)
+            .values({
+              ...localData,
+              customerType: 'business',
+              status: 'active',
+              organizationId,
+            } as any)
+            .returning({ id: customers.id });
+
+          customerId = created.id;
+          customersCreated++;
           console.log(`[QB Pull Customers] Created customer: ${localData.companyName}`);
         }
 
-        syncedCount++;
+        // --- Contact upsert ---
+        const contactPayload = mapQBCustomerToContact(qbCustomer, customerId);
+        if (!contactPayload) {
+          skippedContacts++;
+        } else {
+          try {
+            const outcome = await upsertQBContact(contactPayload);
+            if (outcome === 'created') {
+              contactsCreated++;
+              console.log(`[QB Pull Customers] Created contact for: ${localData.companyName}`);
+            } else {
+              contactsUpdated++;
+            }
+          } catch (contactErr: any) {
+            console.error(`[QB Pull Customers] Contact upsert failed for customer ${localData.companyName}:`, contactErr.message);
+            errorCount++;
+          }
+        }
       } catch (error: any) {
         console.error(`[QB Pull Customers] Error syncing customer ${qbCustomer.DisplayName}:`, error);
         errorCount++;
       }
     }
+
+    // syncedCount kept for UI backward compat (Sync History shows "N synced")
+    const syncedCount = customersCreated + customersUpdated;
 
     // Update job status to completed
     await db
@@ -1230,11 +1409,24 @@ export async function processPullCustomers(jobId: string, organizationId: string
       .set({
         status: 'synced',
         updatedAt: new Date(),
-        payloadJson: { syncedCount, errorCount, total: qbCustomers.length } as any,
+        payloadJson: {
+          syncedCount,
+          customersCreated,
+          customersUpdated,
+          contactsCreated,
+          contactsUpdated,
+          skippedContacts,
+          errorCount,
+          totalQuickBooksCustomers: qbCustomers.length,
+        } as any,
       })
       .where(eq(accountingSyncJobs.id, jobId));
 
-    console.log(`[QB Pull Customers] Completed: ${syncedCount} synced, ${errorCount} errors`);
+    console.log(
+      `[QB Pull Customers] Completed: ${customersCreated} created, ${customersUpdated} updated, ` +
+      `${contactsCreated} contacts created, ${contactsUpdated} contacts updated, ` +
+      `${skippedContacts} contacts skipped, ${errorCount} errors`,
+    );
   } catch (error: any) {
     console.error(`[QB Pull Customers] Job failed:`, error);
     await db
