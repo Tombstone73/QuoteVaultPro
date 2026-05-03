@@ -1144,15 +1144,15 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
 /**
  * Process pull sync: Fetch customers from QuickBooks and upsert into local DB
  */
-export async function processPullCustomers(jobId: string): Promise<void> {
+export async function processPullCustomers(jobId: string, organizationId: string): Promise<void> {
   try {
-    console.log(`[QB Pull Customers] Starting job ${jobId}`);
+    console.log(`[QB Pull Customers] Starting job ${jobId}`, { organizationId });
 
-    const connection = await getActiveConnection();
+    const connection = await getActiveConnection(organizationId);
     if (!connection) {
-      throw new Error('QuickBooks not connected');
+      console.warn('[QB Pull Customers] No active QuickBooks connection found', { organizationId, jobId });
+      throw new Error(`QuickBooks not connected for organization ${organizationId}`);
     }
-    const organizationId = connection.organizationId || DEFAULT_ORGANIZATION_ID;
 
     // Update job status to processing
     await db
@@ -1162,7 +1162,7 @@ export async function processPullCustomers(jobId: string): Promise<void> {
 
     // Fetch all customers from QuickBooks
     const query = "SELECT * FROM Customer";
-    const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`);
+    const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
 
     const qbCustomers = response.QueryResponse?.Customer || [];
     console.log(`[QB Pull Customers] Found ${qbCustomers.length} customers in QuickBooks`);
@@ -1361,9 +1361,15 @@ export async function processPushCustomers(jobId: string): Promise<void> {
 /**
  * Process pull sync: Fetch invoices from QuickBooks
  */
-export async function processPullInvoices(jobId: string): Promise<void> {
+export async function processPullInvoices(jobId: string, organizationId: string): Promise<void> {
   try {
-    console.log(`[QB Pull Invoices] Starting job ${jobId}`);
+    console.log(`[QB Pull Invoices] Starting job ${jobId}`, { organizationId });
+
+    const connection = await getActiveConnection(organizationId);
+    if (!connection) {
+      console.warn('[QB Pull Invoices] No active QuickBooks connection found', { organizationId, jobId });
+      throw new Error(`QuickBooks not connected for organization ${organizationId}`);
+    }
 
     await db
       .update(accountingSyncJobs)
@@ -1371,7 +1377,7 @@ export async function processPullInvoices(jobId: string): Promise<void> {
       .where(eq(accountingSyncJobs.id, jobId));
 
     const query = "SELECT * FROM Invoice";
-    const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`);
+    const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
 
     const qbInvoices = response.QueryResponse?.Invoice || [];
     console.log(`[QB Pull Invoices] Found ${qbInvoices.length} invoices in QuickBooks`);
@@ -1406,12 +1412,17 @@ export async function processPullInvoices(jobId: string): Promise<void> {
           externalAccountingId: qbInvoice.Id,
         };
 
-        // Try to find matching local customer by QB customer ID
+        // Try to find matching local customer by QB customer ID, scoped to this org
         if (qbInvoice.CustomerRef?.value) {
           const [matchedCustomer] = await db
             .select()
             .from(customers)
-            .where(eq(customers.externalAccountingId, qbInvoice.CustomerRef.value))
+            .where(
+              and(
+                eq(customers.organizationId, organizationId),
+                eq(customers.externalAccountingId, qbInvoice.CustomerRef.value)
+              )
+            )
             .limit(1);
 
           if (matchedCustomer) {
@@ -1421,15 +1432,20 @@ export async function processPullInvoices(jobId: string): Promise<void> {
 
         // Skip if no customer match found
         if (!localData.customerId) {
-          console.warn(`[QB Pull Invoices] Skipping invoice ${qbInvoice.DocNumber} - no matching customer`);
+          console.warn(`[QB Pull Invoices] Skipping invoice ${qbInvoice.DocNumber} - no matching customer`, { organizationId });
           continue;
         }
 
-        // Check if invoice exists
+        // Check if invoice exists, scoped to this org
         const [existing] = await db
           .select()
           .from(invoices)
-          .where(eq(invoices.externalAccountingId, qbInvoice.Id))
+          .where(
+            and(
+              eq(invoices.organizationId, organizationId),
+              eq(invoices.externalAccountingId, qbInvoice.Id)
+            )
+          )
           .limit(1);
 
         if (existing) {
