@@ -2151,9 +2151,20 @@ export const customerContacts = pgTable("customer_contacts", {
   state: varchar("state", { length: 100 }),
   postalCode: varchar("postal_code", { length: 20 }),
   country: varchar("country", { length: 100 }),
+  // External source tracking for idempotent QB sync
+  externalSource: varchar("external_source", { length: 30 }),
+  externalSourceId: text("external_source_id"),
+  externalSourceType: varchar("external_source_type", { length: 50 }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (table) => [
+  // Partial unique index: one source-tracked contact per QB identity per customer.
+  // Only enforced when both external_source and external_source_id are non-null,
+  // so manually-created contacts (no source) are never affected.
+  uniqueIndex("customer_contacts_qb_source_uidx")
+    .on(table.customerId, table.externalSource, table.externalSourceId, table.externalSourceType)
+    .where(sql`external_source IS NOT NULL AND external_source_id IS NOT NULL`),
+]);
 
 export const insertCustomerContactSchema = createInsertSchema(customerContacts).omit({
   id: true,

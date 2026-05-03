@@ -288,6 +288,13 @@
       "when": 1778198400000,
       "tag": "0040_invoice_email_logs_type",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1778284800000,
+      "tag": "0041_contact_qb_source_tracking",
+      "breakpoints": true
     }
   ]
 }

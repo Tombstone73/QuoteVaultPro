@@ -727,6 +727,9 @@ type QBContactPayload = {
   phone: string | null;
   mobile: string | null;
   isPrimary: boolean;
+  externalSource: string;      // 'quickbooks'
+  externalSourceId: string;    // QB Customer.Id
+  externalSourceType: string;  // 'customer_primary_contact'
 };
 
 /**
@@ -752,7 +755,18 @@ function mapQBCustomerToContact(
   // If we have useful data but no name, fall back to "Primary Contact"
   const { firstName, lastName } = name ?? { firstName: 'Primary Contact', lastName: '' };
 
-  return { customerId, firstName, lastName, email, phone, mobile, isPrimary: true };
+  return {
+    customerId,
+    firstName,
+    lastName,
+    email,
+    phone,
+    mobile,
+    isPrimary: true,
+    externalSource: 'quickbooks',
+    externalSourceId: String(qbCustomer.Id),
+    externalSourceType: 'customer_primary_contact',
+  };
 }
 
 type ContactUpsertOutcome = 'created' | 'updated';
@@ -760,15 +774,51 @@ type ContactUpsertOutcome = 'created' | 'updated';
 /**
  * Idempotent upsert of a primary contact for a QB-imported customer.
  *
- * Dedup order:
- *   1. customerId + email (case-insensitive, trimmed) — update phone/mobile only
- *   2. customerId + firstName + lastName (case-insensitive, trimmed) — update email/phone/mobile
- *   3. No match — create new contact
+ * Match order (first match wins):
+ *   0. customerId + externalSource + externalSourceId + externalSourceType
+ *      → definitive QB identity; updates all safe fields including name
+ *   1. customerId + email (case-insensitive) — no source fields yet
+ *      → attaches QB source fields; conservatively updates phone/mobile
+ *   2. customerId + normalized firstName/lastName — no source fields yet
+ *      → attaches QB source fields; updates email/phone/mobile
+ *   3. No match → INSERT with all fields including source tracking
  */
 async function upsertQBContact(payload: QBContactPayload): Promise<ContactUpsertOutcome> {
-  const { customerId, firstName, lastName, email, phone, mobile, isPrimary } = payload;
+  const { customerId, firstName, lastName, email, phone, mobile, isPrimary,
+          externalSource, externalSourceId, externalSourceType } = payload;
 
-  // 1. Match by customerId + email
+  // Pass 0: match by definitive QB source identity
+  const [bySource] = await db
+    .select()
+    .from(customerContacts)
+    .where(
+      and(
+        eq(customerContacts.customerId, customerId),
+        eq(customerContacts.externalSource, externalSource),
+        eq(customerContacts.externalSourceId, externalSourceId),
+        eq(customerContacts.externalSourceType, externalSourceType),
+      ),
+    )
+    .limit(1);
+
+  if (bySource) {
+    // Definitive match — safe to update name since we hold the source ID
+    await db
+      .update(customerContacts)
+      .set({
+        firstName,
+        lastName,
+        email: email ?? bySource.email,
+        phone: phone ?? bySource.phone,
+        mobile: mobile ?? bySource.mobile,
+        isPrimary: isPrimary || bySource.isPrimary,
+        updatedAt: new Date(),
+      })
+      .where(eq(customerContacts.id, bySource.id));
+    return 'updated';
+  }
+
+  // Pass 1: match by email (contact predates source tracking)
   if (email) {
     const [byEmail] = await db
       .select()
@@ -776,16 +826,20 @@ async function upsertQBContact(payload: QBContactPayload): Promise<ContactUpsert
       .where(
         and(
           eq(customerContacts.customerId, customerId),
+          sql`${customerContacts.externalSource} IS NULL`,
           sql`LOWER(TRIM(${customerContacts.email})) = LOWER(TRIM(${email}))`,
         ),
       )
       .limit(1);
 
     if (byEmail) {
-      // Email already right — conservatively update only phone/mobile (name may be Titan-edited)
+      // Attach source fields; conservatively do not overwrite name (may be Titan-edited)
       await db
         .update(customerContacts)
         .set({
+          externalSource,
+          externalSourceId,
+          externalSourceType,
           phone: phone ?? byEmail.phone,
           mobile: mobile ?? byEmail.mobile,
           updatedAt: new Date(),
@@ -795,13 +849,14 @@ async function upsertQBContact(payload: QBContactPayload): Promise<ContactUpsert
     }
   }
 
-  // 2. Match by customerId + normalized name
+  // Pass 2: match by normalized name (contact predates source tracking)
   const [byName] = await db
     .select()
     .from(customerContacts)
     .where(
       and(
         eq(customerContacts.customerId, customerId),
+        sql`${customerContacts.externalSource} IS NULL`,
         sql`LOWER(TRIM(${customerContacts.firstName})) = LOWER(${firstName.trim()})`,
         sql`LOWER(TRIM(${customerContacts.lastName})) = LOWER(${lastName.trim()})`,
       ),
@@ -809,10 +864,13 @@ async function upsertQBContact(payload: QBContactPayload): Promise<ContactUpsert
     .limit(1);
 
   if (byName) {
-    // Name matched — update email/phone/mobile; preserve existing values when QB has null
+    // Attach source fields; update email/phone/mobile
     await db
       .update(customerContacts)
       .set({
+        externalSource,
+        externalSourceId,
+        externalSourceType,
         email: email ?? byName.email,
         phone: phone ?? byName.phone,
         mobile: mobile ?? byName.mobile,
@@ -823,7 +881,7 @@ async function upsertQBContact(payload: QBContactPayload): Promise<ContactUpsert
     return 'updated';
   }
 
-  // 3. No existing contact — create
+  // Pass 3: no match — create with full source tracking
   await db.insert(customerContacts).values({
     customerId,
     firstName,
@@ -832,6 +890,9 @@ async function upsertQBContact(payload: QBContactPayload): Promise<ContactUpsert
     phone,
     mobile,
     isPrimary,
+    externalSource,
+    externalSourceId,
+    externalSourceType,
   });
   return 'created';
 }
