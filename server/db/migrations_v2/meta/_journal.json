@@ -281,6 +281,13 @@
       "when": 1778112000000,
       "tag": "0039_invoice_reminder_logs_extended",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1778198400000,
+      "tag": "0040_invoice_email_logs_type",
+      "breakpoints": true
     }
   ]
 }

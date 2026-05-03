@@ -489,3 +489,160 @@ export async function getInvoiceReminderPreviewForOrg(
 
   return { settings, eligible, blocked };
 }
+
+// ---------------------------------------------------------------------------
+// List enrichment (batch, no N+1, used by GET /api/invoices)
+// ---------------------------------------------------------------------------
+
+/**
+ * UI-facing reminder status for the invoices list.
+ *
+ * due         — eligible and past due for a reminder
+ * sent        — reminder sent recently, repeat interval not yet elapsed
+ * disabled    — reminders are off for this org
+ * not_due     — invoice is not overdue yet (or not in billed state)
+ * stopped     — paid or voided; reminders will not fire again
+ * maxed_out   — max reminder count reached
+ * blocked     — no due date; can't compute eligibility
+ */
+export type ReminderListStatus =
+  | 'due'
+  | 'sent'
+  | 'disabled'
+  | 'not_due'
+  | 'stopped'
+  | 'maxed_out'
+  | 'blocked';
+
+export interface InvoiceListReminderInfo {
+  reminderStatus: ReminderListStatus;
+  lastReminderSentAt: Date | null;
+  lastReminderRecipient: string | null;
+  nextReminderDueAt: Date | null;
+}
+
+/** Maps ReminderEligibilityStatus → ReminderListStatus for the list UI. */
+function toReminderListStatus(status: ReminderEligibilityStatus): ReminderListStatus {
+  switch (status) {
+    case 'eligible':            return 'due';
+    case 'too_soon':            return 'sent';
+    case 'settings_disabled':   return 'disabled';
+    case 'not_overdue':
+    case 'not_billed':          return 'not_due';
+    case 'paid':
+    case 'void':                return 'stopped';
+    case 'max_reminders_reached': return 'maxed_out';
+    case 'no_due_date':         return 'blocked';
+    default:                    return 'not_due';
+  }
+}
+
+/**
+ * Batch-enriches a page of invoices with reminder list info.
+ *
+ * - Does NOT hit DB N+1 — one query for all reminder logs, one for settings.
+ * - If settings not provided they are fetched (caller may pass them to avoid
+ *   a second DB round-trip on every list page).
+ * - Uses computeInvoiceReminderEligibility so that status matches preview/job.
+ */
+export async function getInvoiceListReminderInfo(
+  invoiceRows: Array<{
+    id: string;
+    invoiceNumber: number;
+    status: string;
+    dueDate: Date | string | null;
+    totalCents: number;
+    balanceDue?: string | null;
+    customerName?: string;
+    recipientEmail?: string | null;
+  }>,
+  organizationId: string,
+  orgSettings?: InvoiceReminderSettings | null,
+  now: Date = new Date(),
+): Promise<Map<string, InvoiceListReminderInfo>> {
+  const result = new Map<string, InvoiceListReminderInfo>();
+
+  if (invoiceRows.length === 0) return result;
+
+  // Fetch settings if not provided
+  const settings =
+    orgSettings !== undefined
+      ? orgSettings
+      : await getInvoiceReminderSettingsForOrg(organizationId);
+
+  const defaultSettings: InvoiceReminderSettings = settings ?? {
+    id: '',
+    organizationId,
+    enabled: false,
+    firstReminderDaysAfterDue: null,
+    repeatIntervalDays: null,
+    maxReminders: null,
+    sendCopyToInternalEmail: false,
+    internalCopyEmail: null,
+    pauseForManualBillingCustomers: false,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const invoiceIds = invoiceRows.map((r) => r.id);
+
+  // Batch-fetch all successful reminder logs for these invoices (no N+1)
+  const logRows = await db
+    .select({
+      invoiceId: invoiceReminderLogs.invoiceId,
+      reminderNumber: invoiceReminderLogs.reminderNumber,
+      sentAt: invoiceReminderLogs.sentAt,
+      recipientEmail: invoiceReminderLogs.recipientEmail,
+    })
+    .from(invoiceReminderLogs)
+    .where(
+      and(
+        eq(invoiceReminderLogs.organizationId, organizationId),
+        inArray(invoiceReminderLogs.invoiceId, invoiceIds),
+        eq(invoiceReminderLogs.status, 'sent'),
+      ),
+    )
+    .orderBy(asc(invoiceReminderLogs.sentAt));
+
+  // Group logs by invoiceId
+  const logsByInvoice = new Map<string, typeof logRows>();
+  for (const row of logRows) {
+    if (!logsByInvoice.has(row.invoiceId)) logsByInvoice.set(row.invoiceId, []);
+    logsByInvoice.get(row.invoiceId)!.push(row);
+  }
+
+  for (const inv of invoiceRows) {
+    const successfulLogs = logsByInvoice.get(inv.id) ?? [];
+
+    const eligibility = computeInvoiceReminderEligibility({
+      invoice: {
+        id: inv.id,
+        invoiceNumber: inv.invoiceNumber,
+        customerName: inv.customerName ?? '',
+        recipientEmail: inv.recipientEmail ?? null,
+        status: inv.status,
+        dueDate: inv.dueDate,
+        totalCents: inv.totalCents,
+        balanceDue: inv.balanceDue ?? null,
+      },
+      reminderLogs: successfulLogs.map((l) => ({
+        sentAt: l.sentAt,
+        reminderNumber: l.reminderNumber,
+      })),
+      settings: defaultSettings,
+      now,
+    });
+
+    // Most recent successful reminder (last in sorted-asc array)
+    const lastLog = successfulLogs.length > 0 ? successfulLogs[successfulLogs.length - 1] : null;
+
+    result.set(inv.id, {
+      reminderStatus: toReminderListStatus(eligibility.status),
+      lastReminderSentAt: lastLog ? new Date(lastLog.sentAt) : null,
+      lastReminderRecipient: lastLog?.recipientEmail ?? null,
+      nextReminderDueAt: eligibility.nextReminderDueAt,
+    });
+  }
+
+  return result;
+}

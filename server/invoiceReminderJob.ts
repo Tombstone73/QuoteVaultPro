@@ -244,6 +244,7 @@ async function sendReminderForInvoice(opts: {
         invoiceId: inv.id,
         recipientEmail: inv.recipientEmail,
         status: 'failed',
+        type: 'reminder_send',
         messageId: null,
         sentAt: now,
       });
@@ -257,6 +258,7 @@ async function sendReminderForInvoice(opts: {
       invoiceId: inv.id,
       recipientEmail: inv.recipientEmail,
       status: 'sent',
+      type: 'reminder_send',
       messageId,
       sentAt: now,
     });

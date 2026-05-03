@@ -625,7 +625,7 @@ export default function InvoiceDetailPage() {
   const lastSentAt = (invoice as any)?.lastSentAt || null;
   const lastQbSyncedVersion = (invoice as any)?.lastQbSyncedVersion == null ? null : Number((invoice as any)?.lastQbSyncedVersion);
 
-  const customerHasLatest = emailStatus === 'sent';
+  const customerHasLatest = emailStatus === 'sent_current';
   const qbUpToDate = lastQbSyncedVersion === invoiceVersion;
   const qbSyncLabel = qbFailed
     ? 'Failed'
@@ -1334,7 +1334,7 @@ export default function InvoiceDetailPage() {
           />
           <StatusTile
             label="Customer Status"
-            value={<Badge variant={emailStatus === 'outdated' ? 'outline' : 'secondary'}>{customerHasLatest ? 'Sent latest' : emailStatus === 'outdated' ? 'Outdated' : 'Not sent'}</Badge>}
+            value={<Badge variant={emailStatus === 'sent_outdated' ? 'outline' : 'secondary'}>{customerHasLatest ? 'Sent latest' : emailStatus === 'sent_outdated' ? 'Updated After Sent' : 'Not sent'}</Badge>}
           />
           <StatusTile
             label="Accounting Status"

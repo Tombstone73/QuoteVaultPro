@@ -3,7 +3,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, companySettings, customers, invoiceLineItems, invoices, orders, organizations, payments, paymentWebhookEvents, users, manualPaymentMethodSchema } from "../../shared/schema";
 import { applyPayment, createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, refreshInvoiceStatus } from "../invoicesService";
-import { getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
+import { getInvoiceListReminderInfo, getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
 import { runInvoiceReminderJob } from "../invoiceReminderJob";
 import { updateInvoiceReminderSettingsSchema } from "../../shared/schema";
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
@@ -1186,11 +1186,38 @@ export async function registerMvpInvoicingRoutes(
         organizationId,
       );
 
+      // Batch-fetch reminder list info — shares settings fetch with reminder preview
+      const orgSettings = await getInvoiceReminderSettingsForOrg(organizationId);
+      const reminderInfoMap = await getInvoiceListReminderInfo(
+        rows.map((row) => ({
+          id: row.id,
+          invoiceNumber: row.invoiceNumber,
+          status: row.status,
+          dueDate: row.dueDate,
+          totalCents: row.totalCents,
+          balanceDue: (row as any).balanceDue ?? null,
+          customerName: (row as any).customerName ?? '',
+          recipientEmail: null, // not needed for list status derivation
+        })),
+        organizationId,
+        orgSettings,
+      );
+
       res.json({
         success: true,
         data: rows.map((row) => ({
           ...row,
-          ...(emailStatuses.get(row.id) || { lastSentAt: null, emailStatus: 'not_sent' as const }),
+          ...(emailStatuses.get(row.id) || {
+            lastSentAt: null,
+            lastInvoiceEmailRecipient: null,
+            emailStatus: 'not_sent' as const,
+          }),
+          ...(reminderInfoMap.get(row.id) || {
+            reminderStatus: 'not_due' as const,
+            lastReminderSentAt: null,
+            lastReminderRecipient: null,
+            nextReminderDueAt: null,
+          }),
         })),
       });
     } catch (error: any) {
@@ -1998,6 +2025,7 @@ export async function registerMvpInvoicingRoutes(
           invoiceId: id,
           recipientEmail,
           status: 'sent',
+          type: 'invoice_send',
           messageId,
           sentAt: now,
         });
@@ -2008,6 +2036,7 @@ export async function registerMvpInvoicingRoutes(
             invoiceId: id,
             recipientEmail,
             status: 'failed',
+            type: 'invoice_send',
             messageId: null,
             sentAt: now,
           });
