@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Search, Plus, FileText, DollarSign } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useInvoices, type InvoiceEmailStatus } from "@/hooks/useInvoices";
+import { useInvoices, type InvoiceEmailStatus, type ReminderListStatus } from "@/hooks/useInvoices";
 import { format } from "date-fns";
 import { ROUTES } from "@/config/routes";
 import {
@@ -39,8 +39,18 @@ const statusLabels: Record<string, string> = {
 
 const emailStatusMeta: Record<InvoiceEmailStatus, { label: string; variant: "muted" | "info" | "warning" }> = {
   not_sent: { label: "Not Sent", variant: "muted" },
+  sent_current: { label: "Sent", variant: "info" },
+  sent_outdated: { label: "Updated After Sent", variant: "warning" },
+};
+
+const reminderStatusMeta: Record<ReminderListStatus, { label: string; variant: "muted" | "info" | "warning" | "success" | "error" | "default" }> = {
+  due: { label: "Due", variant: "warning" },
   sent: { label: "Sent", variant: "info" },
-  outdated: { label: "Outdated", variant: "warning" },
+  disabled: { label: "Disabled", variant: "muted" },
+  not_due: { label: "Not Due", variant: "muted" },
+  stopped: { label: "Stopped", variant: "muted" },
+  maxed_out: { label: "Max Reached", variant: "muted" },
+  blocked: { label: "No Due Date", variant: "muted" },
 };
 
 export default function InvoicesListPage() {
@@ -168,6 +178,7 @@ export default function InvoicesListPage() {
                 <TitanTableHead>Due Date</TitanTableHead>
                 <TitanTableHead>Status</TitanTableHead>
                 <TitanTableHead>Last Sent</TitanTableHead>
+                <TitanTableHead>Reminders</TitanTableHead>
                 <TitanTableHead className="text-right">Total</TitanTableHead>
                 <TitanTableHead className="text-right">Paid</TitanTableHead>
                 <TitanTableHead className="text-right">Balance</TitanTableHead>
@@ -175,11 +186,11 @@ export default function InvoicesListPage() {
               </TitanTableRow>
             </TitanTableHeader>
             <TitanTableBody>
-              {isLoading && <TitanTableLoading colSpan={9} message="Loading invoices..." />}
+              {isLoading && <TitanTableLoading colSpan={10} message="Loading invoices..." />}
               
               {!isLoading && filteredInvoices.length === 0 && (
                 <TitanTableEmpty
-                  colSpan={9}
+                  colSpan={10}
                   icon={<FileText className="w-12 h-12" />}
                   message="No invoices found"
                   action={
@@ -218,6 +229,14 @@ export default function InvoicesListPage() {
                       <div>{invoice.lastSentAt ? formatDate(invoice.lastSentAt) : "—"}</div>
                       <StatusPill variant={emailStatusMeta[invoice.emailStatus].variant}>
                         {emailStatusMeta[invoice.emailStatus].label}
+                      </StatusPill>
+                    </div>
+                  </TitanTableCell>
+                  <TitanTableCell>
+                    <div className="space-y-1">
+                      <div>{invoice.lastReminderSentAt ? formatDate(invoice.lastReminderSentAt) : "—"}</div>
+                      <StatusPill variant={reminderStatusMeta[invoice.reminderStatus].variant}>
+                        {reminderStatusMeta[invoice.reminderStatus].label}
                       </StatusPill>
                     </div>
                   </TitanTableCell>

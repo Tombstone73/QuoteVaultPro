@@ -1,11 +1,27 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Invoice, Payment, InvoiceLineItem } from '@shared/schema';
 
-export type InvoiceEmailStatus = 'not_sent' | 'sent' | 'outdated';
+export type InvoiceEmailStatus = 'not_sent' | 'sent_current' | 'sent_outdated';
+
+export type ReminderListStatus =
+  | 'due'
+  | 'sent'
+  | 'disabled'
+  | 'not_due'
+  | 'stopped'
+  | 'maxed_out'
+  | 'blocked';
 
 export interface InvoiceListItem extends Omit<Invoice, 'lastSentAt'> {
+  // Email send tracking (original invoice send only — reminders excluded)
   lastSentAt: string | null;
+  lastInvoiceEmailRecipient: string | null;
   emailStatus: InvoiceEmailStatus;
+  // Reminder tracking
+  reminderStatus: ReminderListStatus;
+  lastReminderSentAt: string | null;
+  lastReminderRecipient: string | null;
+  nextReminderDueAt: string | null;
 }
 
 export interface InvoiceWithEmailTracking extends Omit<Invoice, 'lastSentAt'> {

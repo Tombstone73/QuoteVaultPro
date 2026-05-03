@@ -13,7 +13,13 @@ const TERM_OFFSETS: Record<string, number> = {
   custom: 0,
 };
 
-export type InvoiceEmailStatus = 'not_sent' | 'sent' | 'outdated';
+// 'sent_current'  = invoice was emailed and has not changed since
+// 'sent_outdated' = invoice was emailed but has been edited/updated since last send
+// 'not_sent'      = invoice has never been emailed as an original invoice send
+//
+// NOTE: reminder sends must NOT count toward this status — only type='invoice_send'
+// rows in invoice_email_logs should be queried here.
+export type InvoiceEmailStatus = 'not_sent' | 'sent_current' | 'sent_outdated';
 
 export function deriveInvoiceEmailStatus(updatedAt: Date | string | null | undefined, lastSentAt: Date | string | null | undefined): InvoiceEmailStatus {
   if (!lastSentAt) {
@@ -22,14 +28,18 @@ export function deriveInvoiceEmailStatus(updatedAt: Date | string | null | undef
 
   const updatedAtMs = updatedAt ? new Date(updatedAt).getTime() : 0;
   const lastSentAtMs = new Date(lastSentAt).getTime();
-  return updatedAtMs > lastSentAtMs ? 'outdated' : 'sent';
+  return updatedAtMs > lastSentAtMs ? 'sent_outdated' : 'sent_current';
 }
 
 export async function createInvoiceEmailLog(input: InsertInvoiceEmailLog): Promise<void> {
   await db.insert(invoiceEmailLogs).values(input as any);
 }
 
-export async function getInvoiceEmailStatus(invoiceId: string): Promise<{ lastSentAt: Date | null; emailStatus: InvoiceEmailStatus }> {
+export async function getInvoiceEmailStatus(invoiceId: string): Promise<{
+  lastSentAt: Date | null;
+  lastInvoiceEmailRecipient: string | null;
+  emailStatus: InvoiceEmailStatus;
+}> {
   const [invoice] = await db
     .select({ updatedAt: invoices.updatedAt })
     .from(invoices)
@@ -40,14 +50,39 @@ export async function getInvoiceEmailStatus(invoiceId: string): Promise<{ lastSe
     throw new Error('Invoice not found');
   }
 
+  // Only count type='invoice_send' rows — reminder sends must not affect emailStatus.
   const [latestSent] = await db
-    .select({ lastSentAt: sql<Date>`MAX(${invoiceEmailLogs.sentAt})` })
+    .select({
+      lastSentAt: sql<Date>`MAX(${invoiceEmailLogs.sentAt})`,
+    })
     .from(invoiceEmailLogs)
-    .where(and(eq(invoiceEmailLogs.invoiceId, invoiceId), eq(invoiceEmailLogs.status, 'sent')));
+    .where(and(
+      eq(invoiceEmailLogs.invoiceId, invoiceId),
+      eq(invoiceEmailLogs.status, 'sent'),
+      eq(invoiceEmailLogs.type, 'invoice_send'),
+    ));
 
   const lastSentAt = latestSent?.lastSentAt ? new Date(latestSent.lastSentAt) : null;
+
+  // Fetch recipient of the most recent successful invoice send
+  let lastInvoiceEmailRecipient: string | null = null;
+  if (lastSentAt) {
+    const [recipientRow] = await db
+      .select({ recipientEmail: invoiceEmailLogs.recipientEmail })
+      .from(invoiceEmailLogs)
+      .where(and(
+        eq(invoiceEmailLogs.invoiceId, invoiceId),
+        eq(invoiceEmailLogs.status, 'sent'),
+        eq(invoiceEmailLogs.type, 'invoice_send'),
+        sql`${invoiceEmailLogs.sentAt} = ${latestSent!.lastSentAt}`,
+      ))
+      .limit(1);
+    lastInvoiceEmailRecipient = recipientRow?.recipientEmail ?? null;
+  }
+
   return {
     lastSentAt,
+    lastInvoiceEmailRecipient,
     emailStatus: deriveInvoiceEmailStatus(invoice.updatedAt, lastSentAt),
   };
 }
@@ -55,8 +90,8 @@ export async function getInvoiceEmailStatus(invoiceId: string): Promise<{ lastSe
 export async function getInvoiceEmailStatuses(
   invoiceRows: Array<{ id: string; updatedAt: Date | string | null | undefined }>,
   organizationId?: string,
-): Promise<Map<string, { lastSentAt: Date | null; emailStatus: InvoiceEmailStatus }>> {
-  const result = new Map<string, { lastSentAt: Date | null; emailStatus: InvoiceEmailStatus }>();
+): Promise<Map<string, { lastSentAt: Date | null; lastInvoiceEmailRecipient: string | null; emailStatus: InvoiceEmailStatus }>> {
+  const result = new Map<string, { lastSentAt: Date | null; lastInvoiceEmailRecipient: string | null; emailStatus: InvoiceEmailStatus }>();
   if (invoiceRows.length === 0) {
     return result;
   }
@@ -65,11 +100,14 @@ export async function getInvoiceEmailStatuses(
   const conditions: any[] = [
     inArray(invoiceEmailLogs.invoiceId, invoiceIds),
     eq(invoiceEmailLogs.status, 'sent'),
+    // Only count original invoice sends — reminder sends must not affect emailStatus.
+    eq(invoiceEmailLogs.type, 'invoice_send'),
   ];
   if (organizationId) {
     conditions.push(eq(invoiceEmailLogs.organizationId, organizationId));
   }
 
+  // Get the max sentAt per invoice (one row per invoice)
   const latestSentRows = await db
     .select({
       invoiceId: invoiceEmailLogs.invoiceId,
@@ -83,10 +121,31 @@ export async function getInvoiceEmailStatuses(
     latestSentRows.map((row) => [row.invoiceId, row.lastSentAt ? new Date(row.lastSentAt) : null]),
   );
 
+  // Fetch the recipient for each invoice's most recent send in one query using DISTINCT ON
+  const recipientRows = await db
+    .select({
+      invoiceId: invoiceEmailLogs.invoiceId,
+      recipientEmail: invoiceEmailLogs.recipientEmail,
+      sentAt: invoiceEmailLogs.sentAt,
+    })
+    .from(invoiceEmailLogs)
+    .where(and(...conditions))
+    .orderBy(sql`${invoiceEmailLogs.invoiceId}, ${invoiceEmailLogs.sentAt} DESC`);
+
+  // Keep only the latest row per invoice (first encountered after sort by sentAt DESC)
+  const recipientByInvoiceId = new Map<string, string>();
+  for (const row of recipientRows) {
+    if (!recipientByInvoiceId.has(row.invoiceId)) {
+      recipientByInvoiceId.set(row.invoiceId, row.recipientEmail);
+    }
+  }
+
   for (const row of invoiceRows) {
     const lastSentAt = lastSentByInvoiceId.get(row.id) ?? null;
+    const lastInvoiceEmailRecipient = recipientByInvoiceId.get(row.id) ?? null;
     result.set(row.id, {
       lastSentAt,
+      lastInvoiceEmailRecipient,
       emailStatus: deriveInvoiceEmailStatus(row.updatedAt, lastSentAt),
     });
   }
