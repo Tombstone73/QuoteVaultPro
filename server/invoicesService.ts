@@ -434,6 +434,9 @@ export async function applyPayment(invoiceId: string, userId: string, data: { am
     const rel = await getInvoiceWithRelations(invoiceId);
     if (!rel) throw new Error('Invoice not found');
     const { invoice } = rel;
+    if (String((invoice as any).importSource || '').trim().toLowerCase() === 'quickbooks') {
+      throw new Error('Payments for imported QuickBooks invoices should be reconciled from QuickBooks until payment sync is enabled.');
+    }
     const existingStatus = String(invoice.status || '').toLowerCase();
     if (existingStatus === 'void') throw new Error('Cannot record payment on a void invoice');
 

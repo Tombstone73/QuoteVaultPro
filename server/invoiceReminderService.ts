@@ -248,6 +248,7 @@ export async function getCandidateInvoicesForReminderRun(
     .where(
       and(
         eq(invoices.organizationId, organizationId),
+        eq(invoices.isHistorical, false),
         sql`${invoices.status} NOT IN ('draft', 'void')`,
         isNotNull(invoices.dueDate),
         sql`${invoices.balanceDue}::numeric > 0`,
