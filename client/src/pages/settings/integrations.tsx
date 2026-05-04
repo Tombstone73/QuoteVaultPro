@@ -820,7 +820,7 @@ export default function SettingsIntegrations() {
                             <TableHead className="text-xs">Date</TableHead>
                             <TableHead className="text-xs">Total</TableHead>
                             <TableHead className="text-xs">Balance</TableHead>
-                            <TableHead className="text-xs">Customer PO</TableHead>
+                            <TableHead className="text-xs">Customer PO / Description</TableHead>
                             <TableHead className="text-xs">Type</TableHead>
                             <TableHead className="text-xs">Status</TableHead>
                           </TableRow>
@@ -861,7 +861,28 @@ export default function SettingsIntegrations() {
                                   <TableCell className="text-xs">${row.balance.toFixed(2)}</TableCell>
                                   <TableCell className="text-xs">
                                     {row.customerPoNumber
-                                      ? <span title={`Source: ${row.customerPoSource ?? 'unknown'}`}>{row.customerPoNumber}</span>
+                                      ? (() => {
+                                          const sourceLabel =
+                                            row.customerPoSource === 'line_description'
+                                              ? 'Derived from QuickBooks line descriptions'
+                                              : row.customerPoSource === 'custom_field_reference'
+                                              ? 'From QuickBooks reference custom field'
+                                              : row.customerPoSource === 'custom_field'
+                                              ? 'From QuickBooks PO custom field'
+                                              : row.customerPoSource === 'customer_memo'
+                                              ? 'From QuickBooks Customer Memo'
+                                              : row.customerPoSource === 'private_note'
+                                              ? 'From QuickBooks Private Note'
+                                              : `Source: ${row.customerPoSource ?? 'unknown'}`;
+                                          return (
+                                            <span title={sourceLabel} className="cursor-help">
+                                              {row.customerPoNumber}
+                                              {(row.customerPoSource === 'line_description' || row.customerPoSource === 'custom_field_reference') && (
+                                                <span className="ml-1 text-muted-foreground text-xs">(desc)</span>
+                                              )}
+                                            </span>
+                                          );
+                                        })()
                                       : hasDebug
                                         ? (
                                           <button
@@ -873,10 +894,10 @@ export default function SettingsIntegrations() {
                                               return next;
                                             })}
                                           >
-                                            No PO detected — inspect fields
+                                            No PO / description detected — inspect fields
                                           </button>
                                         )
-                                        : <span className="text-muted-foreground italic text-xs">No PO detected. Enable diagnostics to inspect QB fields.</span>
+                                        : <span className="text-muted-foreground italic text-xs">No PO / description detected. Enable diagnostics to inspect QB fields.</span>
                                     }
                                   </TableCell>
                                   <TableCell className="text-xs">
