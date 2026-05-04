@@ -32,6 +32,12 @@ function paymentsDebugLogsEnabled(): boolean {
   return String(process.env.PAYMENTS_DEBUG_LOGS || '').trim() === '1';
 }
 
+const IMPORTED_QB_PAYMENT_RECONCILIATION_MESSAGE = 'Payments for imported QuickBooks invoices should be reconciled from QuickBooks until payment sync is enabled.';
+
+function isImportedQuickBooksInvoice(invoice: Record<string, any> | null | undefined): boolean {
+  return String(invoice?.importSource || '').trim().toLowerCase() === 'quickbooks';
+}
+
 function withNormalizedInvoiceDisplay<T extends Record<string, any>>(invoice: T) {
   return {
     ...invoice,
@@ -141,6 +147,13 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ success: false, error: "Invoice not found" });
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ success: false, error: "Invoice not found" });
+      if (isImportedQuickBooksInvoice(inv)) {
+        return res.status(409).json({
+          success: false,
+          error: IMPORTED_QB_PAYMENT_RECONCILIATION_MESSAGE,
+          code: 'IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED',
+        });
+      }
 
       const status = String(inv.status || '').toLowerCase();
       if (status === 'void') return res.status(400).json({ success: false, error: "Cannot pay a void invoice" });
@@ -404,6 +417,13 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ success: false, error: "Invoice not found" });
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ success: false, error: "Invoice not found" });
+      if (isImportedQuickBooksInvoice(inv)) {
+        return res.status(409).json({
+          success: false,
+          error: IMPORTED_QB_PAYMENT_RECONCILIATION_MESSAGE,
+          code: 'IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED',
+        });
+      }
 
       const { paymentIntentId } = req.body;
       if (!paymentIntentId || typeof paymentIntentId !== 'string') {
@@ -690,6 +710,12 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ error: 'Invoice not found' });
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ error: 'Invoice not found' });
+      if (isImportedQuickBooksInvoice(inv)) {
+        return res.status(409).json({
+          error: IMPORTED_QB_PAYMENT_RECONCILIATION_MESSAGE,
+          code: 'IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED',
+        });
+      }
 
       const status = String(inv.status || '').toLowerCase();
       if (status === 'void') return res.status(400).json({ error: 'Cannot record payment on a void invoice' });
@@ -1737,6 +1763,12 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ error: "Invoice not found" });
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
+      if (isImportedQuickBooksInvoice(inv)) {
+        return res.status(409).json({
+          error: IMPORTED_QB_PAYMENT_RECONCILIATION_MESSAGE,
+          code: 'IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED',
+        });
+      }
 
       const { amountCents, amount, method, note, notes } = req.body || {};
       const amt = amountCents !== undefined ? Number(amountCents) / 100 : Number(amount);
@@ -1784,6 +1816,7 @@ export async function registerMvpInvoicingRoutes(
       if (existing.organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
 
       const existingStatus = String(existing.status || "").toLowerCase();
+      const isImportedQuickBooks = isImportedQuickBooksInvoice(existing);
       const isPaid = existingStatus === "paid";
       const isVoid = existingStatus === "void";
       const balanceDue = Number(existing.balanceDue || Number(existing.total) - Number(existing.amountPaid));
@@ -1807,9 +1840,14 @@ export async function registerMvpInvoicingRoutes(
 
       // Customer/customer-visible identity changes
       if (typeof req.body.customerId === "string" && req.body.customerId && req.body.customerId !== existing.customerId) {
+        if (isImportedQuickBooks) return res.status(400).json({ error: "Imported QuickBooks invoices are read-only for customer/accounting fields" });
         if (isPaid) return res.status(400).json({ error: "Paid invoices are locked" });
         if (isVoid) return res.status(400).json({ error: "Void invoices are locked" });
         updates.customerId = req.body.customerId;
+      }
+
+      if (isImportedQuickBooks && (typeof req.body.terms === "string" || typeof req.body.customDueDate === "string")) {
+        return res.status(400).json({ error: "Imported QuickBooks invoices are read-only for customer/accounting fields" });
       }
 
       const financialUpdates: any = {};
@@ -1844,6 +1882,7 @@ export async function registerMvpInvoicingRoutes(
       }
 
       if (hasFinancialBody) {
+        if (isImportedQuickBooks) return res.status(400).json({ error: "Imported QuickBooks invoices are read-only for customer/accounting fields" });
         if (isPaid) return res.status(400).json({ error: "Paid invoices are locked" });
         if (isVoid) return res.status(400).json({ error: "Void invoices are locked" });
 
