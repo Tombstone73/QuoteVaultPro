@@ -2115,6 +2115,75 @@ export type InsertImportJob = typeof importJobs.$inferInsert;
 export type ImportJobRow = typeof importJobRows.$inferSelect;
 export type InsertImportJobRow = typeof importJobRows.$inferInsert;
 
+// ==================== Material Import Batches ====================
+// Dedicated staging tables for the CSV materials import workflow.
+// Permanent materials are only modified during the explicit commit step.
+// Batch status values: uploaded | parsed | validated | review_ready | committed | failed | cancelled
+// Row status values:   pending | valid | invalid | conflict | ready_to_apply | applied | skipped
+
+export type MaterialImportBatchStatus =
+  | 'uploaded'
+  | 'parsed'
+  | 'validated'
+  | 'review_ready'
+  | 'committed'
+  | 'failed'
+  | 'cancelled';
+
+export type MaterialImportRowStatus =
+  | 'pending'
+  | 'valid'
+  | 'invalid'
+  | 'conflict'
+  | 'ready_to_apply'
+  | 'applied'
+  | 'skipped';
+
+export type MaterialImportRowAction = 'create' | 'update' | 'skip' | null;
+
+export const materialImportBatches = pgTable('material_import_batches', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  status: varchar('status', { length: 30 }).notNull().default('uploaded').$type<MaterialImportBatchStatus>(),
+  sourceFilename: varchar('source_filename', { length: 255 }),
+  createdByUserId: varchar('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  totalRows: integer('total_rows').notNull().default(0),
+  validRows: integer('valid_rows').notNull().default(0),
+  invalidRows: integer('invalid_rows').notNull().default(0),
+  conflictRows: integer('conflict_rows').notNull().default(0),
+  skippedRows: integer('skipped_rows').notNull().default(0),
+  errorMessage: text('error_message'),
+  summaryJson: jsonb('summary_json'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  index('material_import_batches_org_idx').on(table.organizationId),
+  index('material_import_batches_status_idx').on(table.status),
+  index('material_import_batches_created_idx').on(table.createdAt),
+]);
+
+export const materialImportRows = pgTable('material_import_rows', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  batchId: varchar('batch_id').notNull().references(() => materialImportBatches.id, { onDelete: 'cascade' }),
+  rowNumber: integer('row_number').notNull(),
+  status: varchar('status', { length: 30 }).notNull().default('pending').$type<MaterialImportRowStatus>(),
+  action: varchar('action', { length: 20 }).$type<'create' | 'update' | 'skip'>(),
+  existingMaterialId: varchar('existing_material_id').references(() => materials.id, { onDelete: 'set null' }),
+  rawJson: jsonb('raw_json'),
+  normalizedJson: jsonb('normalized_json'),
+  validationErrors: jsonb('validation_errors').$type<string[]>(),
+  matchedBy: varchar('matched_by', { length: 30 }).$type<'material_id' | 'sku' | 'vendor_lookup' | 'name' | 'new' | 'conflict'>(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  index('material_import_rows_batch_idx').on(table.batchId),
+  index('material_import_rows_org_idx').on(table.organizationId),
+  index('material_import_rows_status_idx').on(table.status),
+]);
+
+export type MaterialImportBatch = typeof materialImportBatches.$inferSelect;
+export type MaterialImportRow = typeof materialImportRows.$inferSelect;
+
 // Customer Visible Products - Junction table for portal product visibility
 export const customerVisibleProducts = pgTable("customer_visible_products", {
   customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'cascade' }),
