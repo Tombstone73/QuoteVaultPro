@@ -2486,6 +2486,7 @@ export async function importQBInvoicesByIds(
       const balance = Number(qbInvoice.Balance ?? 0);
       const totalAmt = Number(qbInvoice.TotalAmt ?? 0);
       const taxAmt = Number(qbInvoice.TxnTaxDetail?.TotalTax ?? 0);
+      const amountPaid = Math.max(0, totalAmt - balance);
       const qbCustomerRefId: string | null = qbInvoice.CustomerRef?.value ?? null;
       const lineItemsSnapshot: any[] | null = Array.isArray(qbInvoice.Line) ? qbInvoice.Line : null;
       const { poNumber: extractedPo, source: extractedPoSource } = extractQBInvoiceCustomerPo(qbInvoice);
@@ -2544,6 +2545,7 @@ export async function importQBInvoicesByIds(
             subtotal: totalAmt.toFixed(2),
             tax: taxAmt.toFixed(2),
             total: totalAmt.toFixed(2),
+            amountPaid: amountPaid.toFixed(2),
             balanceDue: balance.toFixed(2),
             importSource: 'quickbooks',
             isHistorical,
@@ -2574,6 +2576,7 @@ export async function importQBInvoicesByIds(
           taxCents: Math.round(taxAmt * 100),
           totalCents: Math.round(totalAmt * 100),
           currency: 'USD',
+          amountPaid: amountPaid.toFixed(2),
           balanceDue: balance.toFixed(2),
           externalAccountingId: qbInvoice.Id,
           qbInvoiceId: qbInvoice.Id,

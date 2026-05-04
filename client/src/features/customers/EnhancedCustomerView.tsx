@@ -1852,11 +1852,11 @@ function InvoicesTable({
                 {formatDate(inv.createdAt)}
               </td>
               <td className="px-4 py-3 text-titan-sm font-medium text-titan-text-primary">
-                {formatCurrency(inv.total)}
+                {formatCurrency(inv.displayTotal || inv.total)}
               </td>
               {!compact && (
                 <td className="px-4 py-3 text-titan-sm font-medium text-titan-warning">
-                  {formatCurrency(inv.balanceDue || inv.total)}
+                  {formatCurrency(inv.displayRemaining || inv.balanceDue || inv.total)}
                 </td>
               )}
               <td className="px-4 py-3">
@@ -1866,7 +1866,7 @@ function InvoicesTable({
                     getStatusStyle(inv.status)
                   )}
                 >
-                  {formatStatusLabel(inv.status)}
+                  {inv.displayStatus || formatStatusLabel(inv.status)}
                 </span>
               </td>
               <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
