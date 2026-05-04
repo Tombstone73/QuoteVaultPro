@@ -38,11 +38,36 @@ function isImportedQuickBooksInvoice(invoice: Record<string, any> | null | undef
   return String(invoice?.importSource || '').trim().toLowerCase() === 'quickbooks';
 }
 
-function withNormalizedInvoiceDisplay<T extends Record<string, any>>(invoice: T) {
+function toInvoiceAccountingPayments(paymentRows: Array<Record<string, any>> | undefined) {
+  return (paymentRows || []).map((payment) => ({
+    id: payment.id,
+    status: payment.status,
+    amountCents: Number(payment.amountCents || 0),
+    syncStatus: payment.syncStatus,
+    externalAccountingId: payment.externalAccountingId,
+    qbReconciledAt: payment.qbReconciledAt,
+  }));
+}
+
+function withNormalizedInvoiceDisplay<T extends Record<string, any>>(invoice: T, paymentRows?: Array<Record<string, any>>) {
   return {
     ...invoice,
-    ...normalizeInvoiceAccountingDisplay(invoice),
+    ...normalizeInvoiceAccountingDisplay({
+      ...invoice,
+      payments: paymentRows ? toInvoiceAccountingPayments(paymentRows) : undefined,
+    }),
   };
+}
+
+function getImportedQuickBooksPaymentBlockReason(invoice: Record<string, any>, paymentRows: Array<Record<string, any>>) {
+  if (!isImportedQuickBooksInvoice(invoice)) return null;
+
+  const normalized = withNormalizedInvoiceDisplay(invoice, paymentRows) as any;
+  if (Boolean(invoice.isHistorical)) return 'Historical imported QuickBooks invoices cannot accept payments.';
+  if (!String(invoice.qbInvoiceId || '').trim()) return 'Imported QuickBooks invoice is missing its QuickBooks Invoice ID.';
+  if (String(invoice.status || '').trim().toLowerCase() === 'void') return 'Cannot pay a void invoice';
+  if (Number(normalized.displayRemainingCents || 0) <= 0) return 'Invoice is already paid';
+  return null;
 }
 
 async function getQuickBooksSyncPolicyForOrganization(organizationId: string): Promise<QuickBooksSyncPolicy> {
@@ -147,16 +172,6 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ success: false, error: "Invoice not found" });
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ success: false, error: "Invoice not found" });
-      if (isImportedQuickBooksInvoice(inv)) {
-        return res.status(409).json({
-          success: false,
-          error: IMPORTED_QB_PAYMENT_RECONCILIATION_MESSAGE,
-          code: 'IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED',
-        });
-      }
-
-      const status = String(inv.status || '').toLowerCase();
-      if (status === 'void') return res.status(400).json({ success: false, error: "Cannot pay a void invoice" });
 
       const paymentRows = await db
         .select()
@@ -164,12 +179,22 @@ export async function registerMvpInvoicingRoutes(
         .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)))
         .orderBy(desc(payments.createdAt));
 
-      const rollup = computeInvoicePaymentRollup({
-        invoiceTotalCents: Number(inv.totalCents || 0),
-        payments: paymentRows.map((p: any) => ({ id: p.id, status: String(p.status || 'succeeded'), amountCents: Number(p.amountCents || 0) })),
-      });
+      const importedPaymentBlockReason = getImportedQuickBooksPaymentBlockReason(inv, paymentRows as any);
+      if (importedPaymentBlockReason) {
+        return res.status(409).json({
+          success: false,
+          error: importedPaymentBlockReason,
+          code: 'IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED',
+        });
+      }
 
-      if (rollup.amountDueCents <= 0) return res.status(400).json({ success: false, error: "Invoice is already paid" });
+      const status = String(inv.status || '').toLowerCase();
+      if (status === 'void') return res.status(400).json({ success: false, error: "Cannot pay a void invoice" });
+
+      const normalizedInvoice = withNormalizedInvoiceDisplay(inv, paymentRows as any) as any;
+      const amountDueCents = Number(normalizedInvoice.displayRemainingCents || 0);
+
+      if (amountDueCents <= 0) return res.status(400).json({ success: false, error: "Invoice is already paid" });
 
       const currency = String(inv.currency || 'USD');
 
@@ -183,7 +208,7 @@ export async function registerMvpInvoicingRoutes(
             eq(payments.invoiceId, inv.id),
             eq(payments.provider, 'stripe'),
             eq(payments.status, 'pending'),
-            eq(payments.amountCents, rollup.amountDueCents)
+            eq(payments.amountCents, amountDueCents)
           )
         )
         .orderBy(desc(payments.createdAt))
@@ -205,7 +230,7 @@ export async function registerMvpInvoicingRoutes(
                 invoiceId: inv.id,
                 paymentId: String((existingPending as any).id),
                 stripePaymentIntentId: existingIntentId,
-                amountCents: rollup.amountDueCents,
+                amountCents: amountDueCents,
               });
 
               const now = new Date();
@@ -225,7 +250,7 @@ export async function registerMvpInvoicingRoutes(
                 invoiceId: inv.id,
                 paymentId: String((existingPending as any).id),
                 stripePaymentIntentId: existingIntentId,
-                amountCents: rollup.amountDueCents,
+                amountCents: amountDueCents,
               });
 
               return res.json({
@@ -268,12 +293,12 @@ export async function registerMvpInvoicingRoutes(
         }
       }
 
-      const idempotencyKey = `${organizationId}:${inv.id}:${rollup.amountDueCents}`;
+      const idempotencyKey = `${organizationId}:${inv.id}:${amountDueCents}`;
 
       const stripe = getStripeClient();
       const pi = await stripe.paymentIntents.create(
         {
-          amount: rollup.amountDueCents,
+          amount: amountDueCents,
           currency: currency.toLowerCase(),
           description: `Invoice #${inv.invoiceNumber}`,
           automatic_payment_methods: { enabled: true },
@@ -281,6 +306,8 @@ export async function registerMvpInvoicingRoutes(
             organizationId,
             invoiceId: inv.id,
             stripeAccountId,
+            importedQuickBooksInvoice: isImportedQuickBooksInvoice(inv) ? 'true' : 'false',
+            qbInvoiceId: inv.qbInvoiceId || null,
           },
         },
         {
@@ -308,7 +335,7 @@ export async function registerMvpInvoicingRoutes(
           invoiceId: inv.id,
           paymentId: String((existingByIntent as any).id),
           stripePaymentIntentId: paymentIntentId,
-          amountCents: rollup.amountDueCents,
+          amountCents: amountDueCents,
         });
         return res.json({ success: true, data: { clientSecret, paymentId: (existingByIntent as any).id } });
       }
@@ -321,14 +348,16 @@ export async function registerMvpInvoicingRoutes(
           invoiceId: inv.id,
           provider: 'stripe',
           status: 'pending',
-          amount: (rollup.amountDueCents / 100).toFixed(2),
-          amountCents: rollup.amountDueCents,
+          amount: (amountDueCents / 100).toFixed(2),
+          amountCents: amountDueCents,
           currency,
           stripePaymentIntentId: paymentIntentId,
           metadata: {
             invoiceId: inv.id,
             organizationId,
             stripeAccountId,
+            importedQuickBooksInvoice: isImportedQuickBooksInvoice(inv),
+            qbInvoiceId: inv.qbInvoiceId || null,
           },
           method: 'credit_card',
           appliedAt: now,
@@ -358,7 +387,7 @@ export async function registerMvpInvoicingRoutes(
             invoiceId: inv.id,
             paymentId: String((existingAfterConflict as any).id),
             stripePaymentIntentId: paymentIntentId,
-            amountCents: rollup.amountDueCents,
+            amountCents: amountDueCents,
           });
           return res.json({ success: true, data: { clientSecret, paymentId: (existingAfterConflict as any).id } });
         }
@@ -372,7 +401,7 @@ export async function registerMvpInvoicingRoutes(
         invoiceId: inv.id,
         paymentId: String(payment.id),
         stripePaymentIntentId: paymentIntentId,
-        amountCents: rollup.amountDueCents,
+        amountCents: amountDueCents,
       });
 
       try {
@@ -385,7 +414,7 @@ export async function registerMvpInvoicingRoutes(
           entityId: inv.id,
           entityName: String(inv.invoiceNumber),
           description: 'Stripe PaymentIntent created',
-          newValues: { provider: 'stripe', stripePaymentIntentId: paymentIntentId, amountCents: rollup.amountDueCents } as any,
+          newValues: { provider: 'stripe', stripePaymentIntentId: paymentIntentId, amountCents: amountDueCents } as any,
           createdAt: now,
         } as any);
       } catch {}
@@ -417,10 +446,11 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ success: false, error: "Invoice not found" });
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ success: false, error: "Invoice not found" });
-      if (isImportedQuickBooksInvoice(inv)) {
+      const importedPaymentBlockReason = getImportedQuickBooksPaymentBlockReason(inv, rel.payments as any);
+      if (importedPaymentBlockReason) {
         return res.status(409).json({
           success: false,
-          error: IMPORTED_QB_PAYMENT_RECONCILIATION_MESSAGE,
+          error: importedPaymentBlockReason,
           code: 'IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED',
         });
       }
@@ -710,9 +740,10 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ error: 'Invoice not found' });
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ error: 'Invoice not found' });
-      if (isImportedQuickBooksInvoice(inv)) {
+      const importedPaymentBlockReason = getImportedQuickBooksPaymentBlockReason(inv, rel.payments as any);
+      if (importedPaymentBlockReason) {
         return res.status(409).json({
-          error: IMPORTED_QB_PAYMENT_RECONCILIATION_MESSAGE,
+          error: importedPaymentBlockReason,
           code: 'IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED',
         });
       }
@@ -747,6 +778,8 @@ export async function registerMvpInvoicingRoutes(
           succeededAt: appliedAt,
           metadata: {
             ...(body.reference ? { reference: body.reference } : {}),
+            importedQuickBooksInvoice: isImportedQuickBooksInvoice(inv),
+            qbInvoiceId: inv.qbInvoiceId || null,
           },
           createdByUserId: userId,
           syncStatus: 'pending',
@@ -1270,7 +1303,7 @@ export async function registerMvpInvoicingRoutes(
       if ((rel.invoice as any).organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
 
       const emailTracking = await getInvoiceEmailStatus(req.params.id);
-      const normalizedInvoice = withNormalizedInvoiceDisplay({ ...(rel.invoice as any), ...emailTracking });
+      const normalizedInvoice = withNormalizedInvoiceDisplay({ ...(rel.invoice as any), ...emailTracking }, rel.payments as any);
       const normalizedQuickBooksLines = normalizeQuickBooksLineItemsSnapshot((rel.invoice as any).qbLineItemsSnapshot);
 
       if (normalizedInvoice.isImportedFromQuickBooks) {
@@ -1763,9 +1796,10 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ error: "Invoice not found" });
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
-      if (isImportedQuickBooksInvoice(inv)) {
+      const importedPaymentBlockReason = getImportedQuickBooksPaymentBlockReason(inv, rel.payments as any);
+      if (importedPaymentBlockReason) {
         return res.status(409).json({
-          error: IMPORTED_QB_PAYMENT_RECONCILIATION_MESSAGE,
+          error: importedPaymentBlockReason,
           code: 'IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED',
         });
       }
