@@ -225,6 +225,7 @@ import { registerSystemRoutes } from './routes/system.routes';
 import { registerAuthRoutes } from './routes/auth.routes';
 import { registerSearchRoutes } from './routes/search.routes';
 import { registerDebugRoutes } from './routes/debug.routes';
+import { registerPricingAuditRoutes } from './routes/pricingAudit.routes';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -351,6 +352,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Debug routes extracted to ./routes/debug.routes.ts (do NOT re-add here)
   registerDebugRoutes(app, { isAuthenticated });
+
+  // Pricing audit route (admin only, read-only)
+  registerPricingAuditRoutes(app, { isAuthenticated, tenantContext, isAdmin });
 
   const assertInternalUser = (req: any, res: any) => {
     const role = req.user?.role || "";
