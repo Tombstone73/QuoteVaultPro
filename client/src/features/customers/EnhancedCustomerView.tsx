@@ -76,6 +76,7 @@ import { useInvoices } from "@/hooks/useInvoices";
 import { ROUTES } from "@/config/routes";
 import { cn } from "@/lib/utils";
 import BackNavControls from "@/components/BackNavControls";
+import { ContactFlagPill } from "@/components/ContactFlagPill";
 
 // ============================================================
 // TYPE DEFINITIONS
@@ -630,7 +631,7 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
               >
                 {/* Contact Info */}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="text-titan-sm font-medium text-titan-text-primary">
                       {contact.firstName} {contact.lastName}
                     </span>
@@ -639,6 +640,9 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
                         Primary
                       </span>
                     )}
+                    {contact.flags?.map((flag) => (
+                      <ContactFlagPill key={flag} flag={flag} />
+                    ))}
                   </div>
                   <div className="flex items-center gap-3 mt-0.5 text-titan-xs text-titan-text-muted">
                     {contact.title && <span>{contact.title}</span>}
