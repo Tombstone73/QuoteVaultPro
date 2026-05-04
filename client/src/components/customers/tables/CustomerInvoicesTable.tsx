@@ -59,9 +59,9 @@ export function CustomerInvoicesTable({ customerId }: { customerId: string }) {
                   switch (c.id) {
                     case "invoiceNumber": return <td className="px-3 py-2 font-mono" style={{ color: 'var(--text-primary)' }} key={c.id}>{inv.invoiceNumber}</td>;
                     case "date": return <td className="px-3 py-2" style={{ color: 'var(--text-muted)' }} key={c.id}>{inv.createdAt ? new Date(inv.createdAt).toLocaleDateString() : "-"}</td>;
-                    case "amount": return <td className="px-3 py-2" style={{ color: 'var(--text-muted)' }} key={c.id}>${Number(inv.total || 0).toFixed(2)}</td>;
+                    case "amount": return <td className="px-3 py-2" style={{ color: 'var(--text-muted)' }} key={c.id}>${Number(inv.displayTotal || inv.total || 0).toFixed(2)}</td>;
                     case "dueDate": return <td className="px-3 py-2" style={{ color: 'var(--text-muted)' }} key={c.id}>{inv.dueDate ? new Date(inv.dueDate).toLocaleDateString() : "-"}</td>;
-                    case "status": return <td className="px-3 py-2" style={{ color: 'var(--text-muted)' }} key={c.id}>{inv.status}</td>;
+                    case "status": return <td className="px-3 py-2" style={{ color: 'var(--text-muted)' }} key={c.id}>{inv.displayStatus || inv.status}</td>;
                     case "actions": return <td className="px-3 py-2 text-right" key={c.id}><a style={{ color: 'var(--accent-primary)' }} className="hover:underline" href={`/invoices/${inv.id}`}>View</a></td>;
                     default: return null;
                   }

@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Invoice, Payment, InvoiceLineItem } from '@shared/schema';
+import type { InvoiceAccountingDisplay, QuickBooksLineItemDisplay } from '@shared/invoiceAccountingDisplay';
 
 export type InvoiceEmailStatus = 'not_sent' | 'sent_current' | 'sent_outdated';
 
@@ -12,7 +13,7 @@ export type ReminderListStatus =
   | 'maxed_out'
   | 'blocked';
 
-export interface InvoiceListItem extends Omit<Invoice, 'lastSentAt'> {
+export interface InvoiceListItem extends Omit<Invoice, 'lastSentAt'>, InvoiceAccountingDisplay {
   // Email send tracking (original invoice send only — reminders excluded)
   lastSentAt: string | null;
   lastInvoiceEmailRecipient: string | null;
@@ -24,7 +25,7 @@ export interface InvoiceListItem extends Omit<Invoice, 'lastSentAt'> {
   nextReminderDueAt: string | null;
 }
 
-export interface InvoiceWithEmailTracking extends Omit<Invoice, 'lastSentAt'> {
+export interface InvoiceWithEmailTracking extends Omit<Invoice, 'lastSentAt'>, InvoiceAccountingDisplay {
   lastSentAt?: string | null;
   emailStatus?: InvoiceEmailStatus;
 }
@@ -33,6 +34,8 @@ interface InvoiceWithRelations {
   invoice: InvoiceWithEmailTracking;
   lineItems: InvoiceLineItem[];
   payments: Payment[];
+  importedQuickBooksLineItems?: QuickBooksLineItemDisplay[];
+  importedQuickBooksLineItemsUnavailableMessage?: string | null;
 }
 
 export interface InvoicePaymentWithCreatedBy extends Payment {

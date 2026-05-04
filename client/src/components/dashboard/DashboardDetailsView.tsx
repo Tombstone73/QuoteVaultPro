@@ -260,10 +260,10 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
               ) : filteredInvoices.map((inv: any) => (
                 <TableRow key={inv.id} className="cursor-pointer" onClick={() => navigate(ROUTES.invoices.detail(inv.id), { state: { referrer: buildReferrer(location) } })}>
                   <TableCell className="font-medium">#{inv.invoiceNumber ?? "—"}</TableCell>
-                  <TableCell>{inv.status || "—"}</TableCell>
+                  <TableCell>{inv.displayStatus || inv.status || "—"}</TableCell>
                   <TableCell>{formatDate(inv.dueDate)}</TableCell>
-                  <TableCell className="text-right">{formatCurrency(inv.total)}</TableCell>
-                  <TableCell className="text-right">{formatCurrency(inv.balanceDue ?? (Number(inv.total || 0) - Number(inv.amountPaid || 0)))}</TableCell>
+                  <TableCell className="text-right">{formatCurrency(inv.displayTotal ?? inv.total)}</TableCell>
+                  <TableCell className="text-right">{formatCurrency(inv.displayRemaining ?? inv.balanceDue ?? (Number(inv.total || 0) - Number(inv.amountPaid || 0)))}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
