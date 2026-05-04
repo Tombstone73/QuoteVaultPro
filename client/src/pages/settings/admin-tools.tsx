@@ -190,21 +190,23 @@ export default function AdminTools() {
               </CardContent>
             </Card>
 
-            {/* Materials Import/Export (Placeholder) */}
-            <Card className="border-titan-border bg-titan-bg-card-elevated opacity-60">
+            {/* Materials Import/Export */}
+            <Card className="border-titan-border bg-titan-bg-card-elevated">
               <CardHeader className="pb-3">
                 <div className="flex items-center gap-2 mb-1">
-                  <Database className="h-4 w-4 text-titan-text-muted" />
+                  <Database className="h-4 w-4 text-titan-accent" />
                   <CardTitle className="text-titan-sm">Materials</CardTitle>
                 </div>
                 <CardDescription className="text-titan-xs">
-                  Export materials and vendor pricing, or import from JSON files
+                  Export materials as CSV, or bulk-import from a CSV with staged review
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <Button variant="outline" size="sm" className="w-full" disabled>
-                  Coming Soon
-                </Button>
+                <Link to="/admin/materials/import-export">
+                  <Button variant="outline" size="sm" className="w-full">
+                    Manage Materials Data
+                  </Button>
+                </Link>
               </CardContent>
             </Card>
           </div>

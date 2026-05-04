@@ -69,6 +69,7 @@ import SelectOrgPage from "@/pages/SelectOrgPage";
 import BugReportsPage from "@/pages/admin/BugReportsPage";
 import ProductImportExport from "@/pages/admin/ProductImportExport";
 import PricingAuditPage from "@/pages/admin/PricingAuditPage";
+import MaterialsImportExport from "@/pages/admin/MaterialsImportExport";
 import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
 import FulfillmentPage from "@/pages/fulfillment";
 import FulfillmentShipmentDetailPage from "@/pages/fulfillment-shipment-detail";
@@ -161,6 +162,7 @@ function Router() {
         <Route path="/admin/bug-reports" element={<BugReportsPage />} />
         <Route path="/admin/products/import-export" element={<ProductImportExport />} />
         <Route path="/admin/pricing-audit" element={<PricingAuditPage />} />
+        <Route path="/admin/materials/import-export" element={<MaterialsImportExport />} />
         <Route path="/users" element={<UserManagement />} />
         <Route path="/admin" element={<Admin />} />
         
