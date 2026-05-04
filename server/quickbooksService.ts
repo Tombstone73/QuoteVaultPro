@@ -2133,8 +2133,8 @@ function classifyQBInvoice(qbInvoice: any): 'open_ar' | 'historical' {
 }
 
 /**
- * Custom field names that indicate a customer PO number.
- * Checked case-insensitively and after normalizing internal whitespace.
+ * Custom field names that indicate an explicit customer PO number.
+ * Checked case-insensitively after normalizing internal whitespace.
  */
 const QB_PO_FIELD_NAMES = new Set([
   'po', 'p.o.', 'po number', 'p.o. number',
@@ -2144,43 +2144,114 @@ const QB_PO_FIELD_NAMES = new Set([
 ]);
 
 /**
- * Conservative regex for extracting a PO value from free-text fields.
- *
- * Matches: PO, P.O., Purchase Order [Number], Customer PO [Number], Client PO, Buyer PO
- * Separator: colon, hash, or whitespace (e.g. "PO: 123", "PO# 123", "PO 123")
- * Value: alphanumeric, hyphens, slashes — 1-50 chars
- *
- * Does NOT match bare numbers or non-PO-labelled text.
+ * Custom field names that indicate a useful job/reference description.
+ * Used as a fallback when no explicit PO is found.
+ * Checked case-insensitively after normalizing internal whitespace.
+ */
+const QB_REFERENCE_FIELD_NAMES = new Set([
+  'ref', 'ref #', 'reference',
+  'customer reference', 'client reference',
+  'job', 'job name', 'job description',
+  'project', 'project name',
+  'description', 'work description',
+  'order description', 'invoice description',
+]);
+
+/**
+ * Conservative regex for extracting an explicit PO value from free-text fields.
+ * Requires a recognizable PO label followed by a separator and a value token.
+ * Does NOT match bare numbers or unlabelled text.
  */
 const QB_PO_TEXT_PATTERN = /(?:PO|P\.O\.|Purchase\s+Order(?:\s+Number)?|Customer\s+PO(?:\s+Number)?|Client\s+PO|Buyer\s+PO)\s*[:#\s]\s*([A-Za-z0-9\-\/]{1,50})/i;
 
 /**
- * Extract a customer PO number from a QB invoice.
+ * Generic boilerplate phrases that should NOT be stored as a job description.
+ * Tested case-insensitively as a substring match against the memo/note text.
+ */
+const QB_GENERIC_MEMO_FRAGMENTS = [
+  'thank you for your business',
+  'have a great day',
+  'we appreciate your business',
+  'thanks for your order',
+  'please remit payment',
+  'payment is due',
+  'terms and conditions',
+  'thank you for choosing',
+];
+
+/**
+ * Returns true if the text is likely generic boilerplate with no useful reference content.
+ * A short text with at least one generic fragment is rejected.
+ */
+function isGenericBoilerplate(text: string): boolean {
+  const lower = text.toLowerCase();
+  return QB_GENERIC_MEMO_FRAGMENTS.some(fragment => lower.includes(fragment));
+}
+
+/**
+ * Returns true if a line description string contains useful textual content.
+ * Rejects: empty, whitespace-only, numeric-only, and very short strings.
+ */
+function isMeaningfulLineDesc(desc: string): boolean {
+  const trimmed = desc.trim();
+  if (trimmed.length < 2) return false;
+  // Must contain at least one letter
+  if (!/[A-Za-z]/.test(trimmed)) return false;
+  return true;
+}
+
+/**
+ * Join up to maxItems meaningful descriptions with ' / ', truncated to maxLen chars.
+ * Truncates cleanly at a word boundary with '...' if needed.
+ */
+function joinLineDescs(descs: string[], maxItems: number, maxLen: number): string {
+  const joined = descs.slice(0, maxItems).join(' / ');
+  if (joined.length <= maxLen) return joined;
+  // Truncate at last word boundary before maxLen - 3 (room for '...')
+  const cutoff = joined.lastIndexOf(' ', maxLen - 3);
+  return cutoff > 0 ? joined.slice(0, cutoff) + '...' : joined.slice(0, maxLen - 3) + '...';
+}
+
+/**
+ * Extract a customer PO / Description from a QB invoice.
  *
- * Extraction order:
- *   A. CustomField array  — look for fields with PO-matching names
- *   B. PrivateNote        — conservative regex on free text
- *   C. CustomerMemo       — conservative regex on free text
- *   D. Line descriptions  — conservative regex; last resort only
+ * The stored field (customer_po_number) is treated as "PO / Description":
+ * - If an explicit PO is found, use it (highest fidelity).
+ * - If not, fall back to useful reference/description data in priority order.
  *
- * Returns { poNumber, source } or { null, null } if nothing found.
- * Never logs raw invoice payloads; logs only the extracted value in debug mode.
+ * Extraction priority:
+ *   A. CustomField with PO name       → source: 'custom_field'
+ *   B. Explicit PO pattern in PrivateNote → source: 'private_note'
+ *   C. Explicit PO pattern in CustomerMemo → source: 'customer_memo'
+ *   D. Explicit PO pattern in any Line description → source: 'line_description'
+ *   E. CustomField with reference name → source: 'custom_field_reference'
+ *   F. CustomerMemo if concise and not generic boilerplate → source: 'customer_memo'
+ *   G. PrivateNote if concise and not generic boilerplate → source: 'private_note'
+ *   H. Joined meaningful line descriptions → source: 'line_description'
+ *   I. Nothing reliable found → null / null
+ *
+ * Returns { poNumber, source } or { null, null }.
+ * Never logs raw invoice payloads.
  */
 export function extractQBInvoiceCustomerPo(qbInvoice: any): { poNumber: string | null; source: string | null } {
-  // A. CustomField
+  // ── A. CustomField with explicit PO name ──────────────────────────────────
+  let referenceFieldValue: string | null = null; // save any reference field for step E
   if (Array.isArray(qbInvoice.CustomField)) {
     for (const field of qbInvoice.CustomField) {
       const name = String(field.Name ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+      const value = String(field.StringValue ?? '').trim();
+      if (!value) continue;
       if (QB_PO_FIELD_NAMES.has(name)) {
-        const value = String(field.StringValue ?? '').trim();
-        if (value) {
-          return { poNumber: value.slice(0, 100), source: 'custom_field' };
-        }
+        return { poNumber: value.slice(0, 100), source: 'custom_field' };
+      }
+      // Collect first non-empty reference field value for step E
+      if (referenceFieldValue === null && QB_REFERENCE_FIELD_NAMES.has(name)) {
+        referenceFieldValue = value;
       }
     }
   }
 
-  // B. PrivateNote
+  // ── B. Explicit PO pattern in PrivateNote ────────────────────────────────
   const privateNote = String(qbInvoice.PrivateNote ?? '').trim();
   if (privateNote) {
     const m = privateNote.match(QB_PO_TEXT_PATTERN);
@@ -2189,7 +2260,7 @@ export function extractQBInvoiceCustomerPo(qbInvoice: any): { poNumber: string |
     }
   }
 
-  // C. CustomerMemo
+  // ── C. Explicit PO pattern in CustomerMemo ───────────────────────────────
   const customerMemoValue = qbInvoice.CustomerMemo?.value ?? qbInvoice.CustomerMemo ?? '';
   const customerMemo = String(customerMemoValue).trim();
   if (customerMemo) {
@@ -2199,10 +2270,10 @@ export function extractQBInvoiceCustomerPo(qbInvoice: any): { poNumber: string |
     }
   }
 
-  // D. Line descriptions (last resort — only explicit PO labels)
+  // ── D. Explicit PO pattern in any Line description ───────────────────────
   if (Array.isArray(qbInvoice.Line)) {
     for (const line of qbInvoice.Line) {
-      const desc = String(line.Description ?? line.SalesItemLineDetail?.ServiceDate ?? '').trim();
+      const desc = String(line.Description ?? '').trim();
       if (desc) {
         const m = desc.match(QB_PO_TEXT_PATTERN);
         if (m?.[1]) {
@@ -2212,6 +2283,39 @@ export function extractQBInvoiceCustomerPo(qbInvoice: any): { poNumber: string |
     }
   }
 
+  // ── E. CustomField with reference/description name ───────────────────────
+  if (referenceFieldValue) {
+    return { poNumber: referenceFieldValue.slice(0, 100), source: 'custom_field_reference' };
+  }
+
+  // ── F. CustomerMemo — useful and not generic boilerplate ─────────────────
+  if (customerMemo && !isGenericBoilerplate(customerMemo)) {
+    return { poNumber: customerMemo.slice(0, 100), source: 'customer_memo' };
+  }
+
+  // ── G. PrivateNote — useful and not generic boilerplate ──────────────────
+  if (privateNote && !isGenericBoilerplate(privateNote)) {
+    return { poNumber: privateNote.slice(0, 100), source: 'private_note' };
+  }
+
+  // ── H. Meaningful line descriptions joined as fallback ───────────────────
+  if (Array.isArray(qbInvoice.Line)) {
+    const seen = new Set<string>();
+    const meaningful: string[] = [];
+    for (const line of qbInvoice.Line) {
+      const desc = String(line.Description ?? '').trim();
+      if (isMeaningfulLineDesc(desc) && !seen.has(desc)) {
+        seen.add(desc);
+        meaningful.push(desc);
+      }
+    }
+    if (meaningful.length > 0) {
+      const joined = joinLineDescs(meaningful, 5, 100);
+      return { poNumber: joined, source: 'line_description' };
+    }
+  }
+
+  // ── I. Nothing found ─────────────────────────────────────────────────────
   return { poNumber: null, source: null };
 }
 
