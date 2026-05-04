@@ -2089,6 +2089,21 @@ export async function processPushOrders(jobId: string): Promise<void> {
 
 // ==================== QB Invoice Preview & Import ====================
 
+export type QBReferenceDebugField = {
+  name: string | null;
+  type: string | null;
+  value: string | null;
+};
+
+export type QBReferenceDebug = {
+  customFields: QBReferenceDebugField[];
+  privateNote: string | null;
+  customerMemo: string | null;
+  lineDescriptions: string[];
+  docNumber: string | null;
+  txnDate: string | null;
+};
+
 export type QBInvoicePreviewRow = {
   qbInvoiceId: string;
   qbDocNumber: string;
@@ -2107,6 +2122,7 @@ export type QBInvoicePreviewRow = {
   cannotImportReason?: string;
   customerPoNumber: string | null;
   customerPoSource: string | null;
+  referenceDebug?: QBReferenceDebug;
 };
 
 /**
@@ -2200,10 +2216,66 @@ export function extractQBInvoiceCustomerPo(qbInvoice: any): { poNumber: string |
 }
 
 /**
+ * Produce a safe diagnostic summary of QB invoice fields relevant to PO / reference detection.
+ *
+ * Rules:
+ *   - Only surfaces fields useful for understanding where PO/reference data lives.
+ *   - Trims and collapses whitespace; limits each string to 300 characters.
+ *   - Never includes tokens, auth headers, realmId, or connection metadata.
+ *   - Does not include the full raw invoice payload.
+ */
+export function summarizeQBInvoiceReferenceFields(qbInvoice: any): QBReferenceDebug {
+  const cap = (s: string | null | undefined): string | null => {
+    if (s == null) return null;
+    const trimmed = String(s).replace(/\s+/g, ' ').trim();
+    return trimmed.length > 0 ? trimmed.slice(0, 300) : null;
+  };
+
+  // CustomField array — include all entries (not just PO-matching ones, so admin sees everything)
+  const customFields: QBReferenceDebugField[] = Array.isArray(qbInvoice.CustomField)
+    ? qbInvoice.CustomField.map((f: any): QBReferenceDebugField => ({
+        name: cap(f.Name) ?? null,
+        type: cap(f.Type) ?? null,
+        value: cap(f.StringValue) ?? cap(f.DateValue) ?? cap(f.NumberValue) ?? null,
+      }))
+    : [];
+
+  // PrivateNote
+  const privateNote = cap(qbInvoice.PrivateNote);
+
+  // CustomerMemo — handles both { value: "..." } and plain string
+  const customerMemoRaw = qbInvoice.CustomerMemo?.value ?? qbInvoice.CustomerMemo ?? null;
+  const customerMemo = cap(customerMemoRaw);
+
+  // Line descriptions — collect unique non-empty Description values from all lines
+  const lineDescriptions: string[] = [];
+  if (Array.isArray(qbInvoice.Line)) {
+    const seen = new Set<string>();
+    for (const line of qbInvoice.Line) {
+      const desc = cap(line.Description);
+      if (desc && !seen.has(desc)) {
+        seen.add(desc);
+        lineDescriptions.push(desc);
+      }
+      if (lineDescriptions.length >= 10) break; // cap at 10 lines
+    }
+  }
+
+  return {
+    customFields,
+    privateNote,
+    customerMemo,
+    lineDescriptions,
+    docNumber: cap(qbInvoice.DocNumber),
+    txnDate: cap(qbInvoice.TxnDate),
+  };
+}
+
+/**
  * Fetch all QB invoices and return a preview with local match status.
  * Read-only — no writes to any table.
  */
-export async function fetchQBInvoicesForPreview(organizationId: string): Promise<QBInvoicePreviewRow[]> {
+export async function fetchQBInvoicesForPreview(organizationId: string, includeReferenceDebug = false): Promise<QBInvoicePreviewRow[]> {
   const query = 'SELECT * FROM Invoice MAXRESULTS 1000';
   const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
   const qbInvoices: any[] = response.QueryResponse?.Invoice || [];
@@ -2262,6 +2334,7 @@ export async function fetchQBInvoicesForPreview(organizationId: string): Promise
       cannotImportReason,
       customerPoNumber,
       customerPoSource,
+      ...(includeReferenceDebug ? { referenceDebug: summarizeQBInvoiceReferenceFields(qbInvoice) } : {}),
     };
   });
 }
