@@ -187,6 +187,7 @@ export const ROUTES = {
     products: "/admin/products",
     productTypes: "/admin/product-types",
     bugReports: "/admin/bug-reports",
+    pricingAudit: "/admin/pricing-audit",
   },
 
   system: {

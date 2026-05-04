@@ -68,6 +68,7 @@ import AcceptInvitePage from "@/pages/accept-invite";
 import SelectOrgPage from "@/pages/SelectOrgPage";
 import BugReportsPage from "@/pages/admin/BugReportsPage";
 import ProductImportExport from "@/pages/admin/ProductImportExport";
+import PricingAuditPage from "@/pages/admin/PricingAuditPage";
 import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
 import FulfillmentPage from "@/pages/fulfillment";
 import FulfillmentShipmentDetailPage from "@/pages/fulfillment-shipment-detail";
@@ -159,6 +160,7 @@ function Router() {
         <Route path="/admin/product-types" element={<ProductTypesSettings />} />
         <Route path="/admin/bug-reports" element={<BugReportsPage />} />
         <Route path="/admin/products/import-export" element={<ProductImportExport />} />
+        <Route path="/admin/pricing-audit" element={<PricingAuditPage />} />
         <Route path="/users" element={<UserManagement />} />
         <Route path="/admin" element={<Admin />} />
         
