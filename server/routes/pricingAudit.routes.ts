@@ -193,7 +193,7 @@ function analyzeFormula(formula: string | null): {
     usesMaterialBasePrice,
     usesCost,
     hasHardcodedMultiplier: hardcodedValues.length > 0 || isPureConstant,
-    hardcodedValues: [...new Set(hardcodedValues)],
+    hardcodedValues: Array.from(new Set(hardcodedValues)),
   };
 }
 
@@ -334,7 +334,7 @@ export function registerPricingAuditRoutes(
             and(
               eq(pbv2TreeVersions.organizationId, organizationId),
               inArray(pbv2TreeVersions.productId, productIds),
-              eq(pbv2TreeVersions.status, "PUBLISHED")
+              eq(pbv2TreeVersions.status, "ACTIVE")
             )
           );
 
@@ -356,13 +356,13 @@ export function registerPricingAuditRoutes(
         const materialById = new Map(allMaterials.map((m) => [m.id, m]));
 
         // ── 4. Fetch pricing formula library entries ───────────────────────
-        const formulaLibraryIds = [
-          ...new Set(
+        const formulaLibraryIds = Array.from(
+          new Set(
             allProducts
               .map((p) => p.pricingFormulaId)
               .filter((id): id is string => !!id)
-          ),
-        ];
+          )
+        );
 
         const formulaLibraryRows =
           formulaLibraryIds.length > 0

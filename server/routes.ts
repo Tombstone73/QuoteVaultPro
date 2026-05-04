@@ -226,6 +226,7 @@ import { registerAuthRoutes } from './routes/auth.routes';
 import { registerSearchRoutes } from './routes/search.routes';
 import { registerDebugRoutes } from './routes/debug.routes';
 import { registerPricingAuditRoutes } from './routes/pricingAudit.routes';
+import { registerMaterialsImportExportRoutes } from './routes/materialsImportExport.routes';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -355,6 +356,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Pricing audit route (admin only, read-only)
   registerPricingAuditRoutes(app, { isAuthenticated, tenantContext, isAdmin });
+
+  // Materials CSV import/export routes (admin only, staged workflow)
+  registerMaterialsImportExportRoutes(app, { isAuthenticated, tenantContext, isAdmin });
 
   const assertInternalUser = (req: any, res: any) => {
     const role = req.user?.role || "";

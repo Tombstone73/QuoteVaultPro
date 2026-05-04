@@ -323,6 +323,13 @@
       "when": 1779062400000,
       "tag": "0050_contact_internal_notes_and_flags",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1779148800000,
+      "tag": "0051_material_import_batches",
+      "breakpoints": true
     }
   ]
 }
