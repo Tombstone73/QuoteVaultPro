@@ -2,7 +2,7 @@ import OAuthClient from 'intuit-oauth';
 import crypto from 'crypto';
 import { db } from './db';
 import { oauthConnections, accountingSyncJobs, customers, customerContacts, invoices, orders, payments, invoiceLineItems, type OAuthConnection } from '../shared/schema';
-import { eq, and, desc, or, isNull, isNotNull, sql } from 'drizzle-orm';
+import { eq, and, asc, desc, or, isNull, isNotNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
 import { DEFAULT_ORGANIZATION_ID } from './tenantContext';
 import { generateNextInvoiceNumber } from './invoicesService';
@@ -2516,10 +2516,65 @@ export async function importQBInvoicesByIds(
       const dueDate = qbInvoice.DueDate ? new Date(qbInvoice.DueDate) : null;
       const lockedReason = isHistorical ? 'historical_import' : 'quickbooks_import';
 
+      const reconcileImportedInvoicePayments = async (params: {
+        invoiceId: string;
+        previousBalanceDue: string | null;
+        nextBalanceDue: string;
+      }) => {
+        const previousBalanceCents = Math.max(0, Math.round(Number(params.previousBalanceDue ?? 0) * 100));
+        const nextBalanceCents = Math.max(0, Math.round(Number(params.nextBalanceDue || 0) * 100));
+        const reflectedDeltaCents = previousBalanceCents - nextBalanceCents;
+        if (reflectedDeltaCents <= 0) return;
+
+        const syncedUnreconciledPayments = await db
+          .select({
+            id: payments.id,
+            amountCents: payments.amountCents,
+          })
+          .from(payments)
+          .where(and(
+            eq(payments.organizationId, organizationId),
+            eq(payments.invoiceId, params.invoiceId),
+            eq(payments.status, 'succeeded'),
+            eq(payments.syncStatus, 'synced'),
+            isNotNull(payments.externalAccountingId),
+            isNull(payments.qbReconciledAt),
+          ))
+          .orderBy(asc(payments.appliedAt), asc(payments.createdAt));
+
+        let remainingReflectedCents = reflectedDeltaCents;
+        const paymentIdsToReconcile: string[] = [];
+        for (const payment of syncedUnreconciledPayments) {
+          const amountCents = Number(payment.amountCents || 0);
+          if (amountCents <= 0 || amountCents > remainingReflectedCents) continue;
+          paymentIdsToReconcile.push(payment.id);
+          remainingReflectedCents -= amountCents;
+          if (remainingReflectedCents <= 0) break;
+        }
+
+        if (paymentIdsToReconcile.length === 0) return;
+
+        await db
+          .update(payments)
+          .set({
+            qbReconciledAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(payments.organizationId, organizationId),
+            sql`${payments.id} = ANY(${paymentIdsToReconcile})`,
+          ));
+      };
+
       // Check for existing invoice (by QB Invoice Id, org-scoped)
       // Fetch customerPoNumber and importSource to apply PO preservation rules.
       const [existing] = await db
-        .select({ id: invoices.id, customerPoNumber: invoices.customerPoNumber, importSource: invoices.importSource })
+        .select({
+          id: invoices.id,
+          customerPoNumber: invoices.customerPoNumber,
+          importSource: invoices.importSource,
+          qbImportBalanceDue: invoices.qbImportBalanceDue,
+        })
         .from(invoices)
         .where(and(
           eq(invoices.organizationId, organizationId),
@@ -2561,6 +2616,14 @@ export async function importQBInvoicesByIds(
             updatedAt: new Date(),
           })
           .where(eq(invoices.id, existing.id));
+
+        if (!isHistorical) {
+          await reconcileImportedInvoicePayments({
+            invoiceId: existing.id,
+            previousBalanceDue: existing.qbImportBalanceDue,
+            nextBalanceDue: balance.toFixed(2),
+          });
+        }
         result.updated++;
       } else {
         const invoiceNumber = await generateNextInvoiceNumber(organizationId);

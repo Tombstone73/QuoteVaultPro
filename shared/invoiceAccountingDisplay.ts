@@ -9,6 +9,29 @@ export type InvoiceAccountingDisplayInput = {
   qbImportBalanceDue?: string | number | null;
   lockedReason?: string | null;
   qbLineItemsSnapshot?: unknown;
+  payments?: InvoiceAccountingPaymentInput[];
+};
+
+export type InvoiceAccountingPaymentInput = {
+  id?: string | number | null;
+  status?: string | null;
+  amountCents?: number | null;
+  syncStatus?: string | null;
+  externalAccountingId?: string | null;
+  qbReconciledAt?: string | Date | null;
+};
+
+export type ImportedQuickBooksPaymentSummary = {
+  unreconciledCount: number;
+  unreconciledCents: number;
+  pendingSyncCount: number;
+  pendingSyncCents: number;
+  failedSyncCount: number;
+  failedSyncCents: number;
+  syncedUnreconciledCount: number;
+  syncedUnreconciledCents: number;
+  reconciledCount: number;
+  reconciledCents: number;
 };
 
 export type InvoiceAccountingDisplay = {
@@ -24,6 +47,7 @@ export type InvoiceAccountingDisplay = {
   accountingSource: 'quickbooks' | 'titanos';
   lockedReason: string | null;
   productionWorkflowDisabled: boolean;
+  importedQuickBooksPaymentSummary: ImportedQuickBooksPaymentSummary;
 };
 
 export type QuickBooksLineItemDisplay = {
@@ -58,6 +82,12 @@ function moneyToCents(value: unknown): number {
   return Math.max(0, Math.round(toFiniteNumber(value) * 100));
 }
 
+function toSafeCents(value: unknown): number {
+  const numeric = Number(value ?? 0);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.max(0, Math.round(numeric));
+}
+
 function centsToMoney(value: number): number {
   return Math.max(0, value) / 100;
 }
@@ -74,22 +104,97 @@ function getPreservedStatusLabel(status: string): string {
   return STATUS_LABELS[status] ?? titleCaseFallback(status || 'unpaid');
 }
 
+function emptyImportedQuickBooksPaymentSummary(): ImportedQuickBooksPaymentSummary {
+  return {
+    unreconciledCount: 0,
+    unreconciledCents: 0,
+    pendingSyncCount: 0,
+    pendingSyncCents: 0,
+    failedSyncCount: 0,
+    failedSyncCents: 0,
+    syncedUnreconciledCount: 0,
+    syncedUnreconciledCents: 0,
+    reconciledCount: 0,
+    reconciledCents: 0,
+  };
+}
+
+function normalizePaymentStatus(raw: unknown): string {
+  return String(raw || '').trim().toLowerCase();
+}
+
+function normalizeSyncStatus(raw: unknown): 'pending' | 'failed' | 'synced' | 'other' {
+  const status = String(raw || '').trim().toLowerCase();
+  if (status === 'pending') return 'pending';
+  if (status === 'failed' || status === 'error') return 'failed';
+  if (status === 'synced') return 'synced';
+  return 'other';
+}
+
+export function summarizeImportedQuickBooksPayments(
+  payments: InvoiceAccountingPaymentInput[] | null | undefined,
+): ImportedQuickBooksPaymentSummary {
+  const summary = emptyImportedQuickBooksPaymentSummary();
+
+  for (const payment of payments || []) {
+    const paymentStatus = normalizePaymentStatus(payment?.status);
+    if (paymentStatus !== 'succeeded') continue;
+
+    const amountCents = toSafeCents(payment?.amountCents);
+    if (amountCents <= 0) continue;
+
+    if (payment?.qbReconciledAt) {
+      summary.reconciledCount += 1;
+      summary.reconciledCents += amountCents;
+      continue;
+    }
+
+    summary.unreconciledCount += 1;
+    summary.unreconciledCents += amountCents;
+
+    const syncStatus = normalizeSyncStatus(payment?.syncStatus);
+    if (syncStatus === 'synced' || (payment?.externalAccountingId && syncStatus !== 'failed')) {
+      summary.syncedUnreconciledCount += 1;
+      summary.syncedUnreconciledCents += amountCents;
+      continue;
+    }
+
+    if (syncStatus === 'failed') {
+      summary.failedSyncCount += 1;
+      summary.failedSyncCents += amountCents;
+      continue;
+    }
+
+    summary.pendingSyncCount += 1;
+    summary.pendingSyncCents += amountCents;
+  }
+
+  return summary;
+}
+
 export function normalizeInvoiceAccountingDisplay(
   invoice: InvoiceAccountingDisplayInput,
 ): InvoiceAccountingDisplay {
   const rawStatus = String(invoice.status || '').trim().toLowerCase();
   const isImportedFromQuickBooks = String(invoice.importSource || '').trim().toLowerCase() === 'quickbooks';
   const isHistorical = Boolean(invoice.isHistorical);
+  const importedQuickBooksPaymentSummary = summarizeImportedQuickBooksPayments(invoice.payments);
 
   const displayTotalCents = invoice.totalCents != null
     ? Math.max(0, Math.round(Number(invoice.totalCents)))
     : moneyToCents(invoice.total);
 
-  const rawRemainingCents = isImportedFromQuickBooks && invoice.qbImportBalanceDue != null
+  const qbBalanceSnapshotCents = isImportedFromQuickBooks && invoice.qbImportBalanceDue != null
     ? moneyToCents(invoice.qbImportBalanceDue)
     : invoice.balanceDue != null
       ? moneyToCents(invoice.balanceDue)
       : Math.max(0, displayTotalCents - moneyToCents(invoice.amountPaid));
+
+  const rawRemainingCents = isImportedFromQuickBooks && !isHistorical && Array.isArray(invoice.payments)
+    ? Math.max(0, qbBalanceSnapshotCents - importedQuickBooksPaymentSummary.unreconciledCents)
+    : invoice.balanceDue != null
+      ? moneyToCents(invoice.balanceDue)
+      : qbBalanceSnapshotCents;
 
   const displayRemainingCents = Math.max(0, Math.min(displayTotalCents, rawRemainingCents));
 
@@ -111,6 +216,8 @@ export function normalizeInvoiceAccountingDisplay(
       if (displayRemainingCents <= 0) displayStatus = 'Paid Historical';
       else if (displayPaidCents <= 0) displayStatus = 'Historical Unpaid';
       else displayStatus = 'Historical Partial';
+    } else if (displayRemainingCents <= 0 && importedQuickBooksPaymentSummary.unreconciledCents > 0) {
+      displayStatus = 'Paid, pending QB sync';
     } else if (displayRemainingCents <= 0) {
       displayStatus = 'Paid';
     } else if (displayPaidCents <= 0) {
@@ -139,6 +246,7 @@ export function normalizeInvoiceAccountingDisplay(
     accountingSource: isImportedFromQuickBooks ? 'quickbooks' : 'titanos',
     lockedReason: invoice.lockedReason ?? null,
     productionWorkflowDisabled: isImportedFromQuickBooks,
+    importedQuickBooksPaymentSummary,
   };
 }
 
