@@ -251,7 +251,7 @@ export default function InvoiceDetailPage() {
   const paymentStatusLabel = String((invoice as any)?.displayStatus || fallbackPaymentStatusLabel);
   const isImportedFromQuickBooks = !!invoice && Boolean((invoice as any)?.isImportedFromQuickBooks);
   const isHistoricalImport = !!invoice && Boolean((invoice as any)?.isHistorical);
-  const paymentActionsLocked = isImportedFromQuickBooks && isHistoricalImport && remainingCents <= 0;
+  const paymentActionsLocked = isImportedFromQuickBooks;
   const canSendInvoiceEmail = isAdminOrOwner && !isImportedFromQuickBooks;
   const canMarkInvoiceSent = isAdminOrOwner && !isImportedFromQuickBooks;
   const canFinalizeInvoice = invoiceStatus === 'draft' && !isImportedFromQuickBooks;
@@ -1434,12 +1434,32 @@ export default function InvoiceDetailPage() {
                   <div className="text-xs font-medium text-muted-foreground">Lifecycle</div>
                   <div className="mt-1 text-sm font-semibold">{accountingModeLabel}</div>
                 </div>
+                <div className="rounded-md border bg-card/50 p-3">
+                  <div className="text-xs font-medium text-muted-foreground">QuickBooks Doc #</div>
+                  <div className="mt-1 text-sm font-semibold">{(invoice as any).qbDocNumber || '—'}</div>
+                </div>
+                <div className="rounded-md border bg-card/50 p-3">
+                  <div className="text-xs font-medium text-muted-foreground">QuickBooks Invoice ID</div>
+                  <div className="mt-1 break-all text-sm font-semibold">{(invoice as any).qbInvoiceId || (invoice as any).externalAccountingId || '—'}</div>
+                </div>
+                <div className="rounded-md border bg-card/50 p-3">
+                  <div className="text-xs font-medium text-muted-foreground">Imported At</div>
+                  <div className="mt-1 text-sm font-semibold">{formatDate((invoice as any).importedAt || null)}</div>
+                </div>
+                <div className="rounded-md border bg-card/50 p-3">
+                  <div className="text-xs font-medium text-muted-foreground">QB Balance at Import</div>
+                  <div className="mt-1 text-sm font-semibold">{formatCurrency((invoice as any).qbImportBalanceDue ?? (invoice as any).displayRemaining ?? 0)}</div>
+                </div>
                 <div className="rounded-md border bg-card/50 p-3 sm:col-span-2">
                   <div className="text-xs font-medium text-muted-foreground">Customer PO / Description</div>
                   <div className="mt-1 text-sm font-semibold">{invoice.customerPoNumber || '—'}</div>
                   {invoice.qbPoSource ? (
                     <div className="mt-1 text-xs text-muted-foreground">Source: {formatPoSource(invoice.qbPoSource)}</div>
                   ) : null}
+                </div>
+                <div className="rounded-md border bg-card/50 p-3 sm:col-span-2">
+                  <div className="text-xs font-medium text-muted-foreground">Workflow Lock</div>
+                  <div className="mt-1 text-sm font-semibold">{(invoice as any).lockedReason ? formatPoSource((invoice as any).lockedReason) : 'Production workflow disabled'}</div>
                 </div>
               </div>
               {isImportedFromQuickBooks ? (
@@ -1926,7 +1946,7 @@ export default function InvoiceDetailPage() {
 
                       {paymentActionsLocked ? (
                         <div className="text-xs text-muted-foreground">
-                          Historical QuickBooks invoices with zero remaining balance are read-only for payment actions.
+                          Payments for imported QuickBooks invoices should be reconciled from QuickBooks until payment sync is enabled.
                         </div>
                       ) : null}
 

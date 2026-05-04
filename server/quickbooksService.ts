@@ -2514,7 +2514,7 @@ export async function importQBInvoicesByIds(
       const status = isHistorical ? 'paid' : (balance > 0 ? 'billed' : 'paid');
       const issueDate = qbInvoice.TxnDate ? new Date(qbInvoice.TxnDate) : new Date();
       const dueDate = qbInvoice.DueDate ? new Date(qbInvoice.DueDate) : null;
-      const lockedReason = isHistorical ? 'historical_import' : null;
+      const lockedReason = isHistorical ? 'historical_import' : 'quickbooks_import';
 
       // Check for existing invoice (by QB Invoice Id, org-scoped)
       // Fetch customerPoNumber and importSource to apply PO preservation rules.
@@ -2523,7 +2523,10 @@ export async function importQBInvoicesByIds(
         .from(invoices)
         .where(and(
           eq(invoices.organizationId, organizationId),
-          eq(invoices.externalAccountingId, qbInvoice.Id),
+          or(
+            eq(invoices.qbInvoiceId, qbInvoice.Id),
+            eq(invoices.externalAccountingId, qbInvoice.Id),
+          ),
         ))
         .limit(1);
 
