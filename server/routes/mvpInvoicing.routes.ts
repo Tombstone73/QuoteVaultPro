@@ -14,6 +14,7 @@ import { generateInvoicePdfBytes } from "../services/invoicePdf";
 import { z } from "zod";
 import { integrationConnections } from "../../shared/schema";
 import { resolveQuickBooksPreferencesFromOrgPreferences, type QuickBooksSyncPolicy } from "../../shared/quickBooksPreferences";
+import { normalizeInvoiceAccountingDisplay, normalizeQuickBooksLineItemsSnapshot } from "../../shared/invoiceAccountingDisplay";
 import { emailService } from "../emailService";
 import { jobs } from "../../shared/schema";
 import { storage } from "../storage";
@@ -29,6 +30,13 @@ function getRequestOrganizationId(req: any): string | undefined {
 
 function paymentsDebugLogsEnabled(): boolean {
   return String(process.env.PAYMENTS_DEBUG_LOGS || '').trim() === '1';
+}
+
+function withNormalizedInvoiceDisplay<T extends Record<string, any>>(invoice: T) {
+  return {
+    ...invoice,
+    ...normalizeInvoiceAccountingDisplay(invoice),
+  };
 }
 
 async function getQuickBooksSyncPolicyForOrganization(organizationId: string): Promise<QuickBooksSyncPolicy> {
@@ -1205,7 +1213,7 @@ export async function registerMvpInvoicingRoutes(
 
       res.json({
         success: true,
-        data: rows.map((row) => ({
+        data: rows.map((row) => withNormalizedInvoiceDisplay({
           ...row,
           ...(emailStatuses.get(row.id) || {
             lastSentAt: null,
@@ -1236,8 +1244,46 @@ export async function registerMvpInvoicingRoutes(
       if ((rel.invoice as any).organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
 
       const emailTracking = await getInvoiceEmailStatus(req.params.id);
+      const normalizedInvoice = withNormalizedInvoiceDisplay({ ...(rel.invoice as any), ...emailTracking });
+      const normalizedQuickBooksLines = normalizeQuickBooksLineItemsSnapshot((rel.invoice as any).qbLineItemsSnapshot);
 
-      res.json({ success: true, data: { ...rel, invoice: { ...(rel.invoice as any), ...emailTracking } } });
+      if (normalizedInvoice.isImportedFromQuickBooks) {
+        try {
+          const userId = getUserId(req.user);
+          const userName = String(req.user?.email || req.user?.claims?.email || req.user?.name || '').trim() || null;
+          await storage.createAuditLog(organizationId, {
+            userId,
+            userName,
+            actionType: 'quickbooks_invoice_detail_normalized',
+            entityType: 'invoice',
+            entityId: String((rel.invoice as any).id || req.params.id),
+            entityName: String((rel.invoice as any).qbDocNumber || (rel.invoice as any).invoiceNumber || req.params.id),
+            description: 'Normalized QuickBooks invoice detail for display',
+            newValues: {
+              displayStatus: normalizedInvoice.displayStatus,
+              displayPaid: normalizedInvoice.displayPaid,
+              displayRemaining: normalizedInvoice.displayRemaining,
+              isHistorical: normalizedInvoice.isHistorical,
+              accountingSource: normalizedInvoice.accountingSource,
+              importedQuickBooksLineItemCount: normalizedQuickBooksLines.lines.length,
+            },
+            ipAddress: req.ip ?? null,
+            userAgent: req.get('user-agent') || null,
+          });
+        } catch (auditError: any) {
+          console.error('[InvoiceDetail] quickbooks_invoice_detail_normalized audit failed:', auditError?.message || auditError);
+        }
+      }
+
+      res.json({
+        success: true,
+        data: {
+          ...rel,
+          invoice: normalizedInvoice,
+          importedQuickBooksLineItems: normalizedQuickBooksLines.lines,
+          importedQuickBooksLineItemsUnavailableMessage: normalizedQuickBooksLines.unavailableMessage,
+        },
+      });
     } catch (error: any) {
       console.error("Error fetching invoice:", error);
       res.status(500).json({ error: error.message || "Failed to fetch invoice" });
