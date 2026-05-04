@@ -120,6 +120,7 @@ type QBInvoicePreviewRow = {
   cannotImportReason?: string;
   customerPoNumber: string | null;
   customerPoSource: string | null;
+  referenceDebug?: QBReferenceDebug;
 };
 
 type QBInvoiceImportResult = {
@@ -127,6 +128,21 @@ type QBInvoiceImportResult = {
   updated: number;
   skipped: number;
   errors: string[];
+};
+
+type QBReferenceDebugField = {
+  name: string | null;
+  type: string | null;
+  value: string | null;
+};
+
+type QBReferenceDebug = {
+  customFields: QBReferenceDebugField[];
+  privateNote: string | null;
+  customerMemo: string | null;
+  lineDescriptions: string[];
+  docNumber: string | null;
+  txnDate: string | null;
 };
 
 export default function SettingsIntegrations() {
@@ -156,6 +172,8 @@ export default function SettingsIntegrations() {
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [selectedQBIds, setSelectedQBIds] = useState<Set<string>>(new Set());
   const [isImportingInvoices, setIsImportingInvoices] = useState(false);
+  const [showReferenceDiagnostics, setShowReferenceDiagnostics] = useState(false);
+  const [expandedDebugIds, setExpandedDebugIds] = useState<Set<string>>(new Set());
 
   const handleImportFile = async (file: File | null) => {
     if (!file) return;
@@ -393,10 +411,12 @@ export default function SettingsIntegrations() {
     setIsLoadingPreview(true);
     setInvoicePreview(null);
     setSelectedQBIds(new Set());
+    setExpandedDebugIds(new Set());
     try {
-      const response = await fetch('/api/integrations/quickbooks/import-preview/invoices', {
-        credentials: 'include',
-      });
+      const url = showReferenceDiagnostics
+        ? '/api/integrations/quickbooks/import-preview/invoices?debugReferenceFields=1'
+        : '/api/integrations/quickbooks/import-preview/invoices';
+      const response = await fetch(url, { credentials: 'include' });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data?.success === false) {
         throw new Error(data?.error || 'Failed to fetch invoice preview');
@@ -690,6 +710,27 @@ export default function SettingsIntegrations() {
                 <p className="text-xs text-muted-foreground mb-3">
                   Pull customers first, then preview and import invoices. Invoice import creates read-only records with no production workflow side-effects.
                 </p>
+
+                {/* Admin diagnostic toggle — only shown to admin/owner users */}
+                {isAdmin && (
+                  <label className="flex items-center gap-2 mb-3 cursor-pointer select-none w-fit">
+                    <input
+                      type="checkbox"
+                      checked={showReferenceDiagnostics}
+                      onChange={e => {
+                        setShowReferenceDiagnostics(e.target.checked);
+                        // Clear existing preview so next fetch uses the new setting
+                        setInvoicePreview(null);
+                        setExpandedDebugIds(new Set());
+                      }}
+                      className="cursor-pointer"
+                    />
+                    <span className="text-xs text-muted-foreground">
+                      Show QuickBooks reference diagnostics <span className="text-amber-600 font-medium">(admin only)</span>
+                    </span>
+                  </label>
+                )}
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {/* Pull Customers — enabled */}
                   <Button
@@ -785,55 +826,165 @@ export default function SettingsIntegrations() {
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {invoicePreview.map(row => (
-                            <TableRow
-                              key={row.qbInvoiceId}
-                              className={!row.canImport ? 'opacity-50' : undefined}
-                            >
-                              <TableCell className="w-8 pr-0">
-                                <input
-                                  type="checkbox"
-                                  checked={selectedQBIds.has(row.qbInvoiceId)}
-                                  disabled={!row.canImport}
-                                  onChange={e => {
-                                    setSelectedQBIds(prev => {
-                                      const next = new Set(prev);
-                                      if (e.target.checked) next.add(row.qbInvoiceId);
-                                      else next.delete(row.qbInvoiceId);
-                                      return next;
-                                    });
-                                  }}
-                                  className="cursor-pointer"
-                                />
-                              </TableCell>
-                              <TableCell className="text-xs font-mono">{row.qbDocNumber || row.qbInvoiceId}</TableCell>
-                              <TableCell className="text-xs">
-                                {row.localCustomerName ?? <span className="text-muted-foreground italic">{row.customerRefName}</span>}
-                              </TableCell>
-                              <TableCell className="text-xs">{row.txnDate}</TableCell>
-                              <TableCell className="text-xs">${row.totalAmt.toFixed(2)}</TableCell>
-                              <TableCell className="text-xs">${row.balance.toFixed(2)}</TableCell>
-                              <TableCell className="text-xs">
-                                {row.customerPoNumber
-                                  ? <span title={`Source: ${row.customerPoSource ?? 'unknown'}`}>{row.customerPoNumber}</span>
-                                  : <span className="text-muted-foreground italic">No PO detected</span>
-                                }
-                              </TableCell>
-                              <TableCell className="text-xs">
-                                <Badge variant={row.classification === 'open_ar' ? 'default' : 'secondary'} className="text-xs">
-                                  {row.classification === 'open_ar' ? 'Open A/R' : 'Historical'}
-                                </Badge>
-                              </TableCell>
-                              <TableCell className="text-xs">
-                                {row.alreadyImported
-                                  ? <Badge variant="outline" className="text-xs">Imported</Badge>
-                                  : row.canImport
-                                    ? <Badge variant="secondary" className="text-xs">New</Badge>
-                                    : <span className="text-muted-foreground text-xs" title={row.cannotImportReason}>No match</span>
-                                }
-                              </TableCell>
-                            </TableRow>
-                          ))}
+                          {invoicePreview.map(row => {
+                            const isExpanded = expandedDebugIds.has(row.qbInvoiceId);
+                            const hasDebug = !!row.referenceDebug;
+                            const colSpan = 9;
+                            return (
+                              <>
+                                <TableRow
+                                  key={row.qbInvoiceId}
+                                  className={!row.canImport ? 'opacity-50' : undefined}
+                                >
+                                  <TableCell className="w-8 pr-0">
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedQBIds.has(row.qbInvoiceId)}
+                                      disabled={!row.canImport}
+                                      onChange={e => {
+                                        setSelectedQBIds(prev => {
+                                          const next = new Set(prev);
+                                          if (e.target.checked) next.add(row.qbInvoiceId);
+                                          else next.delete(row.qbInvoiceId);
+                                          return next;
+                                        });
+                                      }}
+                                      className="cursor-pointer"
+                                    />
+                                  </TableCell>
+                                  <TableCell className="text-xs font-mono">{row.qbDocNumber || row.qbInvoiceId}</TableCell>
+                                  <TableCell className="text-xs">
+                                    {row.localCustomerName ?? <span className="text-muted-foreground italic">{row.customerRefName}</span>}
+                                  </TableCell>
+                                  <TableCell className="text-xs">{row.txnDate}</TableCell>
+                                  <TableCell className="text-xs">${row.totalAmt.toFixed(2)}</TableCell>
+                                  <TableCell className="text-xs">${row.balance.toFixed(2)}</TableCell>
+                                  <TableCell className="text-xs">
+                                    {row.customerPoNumber
+                                      ? <span title={`Source: ${row.customerPoSource ?? 'unknown'}`}>{row.customerPoNumber}</span>
+                                      : hasDebug
+                                        ? (
+                                          <button
+                                            className="text-muted-foreground italic underline decoration-dotted cursor-pointer text-xs text-left"
+                                            onClick={() => setExpandedDebugIds(prev => {
+                                              const next = new Set(prev);
+                                              if (next.has(row.qbInvoiceId)) next.delete(row.qbInvoiceId);
+                                              else next.add(row.qbInvoiceId);
+                                              return next;
+                                            })}
+                                          >
+                                            No PO detected — inspect fields
+                                          </button>
+                                        )
+                                        : <span className="text-muted-foreground italic text-xs">No PO detected. Enable diagnostics to inspect QB fields.</span>
+                                    }
+                                  </TableCell>
+                                  <TableCell className="text-xs">
+                                    <Badge variant={row.classification === 'open_ar' ? 'default' : 'secondary'} className="text-xs">
+                                      {row.classification === 'open_ar' ? 'Open A/R' : 'Historical'}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell className="text-xs">
+                                    <div className="flex items-center gap-1">
+                                      {row.alreadyImported
+                                        ? <Badge variant="outline" className="text-xs">Imported</Badge>
+                                        : row.canImport
+                                          ? <Badge variant="secondary" className="text-xs">New</Badge>
+                                          : <span className="text-muted-foreground text-xs" title={row.cannotImportReason}>No match</span>
+                                      }
+                                      {hasDebug && (
+                                        <button
+                                          className="text-muted-foreground hover:text-foreground ml-1 text-xs"
+                                          title={isExpanded ? 'Hide diagnostics' : 'Show QB field diagnostics'}
+                                          onClick={() => setExpandedDebugIds(prev => {
+                                            const next = new Set(prev);
+                                            if (next.has(row.qbInvoiceId)) next.delete(row.qbInvoiceId);
+                                            else next.add(row.qbInvoiceId);
+                                            return next;
+                                          })}
+                                        >
+                                          {isExpanded ? '▲' : '▼'}
+                                        </button>
+                                      )}
+                                    </div>
+                                  </TableCell>
+                                </TableRow>
+
+                                {/* Expandable diagnostic panel — only shown when debug data is present and row is expanded */}
+                                {hasDebug && isExpanded && row.referenceDebug && (
+                                  <TableRow key={`${row.qbInvoiceId}-debug`} className="bg-muted/30">
+                                    <TableCell colSpan={colSpan} className="py-2 px-4">
+                                      <div className="text-xs space-y-2">
+                                        <p className="font-semibold text-amber-700 dark:text-amber-400">
+                                          Diagnostic — QB reference fields (admin only, not stored)
+                                        </p>
+
+                                        {/* Custom fields */}
+                                        <div>
+                                          <span className="font-medium">Custom Fields: </span>
+                                          {row.referenceDebug.customFields.length === 0
+                                            ? <span className="text-muted-foreground italic">none</span>
+                                            : (
+                                              <span className="font-mono">
+                                                {row.referenceDebug.customFields.map((f, i) => (
+                                                  <span key={i} className="mr-3">
+                                                    <span className="text-muted-foreground">[{f.name ?? '?'}{f.type ? ` (${f.type})` : ''}]</span>
+                                                    {' '}{f.value ?? <span className="italic text-muted-foreground">empty</span>}
+                                                  </span>
+                                                ))}
+                                              </span>
+                                            )
+                                          }
+                                        </div>
+
+                                        {/* Customer Memo */}
+                                        <div>
+                                          <span className="font-medium">Customer Memo: </span>
+                                          {row.referenceDebug.customerMemo
+                                            ? <span className="font-mono">{row.referenceDebug.customerMemo}</span>
+                                            : <span className="text-muted-foreground italic">empty</span>
+                                          }
+                                        </div>
+
+                                        {/* Private Note */}
+                                        <div>
+                                          <span className="font-medium">Private Note: </span>
+                                          {row.referenceDebug.privateNote
+                                            ? <span className="font-mono">{row.referenceDebug.privateNote}</span>
+                                            : <span className="text-muted-foreground italic">empty</span>
+                                          }
+                                        </div>
+
+                                        {/* Line descriptions */}
+                                        <div>
+                                          <span className="font-medium">Line Descriptions: </span>
+                                          {row.referenceDebug.lineDescriptions.length === 0
+                                            ? <span className="text-muted-foreground italic">none</span>
+                                            : (
+                                              <ul className="mt-0.5 ml-4 list-disc">
+                                                {row.referenceDebug.lineDescriptions.map((d, i) => (
+                                                  <li key={i} className="font-mono">{d}</li>
+                                                ))}
+                                              </ul>
+                                            )
+                                          }
+                                        </div>
+
+                                        {/* Detected PO summary */}
+                                        <div>
+                                          <span className="font-medium">Detected PO: </span>
+                                          {row.customerPoNumber
+                                            ? <span className="font-mono text-green-700 dark:text-green-400">{row.customerPoNumber} <span className="text-muted-foreground">(source: {row.customerPoSource})</span></span>
+                                            : <span className="text-muted-foreground italic">none — update extraction rules if a PO-like value appears above</span>
+                                          }
+                                        </div>
+                                      </div>
+                                    </TableCell>
+                                  </TableRow>
+                                )}
+                              </>
+                            );
+                          })}
                         </TableBody>
                       </Table>
                     </div>

@@ -518,11 +518,18 @@ export function registerQuickBooksRoutes(
    * Read-only preview of all QB invoices with local match status.
    * Returns classification (open_ar vs historical), already-imported flag,
    * and canImport flag. No writes — safe to call repeatedly.
+   *
+   * Query params:
+   *   debugReferenceFields=1  (admin/owner only, already enforced by isAdminOrOwner)
+   *     When present, each preview row includes a `referenceDebug` object with
+   *     custom fields, privateNote, customerMemo, and line descriptions — used
+   *     to inspect where PO/reference data lives before finalising extraction rules.
    */
   app.get('/api/integrations/quickbooks/import-preview/invoices', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
-      const rows = await quickbooksService.fetchQBInvoicesForPreview(organizationId);
+      const includeReferenceDebug = req.query.debugReferenceFields === '1';
+      const rows = await quickbooksService.fetchQBInvoicesForPreview(organizationId, includeReferenceDebug);
       return res.json({ success: true, data: rows });
     } catch (error: any) {
       console.error('[QB Invoice Preview] Error:', error);
