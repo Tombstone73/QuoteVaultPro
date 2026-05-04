@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
@@ -43,10 +44,12 @@ import {
   Edit,
   ShoppingCart,
   Plus,
+  MessageSquare,
 } from "lucide-react";
 import { Page, ContentLayout, StatusPill, getStatusVariant } from "@/components/titan";
 import { useSmartBack } from "@/hooks/useSmartBack";
 import BackNavControls from "@/components/BackNavControls";
+import { ContactFlagPill, CONTACT_FLAGS } from "@/components/ContactFlagPill";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PAGE
@@ -159,6 +162,15 @@ export default function ContactDetailPage() {
                     <StatusPill variant="info">Primary Contact</StatusPill>
                   )}
                 </div>
+
+                {/* Flags */}
+                {contact.flags && contact.flags.length > 0 && (
+                  <div className="flex items-center gap-1 flex-wrap mt-0.5">
+                    {contact.flags.map((flag) => (
+                      <ContactFlagPill key={flag} flag={flag} />
+                    ))}
+                  </div>
+                )}
 
                 {/* Title */}
                 {contact.title && (
@@ -411,6 +423,39 @@ export default function ContactDetailPage() {
           </div>
         </div>
 
+        {/* ── INTERNAL NOTES ──────────────────────────────────────────────── */}
+        <div className="bg-titan-bg-card border border-titan-border-subtle rounded-titan-xl p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <MessageSquare className="w-4 h-4 text-titan-text-secondary" />
+              <h2 className="text-titan-base font-semibold text-titan-text-primary">
+                Internal Notes
+              </h2>
+              <span className="text-[10px] text-titan-text-muted bg-titan-bg-card-elevated px-1.5 py-0.5 rounded">
+                Staff only
+              </span>
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setEditOpen(true)}
+              className="h-7 text-[11px] text-titan-text-muted hover:text-titan-text-primary"
+            >
+              <Edit className="w-3 h-3 mr-1" />
+              Edit
+            </Button>
+          </div>
+          {contact.internalNotes ? (
+            <p className="text-titan-sm text-titan-text-secondary whitespace-pre-wrap leading-relaxed">
+              {contact.internalNotes}
+            </p>
+          ) : (
+            <p className="text-titan-xs text-titan-text-muted italic py-2">
+              No internal notes yet.
+            </p>
+          )}
+        </div>
+
         {/* ── RECENT ORDERS ───────────────────────────────────────────────── */}
         <div className="bg-titan-bg-card border border-titan-border-subtle rounded-titan-xl overflow-hidden">
           <div className="flex items-center justify-between px-4 py-3 border-b border-titan-border-subtle">
@@ -658,6 +703,8 @@ interface EditContactDialogProps {
     state: string;
     postalCode: string;
     country: string;
+    internalNotes: string;
+    flags: string[];
   }) => Promise<void>;
 }
 
@@ -681,6 +728,8 @@ function EditContactDialog({
     state: contact.state ?? "",
     postalCode: contact.postalCode ?? "",
     country: contact.country ?? "",
+    internalNotes: contact.internalNotes ?? "",
+    flags: contact.flags ?? [],
   });
   const [isSaving, setIsSaving] = useState(false);
 
@@ -785,6 +834,51 @@ function EditContactDialog({
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Contact Flags */}
+          <div className="space-y-3">
+            <h4 className="font-medium">Contact Flags</h4>
+            <div className="grid grid-cols-2 gap-2">
+              {CONTACT_FLAGS.map((flag) => (
+                <label
+                  key={flag.value}
+                  className="flex items-center gap-2.5 cursor-pointer select-none"
+                >
+                  <Checkbox
+                    id={`ec-flag-${flag.value}`}
+                    checked={formData.flags.includes(flag.value)}
+                    onCheckedChange={(checked) =>
+                      setFormData({
+                        ...formData,
+                        flags: checked
+                          ? [...formData.flags, flag.value]
+                          : formData.flags.filter((f) => f !== flag.value),
+                      })
+                    }
+                  />
+                  <ContactFlagPill flag={flag.value} />
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* Internal Notes */}
+          <div className="space-y-3">
+            <h4 className="font-medium">
+              Internal Notes{" "}
+              <span className="text-xs font-normal text-muted-foreground">(staff only)</span>
+            </h4>
+            <Textarea
+              id="ec-internalNotes"
+              value={formData.internalNotes}
+              onChange={(e) =>
+                setFormData({ ...formData, internalNotes: e.target.value })
+              }
+              placeholder="Add internal notes about this contact…"
+              rows={4}
+              className="resize-none"
+            />
           </div>
 
           <DialogFooter>

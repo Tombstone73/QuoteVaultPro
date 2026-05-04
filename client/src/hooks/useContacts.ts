@@ -30,6 +30,9 @@ export interface Contact {
   state?: string | null;
   postalCode?: string | null;
   country?: string | null;
+  // Internal CRM fields
+  internalNotes?: string | null;
+  flags?: string[] | null;
 }
 
 export interface ContactWithStats extends Contact {
@@ -84,6 +87,8 @@ export interface UpdateContactInput {
   state?: string;
   postalCode?: string;
   country?: string;
+  internalNotes?: string | null;
+  flags?: string[] | null;
 }
 
 export function useContacts(filters?: { search?: string; page?: number; pageSize?: number }) {

@@ -2155,6 +2155,9 @@ export const customerContacts = pgTable("customer_contacts", {
   externalSource: varchar("external_source", { length: 30 }),
   externalSourceId: text("external_source_id"),
   externalSourceType: varchar("external_source_type", { length: 50 }),
+  // Internal CRM fields — staff-only, never exposed to customer-facing views
+  internalNotes: text("internal_notes"),
+  flags: jsonb("flags").$type<string[]>(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -2178,6 +2181,10 @@ export const insertCustomerContactSchema = createInsertSchema(customerContacts).
   state: z.string().max(100).optional(),
   postalCode: z.string().max(20).optional(),
   country: z.string().max(100).optional(),
+  internalNotes: z.string().max(10000).nullable().optional(),
+  flags: z.array(
+    z.enum(["vip", "billing_contact", "artwork_contact", "do_not_email", "needs_follow_up", "problem_contact"])
+  ).nullable().optional(),
 });
 
 export const updateCustomerContactSchema = insertCustomerContactSchema.partial();
