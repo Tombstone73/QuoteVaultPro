@@ -1,13 +1,14 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMaterials, Material, calculateRollDerivedValues } from "@/hooks/useMaterials";
+import { useVendors } from "@/hooks/useVendors";
 import { MaterialForm } from "@/components/MaterialForm";
 import { AdjustInventoryForm } from "@/components/AdjustInventoryForm";
 import { LowStockBadge } from "@/components/LowStockBadge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { ROUTES } from "@/config/routes";
-import { Copy, Pencil, Boxes, Plus } from "lucide-react";
+import { Copy, Pencil, Boxes, Plus, ChevronDown, ChevronUp } from "lucide-react";
 import { useListViewSettings } from "@/hooks/useListViewSettings";
 import { ListViewSettings } from "@/components/list/ListViewSettings";
 import {
@@ -25,7 +26,6 @@ import {
   TitanTableCell,
   TitanTableEmpty,
   TitanTableLoading,
-  TitanButton,
   TitanIconButton,
 } from "@/components/titan";
 
@@ -41,16 +41,62 @@ const defaultColumns = [
   { id: "actions", label: "Actions", visible: true },
 ];
 
+type SortDirection = "asc" | "desc";
+type SortableColumnId = "name" | "sku" | "type" | "stock" | "unit" | "cost" | "vendor" | "alerts";
+
+const sortableColumnIds = new Set<SortableColumnId>([
+  "name",
+  "sku",
+  "type",
+  "stock",
+  "unit",
+  "cost",
+  "vendor",
+  "alerts",
+]);
+
+function getNumberValue(value?: string | null) {
+  const parsed = Number.parseFloat(value ?? "0");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getVendorName(material: Material, vendorNamesById: Map<string, string>) {
+  if (!material.preferredVendorId) return "Unassigned";
+  return vendorNamesById.get(material.preferredVendorId) ?? "Unassigned";
+}
+
+function getMaterialUnitCost(material: Material) {
+  if (material.type === "roll" && material.width && material.rollLengthFt && material.costPerRoll) {
+    return calculateRollDerivedValues(
+      getNumberValue(material.width),
+      getNumberValue(material.rollLengthFt),
+      getNumberValue(material.costPerRoll),
+      getNumberValue(material.edgeWasteInPerSide),
+      getNumberValue(material.leadWasteFt),
+      getNumberValue(material.tailWasteFt)
+    ).costPerSqft;
+  }
+
+  return getNumberValue(material.costPerUnit);
+}
+
+function compareText(a: string, b: string) {
+  return a.localeCompare(b, undefined, { sensitivity: "base" });
+}
+
 export default function MaterialsListPage() {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [lowStockOnly, setLowStockOnly] = useState(false);
+  const [sortKey, setSortKey] = useState<SortableColumnId | null>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [showCreate, setShowCreate] = useState(false);
   const [editMaterial, setEditMaterial] = useState<Material | null>(null);
   const [adjustMaterialId, setAdjustMaterialId] = useState<string | null>(null);
   const [duplicateMaterial, setDuplicateMaterial] = useState<Material | null>(null);
   const { data: materials, isLoading } = useMaterials({ search, type: typeFilter, lowStockOnly });
+  const { data: vendors = [] } = useVendors();
   
   const {
     columns,
@@ -60,6 +106,69 @@ export default function MaterialsListPage() {
   } = useListViewSettings("materials-list", defaultColumns);
 
   const visibleColumns = columns.filter((c) => c.visible);
+  const vendorNamesById = useMemo(
+    () => new Map(vendors.map((vendor) => [vendor.id, vendor.name])),
+    [vendors]
+  );
+
+  const sortedMaterials = useMemo(() => {
+    const list = materials ?? [];
+
+    if (!sortKey) {
+      return list;
+    }
+
+    const directionMultiplier = sortDirection === "asc" ? 1 : -1;
+
+    return [...list].sort((left, right) => {
+      switch (sortKey) {
+        case "name":
+          return compareText(left.name ?? "", right.name ?? "") * directionMultiplier;
+        case "sku":
+          return compareText(left.sku ?? "", right.sku ?? "") * directionMultiplier;
+        case "type":
+          return compareText(left.type ?? "", right.type ?? "") * directionMultiplier;
+        case "stock":
+          return (getNumberValue(left.stockQuantity) - getNumberValue(right.stockQuantity)) * directionMultiplier;
+        case "unit":
+          return compareText(left.unitOfMeasure ?? "", right.unitOfMeasure ?? "") * directionMultiplier;
+        case "cost":
+          return (getMaterialUnitCost(left) - getMaterialUnitCost(right)) * directionMultiplier;
+        case "vendor":
+          return compareText(
+            getVendorName(left, vendorNamesById),
+            getVendorName(right, vendorNamesById)
+          ) * directionMultiplier;
+        case "alerts": {
+          const leftAlert = getNumberValue(left.minStockAlert) > 0 && getNumberValue(left.stockQuantity) <= getNumberValue(left.minStockAlert) ? 1 : 0;
+          const rightAlert = getNumberValue(right.minStockAlert) > 0 && getNumberValue(right.stockQuantity) <= getNumberValue(right.minStockAlert) ? 1 : 0;
+          return (leftAlert - rightAlert) * directionMultiplier;
+        }
+        default:
+          return 0;
+      }
+    });
+  }, [materials, sortDirection, sortKey, vendorNamesById]);
+
+  const handleSort = (columnId: SortableColumnId) => {
+    if (sortKey === columnId) {
+      setSortDirection((currentDirection) => (currentDirection === "asc" ? "desc" : "asc"));
+      return;
+    }
+
+    setSortKey(columnId);
+    setSortDirection("asc");
+  };
+
+  const renderSortIcon = (columnId: SortableColumnId) => {
+    if (sortKey !== columnId) return null;
+
+    return sortDirection === "asc" ? (
+      <ChevronUp className="h-3.5 w-3.5 text-titan-text-primary" />
+    ) : (
+      <ChevronDown className="h-3.5 w-3.5 text-titan-text-primary" />
+    );
+  };
 
   const renderCell = (m: Material, columnId: string) => {
     const stock = parseFloat(m.stockQuantity || "0");
@@ -106,7 +215,7 @@ export default function MaterialsListPage() {
         }
         return <span className="text-titan-text-primary">{m.costPerUnit}</span>;
       case "vendor":
-        return <span className="text-titan-text-muted">—</span>;
+        return <span className="text-titan-text-secondary">{getVendorName(m, vendorNamesById)}</span>;
       case "alerts":
         return <LowStockBadge stock={stock} min={min} />;
       case "actions":
@@ -184,9 +293,14 @@ export default function MaterialsListPage() {
                 {visibleColumns.map((col) => (
                   <TitanTableHead
                     key={col.id}
+                    sortable={sortableColumnIds.has(col.id as SortableColumnId)}
                     style={{ width: col.width ? `${col.width}px` : undefined }}
+                    onClick={sortableColumnIds.has(col.id as SortableColumnId) ? () => handleSort(col.id as SortableColumnId) : undefined}
                   >
-                    {col.label}
+                    <span className="inline-flex items-center gap-1.5">
+                      <span>{col.label}</span>
+                      {sortableColumnIds.has(col.id as SortableColumnId) && renderSortIcon(col.id as SortableColumnId)}
+                    </span>
                   </TitanTableHead>
                 ))}
               </TitanTableRow>
@@ -210,7 +324,7 @@ export default function MaterialsListPage() {
                 />
               )}
               
-              {!isLoading && materials?.map(m => (
+              {!isLoading && sortedMaterials.map(m => (
                 <TitanTableRow
                   key={m.id}
                   clickable
