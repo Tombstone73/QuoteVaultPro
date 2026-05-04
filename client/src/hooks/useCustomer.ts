@@ -16,6 +16,7 @@ export interface CustomerContact {
   phone: string | null;
   isPrimary: boolean;
   isBilling: boolean;
+  flags?: string[] | null;
 }
 
 export interface CustomerNote {

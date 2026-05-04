@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Search, Mail, Phone, Building2, MoreHorizontal, Pencil, Trash2, Eye, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import { ContactFlagPill } from "@/components/ContactFlagPill";
 import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
@@ -202,19 +203,20 @@ export default function ContactsPage() {
     switch (columnId) {
       case "name":
         return (
-          <div className="flex flex-col">
-            <span className="font-medium text-titan-text-primary">
-              {contact.firstName} {contact.lastName}
-            </span>
-            {contact.title && (
-              <span className="text-xs text-titan-text-muted">
-                {contact.title}
+          <div className="flex flex-col gap-0.5">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="font-medium text-titan-text-primary">
+                {contact.firstName} {contact.lastName}
               </span>
-            )}
-            {contact.isPrimary && (
-              <StatusPill variant="info" className="w-fit mt-1">
-                Primary
-              </StatusPill>
+              {contact.isPrimary && (
+                <StatusPill variant="info">Primary</StatusPill>
+              )}
+              {contact.flags?.map((flag) => (
+                <ContactFlagPill key={flag} flag={flag} />
+              ))}
+            </div>
+            {contact.title && (
+              <span className="text-xs text-titan-text-muted">{contact.title}</span>
             )}
           </div>
         );
