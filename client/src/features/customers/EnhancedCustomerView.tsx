@@ -625,7 +625,8 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
             {contacts.map((contact) => (
               <div
                 key={contact.id}
-                className="flex items-center justify-between p-3 rounded-titan-lg bg-titan-bg-card-elevated hover:bg-titan-bg-table-row transition-colors"
+                className="flex items-center justify-between p-3 rounded-titan-lg bg-titan-bg-card-elevated hover:bg-titan-bg-table-row transition-colors cursor-pointer"
+                onClick={() => navigate(ROUTES.contacts.detail(contact.id))}
               >
                 {/* Contact Info */}
                 <div className="flex-1 min-w-0">
@@ -661,6 +662,7 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
                       variant="ghost"
                       size="icon"
                       className="h-7 w-7 text-titan-text-muted hover:text-titan-text-primary hover:bg-titan-bg-card"
+                      onClick={(e) => e.stopPropagation()}
                     >
                       <MoreHorizontal className="w-4 h-4" />
                     </Button>
