@@ -235,16 +235,25 @@ function getNetInternalPaymentCents(paymentRows: Array<{ id?: string | null; sta
 
 function computeInvoiceFinancialState(
   invoice: Record<string, any>,
-  paymentRows: Array<{ id?: string | null; status?: unknown; amountCents?: unknown }>,
+  paymentRows: Array<Record<string, any>>,
 ): { amountPaidCents: number; amountDueCents: number; status: string } {
   const totalCents = Math.max(0, Math.round(Number(invoice.totalCents || 0)));
   const isImportedFromQuickBooks = String(invoice.importSource || '').trim().toLowerCase() === 'quickbooks';
 
   if (isImportedFromQuickBooks) {
-    const baseDisplay = normalizeInvoiceAccountingDisplay(invoice);
-    const netInternalPaymentCents = getNetInternalPaymentCents(paymentRows);
-    const amountPaidCents = Math.max(0, Math.min(totalCents, baseDisplay.displayPaidCents + netInternalPaymentCents));
-    const amountDueCents = Math.max(0, totalCents - amountPaidCents);
+    const normalizedDisplay = normalizeInvoiceAccountingDisplay({
+      ...invoice,
+      payments: paymentRows.map((payment: any) => ({
+        id: payment.id,
+        status: payment.status,
+        amountCents: Number(payment.amountCents || 0),
+        syncStatus: payment.syncStatus,
+        externalAccountingId: payment.externalAccountingId,
+        qbReconciledAt: payment.qbReconciledAt,
+      })),
+    });
+    const amountPaidCents = normalizedDisplay.displayPaidCents;
+    const amountDueCents = normalizedDisplay.displayRemainingCents;
 
     let status = String(invoice.status || 'billed').trim().toLowerCase();
     if (amountDueCents <= 0) status = 'paid';
@@ -434,9 +443,6 @@ export async function applyPayment(invoiceId: string, userId: string, data: { am
     const rel = await getInvoiceWithRelations(invoiceId);
     if (!rel) throw new Error('Invoice not found');
     const { invoice } = rel;
-    if (String((invoice as any).importSource || '').trim().toLowerCase() === 'quickbooks') {
-      throw new Error('Payments for imported QuickBooks invoices should be reconciled from QuickBooks until payment sync is enabled.');
-    }
     const existingStatus = String(invoice.status || '').toLowerCase();
     if (existingStatus === 'void') throw new Error('Cannot record payment on a void invoice');
 

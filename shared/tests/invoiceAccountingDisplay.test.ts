@@ -57,6 +57,58 @@ describe('normalizeInvoiceAccountingDisplay', () => {
     expect(normalized.displayRemaining).toBe(25);
     expect(normalized.displayStatus).toBe('Partially Paid');
   });
+
+  test('open imported invoice subtracts unreconciled local payments from QuickBooks snapshot', () => {
+    const normalized = normalizeInvoiceAccountingDisplay({
+      importSource: 'quickbooks',
+      isHistorical: false,
+      total: '100.00',
+      totalCents: 10000,
+      amountPaid: '0.00',
+      balanceDue: '100.00',
+      qbImportBalanceDue: '100.00',
+      status: 'billed',
+      payments: [
+        { id: 'pay_pending', status: 'succeeded', amountCents: 2500, syncStatus: 'pending' },
+        { id: 'pay_synced', status: 'succeeded', amountCents: 1500, syncStatus: 'synced', externalAccountingId: 'qb_pay_1' },
+      ],
+    });
+
+    expect(normalized.displayPaid).toBe(40);
+    expect(normalized.displayRemaining).toBe(60);
+    expect(normalized.displayStatus).toBe('Partially Paid');
+    expect(normalized.importedQuickBooksPaymentSummary.pendingSyncCents).toBe(2500);
+    expect(normalized.importedQuickBooksPaymentSummary.syncedUnreconciledCents).toBe(1500);
+    expect(normalized.importedQuickBooksPaymentSummary.unreconciledCents).toBe(4000);
+  });
+
+  test('reconciled imported payments stop reducing remaining balance twice', () => {
+    const normalized = normalizeInvoiceAccountingDisplay({
+      importSource: 'quickbooks',
+      isHistorical: false,
+      total: '100.00',
+      totalCents: 10000,
+      amountPaid: '0.00',
+      balanceDue: '60.00',
+      qbImportBalanceDue: '60.00',
+      status: 'billed',
+      payments: [
+        {
+          id: 'pay_reconciled',
+          status: 'succeeded',
+          amountCents: 4000,
+          syncStatus: 'synced',
+          externalAccountingId: 'qb_pay_1',
+          qbReconciledAt: '2025-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+
+    expect(normalized.displayPaid).toBe(40);
+    expect(normalized.displayRemaining).toBe(60);
+    expect(normalized.importedQuickBooksPaymentSummary.reconciledCents).toBe(4000);
+    expect(normalized.importedQuickBooksPaymentSummary.unreconciledCents).toBe(0);
+  });
 });
 
 describe('normalizeQuickBooksLineItemsSnapshot', () => {

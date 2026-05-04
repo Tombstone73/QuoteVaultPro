@@ -3705,6 +3705,7 @@ export const payments = pgTable("payments", {
   syncStatus: varchar("sync_status", { length: 50 }).notNull().default('pending'), // pending, synced, error, skipped
   syncError: text("sync_error"),
   syncedAt: timestamp("synced_at", { withTimezone: true }),
+  qbReconciledAt: timestamp("qb_reconciled_at", { withTimezone: true }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -3736,6 +3737,12 @@ export const insertPaymentSchema = createInsertSchema(payments).omit({
   method: z.enum(['cash','check','wire','bank_transfer','credit_card','ach','other']).default('other'),
   notes: z.string().optional().nullable(),
   syncStatus: z.enum(['pending','synced','error','skipped']).default('pending'),
+  qbReconciledAt: z.preprocess((val) => {
+    if (!val) return null;
+    if (val instanceof Date) return val;
+    if (typeof val === 'string') return new Date(val);
+    return val;
+  }, z.date().nullable().optional()),
 });
 
 export const updatePaymentSchema = insertPaymentSchema.partial().extend({

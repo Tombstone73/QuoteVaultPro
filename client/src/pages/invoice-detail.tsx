@@ -251,7 +251,16 @@ export default function InvoiceDetailPage() {
   const paymentStatusLabel = String((invoice as any)?.displayStatus || fallbackPaymentStatusLabel);
   const isImportedFromQuickBooks = !!invoice && Boolean((invoice as any)?.isImportedFromQuickBooks);
   const isHistoricalImport = !!invoice && Boolean((invoice as any)?.isHistorical);
-  const paymentActionsLocked = isImportedFromQuickBooks;
+  const importedQuickBooksPaymentSummary = (invoice as any)?.importedQuickBooksPaymentSummary;
+  const importedQuickBooksPaymentsEnabled = isImportedFromQuickBooks && !isHistoricalImport && !!String((invoice as any)?.qbInvoiceId || '').trim();
+  const importedQbPendingSyncCents = Number(importedQuickBooksPaymentSummary?.pendingSyncCents || 0);
+  const importedQbFailedSyncCents = Number(importedQuickBooksPaymentSummary?.failedSyncCents || 0);
+  const importedQbSyncedUnreconciledCents = Number(importedQuickBooksPaymentSummary?.syncedUnreconciledCents || 0);
+  const importedQbReconciledCents = Number(importedQuickBooksPaymentSummary?.reconciledCents || 0);
+  const hasImportedQbPaymentSummary =
+    importedQuickBooksPaymentsEnabled &&
+    (importedQbPendingSyncCents > 0 || importedQbFailedSyncCents > 0 || importedQbSyncedUnreconciledCents > 0 || importedQbReconciledCents > 0);
+  const paymentActionsLocked = isImportedFromQuickBooks && !importedQuickBooksPaymentsEnabled;
   const canSendInvoiceEmail = isAdminOrOwner && !isImportedFromQuickBooks;
   const canMarkInvoiceSent = isAdminOrOwner && !isImportedFromQuickBooks;
   const canFinalizeInvoice = invoiceStatus === 'draft' && !isImportedFromQuickBooks;
@@ -1913,6 +1922,44 @@ export default function InvoiceDetailPage() {
                           )}
                         </div>
                       </div>
+
+                      {importedQuickBooksPaymentsEnabled ? (
+                        <Alert>
+                          <AlertCircle className="h-4 w-4" />
+                          <AlertTitle>Imported QuickBooks payment reconciliation</AlertTitle>
+                          <AlertDescription>
+                            <div className="space-y-2">
+                              <div>
+                                TitanOS reduces A/R immediately for local payments on imported QuickBooks invoices. Those payments still need to sync to QuickBooks and later reconcile against the refreshed QuickBooks balance snapshot.
+                              </div>
+                              {hasImportedQbPaymentSummary ? (
+                                <div className="flex flex-wrap gap-2 text-xs">
+                                  {importedQbPendingSyncCents > 0 ? (
+                                    <Badge variant="outline">
+                                      Pending sync {formatCurrencyFromCents(importedQbPendingSyncCents)}
+                                    </Badge>
+                                  ) : null}
+                                  {importedQbFailedSyncCents > 0 ? (
+                                    <Badge variant="destructive">
+                                      Sync failed {formatCurrencyFromCents(importedQbFailedSyncCents)}
+                                    </Badge>
+                                  ) : null}
+                                  {importedQbSyncedUnreconciledCents > 0 ? (
+                                    <Badge variant="secondary">
+                                      Synced, awaiting reconciliation {formatCurrencyFromCents(importedQbSyncedUnreconciledCents)}
+                                    </Badge>
+                                  ) : null}
+                                  {importedQbReconciledCents > 0 ? (
+                                    <Badge variant="secondary">
+                                      Reconciled in QuickBooks {formatCurrencyFromCents(importedQbReconciledCents)}
+                                    </Badge>
+                                  ) : null}
+                                </div>
+                              ) : null}
+                            </div>
+                          </AlertDescription>
+                        </Alert>
+                      ) : null}
 
                       {showQbNeedsReauthBanner ? (
                         <Alert variant="destructive">
