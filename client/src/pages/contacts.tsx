@@ -6,18 +6,18 @@
  * This centralizes contact management with search by name, email, or company.
  */
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ROUTES } from "@/config/routes";
 import { useContacts, useDeleteContact, useUpdateContact, type ContactWithStats } from "@/hooks/useContacts";
 import { useAuth } from "@/hooks/useAuth";
 import { useListViewSettings } from "@/hooks/useListViewSettings";
-import { formatPhoneForDisplay, phoneToTelHref } from "@/lib/utils";
+import { formatPhoneForDisplay, phoneToTelHref, cn } from "@/lib/utils";
 import { ListViewSettings } from "@/components/list/ListViewSettings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Search, Mail, Phone, Building2, MoreHorizontal, Pencil, Trash2, Eye } from "lucide-react";
+import { Search, Mail, Phone, Building2, MoreHorizontal, Pencil, Trash2, Eye, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
@@ -70,7 +70,9 @@ export default function ContactsPage() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [editingContact, setEditingContact] = useState<ContactWithStats | null>(null);
   const [deletingContact, setDeletingContact] = useState<ContactWithStats | null>(null);
-  
+  const [sortKey, setSortKey] = useState<string | null>(null);
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+
   const deleteContactMutation = useDeleteContact();
   const updateContactMutation = useUpdateContact();
   
@@ -97,6 +99,53 @@ export default function ContactsPage() {
     page: 1,
     pageSize: 50,
   });
+
+  const sortedContacts = useMemo(() => {
+    const contacts = data?.contacts ?? [];
+    return [...contacts].sort((a, b) => {
+      // Default: primary contacts first, then name ascending
+      if (sortKey === null) {
+        if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+        const nameA = `${a.firstName ?? ""} ${a.lastName ?? ""}`.toLowerCase().trim();
+        const nameB = `${b.firstName ?? ""} ${b.lastName ?? ""}`.toLowerCase().trim();
+        return nameA < nameB ? -1 : nameA > nameB ? 1 : 0;
+      }
+      const dir = sortDirection === "asc" ? 1 : -1;
+      switch (sortKey) {
+        case "name": {
+          const nameA = `${a.firstName ?? ""} ${a.lastName ?? ""}`.toLowerCase().trim();
+          const nameB = `${b.firstName ?? ""} ${b.lastName ?? ""}`.toLowerCase().trim();
+          return (nameA < nameB ? -1 : nameA > nameB ? 1 : 0) * dir;
+        }
+        case "company": {
+          const compA = (a.companyName ?? "").toLowerCase();
+          const compB = (b.companyName ?? "").toLowerCase();
+          return (compA < compB ? -1 : compA > compB ? 1 : 0) * dir;
+        }
+        case "email": {
+          const emailA = (a.email ?? "").toLowerCase();
+          const emailB = (b.email ?? "").toLowerCase();
+          return (emailA < emailB ? -1 : emailA > emailB ? 1 : 0) * dir;
+        }
+        case "phone": {
+          const phoneA = (a.phone ?? "").toLowerCase();
+          const phoneB = (b.phone ?? "").toLowerCase();
+          return (phoneA < phoneB ? -1 : phoneA > phoneB ? 1 : 0) * dir;
+        }
+        case "orders":
+          return ((a.ordersCount ?? 0) - (b.ordersCount ?? 0)) * dir;
+        case "quotes":
+          return ((a.quotesCount ?? 0) - (b.quotesCount ?? 0)) * dir;
+        case "lastActivity": {
+          const dateA = a.lastActivityAt ? new Date(a.lastActivityAt).getTime() : 0;
+          const dateB = b.lastActivityAt ? new Date(b.lastActivityAt).getTime() : 0;
+          return (dateA - dateB) * dir;
+        }
+        default:
+          return 0;
+      }
+    });
+  }, [data?.contacts, sortKey, sortDirection]);
 
   // Role check - only internal users can access
   if (user?.role === "customer") {
@@ -138,6 +187,15 @@ export default function ContactsPage() {
       return;
     }
     navigate(`/contacts/${contactId}`);
+  };
+
+  const handleSort = (key: string) => {
+    if (sortKey === key) {
+      setSortDirection(prev => prev === "asc" ? "desc" : "asc");
+    } else {
+      setSortKey(key);
+      setSortDirection("asc");
+    }
   };
 
   const renderCell = (contact: ContactWithStats, columnId: string) => {
@@ -332,19 +390,39 @@ export default function ContactsPage() {
               <Table>
                 <TableHeader>
                   <TableRow className="bg-titan-bg-card-elevated border-b border-titan-border-subtle">
-                    {visibleColumns.map((col) => (
-                      <TableHead
-                        key={col.id}
-                        style={{ width: col.width ? `${col.width}px` : undefined }}
-                        className={`text-titan-text-secondary ${col.id === "orders" || col.id === "quotes" ? "text-center" : col.id === "actions" ? "text-right" : ""}`}
-                      >
-                        {col.label}
-                      </TableHead>
-                    ))}
+                    {visibleColumns.map((col) => {
+                      const isSortable = col.id !== "actions";
+                      const isActive = sortKey === col.id;
+                      const isCentered = col.id === "orders" || col.id === "quotes";
+                      const isRight = col.id === "actions";
+                      return (
+                        <TableHead
+                          key={col.id}
+                          style={{ width: col.width ? `${col.width}px` : undefined }}
+                          className={cn(
+                            "text-titan-text-secondary select-none",
+                            isCentered ? "text-center" : isRight ? "text-right" : "",
+                            isSortable && "cursor-pointer hover:text-titan-text-primary"
+                          )}
+                          onClick={isSortable ? () => handleSort(col.id) : undefined}
+                        >
+                          <div className={cn("flex items-center gap-1", isCentered && "justify-center", isRight && "justify-end")}>
+                            {col.label}
+                            {isSortable && (
+                              isActive
+                                ? sortDirection === "asc"
+                                  ? <ArrowUp className="w-3 h-3 text-titan-accent flex-shrink-0" />
+                                  : <ArrowDown className="w-3 h-3 text-titan-accent flex-shrink-0" />
+                                : <ArrowUpDown className="w-3 h-3 opacity-30 flex-shrink-0" />
+                            )}
+                          </div>
+                        </TableHead>
+                      );
+                    })}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data.contacts.map((contact) => (
+                  {sortedContacts.map((contact) => (
                     <TableRow
                       key={contact.id}
                       className="cursor-pointer hover:bg-titan-bg-card-elevated/50 border-b border-titan-border-subtle"
