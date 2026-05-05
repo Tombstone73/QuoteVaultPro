@@ -52,6 +52,7 @@ import { useDesignQueue } from "@/hooks/useOrders";
 import { format, isPast, parseISO } from "date-fns";
 import { cn } from "@/lib/utils";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
+import { buildProofingLineItemPath, isProofApprovalRoutingBlocked } from "@/lib/proofingNavigation";
 import { ROUTES } from "@/config/routes";
 import type { ProofingQueueResponse } from "@shared/proofing";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
@@ -1961,13 +1962,29 @@ function StatusBullet({
 function RoutingReasonAffordance({
   routingReason,
   idempotencyNote,
+  lineItemId,
 }: {
   routingReason?: string | null;
   idempotencyNote?: string | null;
+  lineItemId?: string | null;
 }) {
   const reason = typeof routingReason === "string" ? routingReason.trim() : "";
   const note = typeof idempotencyNote === "string" ? idempotencyNote.trim() : "";
   if (!reason) return null;
+  const showOpenProofingAction = Boolean(lineItemId && isProofApprovalRoutingBlocked(reason));
+
+  const proofingAction = showOpenProofingAction ? (
+    <Button asChild size="sm" variant="outline" className="mt-2 h-7 px-2 text-[11px]">
+      <Link
+        to={buildProofingLineItemPath(String(lineItemId))}
+        onClick={(e) => e.stopPropagation()}
+        onPointerDownCapture={(e) => e.stopPropagation()}
+        onMouseDownCapture={(e) => e.stopPropagation()}
+      >
+        Open Proofing
+      </Link>
+    </Button>
+  ) : null;
 
   const trigger = (
     <button
@@ -1992,6 +2009,7 @@ function RoutingReasonAffordance({
             <TooltipContent className="max-w-[360px] text-xs">
               <div>Routed by: {reason}</div>
               {note ? <div className="mt-1 text-muted-foreground">{note}</div> : null}
+              {proofingAction}
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
@@ -2002,6 +2020,7 @@ function RoutingReasonAffordance({
           <PopoverContent align="end" className="w-[280px] text-xs">
             <div>Routed by: {reason}</div>
             {note ? <div className="mt-1 text-muted-foreground">{note}</div> : null}
+            {proofingAction}
           </PopoverContent>
         </Popover>
       </span>
@@ -2217,6 +2236,7 @@ function JobCard({
                 <RoutingReasonAffordance
                   routingReason={job.routingReason}
                   idempotencyNote={job.idempotencyNote}
+                  lineItemId={job.lineItemId}
                 />
               </div>
             </div>
@@ -2413,6 +2433,7 @@ function JobRow({ job, visibleColumns, showThumbnails, onArtworkClick }: { job: 
             <RoutingReasonAffordance
               routingReason={job.routingReason}
               idempotencyNote={job.idempotencyNote}
+              lineItemId={job.lineItemId}
             />
           </span>
         );

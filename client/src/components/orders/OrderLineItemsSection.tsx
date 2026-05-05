@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -46,6 +47,7 @@ import { useOrderFiles } from "@/hooks/useOrderFiles";
 import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
 import { useOrderLineItemPreviews } from "@/hooks/useOrderLineItemPreviews";
 import { useScheduleOrderLineItemsForProduction } from "@/hooks/useProduction";
+import { buildProofingLineItemPath, shouldOfferProofingNavigation } from "@/lib/proofingNavigation";
 
 import { computePbv2InputSignature, pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
@@ -1651,6 +1653,11 @@ export function OrderLineItemsSection({
                     hasAnyDesignBriefText(designBriefDraft)
                   );
                   const workflowState = String((item as any).workflowState || "new");
+                  const showOpenProofingAction = shouldOfferProofingNavigation({
+                    lineItemId: item.id,
+                    requiresProofApproval: Boolean((item as any).requiresProofApproval),
+                    approvedProofVersionId: (item as any).approvedProofVersionId ?? null,
+                  });
                   const hasActiveOwner = Boolean((item as any).activeOwnerStepKey || (item as any).activeOwnerStationKey || (item as any).activeOwnerJobId);
                   const ownerLabel = (item as any).activeOwnerStepKey || (item as any).activeOwnerStationKey || null;
                   const policy =
@@ -2317,6 +2324,11 @@ export function OrderLineItemsSection({
 
                                   {!readOnly && getWorkflowActions(workflowState).length > 0 && (
                                     <div className="flex flex-wrap gap-2">
+                                      {showOpenProofingAction ? (
+                                        <Button asChild type="button" variant="outline" size="sm" className="h-8">
+                                          <Link to={buildProofingLineItemPath(item.id)}>Open Proofing</Link>
+                                        </Button>
+                                      ) : null}
                                       {getWorkflowActions(workflowState).map((action, index) => (
                                       <Button
                                         key={`${item.id}-${index}`}
@@ -2336,6 +2348,13 @@ export function OrderLineItemsSection({
                                     ))}
                                     </div>
                                   )}
+                                  {!readOnly && showOpenProofingAction && getWorkflowActions(workflowState).length === 0 ? (
+                                    <div className="flex flex-wrap gap-2">
+                                      <Button asChild type="button" variant="outline" size="sm" className="h-8">
+                                        <Link to={buildProofingLineItemPath(item.id)}>Open Proofing</Link>
+                                      </Button>
+                                    </div>
+                                  ) : null}
                                 </div>
                               </div>
                             </div>
