@@ -3413,12 +3413,18 @@ export const productionEvents = pgTable("production_events", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()::text`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   productionJobId: varchar("production_job_id").notNull().references(() => productionJobs.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").references(() => orders.id, { onDelete: 'set null' }),
+  orderLineItemId: varchar("order_line_item_id").references(() => orderLineItems.id, { onDelete: 'set null' }),
+  actorUserId: varchar("actor_user_id").references(() => users.id, { onDelete: 'set null' }),
   type: varchar("type", { length: 40 }).notNull(),
   payload: jsonb("payload").$type<Record<string, any>>().default(sql`'{}'::jsonb`).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   index("production_events_org_job_created_idx").on(table.organizationId, table.productionJobId, table.createdAt),
   index("production_events_org_type_created_idx").on(table.organizationId, table.type, table.createdAt),
+  index("production_events_order_id_idx").on(table.orderId),
+  index("production_events_order_line_item_id_idx").on(table.orderLineItemId),
+  index("production_events_actor_user_id_idx").on(table.actorUserId),
 ]);
 
 export const productionStationSteps = pgTable("production_station_steps", {
@@ -4463,6 +4469,7 @@ export const orderAttachmentsRelations = relations(orderAttachments, ({ one, man
 export const orderAuditLog = pgTable("order_audit_log", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  orderLineItemId: varchar("order_line_item_id").references(() => orderLineItems.id, { onDelete: 'set null' }),
   userId: varchar("user_id").references(() => users.id, { onDelete: 'set null' }),
   userName: varchar("user_name", { length: 255 }), // Snapshot in case user is deleted
   actionType: varchar("action_type", { length: 100 }).notNull(), // status_change, note_added, file_uploaded, approved, rejected, change_requested
@@ -4473,6 +4480,7 @@ export const orderAuditLog = pgTable("order_audit_log", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
   index("order_audit_log_order_id_idx").on(table.orderId),
+  index("order_audit_log_order_line_item_id_idx").on(table.orderLineItemId),
   index("order_audit_log_created_at_idx").on(table.createdAt),
 ]);
 

@@ -330,6 +330,13 @@
       "when": 1779148800000,
       "tag": "0051_material_import_batches",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1779235200000,
+      "tag": "0052_timeline_ledger_columns",
+      "breakpoints": true
     }
   ]
 }

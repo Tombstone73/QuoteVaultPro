@@ -9,6 +9,7 @@ import {
   orderMaterialUsage,
   organizations,
   productionEvents,
+  productionJobs,
 } from "@shared/schema";
 
 import { db } from "../db";
@@ -18,6 +19,7 @@ export const productionViewKeySchema = z.string().min(1);
 export const productionEventTypeSchema = z.enum([
   "intake",
   "routing_override",
+  "status_changed",
   "timer_started",
   "timer_stopped",
   "note",
@@ -514,12 +516,41 @@ export const appendEvent = async (args: {
   organizationId: string;
   productionJobId: string;
   type: z.infer<typeof productionEventTypeSchema>;
+  orderId?: string | null;
+  orderLineItemId?: string | null;
+  actorUserId?: string | null;
   payload?: any;
 }) => {
   const payload = args.payload ?? {};
+  let orderId = args.orderId ?? payload.orderId ?? null;
+  let orderLineItemId = args.orderLineItemId ?? payload.orderLineItemId ?? payload.lineItemId ?? null;
+  const actorUserId = args.actorUserId ?? payload.actorUserId ?? null;
+
+  if (!orderId || !orderLineItemId) {
+    const [job] = await args.tx
+      .select({
+        orderId: productionJobs.orderId,
+        lineItemId: productionJobs.lineItemId,
+      })
+      .from(productionJobs)
+      .where(
+        and(
+          eq(productionJobs.organizationId, args.organizationId),
+          eq(productionJobs.id, args.productionJobId),
+        ),
+      )
+      .limit(1);
+
+    orderId = orderId ?? job?.orderId ?? null;
+    orderLineItemId = orderLineItemId ?? job?.lineItemId ?? null;
+  }
+
   await args.tx.insert(productionEvents).values({
     organizationId: args.organizationId,
     productionJobId: args.productionJobId,
+    orderId,
+    orderLineItemId,
+    actorUserId,
     type: args.type,
     payload,
   });
@@ -698,6 +729,9 @@ export const consumeReservedMaterialsForLineItem = async (
   await tx.insert(productionEvents).values({
     organizationId: args.organizationId,
     productionJobId: args.productionJobId,
+    orderId: args.orderId,
+    orderLineItemId: args.lineItemId,
+    actorUserId: args.userId,
     type: "note",
     payload: {
       eventType: "materials_consumed",
