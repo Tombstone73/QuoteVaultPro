@@ -17,6 +17,7 @@ import { useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  BookOpen,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -494,6 +495,8 @@ export default function MaterialsImportExport() {
   const [activeSection, setActiveSection] = useState<"upload" | "history">("upload");
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [isDownloadingTemplate, setIsDownloadingTemplate] = useState(false);
+  const [isDownloadingDemo, setIsDownloadingDemo] = useState(false);
+  const [isDownloadingFieldGuide, setIsDownloadingFieldGuide] = useState(false);
   const [isDownloadingExport, setIsDownloadingExport] = useState(false);
 
   // ── Queries ────────────────────────────────────────────────────────────────
@@ -645,6 +648,34 @@ export default function MaterialsImportExport() {
     }
   }
 
+  async function handleDemoDownload() {
+    setIsDownloadingDemo(true);
+    try {
+      await downloadFile(
+        "/api/admin/data/materials/demo.csv",
+        "materials_demo.csv"
+      );
+    } catch {
+      toast({ title: "Download failed", variant: "destructive" });
+    } finally {
+      setIsDownloadingDemo(false);
+    }
+  }
+
+  async function handleFieldGuideDownload() {
+    setIsDownloadingFieldGuide(true);
+    try {
+      await downloadFile(
+        "/api/admin/data/materials/field-guide.txt",
+        "materials_field_guide.txt"
+      );
+    } catch {
+      toast({ title: "Download failed", variant: "destructive" });
+    } finally {
+      setIsDownloadingFieldGuide(false);
+    }
+  }
+
   async function handleExportDownload() {
     setIsDownloadingExport(true);
     try {
@@ -689,9 +720,9 @@ export default function MaterialsImportExport() {
         </AlertDescription>
       </Alert>
 
-      {/* Action cards */}
+      {/* Reference downloads */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {/* Template */}
+        {/* Blank template */}
         <Card className="border-titan-border bg-titan-bg-card-elevated">
           <CardHeader className="pb-3">
             <div className="flex items-center gap-2 mb-1">
@@ -699,7 +730,7 @@ export default function MaterialsImportExport() {
               <CardTitle className="text-titan-sm">CSV Template</CardTitle>
             </div>
             <CardDescription className="text-titan-xs">
-              Download a blank template with all supported columns and an example row.
+              Blank CSV with all columns and one example row. Start here if building from scratch.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -720,6 +751,67 @@ export default function MaterialsImportExport() {
           </CardContent>
         </Card>
 
+        {/* Demo CSV */}
+        <Card className="border-titan-border bg-titan-bg-card-elevated">
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2 mb-1">
+              <Package className="h-4 w-4 text-titan-accent" />
+              <CardTitle className="text-titan-sm">Demo CSV</CardTitle>
+            </div>
+            <CardDescription className="text-titan-xs">
+              Five filled rows covering every material type: sheet, roll, laminate, consumable, and ink.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={handleDemoDownload}
+              disabled={isDownloadingDemo}
+            >
+              {isDownloadingDemo ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Download className="w-4 h-4 mr-2" />
+              )}
+              Download Demo CSV
+            </Button>
+          </CardContent>
+        </Card>
+
+        {/* Field guide */}
+        <Card className="border-titan-border bg-titan-bg-card-elevated">
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2 mb-1">
+              <BookOpen className="h-4 w-4 text-titan-accent" />
+              <CardTitle className="text-titan-sm">Field Guide</CardTitle>
+            </div>
+            <CardDescription className="text-titan-xs">
+              Plain-text reference for every column: required/optional status, allowed values, and examples.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={handleFieldGuideDownload}
+              disabled={isDownloadingFieldGuide}
+            >
+              {isDownloadingFieldGuide ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Download className="w-4 h-4 mr-2" />
+              )}
+              Download Field Guide
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Import/export operations */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {/* Export */}
         <Card className="border-titan-border bg-titan-bg-card-elevated">
           <CardHeader className="pb-3">
@@ -728,7 +820,7 @@ export default function MaterialsImportExport() {
               <CardTitle className="text-titan-sm">Export Materials</CardTitle>
             </div>
             <CardDescription className="text-titan-xs">
-              Export all active materials as a CSV. Use as a starting point for bulk edits.
+              Export all active materials as a CSV. Includes material IDs — ideal as a base for bulk edits.
             </CardDescription>
           </CardHeader>
           <CardContent>
