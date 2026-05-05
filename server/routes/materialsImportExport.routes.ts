@@ -284,7 +284,426 @@ export function registerMaterialsImportExportRoutes(
     }
   );
 
-  // ── 2. Export current materials as CSV ───────────────────────────────────
+  // ── 2. Download demo CSV (realistic filled example) ─────────────────────
+  app.get(
+    '/api/admin/data/materials/demo.csv',
+    isAuthenticated,
+    tenantContext,
+    isAdmin,
+    async (_req, res) => {
+      const DEMO_ROWS: Record<string, string>[] = [
+        // ── Sheet substrate ────────────────────────────────────────────────
+        {
+          material_id: '',
+          material_name: '4mm White Coroplast 48x96',
+          sku: 'CORO-4MM-WHT-48X96',
+          material_type: 'sheet',
+          unit_of_measure: 'sqft',
+          category: 'Substrate',
+          color: 'White',
+          width: '48',
+          height: '96',
+          thickness: '4',
+          thickness_unit: 'mm',
+          cost_per_unit: '0.15',
+          wholesale_base_rate: '1.80',
+          wholesale_min_charge: '15.00',
+          retail_base_rate: '2.50',
+          retail_min_charge: '25.00',
+          stock_quantity: '50',
+          reorder_point: '10',
+          vendor_name: 'Grimco',
+          vendor_sku: 'C4W4896',
+          vendor_cost_per_unit: '0.12',
+          roll_length_ft: '',
+          cost_per_roll: '',
+          edge_waste_in_per_side: '',
+          lead_waste_ft: '',
+          tail_waste_ft: '',
+          active: 'true',
+        },
+        // ── Roll media — print vinyl ───────────────────────────────────────
+        {
+          material_id: '',
+          material_name: '54in Economy Print Vinyl',
+          sku: 'VINYL-IJ35C-54',
+          material_type: 'roll',
+          unit_of_measure: 'sqft',
+          category: 'Roll Media',
+          color: 'White',
+          width: '54',
+          height: '',
+          thickness: '3',
+          thickness_unit: 'mil',
+          cost_per_unit: '0.42',
+          wholesale_base_rate: '2.80',
+          wholesale_min_charge: '20.00',
+          retail_base_rate: '4.00',
+          retail_min_charge: '25.00',
+          stock_quantity: '5',
+          reorder_point: '1',
+          vendor_name: 'Fellers',
+          vendor_sku: 'IJ35C-54',
+          vendor_cost_per_unit: '0.35',
+          roll_length_ft: '150',
+          cost_per_roll: '185.00',
+          edge_waste_in_per_side: '0.5',
+          lead_waste_ft: '1',
+          tail_waste_ft: '1',
+          active: 'true',
+        },
+        // ── Roll media — laminate ──────────────────────────────────────────
+        {
+          material_id: '',
+          material_name: '54in Gloss Laminate',
+          sku: 'LAM-GLOSS-54',
+          material_type: 'roll',
+          unit_of_measure: 'sqft',
+          category: 'Laminate',
+          color: 'Clear',
+          width: '54',
+          height: '',
+          thickness: '',
+          thickness_unit: '',
+          cost_per_unit: '0.28',
+          wholesale_base_rate: '0.85',
+          wholesale_min_charge: '',
+          retail_base_rate: '1.25',
+          retail_min_charge: '',
+          stock_quantity: '3',
+          reorder_point: '1',
+          vendor_name: 'Fellers',
+          vendor_sku: 'LAMG54',
+          vendor_cost_per_unit: '0.24',
+          roll_length_ft: '150',
+          cost_per_roll: '165.00',
+          edge_waste_in_per_side: '0.5',
+          lead_waste_ft: '1',
+          tail_waste_ft: '1',
+          active: 'true',
+        },
+        // ── Consumable — wire stake ────────────────────────────────────────
+        {
+          material_id: '',
+          material_name: '30in Wire H-Stake',
+          sku: 'STAKE-WIRE-30',
+          material_type: 'consumable',
+          unit_of_measure: 'ea',
+          category: 'Accessory',
+          color: 'Silver',
+          width: '',
+          height: '',
+          thickness: '',
+          thickness_unit: '',
+          cost_per_unit: '0.42',
+          wholesale_base_rate: '0.85',
+          wholesale_min_charge: '',
+          retail_base_rate: '1.50',
+          retail_min_charge: '',
+          stock_quantity: '200',
+          reorder_point: '50',
+          vendor_name: 'Grimco',
+          vendor_sku: 'HSTAKE30',
+          vendor_cost_per_unit: '0.42',
+          roll_length_ft: '',
+          cost_per_roll: '',
+          edge_waste_in_per_side: '',
+          lead_waste_ft: '',
+          tail_waste_ft: '',
+          active: 'true',
+        },
+        // ── Ink ───────────────────────────────────────────────────────────
+        {
+          material_id: '',
+          material_name: 'HP 792 Latex Black 775ml',
+          sku: 'INK-HP792-BLK-775',
+          material_type: 'ink',
+          unit_of_measure: 'ml',
+          category: 'Ink',
+          color: 'Black',
+          width: '',
+          height: '',
+          thickness: '',
+          thickness_unit: '',
+          cost_per_unit: '0.065',
+          wholesale_base_rate: '',
+          wholesale_min_charge: '',
+          retail_base_rate: '0.12',
+          retail_min_charge: '',
+          stock_quantity: '4',
+          reorder_point: '1',
+          vendor_name: 'HP',
+          vendor_sku: 'CN705A',
+          vendor_cost_per_unit: '0.058',
+          roll_length_ft: '',
+          cost_per_roll: '',
+          edge_waste_in_per_side: '',
+          lead_waste_ft: '',
+          tail_waste_ft: '',
+          active: 'true',
+        },
+      ];
+
+      const csv = Papa.unparse({
+        fields: [...TEMPLATE_COLUMNS],
+        data: DEMO_ROWS.map((row) => TEMPLATE_COLUMNS.map((col) => row[col] ?? '')),
+      });
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="materials_demo.csv"');
+      res.send(csv);
+    }
+  );
+
+  // ── 3. Download field guide (plain-text column reference) ────────────────
+  app.get(
+    '/api/admin/data/materials/field-guide.txt',
+    isAuthenticated,
+    tenantContext,
+    isAdmin,
+    async (_req, res) => {
+      const guide = `MATERIALS CSV — FIELD GUIDE
+===========================
+TitanOS  |  Materials Import/Export
+
+
+OVERVIEW
+--------
+Upload a CSV to stage rows for review, then commit to apply changes permanently.
+No live materials are touched until you click Commit.
+
+
+MATCH PRIORITY  (how the importer decides create vs. update)
+------------------------------------------------------------
+Each row is matched against existing materials using four signals, in priority order:
+
+  1. material_id   — strongest. Direct UUID from an export. Use this to be certain.
+  2. sku           — matches materials.sku. Only used if that SKU is unique in your catalog.
+  3. vendor_name + vendor_sku — matches by preferred vendor + vendor part number pair.
+  4. material_name — weakest fallback. Case-insensitive name match.
+
+If two signals on the same row point to different existing materials, the row is
+flagged CONFLICT and must be fixed or skipped before the batch can be committed.
+Rows with no signal match are treated as new creates.
+
+
+COLUMNS
+-------
+
+material_id
+  Required : No
+  Type     : UUID string
+  Example  : (leave blank for new materials; copy from an export to update existing)
+  Notes    : When present, this takes priority over all other identity signals.
+             Export your current materials to get these IDs.
+
+material_name
+  Required : YES
+  Type     : Text
+  Example  : 4mm White Coroplast 48x96
+  Notes    : Display name shown throughout the app.
+             Used as the weakest identity match signal when no id/sku/vendor is set.
+
+sku
+  Required : YES
+  Type     : Text (max 100 characters)
+  Example  : CORO-4MM-WHT-48X96
+  Notes    : Your internal stock-keeping unit. Must be non-empty.
+             Used as identity match signal — must be unique across your catalog for
+             reliable matching.
+
+material_type
+  Required : YES
+  Allowed  : sheet | roll | ink | consumable
+  Example  : sheet
+  Notes    : sheet     — rigid cut sheets (coroplast, ACM, foam board, etc.)
+             roll      — roll media (vinyl, laminate, banner, canvas)
+             ink       — liquid inks, toners
+             consumable — everything else (stakes, grommets, hardware, supplies)
+
+unit_of_measure
+  Required : YES
+  Allowed  : sheet | sqft | linear_ft | ml | ea
+  Example  : sqft
+  Notes    : The unit your pricing formulas operate on.
+             Roll and sheet materials are typically "sqft".
+             Inks use "ml".  Accessories/stakes/each-items use "ea".
+
+category
+  Required : No
+  Type     : Text
+  Example  : Substrate
+  Notes    : Free-form grouping label visible in inventory views.
+             Common values: Vinyl, Substrate, Laminate, Ink, Accessory, Banner.
+
+color
+  Required : No
+  Type     : Text
+  Example  : White
+  Notes    : Material color. Informational only.
+
+width
+  Required : YES for roll; recommended for sheet
+  Type     : Number (inches)
+  Example  : 54
+  Notes    : Roll width or sheet width in inches.
+
+height
+  Required : Recommended for sheet
+  Type     : Number (inches)
+  Example  : 96
+  Notes    : Sheet height in inches. Not applicable to rolls.
+
+thickness
+  Required : No
+  Type     : Number
+  Example  : 4
+  Notes    : Numeric thickness value. Must be paired with thickness_unit.
+
+thickness_unit
+  Required : No  (required if thickness is set)
+  Allowed  : in | mm | mil | gauge
+  Example  : mm
+  Notes    : Unit for the thickness value above.
+
+cost_per_unit
+  Required : YES
+  Type     : Decimal (USD — no $ symbol)
+  Example  : 0.15
+  Notes    : Your cost per unit_of_measure. For sqft materials this is $/sqft.
+             For ea materials this is cost per each item.
+
+wholesale_base_rate
+  Required : No
+  Type     : Decimal (USD)
+  Example  : 1.80
+  Notes    : Rate charged to wholesale customers per unit_of_measure.
+
+wholesale_min_charge
+  Required : No
+  Type     : Decimal (USD)
+  Example  : 15.00
+  Notes    : Minimum order charge applied to wholesale pricing.
+
+retail_base_rate
+  Required : No
+  Type     : Decimal (USD)
+  Example  : 2.50
+  Notes    : Rate charged to retail customers per unit_of_measure.
+
+retail_min_charge
+  Required : No
+  Type     : Decimal (USD)
+  Example  : 25.00
+  Notes    : Minimum order charge applied to retail pricing.
+
+stock_quantity
+  Required : No  (defaults to 0)
+  Type     : Integer
+  Example  : 50
+  Notes    : Current on-hand quantity in unit_of_measure units.
+
+reorder_point
+  Required : No  (defaults to 0)
+  Type     : Integer
+  Example  : 10
+  Notes    : Quantity below which a restock alert fires (maps to minStockAlert).
+
+vendor_name
+  Required : No
+  Type     : Text — must match an existing vendor name, case-insensitive
+  Example  : Grimco
+  Notes    : Sets the preferred vendor. Paired with vendor_sku as a match signal.
+             If vendor_name is not found in your vendor list, a new vendor record
+             will be created automatically on commit.
+
+vendor_sku
+  Required : No
+  Type     : Text
+  Example  : C4W4896
+  Notes    : The vendor's own part/catalog number for this material.
+             Used with vendor_name as an identity match signal.
+
+vendor_cost_per_unit
+  Required : No
+  Type     : Decimal (USD)
+  Example  : 0.12
+  Notes    : What the vendor charges you per unit_of_measure.
+
+roll_length_ft
+  Required : No  (recommended for roll materials)
+  Type     : Number (feet)
+  Example  : 150
+  Notes    : Length of one roll in feet.
+             Leave blank for sheet, ink, and consumable materials.
+
+cost_per_roll
+  Required : No
+  Type     : Decimal (USD)
+  Example  : 185.00
+  Notes    : Total purchase cost of one full roll.
+             If provided, takes precedence over any derived calculation.
+
+edge_waste_in_per_side
+  Required : No
+  Type     : Number (inches, per side)
+  Example  : 0.5
+  Notes    : Unusable edge on each side of a roll. Applied once per side, not total.
+             A value of 0.5 means 1 inch total width is lost (0.5 each side).
+
+lead_waste_ft
+  Required : No  (defaults to 0)
+  Type     : Number (feet)
+  Example  : 1
+  Notes    : Unusable leader at the start of a roll before usable media begins.
+
+tail_waste_ft
+  Required : No  (defaults to 0)
+  Type     : Number (feet)
+  Example  : 1
+  Notes    : Unusable tail at the end of a roll after usable media ends.
+
+active
+  Required : No  (defaults to true)
+  Allowed  : true | false | yes | no | 1 | 0
+  Example  : true
+  Notes    : Set to false to deactivate a material. Inactive materials are hidden
+             from product builder and pricing lookups but remain in the database.
+
+
+COMMIT BEHAVIOR
+---------------
+  create  — row inserts a new material record.
+  update  — row updates the matched existing material in-place.
+  skip    — row was manually skipped and will not be applied.
+
+Commit runs inside a database transaction. If any row fails, ALL changes roll back
+and the batch is marked "failed". No partial commits are possible.
+
+New vendor records are created inside the same transaction if vendor_name is
+provided but not found in your existing vendor list.
+
+
+TIPS
+----
+  * Export your current materials first, edit the CSV, then re-import —
+    the exported material_id values guarantee exact matches with no ambiguity.
+
+  * SKU is the most reliable match signal if you don't have material IDs.
+    Keep SKUs globally unique within your catalog.
+
+  * Leave material_id blank on every row when importing net-new materials.
+
+  * Invalid and conflict rows must be fixed or skipped before a batch can be
+    committed. Use "Skip all invalid / conflict" to commit only the clean rows.
+`;
+
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="materials_field_guide.txt"');
+      res.send(guide);
+    }
+  );
+
+  // ── 4. Export current materials as CSV ───────────────────────────────────
   app.get(
     '/api/admin/data/materials/export.csv',
     isAuthenticated,
@@ -356,7 +775,7 @@ export function registerMaterialsImportExportRoutes(
     }
   );
 
-  // ── 3. Upload + stage CSV ────────────────────────────────────────────────
+  // ── 5. Upload + stage CSV ────────────────────────────────────────────────
   app.post(
     '/api/admin/data/materials/import',
     isAuthenticated,
@@ -689,7 +1108,7 @@ export function registerMaterialsImportExportRoutes(
     }
   );
 
-  // ── 4. List import batches ───────────────────────────────────────────────
+  // ── 6. List import batches ───────────────────────────────────────────────
   app.get(
     '/api/admin/data/materials/imports',
     isAuthenticated,
@@ -718,7 +1137,7 @@ export function registerMaterialsImportExportRoutes(
     }
   );
 
-  // ── 5. Get batch detail + rows ───────────────────────────────────────────
+  // ── 7. Get batch detail + rows ───────────────────────────────────────────
   app.get(
     '/api/admin/data/materials/imports/:batchId',
     isAuthenticated,
@@ -763,7 +1182,7 @@ export function registerMaterialsImportExportRoutes(
     }
   );
 
-  // ── 6. Commit batch ──────────────────────────────────────────────────────
+  // ── 8. Commit batch ──────────────────────────────────────────────────────
   app.post(
     '/api/admin/data/materials/imports/:batchId/commit',
     isAuthenticated,
@@ -984,7 +1403,7 @@ export function registerMaterialsImportExportRoutes(
     }
   );
 
-  // ── 7. Cancel batch ──────────────────────────────────────────────────────
+  // ── 9. Cancel batch ──────────────────────────────────────────────────────
   app.post(
     '/api/admin/data/materials/imports/:batchId/cancel',
     isAuthenticated,
@@ -1034,7 +1453,7 @@ export function registerMaterialsImportExportRoutes(
     }
   );
 
-  // ── 8. Skip invalid rows in a batch ─────────────────────────────────────
+  // ── 10. Skip invalid rows in a batch ────────────────────────────────────
   // Marks all invalid/conflict rows as skipped so the commit can proceed.
   app.post(
     '/api/admin/data/materials/imports/:batchId/skip-invalid',
