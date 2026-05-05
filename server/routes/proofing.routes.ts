@@ -215,6 +215,7 @@ export function registerProofingRoutes(
             proofFileId: parsed.data.proofFileId,
             createdByUserId: userId,
             internalNotes: parsed.data.internalNotes ?? null,
+            sourceAction: "proof_file_uploaded",
           });
           proofing = await resolveLineItemProofingTruth(tx, {
             organizationId,

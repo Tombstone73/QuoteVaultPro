@@ -29,6 +29,7 @@ import {
   lineItemFiles,
   materials,
   orderAttachments,
+  orderAuditLog,
   orderLineItems,
   orderMaterialUsage,
   orders,
@@ -79,6 +80,44 @@ import {
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub ?? user?.id;
 }
+
+const insertPrepressTimelineLog = async (args: {
+  orderId: string;
+  orderLineItemId: string;
+  actorUserId: string;
+  actionType: string;
+  previousStatus?: string | null;
+  newStatus?: string | null;
+  previousStation?: string | null;
+  newStation?: string | null;
+  sessionId?: string | null;
+  note?: string | null;
+  reason?: string | null;
+  metadata?: Record<string, unknown>;
+}) => {
+  await db.insert(orderAuditLog).values({
+    orderId: args.orderId,
+    orderLineItemId: args.orderLineItemId,
+    userId: args.actorUserId,
+    actionType: args.actionType,
+    fromStatus: args.previousStatus ?? null,
+    toStatus: args.newStatus ?? null,
+    note: args.note ?? args.reason ?? null,
+    metadata: {
+      orderId: args.orderId,
+      orderLineItemId: args.orderLineItemId,
+      previousStatus: args.previousStatus ?? null,
+      newStatus: args.newStatus ?? null,
+      previousStation: args.previousStation ?? null,
+      newStation: args.newStation ?? null,
+      actorUserId: args.actorUserId,
+      sessionId: args.sessionId ?? null,
+      note: args.note ?? null,
+      reason: args.reason ?? null,
+      ...(args.metadata ?? {}),
+    },
+  } as any);
+};
 
 // ---------------------------------------------------------------------------
 // Module-private constants
@@ -661,6 +700,9 @@ const consumeReservedMaterialsForLineItem = async (
   await tx.insert(productionEvents).values({
     organizationId: args.organizationId,
     productionJobId: args.productionJobId,
+    orderId: args.orderId,
+    orderLineItemId: args.lineItemId,
+    actorUserId: args.userId,
     type: "note",
     payload: {
       eventType: "materials_consumed",
@@ -1423,6 +1465,9 @@ export function registerPrepressQueueRoutes(
           await tx.insert(productionEvents).values({
             organizationId,
             productionJobId,
+            orderId: context.lineItem.orderId,
+            orderLineItemId: lineItemId,
+            actorUserId: userId ?? null,
             type: "note",
             payload: {
               eventType: "materials_rebalanced",
@@ -1441,6 +1486,9 @@ export function registerPrepressQueueRoutes(
         await tx.insert(productionEvents).values({
           organizationId,
           productionJobId,
+          orderId: context.lineItem.orderId,
+          orderLineItemId: lineItemId,
+          actorUserId: userId ?? null,
           type: "note",
           payload: {
             eventType: "material_override",
@@ -1947,6 +1995,18 @@ export function registerPrepressQueueRoutes(
           userAgent: req.headers["user-agent"] || null,
         } as any);
 
+        await insertPrepressTimelineLog({
+          orderId: order.id,
+          orderLineItemId: lineItemId,
+          actorUserId: userId,
+          actionType: "prepress_started",
+          previousStatus: lineItem.workflowState,
+          newStatus: "in_prepress",
+          previousStation: activeOwner?.stationKey ?? null,
+          newStation: activeOwner?.stationKey ?? "prepress",
+          sessionId: session.id,
+        });
+
         return {
           ...session,
           lineItemId,
@@ -2191,6 +2251,41 @@ export function registerPrepressQueueRoutes(
           userAgent: req.headers["user-agent"] || null,
         } as any);
 
+        await insertPrepressTimelineLog({
+          orderId: session.orderId,
+          orderLineItemId: session.lineItemId,
+          actorUserId: userId,
+          actionType: "prepress_completed",
+          previousStatus: "in_prepress",
+          newStatus: "in_prepress",
+          previousStation: activeOwner?.stationKey ?? "prepress",
+          newStation: activeOwner?.stationKey ?? "prepress",
+          sessionId,
+          metadata: {
+            finalArtworkSource: finalArtwork.source,
+            finalFileId: finalArtwork.file.id,
+            createdFinalFile: finalArtwork.created,
+          },
+        });
+
+        if (finalArtwork.created) {
+          await insertPrepressTimelineLog({
+            orderId: session.orderId,
+            orderLineItemId: session.lineItemId,
+            actorUserId: userId,
+            actionType: "prepress_file_prepared",
+            previousStatus: "in_prepress",
+            newStatus: "in_prepress",
+            previousStation: activeOwner?.stationKey ?? "prepress",
+            newStation: activeOwner?.stationKey ?? "prepress",
+            sessionId,
+            metadata: {
+              finalArtworkSource: finalArtwork.source,
+              finalFileId: finalArtwork.file.id,
+            },
+          });
+        }
+
         return {
           ...session,
           lineItemId: session.lineItemId,
@@ -2364,6 +2459,9 @@ export function registerPrepressQueueRoutes(
             await tx.insert(productionEvents).values({
               organizationId,
               productionJobId,
+              orderId: materialContext.lineItem.orderId,
+              orderLineItemId: lineItemId,
+              actorUserId: userId ?? null,
               type: "note",
               payload: {
                 eventType: "materials_reserved",
@@ -2400,6 +2498,23 @@ export function registerPrepressQueueRoutes(
           ipAddress: req.ip || null,
           userAgent: req.headers["user-agent"] || null,
         } as any);
+
+        await insertPrepressTimelineLog({
+          orderId: item.orderId,
+          orderLineItemId: lineItemId,
+          actorUserId: userId,
+          actionType: "prepress_routed",
+          previousStatus: item.workflowState,
+          newStatus: workflowTransition.toState,
+          previousStation: activeJob.stationKey,
+          newStation: workflowTransition.activeOwnerStationKey ?? downstreamRoute.stationKey,
+          reason: downstreamRoute.reason,
+          metadata: {
+            targetStation: downstreamRoute.stationKey,
+            targetStepKey: downstreamRoute.stepKey,
+            productionJobId,
+          },
+        });
 
         return workflowTransition;
       });
@@ -2565,6 +2680,23 @@ export function registerPrepressQueueRoutes(
           ipAddress: req.ip || null,
           userAgent: req.headers["user-agent"] || null,
         } as any);
+
+        await insertPrepressTimelineLog({
+          orderId: lineItem.orderId,
+          orderLineItemId: lineItemId,
+          actorUserId: userId,
+          actionType: "prepress_sent_back_for_correction",
+          previousStatus: lineItem.workflowState,
+          newStatus: "in_prepress",
+          previousStation: activeJob?.stationKey ?? null,
+          newStation: workflowTransition.activeOwnerStationKey ?? "prepress",
+          note: note.trim(),
+          metadata: {
+            noPrintsCompletedYet: noPrintsCompletedYet || false,
+            prepressJobId,
+            sessionId,
+          },
+        });
 
         return { sessionId, prepressJobId };
       });

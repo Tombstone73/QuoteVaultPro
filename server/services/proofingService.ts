@@ -26,10 +26,9 @@ import {
   lineItemProofManualApprovalOverrides,
   lineItemProofVersions,
   orderAttachments,
+  orderAuditLog,
   orderLineItems,
   orders,
-  productionEvents,
-  productionJobs,
   proofAccessTokens,
 } from "@shared/schema";
 import { generateBasicProofPdfBytes } from "../lib/proofPdf";
@@ -145,7 +144,33 @@ function normalizeProofingWriteError(error: any): never {
   throw error;
 }
 
-async function supersedeObsoleteDraftVersions(tx: any, args: { organizationId: string; lineItemId: string }) {
+async function supersedeProofVersions(tx: any, args: {
+  organizationId: string;
+  orderId: string;
+  lineItemId: string;
+  statuses: ProofVersionStatus[];
+  actorUserId?: string | null;
+  reason?: string | null;
+}) {
+  const existing = await tx
+    .select({
+      id: lineItemProofVersions.id,
+      versionNumber: lineItemProofVersions.versionNumber,
+      status: lineItemProofVersions.status,
+    })
+    .from(lineItemProofVersions)
+    .where(
+      and(
+        eq(lineItemProofVersions.organizationId, args.organizationId),
+        eq(lineItemProofVersions.lineItemId, args.lineItemId),
+        inArray(lineItemProofVersions.status, args.statuses),
+      ),
+    );
+
+  if (existing.length === 0) {
+    return [];
+  }
+
   await tx
     .update(lineItemProofVersions)
     .set({
@@ -156,25 +181,54 @@ async function supersedeObsoleteDraftVersions(tx: any, args: { organizationId: s
       and(
         eq(lineItemProofVersions.organizationId, args.organizationId),
         eq(lineItemProofVersions.lineItemId, args.lineItemId),
-        eq(lineItemProofVersions.status, "draft"),
+        inArray(lineItemProofVersions.status, args.statuses),
       ),
     );
+
+  for (const version of existing) {
+    await appendProofingEvent(tx, {
+      organizationId: args.organizationId,
+      orderId: args.orderId,
+      lineItemId: args.lineItemId,
+      eventType: "proof_superseded",
+      actorUserId: args.actorUserId ?? null,
+      payload: {
+        proofVersionId: version.id,
+        versionNumber: version.versionNumber,
+        previousProofStatus: version.status,
+        newProofStatus: "superseded",
+        reason: args.reason ?? null,
+      },
+    });
+  }
+
+  return existing;
 }
 
-async function supersedeActionableProofVersions(tx: any, args: { organizationId: string; lineItemId: string }) {
-  await tx
-    .update(lineItemProofVersions)
-    .set({
-      status: "superseded",
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(lineItemProofVersions.organizationId, args.organizationId),
-        eq(lineItemProofVersions.lineItemId, args.lineItemId),
-        inArray(lineItemProofVersions.status, ["draft", "awaiting_response"]),
-      ),
-    );
+async function supersedeObsoleteDraftVersions(tx: any, args: {
+  organizationId: string;
+  orderId: string;
+  lineItemId: string;
+  actorUserId?: string | null;
+  reason?: string | null;
+}) {
+  return supersedeProofVersions(tx, {
+    ...args,
+    statuses: ["draft"],
+  });
+}
+
+async function supersedeActionableProofVersions(tx: any, args: {
+  organizationId: string;
+  orderId: string;
+  lineItemId: string;
+  actorUserId?: string | null;
+  reason?: string | null;
+}) {
+  return supersedeProofVersions(tx, {
+    ...args,
+    statuses: ["draft", "awaiting_response"],
+  });
 }
 
 function isActionableProofStatus(status: string | null | undefined): status is "draft" | "awaiting_response" {
@@ -713,6 +767,7 @@ export async function createAndSendProofVersion(tx: any, args: {
     proofFileId,
     createdByUserId: args.actorUserId,
     internalNotes: args.internalNotes ?? null,
+    sourceAction: args.mode === "generated" ? "proof_file_generated" : "proof_file_uploaded",
   });
 
   const sendResult = await markProofVersionSent(tx, {
@@ -774,6 +829,7 @@ export async function createGeneratedDraftProofVersion(tx: any, args: {
     proofFileId: artifact.attachmentId,
     createdByUserId: args.actorUserId,
     internalNotes: args.internalNotes ?? null,
+    sourceAction: "proof_file_generated",
   });
 
   const proofing = await resolveLineItemProofingTruth(tx, {
@@ -839,14 +895,17 @@ export async function resendProofVersion(tx: any, args: {
 
   await appendProofingEvent(tx, {
     organizationId: args.organizationId,
+    orderId: proofVersion.orderId,
     lineItemId: proofVersion.lineItemId,
-    eventType: "proof_sent_for_review",
+    eventType: "proof_resent",
     actorUserId: args.actorUserId,
     payload: {
       proofVersionId: proofVersion.id,
       versionNumber: proofVersion.versionNumber,
-      resend: true,
+      previousProofStatus: proofVersion.status,
+      newProofStatus: proofVersion.status,
       sentToEmail: args.sentToEmail ?? null,
+      customerMessage: args.customerMessage ?? null,
     },
   });
 
@@ -1070,13 +1129,17 @@ async function ensureProofAttachmentForSource(tx: any, args: {
 
 async function invalidateApprovedProofContext(tx: any, args: {
   organizationId: string;
+  orderId: string;
   lineItemId: string;
   actorUserId?: string | null;
   reason: ProofSyncReason;
 }) {
   await supersedeActionableProofVersions(tx, {
     organizationId: args.organizationId,
+    orderId: args.orderId,
     lineItemId: args.lineItemId,
+    actorUserId: args.actorUserId ?? null,
+    reason: args.reason,
   });
 
   await tx
@@ -1087,15 +1150,6 @@ async function invalidateApprovedProofContext(tx: any, args: {
     })
     .where(eq(orderLineItems.id, args.lineItemId));
 
-  await appendProofingEvent(tx, {
-    organizationId: args.organizationId,
-    lineItemId: args.lineItemId,
-    eventType: "proof_invalidated",
-    actorUserId: args.actorUserId ?? null,
-    payload: {
-      source: args.reason,
-    },
-  });
 }
 
 export async function autoSyncCanonicalProofForLineItem(tx: any, args: {
@@ -1127,6 +1181,7 @@ export async function autoSyncCanonicalProofForLineItem(tx: any, args: {
     if (truth.approvedProofVersionId || truth.currentActionableProofVersionId) {
       await invalidateApprovedProofContext(tx, {
         organizationId: args.organizationId,
+        orderId: lineItem.orderId,
         lineItemId: args.lineItemId,
         actorUserId: args.actorUserId,
         reason: args.reason,
@@ -1184,6 +1239,7 @@ export async function autoSyncCanonicalProofForLineItem(tx: any, args: {
 
   await invalidateApprovedProofContext(tx, {
     organizationId: args.organizationId,
+    orderId: lineItem.orderId,
     lineItemId: args.lineItemId,
     actorUserId: args.actorUserId,
     reason: args.reason,
@@ -1301,32 +1357,42 @@ function isProofRelevantTruth(truth: ProofingReadModel): boolean {
 
 async function appendProofingEvent(tx: any, args: {
   organizationId: string;
+  orderId: string;
   lineItemId: string;
   eventType: string;
   actorUserId?: string | null;
   payload?: Record<string, unknown>;
 }) {
-  const [job] = await tx
-    .select({ id: productionJobs.id })
-    .from(productionJobs)
-    .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.lineItemId, args.lineItemId)))
-    .orderBy(desc(productionJobs.updatedAt), desc(productionJobs.createdAt))
-    .limit(1);
+  const payload = args.payload ?? {};
+  const note = trimNullable(
+    typeof payload.note === "string"
+      ? payload.note
+      : typeof payload.reason === "string"
+        ? payload.reason
+        : typeof payload.responseNotes === "string"
+          ? payload.responseNotes
+          : typeof payload.internalNotes === "string"
+            ? payload.internalNotes
+            : typeof payload.internalNote === "string"
+              ? payload.internalNote
+              : null,
+  );
 
-  if (!job) {
-    return;
-  }
-
-  await tx.insert(productionEvents).values({
-    organizationId: args.organizationId,
-    productionJobId: job.id,
-    type: "note",
-    payload: {
-      eventType: args.eventType,
+  await tx.insert(orderAuditLog).values({
+    orderId: args.orderId,
+    orderLineItemId: args.lineItemId,
+    userId: args.actorUserId ?? null,
+    actionType: args.eventType,
+    fromStatus: typeof payload.previousProofStatus === "string" ? payload.previousProofStatus : null,
+    toStatus: typeof payload.newProofStatus === "string" ? payload.newProofStatus : null,
+    note,
+    metadata: {
+      orderId: args.orderId,
+      orderLineItemId: args.lineItemId,
       actorUserId: args.actorUserId ?? null,
-      ...(args.payload ?? {}),
+      ...payload,
     },
-  });
+  } as any);
 }
 
 async function loadProofVersion(tx: any, args: { organizationId: string; proofVersionId: string }) {
@@ -1671,6 +1737,7 @@ export async function createLineItemProofVersion(tx: any, args: {
   proofFileId: string;
   createdByUserId: string;
   internalNotes?: string | null;
+  sourceAction?: "proof_file_uploaded" | "proof_file_generated" | null;
 }) {
   try {
     const lineItem = await loadProofLineItem(tx, {
@@ -1720,7 +1787,10 @@ export async function createLineItemProofVersion(tx: any, args: {
 
     await supersedeObsoleteDraftVersions(tx, {
       organizationId: args.organizationId,
+      orderId: lineItem.orderId,
       lineItemId: lineItem.lineItemId,
+      actorUserId: args.createdByUserId,
+      reason: "replaced_by_new_draft",
     });
 
     const [versionNumberRow] = await tx
@@ -1745,15 +1815,34 @@ export async function createLineItemProofVersion(tx: any, args: {
 
     await appendProofingEvent(tx, {
       organizationId: args.organizationId,
+      orderId: lineItem.orderId,
       lineItemId: lineItem.lineItemId,
-      eventType: "proof_version_created",
+      eventType: "proof_draft_created",
       actorUserId: args.createdByUserId,
       payload: {
         proofVersionId: created.id,
         proofFileId: created.proofFileId,
         versionNumber: created.versionNumber,
+        newProofStatus: created.status,
+        internalNotes: args.internalNotes ?? null,
       },
     });
+
+    if (args.sourceAction) {
+      await appendProofingEvent(tx, {
+        organizationId: args.organizationId,
+        orderId: lineItem.orderId,
+        lineItemId: lineItem.lineItemId,
+        eventType: args.sourceAction,
+        actorUserId: args.createdByUserId,
+        payload: {
+          proofVersionId: created.id,
+          proofFileId: created.proofFileId,
+          versionNumber: created.versionNumber,
+          newProofStatus: created.status,
+        },
+      });
+    }
 
     return created;
   } catch (error: any) {
@@ -1835,14 +1924,18 @@ export async function markProofVersionSent(tx: any, args: {
 
     await appendProofingEvent(tx, {
       organizationId: args.organizationId,
+      orderId: proofVersion.orderId,
       lineItemId: proofVersion.lineItemId,
-      eventType: "proof_sent_for_review",
+      eventType: "proof_sent",
       actorUserId: args.actorUserId,
       payload: {
         proofVersionId: proofVersion.id,
         versionNumber: proofVersion.versionNumber,
+        previousProofStatus: proofVersion.status,
+        newProofStatus: updatedVersion.status,
         workflowToState: workflowTransition.toState,
         sentToEmail: args.sentToEmail ?? null,
+        customerMessage: args.customerMessage ?? null,
       },
     });
 
@@ -1944,14 +2037,23 @@ export async function recordProofResponse(tx: any, args: {
 
     await appendProofingEvent(tx, {
       organizationId: args.organizationId,
+      orderId: lineItem.orderId,
       lineItemId: lineItem.lineItemId,
-      eventType: "proof_response_recorded",
+      eventType:
+        args.decision === "approved"
+          ? "proof_approved"
+          : args.decision === "rejected"
+            ? "proof_rejected"
+            : "proof_revision_requested",
       actorUserId: args.actorUserId ?? null,
       payload: {
         proofVersionId: proofVersion.id,
         approvalId: approval.id,
-        decision: args.decision,
+        previousProofStatus: proofVersion.status,
+        newProofStatus: nextProofStatus,
         workflowToState: workflowTransition.toState,
+        customerAction: !args.actorUserId || args.responderSource === "customer",
+        responseNotes: args.responseNotes ?? null,
       },
     });
 
@@ -2102,13 +2204,19 @@ export async function recordManualProofApprovalOverride(tx: any, args: {
 
     await appendProofingEvent(tx, {
       organizationId: args.organizationId,
+      orderId: lineItem.orderId,
       lineItemId: lineItem.lineItemId,
-      eventType: "proof_manual_approval_override",
+      eventType: "proof_approved",
       actorUserId: args.actorUserId,
       payload: {
         manualApprovalOverrideId: manualApprovalOverride.id,
         proofVersionId: proofVersion.id,
-        overrideReason,
+        previousProofStatus: proofVersion.status,
+        newProofStatus: "approved",
+        approvalSource: "manual_override",
+        reason: overrideReason,
+        internalNote: trimNullable(args.internalNote),
+        customerAction: false,
         workflowToState: workflowTransition.toState,
       },
     });

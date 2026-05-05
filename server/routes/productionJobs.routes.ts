@@ -1472,6 +1472,7 @@ export function registerProductionJobsRoutes(
             organizationId,
             productionJobId: jobId,
             type: "routing_override",
+            actorUserId: getUserId(req.user) ?? null,
             payload: {
               from: { stationKey: job.stationKey, stepKey: job.stepKey },
               to: { stationKey: nextStationKey, stepKey: nextStepKey },
@@ -1511,6 +1512,7 @@ export function registerProductionJobsRoutes(
       if (!assertInternalUser(req, res)) return;
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
 
       const jobId = req.params.jobId;
       const now = new Date();
@@ -1530,7 +1532,13 @@ export function registerProductionJobsRoutes(
           return job;
         }
 
-        await appendEvent({ tx, organizationId, productionJobId: jobId, type: "timer_started" });
+        await appendEvent({
+          tx,
+          organizationId,
+          productionJobId: jobId,
+          type: "timer_started",
+          actorUserId: userId ?? null,
+        });
 
         await tx
           .update(productionJobs)
@@ -1563,6 +1571,7 @@ export function registerProductionJobsRoutes(
       if (!assertInternalUser(req, res)) return;
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
 
       const jobId = req.params.jobId;
       const now = new Date();
@@ -1602,6 +1611,7 @@ export function registerProductionJobsRoutes(
           organizationId,
           productionJobId: jobId,
           type: "timer_stopped",
+          actorUserId: userId ?? null,
           payload: { seconds: deltaSeconds },
         });
 
@@ -1679,6 +1689,7 @@ export function registerProductionJobsRoutes(
             organizationId,
             productionJobId: jobId,
             type: "timer_stopped",
+            actorUserId: userId,
             payload: { seconds: deltaSeconds },
           });
           await tx
@@ -1855,6 +1866,7 @@ export function registerProductionJobsRoutes(
           organizationId,
           productionJobId: jobId,
           type: "note",
+          actorUserId: userId ?? null,
           payload: { system: true, text: "Job reopened" },
         });
 
@@ -1895,6 +1907,7 @@ export function registerProductionJobsRoutes(
       if (!assertInternalUser(req, res)) return;
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
       const jobId = req.params.jobId;
 
       await db.transaction(async (tx) => {
@@ -1904,7 +1917,13 @@ export function registerProductionJobsRoutes(
           .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
           .limit(1);
         if (!jobRows[0]) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
-        await appendEvent({ tx, organizationId, productionJobId: jobId, type: "reprint_incremented" });
+        await appendEvent({
+          tx,
+          organizationId,
+          productionJobId: jobId,
+          type: "reprint_incremented",
+          actorUserId: userId ?? null,
+        });
         await tx
           .update(productionJobs)
           .set({ updatedAt: new Date() })
@@ -1998,6 +2017,7 @@ export function registerProductionJobsRoutes(
       if (!assertInternalUser(req, res)) return;
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
 
       const jobId = req.params.jobId;
       const mediaSchema = z.object({
@@ -2021,6 +2041,7 @@ export function registerProductionJobsRoutes(
           organizationId,
           productionJobId: jobId,
           type: "media_used_set",
+          actorUserId: userId ?? null,
           payload: parsed.data,
         });
         await tx
@@ -2043,6 +2064,7 @@ export function registerProductionJobsRoutes(
       if (!assertInternalUser(req, res)) return;
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
 
       const jobId = req.params.jobId;
       const noteSchema = z.object({ text: z.string().trim().min(1).max(1000) });
@@ -2061,7 +2083,8 @@ export function registerProductionJobsRoutes(
           organizationId,
           productionJobId: jobId,
           type: "note",
-          payload: { text: parsed.data.text },
+          actorUserId: userId ?? null,
+          payload: { text: parsed.data.text, actorUserId: userId ?? null },
         });
         await tx
           .update(productionJobs)
@@ -2263,6 +2286,20 @@ export function registerProductionJobsRoutes(
           .update(productionJobs)
           .set(updateData)
           .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
+
+        await appendEvent({
+          tx,
+          organizationId,
+          productionJobId: jobId,
+          type: "status_changed",
+          payload: {
+            previousStatus: job.status,
+            newStatus,
+            previousStepKey: job.stepKey,
+            newStepKey: newStepKey === undefined ? job.stepKey : newStepKey,
+            actorUserId: userId ?? null,
+          },
+        });
 
         if (newStatus === "done" && job.lineItemId && job.orderId) {
           const actorUserId = userId;
