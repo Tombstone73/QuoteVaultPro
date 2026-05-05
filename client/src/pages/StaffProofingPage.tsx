@@ -48,6 +48,12 @@ import { useOrder, useUpdateOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
+import {
+  findProofingQueueRowByLineItemId,
+  isRequestedProofingLineItemMissing,
+  PROOFING_MISSING_LINE_ITEM_MESSAGE,
+  resolveProofingActiveRow,
+} from "@/lib/proofingNavigation";
 import { uploadAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
 import { proofQueueSliceValues } from "@shared/proofing";
 import type {
@@ -114,7 +120,9 @@ async function readJson<T>(input: RequestInfo | URL, init?: RequestInit): Promis
 
   const json = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(json.error || "Request failed");
+    const error = new Error(json.error || "Request failed") as Error & { status?: number };
+    error.status = response.status;
+    throw error;
   }
 
   return json as T;
@@ -575,15 +583,16 @@ export default function StaffProofingPage() {
   }, [requestedQueueSlice]);
 
   useEffect(() => {
-    if (!filteredQueueRows.length) {
-      if (selectedLineItemId !== null) setSelectedLineItemId(null);
+    if (requestedLineItemId) {
+      const requestedRow = findProofingQueueRowByLineItemId(filteredQueueRows, requestedLineItemId);
+      if (selectedLineItemId !== (requestedRow?.lineItemId ?? null)) {
+        setSelectedLineItemId(requestedRow?.lineItemId ?? null);
+      }
       return;
     }
 
-    if (requestedLineItemId && filteredQueueRows.some((row) => row.lineItemId === requestedLineItemId)) {
-      if (selectedLineItemId !== requestedLineItemId) {
-        setSelectedLineItemId(requestedLineItemId);
-      }
+    if (!filteredQueueRows.length) {
+      if (selectedLineItemId !== null) setSelectedLineItemId(null);
       return;
     }
 
@@ -593,25 +602,32 @@ export default function StaffProofingPage() {
     }
   }, [filteredQueueRows, requestedLineItemId, selectedLineItemId]);
 
-  const selectedRow = filteredQueueRows.find((row) => row.lineItemId === selectedLineItemId) ?? filteredQueueRows[0];
+  const { activeLineItemId, activeRow } = resolveProofingActiveRow({
+    requestedLineItemId,
+    selectedLineItemId,
+    filteredQueueRows,
+    allQueueRows: sortedQueueRows,
+  });
+  const selectedRow = activeRow;
 
   const detailQuery = useQuery<JsonEnvelope<ProofingReadModel>>({
-    queryKey: ["/api/proofing/line-item", selectedRow?.lineItemId],
-    queryFn: () => readJson(`/api/proofing/line-item/${selectedRow?.lineItemId}`),
-    enabled: Boolean(isInternalUser && selectedRow?.lineItemId),
+    queryKey: ["/api/proofing/line-item", activeLineItemId],
+    queryFn: () => readJson(`/api/proofing/line-item/${activeLineItemId}`),
+    enabled: Boolean(isInternalUser && activeLineItemId),
   });
 
   const detail = detailQuery.data?.data;
-  const orderQuery = useOrder(selectedRow?.orderId);
-  const updateOrder = useUpdateOrder(selectedRow?.orderId ?? "");
+  const activeOrderId = detail?.orderId ?? activeRow?.orderId ?? null;
+  const orderQuery = useOrder(activeOrderId ?? undefined);
+  const updateOrder = useUpdateOrder(activeOrderId ?? "");
   const selectedOrder = orderQuery.data;
   const selectedLineItem = useMemo(
-    () => selectedOrder?.lineItems?.find((lineItem) => lineItem.id === selectedRow?.lineItemId) ?? null,
-    [selectedOrder, selectedRow?.lineItemId],
+    () => selectedOrder?.lineItems?.find((lineItem) => lineItem.id === activeLineItemId) ?? null,
+    [activeLineItemId, selectedOrder],
   );
 
   useEffect(() => {
-    const defaultVersionId = getDefaultVersionId(detail, selectedRow);
+    const defaultVersionId = getDefaultVersionId(detail, selectedRow ?? undefined);
     if (!detail) {
       if (selectedVersionId !== null) setSelectedVersionId(null);
       return;
@@ -623,7 +639,7 @@ export default function StaffProofingPage() {
     }
   }, [detail, selectedRow, selectedVersionId]);
 
-  const filesQuery = useOrderLineItemFiles(selectedRow?.orderId, selectedRow?.lineItemId);
+  const filesQuery = useOrderLineItemFiles(activeOrderId ?? undefined, activeLineItemId ?? undefined);
   const lineItemFiles = (filesQuery.data?.data ?? []) as ProofFileRow[];
 
   const selectableProofFiles = useMemo(
@@ -648,7 +664,7 @@ export default function StaffProofingPage() {
   const previewName = displayedFile?.originalFilename || displayedFile?.fileName || "Proof";
   const previewIsPdf = Boolean(displayedFile && isPdfFile(displayedFile.mimeType || null, previewName));
   const previewIsImage = Boolean(displayedFile?.mimeType?.startsWith("image/"));
-  const staffStatus = getStaffFacingStatus({ row: selectedRow, detail, displayedVersion });
+  const staffStatus = getStaffFacingStatus({ row: activeRow ?? undefined, detail, displayedVersion });
   const latestCustomerFeedback = detail?.proofDecisionHistory?.[0] ?? null;
   const statusNote = getStatusNote({ detail, displayedVersion });
   const [pdfViewerMode, setPdfViewerMode] = useState<"compact" | "default">("compact");
@@ -659,7 +675,7 @@ export default function StaffProofingPage() {
     const separator = url.includes("#") ? "&" : "#";
     return `${url}${separator}page=${viewerPage}&zoom=${viewerZoom}`;
   }, [pdfViewerMode, previewIsPdf, previewUrl, viewerPage, viewerZoom]);
-  const jobSpecificationRows = useMemo(() => getJobSpecificationRows(selectedLineItem, selectedRow), [selectedLineItem, selectedRow]);
+  const jobSpecificationRows = useMemo(() => getJobSpecificationRows(selectedLineItem, activeRow ?? undefined), [activeRow, selectedLineItem]);
   const internalStaffNote = useMemo(() => {
     const candidates = [
       selectedOrder?.notesInternal,
@@ -672,6 +688,16 @@ export default function StaffProofingPage() {
   const canRecordDecision =
     displayedVersion?.id === detail?.currentActionableProofVersionId && displayedVersion?.status === "awaiting_response";
   const primaryActionLabel = getPrimaryActionLabel(canSendCurrentVersion, displayedVersion);
+  const requestedLineItemMissing = isRequestedProofingLineItemMissing({
+    requestedLineItemId,
+    errorStatus: (detailQuery.error as (Error & { status?: number }) | null)?.status ?? null,
+  });
+  const activityTimestamp = activeRow?.lastActivityAt ?? displayedVersion?.updatedAt ?? detail?.currentProofInputSnapshot?.snapshotBasisAt ?? null;
+  const lineItemLabel = activeRow?.lineItemLabel ?? detail?.currentProofInputSnapshot?.lineItemLabel ?? "Proofing";
+  const orderLabel = activeRow?.orderNumber ?? detail?.currentProofInputSnapshot?.orderNumber ?? activeOrderId;
+  const packageLabel = activeRow?.packageLabel ?? null;
+  const customerDisplayName = activeRow?.customerDisplayName ?? selectedOrder?.customer?.name ?? null;
+  const queueBadgeClass = activeRow ? getQueueCardBadgeClass(activeRow) : "border border-slate-700 bg-slate-800 text-slate-300";
 
   useEffect(() => {
     setInternalNotesDraft(selectedOrder?.notesInternal || "");
@@ -972,7 +998,11 @@ export default function StaffProofingPage() {
                 </div>
               ) : filteredQueueRows.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-[#232948] p-4 text-sm text-slate-500">
-                  {searchQuery.trim() ? "No proofs match this search." : "No line items are currently in this proofing slice."}
+                  {requestedLineItemId && requestedLineItemMissing
+                    ? PROOFING_MISSING_LINE_ITEM_MESSAGE
+                    : searchQuery.trim()
+                      ? "No proofs match this search."
+                      : "No line items are currently in this proofing slice."}
                 </div>
               ) : (
                 groupedQueueSections.map((section) => (
@@ -981,7 +1011,7 @@ export default function StaffProofingPage() {
                       {section.label} ({section.rows.length})
                     </p>
                     {section.rows.map((row) => {
-                      const isSelected = row.lineItemId === selectedRow?.lineItemId;
+                      const isSelected = row.lineItemId === activeRow?.lineItemId;
                       return (
                         <button
                           key={row.lineItemId}
@@ -1026,13 +1056,20 @@ export default function StaffProofingPage() {
                 <Skeleton className="h-14 w-full rounded-lg bg-[#141824]" />
                 <Skeleton className="h-full min-h-[34rem] w-full rounded-lg bg-[#141824]" />
               </div>
+            ) : requestedLineItemMissing ? (
+              <div className="p-4">
+                <div className="rounded-lg border border-dashed border-[#232948] bg-[#141824]/40 p-6 text-sm text-slate-300">
+                  <p>{PROOFING_MISSING_LINE_ITEM_MESSAGE}</p>
+                  <p className="mt-2 text-xs text-slate-500">Line item: {requestedLineItemId}</p>
+                </div>
+              </div>
             ) : detailQuery.error ? (
               <div className="p-4">
                 <div className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-4 text-sm text-rose-300">
                   {(detailQuery.error as Error).message}
                 </div>
               </div>
-            ) : !selectedRow || !detail ? (
+            ) : !activeLineItemId || !detail ? (
               <div className="flex h-full items-center justify-center p-8 text-sm text-slate-500">Select a queue row to load proof detail.</div>
             ) : (
               <>
@@ -1044,7 +1081,8 @@ export default function StaffProofingPage() {
                     <div>
                       <h2 className="text-xs font-bold uppercase tracking-tight text-white">{previewName}</h2>
                       <p className="text-[9px] text-slate-500">
-                        {displayedVersion?.sentAt ? `Sent ${formatTimestamp(displayedVersion.sentAt)}` : `Created ${formatTimestamp(displayedVersion?.createdAt)}`} • Last viewed {formatRelativeTime(selectedRow.lastActivityAt)}
+                        {displayedVersion?.sentAt ? `Sent ${formatTimestamp(displayedVersion.sentAt)}` : `Created ${formatTimestamp(displayedVersion?.createdAt)}`}
+                        {activityTimestamp ? ` • Last activity ${formatRelativeTime(activityTimestamp)}` : ""}
                       </p>
                     </div>
                   </div>
@@ -1248,20 +1286,20 @@ export default function StaffProofingPage() {
                     <div className="flex w-full flex-col gap-2">
                       <div className="flex items-center justify-between">
                         <span className="font-mono text-xs font-black uppercase tracking-[0.2em] text-[#1337ec]">
-                          Order {selectedRow?.orderNumber ? `#${selectedRow.orderNumber}` : selectedRow?.orderId}
+                          Order {orderLabel ? `#${orderLabel}` : activeOrderId}
                         </span>
                         <div className="flex gap-2">
                           {displayedVersion ? <span className="rounded-md border border-[#232948] bg-slate-800 px-2 py-0.5 text-[9px] font-bold text-slate-400">v{displayedVersion.versionNumber}</span> : null}
-                          <span className={`rounded-md border px-2 py-0.5 text-[9px] font-bold uppercase tracking-tight ${getQueueCardBadgeClass(selectedRow)}`}>
+                          <span className={`rounded-md px-2 py-0.5 text-[9px] font-bold uppercase tracking-tight ${queueBadgeClass}`}>
                             {staffStatus.label}
                           </span>
                         </div>
                       </div>
                     </div>
                   </div>
-                  <h2 className="mt-2 text-lg font-bold leading-tight text-white">{selectedRow?.lineItemLabel || "Proofing"}</h2>
-                  <p className="mt-1 text-xs font-semibold uppercase tracking-wider text-slate-500">{selectedRow?.packageLabel || "No package linked"}</p>
-                  {selectedRow?.customerDisplayName ? <p className="mt-2 text-sm text-slate-300">{selectedRow.customerDisplayName}</p> : null}
+                  <h2 className="mt-2 text-lg font-bold leading-tight text-white">{lineItemLabel}</h2>
+                  <p className="mt-1 text-xs font-semibold uppercase tracking-wider text-slate-500">{packageLabel || "No package linked"}</p>
+                  {customerDisplayName ? <p className="mt-2 text-sm text-slate-300">{customerDisplayName}</p> : null}
                 </>
               ) : (
                 <div className="text-sm text-slate-500">No line item selected.</div>
@@ -1288,7 +1326,7 @@ export default function StaffProofingPage() {
                         setCreateDialogOpen(true);
                       }
                     }}
-                    disabled={!selectedRow}
+                    disabled={!activeRow}
                   >
                     {canSendCurrentVersion ? <Send className="h-4 w-4" /> : <Upload className="h-4 w-4" />}
                     {primaryActionLabel}
