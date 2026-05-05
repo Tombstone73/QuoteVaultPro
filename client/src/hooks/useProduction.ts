@@ -1,5 +1,9 @@
+import { createElement } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
+import { ToastAction, type ToastActionElement } from "@/components/ui/toast";
 import { useToast } from "@/hooks/use-toast";
+import { buildProofingLineItemPath, PROOF_APPROVAL_REQUIRED_ROUTING_REASON } from "@/lib/proofingNavigation";
 
 export type ProductionConfig = {
   enabledViews: string[];
@@ -230,6 +234,7 @@ export type ScheduleProductionResult = {
 export function useScheduleOrderLineItemsForProduction(orderId: string) {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const navigate = useNavigate();
   return useMutation({
     mutationFn: async (lineItemIds?: string[]) => {
       const res = await fetch(`/api/orders/${orderId}/production/schedule`, {
@@ -245,13 +250,15 @@ export function useScheduleOrderLineItemsForProduction(orderId: string) {
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
       qc.invalidateQueries({ queryKey: ["/api/orders", orderId] as any });
-      const diagnostics = data?.data?.lineItemDiagnostics
-        ? Object.values(data.data.lineItemDiagnostics)
+      const diagnosticEntries = data?.data?.lineItemDiagnostics
+        ? Object.entries(data.data.lineItemDiagnostics)
         : [];
-      const proofBlocked = diagnostics.filter(
-        (diagnostic) => diagnostic.routingReason === "proof_approval_required_before_scheduling",
+      const diagnostics = diagnosticEntries.map(([, diagnostic]) => diagnostic);
+      const proofBlocked = diagnosticEntries.filter(
+        ([, diagnostic]) => diagnostic.routingReason === PROOF_APPROVAL_REQUIRED_ROUTING_REASON,
       );
       const firstDiagnostic = diagnostics[0] ?? null;
+      const firstBlockedLineItemId = proofBlocked[0]?.[0] ?? null;
       const hasScheduledJobs = (data?.data?.createdJobCount ?? 0) + (data?.data?.existingJobCount ?? 0) > 0;
 
       if (!hasScheduledJobs && proofBlocked.length > 0) {
@@ -259,6 +266,16 @@ export function useScheduleOrderLineItemsForProduction(orderId: string) {
           title: "Approved proof required",
           description: data.message,
           variant: "destructive",
+          action: firstBlockedLineItemId
+            ? (createElement(
+                ToastAction,
+                {
+                  altText: "Open proofing",
+                  onClick: () => navigate(buildProofingLineItemPath(firstBlockedLineItemId)),
+                },
+                "Open Proofing",
+              ) as unknown as ToastActionElement)
+            : undefined,
         });
         return;
       }
