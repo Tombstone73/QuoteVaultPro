@@ -5,8 +5,8 @@
  */
 
 import { db } from "./db";
-import { organizations, productionEvents } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { organizations, productionEvents, productionJobs } from "@shared/schema";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 
 const productionLineItemStatusRuleSchema = z
@@ -109,19 +109,48 @@ export async function loadProductionLineItemStatusRulesForOrganization(organizat
   };
 }
 
-type ProductionEventType = "intake" | "routing_override" | "timer_started" | "timer_stopped" | "note" | "reprint_incremented" | "media_used_set";
+type ProductionEventType = "intake" | "routing_override" | "status_changed" | "timer_started" | "timer_stopped" | "note" | "reprint_incremented" | "media_used_set";
 
 export async function appendEvent(args: {
   tx: any;
   organizationId: string;
   productionJobId: string;
   type: ProductionEventType;
+  orderId?: string | null;
+  orderLineItemId?: string | null;
+  actorUserId?: string | null;
   payload?: any;
 }) {
   const payload = args.payload ?? {};
+  let orderId = args.orderId ?? payload.orderId ?? null;
+  let orderLineItemId = args.orderLineItemId ?? payload.orderLineItemId ?? payload.lineItemId ?? null;
+  const actorUserId = args.actorUserId ?? payload.actorUserId ?? null;
+
+  if (!orderId || !orderLineItemId) {
+    const [job] = await args.tx
+      .select({
+        orderId: productionJobs.orderId,
+        lineItemId: productionJobs.lineItemId,
+      })
+      .from(productionJobs)
+      .where(
+        and(
+          eq(productionJobs.organizationId, args.organizationId),
+          eq(productionJobs.id, args.productionJobId),
+        ),
+      )
+      .limit(1);
+
+    orderId = orderId ?? job?.orderId ?? null;
+    orderLineItemId = orderLineItemId ?? job?.lineItemId ?? null;
+  }
+
   await args.tx.insert(productionEvents).values({
     organizationId: args.organizationId,
     productionJobId: args.productionJobId,
+    orderId,
+    orderLineItemId,
+    actorUserId,
     type: args.type,
     payload,
   });
