@@ -48,6 +48,7 @@ import { useOrderLineItemFiles, type OrderFileWithUser } from "@/hooks/useOrderF
 import { useOrder, useUpdateOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
+import { canGeneratePreviewRecovery, canRegenerateGeneratedProof } from "@/lib/proofingRecovery";
 import { buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
 import {
   getInitialProofingFilter,
@@ -81,6 +82,7 @@ type JsonEnvelope<T> = {
   success: boolean;
   data: T;
   error?: string;
+  message?: string;
 };
 
 type ProofFileRow = OrderFileWithUser & {
@@ -575,6 +577,10 @@ export default function StaffProofingPage() {
   const [selectedExistingAttachmentId, setSelectedExistingAttachmentId] = useState<string>("");
   const [createInternalNotes, setCreateInternalNotes] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [previewRecoveryState, setPreviewRecoveryState] = useState<{
+    lineItemId: string;
+    derivativeStatus: "ready" | "pending" | "failed";
+  } | null>(null);
 
   const [sendDialogOpen, setSendDialogOpen] = useState(false);
   // "send" = send a draft for the first time; "resend" = re-notify for an awaiting_response version
@@ -759,6 +765,20 @@ export default function StaffProofingPage() {
   const canRecordDecision =
     displayedVersion?.id === detail?.currentActionableProofVersionId && displayedVersion?.status === "awaiting_response";
   const primaryActionLabel = getPrimaryActionLabel(canSendCurrentVersion, displayedVersion);
+  const hasSourceArtwork = Boolean(currentSnapshot?.sourceArtwork);
+  const canGeneratePreviewAction = canGeneratePreviewRecovery({
+    hasSourceArtwork,
+    previewStatus: currentArtifact?.previewStatus,
+  });
+  const previewRecoveryReady =
+    previewRecoveryState?.lineItemId === selectedRow?.lineItemId &&
+    previewRecoveryState?.derivativeStatus === "ready";
+  const canRegenerateProofAction = canRegenerateGeneratedProof({
+    artifactKind: currentArtifact?.artifactKind,
+    hasSourceArtwork,
+    previewStatus: currentArtifact?.previewStatus,
+    previewRecoveryReady,
+  });
   const requestedLineItemMissing = isRequestedProofingLineItemMissing({
     requestedLineItemId,
     errorStatus: (detailQuery.error as (Error & { status?: number }) | null)?.status ?? null,
@@ -794,6 +814,21 @@ export default function StaffProofingPage() {
       setSelectedExistingAttachmentId(preferred?.id || selectableProofFiles[0]?.id || "");
     }
   }, [createDialogOpen, selectableProofFiles, selectedExistingAttachmentId, displayedFile?.id]);
+
+  useEffect(() => {
+    setPreviewRecoveryState((current) => {
+      if (!selectedRow?.lineItemId) return null;
+      return current?.lineItemId === selectedRow.lineItemId ? current : null;
+    });
+  }, [selectedRow?.lineItemId]);
+
+  useEffect(() => {
+    if (currentArtifact?.previewStatus !== "ready") return;
+    setPreviewRecoveryState((current) => {
+      if (!selectedRow?.lineItemId) return null;
+      return current?.lineItemId === selectedRow.lineItemId ? null : current;
+    });
+  }, [currentArtifact?.previewStatus, selectedRow?.lineItemId]);
 
   async function refreshProofing(lineItemId?: string | null, orderId?: string | null) {
     await queryClient.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
@@ -911,6 +946,68 @@ export default function StaffProofingPage() {
     },
     onError: (error: Error) => {
       toast({ title: createMode === "generated" ? "Failed to generate proof" : "Failed to create proof draft", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const generatePreviewMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedRow?.lineItemId) {
+        throw new Error("Select a proofing queue row first");
+      }
+
+      return readJson<JsonEnvelope<{
+        derivativeStatus: "ready" | "pending" | "failed";
+        previewStatus: ProofArtifactPreviewStatus;
+        sourceFileName: string;
+        sourceType: "attachment" | "asset";
+        sourceId: string;
+        message: string;
+      }>>(`/api/proofing/line-items/${selectedRow.lineItemId}/generate-preview`, {
+        method: "POST",
+      });
+    },
+    onSuccess: async (result) => {
+      if (!selectedRow?.lineItemId) return;
+      setPreviewRecoveryState({
+        lineItemId: selectedRow.lineItemId,
+        derivativeStatus: result.data.derivativeStatus,
+      });
+      await refreshProofing(selectedRow.lineItemId, selectedRow.orderId ?? null);
+      toast({
+        title: result.message || "Preview recovery updated",
+        description: result.data.derivativeStatus === "ready"
+          ? "A new artwork preview derivative is available for proof regeneration."
+          : "Preview generation is still running. Refresh proofing in a moment to continue.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Preview generation failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const regenerateProofMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedRow?.lineItemId) {
+        throw new Error("Select a proofing queue row first");
+      }
+
+      return readJson<JsonEnvelope<{ proofVersion: ProofVersionHistoryEntry; proofing: ProofingReadModel }>>(
+        `/api/proofing/line-item/${selectedRow.lineItemId}/versions`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: "generated", internalNotes: null }),
+        },
+      );
+    },
+    onSuccess: async ({ data }) => {
+      await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
+      setSelectedVersionId(data.proofVersion.id);
+      setPreviewRecoveryState(null);
+      toast({ title: "Proof regenerated", description: "A new generated draft is ready for review and send." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to regenerate proof", description: error.message, variant: "destructive" });
     },
   });
 
@@ -1447,6 +1544,39 @@ export default function StaffProofingPage() {
                     <p className="mt-3 text-center text-[10px] text-amber-300">
                       This proof does not include an artwork preview and cannot be sent to the customer.
                     </p>
+                  ) : null}
+                  {canGeneratePreviewAction || canRegenerateProofAction ? (
+                    <div className="mt-3 grid grid-cols-1 gap-2">
+                      {canGeneratePreviewAction ? (
+                        <Button
+                          variant="outline"
+                          className="h-10 rounded-xl border-amber-400/40 bg-amber-500/10 text-[10px] font-bold uppercase tracking-wider text-amber-100 transition-all hover:bg-amber-500/15"
+                          onClick={() => generatePreviewMutation.mutate()}
+                          disabled={generatePreviewMutation.isPending || regenerateProofMutation.isPending || !selectedRow?.lineItemId}
+                        >
+                          {generatePreviewMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileImage className="mr-2 h-4 w-4" />}
+                          {generatePreviewMutation.isPending ? "Generating Preview" : "Generate Preview"}
+                        </Button>
+                      ) : null}
+                      {canRegenerateProofAction ? (
+                        <Button
+                          variant="outline"
+                          className="h-10 rounded-xl border-[#1337ec]/50 bg-[#1337ec]/10 text-[10px] font-bold uppercase tracking-wider text-[#b9c7ff] transition-all hover:bg-[#1337ec]/15"
+                          onClick={() => regenerateProofMutation.mutate()}
+                          disabled={regenerateProofMutation.isPending || generatePreviewMutation.isPending || !selectedRow?.lineItemId}
+                        >
+                          {regenerateProofMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+                          {regenerateProofMutation.isPending ? "Regenerating Proof" : "Regenerate Proof"}
+                        </Button>
+                      ) : null}
+                      {previewRecoveryState?.lineItemId === selectedRow?.lineItemId ? (
+                        <p className="text-center text-[10px] text-slate-400">
+                          {previewRecoveryState?.derivativeStatus === "ready"
+                            ? "Preview derivative is ready. Regenerate the proof draft to embed it."
+                            : "Preview generation is still running. Refresh proofing in a moment to continue."}
+                        </p>
+                      ) : null}
+                    </div>
                   ) : null}
                   {latestCustomerFeedback ? (
                     <p className="mt-3 text-center text-[10px] text-slate-500">
