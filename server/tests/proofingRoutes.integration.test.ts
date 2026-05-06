@@ -1,5 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, jest, test } from "@jest/globals";
 import express, { NextFunction, Response } from "express";
+import * as fs from "node:fs/promises";
+import path from "node:path";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -32,6 +34,7 @@ jest.mock("../services/productionRoutingService", () => {
 });
 
 import { db } from "../db";
+import { resolveLocalStoragePath } from "../services/localStoragePath";
 import { tenantContext, getRequestOrganizationId } from "../tenantContext";
 import { auditLogs, lineItemProofManualApprovalOverrides, orderAttachments, orderLineItems, productionJobs } from "../../shared/schema";
 import { proofingQueueResponseSchema, proofingReadModelSchema, type ProofVersionHistoryEntry } from "../../shared/proofing";
@@ -41,6 +44,7 @@ import {
   autoSyncCanonicalProofForLineItem,
   createAndSendProofVersion,
   createLineItemProofVersion,
+  generateLineItemArtworkPreviewDerivative,
   INCOMPLETE_PROOF_MESSAGE,
   listProofingQueue,
   markProofVersionSent,
@@ -277,6 +281,23 @@ function createTestApp() {
       return res.json({ success: true, data: truth });
     } catch (error: any) {
       return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to resolve proofing truth" });
+    }
+  });
+
+  app.post("/api/proofing/line-items/:lineItemId/generate-preview", isAuthenticated, tenantContext, async (req: any, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const result = await db.transaction(async (tx) => generateLineItemArtworkPreviewDerivative(tx, {
+        organizationId,
+        lineItemId: String(req.params.lineItemId),
+      }));
+
+      return res.json({ success: true, data: result, message: result.message });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || "Failed to generate artwork preview derivative" });
     }
   });
 
@@ -933,6 +954,14 @@ describe("proofing route integration", () => {
       requiresPrepress?: boolean;
       attachProofFiles?: boolean;
       addArtwork?: boolean;
+      artworkMimeType?: string;
+      artworkThumbStatus?: string | null;
+      artworkThumbKey?: string | null;
+      artworkPreviewKey?: string | null;
+      artworkThumbError?: string | null;
+      artworkFileName?: string;
+      artworkFileUrl?: string;
+      artworkStorageProvider?: string | null;
     },
   ) {
     const lineItemId = `line_${name}_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
@@ -947,6 +976,14 @@ describe("proofing route integration", () => {
     const requiresPrepress = options?.requiresPrepress ?? true;
     const attachProofFiles = options?.attachProofFiles ?? true;
     const addArtwork = options?.addArtwork ?? false;
+    const artworkMimeType = options?.artworkMimeType ?? "application/pdf";
+    const artworkThumbStatus = options?.artworkThumbStatus ?? null;
+    const artworkThumbKey = options?.artworkThumbKey ?? null;
+    const artworkPreviewKey = options?.artworkPreviewKey ?? null;
+    const artworkThumbError = options?.artworkThumbError ?? null;
+    const artworkFileName = options?.artworkFileName ?? `${name}-artwork.pdf`;
+    const artworkFileUrl = options?.artworkFileUrl ?? `https://example.com/${artworkFileId}.pdf`;
+    const artworkStorageProvider = options?.artworkStorageProvider ?? null;
 
     await db.execute(sql`
       insert into order_line_items (
@@ -1001,10 +1038,15 @@ describe("proofing route integration", () => {
           file_url,
           role,
           mime_type,
-          is_primary
+          is_primary,
+          thumb_status,
+          thumb_key,
+          preview_key,
+          thumb_error,
+          storage_provider
         )
         values (
-          ${artworkFileId}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-artwork.pdf`}, ${`https://example.com/${artworkFileId}.pdf`}, ${"artwork"}, ${"application/pdf"}, ${true}
+          ${artworkFileId}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${artworkFileName}, ${artworkFileUrl}, ${"artwork"}, ${artworkMimeType}, ${true}, ${artworkThumbStatus}, ${artworkThumbKey}, ${artworkPreviewKey}, ${artworkThumbError}, ${artworkStorageProvider}
         )
       `);
     }
@@ -1051,6 +1093,101 @@ describe("proofing route integration", () => {
 
     return result.rawToken;
   }
+
+  async function seedLocalImageForPreviewTest(storageKey: string) {
+    const sourcePath = path.join(process.cwd(), "client", "public", "favicon.png");
+    const targetPath = resolveLocalStoragePath(storageKey);
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.copyFile(sourcePath, targetPath);
+    return targetPath;
+  }
+
+  test("returns a safe 400 when no artwork file exists for preview generation", async () => {
+    const { lineItemId } = await createLineItemFixture("generate_preview_missing_art", {
+      addArtwork: false,
+    });
+
+    const res = await request(app)
+      .post(`/api/proofing/line-items/${lineItemId}/generate-preview`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .expect(400);
+
+    expect(res.body).toMatchObject({
+      success: false,
+      message: "No artwork file is attached to this line item.",
+    });
+  });
+
+  test("returns success when a preview derivative already exists", async () => {
+    const { lineItemId } = await createLineItemFixture("generate_preview_exists", {
+      addArtwork: true,
+      artworkThumbStatus: "thumb_ready",
+      artworkThumbKey: "thumbs/existing.jpg",
+      artworkPreviewKey: "previews/existing.jpg",
+    });
+
+    const res = await request(app)
+      .post(`/api/proofing/line-items/${lineItemId}/generate-preview`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .expect(200);
+
+    expect(res.body).toMatchObject({
+      success: true,
+      message: "Preview already exists.",
+      data: {
+        derivativeStatus: "ready",
+        previewStatus: "ready",
+      },
+    });
+  });
+
+  test("generates a missing artwork preview derivative through the existing image pipeline", async () => {
+    const storageKey = `proofing-tests/${Date.now()}-artwork.png`;
+    await seedLocalImageForPreviewTest(storageKey);
+
+    const { lineItemId, artworkFileId } = await createLineItemFixture("generate_preview_pdf", {
+      addArtwork: true,
+      artworkMimeType: "image/png",
+      artworkFileName: "generate-preview-artwork.png",
+      artworkFileUrl: storageKey,
+      artworkStorageProvider: "local",
+      artworkThumbStatus: "uploaded",
+    });
+
+    const res = await request(app)
+      .post(`/api/proofing/line-items/${lineItemId}/generate-preview`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .expect(200);
+
+    expect(res.body).toMatchObject({
+      success: true,
+      message: "Preview generated successfully.",
+      data: {
+        derivativeStatus: "ready",
+        previewStatus: "ready",
+      },
+    });
+
+    const [attachment] = await db
+      .select({
+        thumbStatus: orderAttachments.thumbStatus,
+        thumbKey: orderAttachments.thumbKey,
+        previewKey: orderAttachments.previewKey,
+      })
+      .from(orderAttachments)
+      .where(eq(orderAttachments.id, artworkFileId))
+      .limit(1);
+
+    expect(attachment?.thumbStatus).toBe("thumb_ready");
+    expect(attachment?.thumbKey).toContain(artworkFileId);
+    expect(attachment?.previewKey).toContain(artworkFileId);
+  });
 
   test("creates a proof version and exposes the canonical read model", async () => {
     const { lineItemId, proofFileA } = await createLineItemFixture("create");
@@ -1190,7 +1327,7 @@ describe("proofing route integration", () => {
       slice: "awaiting_approval",
     });
 
-    expect(queue.rows.some((row) => row.lineItemId === lineItemId)).toBe(true);
+    expect(queue.rows.some((row: any) => row.lineItemId === lineItemId)).toBe(true);
   });
 
   test("approves a proof, advances workflow, and rejects repeated approvals safely", async () => {
