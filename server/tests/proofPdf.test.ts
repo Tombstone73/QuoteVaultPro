@@ -27,6 +27,7 @@ describe("generateBasicProofPdfBytes", () => {
 
     expect(result.renderStatus).toBe("ready");
     expect(result.bytes.byteLength).toBeGreaterThan(0);
+    expect(Buffer.from(result.bytes).toString("latin1")).not.toContain("Preview unavailable in this runtime");
   });
 
   test("marks the rendered proof as metadata_only when no preview can be embedded", async () => {

@@ -1,6 +1,3 @@
-import { promises as fsPromises } from "fs";
-import path from "path";
-
 import { and, desc, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 
 import type {
@@ -34,8 +31,7 @@ import {
   quoteAttachmentPages,
 } from "@shared/schema";
 import { generateBasicProofPdfBytes } from "../lib/proofPdf";
-import { SupabaseStorageService } from "../supabaseStorage";
-import { canonicalFileReadResolver } from "./storage/CanonicalFileReadResolver";
+import { resolveProofPreviewSource, type ProofPreviewCandidate } from "./proofPreviewResolver";
 import { storageApplicationService } from "./storage/StorageApplicationService";
 import { transitionLineItemWorkflowState } from "./lineItemWorkflowService";
 
@@ -46,7 +42,10 @@ type ProofSendMode = "generated" | "uploaded";
 
 const GENERATED_PROOF_DESCRIPTION_MARKER = "[proof-artifact:generated-basic]";
 const GENERATED_PROOF_PREVIEW_READY_MARKER = "[proof-preview:ready]";
+const GENERATED_PROOF_MISSING_PREVIEW_MARKER = "[proof-preview:missing-preview]";
+const GENERATED_PROOF_GENERATION_FAILED_MARKER = "[proof-preview:generation-failed]";
 const GENERATED_PROOF_METADATA_ONLY_MARKER = "[proof-preview:metadata-only]";
+const GENERATED_PROOF_PREVIEW_ERROR_PREFIX = "[proof-preview-error:";
 export const INCOMPLETE_PROOF_MESSAGE = "This proof does not include an artwork preview and cannot be sent to the customer.";
 
 type ArtworkProofSource = {
@@ -72,6 +71,8 @@ type ArtworkProofSource = {
   thumbnailRelativePath: string | null;
   thumbnailGeneratedAt: Date | null;
   thumbnailUrl: string | null;
+  pagePreviewFileRecordId?: string | null;
+  pageThumbFileRecordId?: string | null;
   uploadedByUserId: string | null;
   uploadedByName: string | null;
   updatedAt: Date | null;
@@ -120,9 +121,11 @@ type ProofArtifactAttachmentRow = {
 };
 
 type ResolvedProofPreview = {
+  kind: "image" | "pdf" | "unavailable";
   preview: { bytes: Buffer; mimeType: string | null; fileName: string } | null;
   previewStatus: ProofArtifactPreviewStatus;
   previewError: string | null;
+  reason: string | null;
 };
 
 function proofArtifactIsCustomerSendable(artifact: ProofArtifactSummary | null | undefined) {
@@ -132,8 +135,23 @@ function proofArtifactIsCustomerSendable(artifact: ProofArtifactSummary | null |
 function parseGeneratedPreviewStatusFromDescription(description: string | null | undefined): ProofArtifactPreviewStatus | null {
   const normalized = String(description || "");
   if (normalized.includes(GENERATED_PROOF_PREVIEW_READY_MARKER)) return "ready";
+  if (normalized.includes(GENERATED_PROOF_MISSING_PREVIEW_MARKER)) return "missing_preview";
+  if (normalized.includes(GENERATED_PROOF_GENERATION_FAILED_MARKER)) return "generation_failed";
   if (normalized.includes(GENERATED_PROOF_METADATA_ONLY_MARKER)) return "metadata_only";
   return null;
+}
+
+function parseGeneratedPreviewErrorFromDescription(description: string | null | undefined): string | null {
+  const normalized = String(description || "");
+  const startIndex = normalized.indexOf(GENERATED_PROOF_PREVIEW_ERROR_PREFIX);
+  if (startIndex < 0) return null;
+
+  const remainder = normalized.slice(startIndex + GENERATED_PROOF_PREVIEW_ERROR_PREFIX.length);
+  const endIndex = remainder.indexOf("]");
+  if (endIndex < 0) return null;
+
+  const parsed = remainder.slice(0, endIndex).trim();
+  return parsed.length > 0 ? parsed : null;
 }
 
 function derivePreviewStatusFromSource(source: ArtworkProofSource | null): { status: ProofArtifactPreviewStatus; error: string | null } {
@@ -615,6 +633,7 @@ export function buildProofArtifactSummary(args: {
   }
 
   const explicitGeneratedPreviewStatus = parseGeneratedPreviewStatusFromDescription(args.attachment.description);
+  const explicitGeneratedPreviewError = parseGeneratedPreviewErrorFromDescription(args.attachment.description);
   const mime = String(args.attachment.mimeType || "").toLowerCase();
   const isImage = mime.startsWith("image/");
   const isPdf = mime === "application/pdf";
@@ -633,7 +652,7 @@ export function buildProofArtifactSummary(args: {
   if (artifactKind === "generated") {
     previewStatus = explicitGeneratedPreviewStatus ?? "metadata_only";
     if (previewStatus !== "ready") {
-      previewError = "Generated proof does not contain an artwork preview.";
+      previewError = explicitGeneratedPreviewError || "Generated proof does not contain an artwork preview.";
     }
   } else if (hasDerivedPreview || isImage || ((isImage || isPdf) && hasDirectFileUrl)) {
     previewStatus = "ready";
@@ -655,88 +674,137 @@ export function buildProofArtifactSummary(args: {
   };
 }
 
-async function downloadCanonicalFileBuffer(fileRecordId: string): Promise<Buffer | null> {
-  try {
-    const resolved = await canonicalFileReadResolver.resolveOriginal(fileRecordId);
-    if (resolved.status !== "available") return null;
+async function loadPreferredProofPreviewCandidate(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+}): Promise<ProofPreviewCandidate | null> {
+  const [proofAttachment] = await tx
+    .select({
+      id: orderAttachments.id,
+      fileName: orderAttachments.originalFilename,
+      fallbackFileName: orderAttachments.fileName,
+      mimeType: orderAttachments.mimeType,
+      fileRecordId: orderAttachments.fileRecordId,
+      previewKey: orderAttachments.previewKey,
+      thumbKey: orderAttachments.thumbKey,
+      storageProvider: orderAttachments.storageProvider,
+      pagePreviewFileRecordId: sql<string | null>`(
+        select ${quoteAttachmentPages.previewFileRecordId}
+        from ${quoteAttachmentPages}
+        where ${quoteAttachmentPages.attachmentId} = ${orderAttachments.id}
+          and ${quoteAttachmentPages.previewFileRecordId} is not null
+        order by ${quoteAttachmentPages.pageIndex} asc
+        limit 1
+      )`,
+      pageThumbFileRecordId: sql<string | null>`(
+        select ${quoteAttachmentPages.thumbFileRecordId}
+        from ${quoteAttachmentPages}
+        where ${quoteAttachmentPages.attachmentId} = ${orderAttachments.id}
+          and ${quoteAttachmentPages.thumbFileRecordId} is not null
+        order by ${quoteAttachmentPages.pageIndex} asc
+        limit 1
+      )`,
+    })
+    .from(orderAttachments)
+    .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
+    .where(
+      and(
+        eq(orders.organizationId, args.organizationId),
+        eq(orderAttachments.orderLineItemId, args.lineItemId),
+        eq(orderAttachments.role, "proof"),
+        sql`coalesce(${orderAttachments.description}, '') not like ${`%${GENERATED_PROOF_DESCRIPTION_MARKER}%`}`,
+      ),
+    )
+    .orderBy(desc(orderAttachments.isPrimary), desc(orderAttachments.updatedAt), desc(orderAttachments.createdAt))
+    .limit(1);
 
-    if (resolved.localPathRef) {
-      return await fsPromises.readFile(resolved.localPathRef);
-    }
-
-    if (resolved.objectKey) {
-      const signedUrl = await new SupabaseStorageService().getSignedDownloadUrl(resolved.objectKey, 3600);
-      const response = await fetch(signedUrl);
-      if (!response.ok) return null;
-      return Buffer.from(await response.arrayBuffer());
-    }
-  } catch {
+  if (!proofAttachment) {
     return null;
   }
 
-  return null;
+  return {
+    candidateId: `proof:${proofAttachment.id}`,
+    fileName: proofAttachment.fileName || proofAttachment.fallbackFileName,
+    mimeType: proofAttachment.mimeType ?? null,
+    fileRecordId: proofAttachment.fileRecordId ?? null,
+    previewStorageKey: proofAttachment.previewKey ?? null,
+    thumbStorageKey: proofAttachment.thumbKey ?? null,
+    storageProviderHint: proofAttachment.storageProvider ?? null,
+    pagePreviewFileRecordId: proofAttachment.pagePreviewFileRecordId ?? null,
+    pageThumbFileRecordId: proofAttachment.pageThumbFileRecordId ?? null,
+    allowOriginalPdf: true,
+  };
 }
 
-async function downloadStorageKeyBuffer(fileKey: string): Promise<Buffer | null> {
-  const normalized = String(fileKey || "").trim().replace(/^\/objects\//, "").replace(/^\/+/, "");
-  if (!normalized) return null;
-
-  const localRoot = process.env.STORAGE_ROOT || "./storage";
-  const localPath = path.resolve(process.cwd(), localRoot, normalized.replace(/\//g, path.sep));
-  try {
-    return await fsPromises.readFile(localPath);
-  } catch {
-    // fall through
+async function resolveGeneratedProofPreview(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  orderId: string;
+  source: ArtworkProofSource | null;
+}): Promise<ResolvedProofPreview> {
+  const sourceAssessment = derivePreviewStatusFromSource(args.source);
+  if (!args.source) {
+    return {
+      kind: "unavailable",
+      preview: null,
+      previewStatus: sourceAssessment.status,
+      previewError: sourceAssessment.error,
+      reason: "no_preview_source",
+    };
   }
 
-  try {
-    const signedUrl = await new SupabaseStorageService().getSignedDownloadUrl(normalized, 3600);
-    const response = await fetch(signedUrl);
-    if (!response.ok) return null;
-    return Buffer.from(await response.arrayBuffer());
-  } catch {
-    return null;
-  }
-}
-
-async function resolveGeneratedProofPreview(source: ArtworkProofSource | null): Promise<ResolvedProofPreview> {
-  const sourceAssessment = derivePreviewStatusFromSource(source);
-  if (!source) {
-    return { preview: null, previewStatus: sourceAssessment.status, previewError: sourceAssessment.error };
+  const candidates: ProofPreviewCandidate[] = [];
+  const preferredProofCandidate = await loadPreferredProofPreviewCandidate(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+  });
+  if (preferredProofCandidate) {
+    candidates.push(preferredProofCandidate);
   }
 
-  if (source.previewKey || source.thumbKey) {
-    const previewBytes = await downloadStorageKeyBuffer(source.previewKey || source.thumbKey || "");
-    if (previewBytes?.length) {
-      return {
-        preview: {
-          bytes: previewBytes,
-          mimeType: "image/jpeg",
-          fileName: source.originalFilename || source.fileName,
-        },
-        previewStatus: "ready",
-        previewError: null,
-      };
-    }
+  candidates.push({
+    candidateId: `${args.source.sourceType}:${args.source.sourceId}`,
+    fileName: args.source.originalFilename || args.source.fileName,
+    mimeType: args.source.mimeType ?? null,
+    fileRecordId: args.source.fileRecordId ?? null,
+    previewStorageKey: args.source.previewKey ?? null,
+    thumbStorageKey: args.source.thumbKey ?? null,
+    storageProviderHint: args.source.storageProvider ?? null,
+    pagePreviewFileRecordId: args.source.pagePreviewFileRecordId ?? null,
+    pageThumbFileRecordId: args.source.pageThumbFileRecordId ?? null,
+    allowOriginalPdf: false,
+  });
+
+  const resolved = await resolveProofPreviewSource({
+    context: {
+      organizationId: args.organizationId,
+      orderId: args.orderId,
+      lineItemId: args.lineItemId,
+    },
+    candidates,
+  });
+
+  if (resolved.kind === "unavailable") {
+    return {
+      kind: "unavailable",
+      preview: null,
+      previewStatus: resolved.previewStatus,
+      previewError: resolved.previewError || sourceAssessment.error,
+      reason: resolved.reason,
+    };
   }
 
-  const mime = String(source.mimeType || "").toLowerCase();
-  if (source.fileRecordId && (mime.startsWith("image/png") || mime.startsWith("image/jpeg") || mime.startsWith("image/jpg") || mime === "application/pdf")) {
-    const buffer = await downloadCanonicalFileBuffer(source.fileRecordId);
-    if (buffer?.length) {
-      return {
-        preview: {
-          bytes: buffer,
-          mimeType: source.mimeType ?? null,
-          fileName: source.originalFilename || source.fileName,
-        },
-        previewStatus: "ready",
-        previewError: null,
-      };
-    }
-  }
-
-  return { preview: null, previewStatus: sourceAssessment.status, previewError: sourceAssessment.error };
+  return {
+    kind: resolved.kind,
+    preview: {
+      bytes: resolved.sourceBuffer,
+      mimeType: resolved.mimeType,
+      fileName: resolved.filename,
+    },
+    previewStatus: "ready",
+    previewError: null,
+    reason: null,
+  };
 }
 
 async function createGeneratedProofAttachment(tx: any, args: {
@@ -745,7 +813,12 @@ async function createGeneratedProofAttachment(tx: any, args: {
   snapshot: ProofInputSnapshot;
   source: ArtworkProofSource | null;
 }): Promise<ProofArtifactSummary> {
-  const resolvedPreview = await resolveGeneratedProofPreview(args.source);
+  const resolvedPreview = await resolveGeneratedProofPreview(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.snapshot.lineItemId,
+    orderId: args.snapshot.orderId,
+    source: args.source,
+  });
   const timestampToken = new Date().toISOString().replace(/[:.]/g, "-");
   const safeLineItem = args.snapshot.lineItemLabel.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "line-item";
   const fileName = `${safeLineItem}-proof-${timestampToken}.pdf`;
@@ -759,10 +832,23 @@ async function createGeneratedProofAttachment(tx: any, args: {
     sourceFileName: args.snapshot.sourceArtwork?.fileName ?? null,
     generatedAt: new Date(),
     preview: resolvedPreview.preview,
+    previewError: resolvedPreview.previewError,
   });
-  const descriptionPreviewMarker = pdfResult.renderStatus === "ready"
+  const finalPreviewStatus: ProofArtifactPreviewStatus = resolvedPreview.previewStatus === "ready" && pdfResult.renderStatus === "ready"
+    ? "ready"
+    : resolvedPreview.previewStatus === "ready"
+      ? "generation_failed"
+      : resolvedPreview.previewStatus;
+  const descriptionPreviewMarker = finalPreviewStatus === "ready"
     ? GENERATED_PROOF_PREVIEW_READY_MARKER
-    : GENERATED_PROOF_METADATA_ONLY_MARKER;
+    : finalPreviewStatus === "generation_failed"
+      ? GENERATED_PROOF_GENERATION_FAILED_MARKER
+      : finalPreviewStatus === "missing_preview"
+        ? GENERATED_PROOF_MISSING_PREVIEW_MARKER
+        : GENERATED_PROOF_METADATA_ONLY_MARKER;
+  const descriptionPreviewError = resolvedPreview.previewError
+    ? ` ${GENERATED_PROOF_PREVIEW_ERROR_PREFIX}${resolvedPreview.previewError.replace(/\]/g, ")")}]`
+    : "";
 
   const stored = await storageApplicationService.finalizeUpload({
     organizationId: args.organizationId,
@@ -791,7 +877,7 @@ async function createGeneratedProofAttachment(tx: any, args: {
           fileUrl: storedResult.legacyFileUrl,
           fileSize: storedResult.storedObject.sizeBytes,
           mimeType: "application/pdf",
-          description: `${GENERATED_PROOF_DESCRIPTION_MARKER} ${descriptionPreviewMarker} Generated basic proof from persisted line-item truth.`,
+          description: `${GENERATED_PROOF_DESCRIPTION_MARKER} ${descriptionPreviewMarker}${descriptionPreviewError} Generated basic proof from persisted line-item truth.`,
           originalFilename: storedResult.storedObject.originalFilename,
           storedFilename: storedResult.storedObject.storedFilename,
           relativePath: storedResult.legacyRelativePath,
@@ -1075,6 +1161,22 @@ async function loadLatestArtworkProofSource(tx: any, args: { organizationId: str
       thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
       thumbnailGeneratedAt: orderAttachments.thumbnailGeneratedAt,
       thumbnailUrl: orderAttachments.thumbnailUrl,
+      pagePreviewFileRecordId: sql<string | null>`(
+        select ${quoteAttachmentPages.previewFileRecordId}
+        from ${quoteAttachmentPages}
+        where ${quoteAttachmentPages.attachmentId} = ${orderAttachments.id}
+          and ${quoteAttachmentPages.previewFileRecordId} is not null
+        order by ${quoteAttachmentPages.pageIndex} asc
+        limit 1
+      )`,
+      pageThumbFileRecordId: sql<string | null>`(
+        select ${quoteAttachmentPages.thumbFileRecordId}
+        from ${quoteAttachmentPages}
+        where ${quoteAttachmentPages.attachmentId} = ${orderAttachments.id}
+          and ${quoteAttachmentPages.thumbFileRecordId} is not null
+        order by ${quoteAttachmentPages.pageIndex} asc
+        limit 1
+      )`,
       uploadedByUserId: orderAttachments.uploadedByUserId,
       uploadedByName: orderAttachments.uploadedByName,
       updatedAt: orderAttachments.updatedAt,
@@ -1115,6 +1217,8 @@ async function loadLatestArtworkProofSource(tx: any, args: { organizationId: str
       thumbnailRelativePath: attachmentSource.thumbnailRelativePath ?? null,
       thumbnailGeneratedAt: attachmentSource.thumbnailGeneratedAt ?? null,
       thumbnailUrl: attachmentSource.thumbnailUrl ?? null,
+      pagePreviewFileRecordId: attachmentSource.pagePreviewFileRecordId ?? null,
+      pageThumbFileRecordId: attachmentSource.pageThumbFileRecordId ?? null,
       uploadedByUserId: attachmentSource.uploadedByUserId ?? null,
       uploadedByName: attachmentSource.uploadedByName ?? null,
       updatedAt: attachmentSource.updatedAt ?? null,
