@@ -79,4 +79,20 @@ describe("order proof status derivation", () => {
     expect(summary.proofCounts.approved).toBe(1);
     expect(summary.proofActionRequired).toBe(false);
   });
+
+  it("treats superseded proofs as needing a new proof instead of awaiting customer approval", () => {
+    const lineItem = deriveLineItemProofSummary({
+      lineItemId: "line-superseded",
+      requiresProofApproval: true,
+      latestProofVersionStatus: "superseded",
+      hasAnyProofVersion: true,
+      hasSentProofVersion: false,
+    });
+
+    expect(lineItem.status).toBe("proof_needed");
+
+    const summary = deriveOrderProofSummary([lineItem]);
+    expect(summary.proofStatus).toBe("proof_needed");
+    expect(summary.proofCounts.awaitingApproval).toBe(0);
+  });
 });
