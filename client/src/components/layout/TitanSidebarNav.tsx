@@ -7,6 +7,7 @@ import {
   Users,
   Contact2,
   FileText,
+  Inbox,
   ShoppingCart,
   Factory,
   Boxes,
@@ -85,6 +86,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
         },
       },
       { id: "orders", name: "Orders", icon: ShoppingCart, path: ROUTES.orders.list },
+      { id: "inbound-orders", name: "Inbound Orders", icon: Inbox, path: ROUTES.inboundOrders.list },
     ],
   },
   {
