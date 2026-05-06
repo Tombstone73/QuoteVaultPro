@@ -1761,6 +1761,91 @@ function deriveProofingQueueBadge(status: ProofQueueStatus): string {
   }
 }
 
+export async function cancelProofVersion(tx: any, args: {
+  organizationId: string;
+  proofVersionId: string;
+  actorUserId: string;
+  reason?: string | null;
+}) {
+  try {
+    const proofVersion = await loadProofVersion(tx, {
+      organizationId: args.organizationId,
+      proofVersionId: args.proofVersionId,
+    });
+
+    if (proofVersion.status === "approved") {
+      throwProofingBadRequest("Approved proof versions cannot be cancelled from this workflow.");
+    }
+
+    if (proofVersion.status !== "awaiting_response") {
+      const statusLabel = proofVersion.status === "superseded" ? "superseded" : proofVersion.status;
+      throwProofingBadRequest(`Only active sent proof versions can be cancelled. Current status: ${statusLabel}.`);
+    }
+
+    const lineItem = await loadProofLineItem(tx, {
+      organizationId: args.organizationId,
+      lineItemId: proofVersion.lineItemId,
+    });
+
+    const [updatedVersion] = await tx
+      .update(lineItemProofVersions)
+      .set({
+        status: "superseded",
+        updatedAt: new Date(),
+      })
+      .where(eq(lineItemProofVersions.id, proofVersion.id))
+      .returning();
+
+    await tx
+      .update(orderLineItems)
+      .set({
+        approvedProofVersionId: null,
+        requiresProofApproval: true,
+        updatedAt: new Date(),
+      })
+      .where(eq(orderLineItems.id, lineItem.lineItemId));
+
+    let workflowTransition: Awaited<ReturnType<typeof transitionLineItemWorkflowState>> | null = null;
+    if (lineItem.workflowState !== "awaiting_proof_approval") {
+      workflowTransition = await transitionLineItemWorkflowState(tx, {
+        organizationId: args.organizationId,
+        lineItemId: lineItem.lineItemId,
+        toState: "awaiting_proof_approval",
+        actorUserId: args.actorUserId,
+        metadata: {
+          source: "proofing_cancel_version",
+          proofVersionId: proofVersion.id,
+          versionNumber: proofVersion.versionNumber,
+        },
+      });
+    }
+
+    await appendProofingEvent(tx, {
+      organizationId: args.organizationId,
+      orderId: proofVersion.orderId,
+      lineItemId: proofVersion.lineItemId,
+      eventType: "proof_version_cancelled",
+      actorUserId: args.actorUserId,
+      payload: {
+        proofVersionId: proofVersion.id,
+        versionNumber: proofVersion.versionNumber,
+        previousProofStatus: proofVersion.status,
+        newProofStatus: updatedVersion.status,
+        workflowToState: workflowTransition?.toState ?? lineItem.workflowState,
+        reason: trimNullable(args.reason),
+      },
+    });
+
+    return {
+      proofVersion: updatedVersion,
+      lineItem,
+      workflowTransition,
+    };
+  } catch (error: any) {
+    normalizeProofingWriteError(error);
+  }
+}
+
 function matchesProofingQueueSlice(status: ProofQueueStatus, slice: ProofQueueSlice): boolean {
   if (slice === "all") return true;
   if (slice === "approved") return status === "approved" || status === "approved_by_override";

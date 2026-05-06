@@ -317,6 +317,10 @@ function getStatusNote(args: {
     return displayedVersion.sentAt ? `Sent ${formatRelativeTime(displayedVersion.sentAt)}.` : "Waiting on customer approval.";
   }
 
+  if (displayedVersion?.status === "superseded") {
+    return "This proof version has been cancelled or replaced and is no longer customer-actionable.";
+  }
+
   if (displayedVersion?.status === "draft") {
     return "This version is still draft and ready to send.";
   }
@@ -498,6 +502,8 @@ function getVersionStatusBadgeClass(status: ProofVersionStatus) {
       return "border-[#244f45] bg-[#102b24] text-[#72d4b8]";
     case "rejected":
       return "border-[#74324d] bg-[#3a1725] text-[#ff7f9f]";
+    case "superseded":
+      return "border-[#4a5568] bg-[#1f2937] text-[#d1d5db]";
     default:
       return "border-[#3b4660] bg-[#1a2236] text-[#d7ddea]";
   }
@@ -536,6 +542,8 @@ function getVersionStatusLabel(status: ProofVersionStatus | null | undefined) {
   switch (status) {
     case "awaiting_response":
       return "Awaiting Customer Approval";
+    case "superseded":
+      return "Cancelled / Superseded";
     case "approved":
       return "Approved";
     case "rejected":
@@ -599,6 +607,8 @@ export default function StaffProofingPage() {
   const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
   const [overrideNote, setOverrideNote] = useState("");
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
 
   const queueQuery = useQuery<JsonEnvelope<ProofingQueueResponse>>({
     queryKey: ["/api/proofing/queue", "all"],
@@ -762,6 +772,9 @@ export default function StaffProofingPage() {
   });
   const canSendDisplayedVersion = canSendCurrentVersion && currentArtifact?.previewStatus === "ready";
   const canResendDisplayedVersion = displayedVersion?.status === "awaiting_response" && currentArtifact?.previewStatus === "ready";
+  const canCancelDisplayedVersion =
+    displayedVersion?.id === detail?.currentActionableProofVersionId &&
+    displayedVersion?.status === "awaiting_response";
   const canRecordDecision =
     displayedVersion?.id === detail?.currentActionableProofVersionId && displayedVersion?.status === "awaiting_response";
   const primaryActionLabel = getPrimaryActionLabel(canSendCurrentVersion, displayedVersion);
@@ -1095,6 +1108,35 @@ export default function StaffProofingPage() {
     },
     onError: (error: Error) => {
       toast({ title: "Failed to record manual override", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const cancelProofMutation = useMutation({
+    mutationFn: async () => {
+      if (!displayedVersion?.id) throw new Error("Select an active sent proof version first");
+
+      return readJson<JsonEnvelope<{
+        proofId: string;
+        versionId: string;
+        status: ProofVersionStatus;
+        proofing: ProofingReadModel;
+      }>>(`/api/proofing/versions/${displayedVersion.id}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: cancelReason.trim() || null }),
+      });
+    },
+    onSuccess: async () => {
+      await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
+      setCancelDialogOpen(false);
+      setCancelReason("");
+      toast({
+        title: "Proof cancelled",
+        description: "The active customer proof link is no longer approvable. You can generate and send a corrected proof now.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to cancel proof", description: error.message, variant: "destructive" });
     },
   });
 
@@ -1577,6 +1619,16 @@ export default function StaffProofingPage() {
                         </p>
                       ) : null}
                     </div>
+                  ) : null}
+                  {canCancelDisplayedVersion ? (
+                    <Button
+                      variant="outline"
+                      className="mt-3 h-10 w-full rounded-xl border-rose-500/40 bg-rose-500/10 text-[10px] font-bold uppercase tracking-wider text-rose-100 transition-all hover:bg-rose-500/15"
+                      onClick={() => setCancelDialogOpen(true)}
+                      disabled={cancelProofMutation.isPending}
+                    >
+                      Cancel / Supersede Proof
+                    </Button>
                   ) : null}
                   {latestCustomerFeedback ? (
                     <p className="mt-3 text-center text-[10px] text-slate-500">
@@ -2199,6 +2251,39 @@ export default function StaffProofingPage() {
             <Button variant="destructive" onClick={() => overrideMutation.mutate()} disabled={overrideMutation.isPending || !overrideReason.trim()}>
               {overrideMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldAlert className="mr-2 h-4 w-4" />}
               Record manual override
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Cancel / Supersede Proof</DialogTitle>
+            <DialogDescription>
+              This will cancel the active customer proof link. The customer will no longer be able to approve this version. You can generate and send a corrected proof after cancellation.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-2">
+            <Label htmlFor="proof-cancel-reason">Reason</Label>
+            <Textarea
+              id="proof-cancel-reason"
+              rows={4}
+              value={cancelReason}
+              onChange={(event) => setCancelReason(event.target.value)}
+              placeholder="Optional internal reason for cancelling this proof"
+              disabled={cancelProofMutation.isPending}
+            />
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCancelDialogOpen(false)} disabled={cancelProofMutation.isPending}>
+              Keep Proof Active
+            </Button>
+            <Button variant="destructive" onClick={() => cancelProofMutation.mutate()} disabled={cancelProofMutation.isPending || !canCancelDisplayedVersion}>
+              {cancelProofMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Cancel Proof
             </Button>
           </DialogFooter>
         </DialogContent>
