@@ -279,6 +279,10 @@ export function registerPortalProofRoutes(app: Express): void {
           throw Object.assign(new Error("This proof has already been resolved by manual approval override"), { statusCode: 409 });
         }
 
+        if (validation.currentApprovalState.status === "cancelled") {
+          throw Object.assign(new Error("This proof version has been cancelled and is no longer available for approval."), { statusCode: 409 });
+        }
+
         if (validation.currentApprovalState.status !== "pending") {
           throw Object.assign(new Error("This proof has already been resolved"), { statusCode: 409 });
         }

@@ -347,12 +347,18 @@ const STATUS_CONFIG = {
     color: "text-amber-600",
     bg: "bg-amber-50 border-amber-200",
   },
+  cancelled: {
+    icon: AlertCircle,
+    label: "Cancelled",
+    color: "text-slate-700",
+    bg: "bg-slate-100 border-slate-300",
+  },
 } as const;
 
 function AlreadyReviewedBanner({
   status,
 }: {
-  status: "approved" | "rejected" | "revision_requested";
+  status: "approved" | "rejected" | "revision_requested" | "cancelled";
 }) {
   const cfg = STATUS_CONFIG[status];
   const Icon = cfg.icon;
@@ -362,8 +368,9 @@ function AlreadyReviewedBanner({
       <div>
         <p className={`font-medium ${cfg.color}`}>{cfg.label}</p>
         <p className="text-sm text-muted-foreground mt-0.5">
-          This proof has already been reviewed. Contact your account manager if you need to make
-          a change.
+          {status === "cancelled"
+            ? "This proof version has been cancelled and is no longer available for approval. Please contact us or use the newest proof link."
+            : "This proof has already been reviewed. Contact your account manager if you need to make a change."}
         </p>
       </div>
     </div>
@@ -664,7 +671,9 @@ export default function PortalProofPage() {
             <div className="flex items-start gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3">
               <AlertCircle className="h-4 w-4 mt-0.5 shrink-0 text-destructive" />
               <p className="text-sm text-destructive">
-                {mutation.error?.message === "This proof does not include an artwork preview and cannot be sent to the customer."
+                {mutation.error?.message === "This proof version has been cancelled and is no longer available for approval."
+                  ? "This proof version has been cancelled and is no longer available for approval. Please use the newest proof link or contact us."
+                  : mutation.error?.message === "This proof does not include an artwork preview and cannot be sent to the customer."
                   ? "This proof preview is unavailable. Please contact us before approving."
                   : mutation.error?.message?.startsWith("409")
                     ? "This proof has already been reviewed. Please refresh the page."
