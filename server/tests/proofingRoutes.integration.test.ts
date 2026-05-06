@@ -37,9 +37,11 @@ import { auditLogs, lineItemProofManualApprovalOverrides, orderAttachments, orde
 import { proofingQueueResponseSchema, proofingReadModelSchema, type ProofVersionHistoryEntry } from "../../shared/proofing";
 import { createProofAccessToken, validateProofToken } from "../services/proofAccessTokenService";
 import {
+  buildProofArtifactSummary,
   autoSyncCanonicalProofForLineItem,
   createAndSendProofVersion,
   createLineItemProofVersion,
+  INCOMPLETE_PROOF_MESSAGE,
   listProofingQueue,
   markProofVersionSent,
   recordManualProofApprovalOverride,
@@ -379,6 +381,9 @@ function createTestApp() {
 
       return res.json({ success: true, data: result });
     } catch (error: any) {
+      if ((error?.statusCode || 500) === 400 && error?.message === INCOMPLETE_PROOF_MESSAGE) {
+        return res.status(400).json({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
+      }
       return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to send proof version for review" });
     }
   });
@@ -440,6 +445,9 @@ function createTestApp() {
 
       return res.json({ success: true, data: result });
     } catch (error: any) {
+      if ((error?.statusCode || 500) === 400 && error?.message === INCOMPLETE_PROOF_MESSAGE) {
+        return res.status(400).json({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
+      }
       return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to create and send proof" });
     }
   });
@@ -565,6 +573,32 @@ function createTestApp() {
   app.get("/api/portal/proof/:token", async (req: any, res: Response) => {
     try {
       const validation = await validateProofToken(db, String(req.params.token));
+      const [attachment] = await db
+        .select({
+          id: orderAttachments.id,
+          fileName: orderAttachments.fileName,
+          mimeType: orderAttachments.mimeType,
+          description: orderAttachments.description,
+          fileRecordId: orderAttachments.fileRecordId,
+          fileUrl: orderAttachments.fileUrl,
+          thumbKey: orderAttachments.thumbKey,
+          previewKey: orderAttachments.previewKey,
+          thumbnailUrl: orderAttachments.thumbnailUrl,
+        })
+        .from(orderAttachments)
+        .where(eq(orderAttachments.id, validation.proofVersion.proofFileId))
+        .limit(1);
+
+      const artifact = attachment
+        ? buildProofArtifactSummary({
+          attachment: {
+            ...attachment,
+            pagePreviewCount: 0,
+            pageThumbCount: 0,
+          },
+          snapshot: null,
+        })
+        : null;
 
       return res.json({
         success: true,
@@ -578,6 +612,8 @@ function createTestApp() {
             {
               id: validation.proofVersion.proofFileId,
               downloadUrl: `https://example.com/objects/${validation.proofVersion.proofFileId}`,
+              previewStatus: artifact?.previewStatus ?? "missing_preview",
+              previewError: artifact?.previewError ?? null,
             },
           ],
           status: validation.currentApprovalState.status,
@@ -608,6 +644,39 @@ function createTestApp() {
 
         if (validation.currentApprovalState.status !== "pending") {
           throw Object.assign(new Error("This proof has already been resolved"), { statusCode: 409 });
+        }
+
+        const [attachment] = await tx
+          .select({
+            id: orderAttachments.id,
+            fileName: orderAttachments.fileName,
+            mimeType: orderAttachments.mimeType,
+            description: orderAttachments.description,
+            fileRecordId: orderAttachments.fileRecordId,
+            fileUrl: orderAttachments.fileUrl,
+            thumbKey: orderAttachments.thumbKey,
+            previewKey: orderAttachments.previewKey,
+            thumbnailUrl: orderAttachments.thumbnailUrl,
+          })
+          .from(orderAttachments)
+          .where(eq(orderAttachments.id, validation.proofVersion.proofFileId))
+          .limit(1);
+
+        if (!attachment) {
+          throw Object.assign(new Error("Proof attachment not found"), { statusCode: 404 });
+        }
+
+        const artifact = buildProofArtifactSummary({
+          attachment: {
+            ...attachment,
+            pagePreviewCount: 0,
+            pageThumbCount: 0,
+          },
+          snapshot: null,
+        });
+
+        if (artifact.previewStatus !== "ready") {
+          throw Object.assign(new Error(INCOMPLETE_PROOF_MESSAGE), { statusCode: 400 });
         }
 
         const decision = parsed.data.action === "approve"
@@ -654,6 +723,9 @@ function createTestApp() {
 
       return res.json({ success: true, data: result });
     } catch (error: any) {
+      if ((error?.statusCode || 500) === 400 && error?.message === INCOMPLETE_PROOF_MESSAGE) {
+        return res.status(400).json({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
+      }
       return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to record customer proof action" });
     }
   });
@@ -908,11 +980,12 @@ describe("proofing route integration", () => {
           uploaded_by_name,
           file_name,
           file_url,
-          role
+          role,
+          mime_type
         )
         values
-          (${proofFileA}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-proof-a.pdf`}, ${`https://example.com/${proofFileA}.pdf`}, ${"proof"}),
-          (${proofFileB}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-proof-b.pdf`}, ${`https://example.com/${proofFileB}.pdf`}, ${"proof"})
+          (${proofFileA}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-proof-a.pdf`}, ${`https://example.com/${proofFileA}.pdf`}, ${"proof"}, ${"application/pdf"}),
+          (${proofFileB}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-proof-b.pdf`}, ${`https://example.com/${proofFileB}.pdf`}, ${"proof"}, ${"application/pdf"})
       `);
     }
 
@@ -927,10 +1000,11 @@ describe("proofing route integration", () => {
           file_name,
           file_url,
           role,
+          mime_type,
           is_primary
         )
         values (
-          ${artworkFileId}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-artwork.pdf`}, ${`https://example.com/${artworkFileId}.pdf`}, ${"artwork"}, ${true}
+          ${artworkFileId}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-artwork.pdf`}, ${`https://example.com/${artworkFileId}.pdf`}, ${"artwork"}, ${"application/pdf"}, ${true}
         )
       `);
     }
@@ -1023,10 +1097,11 @@ describe("proofing route integration", () => {
     const proofing = proofingReadModelSchema.parse(res.body?.data?.proofing);
     expect(proofing.currentActionableProofVersion?.proofFileId).toBe(proofFileA);
     expect(proofing.currentDisplayedProofArtifact?.artifactKind).toBe("uploaded");
+    expect(proofing.currentDisplayedProofArtifact?.previewStatus).toBe("ready");
     expect(proofing.currentProofInputSnapshot?.lineItemId).toBe(lineItemId);
   });
 
-  test("generates a basic proof from persisted artwork and sends it through the canonical flow", async () => {
+  test("blocks sending a generated proof when the saved artwork cannot produce a preview", async () => {
     const { lineItemId, artworkFileId } = await createLineItemFixture("generated_send", {
       attachProofFiles: false,
       addArtwork: true,
@@ -1041,21 +1116,17 @@ describe("proofing route integration", () => {
       .set("x-test-user-role", "admin")
       .set("x-test-org-id", orgId)
       .send({ mode: "generated", internalNotes: "generated path" })
-      .expect(200);
+      .expect(400);
 
-    expect(res.body?.data?.proofVersion?.status).toBe("awaiting_response");
-    expect(res.body?.data?.proofVersion?.proofFileId).not.toBe(artworkFileId);
-    const proofing = proofingReadModelSchema.parse(res.body?.data?.proofing);
-    expect(proofing.currentDisplayedProofArtifact?.artifactKind).toBe("generated");
-    expect(proofing.currentProofInputSnapshot?.sourceArtwork?.sourceId).toBe(artworkFileId);
+    expect(res.body).toMatchObject({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
 
-    const [generatedAttachment] = await db
-      .select({ mimeType: orderAttachments.mimeType, role: orderAttachments.role })
-      .from(orderAttachments)
-      .where(eq(orderAttachments.id, String(res.body?.data?.proofVersion?.proofFileId)))
-      .limit(1);
+    const truth = await resolveLineItemProofingTruth(db, {
+      organizationId: orgId,
+      lineItemId,
+    });
 
-    expect(generatedAttachment).toMatchObject({ mimeType: "application/pdf", role: "proof" });
+    expect(truth.currentActionableProofVersionId).toBeNull();
+    expect(truth.currentProofInputSnapshot?.sourceArtwork?.sourceId).toBe(artworkFileId);
   });
 
   test("fails clearly when generated proof is requested without a saved artwork source", async () => {
@@ -1605,6 +1676,75 @@ describe("proofing route integration", () => {
     const truth = proofingReadModelSchema.parse(truthRes.body?.data);
     expect(truth.approvedProofVersionId).toBe(proofVersionId);
     expect(truth.proofDecisionHistory[0]?.responderSource).toBe("customer");
+  });
+
+  test("blocks portal approval when the proof artifact is metadata-only", async () => {
+    const { lineItemId } = await createLineItemFixture("portal_incomplete", {
+      attachProofFiles: false,
+      requiresProofApproval: true,
+      requiresPrepress: true,
+      workflowState: "awaiting_proof_approval",
+    });
+    const incompleteProofFileId = `proof_incomplete_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+
+    await db.execute(sql`
+      insert into order_attachments (
+        id,
+        order_id,
+        order_line_item_id,
+        uploaded_by_user_id,
+        uploaded_by_name,
+        file_name,
+        role,
+        mime_type,
+        description
+      ) values (
+        ${incompleteProofFileId},
+        ${orderId},
+        ${lineItemId},
+        ${userId},
+        ${"Proof User"},
+        ${"portal-incomplete-proof.pdf"},
+        ${"proof"},
+        ${"application/pdf"},
+        ${"[proof-artifact:generated-basic] [proof-preview:metadata-only] Generated basic proof from persisted line-item truth."}
+      )
+    `);
+
+    const createdDraft = await db.transaction((tx) =>
+      createLineItemProofVersion(tx, {
+        organizationId: orgId,
+        lineItemId,
+        proofFileId: incompleteProofFileId,
+        createdByUserId: userId,
+        internalNotes: "metadata only",
+        sourceAction: "proof_file_generated",
+      }),
+    );
+
+    await db.execute(sql`
+      update line_item_proof_versions
+      set
+        status = 'awaiting_response'::line_item_proof_version_status,
+        sent_to_email = ${"customer@example.com"},
+        sent_at = now()
+      where id = ${createdDraft.id}
+    `);
+
+    const token = await createPortalToken(lineItemId, createdDraft.id);
+
+    const viewRes = await request(app)
+      .get(`/api/portal/proof/${token}`)
+      .expect(200);
+
+    expect(viewRes.body?.data?.attachments?.[0]?.previewStatus).toBe("metadata_only");
+
+    const actionRes = await request(app)
+      .post(`/api/portal/proof/${token}/action`)
+      .send({ action: "approve", comment: "Looks good" })
+      .expect(400);
+
+    expect(actionRes.body).toMatchObject({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
   });
 
   test("blocks customer token actions after manual approval override resolves the proof", async () => {

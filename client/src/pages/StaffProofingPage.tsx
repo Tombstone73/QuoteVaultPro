@@ -68,6 +68,7 @@ import {
 } from "@/lib/proofingNavigation";
 import { uploadAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
 import type {
+  ProofArtifactPreviewStatus,
   ProofQueueStatus,
   ProofVersionHistoryEntry,
   ProofVersionStatus,
@@ -135,7 +136,7 @@ async function readJson<T>(input: RequestInfo | URL, init?: RequestInit): Promis
 
   const json = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const error = new Error(json.error || "Request failed") as Error & { status?: number };
+    const error = new Error(json.message || json.error || "Request failed") as Error & { status?: number };
     error.status = response.status;
     throw error;
   }
@@ -214,8 +215,23 @@ function getStaffFacingStatus(args: {
   row: ProofingQueueRow | undefined;
   detail: ProofingReadModel | undefined;
   displayedVersion: ProofVersionHistoryEntry | null;
+  artifact: ProofingReadModel["currentDisplayedProofArtifact"] | null;
 }): StaffFacingStatus {
-  const { row, detail, displayedVersion } = args;
+  const { row, detail, displayedVersion, artifact } = args;
+
+  if (artifact?.previewStatus === "generation_failed") {
+    return {
+      label: "Preview Generation Failed",
+      badgeVariant: "destructive",
+    };
+  }
+
+  if (artifact?.previewStatus === "missing_preview" || artifact?.previewStatus === "metadata_only") {
+    return {
+      label: "Missing Artwork Preview",
+      badgeVariant: "destructive",
+    };
+  }
 
   if (detail?.approvedProofSource || row?.currentQueueStatus === "approved") {
     return {
@@ -490,6 +506,30 @@ function getPrimaryActionLabel(canSendCurrentVersion: boolean, displayedVersion:
   return `Send Draft v${displayedVersion?.versionNumber ?? "?"}`;
 }
 
+function getProofPreviewIssue(args: {
+  artifact: ProofingReadModel["currentDisplayedProofArtifact"] | null;
+  sourceFileName: string | null | undefined;
+}) {
+  const { artifact, sourceFileName } = args;
+  if (!artifact || artifact.previewStatus === "ready") return null;
+
+  if (artifact.previewStatus === "generation_failed") {
+    return {
+      title: "Preview Generation Failed",
+      description: artifact.previewError || "The system could not generate a preview from the saved artwork.",
+      nextAction: "Upload proof manually or check artwork attachment.",
+      sourceFileName: sourceFileName || null,
+    };
+  }
+
+  return {
+    title: "Missing Artwork Preview",
+    description: artifact.previewError || "This proof does not include an artwork preview.",
+    nextAction: "Upload proof manually or check artwork attachment.",
+    sourceFileName: sourceFileName || null,
+  };
+}
+
 function getVersionStatusLabel(status: ProofVersionStatus | null | undefined) {
   switch (status) {
     case "awaiting_response":
@@ -689,7 +729,7 @@ export default function StaffProofingPage() {
   const previewName = displayedFile?.originalFilename || displayedFile?.fileName || "Proof";
   const previewIsPdf = Boolean(displayedFile && isPdfFile(displayedFile.mimeType || null, previewName));
   const previewIsImage = Boolean(displayedFile?.mimeType?.startsWith("image/"));
-  const staffStatus = getStaffFacingStatus({ row: activeRow ?? undefined, detail, displayedVersion });
+  const staffStatus = getStaffFacingStatus({ row: activeRow ?? undefined, detail, displayedVersion, artifact: currentArtifact });
   const latestCustomerFeedback = detail?.proofDecisionHistory?.[0] ?? null;
   const statusNote = getStatusNote({ detail, displayedVersion });
   const [pdfViewerMode, setPdfViewerMode] = useState<"compact" | "default">("compact");
@@ -710,6 +750,12 @@ export default function StaffProofingPage() {
     return candidates.find((value) => value && `${value}`.trim().length > 0) ?? null;
   }, [detail?.manualApprovalOverrideHistory, selectedOrder?.notesInternal, statusNote]);
   const canSendCurrentVersion = displayedVersion?.status === "draft";
+  const currentProofIssue = getProofPreviewIssue({
+    artifact: currentArtifact,
+    sourceFileName: currentSnapshot?.sourceArtwork?.fileName ?? null,
+  });
+  const canSendDisplayedVersion = canSendCurrentVersion && currentArtifact?.previewStatus === "ready";
+  const canResendDisplayedVersion = displayedVersion?.status === "awaiting_response" && currentArtifact?.previewStatus === "ready";
   const canRecordDecision =
     displayedVersion?.id === detail?.currentActionableProofVersionId && displayedVersion?.status === "awaiting_response";
   const primaryActionLabel = getPrimaryActionLabel(canSendCurrentVersion, displayedVersion);
@@ -1204,6 +1250,22 @@ export default function StaffProofingPage() {
                   </div>
                 </div>
 
+                {currentProofIssue ? (
+                  <div className="border-t border-[#232948] bg-amber-500/10 px-5 py-4 text-amber-100">
+                    <div className="flex items-start gap-3">
+                      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                      <div className="space-y-1.5">
+                        <p className="text-xs font-bold uppercase tracking-[0.14em]">{currentProofIssue.title}</p>
+                        <p className="text-xs text-amber-50/90">{currentProofIssue.description}</p>
+                        {currentProofIssue.sourceFileName ? (
+                          <p className="text-[11px] text-amber-50/80">Source: {currentProofIssue.sourceFileName}</p>
+                        ) : null}
+                        <p className="text-[11px] font-medium text-amber-50">{currentProofIssue.nextAction}</p>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
                 {/* Proof render area — outer div scrolls when content overflows (zoom > fit).
                     No max-width cap here; the proof fills the available pane. */}
                 <div className="flex flex-1 overflow-auto bg-[radial-gradient(circle_at_center,_#141824,_#0b0e14)]">
@@ -1376,11 +1438,16 @@ export default function StaffProofingPage() {
                         setCreateDialogOpen(true);
                       }
                     }}
-                    disabled={!activeRow}
+                    disabled={!activeRow || (canSendCurrentVersion && !canSendDisplayedVersion)}
                   >
                     {canSendCurrentVersion ? <Send className="h-4 w-4" /> : <Upload className="h-4 w-4" />}
                     {primaryActionLabel}
                   </Button>
+                  {canSendCurrentVersion && currentProofIssue ? (
+                    <p className="mt-3 text-center text-[10px] text-amber-300">
+                      This proof does not include an artwork preview and cannot be sent to the customer.
+                    </p>
+                  ) : null}
                   {latestCustomerFeedback ? (
                     <p className="mt-3 text-center text-[10px] text-slate-500">
                       {displayedVersion?.sentAt ? `v${displayedVersion.versionNumber} sent ${formatTimestamp(displayedVersion.sentAt)}` : "Awaiting response"} • Last response: <span className="font-semibold text-rose-400">{getResponseSummary(latestCustomerFeedback)}</span>
@@ -1447,6 +1514,10 @@ export default function StaffProofingPage() {
                     <div>
                       <p className="text-[9px] font-bold uppercase text-slate-500">Artifact</p>
                       <p className="text-xs font-bold text-slate-200">{currentArtifact ? currentArtifact.artifactKind.replace(/_/g, " ") : "Pending"}</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] font-bold uppercase text-slate-500">Preview Status</p>
+                      <p className="text-xs font-bold text-slate-200">{currentArtifact ? currentArtifact.previewStatus.replace(/_/g, " ") : "Pending"}</p>
                     </div>
                     <div>
                       <p className="text-[9px] font-bold uppercase text-slate-500">Preflight</p>
@@ -1861,6 +1932,9 @@ export default function StaffProofingPage() {
                       {displayedFile ? ` — ${displayedFile.originalFilename || displayedFile.fileName || "Proof file"}` : ""}
                     </p>
                     <p className="mt-0.5 text-xs text-muted-foreground capitalize">{displayedVersion.status.replace(/_/g, " ")}</p>
+                    {currentProofIssue ? (
+                      <p className="mt-1 text-xs text-destructive">This proof does not include an artwork preview and cannot be sent to the customer.</p>
+                    ) : null}
                     {downloadUrl && displayedFile ? (
                       <a
                         href={downloadUrl}
@@ -1938,7 +2012,7 @@ export default function StaffProofingPage() {
             {sendDialogMode === "resend" ? (
               <Button
                 onClick={() => resendMutation.mutate()}
-                disabled={resendMutation.isPending || !sendToEmail.trim()}
+                disabled={resendMutation.isPending || !sendToEmail.trim() || !canResendDisplayedVersion}
               >
                 {resendMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
                 Resend notification
@@ -1946,7 +2020,7 @@ export default function StaffProofingPage() {
             ) : (
               <Button
                 onClick={() => sendMutation.mutate()}
-                disabled={sendMutation.isPending || !sendToEmail.trim()}
+                disabled={sendMutation.isPending || !sendToEmail.trim() || !canSendDisplayedVersion}
               >
                 {sendMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
                 Send proof
