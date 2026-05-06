@@ -28,6 +28,7 @@ import {
   createAndSendProofVersion,
   createGeneratedDraftProofVersion,
   createLineItemProofVersion,
+  generateLineItemArtworkPreviewDerivative,
   INCOMPLETE_PROOF_MESSAGE,
   listProofingQueue,
   markProofVersionSent,
@@ -168,6 +169,25 @@ export function registerProofingRoutes(
       const status = error?.statusCode || 500;
       console.error("[Proofing] Error resolving line-item proofing truth:", error);
       return res.status(status).json({ error: error?.message || "Failed to resolve proofing truth" });
+    }
+  });
+
+  app.post("/api/proofing/line-items/:lineItemId/generate-preview", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const result = await db.transaction(async (tx) => generateLineItemArtworkPreviewDerivative(tx, {
+        organizationId,
+        lineItemId: String(req.params.lineItemId),
+      }));
+
+      return res.json({ success: true, data: result, message: result.message });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error generating artwork preview derivative:", error);
+      return res.status(status).json({ success: false, message: error?.message || "Failed to generate artwork preview derivative" });
     }
   });
 

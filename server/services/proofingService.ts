@@ -31,7 +31,11 @@ import {
   quoteAttachmentPages,
 } from "@shared/schema";
 import { generateBasicProofPdfBytes } from "../lib/proofPdf";
+import { assetRepository } from "./assets/AssetRepository";
+import { assetPreviewGenerator } from "./assets/AssetPreviewGenerator";
+import { processPdfAttachmentDerivedData } from "./pdfProcessing";
 import { resolveProofPreviewSource, type ProofPreviewCandidate } from "./proofPreviewResolver";
+import { ensureSharp, generateImageDerivatives, isSupportedImageType } from "./thumbnailGenerator";
 import { storageApplicationService } from "./storage/StorageApplicationService";
 import { transitionLineItemWorkflowState } from "./lineItemWorkflowService";
 
@@ -68,6 +72,8 @@ type ArtworkProofSource = {
   checksum: string | null;
   thumbKey: string | null;
   previewKey: string | null;
+  thumbStatus?: string | null;
+  thumbError?: string | null;
   thumbnailRelativePath: string | null;
   thumbnailGeneratedAt: Date | null;
   thumbnailUrl: string | null;
@@ -184,12 +190,67 @@ type AutoSyncProofResult =
   | { status: "not_required" | "no_source" | "already_current" }
   | { status: "created" | "refreshed" | "invalidated"; proofVersionId?: string | null; proofFileId?: string | null; toState?: string | null };
 
-function throwProofingConflict(message: string) {
+type PreviewDerivativeGenerationResult = {
+  sourceType: ArtworkProofSource["sourceType"];
+  sourceId: string;
+  derivativeStatus: "ready" | "pending" | "failed";
+  previewStatus: ProofArtifactPreviewStatus;
+  sourceFileName: string;
+  message: string;
+};
+
+function throwProofingConflict(message: string): never {
   throw Object.assign(new Error(message), { statusCode: 409 });
 }
 
-function throwProofingBadRequest(message: string) {
+function throwProofingBadRequest(message: string): never {
   throw Object.assign(new Error(message), { statusCode: 400 });
+}
+
+function isPdfCompatibleArtworkMime(mimeType: string | null | undefined) {
+  const normalized = String(mimeType || "").toLowerCase();
+  return normalized.includes("pdf") || /(illustrator|postscript)/i.test(normalized);
+}
+
+function sourceHasUsablePreviewDerivative(source: ArtworkProofSource | null) {
+  if (!source) return false;
+  return Boolean(
+    source.previewKey ||
+    source.thumbKey ||
+    source.thumbnailUrl ||
+    source.pagePreviewFileRecordId ||
+    source.pageThumbFileRecordId,
+  );
+}
+
+function buildPreviewGenerationUnavailableMessage(source: ArtworkProofSource) {
+  if (isPdfCompatibleArtworkMime(source.mimeType)) {
+    return "Preview generation for PDF artwork is not available in this runtime.";
+  }
+
+  return "Preview generation failed. Upload a manual proof or retry once image preview generation is available.";
+}
+
+function buildAttachmentPreviewGenerationFailureMessage(source: ArtworkProofSource) {
+  const rawError = String(source.thumbError || "").trim();
+  if (/dependencies unavailable|pdfjs unavailable|canvas unavailable|sharp unavailable/i.test(rawError)) {
+    return buildPreviewGenerationUnavailableMessage(source);
+  }
+  if (rawError.length > 0) {
+    return `Preview generation failed. ${rawError}`;
+  }
+  return "Preview generation failed. Upload a manual proof or check the artwork attachment.";
+}
+
+function buildAssetPreviewGenerationFailureMessage(source: ArtworkProofSource) {
+  const rawError = String(source.assetPreviewError || "").trim();
+  if (/unsupported|unavailable|missing/i.test(rawError)) {
+    return buildPreviewGenerationUnavailableMessage(source);
+  }
+  if (rawError.length > 0) {
+    return `Preview generation failed. ${rawError}`;
+  }
+  return "Preview generation failed. Upload a manual proof or check the linked artwork asset.";
 }
 
 function normalizeProofingWriteError(error: any): never {
@@ -1158,6 +1219,8 @@ async function loadLatestArtworkProofSource(tx: any, args: { organizationId: str
       checksum: orderAttachments.checksum,
       thumbKey: orderAttachments.thumbKey,
       previewKey: orderAttachments.previewKey,
+      thumbStatus: orderAttachments.thumbStatus,
+      thumbError: orderAttachments.thumbError,
       thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
       thumbnailGeneratedAt: orderAttachments.thumbnailGeneratedAt,
       thumbnailUrl: orderAttachments.thumbnailUrl,
@@ -1214,6 +1277,8 @@ async function loadLatestArtworkProofSource(tx: any, args: { organizationId: str
       checksum: attachmentSource.checksum ?? null,
       thumbKey: attachmentSource.thumbKey ?? null,
       previewKey: attachmentSource.previewKey ?? null,
+      thumbStatus: attachmentSource.thumbStatus ?? null,
+      thumbError: attachmentSource.thumbError ?? null,
       thumbnailRelativePath: attachmentSource.thumbnailRelativePath ?? null,
       thumbnailGeneratedAt: attachmentSource.thumbnailGeneratedAt ?? null,
       thumbnailUrl: attachmentSource.thumbnailUrl ?? null,
@@ -1294,6 +1359,8 @@ async function loadLatestArtworkProofSource(tx: any, args: { organizationId: str
     checksum: assetSource.checksum ?? null,
     thumbKey: assetSource.thumbKey ?? null,
     previewKey: assetSource.previewKey ?? null,
+    thumbStatus: null,
+    thumbError: null,
     thumbnailRelativePath: assetSource.thumbnailRelativePath ?? null,
     thumbnailGeneratedAt: assetSource.thumbnailGeneratedAt ?? null,
     thumbnailUrl: assetSource.thumbnailUrl ?? null,
@@ -1303,6 +1370,119 @@ async function loadLatestArtworkProofSource(tx: any, args: { organizationId: str
     assetPreviewStatus: assetSource.assetPreviewStatus ?? null,
     assetPreviewError: assetSource.assetPreviewError ?? null,
   };
+}
+
+export async function generateLineItemArtworkPreviewDerivative(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+}): Promise<PreviewDerivativeGenerationResult> {
+  const source = await loadLatestArtworkProofSource(tx, args);
+
+  if (!source) {
+    throwProofingBadRequest("No artwork file is attached to this line item.");
+  }
+
+  if (sourceHasUsablePreviewDerivative(source)) {
+    return {
+      sourceType: source.sourceType,
+      sourceId: source.sourceId,
+      derivativeStatus: "ready",
+      previewStatus: "ready",
+      sourceFileName: source.fileName,
+      message: "Preview already exists.",
+    };
+  }
+
+  if (source.sourceType === "asset") {
+    const asset = await assetRepository.getAssetById(args.organizationId, source.sourceId);
+    if (!asset) {
+      throwProofingBadRequest("No artwork file is attached to this line item.");
+    }
+
+    await assetPreviewGenerator.generatePreviews(asset);
+
+    const refreshedSource = await loadLatestArtworkProofSource(tx, args);
+    if (sourceHasUsablePreviewDerivative(refreshedSource)) {
+      return {
+        sourceType: source.sourceType,
+        sourceId: source.sourceId,
+        derivativeStatus: "ready",
+        previewStatus: "ready",
+        sourceFileName: refreshedSource?.fileName || source.fileName,
+        message: "Preview generated successfully.",
+      };
+    }
+
+    if (refreshedSource?.assetPreviewStatus === "pending") {
+      return {
+        sourceType: source.sourceType,
+        sourceId: source.sourceId,
+        derivativeStatus: "pending",
+        previewStatus: "missing_preview",
+        sourceFileName: refreshedSource.fileName,
+        message: "Preview generation started. Refresh proofing in a moment to continue.",
+      };
+    }
+
+    throwProofingConflict(buildAssetPreviewGenerationFailureMessage(refreshedSource || source));
+  }
+
+  const storageKey = source.relativePath || source.fileUrl || "";
+  const storageProvider = source.storageProvider || "local";
+  const fileName = source.originalFilename || source.fileName || null;
+
+  if (isPdfCompatibleArtworkMime(source.mimeType)) {
+    await processPdfAttachmentDerivedData({
+      orgId: args.organizationId,
+      attachmentId: source.sourceId,
+      storageKey,
+      storageProvider,
+      mimeType: source.mimeType,
+      attachmentType: "order",
+    });
+  } else if (isSupportedImageType(source.mimeType, fileName)) {
+    const sharpReady = await ensureSharp();
+    if (!sharpReady) {
+      throwProofingConflict(buildPreviewGenerationUnavailableMessage(source));
+    }
+
+    await generateImageDerivatives(
+      source.sourceId,
+      "order",
+      storageKey,
+      source.mimeType,
+      storageProvider,
+      args.organizationId,
+      fileName,
+    );
+  } else {
+    throwProofingConflict(`Preview generation failed. Unsupported artwork type: ${source.fileName}.`);
+  }
+
+  const refreshedSource = await loadLatestArtworkProofSource(tx, args);
+  if (sourceHasUsablePreviewDerivative(refreshedSource)) {
+    return {
+      sourceType: source.sourceType,
+      sourceId: source.sourceId,
+      derivativeStatus: "ready",
+      previewStatus: "ready",
+      sourceFileName: refreshedSource?.fileName || source.fileName,
+      message: "Preview generated successfully.",
+    };
+  }
+
+  if (refreshedSource?.thumbStatus === "thumb_pending") {
+    return {
+      sourceType: source.sourceType,
+      sourceId: source.sourceId,
+      derivativeStatus: "pending",
+      previewStatus: "missing_preview",
+      sourceFileName: refreshedSource.fileName,
+      message: "Preview generation started. Refresh proofing in a moment to continue.",
+    };
+  }
+
+  throwProofingConflict(buildAttachmentPreviewGenerationFailureMessage(refreshedSource || source));
 }
 
 async function ensureProofAttachmentForSource(tx: any, args: {
