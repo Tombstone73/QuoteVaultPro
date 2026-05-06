@@ -6,6 +6,8 @@ type BasicProofPreview = {
   fileName: string;
 };
 
+export type BasicProofRenderStatus = "ready" | "metadata_only";
+
 type BasicProofPdfArgs = {
   orderNumber: string | null;
   lineItemLabel: string;
@@ -55,7 +57,7 @@ function drawWrappedText(args: {
   return cursorY;
 }
 
-export async function generateBasicProofPdfBytes(args: BasicProofPdfArgs): Promise<Uint8Array> {
+export async function generateBasicProofPdfBytes(args: BasicProofPdfArgs): Promise<{ bytes: Uint8Array; renderStatus: BasicProofRenderStatus }> {
   const pdfDoc = await PDFDocument.create();
   const page = pdfDoc.addPage([612, 792]);
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -95,21 +97,32 @@ export async function generateBasicProofPdfBytes(args: BasicProofPdfArgs): Promi
   if (args.preview?.bytes?.length) {
     try {
       const mime = String(args.preview.mimeType || "").toLowerCase();
-      const image = mime.includes("png")
-        ? await pdfDoc.embedPng(args.preview.bytes)
-        : mime.includes("jpeg") || mime.includes("jpg")
-          ? await pdfDoc.embedJpg(args.preview.bytes)
-          : null;
-
-      if (image) {
-        const dims = image.scale(1);
-        const scale = Math.min((previewWidth - 24) / dims.width, (previewHeight - 24) / dims.height);
-        const drawWidth = dims.width * scale;
-        const drawHeight = dims.height * scale;
+      if (mime.includes("application/pdf")) {
+        const [embeddedPage] = await pdfDoc.embedPdf(args.preview.bytes, [0]);
+        const scale = Math.min((previewWidth - 24) / embeddedPage.width, (previewHeight - 24) / embeddedPage.height);
+        const drawWidth = embeddedPage.width * scale;
+        const drawHeight = embeddedPage.height * scale;
         const drawX = margin + (previewWidth - drawWidth) / 2;
         const drawY = pageHeight - 132 - previewHeight + (previewHeight - drawHeight) / 2;
-        page.drawImage(image, { x: drawX, y: drawY, width: drawWidth, height: drawHeight });
+        page.drawPage(embeddedPage, { x: drawX, y: drawY, xScale: scale, yScale: scale });
         previewRendered = true;
+      } else {
+        const image = mime.includes("png")
+          ? await pdfDoc.embedPng(args.preview.bytes)
+          : mime.includes("jpeg") || mime.includes("jpg")
+            ? await pdfDoc.embedJpg(args.preview.bytes)
+            : null;
+
+        if (image) {
+          const dims = image.scale(1);
+          const scale = Math.min((previewWidth - 24) / dims.width, (previewHeight - 24) / dims.height);
+          const drawWidth = dims.width * scale;
+          const drawHeight = dims.height * scale;
+          const drawX = margin + (previewWidth - drawWidth) / 2;
+          const drawY = pageHeight - 132 - previewHeight + (previewHeight - drawHeight) / 2;
+          page.drawImage(image, { x: drawX, y: drawY, width: drawWidth, height: drawHeight });
+          previewRendered = true;
+        }
       }
     } catch {
       previewRendered = false;
@@ -189,5 +202,8 @@ export async function generateBasicProofPdfBytes(args: BasicProofPdfArgs): Promi
     color: rgb(0.43, 0.48, 0.58),
   });
 
-  return pdfDoc.save({ useObjectStreams: false });
+  return {
+    bytes: await pdfDoc.save({ useObjectStreams: false }),
+    renderStatus: previewRendered ? "ready" : "metadata_only",
+  };
 }

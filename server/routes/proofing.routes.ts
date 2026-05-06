@@ -28,6 +28,7 @@ import {
   createAndSendProofVersion,
   createGeneratedDraftProofVersion,
   createLineItemProofVersion,
+  INCOMPLETE_PROOF_MESSAGE,
   listProofingQueue,
   markProofVersionSent,
   recordManualProofApprovalOverride,
@@ -382,6 +383,9 @@ export function registerProofingRoutes(
     } catch (error: any) {
       const status = error?.statusCode || 500;
       console.error("[Proofing] Error creating and sending proof:", error);
+      if (status === 400 && error?.message === INCOMPLETE_PROOF_MESSAGE) {
+        return res.status(400).json({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
+      }
       return res.status(status).json({ error: error?.message || "Failed to create and send proof" });
     }
   });
@@ -494,6 +498,9 @@ export function registerProofingRoutes(
     } catch (error: any) {
       const status = error?.statusCode || 500;
       console.error("[Proofing] Error sending proof version for review:", error);
+      if (status === 400 && error?.message === INCOMPLETE_PROOF_MESSAGE) {
+        return res.status(400).json({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
+      }
       return res.status(status).json({ error: error?.message || "Failed to send proof version for review" });
     }
   });
@@ -605,6 +612,9 @@ export function registerProofingRoutes(
     } catch (error: any) {
       const status = error?.statusCode || 500;
       console.error("[Proofing] Error resending proof notification:", error);
+      if (status === 400 && error?.message === INCOMPLETE_PROOF_MESSAGE) {
+        return res.status(400).json({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
+      }
       return res.status(status).json({ error: error?.message || "Failed to resend proof notification" });
     }
   });

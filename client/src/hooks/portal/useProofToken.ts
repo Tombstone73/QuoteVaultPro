@@ -13,6 +13,8 @@ export type PortalProofAttachment = {
   originalFilename: string | null;
   mimeType: string | null;
   createdAt: string;
+  previewStatus: "ready" | "missing_preview" | "generation_failed" | "metadata_only";
+  previewError: string | null;
   originalUrl: string | null;
   downloadUrl: string | null;
   previewUrl: string | null;

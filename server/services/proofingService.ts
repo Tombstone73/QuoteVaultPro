@@ -7,6 +7,7 @@ import type {
   ManualApprovalOverrideHistoryEntry,
   ProofApprovalSource,
   ProofArtifactSummary,
+  ProofArtifactPreviewStatus,
   ProofDecisionHistoryEntry,
   ProofInputSnapshot,
   ProofQueueSlice,
@@ -30,6 +31,7 @@ import {
   orderLineItems,
   orders,
   proofAccessTokens,
+  quoteAttachmentPages,
 } from "@shared/schema";
 import { generateBasicProofPdfBytes } from "../lib/proofPdf";
 import { SupabaseStorageService } from "../supabaseStorage";
@@ -43,6 +45,9 @@ type ProofSyncReason = "order_saved" | "line_item_saved" | "artwork_saved" | "ar
 type ProofSendMode = "generated" | "uploaded";
 
 const GENERATED_PROOF_DESCRIPTION_MARKER = "[proof-artifact:generated-basic]";
+const GENERATED_PROOF_PREVIEW_READY_MARKER = "[proof-preview:ready]";
+const GENERATED_PROOF_METADATA_ONLY_MARKER = "[proof-preview:metadata-only]";
+export const INCOMPLETE_PROOF_MESSAGE = "This proof does not include an artwork preview and cannot be sent to the customer.";
 
 type ArtworkProofSource = {
   sourceType: "attachment" | "asset";
@@ -70,6 +75,8 @@ type ArtworkProofSource = {
   uploadedByUserId: string | null;
   uploadedByName: string | null;
   updatedAt: Date | null;
+  assetPreviewStatus?: "pending" | "ready" | "failed" | null;
+  assetPreviewError?: string | null;
 };
 
 type LoadedProofSnapshotLineItem = {
@@ -104,7 +111,56 @@ type ProofArtifactAttachmentRow = {
   mimeType: string | null;
   description: string | null;
   fileRecordId: string | null;
+  fileUrl?: string | null;
+  thumbKey: string | null;
+  previewKey: string | null;
+  thumbnailUrl: string | null;
+  pagePreviewCount: number;
+  pageThumbCount: number;
 };
+
+type ResolvedProofPreview = {
+  preview: { bytes: Buffer; mimeType: string | null; fileName: string } | null;
+  previewStatus: ProofArtifactPreviewStatus;
+  previewError: string | null;
+};
+
+function proofArtifactIsCustomerSendable(artifact: ProofArtifactSummary | null | undefined) {
+  return artifact?.previewStatus === "ready";
+}
+
+function parseGeneratedPreviewStatusFromDescription(description: string | null | undefined): ProofArtifactPreviewStatus | null {
+  const normalized = String(description || "");
+  if (normalized.includes(GENERATED_PROOF_PREVIEW_READY_MARKER)) return "ready";
+  if (normalized.includes(GENERATED_PROOF_METADATA_ONLY_MARKER)) return "metadata_only";
+  return null;
+}
+
+function derivePreviewStatusFromSource(source: ArtworkProofSource | null): { status: ProofArtifactPreviewStatus; error: string | null } {
+  if (!source) {
+    return { status: "missing_preview", error: "No artwork attachment is available for preview generation." };
+  }
+
+  const mime = String(source.mimeType || "").toLowerCase();
+  const hasDerivativePreview = Boolean(source.previewKey || source.thumbKey || source.thumbnailUrl);
+
+  if (source.sourceType === "asset" && source.assetPreviewStatus === "failed") {
+    return { status: "generation_failed", error: source.assetPreviewError?.trim() || "Preview generation failed for the linked artwork asset." };
+  }
+
+  if (hasDerivativePreview) {
+    return { status: "ready", error: null };
+  }
+
+  if (mime.startsWith("image/png") || mime.startsWith("image/jpeg") || mime.startsWith("image/jpg") || mime === "application/pdf") {
+    if (source.sourceType === "asset" && source.assetPreviewStatus === "pending") {
+      return { status: "missing_preview", error: "Artwork preview has not finished generating yet." };
+    }
+    return { status: "missing_preview", error: "Artwork preview is not available for the selected source file." };
+  }
+
+  return { status: "missing_preview", error: `Unsupported artwork type${source.fileName ? `: ${source.fileName}` : ""}.` };
+}
 
 type AutoSyncProofResult =
   | { status: "not_required" | "no_source" | "already_current" }
@@ -513,6 +569,20 @@ async function loadProofAttachment(tx: any, args: { organizationId: string; atta
       mimeType: orderAttachments.mimeType,
       description: orderAttachments.description,
       fileRecordId: orderAttachments.fileRecordId,
+      fileUrl: orderAttachments.fileUrl,
+      thumbKey: orderAttachments.thumbKey,
+      previewKey: orderAttachments.previewKey,
+      thumbnailUrl: orderAttachments.thumbnailUrl,
+      pagePreviewCount: sql<number>`(
+        select count(*)::int from ${quoteAttachmentPages}
+        where ${quoteAttachmentPages.attachmentId} = ${orderAttachments.id}
+          and ${quoteAttachmentPages.previewFileRecordId} is not null
+      )`,
+      pageThumbCount: sql<number>`(
+        select count(*)::int from ${quoteAttachmentPages}
+        where ${quoteAttachmentPages.attachmentId} = ${orderAttachments.id}
+          and ${quoteAttachmentPages.thumbFileRecordId} is not null
+      )`,
     })
     .from(orderAttachments)
     .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
@@ -526,7 +596,7 @@ async function loadProofAttachment(tx: any, args: { organizationId: string; atta
   return attachment;
 }
 
-function buildProofArtifactSummary(args: {
+export function buildProofArtifactSummary(args: {
   attachment: ProofArtifactAttachmentRow;
   snapshot: ProofInputSnapshot | null;
 }): ProofArtifactSummary {
@@ -544,12 +614,44 @@ function buildProofArtifactSummary(args: {
     artifactKind = "promoted_artwork";
   }
 
+  const explicitGeneratedPreviewStatus = parseGeneratedPreviewStatusFromDescription(args.attachment.description);
+  const mime = String(args.attachment.mimeType || "").toLowerCase();
+  const isImage = mime.startsWith("image/");
+  const isPdf = mime === "application/pdf";
+  const hasDirectFileUrl = Boolean(args.attachment.fileUrl);
+  const hasDerivedPreview = Boolean(
+    args.attachment.previewKey ||
+    args.attachment.thumbKey ||
+    args.attachment.thumbnailUrl ||
+    args.attachment.pagePreviewCount > 0 ||
+    args.attachment.pageThumbCount > 0
+  );
+
+  let previewStatus: ProofArtifactPreviewStatus;
+  let previewError: string | null = null;
+
+  if (artifactKind === "generated") {
+    previewStatus = explicitGeneratedPreviewStatus ?? "metadata_only";
+    if (previewStatus !== "ready") {
+      previewError = "Generated proof does not contain an artwork preview.";
+    }
+  } else if (hasDerivedPreview || isImage || ((isImage || isPdf) && hasDirectFileUrl)) {
+    previewStatus = "ready";
+  } else if (isPdf && args.attachment.fileRecordId) {
+    previewStatus = "ready";
+  } else {
+    previewStatus = "missing_preview";
+    previewError = "No previewable proof content is available for this attachment.";
+  }
+
   return {
     attachmentId: args.attachment.id,
     artifactKind,
     fileName: args.attachment.fileName,
     mimeType: args.attachment.mimeType ?? null,
     generatedFromSnapshot: artifactKind === "generated",
+    previewStatus,
+    previewError,
   };
 }
 
@@ -597,33 +699,44 @@ async function downloadStorageKeyBuffer(fileKey: string): Promise<Buffer | null>
   }
 }
 
-async function tryLoadProofPreview(source: ArtworkProofSource | null): Promise<{ bytes: Buffer; mimeType: string | null; fileName: string } | null> {
-  if (!source) return null;
+async function resolveGeneratedProofPreview(source: ArtworkProofSource | null): Promise<ResolvedProofPreview> {
+  const sourceAssessment = derivePreviewStatusFromSource(source);
+  if (!source) {
+    return { preview: null, previewStatus: sourceAssessment.status, previewError: sourceAssessment.error };
+  }
 
   if (source.previewKey || source.thumbKey) {
     const previewBytes = await downloadStorageKeyBuffer(source.previewKey || source.thumbKey || "");
     if (previewBytes?.length) {
       return {
-        bytes: previewBytes,
-        mimeType: "image/jpeg",
-        fileName: source.originalFilename || source.fileName,
+        preview: {
+          bytes: previewBytes,
+          mimeType: "image/jpeg",
+          fileName: source.originalFilename || source.fileName,
+        },
+        previewStatus: "ready",
+        previewError: null,
       };
     }
   }
 
   const mime = String(source.mimeType || "").toLowerCase();
-  if (source.fileRecordId && (mime.startsWith("image/png") || mime.startsWith("image/jpeg") || mime.startsWith("image/jpg"))) {
+  if (source.fileRecordId && (mime.startsWith("image/png") || mime.startsWith("image/jpeg") || mime.startsWith("image/jpg") || mime === "application/pdf")) {
     const buffer = await downloadCanonicalFileBuffer(source.fileRecordId);
     if (buffer?.length) {
       return {
-        bytes: buffer,
-        mimeType: source.mimeType ?? null,
-        fileName: source.originalFilename || source.fileName,
+        preview: {
+          bytes: buffer,
+          mimeType: source.mimeType ?? null,
+          fileName: source.originalFilename || source.fileName,
+        },
+        previewStatus: "ready",
+        previewError: null,
       };
     }
   }
 
-  return null;
+  return { preview: null, previewStatus: sourceAssessment.status, previewError: sourceAssessment.error };
 }
 
 async function createGeneratedProofAttachment(tx: any, args: {
@@ -632,11 +745,11 @@ async function createGeneratedProofAttachment(tx: any, args: {
   snapshot: ProofInputSnapshot;
   source: ArtworkProofSource | null;
 }): Promise<ProofArtifactSummary> {
-  const preview = await tryLoadProofPreview(args.source);
+  const resolvedPreview = await resolveGeneratedProofPreview(args.source);
   const timestampToken = new Date().toISOString().replace(/[:.]/g, "-");
   const safeLineItem = args.snapshot.lineItemLabel.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "line-item";
   const fileName = `${safeLineItem}-proof-${timestampToken}.pdf`;
-  const pdfBytes = await generateBasicProofPdfBytes({
+  const pdfResult = await generateBasicProofPdfBytes({
     orderNumber: args.snapshot.orderNumber,
     lineItemLabel: args.snapshot.lineItemLabel,
     displaySizeLabel: args.snapshot.displaySizeLabel,
@@ -645,8 +758,11 @@ async function createGeneratedProofAttachment(tx: any, args: {
     preflightStatus: args.snapshot.preflightStatus,
     sourceFileName: args.snapshot.sourceArtwork?.fileName ?? null,
     generatedAt: new Date(),
-    preview,
+    preview: resolvedPreview.preview,
   });
+  const descriptionPreviewMarker = pdfResult.renderStatus === "ready"
+    ? GENERATED_PROOF_PREVIEW_READY_MARKER
+    : GENERATED_PROOF_METADATA_ONLY_MARKER;
 
   const stored = await storageApplicationService.finalizeUpload({
     organizationId: args.organizationId,
@@ -659,7 +775,7 @@ async function createGeneratedProofAttachment(tx: any, args: {
     },
     source: {
       kind: "buffer",
-      buffer: Buffer.from(pdfBytes),
+      buffer: Buffer.from(pdfResult.bytes),
       originalFilename: fileName,
       mimeType: "application/pdf",
     },
@@ -675,7 +791,7 @@ async function createGeneratedProofAttachment(tx: any, args: {
           fileUrl: storedResult.legacyFileUrl,
           fileSize: storedResult.storedObject.sizeBytes,
           mimeType: "application/pdf",
-          description: `${GENERATED_PROOF_DESCRIPTION_MARKER} Generated basic proof from persisted line-item truth.`,
+          description: `${GENERATED_PROOF_DESCRIPTION_MARKER} ${descriptionPreviewMarker} Generated basic proof from persisted line-item truth.`,
           originalFilename: storedResult.storedObject.originalFilename,
           storedFilename: storedResult.storedObject.storedFilename,
           relativePath: storedResult.legacyRelativePath,
@@ -755,6 +871,10 @@ export async function createAndSendProofVersion(tx: any, args: {
       attachmentId: resolvedProofFileId,
     });
     artifact = buildProofArtifactSummary({ attachment, snapshot });
+  }
+
+  if (!proofArtifactIsCustomerSendable(artifact)) {
+    throw Object.assign(new Error(INCOMPLETE_PROOF_MESSAGE), { statusCode: 400 });
   }
 
   if (!proofFileId) {
@@ -865,6 +985,21 @@ export async function resendProofVersion(tx: any, args: {
       new Error("Only awaiting_response proof versions can be resent"),
       { statusCode: 409 },
     );
+  }
+
+  const artifact = buildProofArtifactSummary({
+    attachment: await loadProofAttachment(tx, {
+      organizationId: args.organizationId,
+      attachmentId: proofVersion.proofFileId,
+    }),
+    snapshot: await buildProofInputSnapshot(tx, {
+      organizationId: args.organizationId,
+      lineItemId: proofVersion.lineItemId,
+    }),
+  });
+
+  if (!proofArtifactIsCustomerSendable(artifact)) {
+    throw Object.assign(new Error(INCOMPLETE_PROOF_MESSAGE), { statusCode: 400 });
   }
 
   // Revoke all existing active tokens for this proof version so old links stop working.
@@ -1012,6 +1147,8 @@ async function loadLatestArtworkProofSource(tx: any, args: { organizationId: str
       uploadedByUserId: sql<string | null>`null`,
       uploadedByName: sql<string | null>`null`,
       updatedAt: assets.updatedAt,
+      assetPreviewStatus: assets.previewStatus,
+      assetPreviewError: assets.previewError,
       role: assetLinks.role,
     })
     .from(assetLinks)
@@ -1059,6 +1196,8 @@ async function loadLatestArtworkProofSource(tx: any, args: { organizationId: str
     uploadedByUserId: assetSource.uploadedByUserId ?? null,
     uploadedByName: assetSource.uploadedByName ?? null,
     updatedAt: assetSource.updatedAt ?? null,
+    assetPreviewStatus: assetSource.assetPreviewStatus ?? null,
+    assetPreviewError: assetSource.assetPreviewError ?? null,
   };
 }
 
@@ -1884,6 +2023,21 @@ export async function markProofVersionSent(tx: any, args: {
 
     if (blockingVersion) {
       throwProofingConflict("Another proof version is already awaiting response");
+    }
+
+    const artifact = buildProofArtifactSummary({
+      attachment: await loadProofAttachment(tx, {
+        organizationId: args.organizationId,
+        attachmentId: proofVersion.proofFileId,
+      }),
+      snapshot: await buildProofInputSnapshot(tx, {
+        organizationId: args.organizationId,
+        lineItemId: proofVersion.lineItemId,
+      }),
+    });
+
+    if (!proofArtifactIsCustomerSendable(artifact)) {
+      throw Object.assign(new Error(INCOMPLETE_PROOF_MESSAGE), { statusCode: 400 });
     }
 
     await tx

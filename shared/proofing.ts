@@ -28,6 +28,13 @@ export const proofArtifactKindValues = [
   "promoted_artwork",
 ] as const;
 
+export const proofArtifactPreviewStatusValues = [
+  "ready",
+  "missing_preview",
+  "generation_failed",
+  "metadata_only",
+] as const;
+
 export const proofPreflightStatusValues = [
   "not_run",
   "queued",
@@ -60,6 +67,7 @@ export const proofVersionStatusSchema = z.enum(proofVersionStatusValues);
 export const proofDecisionSchema = z.enum(proofDecisionValues);
 export const proofApprovalSourceSchema = z.enum(proofApprovalSourceValues);
 export const proofArtifactKindSchema = z.enum(proofArtifactKindValues);
+export const proofArtifactPreviewStatusSchema = z.enum(proofArtifactPreviewStatusValues);
 export const proofPreflightStatusSchema = z.enum(proofPreflightStatusValues);
 export const proofQueueSliceSchema = z.enum(proofQueueSliceValues);
 export const proofQueueStatusSchema = z.enum(proofQueueStatusValues);
@@ -97,6 +105,8 @@ export const proofArtifactSummarySchema = z.object({
   fileName: z.string(),
   mimeType: z.string().nullable(),
   generatedFromSnapshot: z.boolean(),
+  previewStatus: proofArtifactPreviewStatusSchema,
+  previewError: z.string().nullable(),
 });
 
 export const proofVersionHistoryEntrySchema = z.object({
@@ -202,6 +212,7 @@ export type ProofVersionStatus = z.infer<typeof proofVersionStatusSchema>;
 export type ProofDecision = z.infer<typeof proofDecisionSchema>;
 export type ProofApprovalSource = z.infer<typeof proofApprovalSourceSchema>;
 export type ProofArtifactKind = z.infer<typeof proofArtifactKindSchema>;
+export type ProofArtifactPreviewStatus = z.infer<typeof proofArtifactPreviewStatusSchema>;
 export type ProofPreflightStatus = z.infer<typeof proofPreflightStatusSchema>;
 export type ProofQueueSlice = z.infer<typeof proofQueueSliceSchema>;
 export type ProofQueueStatus = z.infer<typeof proofQueueStatusSchema>;

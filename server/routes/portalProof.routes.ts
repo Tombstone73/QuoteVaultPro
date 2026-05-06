@@ -14,11 +14,11 @@
 import type { Express } from "express";
 import { db } from "../db";
 import { auditLogs, orderAttachments, lineItemProofVersions, quoteAttachmentPages } from "@shared/schema";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 import { validateProofToken } from "../services/proofAccessTokenService";
-import { buildProofInputSnapshot, recordProofResponse } from "../services/proofingService";
+import { buildProofArtifactSummary, buildProofInputSnapshot, INCOMPLETE_PROOF_MESSAGE, recordProofResponse } from "../services/proofingService";
 import { enrichAttachmentWithUrls, resolveOriginalFileAccess, resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 import { isSupabaseConfigured, SupabaseStorageService } from "../supabaseStorage";
 
@@ -36,6 +36,7 @@ export function registerPortalProofRoutes(app: Express): void {
           fileName: orderAttachments.fileName,
           originalFilename: orderAttachments.originalFilename,
           mimeType: orderAttachments.mimeType,
+          description: orderAttachments.description,
           fileUrl: orderAttachments.fileUrl,
           thumbKey: orderAttachments.thumbKey,
           previewKey: orderAttachments.previewKey,
@@ -110,12 +111,36 @@ export function registerPortalProofRoutes(app: Express): void {
           },
           lineItemDisplay,
           attachments: [
-            {
+            (() => {
+              const artifactSummary = buildProofArtifactSummary({
+                attachment: {
+                  id: enrichedAttachment.id,
+                  fileName: enrichedAttachment.fileName,
+                  mimeType: enrichedAttachment.mimeType ?? null,
+                  description: attachment.description ?? null,
+                  fileRecordId: enrichedAttachment.fileRecordId ?? null,
+                  fileUrl: enrichedAttachment.fileUrl ?? null,
+                  thumbKey: enrichedAttachment.thumbKey ?? null,
+                  previewKey: enrichedAttachment.previewKey ?? null,
+                  thumbnailUrl: enrichedAttachment.thumbnailUrl ?? null,
+                  pagePreviewCount: Array.isArray(enrichedAttachment.pages)
+                    ? enrichedAttachment.pages.filter((page: any) => Boolean(page.previewUrl)).length
+                    : 0,
+                  pageThumbCount: Array.isArray(enrichedAttachment.pages)
+                    ? enrichedAttachment.pages.filter((page: any) => Boolean(page.thumbUrl)).length
+                    : 0,
+                },
+                snapshot: null,
+              });
+
+              return {
               id: enrichedAttachment.id,
               fileName: enrichedAttachment.fileName,
               originalFilename: enrichedAttachment.originalFilename ?? null,
               mimeType: enrichedAttachment.mimeType ?? null,
               createdAt: new Date(enrichedAttachment.createdAt).toISOString(),
+              previewStatus: artifactSummary.previewStatus,
+              previewError: artifactSummary.previewError,
               originalUrl: enrichedAttachment.originalUrl ? fileBase : null,
               downloadUrl: enrichedAttachment.downloadUrl ? `${fileBase}?download=1&filename=${displayFilename}` : null,
               previewUrl: enrichedAttachment.previewUrl ? `${fileBase}?variant=preview` : null,
@@ -127,7 +152,8 @@ export function registerPortalProofRoutes(app: Express): void {
                     previewUrl: page.previewUrl ? `${fileBase}?variant=page-preview&pageIndex=${page.pageIndex}` : null,
                   }))
                 : [],
-            },
+              };
+            })(),
           ],
           status: validation.currentApprovalState.status,
           proofText: {
@@ -257,6 +283,40 @@ export function registerPortalProofRoutes(app: Express): void {
           throw Object.assign(new Error("This proof has already been resolved"), { statusCode: 409 });
         }
 
+        const [attachment] = await tx
+          .select({
+            id: orderAttachments.id,
+            fileName: orderAttachments.fileName,
+            mimeType: orderAttachments.mimeType,
+            description: orderAttachments.description,
+            fileRecordId: orderAttachments.fileRecordId,
+            fileUrl: orderAttachments.fileUrl,
+            thumbKey: orderAttachments.thumbKey,
+            previewKey: orderAttachments.previewKey,
+            thumbnailUrl: orderAttachments.thumbnailUrl,
+            pagePreviewCount: sql<number>`(
+              select count(*)::int from ${quoteAttachmentPages}
+              where ${quoteAttachmentPages.attachmentId} = ${orderAttachments.id}
+                and ${quoteAttachmentPages.previewFileRecordId} is not null
+            )`,
+            pageThumbCount: sql<number>`(
+              select count(*)::int from ${quoteAttachmentPages}
+              where ${quoteAttachmentPages.attachmentId} = ${orderAttachments.id}
+                and ${quoteAttachmentPages.thumbFileRecordId} is not null
+            )`,
+          })
+          .from(orderAttachments)
+          .where(eq(orderAttachments.id, validation.proofVersion.proofFileId))
+          .limit(1);
+
+        const artifactSummary = attachment
+          ? buildProofArtifactSummary({ attachment, snapshot: null })
+          : null;
+
+        if (!artifactSummary || artifactSummary.previewStatus !== "ready") {
+          throw Object.assign(new Error(INCOMPLETE_PROOF_MESSAGE), { statusCode: 400 });
+        }
+
         const decision = parsed.data.action === "approve"
           ? "approved"
           : parsed.data.action === "reject"
@@ -307,6 +367,9 @@ export function registerPortalProofRoutes(app: Express): void {
     } catch (error: any) {
       const status = error?.statusCode || 500;
       console.error("[PortalProof] Error recording customer proof action:", error);
+      if (status === 400 && error?.message === INCOMPLETE_PROOF_MESSAGE) {
+        return res.status(400).json({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
+      }
       return res.status(status).json({ error: error?.message || "Failed to record customer proof action" });
     }
   });
