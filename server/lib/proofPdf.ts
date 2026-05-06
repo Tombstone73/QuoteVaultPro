@@ -18,6 +18,7 @@ type BasicProofPdfArgs = {
   sourceFileName: string | null;
   generatedAt: Date;
   preview: BasicProofPreview | null;
+  previewError?: string | null;
 };
 
 function drawWrappedText(args: {
@@ -130,20 +131,22 @@ export async function generateBasicProofPdfBytes(args: BasicProofPdfArgs): Promi
   }
 
   if (!previewRendered) {
-    page.drawRectangle({ x: margin + 18, y: pageHeight - 132 - previewHeight + 18, width: previewWidth - 36, height: previewHeight - 36, color: rgb(0.97, 0.98, 1) });
-    page.drawText("Source Preview", { x: margin + 32, y: pageHeight - 188, font: fontBold, size: 16, color: rgb(0.21, 0.27, 0.39) });
+    page.drawRectangle({ x: margin + 18, y: pageHeight - 132 - previewHeight + 18, width: previewWidth - 36, height: previewHeight - 36, color: rgb(1, 0.97, 0.93) });
+    page.drawText("Incomplete Draft Proof", { x: margin + 32, y: pageHeight - 188, font: fontBold, size: 16, color: rgb(0.66, 0.21, 0.07) });
     drawWrappedText({
       page,
-      text: args.sourceFileName
-        ? `Preview unavailable in this runtime. Source file: ${args.sourceFileName}`
-        : "Preview unavailable in this runtime. The proof is based on the currently persisted artwork source.",
+      text: args.previewError
+        ? `Artwork preview could not be embedded. ${args.previewError} Do not send this draft to the customer.`
+        : args.sourceFileName
+          ? `Artwork preview could not be embedded for ${args.sourceFileName}. Do not send this draft to the customer.`
+          : "Artwork preview could not be embedded from the persisted source. Do not send this draft to the customer.",
       x: margin + 32,
       y: pageHeight - 218,
       maxWidth: previewWidth - 64,
       lineHeight: 16,
       font,
       size: 11,
-      color: rgb(0.35, 0.41, 0.5),
+      color: rgb(0.48, 0.24, 0.12),
     });
   }
 
