@@ -123,6 +123,10 @@ export const ROUTES = {
     // edit: (id: string) => `/orders/${id}/edit`,
   },
 
+  inboundOrders: {
+    list: "/inbound-orders",
+  },
+
   // Customers
   customers: {
     list: "/customers",

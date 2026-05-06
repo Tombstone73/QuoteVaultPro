@@ -76,6 +76,7 @@ import FulfillmentShipmentDetailPage from "@/pages/fulfillment-shipment-detail";
 import LabelsPage from "@/pages/labels";
 import ReportsPage from "@/pages/reports";
 import FinancePage from "@/pages/finance";
+import InboundOrdersPage from "@/pages/inbound-orders";
 
 function Router() {
   const { user, isAuthenticated, isLoading, mustChangePassword } = useAuth();
@@ -181,6 +182,7 @@ function Router() {
         <Route path={ROUTES.orders.new} element={<OrderNewRoute />} />
         <Route path="/orders/:id" element={<OrderDetail />} />
         <Route path="/orders" element={<Orders />} />
+        <Route path={ROUTES.inboundOrders.list} element={<InboundOrdersPage />} />
 
         {/* Inventory / Materials routes */}
         <Route path="/materials/:id" element={<MaterialDetailRoute />} />
