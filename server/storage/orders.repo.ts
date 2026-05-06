@@ -3,6 +3,9 @@ import {
     orders,
     orderLineItems,
     orderLineItemComponents,
+    lineItemProofApprovals,
+    lineItemProofManualApprovalOverrides,
+    lineItemProofVersions,
     shipments,
     orderAttachments,
     orderAuditLog,
@@ -39,6 +42,7 @@ import {
     type InsertJobStatusLog,
 } from "@shared/schema";
 import { eq, and, or, ilike, gte, lte, desc, sql, isNull, inArray } from "drizzle-orm";
+import { deriveLineItemProofSummary, deriveOrderProofSummary, type LineItemProofSummary, type OrderProofSummary } from "@shared/orderProofStatus";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
 import { resolveActiveProductionOwners } from "../services/productionOwnership";
@@ -54,6 +58,14 @@ type OrderProductionSummary = {
     inProductionCount: number;
     completeCount: number;
     status: ProductionSummaryStatus;
+};
+
+type OrderWithProofSummary = Order & {
+    proofStatus?: OrderProofSummary["proofStatus"];
+    proofStatusLabel?: string;
+    proofActionRequired?: boolean;
+    proofCounts?: OrderProofSummary["proofCounts"];
+    proofLineItemId?: string | null;
 };
 
 const ORDER_ATTACHMENT_SAFE_SELECT = {
@@ -215,6 +227,152 @@ export class OrdersRepository {
         return summaries;
     }
 
+    private async buildProofSummaries(organizationId: string, orderIds: string[]) {
+        const orderSummaries = new Map<string, OrderProofSummary>();
+        const lineItemSummaries = new Map<string, LineItemProofSummary>();
+
+        if (!orderIds.length) {
+            return { orderSummaries, lineItemSummaries };
+        }
+
+        const lineItems = await this.dbInstance
+            .select({
+                orderId: orderLineItems.orderId,
+                lineItemId: orderLineItems.id,
+                requiresProofApproval: orderLineItems.requiresProofApproval,
+                approvedProofVersionId: orderLineItems.approvedProofVersionId,
+            })
+            .from(orderLineItems)
+            .where(inArray(orderLineItems.orderId, orderIds));
+
+        const lineItemIds = lineItems.map((lineItem) => String(lineItem.lineItemId));
+
+        if (!lineItemIds.length) {
+            for (const orderId of orderIds) {
+                orderSummaries.set(orderId, deriveOrderProofSummary([]));
+            }
+            return { orderSummaries, lineItemSummaries };
+        }
+
+        const [versions, approvals, overrides] = await Promise.all([
+            this.dbInstance
+                .select({
+                    lineItemId: lineItemProofVersions.lineItemId,
+                    id: lineItemProofVersions.id,
+                    status: lineItemProofVersions.status,
+                    sentAt: lineItemProofVersions.sentAt,
+                    versionNumber: lineItemProofVersions.versionNumber,
+                    createdAt: lineItemProofVersions.createdAt,
+                })
+                .from(lineItemProofVersions)
+                .where(
+                    and(
+                        eq(lineItemProofVersions.organizationId, organizationId),
+                        inArray(lineItemProofVersions.lineItemId, lineItemIds),
+                    ),
+                )
+                .orderBy(desc(lineItemProofVersions.versionNumber), desc(lineItemProofVersions.createdAt)),
+            this.dbInstance
+                .select({
+                    lineItemId: lineItemProofApprovals.lineItemId,
+                    proofVersionId: lineItemProofApprovals.proofVersionId,
+                    decision: lineItemProofApprovals.decision,
+                    respondedAt: lineItemProofApprovals.respondedAt,
+                    createdAt: lineItemProofApprovals.createdAt,
+                })
+                .from(lineItemProofApprovals)
+                .where(
+                    and(
+                        eq(lineItemProofApprovals.organizationId, organizationId),
+                        inArray(lineItemProofApprovals.lineItemId, lineItemIds),
+                    ),
+                )
+                .orderBy(desc(lineItemProofApprovals.respondedAt), desc(lineItemProofApprovals.createdAt)),
+            this.dbInstance
+                .select({
+                    lineItemId: lineItemProofManualApprovalOverrides.lineItemId,
+                    proofVersionId: lineItemProofManualApprovalOverrides.proofVersionId,
+                    overriddenAt: lineItemProofManualApprovalOverrides.overriddenAt,
+                    createdAt: lineItemProofManualApprovalOverrides.createdAt,
+                })
+                .from(lineItemProofManualApprovalOverrides)
+                .where(
+                    and(
+                        eq(lineItemProofManualApprovalOverrides.organizationId, organizationId),
+                        inArray(lineItemProofManualApprovalOverrides.lineItemId, lineItemIds),
+                    ),
+                )
+                .orderBy(desc(lineItemProofManualApprovalOverrides.overriddenAt), desc(lineItemProofManualApprovalOverrides.createdAt)),
+        ]);
+
+        const versionsByLineItem = new Map<string, typeof versions>();
+        for (const version of versions) {
+            const key = String(version.lineItemId);
+            const bucket = versionsByLineItem.get(key) ?? [];
+            bucket.push(version);
+            versionsByLineItem.set(key, bucket);
+        }
+
+        const approvalsByLineItem = new Map<string, typeof approvals>();
+        for (const approval of approvals) {
+            const key = String(approval.lineItemId);
+            const bucket = approvalsByLineItem.get(key) ?? [];
+            bucket.push(approval);
+            approvalsByLineItem.set(key, bucket);
+        }
+
+        const overridesByLineItem = new Map<string, typeof overrides>();
+        for (const override of overrides) {
+            const key = String(override.lineItemId);
+            const bucket = overridesByLineItem.get(key) ?? [];
+            bucket.push(override);
+            overridesByLineItem.set(key, bucket);
+        }
+
+        const lineItemsByOrderId = new Map<string, LineItemProofSummary[]>();
+        for (const lineItem of lineItems) {
+            const lineItemId = String(lineItem.lineItemId);
+            const orderId = String(lineItem.orderId);
+            const lineVersions = versionsByLineItem.get(lineItemId) ?? [];
+            const lineApprovals = approvalsByLineItem.get(lineItemId) ?? [];
+            const lineOverrides = overridesByLineItem.get(lineItemId) ?? [];
+            const approvedProofVersionId = lineItem.approvedProofVersionId ? String(lineItem.approvedProofVersionId) : null;
+            const currentActionableVersion = lineVersions.find((version) => version.status === "draft" || version.status === "awaiting_response") ?? null;
+            const latestVersion = lineVersions[0] ?? null;
+            const latestDecision = lineApprovals[0]?.decision ?? null;
+            const approvedNormally = approvedProofVersionId
+                ? lineApprovals.some((approval) => approval.proofVersionId === approvedProofVersionId && approval.decision === "approved")
+                : false;
+            const approvedByOverride = approvedProofVersionId
+                ? lineOverrides.some((override) => override.proofVersionId === approvedProofVersionId)
+                : false;
+            const lineSummary = deriveLineItemProofSummary({
+                lineItemId,
+                requiresProofApproval: Boolean(lineItem.requiresProofApproval),
+                approvedProofVersionId,
+                currentActionableProofVersionStatus: currentActionableVersion?.status ?? null,
+                latestProofVersionStatus: latestVersion?.status ?? null,
+                latestDecision,
+                hasAnyProofVersion: lineVersions.length > 0,
+                hasSentProofVersion: lineVersions.some((version) => Boolean(version.sentAt) || version.status !== "draft"),
+                approvedNormally,
+                approvedByOverride,
+            });
+
+            lineItemSummaries.set(lineItemId, lineSummary);
+
+            const bucket = lineItemsByOrderId.get(orderId) ?? [];
+            bucket.push(lineSummary);
+            lineItemsByOrderId.set(orderId, bucket);
+        }
+
+        for (const orderId of orderIds) {
+            orderSummaries.set(orderId, deriveOrderProofSummary(lineItemsByOrderId.get(orderId) ?? []));
+        }
+
+        return { orderSummaries, lineItemSummaries };
+    }
+
     private async getDesignConfigMap(organizationId: string, productIds: string[], executor: any = this.dbInstance) {
         const configs = await productDesignConfigRepository.listByProductIds(organizationId, Array.from(new Set(productIds)), executor);
         return new Map(configs.map((config) => [config.productId, config]));
@@ -367,7 +525,7 @@ export class OrdersRepository {
         pageSize: number;
         includeThumbnails: boolean;
     }): Promise<{
-        items: Array<Order & {
+        items: Array<OrderWithProofSummary & {
             customer: any;
             contact: any;
             lineItemsCount: number;
@@ -472,6 +630,7 @@ export class OrdersRepository {
 
         const orderIds = rows.map((r) => r.order.id);
         const productionSummaries = await this.buildProductionSummaries(organizationId, orderIds);
+        const { orderSummaries } = await this.buildProofSummaries(organizationId, orderIds);
         let previewData = new Map<string, {
             thumbnails: string[];
             totalCount: number;
@@ -530,6 +689,18 @@ export class OrdersRepository {
                 }
                 : { totalCount: 0, previews: [] },
             listLabel: listNotesMap.get(order.id) || null,
+            proofStatus: orderSummaries.get(order.id)?.proofStatus ?? "no_proof_required",
+            proofStatusLabel: orderSummaries.get(order.id)?.proofStatusLabel ?? "No Proof Needed",
+            proofActionRequired: orderSummaries.get(order.id)?.proofActionRequired ?? false,
+            proofCounts: orderSummaries.get(order.id)?.proofCounts ?? {
+                required: 0,
+                needed: 0,
+                draftNotSent: 0,
+                awaitingApproval: 0,
+                approved: 0,
+                issue: 0,
+            },
+            proofLineItemId: orderSummaries.get(order.id)?.proofLineItemId ?? null,
         }));
 
         const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
@@ -551,7 +722,7 @@ export class OrdersRepository {
         customerId?: string;
         startDate?: Date;
         endDate?: Date;
-    }): Promise<Array<Order & { productionSummary?: OrderProductionSummary }>> {
+    }): Promise<Array<OrderWithProofSummary & { productionSummary?: OrderProductionSummary }>> {
         const conditions = [eq(orders.organizationId, organizationId)] as any[];
         if (filters?.search) {
             const pattern = `%${filters.search}%`;
@@ -573,6 +744,10 @@ export class OrdersRepository {
         query = query.orderBy(desc(orders.createdAt));
         const rows = await query;
         const productionSummaries = await this.buildProductionSummaries(
+            organizationId,
+            rows.map((order: Order) => order.id),
+        );
+        const { orderSummaries } = await this.buildProofSummaries(
             organizationId,
             rows.map((order: Order) => order.id),
         );
@@ -599,6 +774,18 @@ export class OrdersRepository {
                     completeCount: 0,
                     status: "none",
                 },
+                proofStatus: orderSummaries.get(order.id)?.proofStatus ?? "no_proof_required",
+                proofStatusLabel: orderSummaries.get(order.id)?.proofStatusLabel ?? "No Proof Needed",
+                proofActionRequired: orderSummaries.get(order.id)?.proofActionRequired ?? false,
+                proofCounts: orderSummaries.get(order.id)?.proofCounts ?? {
+                    required: 0,
+                    needed: 0,
+                    draftNotSent: 0,
+                    awaitingApproval: 0,
+                    approved: 0,
+                    issue: 0,
+                },
+                proofLineItemId: orderSummaries.get(order.id)?.proofLineItemId ?? null,
             };
         }));
 
@@ -655,6 +842,17 @@ export class OrdersRepository {
                 } as any;
             })
         );
+        const { orderSummaries, lineItemSummaries } = await this.buildProofSummaries(organizationId, [id]);
+        const enrichedLineItemsWithProof = enrichedLineItems.map((lineItem: any) => ({
+            ...lineItem,
+            proofSummary: lineItemSummaries.get(String(lineItem.id)) ?? deriveLineItemProofSummary({
+                lineItemId: String(lineItem.id),
+                requiresProofApproval: Boolean(lineItem.requiresProofApproval),
+                approvedProofVersionId: lineItem.approvedProofVersionId ?? null,
+                hasAnyProofVersion: false,
+                hasSentProofVersion: false,
+            }),
+        }));
         const [customer] = await this.dbInstance.select().from(customers).where(eq(customers.id, order.customerId)).catch(() => []);
         
         // Contact resolution with fallback logic
@@ -681,10 +879,22 @@ export class OrdersRepository {
         const [createdByUser] = await this.dbInstance.select().from(users).where(eq(users.id, order.createdByUserId));
         return {
             ...order,
-            lineItems: enrichedLineItems,
+            lineItems: enrichedLineItemsWithProof,
             customer,
             contact,
             createdByUser,
+            proofStatus: orderSummaries.get(id)?.proofStatus ?? "no_proof_required",
+            proofStatusLabel: orderSummaries.get(id)?.proofStatusLabel ?? "No Proof Needed",
+            proofActionRequired: orderSummaries.get(id)?.proofActionRequired ?? false,
+            proofCounts: orderSummaries.get(id)?.proofCounts ?? {
+                required: 0,
+                needed: 0,
+                draftNotSent: 0,
+                awaitingApproval: 0,
+                approved: 0,
+                issue: 0,
+            },
+            proofLineItemId: orderSummaries.get(id)?.proofLineItemId ?? null,
         } as OrderWithRelations;
     }
 

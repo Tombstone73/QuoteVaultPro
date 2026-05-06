@@ -69,6 +69,9 @@ import { isTerminalState as checkIfTerminalState } from "@/hooks/useOrderState";
 import { OrderLineItemsSection } from "@/components/orders/OrderLineItemsSection";
 import { ManualReservationsCard } from "@/components/orders/ManualReservationsCard";
 import BackNavControls from "@/components/BackNavControls";
+import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
+import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
+import { canOpenProofingFromOrderStatus } from "@shared/orderProofStatus";
 
 /**
  * OrderDetail renders some legacy "bill to / ship to / shipping" snapshot fields
@@ -2204,6 +2207,15 @@ export default function OrderDetail() {
                         {orderOperationalSummary.productionRequiredCount} require production
                       </Badge>
                     ) : null}
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        "h-6 px-2 text-xs",
+                        getOrderProofBadgeClass(order?.proofStatus ?? "no_proof_required")
+                      )}
+                    >
+                      {order?.proofStatusLabel ?? "No Proof Needed"}
+                    </Badge>
                     {orderOperationalSummary.actionNeededCount > 0 ? (
                       <Badge className="h-6 px-2 text-xs bg-amber-100 text-amber-900 hover:bg-amber-100">
                         {orderOperationalSummary.actionNeededCount} action needed
@@ -2221,6 +2233,11 @@ export default function OrderDetail() {
                   </div>
                   {isAdminOrOwner && canEditLineItems && orderOperationalSummary.productionRequiredCount > 0 ? (
                     <div className="text-xs text-muted-foreground">Bulk production handoff is available below in Line Items.</div>
+                  ) : null}
+                  {order?.proofLineItemId && canOpenProofingFromOrderStatus(order?.proofStatus ?? "no_proof_required") ? (
+                    <Button asChild type="button" variant="outline" size="sm" className="h-8">
+                      <Link to={buildProofingLineItemPath(order.proofLineItemId)}>Open Proofing</Link>
+                    </Button>
                   ) : null}
                 </div>
               </div>

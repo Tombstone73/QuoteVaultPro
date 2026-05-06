@@ -33,9 +33,13 @@ import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
 import { normalizeOrderFileRows } from "@/lib/attachments/orderFileRows";
 import BackNavControls from "@/components/BackNavControls";
+import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
+import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
+import { canOpenProofingFromOrderStatus, type OrderProofStatus } from "@shared/orderProofStatus";
 
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "paymentStatus";
 type ProductionFilterValue = "all" | "needs_handoff" | "partial" | "action_needed";
+type ProofFilterValue = "all" | "needs_action";
 
 function ProductionSummaryBadge({
   summary,
@@ -114,6 +118,29 @@ function ProductionSummaryBadge({
   }
 
   return badgeNode;
+}
+
+function ProofSummaryBadge({
+  row,
+}: {
+  row: OrderRow;
+}) {
+  const status = row.proofStatus ?? "no_proof_required";
+  const label = row.proofStatusLabel ?? "No Proof Needed";
+  const canOpenProofing = Boolean(row.proofLineItemId) && canOpenProofingFromOrderStatus(status);
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5" data-stop-row-nav="true">
+      <Badge variant="outline" className={cn("h-5 px-1.5 text-[11px] font-semibold whitespace-nowrap", getOrderProofBadgeClass(status))}>
+        {label}
+      </Badge>
+      {canOpenProofing ? (
+        <Button asChild type="button" variant="ghost" size="sm" className="h-6 px-2 text-[11px]">
+          <Link to={buildProofingLineItemPath(String(row.proofLineItemId))}>Open Proofing</Link>
+        </Button>
+      ) : null}
+    </div>
+  );
 }
 
 function OrderStatusPillCell({
@@ -197,6 +224,7 @@ const ORDER_COLUMNS: ColumnDefinition[] = [
   { key: "customer", label: "Customer", defaultVisible: true, defaultWidth: 180, minWidth: 120, maxWidth: 300, sortable: true },
   { key: "status", label: "Status", defaultVisible: true, defaultWidth: 130, minWidth: 100, maxWidth: 180, sortable: true },
   { key: "production", label: "Production", defaultVisible: true, defaultWidth: 160, minWidth: 120, maxWidth: 200 },
+  { key: "proof", label: "Proof", defaultVisible: true, defaultWidth: 210, minWidth: 150, maxWidth: 280 },
   { key: "paymentStatus", label: "Payment", defaultVisible: false, defaultWidth: 110, minWidth: 90, maxWidth: 150, sortable: true },
   { key: "priority", label: "Priority", defaultVisible: true, defaultWidth: 100, minWidth: 80, maxWidth: 150, sortable: true },
   { key: "dueDate", label: "Due Date", defaultVisible: true, defaultWidth: 120, minWidth: 100, maxWidth: 180, sortable: true },
@@ -219,6 +247,7 @@ export default function Orders() {
   const [statusPillFilter, setStatusPillFilter] = useState<string>("all");
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
   const [productionFilter, setProductionFilter] = useState<ProductionFilterValue>("all");
+  const [proofFilter, setProofFilter] = useState<ProofFilterValue>("all");
   
   // Pagination + performance controls (persisted per org+user, matching Quotes)
   const [page, setPage] = useState(1);
@@ -350,11 +379,10 @@ export default function Orders() {
   }, [orders, search, stateFilter, pillFilterEnabled, statusPillFilter, priorityFilter]);
 
   const filteredOrders = useMemo(() => {
-    if (productionFilter === "all") {
-      return baseFilteredOrders;
-    }
+    let filtered = baseFilteredOrders;
 
-    return baseFilteredOrders.filter((order: any) => {
+    if (productionFilter !== "all") {
+      filtered = filtered.filter((order: any) => {
       const productionStatus = order.productionSummary?.status || "none";
 
       if (productionFilter === "action_needed") {
@@ -362,8 +390,15 @@ export default function Orders() {
       }
 
       return productionStatus === productionFilter;
-    });
-  }, [baseFilteredOrders, productionFilter]);
+      });
+    }
+
+    if (proofFilter === "needs_action") {
+      filtered = filtered.filter((order) => order.proofActionRequired === true);
+    }
+
+    return filtered;
+  }, [baseFilteredOrders, productionFilter, proofFilter]);
 
   const actionNeededCount = useMemo(
     () => baseFilteredOrders.filter((order) => {
@@ -838,6 +873,10 @@ export default function Orders() {
         );
       }
 
+      case "proof": {
+        return <ProofSummaryBadge row={row} />;
+      }
+
       case "priority": {
         if (!isAdminOrOwner) {
           return <OrderPriorityBadge priority={row.priority} />;
@@ -1039,6 +1078,15 @@ export default function Orders() {
               <SelectItem value="needs_handoff">Needs Production</SelectItem>
               <SelectItem value="partial">Partial</SelectItem>
               <SelectItem value="action_needed">Action Needed</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={proofFilter} onValueChange={(value) => setProofFilter(value as ProofFilterValue)}>
+            <SelectTrigger className="w-[180px] h-9">
+              <SelectValue placeholder="All Proof" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Proof</SelectItem>
+              <SelectItem value="needs_action">Needs Proof Action</SelectItem>
             </SelectContent>
           </Select>
           <button
