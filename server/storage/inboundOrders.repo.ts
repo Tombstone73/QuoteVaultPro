@@ -958,6 +958,8 @@ export class InboundOrdersRepository {
       const quoteNumber = Math.floor(Number(quoteNumberVar.value));
       const now = new Date();
 
+      // Keep quote.source aligned with normal staff-created quotes so internal quote lists and permissions include it.
+      // Inbound provenance stays in quote list notes, line item specs, and the inbound review event metadata.
       const [quote] = await tx
         .insert(quotes)
         .values({
@@ -965,7 +967,7 @@ export class InboundOrdersRepository {
           userId: input.actorUserId,
           quoteNumber,
           status: "draft",
-          source: "inbound_review",
+          source: "internal",
           label: input.label,
           customerId: input.customerId ?? null,
           contactId: input.contactId ?? null,
@@ -993,7 +995,7 @@ export class InboundOrdersRepository {
 
       const lineItemRows = input.lineItems.map((lineItem, index) => ({
         quoteId: quote.id,
-        status: "draft" as const,
+        status: "active" as const,
         productId: lineItem.productId,
         productName: lineItem.productName,
         variantId: lineItem.variantId ?? null,
@@ -1115,6 +1117,84 @@ export class InboundOrdersRepository {
         lineItems: createdLineItems,
         skippedLineItems: input.skippedLineItems,
       };
+    });
+  }
+
+  async markLinkedQuoteCompleted(args: {
+    organizationId: string;
+    quoteId: string;
+    actorUserId?: string | null;
+    quoteStatus: string;
+    completionSource: "quote_status" | "quote_staff_approval";
+  }): Promise<InboundOrderRecord | null> {
+    return this.dbInstance.transaction(async (tx) => {
+      const [record] = await tx
+        .select()
+        .from(inboundOrderRecords)
+        .where(
+          and(
+            eq(inboundOrderRecords.organizationId, args.organizationId),
+            eq(inboundOrderRecords.createdQuoteId, args.quoteId),
+          ),
+        )
+        .limit(1);
+
+      if (!record || record.status === "approved" || record.status === "terminal") {
+        return null;
+      }
+
+      const [existingEvent] = await tx
+        .select({ id: inboundOrderEvents.id })
+        .from(inboundOrderEvents)
+        .where(
+          and(
+            eq(inboundOrderEvents.organizationId, args.organizationId),
+            eq(inboundOrderEvents.inboundRecordId, record.id),
+            eq(inboundOrderEvents.eventType, "review.downstream_quote_completed"),
+          ),
+        )
+        .limit(1);
+
+      if (existingEvent) {
+        return record;
+      }
+
+      const now = new Date();
+      const [updated] = await tx
+        .update(inboundOrderRecords)
+        .set({
+          status: "approved",
+          reviewOutcome: "downstream_quote_completed",
+          requiresHumanDecision: false,
+          reviewRequiredReason: null,
+          approvedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(inboundOrderRecords.organizationId, args.organizationId),
+            eq(inboundOrderRecords.id, record.id),
+          ),
+        )
+        .returning();
+
+      await tx.insert(inboundOrderEvents).values({
+        organizationId: args.organizationId,
+        inboundRecordId: record.id,
+        actorUserId: args.actorUserId ?? null,
+        actorType: args.actorUserId ? "user" : "system",
+        eventType: "review.downstream_quote_completed",
+        fromStatus: record.status,
+        toStatus: "approved",
+        message: "Linked quote was completed downstream; inbound review cleared from active pending state.",
+        metadataJson: {
+          quoteId: args.quoteId,
+          quoteStatus: args.quoteStatus,
+          completionSource: args.completionSource,
+        },
+      });
+
+      return updated ?? record;
     });
   }
 }
