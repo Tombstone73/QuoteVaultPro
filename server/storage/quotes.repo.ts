@@ -5,6 +5,8 @@ import {
     quoteAttachments,
     quoteWorkflowStates,
     orders,
+    inboundOrderEvents,
+    inboundOrderRecords,
     users,
     customers,
     products,
@@ -28,6 +30,72 @@ import { productDesignConfigRepository } from "./productDesignConfig.repo";
 
 export class QuotesRepository {
     constructor(private readonly dbInstance = db) { }
+
+    private async getInboundReviewLinksForQuoteIds(organizationId: string, quoteIds: string[]) {
+        const links = new Map<string, {
+            inboundRecordId: string;
+            status: string;
+            reviewOutcome: string | null;
+            isActive: boolean;
+            convertedLineItemCount: number | null;
+            skippedLineItemCount: number | null;
+        }>();
+
+        if (quoteIds.length === 0) return links;
+
+        const records = await this.dbInstance
+            .select({
+                id: inboundOrderRecords.id,
+                createdQuoteId: inboundOrderRecords.createdQuoteId,
+                status: inboundOrderRecords.status,
+                reviewOutcome: inboundOrderRecords.reviewOutcome,
+            })
+            .from(inboundOrderRecords)
+            .where(and(
+                eq(inboundOrderRecords.organizationId, organizationId),
+                inArray(inboundOrderRecords.createdQuoteId, quoteIds as [string, ...string[]]),
+            ));
+
+        const inboundRecordIds = records.map((record) => record.id);
+        const events = inboundRecordIds.length > 0
+            ? await this.dbInstance
+                .select({
+                    inboundRecordId: inboundOrderEvents.inboundRecordId,
+                    metadataJson: inboundOrderEvents.metadataJson,
+                    createdAt: inboundOrderEvents.createdAt,
+                })
+                .from(inboundOrderEvents)
+                .where(and(
+                    eq(inboundOrderEvents.organizationId, organizationId),
+                    eq(inboundOrderEvents.eventType, "review.quote_created"),
+                    inArray(inboundOrderEvents.inboundRecordId, inboundRecordIds as [string, ...string[]]),
+                ))
+                .orderBy(desc(inboundOrderEvents.createdAt))
+            : [];
+
+        const eventsByInboundRecordId = new Map(events.map((event) => [event.inboundRecordId, event]));
+
+        for (const record of records) {
+            if (!record.createdQuoteId) continue;
+            const event = eventsByInboundRecordId.get(record.id);
+            const metadata = event?.metadataJson && typeof event.metadataJson === "object" && !Array.isArray(event.metadataJson)
+                ? event.metadataJson as Record<string, unknown>
+                : {};
+            const convertedLineItemCount = Number(metadata.convertedLineItemCount);
+            const skippedLineItemCount = Number(metadata.skippedLineItemCount);
+
+            links.set(record.createdQuoteId, {
+                inboundRecordId: record.id,
+                status: record.status,
+                reviewOutcome: record.reviewOutcome,
+                isActive: record.status !== "approved" && record.status !== "terminal",
+                convertedLineItemCount: Number.isFinite(convertedLineItemCount) ? convertedLineItemCount : null,
+                skippedLineItemCount: Number.isFinite(skippedLineItemCount) ? skippedLineItemCount : null,
+            });
+        }
+
+        return links;
+    }
 
     private async getDesignConfigMap(organizationId: string, productIds: string[], executor: any = this.dbInstance) {
         const configs = await productDesignConfigRepository.listByProductIds(organizationId, Array.from(new Set(productIds)), executor);
@@ -266,6 +334,14 @@ export class QuotesRepository {
                 previewThumbnails?: string[];
                 thumbsCount?: number;
                 workflowState?: WorkflowState;
+                inboundReview?: {
+                    inboundRecordId: string;
+                    status: string;
+                    reviewOutcome: string | null;
+                    isActive: boolean;
+                    convertedLineItemCount: number | null;
+                    skippedLineItemCount: number | null;
+                } | null;
             }
         >
         page: number;
@@ -321,6 +397,7 @@ export class QuotesRepository {
             .offset(offset);
 
         const quoteIds = rows.map((r) => r.quote.id);
+        const inboundLinks = await this.getInboundReviewLinksForQuoteIds(organizationId, quoteIds);
         const previewData = opts.includeThumbnails
             ? await this.getPreviewThumbnailsForQuoteIds(organizationId, quoteIds)
             : new Map<string, { thumbnails: string[]; totalCount: number }>();
@@ -362,6 +439,7 @@ export class QuotesRepository {
                 previewThumbnails: opts.includeThumbnails ? (previewData.get(quote.id)?.thumbnails || []) : [],
                 thumbsCount: opts.includeThumbnails ? (previewData.get(quote.id)?.totalCount || 0) : 0,
                 listLabel: listNotesMap.get(quote.id) || null,
+                inboundReview: inboundLinks.get(quote.id) ?? null,
             };
         });
 
@@ -705,7 +783,20 @@ export class QuotesRepository {
         };
     }
 
-    async getQuoteById(organizationId: string, id: string, userId?: string): Promise<QuoteWithRelations | undefined> {
+    async getQuoteById(
+        organizationId: string,
+        id: string,
+        userId?: string
+    ): Promise<(QuoteWithRelations & {
+        inboundReview?: {
+            inboundRecordId: string;
+            status: string;
+            reviewOutcome: string | null;
+            isActive: boolean;
+            convertedLineItemCount: number | null;
+            skippedLineItemCount: number | null;
+        } | null;
+    }) | undefined> {
         const [quoteRow] = await this.dbInstance
             .select()
             .from(quotes)
@@ -746,6 +837,7 @@ export class QuotesRepository {
         );
 
         const [user] = await this.dbInstance.select().from(users).where(eq(users.id, quoteRow.userId));
+        const inboundLinks = await this.getInboundReviewLinksForQuoteIds(organizationId, [quoteRow.id]);
 
         // Fetch list note (flags) for this quote
         const { quoteListNotes } = await import("@shared/schema");
@@ -764,6 +856,7 @@ export class QuotesRepository {
             ...quoteRow,
             user,
             lineItems: lineItemsWithRelations,
+            inboundReview: inboundLinks.get(quoteRow.id) ?? null,
         };
     }
 
