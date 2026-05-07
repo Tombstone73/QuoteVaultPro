@@ -1569,6 +1569,18 @@ function DraftBuilderPanel({
     enabled: Boolean(selectedCustomerMatchId),
   });
 
+  const productById = useMemo(() => new Map(products.map((product) => [product.id, product])), [products]);
+  const filteredProducts = useMemo(() => {
+    const query = productSearch.trim().toLowerCase();
+    if (!query) return products.slice(0, 80);
+    return products
+      .filter((product) => (
+        product.name.toLowerCase().includes(query)
+        || product.category?.toLowerCase().includes(query)
+      ))
+      .slice(0, 80);
+  }, [products, productSearch]);
+
   if (!selectedRecord) {
     return (
       <EmptyPanel
@@ -1613,17 +1625,6 @@ function DraftBuilderPanel({
   const eventSkippedLineItemCount = numberFromUnknown(
     quoteCreatedMetadata.skippedLineItemCount ?? conversionMetadata.skippedLineItemCount,
   );
-  const productById = useMemo(() => new Map(products.map((product) => [product.id, product])), [products]);
-  const filteredProducts = useMemo(() => {
-    const query = productSearch.trim().toLowerCase();
-    if (!query) return products.slice(0, 80);
-    return products
-      .filter((product) => (
-        product.name.toLowerCase().includes(query)
-        || product.category?.toLowerCase().includes(query)
-      ))
-      .slice(0, 80);
-  }, [products, productSearch]);
   const canCreateQuoteDraft = Boolean(quoteDraftPreview?.eligible) && !record.createdQuoteId;
   const displayedQuote = createdQuote && createdQuote.id === convertedQuoteId
     ? createdQuote
