@@ -1888,6 +1888,147 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
     }
   }
 
+  // Choice-level override metadata validation
+  for (const n of nodes) {
+    if (n.status === "DELETED") continue;
+
+    const choices = (n.raw as any).choices;
+    if (!Array.isArray(choices)) continue;
+
+    const seenChoiceValues = new Set<string>();
+    for (let i = 0; i < choices.length; i++) {
+      const choice = asRecord(choices[i]);
+      const cPath = `tree.nodes[${n.id}].choices[${i}]`;
+      if (!choice) {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_CHOICE_OVERRIDE_INVALID",
+            message: "Choice must be an object",
+            path: cPath,
+            entityId: n.id,
+          })
+        );
+        continue;
+      }
+
+      const choiceValue = isNonEmptyString((choice as any).value) ? String((choice as any).value) : null;
+      if (choiceValue) {
+        if (seenChoiceValues.has(choiceValue)) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_CHOICE_VALUE_DUPLICATE",
+              message: `Choice value '${choiceValue}' must be unique within its node`,
+              path: `${cPath}.value`,
+              entityId: n.id,
+              context: { value: choiceValue },
+            })
+          );
+        }
+        seenChoiceValues.add(choiceValue);
+      }
+
+      const priceDeltaCents = (choice as any).priceDeltaCents;
+      if (priceDeltaCents !== undefined && (!Number.isInteger(priceDeltaCents) || !Number.isFinite(priceDeltaCents))) {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_CHOICE_OVERRIDE_INVALID",
+            message: "priceDeltaCents must be a finite integer when provided",
+            path: `${cPath}.priceDeltaCents`,
+            entityId: n.id,
+          })
+        );
+      }
+
+      const materialOverride = asRecord((choice as any).materialOverride);
+      if ((choice as any).materialOverride !== undefined) {
+        if (!materialOverride || !isNonEmptyString((materialOverride as any).materialId)) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_CHOICE_OVERRIDE_INVALID",
+              message: "materialOverride.materialId must be a non-empty string",
+              path: `${cPath}.materialOverride.materialId`,
+              entityId: n.id,
+            })
+          );
+        }
+      }
+
+      const workflowTagsRaw = (choice as any).workflowTags;
+      if (workflowTagsRaw !== undefined) {
+        if (!Array.isArray(workflowTagsRaw)) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_CHOICE_OVERRIDE_INVALID",
+              message: "workflowTags must be an array of non-empty strings",
+              path: `${cPath}.workflowTags`,
+              entityId: n.id,
+            })
+          );
+        } else {
+          const normalizedTags = workflowTagsRaw
+            .filter((tag): tag is string => typeof tag === "string")
+            .map((tag) => tag.trim())
+            .filter(Boolean);
+
+          if (normalizedTags.length !== workflowTagsRaw.length) {
+            findings.push(
+              errorFinding({
+                code: "PBV2_E_CHOICE_OVERRIDE_INVALID",
+                message: "workflowTags may only contain non-empty strings",
+                path: `${cPath}.workflowTags`,
+                entityId: n.id,
+              })
+            );
+          }
+
+          const duplicateWorkflowTags = normalizedTags.filter((tag, idx) => normalizedTags.indexOf(tag) !== idx);
+          if (duplicateWorkflowTags.length > 0) {
+            findings.push(
+              warningFinding({
+                code: "PBV2_W_CHOICE_WORKFLOW_TAG_DUPLICATE",
+                message: "workflowTags contains duplicate values",
+                path: `${cPath}.workflowTags`,
+                entityId: n.id,
+                context: { duplicateTags: Array.from(new Set(duplicateWorkflowTags)).sort() },
+              })
+            );
+          }
+        }
+      }
+
+      if (materialOverride && isNonEmptyString((materialOverride as any).materialId)) {
+        const inventoryEntries = Array.isArray((choice as any).inventoryConsumption) ? (choice as any).inventoryConsumption : [];
+        const distinctInventoryMaterialIds = Array.from(
+          new Set(
+            inventoryEntries
+              .map(asRecord)
+              .map((entry: Record<string, unknown> | null) => (entry && isNonEmptyString((entry as any).materialId) ? String((entry as any).materialId) : null))
+              .filter((materialId: string | null): materialId is string => Boolean(materialId))
+          )
+        );
+
+        const conflictingInventoryMaterialIds = distinctInventoryMaterialIds.filter(
+          (materialId) => materialId !== String((materialOverride as any).materialId)
+        );
+
+        if (conflictingInventoryMaterialIds.length > 0) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_CHOICE_MATERIAL_OVERRIDE_CONFLICT",
+              message: "materialOverride conflicts with inventoryConsumption material references",
+              path: `${cPath}.materialOverride`,
+              entityId: n.id,
+              context: {
+                materialOverrideId: String((materialOverride as any).materialId),
+                conflictingInventoryMaterialIds: conflictingInventoryMaterialIds.sort(),
+              },
+            })
+          );
+        }
+      }
+    }
+  }
+
   // Weight validation: check for negative weights (ERROR)
   const negativeWeights: Array<{ path: string; value: number; label?: string }> = [];
 

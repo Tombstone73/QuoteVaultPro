@@ -13,9 +13,11 @@ import { evaluateOptionTreeV2, pbv2ToWeightTotal } from '../optionTreeV2Evaluato
 import { buildFlatGoodsInput, flatGoodsCalculator, getProfile, type FlatGoodsConfig } from '../../../shared/pricingProfiles';
 import type { 
   OptionTreeV2, 
-  LineItemOptionSelectionsV2
+  LineItemOptionSelectionsV2,
+  OptionRuntimeSelectionContext,
 } from '../../../shared/optionTreeV2';
 import { PBV2_PRICING_VARIABLES, type PricingVariableDefinition } from '../../../shared/pbv2/pricingVariableRegistry';
+import { pbv2ToRuntimeSelectionContext } from '../../../shared/pbv2/pricingAdapter';
 // @ts-ignore - NestingCalculator.js is plain JS without exported TS types
 import NestingCalculator from '../../NestingCalculator.js';
 
@@ -54,6 +56,7 @@ export type PBV2PricingSnapshot = {
   treeVersionId: string;
   treeJson: any; // DB stores as jsonb, not strongly typed
   selections: Record<string, any>; // Option selections snapshot
+  runtimeSelectionContext: OptionRuntimeSelectionContext;
   selectedOptions: any[];
   visibleNodeIds: string[];
   pricedAt: string; // ISO timestamp
@@ -211,12 +214,22 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
       schemaVersion: 2,
       selected: pbv2ExplicitSelections || {},
     };
+    const runtimeSelectionContext = pbv2ToRuntimeSelectionContext(
+      treeVersion.treeJson as any,
+      pbv2ExplicitSelections || {},
+      {
+        widthIn: widthIn ?? 0,
+        heightIn: heightIn ?? 0,
+        quantity,
+      },
+    );
 
     // Build minimal snapshot
     const snapshot: PBV2PricingSnapshot = {
       treeVersionId,
       treeJson: treeVersion.treeJson,
       selections: pbv2ExplicitSelections || {},
+      runtimeSelectionContext,
       selectedOptions: [],
       visibleNodeIds: [],
       pricedAt: new Date().toISOString(),
@@ -291,6 +304,15 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     schemaVersion: 2,
     selected: pbv2ExplicitSelections || {},
   };
+  const runtimeSelectionContext = pbv2ToRuntimeSelectionContext(
+    treeVersion.treeJson as any,
+    pbv2ExplicitSelections,
+    {
+      widthIn: widthIn ?? 0,
+      heightIn: heightIn ?? 0,
+      quantity,
+    },
+  );
 
   // DEV: Build identifier and calculation path logging
   if (process.env.NODE_ENV === "development") {
@@ -362,6 +384,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     treeVersionId,
     treeJson: treeVersion.treeJson,
     selections: pbv2ExplicitSelections,
+    runtimeSelectionContext,
     selectedOptions: evalResult.selectedOptions,
     visibleNodeIds: evalResult.visibleNodeIds,
     pricedAt: new Date().toISOString(),

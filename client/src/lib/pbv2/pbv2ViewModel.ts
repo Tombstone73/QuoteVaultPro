@@ -12,7 +12,7 @@
  * - Keep all edits local until "Save Draft" is called
  */
 
-import type { OptionNodeV2, PricingImpact } from '@shared/optionTreeV2';
+import type { ChoiceMaterialOverride, OptionNodeV2, PricingImpact } from '@shared/optionTreeV2';
 
 /**
  * CANONICAL PBV2 GRAPH RULES (enforced by normalizeTreeJson):
@@ -329,7 +329,17 @@ type PBV2Node = {
   };
   label?: string;
   description?: string;
-  choices?: Array<{ value: string; label: string; description?: string; sortOrder?: number; weightOz?: number; inventoryConsumption?: Array<{ materialId: string; quantityBasis: "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed"; multiplier: number; wastePercent?: number; fixedQty?: number }> }>;
+  choices?: Array<{
+    value: string;
+    label: string;
+    description?: string;
+    sortOrder?: number;
+    weightOz?: number;
+    priceDeltaCents?: number;
+    materialOverride?: ChoiceMaterialOverride;
+    workflowTags?: string[];
+    inventoryConsumption?: Array<{ materialId: string; quantityBasis: "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed"; multiplier: number; wastePercent?: number; fixedQty?: number }>;
+  }>;
   data?: any;
   priceComponents?: any[];
   pricingImpact?: any[];
@@ -734,7 +744,16 @@ export function createUpdateOptionPatch(
     isRequired?: boolean; // UI field
     defaultValue?: any;
     isDefault?: boolean; // UI field
-    choices?: Array<{ value: string; label: string; description?: string; sortOrder?: number; inventoryConsumption?: Array<{ materialId: string; quantityBasis: "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed"; multiplier: number; wastePercent?: number; fixedQty?: number }> }>;
+    choices?: Array<{
+      value: string;
+      label: string;
+      description?: string;
+      sortOrder?: number;
+      priceDeltaCents?: number;
+      materialOverride?: ChoiceMaterialOverride;
+      workflowTags?: string[];
+      inventoryConsumption?: Array<{ materialId: string; quantityBasis: "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed"; multiplier: number; wastePercent?: number; fixedQty?: number }>;
+    }>;
   }
 ): { patch: any } {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
@@ -868,7 +887,9 @@ export function createUpdateChoicePatch(
     description?: string;
     priceDeltaCents?: number;
     pricingImpact?: PricingImpact[];
+    materialOverride?: ChoiceMaterialOverride;
     inventoryConsumption?: Array<{ materialId: string; quantityBasis: "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed"; multiplier: number; wastePercent?: number; fixedQty?: number }>;
+    workflowTags?: string[];
   }
 ): { patch: any; validationError?: string } {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
@@ -911,12 +932,29 @@ export function createUpdateChoicePatch(
       if (c.value !== choiceValue) return c;
       
       const updated = { ...c };
-      if (updates.label !== undefined) updated.label = updates.label;
-      if (updates.value !== undefined) updated.value = updates.value;
-      if (updates.description !== undefined) updated.description = updates.description;
-      if (updates.priceDeltaCents !== undefined) updated.priceDeltaCents = updates.priceDeltaCents;
-      if (updates.pricingImpact !== undefined) updated.pricingImpact = updates.pricingImpact;
-      if (updates.inventoryConsumption !== undefined) updated.inventoryConsumption = updates.inventoryConsumption;
+      if (Object.prototype.hasOwnProperty.call(updates, 'label')) updated.label = updates.label;
+      if (Object.prototype.hasOwnProperty.call(updates, 'value')) updated.value = updates.value;
+      if (Object.prototype.hasOwnProperty.call(updates, 'description')) updated.description = updates.description;
+      if (Object.prototype.hasOwnProperty.call(updates, 'priceDeltaCents')) {
+        if (updates.priceDeltaCents === undefined) delete updated.priceDeltaCents;
+        else updated.priceDeltaCents = updates.priceDeltaCents;
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'pricingImpact')) {
+        if (updates.pricingImpact === undefined) delete updated.pricingImpact;
+        else updated.pricingImpact = updates.pricingImpact;
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'materialOverride')) {
+        if (updates.materialOverride === undefined) delete updated.materialOverride;
+        else updated.materialOverride = updates.materialOverride;
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'inventoryConsumption')) {
+        if (updates.inventoryConsumption === undefined) delete updated.inventoryConsumption;
+        else updated.inventoryConsumption = updates.inventoryConsumption;
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'workflowTags')) {
+        if (!updates.workflowTags || updates.workflowTags.length === 0) delete updated.workflowTags;
+        else updated.workflowTags = updates.workflowTags;
+      }
       return updated;
     });
 

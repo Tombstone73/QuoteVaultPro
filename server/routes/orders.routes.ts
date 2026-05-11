@@ -57,9 +57,10 @@ import { findActiveJobForLineItem } from "../services/productionOwnership";
 import { autoSyncCanonicalProofForLineItem } from "../services/proofingService";
 import { materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
 import { productDesignConfigRepository } from "../storage/productDesignConfig.repo";
-import { pbv2ToChildItemProposals, pbv2ToMaterialEffects, pbv2ToPricingAddons } from "@shared/pbv2/pricingAdapter";
+import { pbv2ToChildItemProposals, pbv2ToMaterialEffects, pbv2ToPricingAddons, pbv2ToRuntimeSelectionContext } from "@shared/pbv2/pricingAdapter";
 import { computePbv2InputSignature } from "@shared/pbv2/pbv2InputSignature";
 import { pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
+import type { OptionRuntimeSelectionContext } from "@shared/optionTreeV2";
 import { selectPbv2TreeVersionIdForEvaluation } from "../lib/pbv2OverrideConfig";
 import { assignEffectIndexFallback, buildOrderLineItemComponentUpsertValues } from "../lib/pbv2ComponentUpsert";
 import { assertPbv2TreeVersionNotDraft } from "../lib/pbv2TreeVersionGuards";
@@ -330,6 +331,7 @@ type Pbv2OrderLineItemSnapshot = {
     pbv2InputSignature: string;
     explicitSelections: Record<string, unknown>;
     env: Record<string, unknown>;
+    runtimeSelectionContext: OptionRuntimeSelectionContext;
     pricing: { addOnCents: number; breakdown: any[] };
     materials: any[];
     childItems: any[];
@@ -402,33 +404,34 @@ async function evaluatePbv2SnapshotForProduct(args: {
         const pricingRes = pbv2ToPricingAddons(treeVersion.treeJson as any, explicitSelections, env as any, {
             pricingContext: args.pricingContext,
         });
+        const runtimeSelectionContext = pbv2ToRuntimeSelectionContext(treeVersion.treeJson as any, explicitSelections, env as any);
         const materialsRes = pbv2ToMaterialEffects(treeVersion.treeJson as any, explicitSelections, env as any);
         const childItemsRes = pbv2ToChildItemProposals(treeVersion.treeJson as any, explicitSelections, env as any);
-        pricing = { addOnCents: pricingRes.addOnCents, breakdown: pricingRes.breakdown };
         materials = materialsRes.materials;
         childItems = childItemsRes.childItems;
+        pricing = { addOnCents: pricingRes.addOnCents, breakdown: pricingRes.breakdown };
+        const snapshotJson: Pbv2OrderLineItemSnapshot = {
+            treeVersionId: String(treeVersion.id),
+            evaluatedAt,
+            pbv2InputSignature: await computePbv2InputSignature({
+                treeVersionId: String(treeVersion.id),
+                explicitSelections,
+                env,
+            }),
+            explicitSelections,
+            env,
+            runtimeSelectionContext,
+            pricing,
+            materials,
+            childItems,
+        };
+
+        return { treeVersionId: String(treeVersion.id), snapshotJson };
     } catch (e: any) {
         const err: any = new Error(e?.message || 'PBV2 evaluation failed');
         err.statusCode = 400;
         throw err;
     }
-
-    const snapshotJson: Pbv2OrderLineItemSnapshot = {
-        treeVersionId: String(treeVersion.id),
-        evaluatedAt,
-        pbv2InputSignature: await computePbv2InputSignature({
-            treeVersionId: String(treeVersion.id),
-            explicitSelections,
-            env,
-        }),
-        explicitSelections,
-        env,
-        pricing,
-        materials,
-        childItems,
-    };
-
-    return { treeVersionId: String(treeVersion.id), snapshotJson };
 }
 
 function toChildItemProposalsWithIndexFromSnapshot(snapshot: any): Pbv2ChildItemProposalWithIndex[] {
