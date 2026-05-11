@@ -35,11 +35,13 @@ const defaultColumns = [
   { id: "type", label: "Type", visible: true },
   { id: "stock", label: "Stock Quantity", visible: true },
   { id: "unit", label: "Catalog Unit", visible: true },
-  { id: "cost", label: "Base Sell Price", visible: true },
+  { id: "cost", label: "Sell / Cost", visible: true },
   { id: "vendor", label: "Vendor", visible: true },
   { id: "alerts", label: "Alerts", visible: true },
   { id: "actions", label: "Actions", visible: true },
 ];
+
+const defaultColumnLabels = new Map(defaultColumns.map((column) => [column.id, column.label]));
 
 type SortDirection = "asc" | "desc";
 type SortableColumnId = "name" | "sku" | "type" | "stock" | "unit" | "cost" | "vendor" | "alerts";
@@ -80,6 +82,24 @@ function getMaterialUnitCost(material: Material) {
   return getNumberValue(material.costPerUnit);
 }
 
+function formatMoney(value?: string | number | null, decimals = 2) {
+  const numericValue = typeof value === "number" ? value : Number.parseFloat(value ?? "0");
+  const safeValue = Number.isFinite(numericValue) ? numericValue : 0;
+  return `$${safeValue.toFixed(decimals)}`;
+}
+
+function getCatalogUnit(material: Material) {
+  return material.unitOfMeasure || "unit";
+}
+
+function getSellPriceUnit(material: Material) {
+  return material.sellPriceUnit || getCatalogUnit(material);
+}
+
+function getVendorCostUnit(material: Material) {
+  return material.vendorCostUnit || getCatalogUnit(material);
+}
+
 function compareText(a: string, b: string) {
   return a.localeCompare(b, undefined, { sensitivity: "base" });
 }
@@ -105,7 +125,15 @@ export default function MaterialsListPage() {
     setColumnWidth,
   } = useListViewSettings("materials-list", defaultColumns);
 
-  const visibleColumns = columns.filter((c) => c.visible);
+  const normalizedColumns = useMemo(
+    () => columns.map((column) => ({
+      ...column,
+      label: defaultColumnLabels.get(column.id) ?? column.label,
+    })),
+    [columns]
+  );
+
+  const visibleColumns = normalizedColumns.filter((c) => c.visible);
   const vendorNamesById = useMemo(
     () => new Map(vendors.map((vendor) => [vendor.id, vendor.name])),
     [vendors]
@@ -208,12 +236,26 @@ export default function MaterialsListPage() {
       case "cost":
         if (m.type === "roll" && rollDerived) {
           return (
-            <span title={`$${m.costPerRoll}/roll → $${rollDerived.costPerSqft.toFixed(4)}/sqft`} className="text-titan-text-primary">
-              ${rollDerived.costPerSqft.toFixed(4)}/sqft
-            </span>
+            <div
+              title={`Displayed pricing may use sell price unit, vendor cost unit, or derived roll sqft cost depending on material type. ${formatMoney(m.costPerRoll)} / roll derives ${formatMoney(rollDerived.costPerSqft, 4)} / sqft.`}
+              className="space-y-0.5"
+            >
+              <div className="text-titan-text-primary">Derived: {formatMoney(rollDerived.costPerSqft, 4)} / sqft</div>
+              <div className="text-xs text-titan-text-secondary">Vendor: {formatMoney(m.costPerRoll)} / roll</div>
+            </div>
           );
         }
-        return <span className="text-titan-text-primary">{m.costPerUnit}</span>;
+        return (
+          <div
+            title="Displayed pricing may use sell price unit, vendor cost unit, or derived roll sqft cost depending on material type."
+            className="space-y-0.5"
+          >
+            <div className="text-titan-text-primary">Sell: {formatMoney(m.costPerUnit)} / {getSellPriceUnit(m)}</div>
+            {m.vendorCostPerUnit ? (
+              <div className="text-xs text-titan-text-secondary">Vendor: {formatMoney(m.vendorCostPerUnit)} / {getVendorCostUnit(m)}</div>
+            ) : null}
+          </div>
+        );
       case "vendor":
         return <span className="text-titan-text-secondary">{getVendorName(m, vendorNamesById)}</span>;
       case "alerts":
@@ -241,7 +283,7 @@ export default function MaterialsListPage() {
         actions={
           <div className="flex gap-2">
             <ListViewSettings
-              columns={columns}
+              columns={normalizedColumns}
               onToggleVisibility={toggleVisibility}
               onReorder={setColumnOrder}
               onWidthChange={setColumnWidth}
@@ -296,6 +338,7 @@ export default function MaterialsListPage() {
                     sortable={sortableColumnIds.has(col.id as SortableColumnId)}
                     style={{ width: col.width ? `${col.width}px` : undefined }}
                     onClick={sortableColumnIds.has(col.id as SortableColumnId) ? () => handleSort(col.id as SortableColumnId) : undefined}
+                    title={col.id === "cost" ? "Displayed pricing may use sell price unit, vendor cost unit, or derived roll sqft cost depending on material type." : undefined}
                   >
                     <span className="inline-flex items-center gap-1.5">
                       <span>{col.label}</span>
