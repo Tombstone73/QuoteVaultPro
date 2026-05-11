@@ -42,6 +42,35 @@ export type InventoryConsumption = {
   fixedQty?: number;
 };
 
+export type ChoicePricingOverrideMetadata = {
+  priceDeltaCents?: number;
+  pricingImpact?: PricingImpact[];
+};
+
+export type ChoiceMaterialOverride = {
+  materialId: string;
+};
+
+export type OptionChoiceRuntimeSelection = {
+  nodeId: string;
+  selectionKey: string;
+  optionLabel: string;
+  choiceValue: string;
+  choiceLabel: string;
+  pricing?: ChoicePricingOverrideMetadata;
+  material?: ChoiceMaterialOverride;
+  inventoryConsumption?: InventoryConsumption[];
+  workflowTags?: string[];
+  role: "variant" | "modifier";
+};
+
+export type OptionRuntimeSelectionContext = {
+  selectedChoices: Record<string, string>;
+  resolvedChoices: Record<string, OptionChoiceRuntimeSelection>;
+  visibleNodeIds: string[];
+  workflowTags: string[];
+};
+
 export type PricingV2Tier = {
   minQty?: number;
   minSqft?: number;
@@ -106,8 +135,11 @@ export type OptionNodeV2 = {
     description?: string; 
     sortOrder?: number; 
     weightOz?: number;
+    priceDeltaCents?: number;
     pricingImpact?: PricingImpact[]; // v2.1: Choice-level pricing impacts
+    materialOverride?: ChoiceMaterialOverride;
     inventoryConsumption?: InventoryConsumption[];
+    workflowTags?: string[];
   }>;
   visibility?: { condition?: ConditionExpr };
   edges?: { children?: BranchEdge[] };
@@ -215,6 +247,10 @@ export const inventoryConsumptionSchema: z.ZodType<InventoryConsumption> = z
     }
   });
 
+export const choiceMaterialOverrideSchema: z.ZodType<ChoiceMaterialOverride> = z.object({
+  materialId: z.string().min(1),
+});
+
 export const pricingV2TierSchema: z.ZodType<PricingV2Tier> = z.object({
   minQty: z.number().int().min(1).optional(),
   minSqft: z.number().positive().optional(),
@@ -291,8 +327,11 @@ export const optionNodeV2Schema: z.ZodType<OptionNodeV2> = z.object({
         description: z.string().optional(),
         sortOrder: z.number().optional(),
         weightOz: z.number().optional(),
+        priceDeltaCents: z.number().int().optional(),
         pricingImpact: z.array(pricingImpactSchema).optional(), // v2.1: Choice-level pricing
+        materialOverride: choiceMaterialOverrideSchema.optional(),
         inventoryConsumption: z.array(inventoryConsumptionSchema).optional(),
+        workflowTags: z.array(z.string().min(1)).optional(),
       })
     )
     .optional(),
@@ -349,6 +388,31 @@ export const lineItemOptionSelectionsV2Schema: z.ZodType<LineItemOptionSelection
       pathTags: z.array(z.string()).optional(),
     })
     .optional(),
+});
+
+export const choicePricingOverrideMetadataSchema: z.ZodType<ChoicePricingOverrideMetadata> = z.object({
+  priceDeltaCents: z.number().int().optional(),
+  pricingImpact: z.array(pricingImpactSchema).optional(),
+});
+
+export const optionChoiceRuntimeSelectionSchema: z.ZodType<OptionChoiceRuntimeSelection> = z.object({
+  nodeId: z.string(),
+  selectionKey: z.string(),
+  optionLabel: z.string(),
+  choiceValue: z.string(),
+  choiceLabel: z.string(),
+  pricing: choicePricingOverrideMetadataSchema.optional(),
+  material: choiceMaterialOverrideSchema.optional(),
+  inventoryConsumption: z.array(inventoryConsumptionSchema).optional(),
+  workflowTags: z.array(z.string()).optional(),
+  role: z.enum(["variant", "modifier"]),
+});
+
+export const optionRuntimeSelectionContextSchema: z.ZodType<OptionRuntimeSelectionContext> = z.object({
+  selectedChoices: z.record(z.string()),
+  resolvedChoices: z.record(optionChoiceRuntimeSelectionSchema),
+  visibleNodeIds: z.array(z.string()),
+  workflowTags: z.array(z.string()),
 });
 
 // ------------------------------------------------------------

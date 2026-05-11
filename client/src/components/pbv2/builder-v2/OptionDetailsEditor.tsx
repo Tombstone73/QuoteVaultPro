@@ -33,6 +33,26 @@ function normalizeMaterialUom(value: string | null | undefined): 'sqft' | 'ft' |
   return null;
 }
 
+function formatWorkflowTags(value: unknown): string {
+  if (!Array.isArray(value)) return '';
+  return value
+    .filter((tag): tag is string => typeof tag === 'string')
+    .map((tag) => tag.trim())
+    .filter(Boolean)
+    .join(', ');
+}
+
+function parseWorkflowTags(value: string): string[] {
+  return Array.from(
+    new Set(
+      value
+        .split(/[\n,]+/)
+        .map((tag) => tag.trim())
+        .filter(Boolean)
+    )
+  );
+}
+
 interface OptionDetailsEditorProps {
   option: EditorOption;
   treeJson: any;
@@ -214,6 +234,14 @@ export function OptionDetailsEditor({
                 {choices.map((choice: any, index: number) => {
                   const isDuplicate = duplicateValues.has(choice.value);
                   const isEditing = editingChoiceValue?.optionId === option.id && editingChoiceValue?.value === choice.value;
+                  const choiceWorkflowTags = Array.isArray(choice.workflowTags) ? choice.workflowTags : [];
+                  const hasVariantContext =
+                    choice.priceDeltaCents !== undefined ||
+                    !!choice.materialOverride?.materialId ||
+                    choiceWorkflowTags.length > 0;
+                  const hasModifierContext =
+                    (Array.isArray(choice.pricingImpact) && choice.pricingImpact.length > 0) ||
+                    (Array.isArray(choice.inventoryConsumption) && choice.inventoryConsumption.length > 0);
 
                   return (
                     <div
@@ -245,6 +273,19 @@ export function OptionDetailsEditor({
                         </div>
 
                         <div className="flex-1 space-y-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            {hasVariantContext ? (
+                              <span className="rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-200">
+                                Variant-defining
+                              </span>
+                            ) : null}
+                            {hasModifierContext ? (
+                              <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-200">
+                                Additive modifier
+                              </span>
+                            ) : null}
+                          </div>
+
                           <div>
                             <Label className="text-xs text-slate-400 mb-1 block">Label *</Label>
                             <Input
@@ -325,31 +366,79 @@ export function OptionDetailsEditor({
                             )}
                           </div>
 
-                          <div>
-                            <Label className="text-xs text-slate-400 mb-1 block">Price Delta (cents)</Label>
-                            <Input
-                              type="number"
-                              value={choice.priceDeltaCents ?? ''}
-                              onChange={(e) => {
-                                const value = e.target.value;
-                                onUpdateChoice(option.id, choice.value, {
-                                  priceDeltaCents: value === '' ? undefined : parseInt(value, 10) || 0
-                                });
-                              }}
-                              onBlur={(e) => {
-                                const value = e.target.value;
-                                if (value === '') {
-                                  onUpdateChoice(option.id, choice.value, { priceDeltaCents: undefined });
+                          <div className="mt-3 pt-3 border-t border-slate-700 space-y-3">
+                            <div>
+                              <Label className="text-xs text-slate-400">Variant Context</Label>
+                              <p className="text-[11px] text-slate-500 mt-0.5">
+                                Use these fields for variant-defining selections. Keep additive logic in Pricing Impacts and Materials below.
+                              </p>
+                            </div>
+
+                            <div>
+                              <Label className="text-xs text-slate-400 mb-1 block">Variant Price Delta (cents)</Label>
+                              <Input
+                                type="number"
+                                value={choice.priceDeltaCents ?? ''}
+                                onChange={(e) => {
+                                  const value = e.target.value;
+                                  onUpdateChoice(option.id, choice.value, {
+                                    priceDeltaCents: value === '' ? undefined : parseInt(value, 10) || 0
+                                  });
+                                }}
+                                onBlur={(e) => {
+                                  const value = e.target.value;
+                                  if (value === '') {
+                                    onUpdateChoice(option.id, choice.value, { priceDeltaCents: undefined });
+                                  }
+                                }}
+                                placeholder="0 (optional)"
+                                className="bg-[#0f172a] border-slate-600 text-slate-100 text-sm"
+                              />
+                              {choice.priceDeltaCents !== undefined && choice.priceDeltaCents !== null ? (
+                                <div className="text-xs text-slate-400 mt-1">
+                                  {choice.priceDeltaCents >= 0 ? '+' : ''}${((choice.priceDeltaCents || 0) / 100).toFixed(2)}
+                                </div>
+                              ) : (
+                                <div className="text-[11px] text-slate-500 mt-1">
+                                  Optional metadata for variant-level pricing context. Existing additive impacts still apply separately.
+                                </div>
+                              )}
+                            </div>
+
+                            <div>
+                              <Label className="text-xs text-slate-400 mb-1 block">Resolved Material Override</Label>
+                              <MaterialIdSearchField
+                                value={choice.materialOverride?.materialId ?? ''}
+                                onChange={(nextMaterialId) =>
+                                  onUpdateChoice(option.id, choice.value, {
+                                    materialOverride: nextMaterialId ? { materialId: nextMaterialId } : undefined,
+                                  })
                                 }
-                              }}
-                              placeholder="0 (optional)"
-                              className="bg-[#0f172a] border-slate-600 text-slate-100 text-sm"
-                            />
-                            {choice.priceDeltaCents !== undefined && choice.priceDeltaCents !== null && (
-                              <div className="text-xs text-slate-400 mt-1">
-                                {choice.priceDeltaCents >= 0 ? '+' : ''}${((choice.priceDeltaCents || 0) / 100).toFixed(2)}
+                                onRequestAddMaterial={() => {}}
+                                canCreateMaterials={false}
+                                showUsageValidation={false}
+                              />
+                              <div className="text-[11px] text-slate-500 mt-1">
+                                Use this when the selected choice should resolve to a canonical material, separate from additive usage rules.
                               </div>
-                            )}
+                            </div>
+
+                            <div>
+                              <Label className="text-xs text-slate-400 mb-1 block">Workflow Context Tags</Label>
+                              <Textarea
+                                value={formatWorkflowTags(choice.workflowTags)}
+                                onChange={(e) =>
+                                  onUpdateChoice(option.id, choice.value, {
+                                    workflowTags: parseWorkflowTags(e.target.value),
+                                  })
+                                }
+                                placeholder="acm, rigid, thickness:3mm"
+                                className="bg-[#0f172a] border-slate-600 text-slate-100 text-sm min-h-[72px]"
+                              />
+                              <div className="text-[11px] text-slate-500 mt-1">
+                                Comma or newline separated tags for downstream workflow context.
+                              </div>
+                            </div>
                           </div>
 
                           {/* Choice-level Pricing Impacts (v2.1) */}
@@ -978,13 +1067,15 @@ function MaterialIdSearchField({
   onRequestAddMaterial,
   createdMaterialOverride,
   canCreateMaterials,
+  showUsageValidation = true,
 }: {
   value: string;
   onChange: (materialId: string) => void;
-  quantityBasis: QuantityBasis;
+  quantityBasis?: QuantityBasis;
   onRequestAddMaterial: () => void;
   createdMaterialOverride?: MaterialSearchItem | null;
   canCreateMaterials: boolean;
+  showUsageValidation?: boolean;
 }) {
   const [open, setOpen] = React.useState(false);
   const [searchText, setSearchText] = React.useState('');
@@ -1020,9 +1111,14 @@ function MaterialIdSearchField({
 
   const isMissingMaterial = !!value && !selectedMaterial && !materialByIdQuery.isLoading;
 
-  const impliedUom = impliedUomForBasis(quantityBasis);
+  const impliedUom = quantityBasis ? impliedUomForBasis(quantityBasis) : null;
   const selectedMaterialUom = normalizeMaterialUom(selectedMaterial?.unitOfMeasure);
-  const hasUomMismatch = !!selectedMaterial && !!selectedMaterialUom && selectedMaterialUom !== impliedUom;
+  const hasUomMismatch =
+    showUsageValidation &&
+    !!selectedMaterial &&
+    !!selectedMaterialUom &&
+    !!impliedUom &&
+    selectedMaterialUom !== impliedUom;
 
   return (
     <div className="space-y-1">
