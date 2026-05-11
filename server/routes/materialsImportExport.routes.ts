@@ -594,37 +594,37 @@ inventory_unit
   Required : No
   Allowed  : sheet | sqft | linear_ft | ml | ea
   Example  : sqft
-  Notes    : How stock quantity and reorder points are tracked. If blank,
-             defaults to unit_of_measure. Conversion is not automatic yet.
+  Notes    : Controls stock quantity and reorder points. If blank, defaults to
+             unit_of_measure. Conversion is not automatic yet.
 
 sell_price_unit
   Required : No
   Allowed  : sheet | sqft | linear_ft | ml | ea
   Example  : sqft
-  Notes    : How customer-facing material pricing is calculated. If blank,
-             defaults to unit_of_measure.
+  Notes    : Controls the base sell price unit. If blank, defaults to
+             unit_of_measure.
 
 wholesale_price_unit
   Required : No
   Allowed  : sheet | sqft | linear_ft | ml | ea
   Example  : sqft
-  Notes    : How wholesale/trade material pricing is calculated. If blank,
-             defaults to sell_price_unit, then unit_of_measure.
+  Notes    : Controls the wholesale sell price unit. If blank, defaults to
+             sell_price_unit, then unit_of_measure.
 
 vendor_cost_unit
   Required : No
   Allowed  : sheet | sqft | linear_ft | ml | ea
   Example  : sqft
-  Notes    : How the supplier charges for this material. If blank, defaults to
-             unit_of_measure.
+  Notes    : Controls the supplier cost basis for this material. If blank,
+             defaults to unit_of_measure.
 
 consumption_unit
   Required : No
   Allowed  : sheet | sqft | linear_ft | ml | ea
   Example  : sqft
-  Notes    : How production usage or reservations should consume this material.
-             This does not enable automatic conversion yet. If blank, defaults
-             to sell_price_unit, then unit_of_measure.
+  Notes    : Informational production consumption unit until conversion
+             profiles exist. This does not enable automatic conversion yet.
+             If blank, defaults to sell_price_unit, then unit_of_measure.
 
 category
   Required : No
