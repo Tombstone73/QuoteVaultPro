@@ -23,6 +23,7 @@ import {
     transitionMaterialReorderRequest,
     type InventoryAdjustmentDetailType,
 } from "../services/materialInventoryLogic";
+import { canAutoDeductMaterialStock } from "../lib/materialStockDeductionGuard";
 
 type InventoryMovementRecordInput = {
     organizationId: string;
@@ -58,6 +59,22 @@ function mapLegacyMovementType(type: InventoryAdjustmentDetailType): InventoryMo
     if (type === "job_usage") return "usage";
     if (type === "purchase_receipt" || type === "reorder_receipt") return "receipt";
     return "adjustment";
+}
+
+function withMaterialUnitFallbacks<T extends { unitOfMeasure?: string | null }>(material: T): T {
+    const unitOfMeasure = material.unitOfMeasure;
+    if (!unitOfMeasure) return material;
+    const sellPriceUnit = (material as any).sellPriceUnit || unitOfMeasure;
+    return {
+        ...material,
+        inventoryUnit: (material as any).inventoryUnit || unitOfMeasure,
+        sellPriceUnit,
+        wholesalePriceUnit: (material as any).wholesalePriceUnit || sellPriceUnit || unitOfMeasure,
+        vendorCostUnit: (material as any).vendorCostUnit || unitOfMeasure,
+        // TODO(material-units): consumptionUnit remains informational until conversion factors
+        // exist for roll sqft conversion, sheet yield conversion, and partial depletion tracking.
+        consumptionUnit: (material as any).consumptionUnit || sellPriceUnit || unitOfMeasure,
+    };
 }
 
 export class InventoryRepository {
@@ -121,7 +138,8 @@ export class InventoryRepository {
     }
 
     async createMaterial(organizationId: string, material: Omit<InsertMaterial, 'organizationId'>): Promise<Material> {
-        const [created] = await this.dbInstance.insert(materials).values({ ...material, organizationId } as any).returning();
+        const materialWithUnitFallbacks = withMaterialUnitFallbacks(material);
+        const [created] = await this.dbInstance.insert(materials).values({ ...materialWithUnitFallbacks, organizationId } as any).returning();
         return created;
     }
 
@@ -371,10 +389,30 @@ export class InventoryRepository {
     }
 
     // Auto-deduction for production
-    async autoDeductInventoryWhenOrderMovesToProduction(organizationId: string, orderId: string, userId: string): Promise<void> {
+    async autoDeductInventoryWhenOrderMovesToProduction(organizationId: string, orderId: string, userId: string): Promise<{
+        deductedCount: number;
+        skippedStockDeductionCount: number;
+        warnings: Array<{
+            lineItemId: string;
+            materialId: string;
+            materialUom: string | null;
+            usageUom: string | null;
+            reason: string;
+        }>;
+    }> {
         const lineItems = await this.dbInstance.select()
             .from(orderLineItems)
             .where(eq(orderLineItems.orderId, orderId));
+
+        let deductedCount = 0;
+        let skippedStockDeductionCount = 0;
+        const warnings: Array<{
+            lineItemId: string;
+            materialId: string;
+            materialUom: string | null;
+            usageUom: string | null;
+            reason: string;
+        }> = [];
 
         for (const lineItem of lineItems) {
             if (!lineItem.requiresInventory || !lineItem.materialId) continue;
@@ -393,23 +431,51 @@ export class InventoryRepository {
             if (!material) continue;
 
             let quantityNeeded = 0;
+            let usageUom = material.unitOfMeasure;
             if (material.type === 'sheet') {
                 quantityNeeded = lineItem.nestingConfigSnapshot?.totalSheets || lineItem.quantity;
+                usageUom = "sheet";
             } else if (material.type === 'roll' && material.unitOfMeasure === 'sqft') {
                 quantityNeeded = parseFloat(lineItem.sqft?.toString() || '0');
+                usageUom = "sqft";
             } else {
                 quantityNeeded = lineItem.quantity;
             }
             if (quantityNeeded <= 0) continue;
+
+            // TODO(material-units): consumptionUnit is informational until explicit roll/sheet
+            // conversion factors and partial depletion tracking exist.
+            const deductionDecision = canAutoDeductMaterialStock(material, usageUom);
 
             await this.dbInstance.insert(orderMaterialUsage).values({
                 orderId,
                 orderLineItemId: lineItem.id,
                 materialId: lineItem.materialId,
                 quantityUsed: `${quantityNeeded}`,
-                unitOfMeasure: material.unitOfMeasure,
+                unitOfMeasure: usageUom,
                 calculatedBy: 'auto',
             } as any);
+
+            if (!deductionDecision.allowed) {
+                skippedStockDeductionCount += 1;
+                warnings.push({
+                    lineItemId: lineItem.id,
+                    materialId: lineItem.materialId,
+                    materialUom: deductionDecision.materialUom,
+                    usageUom: deductionDecision.usageUom,
+                    reason: deductionDecision.reason,
+                });
+                console.warn("[InventoryDeductionGuard] Skipped automatic stock deduction", {
+                    organizationId,
+                    orderId,
+                    lineItemId: lineItem.id,
+                    materialId: lineItem.materialId,
+                    materialUom: deductionDecision.materialUom,
+                    usageUom: deductionDecision.usageUom,
+                    reason: deductionDecision.reason,
+                });
+                continue;
+            }
 
             await this.adjustInventory(
                 organizationId,
@@ -420,7 +486,10 @@ export class InventoryRepository {
                 `Auto-deducted for order ${orderId}, line item: ${lineItem.description}`,
                 orderId
             );
+            deductedCount += 1;
         }
+
+        return { deductedCount, skippedStockDeductionCount, warnings };
     }
 }
 

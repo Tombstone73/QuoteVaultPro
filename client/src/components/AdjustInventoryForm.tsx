@@ -56,6 +56,7 @@ export function AdjustInventoryForm({ materialId, material: providedMaterial, op
   const { toast } = useToast();
   const adjustMutation = useAdjustInventory(materialId);
   const currentQuantity = Number(material?.stockQuantity || 0);
+  const inventoryUnit = material?.inventoryUnit || material?.unitOfMeasure || "";
 
   const projectedQuantity = useMemo(() => {
     const values = form.getValues();
@@ -99,7 +100,7 @@ export function AdjustInventoryForm({ materialId, material: providedMaterial, op
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
           <div>
             <label className="text-sm font-medium">Current Quantity</label>
-            <Input value={material ? `${currentQuantity} ${material.unitOfMeasure}` : "Loading..."} readOnly />
+            <Input value={material ? `${currentQuantity} ${inventoryUnit}` : "Loading..."} readOnly />
           </div>
           <div>
             <label className="text-sm font-medium">Adjustment Mode</label>
@@ -118,7 +119,7 @@ export function AdjustInventoryForm({ materialId, material: providedMaterial, op
           </div>
           <div>
             <label className="text-sm font-medium">Projected Quantity</label>
-            <Input value={Number.isFinite(projectedQuantity) ? `${projectedQuantity} ${material?.unitOfMeasure || ""}`.trim() : "-"} readOnly />
+            <Input value={Number.isFinite(projectedQuantity) ? `${projectedQuantity} ${inventoryUnit}`.trim() : "-"} readOnly />
           </div>
           <div>
             <label className="text-sm font-medium">Reason</label>
