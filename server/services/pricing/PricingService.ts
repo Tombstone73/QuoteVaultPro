@@ -17,7 +17,7 @@ import type {
   OptionRuntimeSelectionContext,
 } from '../../../shared/optionTreeV2';
 import { PBV2_PRICING_VARIABLES, type PricingVariableDefinition } from '../../../shared/pbv2/pricingVariableRegistry';
-import { pbv2ToRuntimeSelectionContext } from '../../../shared/pbv2/pricingAdapter';
+import { pbv2ToRuntimeSelectionContext, resolvePricingV2BaseRates } from '../../../shared/pbv2/pricingAdapter';
 // @ts-ignore - NestingCalculator.js is plain JS without exported TS types
 import NestingCalculator from '../../NestingCalculator.js';
 
@@ -221,6 +221,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
         widthIn: widthIn ?? 0,
         heightIn: heightIn ?? 0,
         quantity,
+        sqft: (widthIn ?? 0) > 0 && (heightIn ?? 0) > 0 ? ((widthIn ?? 0) * (heightIn ?? 0)) / 144 : 0,
       },
     );
 
@@ -278,12 +279,25 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
   // Step 3: Load tree version
   const treeVersion = await loadTreeVersion(organizationId, treeVersionId);
 
+  const runtimeSelectionContext = pbv2ToRuntimeSelectionContext(
+    treeVersion.treeJson as any,
+    pbv2ExplicitSelections,
+    {
+      widthIn: widthIn ?? 0,
+      heightIn: heightIn ?? 0,
+      quantity,
+      sqft: (widthIn ?? 0) > 0 && (heightIn ?? 0) > 0 ? ((widthIn ?? 0) * (heightIn ?? 0)) / 144 : 0,
+    },
+  );
+
   // Step 4: Calculate base price from tree metadata with dimensions/quantity
   const baseDetails = calculateBasePriceDetails(treeVersion.treeJson, {
     widthIn: widthIn ?? 0,
     heightIn: heightIn ?? 0,
     quantity,
   }, {
+    explicitSelections: pbv2ExplicitSelections,
+    runtimeSelectionContext,
     pricingProfileKey: product.pricingProfileKey,
     pricingProfileConfig: product.pricingProfileConfig,
     productLegacy: {
@@ -304,15 +318,6 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     schemaVersion: 2,
     selected: pbv2ExplicitSelections || {},
   };
-  const runtimeSelectionContext = pbv2ToRuntimeSelectionContext(
-    treeVersion.treeJson as any,
-    pbv2ExplicitSelections,
-    {
-      widthIn: widthIn ?? 0,
-      heightIn: heightIn ?? 0,
-      quantity,
-    },
-  );
 
   // DEV: Build identifier and calculation path logging
   if (process.env.NODE_ENV === "development") {
@@ -451,12 +456,24 @@ export function evaluatePricingPreviewFromTree(input: {
     schemaVersion: 2,
     selected: pbv2ExplicitSelections,
   };
+  const runtimeSelectionContext = pbv2ToRuntimeSelectionContext(
+    input.treeJson as any,
+    pbv2ExplicitSelections,
+    {
+      widthIn,
+      heightIn,
+      quantity,
+      sqft: widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0,
+    },
+  );
 
   const baseDetails = calculateBasePriceDetails(input.treeJson, {
     widthIn,
     heightIn,
     quantity,
   }, {
+    explicitSelections: pbv2ExplicitSelections,
+    runtimeSelectionContext,
     pricingProfileKey: input.pricingProfileKey,
     pricingProfileConfig: input.pricingProfileConfig,
   });
@@ -758,6 +775,8 @@ function calculateBasePrice(
   tree: any,
   context: { widthIn: number; heightIn: number; quantity: number },
   pricingContext?: {
+    explicitSelections?: Record<string, any>;
+    runtimeSelectionContext?: OptionRuntimeSelectionContext;
     pricingProfileKey?: string | null;
     pricingProfileConfig?: unknown;
     productLegacy?: {
@@ -776,6 +795,8 @@ function calculateBasePriceDetails(
   tree: any,
   context: { widthIn: number; heightIn: number; quantity: number },
   pricingContext?: {
+    explicitSelections?: Record<string, any>;
+    runtimeSelectionContext?: OptionRuntimeSelectionContext;
     pricingProfileKey?: string | null;
     pricingProfileConfig?: unknown;
     productLegacy?: {
@@ -824,20 +845,9 @@ function calculateBasePriceDetails(
     );
   }
 
-  const qtyTiers = Array.isArray(pricingV2.qtyTiers) ? pricingV2.qtyTiers : [];
-  const sqftTiers = Array.isArray(pricingV2.sqftTiers) ? pricingV2.sqftTiers : [];
-
-  // Start with base rates
   let perSqftCents = typeof base.perSqftCents === 'number' ? base.perSqftCents : 0;
   let perPieceCents = typeof base.perPieceCents === 'number' ? base.perPieceCents : 0;
   let minimumChargeCents = typeof base.minimumChargeCents === 'number' ? base.minimumChargeCents : 0;
-
-  // Validate at least one pricing field is non-zero
-  if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0) {
-    throw new Error(
-      'This product needs base pricing configured before it can be quoted. Please edit the product and set at least one base price ($/sqft, $/piece, or minimum charge) in the Base Pricing section.'
-    );
-  }
 
   const { widthIn, heightIn, quantity } = context;
   const profileFromTree = typeof (meta as any)?.pricingProfileKey === 'string'
@@ -856,40 +866,27 @@ function calculateBasePriceDetails(
   const finishedHeightIn = orderedHeightIn + trimAllowanceY;
   const sqftPerItem = finishedWidthIn > 0 && finishedHeightIn > 0 ? (finishedWidthIn * finishedHeightIn) / 144 : 0;
 
-  // Apply best-match qtyTier (highest minQty <= quantity)
-  let bestQtyTier: any = null;
-  for (const tier of qtyTiers) {
-    if (!tier || typeof tier !== 'object') continue;
-    const minQty = typeof tier.minQty === 'number' ? tier.minQty : 0;
-    if (minQty <= quantity) {
-      if (!bestQtyTier || minQty > (bestQtyTier.minQty || 0)) {
-        bestQtyTier = tier;
-      }
+  const resolvedBaseRates = resolvePricingV2BaseRates(
+    tree,
+    pricingContext?.explicitSelections,
+    {
+      widthIn: orderedWidthIn,
+      heightIn: orderedHeightIn,
+      quantity,
+      sqft: sqftPerItem,
+    },
+    {
+      runtimeSelectionContext: pricingContext?.runtimeSelectionContext,
     }
-  }
+  );
+  perSqftCents = resolvedBaseRates.perSqftCents;
+  perPieceCents = resolvedBaseRates.perPieceCents;
+  minimumChargeCents = resolvedBaseRates.minimumChargeCents;
 
-  if (bestQtyTier) {
-    if (typeof bestQtyTier.perSqftCents === 'number') perSqftCents = bestQtyTier.perSqftCents;
-    if (typeof bestQtyTier.perPieceCents === 'number') perPieceCents = bestQtyTier.perPieceCents;
-    if (typeof bestQtyTier.minimumChargeCents === 'number') minimumChargeCents = bestQtyTier.minimumChargeCents;
-  }
-
-  // Apply best-match sqftTier (highest minSqft <= sqftPerItem)
-  let bestSqftTier: any = null;
-  for (const tier of sqftTiers) {
-    if (!tier || typeof tier !== 'object') continue;
-    const minSqft = typeof tier.minSqft === 'number' ? tier.minSqft : 0;
-    if (minSqft <= sqftPerItem) {
-      if (!bestSqftTier || minSqft > (bestSqftTier.minSqft || 0)) {
-        bestSqftTier = tier;
-      }
-    }
-  }
-
-  if (bestSqftTier) {
-    if (typeof bestSqftTier.perSqftCents === 'number') perSqftCents = bestSqftTier.perSqftCents;
-    if (typeof bestSqftTier.perPieceCents === 'number') perPieceCents = bestSqftTier.perPieceCents;
-    if (typeof bestSqftTier.minimumChargeCents === 'number') minimumChargeCents = bestSqftTier.minimumChargeCents;
+  if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0) {
+    throw new Error(
+      'This product needs base pricing configured before it can be quoted. Please edit the product and set at least one base price ($/sqft, $/piece, or minimum charge) in the Base Pricing section.'
+    );
   }
 
   // Compute line base total: perSqft applies to total sqft across all items

@@ -26,6 +26,10 @@ type EdgeRec = {
   condition: unknown;
 };
 
+type ChoicePricingOverrideMode = "none" | "set_base_rate" | "add_base_rate" | "multiply_base_rate";
+type ChoicePricingOverrideUnit = "perSqft" | "perPiece" | "minimumCharge";
+type ChoicePricingOverrideAppliesTo = "base" | "area" | "quantity";
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object") return null;
   return value as Record<string, unknown>;
@@ -321,6 +325,58 @@ function extractChildItemEffects(node: Record<string, unknown>): unknown[] {
   const price = asRecord((node as any).price) ?? asRecord((node as any).data);
   const effects = price ? (price as any).childItemEffects : undefined;
   return Array.isArray(effects) ? effects : [];
+}
+
+function normalizeChoicePricingOverride(raw: unknown): {
+  mode: ChoicePricingOverrideMode;
+  amount?: number;
+  unit?: ChoicePricingOverrideUnit;
+  appliesTo?: ChoicePricingOverrideAppliesTo;
+} | null {
+  const override = asRecord(raw);
+  if (!override) return null;
+
+  const modeRaw = typeof (override as any).mode === "string" ? String((override as any).mode).trim() : "";
+  const mode =
+    modeRaw === "none" ||
+    modeRaw === "set_base_rate" ||
+    modeRaw === "add_base_rate" ||
+    modeRaw === "multiply_base_rate"
+      ? (modeRaw as ChoicePricingOverrideMode)
+      : null;
+  if (!mode) return null;
+
+  const amountRaw = (override as any).amount;
+  const amount = typeof amountRaw === "number" && Number.isFinite(amountRaw) ? amountRaw : undefined;
+
+  const unitRaw = typeof (override as any).unit === "string" ? String((override as any).unit).trim() : "";
+  const unit =
+    unitRaw === "perSqft" || unitRaw === "perPiece" || unitRaw === "minimumCharge"
+      ? (unitRaw as ChoicePricingOverrideUnit)
+      : undefined;
+
+  const appliesToRaw = typeof (override as any).appliesTo === "string" ? String((override as any).appliesTo).trim() : "";
+  const appliesTo =
+    appliesToRaw === "base" || appliesToRaw === "area" || appliesToRaw === "quantity"
+      ? (appliesToRaw as ChoicePricingOverrideAppliesTo)
+      : undefined;
+
+  return {
+    mode,
+    ...(amount !== undefined ? { amount } : {}),
+    ...(unit ? { unit } : {}),
+    ...(appliesTo ? { appliesTo } : {}),
+  };
+}
+
+function inferChoicePricingOverrideUnit(
+  override: Pick<{ unit?: ChoicePricingOverrideUnit; appliesTo?: ChoicePricingOverrideAppliesTo }, "unit" | "appliesTo">
+): ChoicePricingOverrideUnit | undefined {
+  if (override.unit) return override.unit;
+  if (override.appliesTo === "area") return "perSqft";
+  if (override.appliesTo === "quantity") return "perPiece";
+  if (override.appliesTo === "base") return "minimumCharge";
+  return undefined;
 }
 
 function extractEffectOutputs(node: Record<string, unknown>): unknown[] {
@@ -1888,6 +1944,11 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
     }
   }
 
+  const setBaseRateOverridesByUnit = new Map<
+    ChoicePricingOverrideUnit,
+    Array<{ nodeId: string; choiceValue: string; path: string }>
+  >();
+
   // Choice-level override metadata validation
   for (const n of nodes) {
     if (n.status === "DELETED") continue;
@@ -1937,6 +1998,89 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
             entityId: n.id,
           })
         );
+      }
+
+      if ((choice as any).pricingOverride !== undefined) {
+        const pricingOverride = normalizeChoicePricingOverride((choice as any).pricingOverride);
+        if (!pricingOverride) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_CHOICE_PRICING_OVERRIDE_INVALID",
+              message: "pricingOverride.mode must be one of: none, set_base_rate, add_base_rate, multiply_base_rate",
+              path: `${cPath}.pricingOverride.mode`,
+              entityId: n.id,
+            })
+          );
+        } else if (pricingOverride.mode !== "none") {
+          if (pricingOverride.amount === undefined) {
+            findings.push(
+              errorFinding({
+                code: "PBV2_E_CHOICE_PRICING_OVERRIDE_INVALID",
+                message: "pricingOverride.amount is required when pricingOverride.mode is active",
+                path: `${cPath}.pricingOverride.amount`,
+                entityId: n.id,
+              })
+            );
+          } else if (
+            (pricingOverride.mode === "set_base_rate" || pricingOverride.mode === "add_base_rate") &&
+            (!Number.isInteger(pricingOverride.amount) || pricingOverride.amount < 0)
+          ) {
+            findings.push(
+              errorFinding({
+                code: "PBV2_E_CHOICE_PRICING_OVERRIDE_INVALID",
+                message: "Base-rate pricingOverride.amount must be a non-negative integer number of cents",
+                path: `${cPath}.pricingOverride.amount`,
+                entityId: n.id,
+              })
+            );
+          } else if (pricingOverride.mode === "multiply_base_rate" && pricingOverride.amount < 0) {
+            findings.push(
+              errorFinding({
+                code: "PBV2_E_CHOICE_PRICING_OVERRIDE_INVALID",
+                message: "multiply_base_rate amount must be non-negative",
+                path: `${cPath}.pricingOverride.amount`,
+                entityId: n.id,
+              })
+            );
+          }
+
+          const overrideUnit = inferChoicePricingOverrideUnit(pricingOverride);
+          if (!overrideUnit) {
+            findings.push(
+              errorFinding({
+                code: "PBV2_E_CHOICE_PRICING_OVERRIDE_INVALID",
+                message: "pricingOverride.unit is required for active pricing overrides",
+                path: `${cPath}.pricingOverride.unit`,
+                entityId: n.id,
+              })
+            );
+          } else {
+            if (
+              (overrideUnit === "perSqft" && pricingOverride.appliesTo && pricingOverride.appliesTo !== "area") ||
+              (overrideUnit === "perPiece" && pricingOverride.appliesTo && pricingOverride.appliesTo !== "quantity") ||
+              (overrideUnit === "minimumCharge" && pricingOverride.appliesTo && pricingOverride.appliesTo !== "base")
+            ) {
+              findings.push(
+                warningFinding({
+                  code: "PBV2_W_CHOICE_PRICING_OVERRIDE_APPLIES_TO_MISMATCH",
+                  message: "pricingOverride.appliesTo does not match pricingOverride.unit",
+                  path: `${cPath}.pricingOverride.appliesTo`,
+                  entityId: n.id,
+                })
+              );
+            }
+
+            if (pricingOverride.mode === "set_base_rate") {
+              const existing = setBaseRateOverridesByUnit.get(overrideUnit) ?? [];
+              existing.push({
+                nodeId: n.id,
+                choiceValue: choiceValue ?? `choice_${i}`,
+                path: cPath,
+              });
+              setBaseRateOverridesByUnit.set(overrideUnit, existing);
+            }
+          }
+        }
       }
 
       const materialOverride = asRecord((choice as any).materialOverride);
@@ -2028,6 +2172,28 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
       }
     }
   }
+
+  setBaseRateOverridesByUnit.forEach((entries, unit) => {
+    const reachableEntries = entries.filter((entry) => reachable.has(entry.nodeId));
+    const distinctReachableNodeIds = Array.from(new Set(reachableEntries.map((entry) => entry.nodeId)));
+    if (distinctReachableNodeIds.length > 1) {
+      findings.push(
+        warningFinding({
+          code: "PBV2_W_CHOICE_PRICING_OVERRIDE_POTENTIAL_CONFLICT",
+          message: `Multiple reachable choices can set the same base pricing unit (${unit}); runtime pricing will reject conflicting active selections`,
+          path: "tree.nodes",
+          context: {
+            unit,
+            entries: reachableEntries.map((entry) => ({
+              nodeId: entry.nodeId,
+              choiceValue: entry.choiceValue,
+              path: entry.path,
+            })),
+          },
+        })
+      );
+    }
+  });
 
   // Weight validation: check for negative weights (ERROR)
   const negativeWeights: Array<{ path: string; value: number; label?: string }> = [];

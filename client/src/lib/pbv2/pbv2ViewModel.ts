@@ -12,7 +12,7 @@
  * - Keep all edits local until "Save Draft" is called
  */
 
-import type { ChoiceMaterialOverride, OptionNodeV2, PricingImpact } from '@shared/optionTreeV2';
+import type { ChoiceMaterialOverride, ChoicePricingOverride, OptionNodeV2, PricingImpact } from '@shared/optionTreeV2';
 
 /**
  * CANONICAL PBV2 GRAPH RULES (enforced by normalizeTreeJson):
@@ -336,6 +336,7 @@ type PBV2Node = {
     sortOrder?: number;
     weightOz?: number;
     priceDeltaCents?: number;
+    pricingOverride?: ChoicePricingOverride;
     materialOverride?: ChoiceMaterialOverride;
     workflowTags?: string[];
     inventoryConsumption?: Array<{ materialId: string; quantityBasis: "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed"; multiplier: number; wastePercent?: number; fixedQty?: number }>;
@@ -750,6 +751,7 @@ export function createUpdateOptionPatch(
       description?: string;
       sortOrder?: number;
       priceDeltaCents?: number;
+      pricingOverride?: ChoicePricingOverride;
       materialOverride?: ChoiceMaterialOverride;
       workflowTags?: string[];
       inventoryConsumption?: Array<{ materialId: string; quantityBasis: "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed"; multiplier: number; wastePercent?: number; fixedQty?: number }>;
@@ -887,6 +889,7 @@ export function createUpdateChoicePatch(
     description?: string;
     priceDeltaCents?: number;
     pricingImpact?: PricingImpact[];
+    pricingOverride?: ChoicePricingOverride;
     materialOverride?: ChoiceMaterialOverride;
     inventoryConsumption?: Array<{ materialId: string; quantityBasis: "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed"; multiplier: number; wastePercent?: number; fixedQty?: number }>;
     workflowTags?: string[];
@@ -942,6 +945,10 @@ export function createUpdateChoicePatch(
       if (Object.prototype.hasOwnProperty.call(updates, 'pricingImpact')) {
         if (updates.pricingImpact === undefined) delete updated.pricingImpact;
         else updated.pricingImpact = updates.pricingImpact;
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'pricingOverride')) {
+        if (updates.pricingOverride === undefined) delete updated.pricingOverride;
+        else updated.pricingOverride = updates.pricingOverride;
       }
       if (Object.prototype.hasOwnProperty.call(updates, 'materialOverride')) {
         if (updates.materialOverride === undefined) delete updated.materialOverride;
