@@ -33,6 +33,7 @@ interface Props {
 export function RequestMaterialReorderDialog({ open, onOpenChange, material, vendors }: Props) {
   const { toast } = useToast();
   const createMutation = useCreateMaterialReorderRequest(material.id);
+  const inventoryUnit = material.inventoryUnit || material.unitOfMeasure;
   const form = useForm<RequestValues>({
     resolver: zodResolver(requestSchema),
     defaultValues: {
@@ -68,11 +69,11 @@ export function RequestMaterialReorderDialog({ open, onOpenChange, material, ven
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
           <div>
             <label className="text-sm font-medium">Current Quantity</label>
-            <Input value={`${Number(material.stockQuantity || 0)} ${material.unitOfMeasure}`} readOnly />
+            <Input value={`${Number(material.stockQuantity || 0)} ${inventoryUnit}`} readOnly />
           </div>
           <div>
             <label className="text-sm font-medium">Min Stock Alert</label>
-            <Input value={`${Number(material.minStockAlert || 0)} ${material.unitOfMeasure}`} readOnly />
+            <Input value={`${Number(material.minStockAlert || 0)} ${inventoryUnit}`} readOnly />
           </div>
           <div>
             <label className="text-sm font-medium">Requested Quantity</label>

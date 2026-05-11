@@ -296,9 +296,9 @@ export function MaterialsSettingsPanel() {
               <TitanTableHead>Material Name</TitanTableHead>
               <TitanTableHead>SKU</TitanTableHead>
               <TitanTableHead>Category / Type</TitanTableHead>
-              <TitanTableHead>Unit</TitanTableHead>
-              <TitanTableHead>Quantity On Hand</TitanTableHead>
-              <TitanTableHead>Min Stock Alert</TitanTableHead>
+              <TitanTableHead>Catalog Unit</TitanTableHead>
+              <TitanTableHead>Stock Quantity</TitanTableHead>
+              <TitanTableHead>Minimum Stock Alert</TitanTableHead>
               <TitanTableHead>Status</TitanTableHead>
               <TitanTableHead>Supplier / Vendor</TitanTableHead>
               <TitanTableHead>Actions</TitanTableHead>

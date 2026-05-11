@@ -4535,6 +4535,11 @@ export const materials = pgTable("materials", {
   type: varchar("type", { length: 50 }).notNull(), // sheet, roll, ink, consumable
   category: varchar("category", { length: 100 }), // optional category for grouping
   unitOfMeasure: varchar("unit_of_measure", { length: 50 }).notNull(), // sheet, sqft, linear_ft, ml, ea
+  inventoryUnit: varchar("inventory_unit", { length: 50 }),
+  sellPriceUnit: varchar("sell_price_unit", { length: 50 }),
+  wholesalePriceUnit: varchar("wholesale_price_unit", { length: 50 }),
+  vendorCostUnit: varchar("vendor_cost_unit", { length: 50 }),
+  consumptionUnit: varchar("consumption_unit", { length: 50 }),
   width: decimal("width", { precision: 10, scale: 2 }), // nullable for width dimension (sheet width or roll width)
   height: decimal("height", { precision: 10, scale: 2 }), // nullable for height dimension (sheet only)
   thickness: decimal("thickness", { precision: 10, scale: 4 }), // nullable for thickness
@@ -4570,6 +4575,12 @@ export const materials = pgTable("materials", {
   index("materials_preferred_vendor_id_idx").on(table.preferredVendorId),
 ]);
 
+const materialUnitSchema = z.enum(["sheet", "sqft", "linear_ft", "ml", "ea"]);
+const optionalMaterialUnitSchema = z.preprocess(
+  (v) => (v === "" || v == null ? undefined : v),
+  materialUnitSchema.optional().nullable()
+);
+
 const materialBaseSchema = createInsertSchema(materials).omit({
   id: true,
   createdAt: true,
@@ -4577,7 +4588,12 @@ const materialBaseSchema = createInsertSchema(materials).omit({
   organizationId: true,
 }).extend({
   type: z.enum(["sheet", "roll", "ink", "consumable"]),
-  unitOfMeasure: z.enum(["sheet", "sqft", "linear_ft", "ml", "ea"]),
+  unitOfMeasure: materialUnitSchema,
+  inventoryUnit: optionalMaterialUnitSchema,
+  sellPriceUnit: optionalMaterialUnitSchema,
+  wholesalePriceUnit: optionalMaterialUnitSchema,
+  vendorCostUnit: optionalMaterialUnitSchema,
+  consumptionUnit: optionalMaterialUnitSchema,
   thicknessUnit: z.enum(["in", "mm", "mil", "gauge"]).optional().nullable(),
   costPerUnit: z.coerce.number().nonnegative(),
   // Numeric/decimal fields: accept strings from forms, treat "" and NaN as undefined.

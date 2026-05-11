@@ -18,6 +18,9 @@ const optionalNumber = (schema: z.ZodNumber) =>
     schema.optional()
   );
 
+const LEGACY_UNIT_HELPER_TEXT =
+  "Legacy/default unit for this material. Existing pricing, inventory, CSV, and some usage behavior may still fall back to this.";
+
 const createMaterialSchema = z
   .object({
   name: z.string().trim().min(1, "Material name is required"),
@@ -274,7 +277,7 @@ export function CreateMaterialDialog({
                 name="unitOfMeasure"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Unit</FormLabel>
+                    <FormLabel>Catalog Unit</FormLabel>
                     <Select value={field.value} onValueChange={field.onChange}>
                       <FormControl>
                         <SelectTrigger>
@@ -289,6 +292,9 @@ export function CreateMaterialDialog({
                         <SelectItem value="ea">Each</SelectItem>
                       </SelectContent>
                     </Select>
+                    <p className="text-xs text-muted-foreground">
+                      {LEGACY_UNIT_HELPER_TEXT}
+                    </p>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -300,7 +306,7 @@ export function CreateMaterialDialog({
               name="costPerUnit"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Cost / Unit</FormLabel>
+                  <FormLabel>Base Sell Price</FormLabel>
                   <FormControl>
                     <Input
                       inputMode="decimal"
@@ -314,6 +320,9 @@ export function CreateMaterialDialog({
                       }}
                     />
                   </FormControl>
+                  <p className="text-xs text-muted-foreground">
+                    Recorded per Sell Price Unit, which falls back to the Catalog Unit when not set. Existing quote pricing math is unchanged in this phase.
+                  </p>
                   <FormMessage />
                 </FormItem>
               )}

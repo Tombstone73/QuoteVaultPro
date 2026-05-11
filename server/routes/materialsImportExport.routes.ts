@@ -47,6 +47,11 @@ const TEMPLATE_COLUMNS = [
   "sku",                // required → materials.sku
   "material_type",      // required → materials.type (sheet|roll|ink|consumable)
   "unit_of_measure",    // required → materials.unitOfMeasure (sheet|sqft|linear_ft|ml|ea)
+  "inventory_unit",     // optional → materials.inventoryUnit (falls back to unit_of_measure)
+  "sell_price_unit",    // optional → materials.sellPriceUnit (falls back to unit_of_measure)
+  "wholesale_price_unit",// optional → materials.wholesalePriceUnit (falls back to sell_price_unit, then unit_of_measure)
+  "vendor_cost_unit",   // optional → materials.vendorCostUnit (falls back to unit_of_measure)
+  "consumption_unit",   // optional → materials.consumptionUnit (falls back to sell_price_unit, then unit_of_measure)
   "category",           // → materials.category
   "color",              // → materials.color
   "width",              // → materials.width (sheet width or roll width)
@@ -78,6 +83,11 @@ const TEMPLATE_EXAMPLE_ROW: Record<string, string> = {
   sku:                    "VNL-3M-PGW-54",
   material_type:          "roll",
   unit_of_measure:        "sqft",
+  inventory_unit:         "sqft",
+  sell_price_unit:        "sqft",
+  wholesale_price_unit:   "sqft",
+  vendor_cost_unit:       "sqft",
+  consumption_unit:       "sqft",
   category:               "Vinyl",
   color:                  "White",
   width:                  "54",
@@ -114,6 +124,11 @@ function normalizeRow(row: Record<string, string>): {
   sku: string;
   type: string;
   unitOfMeasure: string;
+  inventoryUnit: string | undefined;
+  sellPriceUnit: string | undefined;
+  wholesalePriceUnit: string | undefined;
+  vendorCostUnit: string | undefined;
+  consumptionUnit: string | undefined;
   category: string | undefined;
   color: string | undefined;
   width: number | undefined;
@@ -139,11 +154,18 @@ function normalizeRow(row: Record<string, string>): {
   materialId: string | undefined;
   vendorName: string | undefined;
 } {
+  const unitOfMeasure = (row['unit_of_measure'] || '').trim().toLowerCase();
+  const sellPriceUnit = (row['sell_price_unit'] || '').trim().toLowerCase() || unitOfMeasure || undefined;
   return {
     name:             (row['material_name'] || '').trim(),
     sku:              (row['sku'] || '').trim(),
     type:             (row['material_type'] || '').trim().toLowerCase(),
-    unitOfMeasure:    (row['unit_of_measure'] || '').trim().toLowerCase(),
+    unitOfMeasure,
+    inventoryUnit:    (row['inventory_unit'] || '').trim().toLowerCase() || unitOfMeasure || undefined,
+    sellPriceUnit,
+    wholesalePriceUnit: (row['wholesale_price_unit'] || '').trim().toLowerCase() || sellPriceUnit || unitOfMeasure || undefined,
+    vendorCostUnit:   (row['vendor_cost_unit'] || '').trim().toLowerCase() || unitOfMeasure || undefined,
+    consumptionUnit:  (row['consumption_unit'] || '').trim().toLowerCase() || sellPriceUnit || unitOfMeasure || undefined,
     category:         (row['category'] || '').trim() || undefined,
     color:            (row['color'] || '').trim() || undefined,
     width:            parseNum(row['width']),
@@ -190,6 +212,17 @@ function validateNormalizedRow(n: ReturnType<typeof normalizeRow>): string[] {
   } else if (!VALID_UNITS.includes(n.unitOfMeasure)) {
     errors.push(`unit_of_measure must be one of: ${VALID_UNITS.join(', ')} (got "${n.unitOfMeasure}")`);
   }
+  for (const [field, value] of [
+    ['inventory_unit', n.inventoryUnit],
+    ['sell_price_unit', n.sellPriceUnit],
+    ['wholesale_price_unit', n.wholesalePriceUnit],
+    ['vendor_cost_unit', n.vendorCostUnit],
+    ['consumption_unit', n.consumptionUnit],
+  ] as const) {
+    if (value && !VALID_UNITS.includes(value)) {
+      errors.push(`${field} must be one of: ${VALID_UNITS.join(', ')} (got "${value}")`);
+    }
+  }
   if (n.costPerUnit == null) {
     errors.push('cost_per_unit is required');
   } else if (n.costPerUnit < 0) {
@@ -230,6 +263,11 @@ function buildMaterialPayload(
     sku: n.sku,
     type: n.type,
     unitOfMeasure: n.unitOfMeasure,
+    inventoryUnit: n.inventoryUnit ?? n.unitOfMeasure,
+    sellPriceUnit: n.sellPriceUnit ?? n.unitOfMeasure,
+    wholesalePriceUnit: n.wholesalePriceUnit ?? n.sellPriceUnit ?? n.unitOfMeasure,
+    vendorCostUnit: n.vendorCostUnit ?? n.unitOfMeasure,
+    consumptionUnit: n.consumptionUnit ?? n.sellPriceUnit ?? n.unitOfMeasure,
     category: n.category ?? null,
     color: n.color ?? null,
     width: n.width ?? null,
@@ -299,6 +337,11 @@ export function registerMaterialsImportExportRoutes(
           sku: 'CORO-4MM-WHT-48X96',
           material_type: 'sheet',
           unit_of_measure: 'sqft',
+          inventory_unit: 'sqft',
+          sell_price_unit: 'sqft',
+          wholesale_price_unit: 'sqft',
+          vendor_cost_unit: 'sqft',
+          consumption_unit: 'sqft',
           category: 'Substrate',
           color: 'White',
           width: '48',
@@ -329,6 +372,11 @@ export function registerMaterialsImportExportRoutes(
           sku: 'VINYL-IJ35C-54',
           material_type: 'roll',
           unit_of_measure: 'sqft',
+          inventory_unit: 'sqft',
+          sell_price_unit: 'sqft',
+          wholesale_price_unit: 'sqft',
+          vendor_cost_unit: 'sqft',
+          consumption_unit: 'sqft',
           category: 'Roll Media',
           color: 'White',
           width: '54',
@@ -359,6 +407,11 @@ export function registerMaterialsImportExportRoutes(
           sku: 'LAM-GLOSS-54',
           material_type: 'roll',
           unit_of_measure: 'sqft',
+          inventory_unit: 'sqft',
+          sell_price_unit: 'sqft',
+          wholesale_price_unit: 'sqft',
+          vendor_cost_unit: 'sqft',
+          consumption_unit: 'sqft',
           category: 'Laminate',
           color: 'Clear',
           width: '54',
@@ -389,6 +442,11 @@ export function registerMaterialsImportExportRoutes(
           sku: 'STAKE-WIRE-30',
           material_type: 'consumable',
           unit_of_measure: 'ea',
+          inventory_unit: 'ea',
+          sell_price_unit: 'ea',
+          wholesale_price_unit: 'ea',
+          vendor_cost_unit: 'ea',
+          consumption_unit: 'ea',
           category: 'Accessory',
           color: 'Silver',
           width: '',
@@ -419,6 +477,11 @@ export function registerMaterialsImportExportRoutes(
           sku: 'INK-HP792-BLK-775',
           material_type: 'ink',
           unit_of_measure: 'ml',
+          inventory_unit: 'ml',
+          sell_price_unit: 'ml',
+          wholesale_price_unit: 'ml',
+          vendor_cost_unit: 'ml',
+          consumption_unit: 'ml',
           category: 'Ink',
           color: 'Black',
           width: '',
@@ -524,9 +587,44 @@ unit_of_measure
   Required : YES
   Allowed  : sheet | sqft | linear_ft | ml | ea
   Example  : sqft
-  Notes    : The unit your pricing formulas operate on.
-             Roll and sheet materials are typically "sqft".
-             Inks use "ml".  Accessories/stakes/each-items use "ea".
+  Notes    : Legacy/default catalog unit. Existing pricing, inventory, CSV, and
+             some usage behavior may still fall back to this.
+
+inventory_unit
+  Required : No
+  Allowed  : sheet | sqft | linear_ft | ml | ea
+  Example  : sqft
+  Notes    : How stock quantity and reorder points are tracked. If blank,
+             defaults to unit_of_measure. Conversion is not automatic yet.
+
+sell_price_unit
+  Required : No
+  Allowed  : sheet | sqft | linear_ft | ml | ea
+  Example  : sqft
+  Notes    : How customer-facing material pricing is calculated. If blank,
+             defaults to unit_of_measure.
+
+wholesale_price_unit
+  Required : No
+  Allowed  : sheet | sqft | linear_ft | ml | ea
+  Example  : sqft
+  Notes    : How wholesale/trade material pricing is calculated. If blank,
+             defaults to sell_price_unit, then unit_of_measure.
+
+vendor_cost_unit
+  Required : No
+  Allowed  : sheet | sqft | linear_ft | ml | ea
+  Example  : sqft
+  Notes    : How the supplier charges for this material. If blank, defaults to
+             unit_of_measure.
+
+consumption_unit
+  Required : No
+  Allowed  : sheet | sqft | linear_ft | ml | ea
+  Example  : sqft
+  Notes    : How production usage or reservations should consume this material.
+             This does not enable automatic conversion yet. If blank, defaults
+             to sell_price_unit, then unit_of_measure.
 
 category
   Required : No
@@ -569,14 +667,14 @@ cost_per_unit
   Required : YES
   Type     : Decimal (USD — no $ symbol)
   Example  : 0.15
-  Notes    : Your cost per unit_of_measure. For sqft materials this is $/sqft.
+  Notes    : Your base sell price per sell_price_unit. For sqft materials this is $/sqft.
              For ea materials this is cost per each item.
 
 wholesale_base_rate
   Required : No
   Type     : Decimal (USD)
   Example  : 1.80
-  Notes    : Rate charged to wholesale customers per unit_of_measure.
+  Notes    : Rate charged to wholesale customers per wholesale_price_unit.
 
 wholesale_min_charge
   Required : No
@@ -588,7 +686,7 @@ retail_base_rate
   Required : No
   Type     : Decimal (USD)
   Example  : 2.50
-  Notes    : Rate charged to retail customers per unit_of_measure.
+  Notes    : Rate charged to retail customers per sell_price_unit.
 
 retail_min_charge
   Required : No
@@ -600,7 +698,7 @@ stock_quantity
   Required : No  (defaults to 0)
   Type     : Integer
   Example  : 50
-  Notes    : Current on-hand quantity in unit_of_measure units.
+  Notes    : Current on-hand quantity in inventory_unit units.
 
 reorder_point
   Required : No  (defaults to 0)
@@ -627,7 +725,7 @@ vendor_cost_per_unit
   Required : No
   Type     : Decimal (USD)
   Example  : 0.12
-  Notes    : What the vendor charges you per unit_of_measure.
+  Notes    : What the vendor charges you per vendor_cost_unit.
 
 roll_length_ft
   Required : No  (recommended for roll materials)
@@ -739,6 +837,11 @@ TIPS
           sku:                    m.sku,
           material_type:          m.type,
           unit_of_measure:        m.unitOfMeasure,
+          inventory_unit:         m.inventoryUnit ?? m.unitOfMeasure,
+          sell_price_unit:        m.sellPriceUnit ?? m.unitOfMeasure,
+          wholesale_price_unit:   m.wholesalePriceUnit ?? m.sellPriceUnit ?? m.unitOfMeasure,
+          vendor_cost_unit:       m.vendorCostUnit ?? m.unitOfMeasure,
+          consumption_unit:       m.consumptionUnit ?? m.sellPriceUnit ?? m.unitOfMeasure,
           category:               m.category ?? '',
           color:                  m.color ?? '',
           width:                  m.width ?? '',

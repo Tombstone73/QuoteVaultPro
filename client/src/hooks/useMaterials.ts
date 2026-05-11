@@ -10,6 +10,11 @@ export interface Material {
   type: "sheet" | "roll" | "ink" | "consumable";
   category?: string | null;
   unitOfMeasure: string;
+  inventoryUnit?: string | null;
+  sellPriceUnit?: string | null;
+  wholesalePriceUnit?: string | null;
+  vendorCostUnit?: string | null;
+  consumptionUnit?: string | null;
   width?: string | null;
   height?: string | null;
   thickness?: string | null;
@@ -164,6 +169,11 @@ export interface MaterialSearchItem {
   id: string;
   name: string;
   unitOfMeasure: string;
+  inventoryUnit?: string | null;
+  sellPriceUnit?: string | null;
+  wholesalePriceUnit?: string | null;
+  vendorCostUnit?: string | null;
+  consumptionUnit?: string | null;
   isActive: boolean;
 }
 
@@ -191,6 +201,11 @@ export function useMaterialsSearch(searchText: string, options?: { limit?: numbe
         id: String(m.id || ""),
         name: String(m.name || ""),
         unitOfMeasure: String(m.unitOfMeasure || ""),
+        inventoryUnit: m.inventoryUnit ?? m.unitOfMeasure ?? null,
+        sellPriceUnit: m.sellPriceUnit ?? m.unitOfMeasure ?? null,
+        wholesalePriceUnit: m.wholesalePriceUnit ?? m.sellPriceUnit ?? m.unitOfMeasure ?? null,
+        vendorCostUnit: m.vendorCostUnit ?? m.unitOfMeasure ?? null,
+        consumptionUnit: m.consumptionUnit ?? m.sellPriceUnit ?? m.unitOfMeasure ?? null,
         isActive: m?.isActive !== false,
       })).filter((m) => !!m.id && !!m.name);
     },

@@ -13,6 +13,7 @@ import {
 } from "@shared/schema";
 
 import { db } from "../db";
+import { canAutoDeductMaterialStock } from "../lib/materialStockDeductionGuard";
 
 export const productionStatusSchema = z.enum(["queued", "in_progress", "done"]);
 export const productionViewKeySchema = z.string().min(1);
@@ -603,8 +604,18 @@ const listReservedMaterialsForLineItem = async (tx: any, args: { organizationId:
       sourceKey: inventoryReservations.sourceKey,
       uom: inventoryReservations.uom,
       qty: inventoryReservations.qty,
+      materialType: materials.type,
+      materialUnitOfMeasure: materials.unitOfMeasure,
+      materialInventoryUnit: materials.inventoryUnit,
     })
     .from(inventoryReservations)
+    .leftJoin(
+      materials,
+      and(
+        eq(materials.organizationId, inventoryReservations.organizationId),
+        eq(materials.id, inventoryReservations.sourceKey),
+      ),
+    )
     .where(
       and(
         eq(inventoryReservations.organizationId, args.organizationId),
@@ -677,38 +688,75 @@ export const consumeReservedMaterialsForLineItem = async (
 
   const now = new Date();
   let consumedCount = 0;
+  let deductedCount = 0;
+  let skippedStockDeductionCount = 0;
+  const stockDeductionWarnings: Array<{
+    materialId: string;
+    materialUom: string | null;
+    usageUom: string | null;
+    reason: string;
+  }> = [];
 
   for (const row of reserved) {
     const materialId = String(row.sourceKey || "").trim();
     if (!materialId) continue;
     const qty = toQtyNumber2dp(row.qty);
     if (!Number.isFinite(qty) || qty <= 0) continue;
+    const usageUom = String(row.uom || "each");
+    const deductionDecision = canAutoDeductMaterialStock(
+      {
+        type: (row as any).materialType,
+        unitOfMeasure: (row as any).materialUnitOfMeasure,
+        inventoryUnit: (row as any).materialInventoryUnit,
+      },
+      usageUom,
+    );
 
     await tx.insert(orderMaterialUsage).values({
       orderId: args.orderId,
       orderLineItemId: args.lineItemId,
       materialId,
       quantityUsed: normalizeQty2dp(qty),
-      unitOfMeasure: String(row.uom || "each"),
+      unitOfMeasure: usageUom,
       calculatedBy: "auto",
     } as any);
 
-    await tx.insert(inventoryAdjustments).values({
-      materialId,
-      type: "job_usage",
-      quantityChange: normalizeQty2dp(-qty),
-      reason: `Auto-consumed from reservation for line item ${args.lineItemId}`,
-      orderId: args.orderId,
-      userId: args.userId,
-    } as any);
+    if (deductionDecision.allowed) {
+      await tx.insert(inventoryAdjustments).values({
+        materialId,
+        type: "job_usage",
+        quantityChange: normalizeQty2dp(-qty),
+        reason: `Auto-consumed from reservation for line item ${args.lineItemId}`,
+        orderId: args.orderId,
+        userId: args.userId,
+      } as any);
 
-    await tx
-      .update(materials)
-      .set({
-        stockQuantity: sql`${materials.stockQuantity} - ${normalizeQty2dp(qty)}`,
-        updatedAt: now,
-      } as any)
-      .where(and(eq(materials.organizationId, args.organizationId), eq(materials.id, materialId)));
+      await tx
+        .update(materials)
+        .set({
+          stockQuantity: sql`${materials.stockQuantity} - ${normalizeQty2dp(qty)}`,
+          updatedAt: now,
+        } as any)
+        .where(and(eq(materials.organizationId, args.organizationId), eq(materials.id, materialId)));
+      deductedCount += 1;
+    } else {
+      skippedStockDeductionCount += 1;
+      stockDeductionWarnings.push({
+        materialId,
+        materialUom: deductionDecision.materialUom,
+        usageUom: deductionDecision.usageUom,
+        reason: deductionDecision.reason,
+      });
+      console.warn("[InventoryDeductionGuard] Skipped automatic stock deduction", {
+        organizationId: args.organizationId,
+        orderId: args.orderId,
+        lineItemId: args.lineItemId,
+        materialId,
+        materialUom: deductionDecision.materialUom,
+        usageUom: deductionDecision.usageUom,
+        reason: deductionDecision.reason,
+      });
+    }
 
     consumedCount += 1;
   }
@@ -739,8 +787,11 @@ export const consumeReservedMaterialsForLineItem = async (
       orderId: args.orderId,
       materialFingerprint: fingerprint,
       consumedCount,
+      deductedCount,
+      skippedStockDeductionCount,
+      stockDeductionWarnings,
     },
   });
 
-  return { consumed: true, reason: "ok" as const, fingerprint, consumedCount };
+  return { consumed: true, reason: "ok" as const, fingerprint, consumedCount, deductedCount, skippedStockDeductionCount, stockDeductionWarnings };
 };
