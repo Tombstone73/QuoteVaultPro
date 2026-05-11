@@ -6,6 +6,7 @@ import {
 } from "./componentDiscounts";
 import { buildSymbolTable } from "./symbolTable";
 import { typeCheckCondition, typeCheckExpression } from "./typeChecker";
+import type { OptionRuntimeSelectionContext } from "../optionTreeV2";
 
 // Re-export weight calculation from OptionTreeV2 evaluator for consistent import path
 export { pbv2ToWeightTotal } from "../../server/services/optionTreeV2Evaluator";
@@ -768,6 +769,210 @@ function evaluateActiveComputeOutputs(nodes: NodeRec[], activeNodeIds: ReadonlyS
     const value = evalExpression(expr, evalCtx);
     evalCtx.computeOutputsByNodeId[id] = { [outKey]: value };
   }
+}
+
+function normalizeExplicitSelections(
+  selections: Pbv2Selections | Record<string, unknown> | undefined
+): Record<string, unknown> {
+  if (!selections) return {};
+  if ((selections as any).explicitSelections && typeof (selections as any).explicitSelections === "object") {
+    return (selections as any).explicitSelections as Record<string, unknown>;
+  }
+  return selections as Record<string, unknown>;
+}
+
+function unwrapSelectionValue(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  if (Object.prototype.hasOwnProperty.call(value, "value")) {
+    return (value as { value?: unknown }).value;
+  }
+  return value;
+}
+
+function extractSelectionKey(node: AnyRecord): string | null {
+  const payload = extractInputPayload(node);
+  if (payload && isNonEmptyString((payload as any).selectionKey)) {
+    return String((payload as any).selectionKey);
+  }
+  if (isNonEmptyString((node as any).selectionKey)) {
+    return String((node as any).selectionKey);
+  }
+  if (isNonEmptyString((node as any).key)) {
+    return String((node as any).key);
+  }
+  if (isNonEmptyString((node as any).id)) {
+    return String((node as any).id);
+  }
+  return null;
+}
+
+function extractChoiceOptions(node: AnyRecord): AnyRecord[] {
+  const directChoices = Array.isArray((node as any).choices) ? (node as any).choices : [];
+  if (directChoices.length > 0) {
+    return directChoices.map(asRecord).filter((choice: Record<string, unknown> | null): choice is AnyRecord => Boolean(choice));
+  }
+
+  const payload = extractInputPayload(node);
+  const constraints = payload ? asRecord((payload as any).constraints) : null;
+  const enumRec = constraints ? asRecord((constraints as any).enum) : null;
+  const options = enumRec ? (enumRec as any).options : undefined;
+  if (!Array.isArray(options)) return [];
+  return options.map(asRecord).filter((choice: Record<string, unknown> | null): choice is AnyRecord => Boolean(choice));
+}
+
+function buildEvalCtxForTree(
+  tree: AnyRecord,
+  selections: Pbv2Selections | Record<string, unknown> | undefined,
+  env: Pbv2Env | undefined,
+  opts?: { pricebook?: Record<string, number> }
+): {
+  nodes: NodeRec[];
+  edges: EdgeRec[];
+  explicitSelections: Record<string, unknown>;
+  inputDefaultsBySelectionKey: Record<string, unknown>;
+  evalCtx: EvalCtx;
+  activeNodeIds: Set<string>;
+} {
+  const nodes = extractNodes(tree);
+  const edges = extractEdges(tree);
+
+  const nodesById: Record<string, NodeRec> = {};
+  for (const n of nodes) nodesById[n.id] = n;
+
+  const explicitSelections = normalizeExplicitSelections(selections);
+  const envMap: Record<string, unknown> = { ...(env ?? {}) };
+
+  const inputDefaultsBySelectionKey: Record<string, unknown> = {};
+  const inputEnumOptionsBySelectionKey: Record<string, unknown[]> = {};
+  for (const n of nodes) {
+    if (n.status !== "ENABLED") continue;
+    if (n.type !== "INPUT") continue;
+    const payload = extractInputPayload(n.raw);
+    const selectionKey = payload && isNonEmptyString((payload as any).selectionKey) ? String((payload as any).selectionKey) : null;
+    if (!selectionKey) continue;
+    const def = extractInputDefault(n.raw);
+    if (def !== undefined) inputDefaultsBySelectionKey[selectionKey] = def;
+
+    const valueType = payload ? (payload as any).valueType ?? (payload as any).type ?? (payload as any).inputKind : undefined;
+    if (typeof valueType === "string" && valueType.toUpperCase() === "ENUM") {
+      const constraints = payload ? asRecord((payload as any).constraints) : null;
+      const enumRec = constraints ? asRecord((constraints as any).enum) : null;
+      const options = enumRec ? (enumRec as any).options : undefined;
+      if (Array.isArray(options)) inputEnumOptionsBySelectionKey[selectionKey] = options;
+    }
+  }
+
+  const evalCtx: EvalCtx = {
+    selections: explicitSelections,
+    inputDefaultsBySelectionKey,
+    inputEnumOptionsBySelectionKey,
+    computeOutputsByNodeId: {},
+    env: envMap,
+    pricebook: opts?.pricebook,
+  };
+
+  const activeNodeIds = resolveActiveNodeIds(tree, nodesById, edges, evalCtx);
+  evaluateActiveComputeOutputs(nodes, activeNodeIds, evalCtx);
+
+  return {
+    nodes,
+    edges,
+    explicitSelections,
+    inputDefaultsBySelectionKey,
+    evalCtx,
+    activeNodeIds,
+  };
+}
+
+export function pbv2ToRuntimeSelectionContext(
+  treeJson: unknown,
+  selections: Pbv2Selections | Record<string, unknown> | undefined,
+  env: Pbv2Env | undefined,
+  opts?: { pricebook?: Record<string, number> }
+): OptionRuntimeSelectionContext {
+  const tree = asRecord(treeJson);
+  if (!tree) throw new Error("Invalid PBV2 treeJson");
+
+  const prepared = buildEvalCtxForTree(tree, selections, env, opts);
+  const selectedChoices: Record<string, string> = {};
+  const resolvedChoices: OptionRuntimeSelectionContext["resolvedChoices"] = {};
+  const workflowTags = new Set<string>();
+
+  for (const node of prepared.nodes) {
+    if (node.status !== "ENABLED" || node.type !== "INPUT" || !prepared.activeNodeIds.has(node.id)) continue;
+
+    const selectionKey = extractSelectionKey(node.raw);
+    if (!selectionKey) continue;
+
+    const resolvedValue = Object.prototype.hasOwnProperty.call(prepared.explicitSelections, selectionKey)
+      ? unwrapSelectionValue(prepared.explicitSelections[selectionKey])
+      : unwrapSelectionValue(prepared.inputDefaultsBySelectionKey[selectionKey]);
+
+    if (resolvedValue === undefined || resolvedValue === null || resolvedValue === "") continue;
+
+    const resolvedStringValue = String(resolvedValue);
+    selectedChoices[selectionKey] = resolvedStringValue;
+
+    const choice = extractChoiceOptions(node.raw).find((entry) => String((entry as any).value ?? "") === resolvedStringValue);
+    if (!choice) continue;
+
+    const rawWorkflowTags: unknown[] = Array.isArray((choice as any).workflowTags) ? ((choice as any).workflowTags as unknown[]) : [];
+    const normalizedWorkflowTags: string[] = Array.from(
+      new Set(
+        rawWorkflowTags
+          .filter((tag: unknown): tag is string => typeof tag === "string")
+          .map((tag: string) => tag.trim())
+          .filter(Boolean)
+      )
+    );
+
+    for (const tag of normalizedWorkflowTags) workflowTags.add(tag);
+
+    const priceDeltaCentsRaw = (choice as any).priceDeltaCents;
+    const priceDeltaCents = Number.isInteger(priceDeltaCentsRaw) ? Number(priceDeltaCentsRaw) : undefined;
+    const pricingImpact = Array.isArray((choice as any).pricingImpact) ? ((choice as any).pricingImpact as any[]) : undefined;
+
+    const materialOverrideRaw = asRecord((choice as any).materialOverride);
+    const materialOverride =
+      materialOverrideRaw && isNonEmptyString((materialOverrideRaw as any).materialId)
+        ? { materialId: String((materialOverrideRaw as any).materialId) }
+        : undefined;
+
+    const inventoryConsumption = Array.isArray((choice as any).inventoryConsumption)
+      ? ((choice as any).inventoryConsumption as any[])
+      : undefined;
+
+    const hasVariantMetadata =
+      priceDeltaCents !== undefined ||
+      materialOverride !== undefined ||
+      normalizedWorkflowTags.length > 0;
+
+    resolvedChoices[selectionKey] = {
+      nodeId: node.id,
+      selectionKey,
+      optionLabel: isNonEmptyString((node.raw as any).label) ? String((node.raw as any).label) : selectionKey,
+      choiceValue: resolvedStringValue,
+      choiceLabel: isNonEmptyString((choice as any).label) ? String((choice as any).label) : resolvedStringValue,
+      pricing:
+        priceDeltaCents !== undefined || (pricingImpact && pricingImpact.length > 0)
+          ? {
+              ...(priceDeltaCents !== undefined ? { priceDeltaCents } : {}),
+              ...(pricingImpact && pricingImpact.length > 0 ? { pricingImpact: pricingImpact as any } : {}),
+            }
+          : undefined,
+      material: materialOverride,
+      inventoryConsumption: inventoryConsumption as any,
+      workflowTags: normalizedWorkflowTags.length > 0 ? normalizedWorkflowTags : undefined,
+      role: hasVariantMetadata ? "variant" : "modifier",
+    };
+  }
+
+  return {
+    selectedChoices,
+    resolvedChoices,
+    visibleNodeIds: Array.from(prepared.activeNodeIds),
+    workflowTags: Array.from(workflowTags).sort(),
+  };
 }
 
 /**
