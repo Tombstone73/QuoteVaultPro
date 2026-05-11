@@ -17,6 +17,8 @@ import { useMaterial, useMaterialsSearch, type MaterialSearchItem } from '@/hook
 import { useAuth } from '@/hooks/useAuth';
 
 type QuantityBasis = 'area_sqft' | 'perimeter_ft' | 'linear_ft' | 'each' | 'fixed';
+type PricingOverrideMode = 'none' | 'set_base_rate' | 'add_base_rate' | 'multiply_base_rate';
+type PricingOverrideUnit = 'perSqft' | 'perPiece' | 'minimumCharge';
 
 function impliedUomForBasis(basis: QuantityBasis): 'sqft' | 'ft' | 'each' {
   if (basis === 'area_sqft') return 'sqft';
@@ -51,6 +53,18 @@ function parseWorkflowTags(value: string): string[] {
         .filter(Boolean)
     )
   );
+}
+
+function pricingOverrideAppliesToForUnit(unit: PricingOverrideUnit): 'base' | 'area' | 'quantity' {
+  if (unit === 'perSqft') return 'area';
+  if (unit === 'perPiece') return 'quantity';
+  return 'base';
+}
+
+function formatPricingOverrideAmount(mode: PricingOverrideMode, amount: number | undefined): string {
+  if (typeof amount !== 'number' || !Number.isFinite(amount)) return '';
+  if (mode === 'multiply_base_rate') return amount.toString();
+  return Math.round(amount).toString();
 }
 
 interface OptionDetailsEditorProps {
@@ -237,6 +251,7 @@ export function OptionDetailsEditor({
                   const choiceWorkflowTags = Array.isArray(choice.workflowTags) ? choice.workflowTags : [];
                   const hasVariantContext =
                     choice.priceDeltaCents !== undefined ||
+                    (choice.pricingOverride?.mode && choice.pricingOverride.mode !== 'none') ||
                     !!choice.materialOverride?.materialId ||
                     choiceWorkflowTags.length > 0;
                   const hasModifierContext =
@@ -372,6 +387,102 @@ export function OptionDetailsEditor({
                               <p className="text-[11px] text-slate-500 mt-0.5">
                                 Use these fields for variant-defining selections. Keep additive logic in Pricing Impacts and Materials below.
                               </p>
+                            </div>
+
+                            <div className="space-y-2 rounded-md border border-slate-700/80 bg-[#0f172a]/60 p-3">
+                              <div>
+                                <Label className="text-xs text-slate-400 mb-1 block">Pricing Override</Label>
+                                <Select
+                                  value={choice.pricingOverride?.mode ?? 'none'}
+                                  onValueChange={(mode: PricingOverrideMode) => {
+                                    if (mode === 'none') {
+                                      onUpdateChoice(option.id, choice.value, { pricingOverride: undefined });
+                                      return;
+                                    }
+
+                                    const nextUnit: PricingOverrideUnit = choice.pricingOverride?.unit ?? 'perSqft';
+                                    onUpdateChoice(option.id, choice.value, {
+                                      pricingOverride: {
+                                        ...choice.pricingOverride,
+                                        mode,
+                                        unit: nextUnit,
+                                        appliesTo: pricingOverrideAppliesToForUnit(nextUnit),
+                                      },
+                                    });
+                                  }}
+                                >
+                                  <SelectTrigger className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-sm">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="none">None</SelectItem>
+                                    <SelectItem value="set_base_rate">Set Base Rate</SelectItem>
+                                    <SelectItem value="add_base_rate">Add Base Rate</SelectItem>
+                                    <SelectItem value="multiply_base_rate">Multiply Base Rate</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+
+                              {choice.pricingOverride?.mode && choice.pricingOverride.mode !== 'none' ? (
+                                <div className="grid gap-2 md:grid-cols-2">
+                                  <div>
+                                    <Label className="text-xs text-slate-400 mb-1 block">
+                                      {choice.pricingOverride.mode === 'multiply_base_rate' ? 'Multiplier' : 'Amount'}
+                                    </Label>
+                                    <Input
+                                      type="number"
+                                      step={choice.pricingOverride.mode === 'multiply_base_rate' ? '0.01' : '1'}
+                                      value={formatPricingOverrideAmount(choice.pricingOverride.mode, choice.pricingOverride.amount)}
+                                      onChange={(e) => {
+                                        const raw = e.target.value;
+                                        const parsed = raw === '' ? undefined : Number(raw);
+                                        onUpdateChoice(option.id, choice.value, {
+                                          pricingOverride: {
+                                            ...choice.pricingOverride,
+                                            amount: parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined,
+                                          },
+                                        });
+                                      }}
+                                      placeholder={choice.pricingOverride.mode === 'multiply_base_rate' ? '1.00' : '0'}
+                                      className="bg-[#0a0f1a] border-slate-700 text-slate-100 text-sm"
+                                    />
+                                    <div className="text-[11px] text-slate-500 mt-1">
+                                      {choice.pricingOverride.mode === 'multiply_base_rate'
+                                        ? 'Use 1.10 to increase the resolved base rate by 10%.'
+                                        : 'Enter cents for the resolved base rate input this choice controls.'}
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <Label className="text-xs text-slate-400 mb-1 block">Pricing Unit</Label>
+                                    <Select
+                                      value={choice.pricingOverride.unit ?? 'perSqft'}
+                                      onValueChange={(unit: PricingOverrideUnit) =>
+                                        onUpdateChoice(option.id, choice.value, {
+                                          pricingOverride: {
+                                            ...choice.pricingOverride,
+                                            unit,
+                                            appliesTo: pricingOverrideAppliesToForUnit(unit),
+                                          },
+                                        })
+                                      }
+                                    >
+                                      <SelectTrigger className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-sm">
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="perSqft">Per Sqft</SelectItem>
+                                        <SelectItem value="perPiece">Per Piece</SelectItem>
+                                        <SelectItem value="minimumCharge">Minimum Charge</SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                </div>
+                              ) : null}
+
+                              <div className="text-[11px] text-slate-500">
+                                Use this when a choice defines the base pricing for the configured product, such as ACM thickness or banner media weight.
+                              </div>
                             </div>
 
                             <div>

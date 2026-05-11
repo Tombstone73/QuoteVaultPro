@@ -42,9 +42,34 @@ export type InventoryConsumption = {
   fixedQty?: number;
 };
 
+export type ChoicePricingOverrideMode = "none" | "set_base_rate" | "add_base_rate" | "multiply_base_rate";
+export type ChoicePricingOverrideUnit = "perSqft" | "perPiece" | "minimumCharge";
+export type ChoicePricingOverrideAppliesTo = "base" | "area" | "quantity";
+
+export type ChoicePricingOverride = {
+  mode: ChoicePricingOverrideMode;
+  amount?: number;
+  unit?: ChoicePricingOverrideUnit;
+  appliesTo?: ChoicePricingOverrideAppliesTo;
+  label?: string;
+};
+
+export type AppliedChoicePricingOverride = {
+  selectionKey: string;
+  optionLabel: string;
+  choiceValue: string;
+  choiceLabel: string;
+  mode: Exclude<ChoicePricingOverrideMode, "none">;
+  amount: number;
+  unit?: ChoicePricingOverrideUnit;
+  appliesTo?: ChoicePricingOverrideAppliesTo;
+  label?: string;
+};
+
 export type ChoicePricingOverrideMetadata = {
   priceDeltaCents?: number;
   pricingImpact?: PricingImpact[];
+  pricingOverride?: ChoicePricingOverride;
 };
 
 export type ChoiceMaterialOverride = {
@@ -69,6 +94,7 @@ export type OptionRuntimeSelectionContext = {
   resolvedChoices: Record<string, OptionChoiceRuntimeSelection>;
   visibleNodeIds: string[];
   workflowTags: string[];
+  appliedPricingOverrides: AppliedChoicePricingOverride[];
 };
 
 export type PricingV2Tier = {
@@ -137,6 +163,7 @@ export type OptionNodeV2 = {
     weightOz?: number;
     priceDeltaCents?: number;
     pricingImpact?: PricingImpact[]; // v2.1: Choice-level pricing impacts
+    pricingOverride?: ChoicePricingOverride;
     materialOverride?: ChoiceMaterialOverride;
     inventoryConsumption?: InventoryConsumption[];
     workflowTags?: string[];
@@ -251,6 +278,18 @@ export const choiceMaterialOverrideSchema: z.ZodType<ChoiceMaterialOverride> = z
   materialId: z.string().min(1),
 });
 
+export const choicePricingOverrideModeSchema = z.enum(["none", "set_base_rate", "add_base_rate", "multiply_base_rate"]);
+export const choicePricingOverrideUnitSchema = z.enum(["perSqft", "perPiece", "minimumCharge"]);
+export const choicePricingOverrideAppliesToSchema = z.enum(["base", "area", "quantity"]);
+
+export const choicePricingOverrideSchema: z.ZodType<ChoicePricingOverride> = z.object({
+  mode: choicePricingOverrideModeSchema,
+  amount: z.number().finite().optional(),
+  unit: choicePricingOverrideUnitSchema.optional(),
+  appliesTo: choicePricingOverrideAppliesToSchema.optional(),
+  label: z.string().optional(),
+});
+
 export const pricingV2TierSchema: z.ZodType<PricingV2Tier> = z.object({
   minQty: z.number().int().min(1).optional(),
   minSqft: z.number().positive().optional(),
@@ -329,6 +368,7 @@ export const optionNodeV2Schema: z.ZodType<OptionNodeV2> = z.object({
         weightOz: z.number().optional(),
         priceDeltaCents: z.number().int().optional(),
         pricingImpact: z.array(pricingImpactSchema).optional(), // v2.1: Choice-level pricing
+        pricingOverride: choicePricingOverrideSchema.optional(),
         materialOverride: choiceMaterialOverrideSchema.optional(),
         inventoryConsumption: z.array(inventoryConsumptionSchema).optional(),
         workflowTags: z.array(z.string().min(1)).optional(),
@@ -393,6 +433,19 @@ export const lineItemOptionSelectionsV2Schema: z.ZodType<LineItemOptionSelection
 export const choicePricingOverrideMetadataSchema: z.ZodType<ChoicePricingOverrideMetadata> = z.object({
   priceDeltaCents: z.number().int().optional(),
   pricingImpact: z.array(pricingImpactSchema).optional(),
+  pricingOverride: choicePricingOverrideSchema.optional(),
+});
+
+export const appliedChoicePricingOverrideSchema: z.ZodType<AppliedChoicePricingOverride> = z.object({
+  selectionKey: z.string(),
+  optionLabel: z.string(),
+  choiceValue: z.string(),
+  choiceLabel: z.string(),
+  mode: z.enum(["set_base_rate", "add_base_rate", "multiply_base_rate"]),
+  amount: z.number().finite(),
+  unit: choicePricingOverrideUnitSchema.optional(),
+  appliesTo: choicePricingOverrideAppliesToSchema.optional(),
+  label: z.string().optional(),
 });
 
 export const optionChoiceRuntimeSelectionSchema: z.ZodType<OptionChoiceRuntimeSelection> = z.object({
@@ -413,6 +466,7 @@ export const optionRuntimeSelectionContextSchema: z.ZodType<OptionRuntimeSelecti
   resolvedChoices: z.record(optionChoiceRuntimeSelectionSchema),
   visibleNodeIds: z.array(z.string()),
   workflowTags: z.array(z.string()),
+  appliedPricingOverrides: z.array(appliedChoicePricingOverrideSchema),
 });
 
 // ------------------------------------------------------------
