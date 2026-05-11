@@ -1933,7 +1933,13 @@ export async function registerOrderRoutes(
             
             if (order.status === 'new' && toStatus === 'in_production') {
                 try {
-                    await storage.autoDeductInventoryWhenOrderMovesToProduction(organizationId, orderId, userId);
+                    const inventoryDeduction = await storage.autoDeductInventoryWhenOrderMovesToProduction(organizationId, orderId, userId);
+                    if (inventoryDeduction.skippedStockDeductionCount > 0) {
+                        validation.warnings = validation.warnings || [];
+                        validation.warnings.push(
+                            `${inventoryDeduction.skippedStockDeductionCount} material stock deduction(s) skipped: manual inventory review required.`
+                        );
+                    }
                 } catch (invErr) {
                     console.error('[OrderTransition] Inventory deduction failed:', invErr);
                     validation.warnings = validation.warnings || [];
@@ -2910,6 +2916,11 @@ export async function registerOrderRoutes(
                         id: m.id,
                         name: m.name,
                         unitOfMeasure: m.unitOfMeasure,
+                        inventoryUnit: m.inventoryUnit ?? m.unitOfMeasure,
+                        sellPriceUnit: m.sellPriceUnit ?? m.unitOfMeasure,
+                        wholesalePriceUnit: m.wholesalePriceUnit ?? m.sellPriceUnit ?? m.unitOfMeasure,
+                        vendorCostUnit: m.vendorCostUnit ?? m.unitOfMeasure,
+                        consumptionUnit: m.consumptionUnit ?? m.sellPriceUnit ?? m.unitOfMeasure,
                         isActive: m.isActive,
                     }));
                 return res.json({ success: true, data: { materials: materialsList } });
@@ -2932,6 +2943,11 @@ export async function registerOrderRoutes(
                     Type: 'roll',
                     Category: 'Vinyl',
                     'Unit Of Measure': 'sqft',
+                    'Inventory Unit': 'sqft',
+                    'Sell Price Unit': 'sqft',
+                    'Wholesale Price Unit': 'sqft',
+                    'Vendor Cost Unit': 'sqft',
+                    'Consumption Unit': 'sqft',
                     Width: '54',
                     Height: '',
                     Thickness: '',
@@ -2978,6 +2994,11 @@ export async function registerOrderRoutes(
                 Type: m.type || '',
                 Category: m.category || '',
                 'Unit Of Measure': m.unitOfMeasure || '',
+                'Inventory Unit': m.inventoryUnit || m.unitOfMeasure || '',
+                'Sell Price Unit': m.sellPriceUnit || m.unitOfMeasure || '',
+                'Wholesale Price Unit': m.wholesalePriceUnit || m.sellPriceUnit || m.unitOfMeasure || '',
+                'Vendor Cost Unit': m.vendorCostUnit || m.unitOfMeasure || '',
+                'Consumption Unit': m.consumptionUnit || m.sellPriceUnit || m.unitOfMeasure || '',
                 Width: m.width ?? '',
                 Height: m.height ?? '',
                 Thickness: m.thickness ?? '',
@@ -3080,6 +3101,11 @@ export async function registerOrderRoutes(
                     type,
                     category: (row['Category'] || '').trim() || undefined,
                     unitOfMeasure,
+                    inventoryUnit: (row['Inventory Unit'] || '').trim() || unitOfMeasure,
+                    sellPriceUnit: (row['Sell Price Unit'] || '').trim() || unitOfMeasure,
+                    wholesalePriceUnit: (row['Wholesale Price Unit'] || '').trim() || (row['Sell Price Unit'] || '').trim() || unitOfMeasure,
+                    vendorCostUnit: (row['Vendor Cost Unit'] || '').trim() || unitOfMeasure,
+                    consumptionUnit: (row['Consumption Unit'] || '').trim() || (row['Sell Price Unit'] || '').trim() || unitOfMeasure,
                     width: parseNum(row['Width']),
                     height: parseNum(row['Height']),
                     thickness: parseNum(row['Thickness']),
@@ -3463,9 +3489,16 @@ export async function registerOrderRoutes(
             if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
             const userId = getUserId(req.user);
             if (!userId) return res.status(401).json({ error: 'Not authenticated' });
-            await storage.autoDeductInventoryWhenOrderMovesToProduction(organizationId, req.params.id, userId);
+            const deductionResult = await storage.autoDeductInventoryWhenOrderMovesToProduction(organizationId, req.params.id, userId);
             const usage = await storage.getMaterialUsageByOrder(req.params.id);
-            res.json({ success: true, data: usage });
+            res.json({
+                success: true,
+                data: usage,
+                message: deductionResult.skippedStockDeductionCount > 0
+                    ? "Inventory deduction completed with skipped stock mutation(s); manual inventory review required."
+                    : "Inventory deducted",
+                deductionResult,
+            });
         } catch (err) {
             console.error('Error deducting inventory manually', err);
             res.status(500).json({ error: 'Failed to deduct inventory' });
