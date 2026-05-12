@@ -37,7 +37,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Plus, Pencil, Trash2, Eye, Package, Play, AlertTriangle, Info } from "lucide-react";
+import { Loader2, Plus, Pencil, Trash2, Eye, Package, Play, AlertTriangle, Info, ChevronDown } from "lucide-react";
 import { TitanCard } from "@/components/ui/TitanCard";
 import { evaluate } from "mathjs";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -193,6 +193,7 @@ export default function PricingFormulasSettings() {
     height: number;
     quantity: number;
     MACHINE_RATE: number;
+    basePrice: number;
   };
 
   // Formula tester state
@@ -201,6 +202,7 @@ export default function PricingFormulasSettings() {
     height: 18,
     quantity: 100,
     MACHINE_RATE: 75,
+    basePrice: 1.0,
   });
   const [testResult, setTestResult] = useState<FormulaTestBreakdown | null>(null);
   const [testError, setTestError] = useState<string>("");
@@ -222,6 +224,8 @@ export default function PricingFormulasSettings() {
       const total_sqft = sqft * q;
       const MACHINE_RATE = testValues.MACHINE_RATE;
 
+      const base_price = testValues.basePrice > 0 ? testValues.basePrice : 1.0;
+
       const scope = {
         ...testValues,
         w,
@@ -229,9 +233,9 @@ export default function PricingFormulasSettings() {
         q,
         sqft,
         total_sqft,
-        base_price: 1.0,
-        basePricePerSqft: 1.0,
-        p: 1.0,
+        base_price,
+        basePricePerSqft: base_price,
+        p: base_price,
         MACHINE_RATE,
       };
 
@@ -245,7 +249,7 @@ export default function PricingFormulasSettings() {
         return;
       }
 
-      setTestResult({ rawValue: result, expression, w, h, q, sqft, total_sqft, base_price: 1.0, MACHINE_RATE });
+      setTestResult({ rawValue: result, expression, w, h, q, sqft, total_sqft, base_price, MACHINE_RATE });
       setTestError("");
     } catch (error: any) {
       setTestError(error.message || "Invalid formula");
@@ -261,6 +265,7 @@ export default function PricingFormulasSettings() {
       height: values.height ?? prev.height,
       quantity: values.quantity ?? prev.quantity,
       MACHINE_RATE: values.MACHINE_RATE ?? prev.MACHINE_RATE,
+      basePrice: values.basePrice ?? prev.basePrice,
     }));
   };
 
@@ -500,6 +505,44 @@ export default function PricingFormulasSettings() {
   );
 }
 
+type SheetFitResult = {
+  normalFit: number;
+  rotatedFit: number;
+  mixedA: number;
+  mixedB: number;
+  best: number;
+  sheetsRequired: number;
+  fullSheetSqft: number;
+  billableSqft: number;
+};
+
+function computeSheetFit(
+  w: number,
+  h: number,
+  q: number,
+  sheetW = 48,
+  sheetH = 96
+): SheetFitResult | null {
+  if (w <= 0 || h <= 0 || q <= 0) return null;
+  const normalFit = Math.floor(sheetW / w) * Math.floor(sheetH / h);
+  const rotatedFit = Math.floor(sheetW / h) * Math.floor(sheetH / w);
+  // Mixed A: fill normal rows, then use remainder height with rotated orientation
+  const normRows = Math.floor(sheetH / h);
+  const remainA = sheetH - normRows * h;
+  const mixedA =
+    Math.floor(sheetW / w) * normRows + Math.floor(sheetW / h) * Math.floor(remainA / w);
+  // Mixed B: fill rotated rows, then use remainder height with normal orientation
+  const rotRows = Math.floor(sheetH / w);
+  const remainB = sheetH - rotRows * w;
+  const mixedB =
+    Math.floor(sheetW / h) * rotRows + Math.floor(sheetW / w) * Math.floor(remainB / h);
+  const best = Math.max(normalFit, rotatedFit, mixedA, mixedB, 1);
+  const sheetsRequired = Math.ceil(q / best);
+  const fullSheetSqft = (sheetW * sheetH) / 144;
+  const billableSqft = sheetsRequired * fullSheetSqft;
+  return { normalFit, rotatedFit, mixedA, mixedB, best, sheetsRequired, fullSheetSqft, billableSqft };
+}
+
 function BreakdownRow({
   label,
   value,
@@ -552,6 +595,11 @@ function FormulaEditorFields({
   testError,
   handleRunTest,
 }: FormulaEditorFieldsProps) {
+  const [outputMeaning, setOutputMeaning] = useState<"billable" | "final_price" | "generic">(
+    formData.pricingProfileKey === "fee" ? "final_price" : "billable"
+  );
+  const [showSheetDebug, setShowSheetDebug] = useState(false);
+
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -798,27 +846,103 @@ function FormulaEditorFields({
                       className="h-8 text-sm"
                     />
                   </div>
+                  <div>
+                    <Label htmlFor="test-base-price" className="text-xs">
+                      Base Price ($/unit)
+                    </Label>
+                    <Input
+                      id="test-base-price"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={testValues.basePrice ?? 1}
+                      onChange={(e) =>
+                        setTestValues({ ...testValues, basePrice: parseFloat(e.target.value) || 1 })
+                      }
+                      className="h-8 text-sm"
+                    />
+                    <p className="text-[10px] text-muted-foreground mt-0.5">
+                      Sets base_price / p in formula
+                    </p>
+                  </div>
+                  <div>
+                    <Label className="text-xs">Output Meaning</Label>
+                    <Select
+                      value={outputMeaning}
+                      onValueChange={(v) =>
+                        setOutputMeaning(v as "billable" | "final_price" | "generic")
+                      }
+                    >
+                      <SelectTrigger className="h-8 text-sm">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="billable">Billable qty / sqft</SelectItem>
+                        <SelectItem value="final_price">Final price ($)</SelectItem>
+                        <SelectItem value="generic">Generic number</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">
+                      How to interpret the result
+                    </p>
+                  </div>
                 </div>
 
                 {testResult && (() => {
-                  const isFeeProfile = formData.pricingProfileKey === "fee";
-                  const displayValue = isFeeProfile
-                    ? `$${testResult.rawValue.toFixed(2)}`
-                    : testResult.rawValue.toLocaleString(undefined, { maximumFractionDigits: 8 });
-                  const resultLabel = isFeeProfile
-                    ? "Formula Result (dollar amount)"
-                    : "Formula Result";
-                  const resultNote = isFeeProfile
-                    ? "Fee profile — result is a dollar amount"
-                    : "Raw expression output — not a final price";
+                  const resultLabel =
+                    outputMeaning === "final_price"
+                      ? "Formula Result (dollar amount)"
+                      : outputMeaning === "billable"
+                      ? "Formula Result (billable qty / sqft)"
+                      : "Formula Result";
+                  const resultNote =
+                    outputMeaning === "final_price"
+                      ? "Treated as a final dollar amount"
+                      : outputMeaning === "billable"
+                      ? "Billable quantity or sqft — multiply by base price for estimated price"
+                      : "Raw expression output";
+                  const displayValue =
+                    outputMeaning === "final_price"
+                      ? `$${testResult.rawValue.toFixed(2)}`
+                      : testResult.rawValue.toLocaleString(undefined, { maximumFractionDigits: 8 });
+                  const estimatedPrice: number | null =
+                    outputMeaning === "final_price"
+                      ? testResult.rawValue
+                      : outputMeaning === "billable"
+                      ? testResult.rawValue * testResult.base_price
+                      : null;
+
+                  const fit = computeSheetFit(testResult.w, testResult.h, testResult.q);
+                  const pieceSqft = testResult.sqft;
+                  const rounded3 = Math.ceil(pieceSqft / 3) * 3;
+                  const fullSheetSqft48x96 = (48 * 96) / 144; // 32
+                  const fullSheetTrigger = pieceSqft >= fullSheetSqft48x96;
+                  const chosenBillable = fullSheetTrigger ? fullSheetSqft48x96 : rounded3;
 
                   return (
                     <div className="space-y-2">
                       {/* Result headline */}
                       <div className="bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-800 rounded p-3">
-                        <p className="text-xs font-medium text-green-800 dark:text-green-300 mb-0.5">{resultLabel}</p>
-                        <p className="text-xl font-bold text-green-700 dark:text-green-400">{displayValue}</p>
+                        <p className="text-xs font-medium text-green-800 dark:text-green-300 mb-0.5">
+                          {resultLabel}
+                        </p>
+                        <p className="text-xl font-bold text-green-700 dark:text-green-400">
+                          {displayValue}
+                        </p>
                         <p className="text-[11px] text-muted-foreground mt-1">{resultNote}</p>
+                        {estimatedPrice !== null && (
+                          <div className="mt-2 pt-2 border-t border-green-200 dark:border-green-800">
+                            <p className="text-[11px] text-green-700 dark:text-green-300">
+                              Estimated price:{" "}
+                              <strong className="text-base">${estimatedPrice.toFixed(2)}</strong>
+                              {outputMeaning === "billable" && (
+                                <span className="text-muted-foreground ml-1.5">
+                                  ({testResult.rawValue} × ${testResult.base_price.toFixed(2)})
+                                </span>
+                              )}
+                            </p>
+                          </div>
+                        )}
                       </div>
 
                       {/* Breakdown table */}
@@ -829,7 +953,10 @@ function FormulaEditorFields({
                         <BreakdownRow label="Width" value={`${testResult.w}"`} />
                         <BreakdownRow label="Height" value={`${testResult.h}"`} />
                         <BreakdownRow label="Quantity" value={String(testResult.q)} />
-                        <BreakdownRow label="Machine Rate" value={`$${testResult.MACHINE_RATE.toFixed(2)}`} />
+                        <BreakdownRow
+                          label="Machine Rate"
+                          value={`$${testResult.MACHINE_RATE.toFixed(2)}`}
+                        />
 
                         <div className="px-3 py-1.5 bg-muted/50 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
                           Computed Geometry
@@ -848,7 +975,11 @@ function FormulaEditorFields({
                         <div className="px-3 py-1.5 bg-muted/50 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
                           Test Context
                         </div>
-                        <BreakdownRow label="base_price (p)" value="1.00" note="fixed at 1.0 for test" />
+                        <BreakdownRow
+                          label="base_price (p)"
+                          value={`$${testResult.base_price.toFixed(2)}`}
+                          note="test input value"
+                        />
 
                         <div className="px-3 py-1.5 bg-muted/50 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
                           Evaluated
@@ -864,12 +995,117 @@ function FormulaEditorFields({
                         )}
                       </div>
 
+                      {/* Sheet Fit Debug toggle */}
+                      <button
+                        type="button"
+                        onClick={() => setShowSheetDebug((v) => !v)}
+                        className="flex items-center gap-1 text-xs text-primary hover:underline underline-offset-4 w-full"
+                      >
+                        <ChevronDown
+                          className={`h-3.5 w-3.5 transition-transform ${showSheetDebug ? "rotate-180" : ""}`}
+                        />
+                        {showSheetDebug ? "Hide" : "Show"} Sheet Fit Debug (48×96)
+                      </button>
+
+                      {/* Sheet Fit Debug panel */}
+                      {showSheetDebug && fit && (
+                        <div className="border border-blue-200 dark:border-blue-800 rounded divide-y text-xs overflow-hidden">
+                          <div className="px-3 py-1.5 bg-blue-50 dark:bg-blue-950/20 text-[10px] font-semibold text-blue-700 dark:text-blue-400 uppercase tracking-wide">
+                            Sheet Fit Debug — 48×96 sheet
+                          </div>
+                          <BreakdownRow label="Sheet size" value="48 × 96 in" />
+                          <BreakdownRow
+                            label="Piece size"
+                            value={`${testResult.w} × ${testResult.h} in`}
+                          />
+
+                          <div className="px-3 py-1.5 bg-muted/40 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                            Nesting
+                          </div>
+                          <BreakdownRow
+                            label="Normal orientation"
+                            value={String(fit.normalFit)}
+                            note={`floor(48/${testResult.w}) × floor(96/${testResult.h})`}
+                          />
+                          <BreakdownRow
+                            label="Rotated 90°"
+                            value={String(fit.rotatedFit)}
+                            note={`floor(48/${testResult.h}) × floor(96/${testResult.w})`}
+                          />
+                          <BreakdownRow
+                            label="Mixed layout A"
+                            value={String(fit.mixedA)}
+                            note="normal rows + rotated remainder"
+                          />
+                          <BreakdownRow
+                            label="Mixed layout B"
+                            value={String(fit.mixedB)}
+                            note="rotated rows + normal remainder"
+                          />
+                          <BreakdownRow
+                            label="Best fit"
+                            value={String(fit.best)}
+                            note={`max(${fit.normalFit}, ${fit.rotatedFit}, ${fit.mixedA}, ${fit.mixedB}, 1)`}
+                          />
+
+                          <div className="px-3 py-1.5 bg-muted/40 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                            Sheet Requirements
+                          </div>
+                          <BreakdownRow
+                            label="Sheets required"
+                            value={String(fit.sheetsRequired)}
+                            note={`ceil(${testResult.q} / ${fit.best})`}
+                          />
+                          <BreakdownRow
+                            label="Full sheet sqft"
+                            value={`${fit.fullSheetSqft} sqft`}
+                            note="(48 × 96) / 144"
+                          />
+                          <BreakdownRow
+                            label="Billable sqft"
+                            value={`${fit.billableSqft} sqft`}
+                            note={`${fit.sheetsRequired} sheets × ${fit.fullSheetSqft}`}
+                          />
+
+                          <div className="px-3 py-1.5 bg-muted/40 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                            4×8 Single-Piece Debug
+                          </div>
+                          <BreakdownRow
+                            label="Piece sqft"
+                            value={`${pieceSqft.toFixed(4).replace(/\.?0+$/, "")} sqft`}
+                          />
+                          <BreakdownRow
+                            label="Rounded (3-sqft)"
+                            value={`${rounded3} sqft`}
+                            note={`ceil(${pieceSqft.toFixed(4).replace(/\.?0+$/, "")} / 3) × 3`}
+                          />
+                          <BreakdownRow
+                            label="Full-sheet trigger"
+                            value={fullSheetTrigger ? "Yes" : "No"}
+                            note={`sqft ${fullSheetTrigger ? "≥" : "<"} 32`}
+                          />
+                          <BreakdownRow
+                            label="Chosen billable sqft"
+                            value={`${chosenBillable} sqft`}
+                            note={fullSheetTrigger ? "full sheet" : "3-sqft increment"}
+                          />
+
+                          <div className="px-3 py-2">
+                            <p className="text-[10px] text-muted-foreground">
+                              4×8 helper debug based on current test inputs. This debug panel is for
+                              validating common flat-sheet formulas. The actual formula result above
+                              is the source of truth.
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
                       {/* Helper note */}
                       <div className="flex items-start gap-2 text-xs text-muted-foreground bg-muted/30 rounded px-3 py-2">
                         <Info className="h-3.5 w-3.5 shrink-0 mt-0.5 text-blue-500" />
                         <span>
-                          The formula tester evaluates the expression only. Product pricing preview may apply base rates,
-                          minimums, option pricing, and modifiers separately.
+                          The formula tester evaluates the expression only. Product pricing preview
+                          may apply base rates, minimums, option pricing, and modifiers separately.
                         </span>
                       </div>
                     </div>

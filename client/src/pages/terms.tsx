@@ -2,6 +2,7 @@ import { PublicPageLayout } from "@/components/layout/PublicPageLayout";
 
 const LAST_UPDATED = "May 2026";
 const CONTACT_EMAIL = "support@printershero.com";
+const COMPANY_NAME = "Workflow Dynamics Group, LLC";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -17,7 +18,7 @@ export default function TermsPage() {
     <PublicPageLayout title="Terms of Service" description={`Last updated: ${LAST_UPDATED}`}>
       <p className="text-sm text-muted-foreground mb-8 leading-relaxed">
         These Terms of Service ("Terms") govern your use of PrintersHero and TitanOS (collectively,
-        the "Platform"), operated by Titan Graphics, LLC ("we," "us," or "our"). By accessing or
+        the "Platform"), operated by {COMPANY_NAME} ("we," "us," or "our"). By accessing or
         using the Platform, you agree to these Terms. If you do not agree, do not use the Platform.
       </p>
 
@@ -112,7 +113,7 @@ export default function TermsPage() {
 
       <Section title="6. Limitation of Liability">
         <p>
-          To the fullest extent permitted by applicable law, Titan Graphics, LLC shall not be liable
+          To the fullest extent permitted by applicable law, {COMPANY_NAME} shall not be liable
           for any indirect, incidental, special, consequential, or punitive damages, including loss
           of profits, business interruption, or data loss, arising from your use of or inability to
           use the Platform.
@@ -150,7 +151,7 @@ export default function TermsPage() {
       <Section title="8. Intellectual Property">
         <p>
           The Platform and its underlying software, design, trademarks, and documentation are owned
-          by Titan Graphics, LLC. Nothing in these Terms transfers ownership of our intellectual
+          by {COMPANY_NAME}. Nothing in these Terms transfers ownership of our intellectual
           property to you.
         </p>
         <p>
@@ -200,7 +201,7 @@ export default function TermsPage() {
           </a>
         </p>
         <p>
-          <strong className="text-foreground">Company:</strong> Titan Graphics, LLC
+          <strong className="text-foreground">Company:</strong> {COMPANY_NAME}
         </p>
       </Section>
     </PublicPageLayout>
