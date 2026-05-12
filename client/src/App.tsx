@@ -68,12 +68,18 @@ import AcceptInvitePage from "@/pages/accept-invite";
 import SelectOrgPage from "@/pages/SelectOrgPage";
 import BugReportsPage from "@/pages/admin/BugReportsPage";
 import ProductImportExport from "@/pages/admin/ProductImportExport";
+import PricingAuditPage from "@/pages/admin/PricingAuditPage";
+import MaterialsImportExport from "@/pages/admin/MaterialsImportExport";
 import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
 import FulfillmentPage from "@/pages/fulfillment";
 import FulfillmentShipmentDetailPage from "@/pages/fulfillment-shipment-detail";
 import LabelsPage from "@/pages/labels";
 import ReportsPage from "@/pages/reports";
 import FinancePage from "@/pages/finance";
+import InboundOrdersPage from "@/pages/inbound-orders";
+import PrivacyPage from "@/pages/privacy";
+import TermsPage from "@/pages/terms";
+import SupportPage from "@/pages/support";
 
 function Router() {
   const { user, isAuthenticated, isLoading, mustChangePassword } = useAuth();
@@ -97,6 +103,10 @@ function Router() {
         <Route path="/accept-invite" element={<AcceptInvitePage />} />
         {/* Token-based proof review — no account required; the token IS the auth */}
         <Route path="/portal/proof/:token" element={<PortalProofPage />} />
+        {/* Public legal/support pages */}
+        <Route path="/privacy" element={<PrivacyPage />} />
+        <Route path="/terms" element={<TermsPage />} />
+        <Route path="/support" element={<SupportPage />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     );
@@ -107,6 +117,9 @@ function Router() {
     return (
       <Routes>
         <Route path="/force-password-change" element={<ForcePasswordChange />} />
+        <Route path="/privacy" element={<PrivacyPage />} />
+        <Route path="/terms" element={<TermsPage />} />
+        <Route path="/support" element={<SupportPage />} />
         <Route path="*" element={<Navigate to="/force-password-change" replace />} />
       </Routes>
     );
@@ -117,6 +130,9 @@ function Router() {
     return (
       <Routes>
         <Route path="/set-password" element={<SetPasswordPage />} />
+        <Route path="/privacy" element={<PrivacyPage />} />
+        <Route path="/terms" element={<TermsPage />} />
+        <Route path="/support" element={<SupportPage />} />
         <Route path="*" element={<Navigate to="/set-password" replace />} />
       </Routes>
     );
@@ -159,6 +175,8 @@ function Router() {
         <Route path="/admin/product-types" element={<ProductTypesSettings />} />
         <Route path="/admin/bug-reports" element={<BugReportsPage />} />
         <Route path="/admin/products/import-export" element={<ProductImportExport />} />
+        <Route path="/admin/pricing-audit" element={<PricingAuditPage />} />
+        <Route path="/admin/materials/import-export" element={<MaterialsImportExport />} />
         <Route path="/users" element={<UserManagement />} />
         <Route path="/admin" element={<Admin />} />
         
@@ -177,6 +195,7 @@ function Router() {
         <Route path={ROUTES.orders.new} element={<OrderNewRoute />} />
         <Route path="/orders/:id" element={<OrderDetail />} />
         <Route path="/orders" element={<Orders />} />
+        <Route path={ROUTES.inboundOrders.list} element={<InboundOrdersPage />} />
 
         {/* Inventory / Materials routes */}
         <Route path="/materials/:id" element={<MaterialDetailRoute />} />
@@ -263,6 +282,11 @@ function Router() {
       <Route path="/portal" element={<PortalLayout />}>
         <Route path="dashboard" element={<div className="p-4 text-muted-foreground">Portal Dashboard — coming soon</div>} />
       </Route>
+
+      {/* Public legal/support pages — standalone, no app shell */}
+      <Route path="/privacy" element={<PrivacyPage />} />
+      <Route path="/terms" element={<TermsPage />} />
+      <Route path="/support" element={<SupportPage />} />
 
       {/* Catch-all not found */}
       <Route path="*" element={<NotFound />} />

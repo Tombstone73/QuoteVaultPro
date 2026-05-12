@@ -19,6 +19,7 @@ import {
   lineItemFiles,
   materials,
   orderAttachments,
+  orderAuditLog,
   orderLineItems,
   orders,
 } from "@shared/schema";
@@ -118,6 +119,40 @@ const insertDesignAuditLog = async (args: {
   } as any);
 };
 
+const insertDesignTimelineLog = async (args: {
+  orderId: string;
+  orderLineItemId: string;
+  actorUserId: string;
+  actionType: string;
+  previousDesignStatus?: string | null;
+  newDesignStatus?: string | null;
+  sessionId?: string | null;
+  note?: string | null;
+  reason?: string | null;
+  metadata?: Record<string, unknown>;
+}) => {
+  await db.insert(orderAuditLog).values({
+    orderId: args.orderId,
+    orderLineItemId: args.orderLineItemId,
+    userId: args.actorUserId,
+    actionType: args.actionType,
+    fromStatus: args.previousDesignStatus ?? null,
+    toStatus: args.newDesignStatus ?? null,
+    note: args.note ?? args.reason ?? null,
+    metadata: {
+      orderId: args.orderId,
+      orderLineItemId: args.orderLineItemId,
+      previousDesignStatus: args.previousDesignStatus ?? null,
+      newDesignStatus: args.newDesignStatus ?? null,
+      actorUserId: args.actorUserId,
+      sessionId: args.sessionId ?? null,
+      note: args.note ?? null,
+      reason: args.reason ?? null,
+      ...(args.metadata ?? {}),
+    },
+  } as any);
+};
+
 const buildDesignWorkspacePayload = async (args: {
   organizationId: string;
   lineItem: Awaited<ReturnType<typeof getDesignLineItemContext>> extends infer T ? T : never;
@@ -156,6 +191,7 @@ const executeExplicitLineItemWorkflowAction = async (args: {
   source: string;
   description: string;
   note?: string | null;
+  timelineActionType?: string | null;
 }) => {
   const organizationId = getRequestOrganizationId(args.req);
   if (!organizationId) {
@@ -172,6 +208,7 @@ const executeExplicitLineItemWorkflowAction = async (args: {
   const [currentLineItem] = await db
     .select({
       id: orderLineItems.id,
+      orderId: orderLineItems.orderId,
       status: orderLineItems.status,
       workflowState: orderLineItems.workflowState,
       designStatus: orderLineItems.designStatus,
@@ -221,6 +258,22 @@ const executeExplicitLineItemWorkflowAction = async (args: {
     ipAddress: args.req.ip || null,
     userAgent: args.req.headers["user-agent"] || null,
   } as any);
+
+  if (args.timelineActionType) {
+    await insertDesignTimelineLog({
+      orderId: currentLineItem.orderId,
+      orderLineItemId: args.lineItemId,
+      actorUserId: userId,
+      actionType: args.timelineActionType,
+      previousDesignStatus: currentLineItem.designStatus ?? currentLineItem.workflowState,
+      newDesignStatus: result.toState === "in_design" ? "in_design" : currentLineItem.designStatus ?? result.toState,
+      note: args.note ?? null,
+      metadata: {
+        source: args.source,
+        ownerJobId: result.activeOwnerJobId,
+      },
+    });
+  }
 
   args.res.json({ success: true, data: result });
 };
@@ -446,6 +499,16 @@ export function registerDesignRoutes(
             sessionState: "active",
           },
         });
+
+        await insertDesignTimelineLog({
+          orderId: lineItem.orderId,
+          orderLineItemId: lineItemId,
+          actorUserId: userId,
+          actionType: workspace.session.status === "paused" ? "design_resumed" : "design_started",
+          previousDesignStatus: lineItem.designStatus ?? lineItem.workflowState,
+          newDesignStatus: lineItem.designStatus ?? lineItem.workflowState,
+          sessionId: (workspace.session as any)?.sessionId ?? null,
+        });
       }
 
       if (parsed.data.action === "pause") {
@@ -465,6 +528,16 @@ export function registerDesignRoutes(
             sessionState: "paused",
           },
         });
+
+        await insertDesignTimelineLog({
+          orderId: lineItem.orderId,
+          orderLineItemId: lineItemId,
+          actorUserId: userId,
+          actionType: "design_paused",
+          previousDesignStatus: lineItem.designStatus ?? lineItem.workflowState,
+          newDesignStatus: lineItem.designStatus ?? lineItem.workflowState,
+          sessionId: (workspace.session as any)?.sessionId ?? null,
+        });
       }
 
       if (parsed.data.action === "resume") {
@@ -483,6 +556,16 @@ export function registerDesignRoutes(
           newValues: {
             sessionState: "active",
           },
+        });
+
+        await insertDesignTimelineLog({
+          orderId: lineItem.orderId,
+          orderLineItemId: lineItemId,
+          actorUserId: userId,
+          actionType: "design_resumed",
+          previousDesignStatus: lineItem.designStatus ?? lineItem.workflowState,
+          newDesignStatus: lineItem.designStatus ?? lineItem.workflowState,
+          sessionId: (workspace.session as any)?.sessionId ?? null,
         });
       }
 
@@ -660,6 +743,7 @@ export function registerDesignRoutes(
         source: "api_design_start",
         description: "Started Design work on line item",
         note: typeof req.body?.note === "string" ? req.body.note : null,
+        timelineActionType: "design_started",
       });
     } catch (error: any) {
       const status = error?.statusCode || 500;
@@ -703,6 +787,7 @@ export function registerDesignRoutes(
       const [currentLineItem] = await db
         .select({
           id: orderLineItems.id,
+          orderId: orderLineItems.orderId,
           status: orderLineItems.status,
           workflowState: orderLineItems.workflowState,
           designStatus: orderLineItems.designStatus,
@@ -766,6 +851,37 @@ export function registerDesignRoutes(
         ipAddress: req.ip || null,
         userAgent: req.headers["user-agent"] || null,
       } as any);
+
+      await insertDesignTimelineLog({
+        orderId: currentLineItem.orderId,
+        orderLineItemId: lineItemId,
+        actorUserId: userId,
+        actionType: "design_completed",
+        previousDesignStatus: currentLineItem.designStatus ?? currentLineItem.workflowState,
+        newDesignStatus: "design_complete",
+        note,
+        metadata: {
+          ownerJobId: result.activeOwnerJobId,
+          ownerStationKey: result.activeOwnerStationKey,
+          ownerStepKey: result.activeOwnerStepKey,
+        },
+      });
+
+      if (result.toState === "awaiting_proof_approval") {
+        await insertDesignTimelineLog({
+          orderId: currentLineItem.orderId,
+          orderLineItemId: lineItemId,
+          actorUserId: userId,
+          actionType: "design_sent_to_proofing",
+          previousDesignStatus: currentLineItem.designStatus ?? currentLineItem.workflowState,
+          newDesignStatus: "design_complete",
+          note,
+          metadata: {
+            workflowState: result.toState,
+            ownerJobId: result.activeOwnerJobId,
+          },
+        });
+      }
 
       const designAudits = await listDesignAuditRows(organizationId, lineItemId);
       const designWorkspace = buildDesignWorkspaceState({ lineItem: currentLineItem, auditRows: designAudits });

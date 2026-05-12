@@ -26,6 +26,11 @@ type EdgeRec = {
   condition: unknown;
 };
 
+type ChoicePricingOverrideMode = "none" | "set_base_rate" | "add_base_rate" | "multiply_base_rate";
+type ChoicePricingOverrideUnit = "perSqft" | "perPiece" | "minimumCharge";
+type ChoicePricingOverrideAppliesTo = "base" | "area" | "quantity";
+type VisibilityRuleType = "equals" | "notEquals" | "in" | "truthy" | "and" | "or" | "not";
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object") return null;
   return value as Record<string, unknown>;
@@ -321,6 +326,200 @@ function extractChildItemEffects(node: Record<string, unknown>): unknown[] {
   const price = asRecord((node as any).price) ?? asRecord((node as any).data);
   const effects = price ? (price as any).childItemEffects : undefined;
   return Array.isArray(effects) ? effects : [];
+}
+
+function normalizeChoicePricingOverride(raw: unknown): {
+  mode: ChoicePricingOverrideMode;
+  amount?: number;
+  unit?: ChoicePricingOverrideUnit;
+  appliesTo?: ChoicePricingOverrideAppliesTo;
+} | null {
+  const override = asRecord(raw);
+  if (!override) return null;
+
+  const modeRaw = typeof (override as any).mode === "string" ? String((override as any).mode).trim() : "";
+  const mode =
+    modeRaw === "none" ||
+    modeRaw === "set_base_rate" ||
+    modeRaw === "add_base_rate" ||
+    modeRaw === "multiply_base_rate"
+      ? (modeRaw as ChoicePricingOverrideMode)
+      : null;
+  if (!mode) return null;
+
+  const amountRaw = (override as any).amount;
+  const amount = typeof amountRaw === "number" && Number.isFinite(amountRaw) ? amountRaw : undefined;
+
+  const unitRaw = typeof (override as any).unit === "string" ? String((override as any).unit).trim() : "";
+  const unit =
+    unitRaw === "perSqft" || unitRaw === "perPiece" || unitRaw === "minimumCharge"
+      ? (unitRaw as ChoicePricingOverrideUnit)
+      : undefined;
+
+  const appliesToRaw = typeof (override as any).appliesTo === "string" ? String((override as any).appliesTo).trim() : "";
+  const appliesTo =
+    appliesToRaw === "base" || appliesToRaw === "area" || appliesToRaw === "quantity"
+      ? (appliesToRaw as ChoicePricingOverrideAppliesTo)
+      : undefined;
+
+  return {
+    mode,
+    ...(amount !== undefined ? { amount } : {}),
+    ...(unit ? { unit } : {}),
+    ...(appliesTo ? { appliesTo } : {}),
+  };
+}
+
+function inferChoicePricingOverrideUnit(
+  override: Pick<{ unit?: ChoicePricingOverrideUnit; appliesTo?: ChoicePricingOverrideAppliesTo }, "unit" | "appliesTo">
+): ChoicePricingOverrideUnit | undefined {
+  if (override.unit) return override.unit;
+  if (override.appliesTo === "area") return "perSqft";
+  if (override.appliesTo === "quantity") return "perPiece";
+  if (override.appliesTo === "base") return "minimumCharge";
+  return undefined;
+}
+
+function collectGroupChildSelectionKeys(
+  groupId: string,
+  nodesById: Record<string, NodeRec>,
+  edges: EdgeRec[]
+): Set<string> {
+  const selectionKeys = new Set<string>();
+  for (const edge of edges) {
+    if (edge.fromNodeId !== groupId || !edge.toNodeId) continue;
+    const child = nodesById[edge.toNodeId];
+    if (!child || child.type !== "INPUT" || !child.selectionKey) continue;
+    selectionKeys.add(child.selectionKey);
+  }
+  return selectionKeys;
+}
+
+function walkVisibilityRuleSelectionKeys(
+  rule: unknown,
+  visit: (selectionKey: string, ruleType: VisibilityRuleType) => void
+): void {
+  const rec = asRecord(rule);
+  if (!rec) return;
+  const type = typeof (rec as any).type === "string" ? String((rec as any).type) as VisibilityRuleType : null;
+  if (!type) return;
+
+  switch (type) {
+    case "equals":
+    case "notEquals":
+    case "in":
+    case "truthy":
+      if (isNonEmptyString((rec as any).selectionKey)) {
+        visit(String((rec as any).selectionKey), type);
+      }
+      return;
+    case "and":
+    case "or": {
+      const rules = Array.isArray((rec as any).rules) ? (rec as any).rules : [];
+      rules.forEach((child: unknown) => walkVisibilityRuleSelectionKeys(child, visit));
+      return;
+    }
+    case "not":
+      walkVisibilityRuleSelectionKeys((rec as any).rule, visit);
+      return;
+    default:
+      return;
+  }
+}
+
+function validateVisibilityRuleStructure(
+  rule: unknown,
+  path: string,
+  findings: Finding[],
+  entityId: string
+): void {
+  const rec = asRecord(rule);
+  if (!rec) {
+    findings.push(
+      warningFinding({
+        code: "PBV2_W_VISIBILITY_RULE_INVALID",
+        message: "Visibility rule must be an object",
+        path,
+        entityId,
+      })
+    );
+    return;
+  }
+
+  const type = typeof (rec as any).type === "string" ? String((rec as any).type) as VisibilityRuleType : null;
+  if (
+    type !== "equals" &&
+    type !== "notEquals" &&
+    type !== "in" &&
+    type !== "truthy" &&
+    type !== "and" &&
+    type !== "or" &&
+    type !== "not"
+  ) {
+    findings.push(
+      warningFinding({
+        code: "PBV2_W_VISIBILITY_RULE_INVALID",
+        message: "Visibility rule type is invalid",
+        path: `${path}.type`,
+        entityId,
+      })
+    );
+    return;
+  }
+
+  if (type === "equals" || type === "notEquals" || type === "truthy" || type === "in") {
+    if (!isNonEmptyString((rec as any).selectionKey)) {
+      findings.push(
+        warningFinding({
+          code: "PBV2_W_VISIBILITY_RULE_INVALID",
+          message: "Visibility rule requires selectionKey",
+          path: `${path}.selectionKey`,
+          entityId,
+        })
+      );
+    }
+  }
+
+  if (type === "in" && !Array.isArray((rec as any).values)) {
+    findings.push(
+      warningFinding({
+        code: "PBV2_W_VISIBILITY_RULE_INVALID",
+        message: "Visibility rule type 'in' requires values[]",
+        path: `${path}.values`,
+        entityId,
+      })
+    );
+  }
+
+  if (type === "and" || type === "or") {
+    const rules = Array.isArray((rec as any).rules) ? (rec as any).rules : [];
+    if (rules.length === 0) {
+      findings.push(
+        warningFinding({
+          code: "PBV2_W_VISIBILITY_RULE_INVALID",
+          message: `Visibility rule type '${type}' requires at least one child rule`,
+          path: `${path}.rules`,
+          entityId,
+        })
+      );
+    }
+    rules.forEach((child: unknown, idx: number) => validateVisibilityRuleStructure(child, `${path}.rules[${idx}]`, findings, entityId));
+  }
+
+  if (type === "not") {
+    if (!asRecord((rec as any).rule)) {
+      findings.push(
+        warningFinding({
+          code: "PBV2_W_VISIBILITY_RULE_INVALID",
+          message: "Visibility rule type 'not' requires a child rule",
+          path: `${path}.rule`,
+          entityId,
+        })
+      );
+      return;
+    }
+    validateVisibilityRuleStructure((rec as any).rule, `${path}.rule`, findings, entityId);
+  }
 }
 
 function extractEffectOutputs(node: Record<string, unknown>): unknown[] {
@@ -676,6 +875,162 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
         context: { selectionKey: sk, nodeIds: ids },
       })
     );
+  }
+
+  const visibilityDependencyEdges: Array<[string, string]> = [];
+  const groupChildSelectionKeysByNodeId: Record<string, Set<string>> = {};
+  for (const n of nodes) {
+    if (n.status === "DELETED" || n.type !== "GROUP") continue;
+    groupChildSelectionKeysByNodeId[n.id] = collectGroupChildSelectionKeys(n.id, nodesById, edges);
+    for (const edge of edges) {
+      if (edge.fromNodeId !== n.id || !edge.toNodeId) continue;
+      const childNode = nodesById[edge.toNodeId];
+      if (!childNode || childNode.status === "DELETED") continue;
+      visibilityDependencyEdges.push([n.id, childNode.id]);
+    }
+  }
+
+  for (const n of nodes) {
+    if (n.status === "DELETED") continue;
+
+    const visibility = asRecord((n.raw as any).visibility);
+    const visibilityRules = Array.isArray((visibility as any)?.rules) ? ((visibility as any).rules as unknown[]) : [];
+    visibilityRules.forEach((rule, idx) => {
+      validateVisibilityRuleStructure(rule, `tree.nodes[${n.id}].visibility.rules[${idx}]`, findings, n.id);
+      walkVisibilityRuleSelectionKeys(rule, (selectionKey) => {
+        if (!selectionKeyToNodeIds[selectionKey] || selectionKeyToNodeIds[selectionKey].length === 0) {
+          findings.push(
+            warningFinding({
+              code: "PBV2_W_VISIBILITY_SELECTION_KEY_UNKNOWN",
+              message: `Visibility rule references unknown selectionKey '${selectionKey}'`,
+              path: `tree.nodes[${n.id}].visibility.rules[${idx}]`,
+              entityId: n.id,
+              context: { selectionKey },
+            })
+          );
+          return;
+        }
+
+        if (n.selectionKey && selectionKey === n.selectionKey) {
+          findings.push(
+            warningFinding({
+              code: "PBV2_W_VISIBILITY_SELF_REFERENCE",
+              message: "Visibility rule references the node's own selectionKey",
+              path: `tree.nodes[${n.id}].visibility.rules[${idx}]`,
+              entityId: n.id,
+              context: { selectionKey },
+            })
+          );
+        }
+
+        if (n.type === "GROUP" && groupChildSelectionKeysByNodeId[n.id]?.has(selectionKey)) {
+          findings.push(
+            warningFinding({
+              code: "PBV2_W_VISIBILITY_GROUP_SELF_GATE",
+              message: "Group visibility references a selection inside the same group; the group may be unreachable at runtime",
+              path: `tree.nodes[${n.id}].visibility.rules[${idx}]`,
+              entityId: n.id,
+              context: { selectionKey },
+            })
+          );
+        }
+
+        for (const providerNodeId of selectionKeyToNodeIds[selectionKey] ?? []) {
+          visibilityDependencyEdges.push([providerNodeId, n.id]);
+        }
+      });
+    });
+
+    const choices = Array.isArray((n.raw as any).choices) ? ((n.raw as any).choices as unknown[]) : [];
+    choices.forEach((choiceRaw, idx) => {
+      const choice = asRecord(choiceRaw);
+      if (!choice) return;
+      const choiceValue = isNonEmptyString((choice as any).value) ? String((choice as any).value) : `choice_${idx}`;
+      const choiceRules = Array.isArray((choice as any).visibilityRules) ? ((choice as any).visibilityRules as unknown[]) : [];
+      choiceRules.forEach((rule, ruleIdx) => {
+        const choiceEntityId = `${n.id}:${choiceValue}`;
+        validateVisibilityRuleStructure(rule, `tree.nodes[${n.id}].choices[${idx}].visibilityRules[${ruleIdx}]`, findings, n.id);
+        walkVisibilityRuleSelectionKeys(rule, (selectionKey) => {
+          if (!selectionKeyToNodeIds[selectionKey] || selectionKeyToNodeIds[selectionKey].length === 0) {
+            findings.push(
+              warningFinding({
+                code: "PBV2_W_VISIBILITY_SELECTION_KEY_UNKNOWN",
+                message: `Choice visibility references unknown selectionKey '${selectionKey}'`,
+                path: `tree.nodes[${n.id}].choices[${idx}].visibilityRules[${ruleIdx}]`,
+                entityId: n.id,
+                context: { selectionKey, choiceValue },
+              })
+            );
+            return;
+          }
+
+          if (n.selectionKey && selectionKey === n.selectionKey) {
+            findings.push(
+              warningFinding({
+                code: "PBV2_W_VISIBILITY_SELF_REFERENCE",
+                message: "Choice visibility references its own node selectionKey",
+                path: `tree.nodes[${n.id}].choices[${idx}].visibilityRules[${ruleIdx}]`,
+                entityId: n.id,
+                context: { selectionKey, choiceValue },
+              })
+            );
+          }
+
+          for (const providerNodeId of selectionKeyToNodeIds[selectionKey] ?? []) {
+            visibilityDependencyEdges.push([providerNodeId, choiceEntityId]);
+          }
+        });
+      });
+    });
+  }
+
+  const visibilityEntities = Array.from(
+    new Set([
+      ...nodes.filter((n) => n.status !== "DELETED").map((n) => n.id),
+      ...visibilityDependencyEdges.map(([, consumerId]) => consumerId),
+    ])
+  ).sort();
+  const visibilityCycle = detectDirectedCycle(visibilityEntities, visibilityDependencyEdges);
+  if (visibilityCycle) {
+    findings.push(
+      warningFinding({
+        code: "PBV2_W_VISIBILITY_DEP_CYCLE",
+        message: "Visibility dependencies contain a cycle; runtime visibility may be unstable",
+        path: "tree.nodes",
+        context: { cycle: visibilityCycle },
+      })
+    );
+  }
+
+  for (const n of nodes) {
+    if (n.status === "DELETED" || n.type !== "GROUP") continue;
+    const visibility = asRecord((n.raw as any).visibility);
+    const visibilityRules = Array.isArray((visibility as any)?.rules) ? ((visibility as any).rules as unknown[]) : [];
+    if (visibilityRules.length === 0) continue;
+
+    const referencedSelectionKeys = new Set<string>();
+    visibilityRules.forEach((rule) => {
+      walkVisibilityRuleSelectionKeys(rule, (selectionKey) => referencedSelectionKeys.add(selectionKey));
+    });
+
+    if (referencedSelectionKeys.size === 0) continue;
+
+    const allRefsInternalOrUnknown = Array.from(referencedSelectionKeys).every((selectionKey) => {
+      const isInternal = groupChildSelectionKeysByNodeId[n.id]?.has(selectionKey) ?? false;
+      const isKnown = Boolean(selectionKeyToNodeIds[selectionKey]?.length);
+      return isInternal || !isKnown;
+    });
+
+    if (allRefsInternalOrUnknown) {
+      findings.push(
+        warningFinding({
+          code: "PBV2_W_GROUP_VISIBILITY_UNREACHABLE",
+          message: "Group visibility only depends on selections inside the same group or unknown keys, so the group may never become visible",
+          path: `tree.nodes[${n.id}].visibility.rules`,
+          entityId: n.id,
+        })
+      );
+    }
   }
 
   // INPUT constraints validation (minimal)
@@ -1888,15 +2243,280 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
     }
   }
 
+  const setBaseRateOverridesByUnit = new Map<
+    ChoicePricingOverrideUnit,
+    Array<{ nodeId: string; choiceValue: string; path: string }>
+  >();
+
+  // Choice-level override metadata validation
+  for (const n of nodes) {
+    if (n.status === "DELETED") continue;
+
+    const choices = (n.raw as any).choices;
+    if (!Array.isArray(choices)) continue;
+
+    const seenChoiceValues = new Set<string>();
+    for (let i = 0; i < choices.length; i++) {
+      const choice = asRecord(choices[i]);
+      const cPath = `tree.nodes[${n.id}].choices[${i}]`;
+      if (!choice) {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_CHOICE_OVERRIDE_INVALID",
+            message: "Choice must be an object",
+            path: cPath,
+            entityId: n.id,
+          })
+        );
+        continue;
+      }
+
+      const choiceValue = isNonEmptyString((choice as any).value) ? String((choice as any).value) : null;
+      if (choiceValue) {
+        if (seenChoiceValues.has(choiceValue)) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_CHOICE_VALUE_DUPLICATE",
+              message: `Choice value '${choiceValue}' must be unique within its node`,
+              path: `${cPath}.value`,
+              entityId: n.id,
+              context: { value: choiceValue },
+            })
+          );
+        }
+        seenChoiceValues.add(choiceValue);
+      }
+
+      const priceDeltaCents = (choice as any).priceDeltaCents;
+      if (priceDeltaCents !== undefined && (!Number.isInteger(priceDeltaCents) || !Number.isFinite(priceDeltaCents))) {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_CHOICE_OVERRIDE_INVALID",
+            message: "priceDeltaCents must be a finite integer when provided",
+            path: `${cPath}.priceDeltaCents`,
+            entityId: n.id,
+          })
+        );
+      }
+
+      if ((choice as any).pricingOverride !== undefined) {
+        const pricingOverride = normalizeChoicePricingOverride((choice as any).pricingOverride);
+        if (!pricingOverride) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_CHOICE_PRICING_OVERRIDE_INVALID",
+              message: "pricingOverride.mode must be one of: none, set_base_rate, add_base_rate, multiply_base_rate",
+              path: `${cPath}.pricingOverride.mode`,
+              entityId: n.id,
+            })
+          );
+        } else if (pricingOverride.mode !== "none") {
+          if (pricingOverride.amount === undefined) {
+            findings.push(
+              errorFinding({
+                code: "PBV2_E_CHOICE_PRICING_OVERRIDE_INVALID",
+                message: "pricingOverride.amount is required when pricingOverride.mode is active",
+                path: `${cPath}.pricingOverride.amount`,
+                entityId: n.id,
+              })
+            );
+          } else if (
+            (pricingOverride.mode === "set_base_rate" || pricingOverride.mode === "add_base_rate") &&
+            (!Number.isInteger(pricingOverride.amount) || pricingOverride.amount < 0)
+          ) {
+            findings.push(
+              errorFinding({
+                code: "PBV2_E_CHOICE_PRICING_OVERRIDE_INVALID",
+                message: "Base-rate pricingOverride.amount must be a non-negative integer number of cents",
+                path: `${cPath}.pricingOverride.amount`,
+                entityId: n.id,
+              })
+            );
+          } else if (pricingOverride.mode === "multiply_base_rate" && pricingOverride.amount < 0) {
+            findings.push(
+              errorFinding({
+                code: "PBV2_E_CHOICE_PRICING_OVERRIDE_INVALID",
+                message: "multiply_base_rate amount must be non-negative",
+                path: `${cPath}.pricingOverride.amount`,
+                entityId: n.id,
+              })
+            );
+          }
+
+          const overrideUnit = inferChoicePricingOverrideUnit(pricingOverride);
+          if (!overrideUnit) {
+            findings.push(
+              errorFinding({
+                code: "PBV2_E_CHOICE_PRICING_OVERRIDE_INVALID",
+                message: "pricingOverride.unit is required for active pricing overrides",
+                path: `${cPath}.pricingOverride.unit`,
+                entityId: n.id,
+              })
+            );
+          } else {
+            if (
+              (overrideUnit === "perSqft" && pricingOverride.appliesTo && pricingOverride.appliesTo !== "area") ||
+              (overrideUnit === "perPiece" && pricingOverride.appliesTo && pricingOverride.appliesTo !== "quantity") ||
+              (overrideUnit === "minimumCharge" && pricingOverride.appliesTo && pricingOverride.appliesTo !== "base")
+            ) {
+              findings.push(
+                warningFinding({
+                  code: "PBV2_W_CHOICE_PRICING_OVERRIDE_APPLIES_TO_MISMATCH",
+                  message: "pricingOverride.appliesTo does not match pricingOverride.unit",
+                  path: `${cPath}.pricingOverride.appliesTo`,
+                  entityId: n.id,
+                })
+              );
+            }
+
+            if (pricingOverride.mode === "set_base_rate") {
+              const existing = setBaseRateOverridesByUnit.get(overrideUnit) ?? [];
+              existing.push({
+                nodeId: n.id,
+                choiceValue: choiceValue ?? `choice_${i}`,
+                path: cPath,
+              });
+              setBaseRateOverridesByUnit.set(overrideUnit, existing);
+            }
+          }
+        }
+      }
+
+      const materialOverride = asRecord((choice as any).materialOverride);
+      if ((choice as any).materialOverride !== undefined) {
+        if (!materialOverride || !isNonEmptyString((materialOverride as any).materialId)) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_CHOICE_OVERRIDE_INVALID",
+              message: "materialOverride.materialId must be a non-empty string",
+              path: `${cPath}.materialOverride.materialId`,
+              entityId: n.id,
+            })
+          );
+        }
+      }
+
+      const workflowTagsRaw = (choice as any).workflowTags;
+      if (workflowTagsRaw !== undefined) {
+        if (!Array.isArray(workflowTagsRaw)) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_CHOICE_OVERRIDE_INVALID",
+              message: "workflowTags must be an array of non-empty strings",
+              path: `${cPath}.workflowTags`,
+              entityId: n.id,
+            })
+          );
+        } else {
+          const normalizedTags = workflowTagsRaw
+            .filter((tag): tag is string => typeof tag === "string")
+            .map((tag) => tag.trim())
+            .filter(Boolean);
+
+          if (normalizedTags.length !== workflowTagsRaw.length) {
+            findings.push(
+              errorFinding({
+                code: "PBV2_E_CHOICE_OVERRIDE_INVALID",
+                message: "workflowTags may only contain non-empty strings",
+                path: `${cPath}.workflowTags`,
+                entityId: n.id,
+              })
+            );
+          }
+
+          const duplicateWorkflowTags = normalizedTags.filter((tag, idx) => normalizedTags.indexOf(tag) !== idx);
+          if (duplicateWorkflowTags.length > 0) {
+            findings.push(
+              warningFinding({
+                code: "PBV2_W_CHOICE_WORKFLOW_TAG_DUPLICATE",
+                message: "workflowTags contains duplicate values",
+                path: `${cPath}.workflowTags`,
+                entityId: n.id,
+                context: { duplicateTags: Array.from(new Set(duplicateWorkflowTags)).sort() },
+              })
+            );
+          }
+        }
+      }
+
+      if (materialOverride && isNonEmptyString((materialOverride as any).materialId)) {
+        const inventoryEntries = Array.isArray((choice as any).inventoryConsumption) ? (choice as any).inventoryConsumption : [];
+        const distinctInventoryMaterialIds = Array.from(
+          new Set(
+            inventoryEntries
+              .map(asRecord)
+              .map((entry: Record<string, unknown> | null) => (entry && isNonEmptyString((entry as any).materialId) ? String((entry as any).materialId) : null))
+              .filter((materialId: string | null): materialId is string => Boolean(materialId))
+          )
+        );
+
+        const conflictingInventoryMaterialIds = distinctInventoryMaterialIds.filter(
+          (materialId) => materialId !== String((materialOverride as any).materialId)
+        );
+
+        if (conflictingInventoryMaterialIds.length > 0) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_CHOICE_MATERIAL_OVERRIDE_CONFLICT",
+              message: "materialOverride conflicts with inventoryConsumption material references",
+              path: `${cPath}.materialOverride`,
+              entityId: n.id,
+              context: {
+                materialOverrideId: String((materialOverride as any).materialId),
+                conflictingInventoryMaterialIds: conflictingInventoryMaterialIds.sort(),
+              },
+            })
+          );
+        }
+      }
+    }
+  }
+
+  setBaseRateOverridesByUnit.forEach((entries, unit) => {
+    const reachableEntries = entries.filter((entry) => reachable.has(entry.nodeId));
+    const distinctReachableNodeIds = Array.from(new Set(reachableEntries.map((entry) => entry.nodeId)));
+    if (distinctReachableNodeIds.length > 1) {
+      findings.push(
+        warningFinding({
+          code: "PBV2_W_CHOICE_PRICING_OVERRIDE_POTENTIAL_CONFLICT",
+          message: `Multiple reachable choices can set the same base pricing unit (${unit}); runtime pricing will reject conflicting active selections`,
+          path: "tree.nodes",
+          context: {
+            unit,
+            entries: reachableEntries.map((entry) => ({
+              nodeId: entry.nodeId,
+              choiceValue: entry.choiceValue,
+              path: entry.path,
+            })),
+          },
+        })
+      );
+    }
+  });
+
   // Weight validation: check for negative weights (ERROR)
   const negativeWeights: Array<{ path: string; value: number; label?: string }> = [];
 
-  // Check base weight
+  // Check base weight (canonical field)
   const meta = asRecord((t as any).meta);
   if (meta) {
     const baseWeightOz = meta.baseWeightOz;
     if (typeof baseWeightOz === "number" && baseWeightOz < 0) {
       negativeWeights.push({ path: "tree.meta.baseWeightOz", value: baseWeightOz, label: "Base weight" });
+    }
+    // Also check shippingConfig.baseWeight for negative values
+    const shippingConfig = asRecord(meta.shippingConfig);
+    if (shippingConfig) {
+      const rawWeight = shippingConfig.baseWeight;
+      let numWeight: number | null = null;
+      if (typeof rawWeight === "number" && !isNaN(rawWeight)) numWeight = rawWeight;
+      else if (typeof rawWeight === "string") {
+        const p = parseFloat(rawWeight);
+        if (!isNaN(p)) numWeight = p;
+      }
+      if (numWeight !== null && numWeight < 0) {
+        negativeWeights.push({ path: "tree.meta.shippingConfig.baseWeight", value: numWeight, label: "Base weight (shipping config)" });
+      }
     }
   }
 
@@ -1956,11 +2576,32 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
   // Weight validation: check for missing weight (WARNING)
   let hasWeight = false;
 
-  // Check base weight
+  // Check base weight from meta.baseWeightOz (canonical field)
   if (meta) {
     const baseWeightOz = meta.baseWeightOz;
-    if (typeof baseWeightOz === "number" && baseWeightOz !== 0) {
+    if (typeof baseWeightOz === "number" && baseWeightOz > 0) {
       hasWeight = true;
+    }
+  }
+
+  // Check base weight from meta.shippingConfig.baseWeight (form-managed field)
+  // The product editor stores weight here: { baseWeight: 0.9, weightUnit: "oz" | "lb", ... }
+  if (!hasWeight && meta) {
+    const shippingConfig = asRecord(meta.shippingConfig);
+    if (shippingConfig) {
+      const rawWeight = shippingConfig.baseWeight;
+      const weightUnit = typeof shippingConfig.weightUnit === "string" ? shippingConfig.weightUnit : "oz";
+      let weightOz: number | null = null;
+      if (typeof rawWeight === "number" && !isNaN(rawWeight)) {
+        weightOz = rawWeight;
+      } else if (typeof rawWeight === "string" && rawWeight.trim().length > 0) {
+        const parsed = parseFloat(rawWeight);
+        if (!isNaN(parsed)) weightOz = parsed;
+      }
+      if (weightOz !== null && weightOz > 0) {
+        // Convert lbs to oz if needed for comparison (any positive weight satisfies the check)
+        hasWeight = weightUnit === "lb" ? weightOz > 0 : weightOz > 0;
+      }
     }
   }
 

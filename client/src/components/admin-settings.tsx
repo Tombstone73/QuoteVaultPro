@@ -39,6 +39,7 @@ import type {
   UpdateFormulaTemplate,
 } from "@shared/schema";
 import { useForm } from "react-hook-form";
+import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import {
   insertProductSchema,
@@ -660,6 +661,438 @@ function GmailConnectionCard() {
 // Email Settings Tab Component (exported for use in settings page)
 export function EmailSettingsTab() {
   return <GmailConnectionCard />;
+}
+
+// ---------------------------------------------------------------------------
+// Invoice Reminders Tab
+// ---------------------------------------------------------------------------
+
+const reminderSettingsFormSchema = z.object({
+  enabled: z.boolean().default(false),
+  firstReminderDaysAfterDue: z.coerce.number().int().min(1).nullable().optional(),
+  repeatIntervalDays: z.coerce.number().int().min(1).nullable().optional(),
+  maxReminders: z.coerce.number().int().min(1).nullable().optional(),
+  sendCopyToInternalEmail: z.boolean().default(false),
+  internalCopyEmail: z.string().email().nullable().optional().or(z.literal("")),
+  pauseForManualBillingCustomers: z.boolean().default(false),
+});
+
+type ReminderSettingsFormValues = z.infer<typeof reminderSettingsFormSchema>;
+
+type ReminderEligibilityStatus =
+  | "eligible"
+  | "settings_disabled"
+  | "not_billed"
+  | "not_overdue"
+  | "no_due_date"
+  | "paid"
+  | "void"
+  | "max_reminders_reached"
+  | "too_soon";
+
+interface InvoiceReminderEligibility {
+  invoiceId: string;
+  invoiceNumber: number;
+  customerName: string;
+  dueDate: string | null;
+  daysOverdue: number | null;
+  balanceDueCents: number;
+  remindersSentCount: number;
+  lastReminderSentAt: string | null;
+  nextReminderDueAt: string | null;
+  status: ReminderEligibilityStatus;
+}
+
+interface ReminderPreviewData {
+  settings: ReminderSettingsFormValues | null;
+  eligible: InvoiceReminderEligibility[];
+  blocked: InvoiceReminderEligibility[];
+}
+
+function eligibilityStatusLabel(status: ReminderEligibilityStatus): string {
+  switch (status) {
+    case "eligible": return "Ready to send";
+    case "settings_disabled": return "Reminders disabled";
+    case "not_billed": return "Not yet billed";
+    case "not_overdue": return "Not overdue";
+    case "no_due_date": return "No due date";
+    case "paid": return "Paid";
+    case "void": return "Voided";
+    case "max_reminders_reached": return "Max reminders reached";
+    case "too_soon": return "Too soon to re-send";
+  }
+}
+
+function ReminderPreviewPanel() {
+  const { data: previewResp, isLoading, refetch } = useQuery<{ success: boolean; data: ReminderPreviewData }>({
+    queryKey: ["/api/invoices/reminder-preview"],
+    queryFn: () => apiRequest("GET", "/api/invoices/reminder-preview").then((r) => r.json()),
+  });
+
+  const preview = previewResp?.data;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="font-medium text-sm">Eligibility Preview</h3>
+          <p className="text-xs text-muted-foreground">
+            Read-only. Shows which open invoices would receive a reminder right now.
+            No emails are sent from this panel.
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => refetch()}>
+          Refresh
+        </Button>
+      </div>
+
+      {isLoading && (
+        <div className="space-y-2">
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+        </div>
+      )}
+
+      {!isLoading && preview && (
+        <>
+          {preview.eligible.length === 0 && preview.blocked.length === 0 && (
+            <p className="text-sm text-muted-foreground py-4 text-center">
+              No open overdue invoices found.
+            </p>
+          )}
+
+          {preview.eligible.length > 0 && (
+            <div>
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-green-700 mb-2">
+                Would receive a reminder ({preview.eligible.length})
+              </h4>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Invoice</TableHead>
+                    <TableHead>Customer</TableHead>
+                    <TableHead>Days Overdue</TableHead>
+                    <TableHead>Reminders Sent</TableHead>
+                    <TableHead>Next Due</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {preview.eligible.map((inv) => (
+                    <TableRow key={inv.invoiceId}>
+                      <TableCell>#{inv.invoiceNumber}</TableCell>
+                      <TableCell>{inv.customerName}</TableCell>
+                      <TableCell>{inv.daysOverdue ?? "—"}</TableCell>
+                      <TableCell>{inv.remindersSentCount}</TableCell>
+                      <TableCell>
+                        {inv.nextReminderDueAt
+                          ? new Date(inv.nextReminderDueAt).toLocaleDateString()
+                          : "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+
+          {preview.blocked.length > 0 && (
+            <div>
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                Skipped ({preview.blocked.length})
+              </h4>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Invoice</TableHead>
+                    <TableHead>Customer</TableHead>
+                    <TableHead>Days Overdue</TableHead>
+                    <TableHead>Reason</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {preview.blocked.map((inv) => (
+                    <TableRow key={inv.invoiceId} className="opacity-60">
+                      <TableCell>#{inv.invoiceNumber}</TableCell>
+                      <TableCell>{inv.customerName}</TableCell>
+                      <TableCell>{inv.daysOverdue ?? "—"}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="text-xs">
+                          {eligibilityStatusLabel(inv.status)}
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+export function InvoiceRemindersTab() {
+  const { toast } = useToast();
+
+  const { data: settingsResp, isLoading } = useQuery<{ success: boolean; data: ReminderSettingsFormValues | null }>({
+    queryKey: ["/api/invoices/reminder-settings"],
+    queryFn: () => apiRequest("GET", "/api/invoices/reminder-settings").then((r) => r.json()),
+  });
+
+  const form = useForm<ReminderSettingsFormValues>({
+    resolver: zodResolver(reminderSettingsFormSchema),
+    defaultValues: {
+      enabled: false,
+      firstReminderDaysAfterDue: null,
+      repeatIntervalDays: null,
+      maxReminders: null,
+      sendCopyToInternalEmail: false,
+      internalCopyEmail: null,
+      pauseForManualBillingCustomers: false,
+    },
+  });
+
+  // Populate form once data loads
+  const { reset } = form;
+  const loadedSettings = settingsResp?.data;
+  useState(() => {
+    if (loadedSettings) reset(loadedSettings);
+  });
+
+  // Reset form when data is fetched
+  const [initialized, setInitialized] = useState(false);
+  if (!initialized && loadedSettings !== undefined) {
+    if (loadedSettings) reset(loadedSettings);
+    setInitialized(true);
+  }
+
+  const saveMutation = useMutation({
+    mutationFn: (values: ReminderSettingsFormValues) =>
+      apiRequest("PUT", "/api/invoices/reminder-settings", values).then((r) => r.json()),
+    onSuccess: (data) => {
+      if (data.success) {
+        queryClient.invalidateQueries({ queryKey: ["/api/invoices/reminder-settings"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/invoices/reminder-preview"] });
+        toast({ title: "Reminder settings saved" });
+      } else {
+        toast({ title: "Failed to save", description: data.error, variant: "destructive" });
+      }
+    },
+    onError: () => {
+      toast({ title: "Failed to save reminder settings", variant: "destructive" });
+    },
+  });
+
+  const enabled = form.watch("enabled");
+  const sendCopy = form.watch("sendCopyToInternalEmail");
+
+  if (isLoading) {
+    return (
+      <div className="space-y-3">
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="h-8 w-full" />
+        <Skeleton className="h-8 w-full" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-base font-semibold">Invoice Reminder Settings</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Configure automatic payment reminders for overdue invoices.{" "}
+          <span className="font-medium text-amber-600">
+            Automatic sending is not active yet — these settings will be used when the reminder
+            job is enabled.
+          </span>
+        </p>
+      </div>
+
+      <Form {...form}>
+        <form onSubmit={form.handleSubmit((v) => saveMutation.mutate(v))} className="space-y-6">
+          {/* Enable toggle */}
+          <FormField
+            control={form.control}
+            name="enabled"
+            render={({ field }) => (
+              <FormItem className="flex items-center justify-between rounded-lg border p-4">
+                <div>
+                  <FormLabel className="text-base">Enable Reminders</FormLabel>
+                  <FormDescription>
+                    When enabled, qualifying overdue invoices will receive automated reminders.
+                  </FormDescription>
+                </div>
+                <FormControl>
+                  <Switch checked={field.value} onCheckedChange={field.onChange} />
+                </FormControl>
+              </FormItem>
+            )}
+          />
+
+          {/* Timing fields */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <FormField
+              control={form.control}
+              name="firstReminderDaysAfterDue"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>First Reminder (days after due)</FormLabel>
+                  <FormControl>
+                    <Input
+                      type="number"
+                      min={1}
+                      placeholder="e.g. 3"
+                      value={field.value ?? ""}
+                      onChange={(e) =>
+                        field.onChange(e.target.value === "" ? null : Number(e.target.value))
+                      }
+                      disabled={!enabled}
+                    />
+                  </FormControl>
+                  <FormDescription>Days after due date to send the first reminder.</FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="repeatIntervalDays"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Repeat Interval (days)</FormLabel>
+                  <FormControl>
+                    <Input
+                      type="number"
+                      min={1}
+                      placeholder="e.g. 7"
+                      value={field.value ?? ""}
+                      onChange={(e) =>
+                        field.onChange(e.target.value === "" ? null : Number(e.target.value))
+                      }
+                      disabled={!enabled}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    How many days between follow-up reminders. Leave blank for no repeats.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="maxReminders"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Max Reminders</FormLabel>
+                  <FormControl>
+                    <Input
+                      type="number"
+                      min={1}
+                      placeholder="e.g. 5"
+                      value={field.value ?? ""}
+                      onChange={(e) =>
+                        field.onChange(e.target.value === "" ? null : Number(e.target.value))
+                      }
+                      disabled={!enabled}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    Maximum reminders per invoice. Leave blank for unlimited.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+
+          {/* Internal copy */}
+          <div className="space-y-3 rounded-lg border p-4">
+            <FormField
+              control={form.control}
+              name="sendCopyToInternalEmail"
+              render={({ field }) => (
+                <FormItem className="flex items-center gap-3 space-y-0">
+                  <FormControl>
+                    <Switch
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                      disabled={!enabled}
+                    />
+                  </FormControl>
+                  <div>
+                    <FormLabel>Send copy to internal email</FormLabel>
+                    <FormDescription>
+                      CC an internal address on every reminder sent.
+                    </FormDescription>
+                  </div>
+                </FormItem>
+              )}
+            />
+
+            {sendCopy && (
+              <FormField
+                control={form.control}
+                name="internalCopyEmail"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Internal copy email</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="email"
+                        placeholder="billing@yourshop.com"
+                        value={field.value ?? ""}
+                        onChange={(e) =>
+                          field.onChange(e.target.value === "" ? null : e.target.value)
+                        }
+                        disabled={!enabled}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            )}
+          </div>
+
+          {/* Pause for manual billing */}
+          <FormField
+            control={form.control}
+            name="pauseForManualBillingCustomers"
+            render={({ field }) => (
+              <FormItem className="flex items-center justify-between rounded-lg border p-4">
+                <div>
+                  <FormLabel>Pause for manual-billing customers</FormLabel>
+                  <FormDescription>
+                    Skip reminders for customers flagged as manual billing.
+                  </FormDescription>
+                </div>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                    disabled={!enabled}
+                  />
+                </FormControl>
+              </FormItem>
+            )}
+          />
+
+          <Button type="submit" disabled={saveMutation.isPending}>
+            {saveMutation.isPending ? "Saving…" : "Save Reminder Settings"}
+          </Button>
+        </form>
+      </Form>
+
+      <hr />
+
+      <ReminderPreviewPanel />
+    </div>
+  );
 }
 
 // Helper: validate URL is a proper http(s) string
@@ -1522,6 +1955,7 @@ export default function AdminSettings() {
               <TabsTrigger value="formulas" data-testid="tab-formulas">Formula Templates</TabsTrigger>
               <TabsTrigger value="email" data-testid="tab-email">Email Settings</TabsTrigger>
               <TabsTrigger value="workflow" data-testid="tab-workflow">Workflow</TabsTrigger>
+              <TabsTrigger value="invoice-reminders" data-testid="tab-invoice-reminders">Invoice Reminders</TabsTrigger>
             </TabsList>
 
             <TabsContent value="products" className="space-y-4">
@@ -1802,7 +2236,7 @@ export default function AdminSettings() {
                                   />
                                 </FormControl>
                                 <FormDescription>
-                                  Use: w (width), h (height), q (quantity), sqft, p (price/sqft). Example: sqft * p * q
+                                  Use lowercase variables such as w, h, q, sqft, and base_price. Use functions like ceil(...), round(...), and max(...). Example: ceil((((w + 0.25) * (h + 0.25)) * q) / 144) * base_price
                                 </FormDescription>
                                 <FormMessage />
                               </FormItem>
@@ -2410,7 +2844,7 @@ export default function AdminSettings() {
                                                 <Input {...field} value={field.value || ""} data-testid={`input-edit-formula-${product.id}`} />
                                               </FormControl>
                                               <FormDescription>
-                                                Use: w (width), h (height), q (quantity), sqft, p (price/sqft)
+                                                Use lowercase variables such as w, h, q, sqft, and base_price. Use functions like ceil(...), round(...), and max(...).
                                               </FormDescription>
                                               <FormMessage />
                                             </FormItem>
@@ -3621,7 +4055,7 @@ export default function AdminSettings() {
                                                           />
                                                         </FormControl>
                                                         <FormDescription className="text-xs">
-                                                          JavaScript expression. Available: w, h, q, sqft, setupCost
+                                                          Formula expression. Available: w, h, q, sqft, total_sqft, base_price
                                                         </FormDescription>
                                                         <FormMessage />
                                                       </FormItem>
@@ -4158,14 +4592,15 @@ export default function AdminSettings() {
                         These variables are automatically available in all formulas:
                       </p>
                       <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
-                        <li><code className="bg-muted px-1 rounded">width</code> or <code className="bg-muted px-1 rounded">w</code> - Product width in inches</li>
-                        <li><code className="bg-muted px-1 rounded">height</code> or <code className="bg-muted px-1 rounded">h</code> - Product height in inches</li>
-                        <li><code className="bg-muted px-1 rounded">quantity</code> or <code className="bg-muted px-1 rounded">q</code> - Number of items</li>
-                        <li><code className="bg-muted px-1 rounded">sqft</code> - Square footage (width × height ÷ 144)</li>
-                        <li><code className="bg-muted px-1 rounded">basePricePerSqft</code> or <code className="bg-muted px-1 rounded">p</code> - Price per sq ft from variant</li>
+                        <li><code className="bg-muted px-1 rounded">w</code> - Ordered width in inches</li>
+                        <li><code className="bg-muted px-1 rounded">h</code> - Ordered height in inches</li>
+                        <li><code className="bg-muted px-1 rounded">q</code> - Quantity</li>
+                        <li><code className="bg-muted px-1 rounded">sqft</code> - Square feet per item</li>
+                        <li><code className="bg-muted px-1 rounded">total_sqft</code> - Total square feet for the order</li>
+                        <li><code className="bg-muted px-1 rounded">base_price</code> - Effective base price rate used by the evaluator</li>
                       </ul>
                       <p className="text-xs text-muted-foreground mt-2 italic">
-                        💡 Tip: Use single letters (w, h, q, p) for shorter formulas!
+                        💡 Tip: Use lowercase keys and formula functions such as <code className="bg-muted px-1 rounded">ceil(...)</code>, <code className="bg-muted px-1 rounded">round(...)</code>, and <code className="bg-muted px-1 rounded">max(...)</code>.
                       </p>
                       <p className="text-xs text-muted-foreground mt-2 font-semibold">
                         ⚠️ Note: Set price per sq ft in Product Variants, not in the formula!
@@ -4192,20 +4627,20 @@ export default function AdminSettings() {
                       <h4 className="font-medium mb-2">Example Formulas:</h4>
                       <div className="space-y-2 text-sm">
                         <div className="bg-muted p-2 rounded">
-                          <code className="font-mono">sqft * p * q</code>
-                          <p className="text-muted-foreground mt-1">Simple: sqft × price per sqft × quantity</p>
+                          <code className="font-mono">ceil((((w + 0.25) * (h + 0.25)) * q) / 144) * base_price</code>
+                          <p className="text-muted-foreground mt-1">Finished-size billing with a 0.25&quot; trim allowance and whole-square-foot rounding.</p>
                         </div>
                         <div className="bg-muted p-2 rounded">
-                          <code className="font-mono">(sqft * p * q) + SETUP_FEE</code>
-                          <p className="text-muted-foreground mt-1">With setup fee from global variable</p>
+                          <code className="font-mono">sqft * base_price * q</code>
+                          <p className="text-muted-foreground mt-1">Simple area pricing using lowercase evaluator variables.</p>
                         </div>
                         <div className="bg-muted p-2 rounded">
-                          <code className="font-mono">max(MIN_ORDER, sqft * p * q)</code>
+                          <code className="font-mono">max(25, sqft * base_price * q)</code>
                           <p className="text-muted-foreground mt-1">Minimum order price</p>
                         </div>
                         <div className="bg-muted p-2 rounded">
-                          <code className="font-mono">sqft * p * q * (q &gt; 100 ? 0.9 : 1)</code>
-                          <p className="text-muted-foreground mt-1">10% discount for orders over 100</p>
+                          <code className="font-mono">round(sqft * base_price * q)</code>
+                          <p className="text-muted-foreground mt-1">Round the evaluated total using supported formula functions.</p>
                         </div>
                       </div>
                     </div>
@@ -4822,6 +5257,9 @@ export default function AdminSettings() {
             </TabsContent>
             <TabsContent value="workflow" className="space-y-4">
               <JobStatusSettings />
+            </TabsContent>
+            <TabsContent value="invoice-reminders" className="space-y-4">
+              <InvoiceRemindersTab />
             </TabsContent>
           </Tabs>
         </CardContent>

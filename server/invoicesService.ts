@@ -1,8 +1,9 @@
 import { db } from './db';
-import { invoices, invoiceLineItems, payments, orders, orderLineItems, globalVariables } from '../shared/schema';
-import { eq, and, sql } from 'drizzle-orm';
-import { InsertInvoice, InsertInvoiceLineItem, InsertPayment } from '../shared/schema';
+import { invoices, invoiceEmailLogs, invoiceLineItems, payments, orders, orderLineItems, globalVariables } from '../shared/schema';
+import { eq, and, inArray, sql } from 'drizzle-orm';
+import { InsertInvoice, InsertInvoiceEmailLog, InsertInvoiceLineItem, InsertPayment } from '../shared/schema';
 import { computeInvoicePaymentRollup } from '../shared/rollups/invoicePaymentRollup';
+import { normalizeInvoiceAccountingDisplay } from '../shared/invoiceAccountingDisplay';
 
 // Map payment terms to days offset
 const TERM_OFFSETS: Record<string, number> = {
@@ -12,6 +13,146 @@ const TERM_OFFSETS: Record<string, number> = {
   net_45: 45,
   custom: 0,
 };
+
+// 'sent_current'  = invoice was emailed and has not changed since
+// 'sent_outdated' = invoice was emailed but has been edited/updated since last send
+// 'not_sent'      = invoice has never been emailed as an original invoice send
+//
+// NOTE: reminder sends must NOT count toward this status — only type='invoice_send'
+// rows in invoice_email_logs should be queried here.
+export type InvoiceEmailStatus = 'not_sent' | 'sent_current' | 'sent_outdated';
+
+export function deriveInvoiceEmailStatus(updatedAt: Date | string | null | undefined, lastSentAt: Date | string | null | undefined): InvoiceEmailStatus {
+  if (!lastSentAt) {
+    return 'not_sent';
+  }
+
+  const updatedAtMs = updatedAt ? new Date(updatedAt).getTime() : 0;
+  const lastSentAtMs = new Date(lastSentAt).getTime();
+  return updatedAtMs > lastSentAtMs ? 'sent_outdated' : 'sent_current';
+}
+
+export async function createInvoiceEmailLog(input: InsertInvoiceEmailLog): Promise<void> {
+  await db.insert(invoiceEmailLogs).values(input as any);
+}
+
+export async function getInvoiceEmailStatus(invoiceId: string): Promise<{
+  lastSentAt: Date | null;
+  lastInvoiceEmailRecipient: string | null;
+  emailStatus: InvoiceEmailStatus;
+}> {
+  const [invoice] = await db
+    .select({ updatedAt: invoices.updatedAt })
+    .from(invoices)
+    .where(eq(invoices.id, invoiceId))
+    .limit(1);
+
+  if (!invoice) {
+    throw new Error('Invoice not found');
+  }
+
+  // Only count type='invoice_send' rows — reminder sends must not affect emailStatus.
+  const [latestSent] = await db
+    .select({
+      lastSentAt: sql<Date>`MAX(${invoiceEmailLogs.sentAt})`,
+    })
+    .from(invoiceEmailLogs)
+    .where(and(
+      eq(invoiceEmailLogs.invoiceId, invoiceId),
+      eq(invoiceEmailLogs.status, 'sent'),
+      eq(invoiceEmailLogs.type, 'invoice_send'),
+    ));
+
+  const lastSentAt = latestSent?.lastSentAt ? new Date(latestSent.lastSentAt) : null;
+
+  // Fetch recipient of the most recent successful invoice send
+  let lastInvoiceEmailRecipient: string | null = null;
+  if (lastSentAt) {
+    const [recipientRow] = await db
+      .select({ recipientEmail: invoiceEmailLogs.recipientEmail })
+      .from(invoiceEmailLogs)
+      .where(and(
+        eq(invoiceEmailLogs.invoiceId, invoiceId),
+        eq(invoiceEmailLogs.status, 'sent'),
+        eq(invoiceEmailLogs.type, 'invoice_send'),
+        sql`${invoiceEmailLogs.sentAt} = ${latestSent!.lastSentAt}`,
+      ))
+      .limit(1);
+    lastInvoiceEmailRecipient = recipientRow?.recipientEmail ?? null;
+  }
+
+  return {
+    lastSentAt,
+    lastInvoiceEmailRecipient,
+    emailStatus: deriveInvoiceEmailStatus(invoice.updatedAt, lastSentAt),
+  };
+}
+
+export async function getInvoiceEmailStatuses(
+  invoiceRows: Array<{ id: string; updatedAt: Date | string | null | undefined }>,
+  organizationId?: string,
+): Promise<Map<string, { lastSentAt: Date | null; lastInvoiceEmailRecipient: string | null; emailStatus: InvoiceEmailStatus }>> {
+  const result = new Map<string, { lastSentAt: Date | null; lastInvoiceEmailRecipient: string | null; emailStatus: InvoiceEmailStatus }>();
+  if (invoiceRows.length === 0) {
+    return result;
+  }
+
+  const invoiceIds = invoiceRows.map((row) => row.id);
+  const conditions: any[] = [
+    inArray(invoiceEmailLogs.invoiceId, invoiceIds),
+    eq(invoiceEmailLogs.status, 'sent'),
+    // Only count original invoice sends — reminder sends must not affect emailStatus.
+    eq(invoiceEmailLogs.type, 'invoice_send'),
+  ];
+  if (organizationId) {
+    conditions.push(eq(invoiceEmailLogs.organizationId, organizationId));
+  }
+
+  // Get the max sentAt per invoice (one row per invoice)
+  const latestSentRows = await db
+    .select({
+      invoiceId: invoiceEmailLogs.invoiceId,
+      lastSentAt: sql<Date>`MAX(${invoiceEmailLogs.sentAt})`,
+    })
+    .from(invoiceEmailLogs)
+    .where(and(...conditions))
+    .groupBy(invoiceEmailLogs.invoiceId);
+
+  const lastSentByInvoiceId = new Map(
+    latestSentRows.map((row) => [row.invoiceId, row.lastSentAt ? new Date(row.lastSentAt) : null]),
+  );
+
+  // Fetch the recipient for each invoice's most recent send in one query using DISTINCT ON
+  const recipientRows = await db
+    .select({
+      invoiceId: invoiceEmailLogs.invoiceId,
+      recipientEmail: invoiceEmailLogs.recipientEmail,
+      sentAt: invoiceEmailLogs.sentAt,
+    })
+    .from(invoiceEmailLogs)
+    .where(and(...conditions))
+    .orderBy(sql`${invoiceEmailLogs.invoiceId}, ${invoiceEmailLogs.sentAt} DESC`);
+
+  // Keep only the latest row per invoice (first encountered after sort by sentAt DESC)
+  const recipientByInvoiceId = new Map<string, string>();
+  for (const row of recipientRows) {
+    if (!recipientByInvoiceId.has(row.invoiceId)) {
+      recipientByInvoiceId.set(row.invoiceId, row.recipientEmail);
+    }
+  }
+
+  for (const row of invoiceRows) {
+    const lastSentAt = lastSentByInvoiceId.get(row.id) ?? null;
+    const lastInvoiceEmailRecipient = recipientByInvoiceId.get(row.id) ?? null;
+    result.set(row.id, {
+      lastSentAt,
+      lastInvoiceEmailRecipient,
+      emailStatus: deriveInvoiceEmailStatus(row.updatedAt, lastSentAt),
+    });
+  }
+
+  return result;
+}
 
 export async function generateNextInvoiceNumber(organizationId: string, tx?: any): Promise<number> {
   const dbConn = tx || db;
@@ -66,6 +207,83 @@ function centsToDecimalString(cents: number): string {
 function normalizePaymentStatus(raw: unknown): string {
   if (!raw) return 'succeeded';
   return String(raw).trim().toLowerCase();
+}
+
+function getNetInternalPaymentCents(paymentRows: Array<{ id?: string | null; status?: unknown; amountCents?: unknown }>): number {
+  let paid = 0;
+  const seen = new Set<string>();
+
+  for (const payment of paymentRows || []) {
+    const rawId = payment?.id == null ? null : String(payment.id).trim();
+    if (rawId) {
+      if (seen.has(rawId)) continue;
+      seen.add(rawId);
+    }
+
+    const status = normalizePaymentStatus(payment?.status);
+    const amountCents = Math.max(0, Math.round(Number(payment?.amountCents || 0)));
+
+    if (status === 'succeeded') {
+      paid += amountCents;
+    } else if (status === 'refunded') {
+      paid -= amountCents;
+    }
+  }
+
+  return Math.max(0, paid);
+}
+
+function computeInvoiceFinancialState(
+  invoice: Record<string, any>,
+  paymentRows: Array<Record<string, any>>,
+): { amountPaidCents: number; amountDueCents: number; status: string } {
+  const totalCents = Math.max(0, Math.round(Number(invoice.totalCents || 0)));
+  const isImportedFromQuickBooks = String(invoice.importSource || '').trim().toLowerCase() === 'quickbooks';
+
+  if (isImportedFromQuickBooks) {
+    const normalizedDisplay = normalizeInvoiceAccountingDisplay({
+      ...invoice,
+      payments: paymentRows.map((payment: any) => ({
+        id: payment.id,
+        status: payment.status,
+        amountCents: Number(payment.amountCents || 0),
+        syncStatus: payment.syncStatus,
+        externalAccountingId: payment.externalAccountingId,
+        qbReconciledAt: payment.qbReconciledAt,
+      })),
+    });
+    const amountPaidCents = normalizedDisplay.displayPaidCents;
+    const amountDueCents = normalizedDisplay.displayRemainingCents;
+
+    let status = String(invoice.status || 'billed').trim().toLowerCase();
+    if (amountDueCents <= 0) status = 'paid';
+    else if (amountPaidCents > 0) status = 'partially_paid';
+    else status = 'billed';
+
+    return { amountPaidCents, amountDueCents, status };
+  }
+
+  const rollup = computeInvoicePaymentRollup({
+    invoiceTotalCents: totalCents,
+    payments: paymentRows.map((payment: any) => ({
+      id: payment.id,
+      status: normalizePaymentStatus(payment.status),
+      amountCents: Number(payment.amountCents || 0),
+    })),
+  });
+
+  let status = String(invoice.status || '').trim().toLowerCase();
+  if (rollup.amountDueCents <= 0) status = 'paid';
+  else {
+    if (status === 'billed') status = 'billed';
+    else if (rollup.amountPaidCents > 0) status = 'partially_paid';
+  }
+
+  return {
+    amountPaidCents: rollup.amountPaidCents,
+    amountDueCents: rollup.amountDueCents,
+    status,
+  };
 }
 
 function calculateDueDate(issueDate: Date, terms: string, customProvided?: Date | null): Date | null {
@@ -216,7 +434,8 @@ export async function getInvoiceWithRelations(id: string) {
     .select()
     .from(payments)
     .where(and(eq(payments.invoiceId, id), eq(payments.organizationId, (invoice as any).organizationId)));
-  return { invoice, lineItems, payments: paymentRows };
+  const emailTracking = await getInvoiceEmailStatus(id);
+  return { invoice: { ...invoice, ...emailTracking }, lineItems, payments: paymentRows };
 }
 
 export async function applyPayment(invoiceId: string, userId: string, data: { amount: number; method: string; notes?: string }) {
@@ -227,9 +446,8 @@ export async function applyPayment(invoiceId: string, userId: string, data: { am
     const existingStatus = String(invoice.status || '').toLowerCase();
     if (existingStatus === 'void') throw new Error('Cannot record payment on a void invoice');
 
-    const amountPaidAlready = Number(invoice.amountPaid);
-    const balanceDueNow = Number(invoice.balanceDue ?? (Number(invoice.total) - amountPaidAlready));
-    if (data.amount > balanceDueNow) throw new Error('Overpayment not allowed');
+    const currentFinancialState = computeInvoiceFinancialState(invoice as any, rel.payments as any);
+    if (toCents(data.amount) > currentFinancialState.amountDueCents) throw new Error('Overpayment not allowed');
 
     const paymentInsert: InsertPayment = {
       invoiceId,
@@ -254,20 +472,11 @@ export async function applyPayment(invoiceId: string, userId: string, data: { am
       .select()
       .from(payments)
       .where(and(eq(payments.invoiceId, invoiceId), eq(payments.organizationId, (invoice as any).organizationId)));
-    const rollup = computeInvoicePaymentRollup({
-      invoiceTotalCents: Number((invoice as any).totalCents || 0),
-      payments: paymentRows.map((p: any) => ({ id: p.id, status: normalizePaymentStatus(p.status), amountCents: Number(p.amountCents || 0) })),
-    });
+    const nextFinancialState = computeInvoiceFinancialState(invoice as any, paymentRows as any);
 
-    const amountPaid = centsToDecimalString(rollup.amountPaidCents);
-    const balanceDue = centsToDecimalString(rollup.amountDueCents);
-    let newStatus = invoice.status;
-    if (rollup.amountDueCents <= 0) newStatus = 'paid' as any;
-    else {
-      // Keep billed status if already billed; otherwise leave as-is (legacy statuses supported)
-      if (String(invoice.status || '').toLowerCase() === 'billed') newStatus = 'billed' as any;
-      else if (rollup.amountPaidCents > 0) newStatus = 'partially_paid' as any;
-    }
+    const amountPaid = centsToDecimalString(nextFinancialState.amountPaidCents);
+    const balanceDue = centsToDecimalString(nextFinancialState.amountDueCents);
+    const newStatus = nextFinancialState.status as any;
 
     await tx.update(invoices).set({
       amountPaid,
@@ -292,18 +501,14 @@ export async function refreshInvoiceStatus(id: string) {
   const rel = await getInvoiceWithRelations(id);
   if (!rel) return null;
   const { invoice, payments: paymentRows } = rel;
-  const rollup = computeInvoicePaymentRollup({
-    invoiceTotalCents: Number((invoice as any).totalCents || 0),
-    payments: paymentRows.map((p: any) => ({ id: p.id, status: normalizePaymentStatus(p.status), amountCents: Number(p.amountCents || 0) })),
-  });
+  const financialState = computeInvoiceFinancialState(invoice as any, paymentRows as any);
 
-  const amountPaid = centsToDecimalString(rollup.amountPaidCents);
-  const balanceDue = centsToDecimalString(rollup.amountDueCents);
+  const amountPaid = centsToDecimalString(financialState.amountPaidCents);
+  const balanceDue = centsToDecimalString(financialState.amountDueCents);
 
-  let status = invoice.status;
-  if (rollup.amountDueCents <= 0) status = 'paid';
-  else if (rollup.amountPaidCents > 0) status = 'partially_paid';
-  if (status !== 'paid' && invoice.dueDate && new Date(invoice.dueDate) < new Date()) {
+  let status = financialState.status;
+  const isImportedFromQuickBooks = String((invoice as any).importSource || '').trim().toLowerCase() === 'quickbooks';
+  if (!isImportedFromQuickBooks && status !== 'paid' && invoice.dueDate && new Date(invoice.dueDate) < new Date()) {
     status = 'overdue';
   }
   const [updated] = await db.update(invoices).set({ amountPaid, balanceDue, status, updatedAt: new Date() }).where(eq(invoices.id, id)).returning();

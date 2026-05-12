@@ -14,6 +14,20 @@ export type ConditionExpr =
   | { op: "or"; args: ConditionExpr[] }
   | { op: "not"; arg: ConditionExpr };
 
+export type VisibilityRule =
+  | { type: "equals"; selectionKey: string; value?: any }
+  | { type: "notEquals"; selectionKey: string; value?: any }
+  | { type: "in"; selectionKey: string; values: any[] }
+  | { type: "truthy"; selectionKey: string }
+  | { type: "and"; rules: VisibilityRule[] }
+  | { type: "or"; rules: VisibilityRule[] }
+  | { type: "not"; rule: VisibilityRule };
+
+export type VisibilityConfig = {
+  condition?: ConditionExpr;
+  rules?: VisibilityRule[];
+};
+
 // New unified pricing impact types (can be negative for discounts)
 export type PricingImpact =
   // Legacy modes (kept for backward compatibility)
@@ -40,6 +54,70 @@ export type InventoryConsumption = {
   multiplier: number;
   wastePercent?: number;
   fixedQty?: number;
+};
+
+export type ChoicePricingOverrideMode = "none" | "set_base_rate" | "add_base_rate" | "multiply_base_rate";
+export type ChoicePricingOverrideUnit = "perSqft" | "perPiece" | "minimumCharge";
+export type ChoicePricingOverrideAppliesTo = "base" | "area" | "quantity";
+
+export type ChoicePricingOverride = {
+  mode: ChoicePricingOverrideMode;
+  amount?: number;
+  unit?: ChoicePricingOverrideUnit;
+  appliesTo?: ChoicePricingOverrideAppliesTo;
+  label?: string;
+};
+
+export type AppliedChoicePricingOverride = {
+  selectionKey: string;
+  optionLabel: string;
+  choiceValue: string;
+  choiceLabel: string;
+  mode: Exclude<ChoicePricingOverrideMode, "none">;
+  amount: number;
+  unit?: ChoicePricingOverrideUnit;
+  appliesTo?: ChoicePricingOverrideAppliesTo;
+  label?: string;
+};
+
+export type ChoicePricingOverrideMetadata = {
+  priceDeltaCents?: number;
+  pricingImpact?: PricingImpact[];
+  pricingOverride?: ChoicePricingOverride;
+};
+
+export type ChoiceMaterialOverride = {
+  materialId: string;
+};
+
+export type OptionChoiceRuntimeSelection = {
+  nodeId: string;
+  selectionKey: string;
+  optionLabel: string;
+  choiceValue: string;
+  choiceLabel: string;
+  pricing?: ChoicePricingOverrideMetadata;
+  material?: ChoiceMaterialOverride;
+  inventoryConsumption?: InventoryConsumption[];
+  workflowTags?: string[];
+  role: "variant" | "modifier";
+};
+
+export type OptionRuntimeSelectionWarning = {
+  selectionKey: string;
+  choiceValue?: string;
+  reason: "hidden_node" | "hidden_choice";
+};
+
+export type OptionRuntimeSelectionContext = {
+  selectedChoices: Record<string, string>;
+  resolvedChoices: Record<string, OptionChoiceRuntimeSelection>;
+  visibleNodeIds: string[];
+  visibleGroupIds: string[];
+  visibleChoiceIds: string[];
+  workflowTags: string[];
+  appliedPricingOverrides: AppliedChoicePricingOverride[];
+  hiddenSelectionWarnings: OptionRuntimeSelectionWarning[];
 };
 
 export type PricingV2Tier = {
@@ -80,6 +158,9 @@ export type BranchEdge = {
 export type OptionNodeV2 = {
   id: string;
   kind: "question" | "group" | "computed";
+  type?: string;
+  status?: "ENABLED" | "DISABLED" | "DELETED";
+  key?: string;
   label: string;
   description?: string;
   ui?: {
@@ -106,10 +187,15 @@ export type OptionNodeV2 = {
     description?: string; 
     sortOrder?: number; 
     weightOz?: number;
+    priceDeltaCents?: number;
     pricingImpact?: PricingImpact[]; // v2.1: Choice-level pricing impacts
+    pricingOverride?: ChoicePricingOverride;
+    visibilityRules?: VisibilityRule[];
+    materialOverride?: ChoiceMaterialOverride;
     inventoryConsumption?: InventoryConsumption[];
+    workflowTags?: string[];
   }>;
-  visibility?: { condition?: ConditionExpr };
+  visibility?: VisibilityConfig;
   edges?: { children?: BranchEdge[] };
   pricingImpact?: PricingImpact[];
   weightImpact?: WeightImpact[];
@@ -138,6 +224,14 @@ export type OptionTreeV2 = {
   schemaVersion: 2;
   rootNodeIds: string[];
   nodes: Record<string, OptionNodeV2>;
+  edges?: Array<{
+    id?: string;
+    status?: "ENABLED" | "DISABLED" | "DELETED";
+    fromNodeId: string;
+    toNodeId: string;
+    priority?: number;
+    condition?: any;
+  }>;
   meta?: {
     title?: string;
     updatedAt?: string;
@@ -215,6 +309,22 @@ export const inventoryConsumptionSchema: z.ZodType<InventoryConsumption> = z
     }
   });
 
+export const choiceMaterialOverrideSchema: z.ZodType<ChoiceMaterialOverride> = z.object({
+  materialId: z.string().min(1),
+});
+
+export const choicePricingOverrideModeSchema = z.enum(["none", "set_base_rate", "add_base_rate", "multiply_base_rate"]);
+export const choicePricingOverrideUnitSchema = z.enum(["perSqft", "perPiece", "minimumCharge"]);
+export const choicePricingOverrideAppliesToSchema = z.enum(["base", "area", "quantity"]);
+
+export const choicePricingOverrideSchema: z.ZodType<ChoicePricingOverride> = z.object({
+  mode: choicePricingOverrideModeSchema,
+  amount: z.number().finite().optional(),
+  unit: choicePricingOverrideUnitSchema.optional(),
+  appliesTo: choicePricingOverrideAppliesToSchema.optional(),
+  label: z.string().optional(),
+});
+
 export const pricingV2TierSchema: z.ZodType<PricingV2Tier> = z.object({
   minQty: z.number().int().min(1).optional(),
   minSqft: z.number().positive().optional(),
@@ -251,9 +361,29 @@ export const branchEdgeSchema: z.ZodType<BranchEdge> = z.object({
   effectTag: z.string().optional(),
 });
 
+export const visibilityRuleSchema: z.ZodType<VisibilityRule> = z.lazy(() =>
+  z.discriminatedUnion("type", [
+    z.object({ type: z.literal("equals"), selectionKey: z.string(), value: z.any().optional() }),
+    z.object({ type: z.literal("notEquals"), selectionKey: z.string(), value: z.any().optional() }),
+    z.object({ type: z.literal("in"), selectionKey: z.string(), values: z.array(z.any()) }),
+    z.object({ type: z.literal("truthy"), selectionKey: z.string() }),
+    z.object({ type: z.literal("and"), rules: z.array(visibilityRuleSchema) }),
+    z.object({ type: z.literal("or"), rules: z.array(visibilityRuleSchema) }),
+    z.object({ type: z.literal("not"), rule: visibilityRuleSchema }),
+  ])
+);
+
+export const visibilityConfigSchema: z.ZodType<VisibilityConfig> = z.object({
+  condition: conditionExprSchema.optional(),
+  rules: z.array(visibilityRuleSchema).optional(),
+});
+
 export const optionNodeV2Schema: z.ZodType<OptionNodeV2> = z.object({
   id: z.string(),
   kind: z.enum(["question", "group", "computed"]),
+  type: z.string().optional(),
+  status: z.enum(["ENABLED", "DISABLED", "DELETED"]).optional(),
+  key: z.string().optional(),
   label: z.string(),
   description: z.string().optional(),
   ui: z
@@ -291,12 +421,17 @@ export const optionNodeV2Schema: z.ZodType<OptionNodeV2> = z.object({
         description: z.string().optional(),
         sortOrder: z.number().optional(),
         weightOz: z.number().optional(),
+        priceDeltaCents: z.number().int().optional(),
         pricingImpact: z.array(pricingImpactSchema).optional(), // v2.1: Choice-level pricing
+        pricingOverride: choicePricingOverrideSchema.optional(),
+        visibilityRules: z.array(visibilityRuleSchema).optional(),
+        materialOverride: choiceMaterialOverrideSchema.optional(),
         inventoryConsumption: z.array(inventoryConsumptionSchema).optional(),
+        workflowTags: z.array(z.string().min(1)).optional(),
       })
     )
     .optional(),
-  visibility: z.object({ condition: conditionExprSchema.optional() }).optional(),
+  visibility: visibilityConfigSchema.optional(),
   edges: z.object({ children: z.array(branchEdgeSchema).optional() }).optional(),
   pricingImpact: z.array(pricingImpactSchema).optional(),
   weightImpact: z.array(weightImpactSchema).optional(),
@@ -325,6 +460,18 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
   schemaVersion: z.literal(2),
   rootNodeIds: z.array(z.string()),
   nodes: z.record(optionNodeV2Schema),
+  edges: z
+    .array(
+      z.object({
+        id: z.string().optional(),
+        status: z.enum(["ENABLED", "DISABLED", "DELETED"]).optional(),
+        fromNodeId: z.string(),
+        toNodeId: z.string(),
+        priority: z.number().optional(),
+        condition: z.any().optional(),
+      })
+    )
+    .optional(),
   meta: z
     .object({
       title: z.string().optional(),
@@ -349,6 +496,54 @@ export const lineItemOptionSelectionsV2Schema: z.ZodType<LineItemOptionSelection
       pathTags: z.array(z.string()).optional(),
     })
     .optional(),
+});
+
+export const choicePricingOverrideMetadataSchema: z.ZodType<ChoicePricingOverrideMetadata> = z.object({
+  priceDeltaCents: z.number().int().optional(),
+  pricingImpact: z.array(pricingImpactSchema).optional(),
+  pricingOverride: choicePricingOverrideSchema.optional(),
+});
+
+export const appliedChoicePricingOverrideSchema: z.ZodType<AppliedChoicePricingOverride> = z.object({
+  selectionKey: z.string(),
+  optionLabel: z.string(),
+  choiceValue: z.string(),
+  choiceLabel: z.string(),
+  mode: z.enum(["set_base_rate", "add_base_rate", "multiply_base_rate"]),
+  amount: z.number().finite(),
+  unit: choicePricingOverrideUnitSchema.optional(),
+  appliesTo: choicePricingOverrideAppliesToSchema.optional(),
+  label: z.string().optional(),
+});
+
+export const optionChoiceRuntimeSelectionSchema: z.ZodType<OptionChoiceRuntimeSelection> = z.object({
+  nodeId: z.string(),
+  selectionKey: z.string(),
+  optionLabel: z.string(),
+  choiceValue: z.string(),
+  choiceLabel: z.string(),
+  pricing: choicePricingOverrideMetadataSchema.optional(),
+  material: choiceMaterialOverrideSchema.optional(),
+  inventoryConsumption: z.array(inventoryConsumptionSchema).optional(),
+  workflowTags: z.array(z.string()).optional(),
+  role: z.enum(["variant", "modifier"]),
+});
+
+export const optionRuntimeSelectionContextSchema: z.ZodType<OptionRuntimeSelectionContext> = z.object({
+  selectedChoices: z.record(z.string()),
+  resolvedChoices: z.record(optionChoiceRuntimeSelectionSchema),
+  visibleNodeIds: z.array(z.string()),
+  visibleGroupIds: z.array(z.string()),
+  visibleChoiceIds: z.array(z.string()),
+  workflowTags: z.array(z.string()),
+  appliedPricingOverrides: z.array(appliedChoicePricingOverrideSchema),
+  hiddenSelectionWarnings: z.array(
+    z.object({
+      selectionKey: z.string(),
+      choiceValue: z.string().optional(),
+      reason: z.enum(["hidden_node", "hidden_choice"]),
+    })
+  ),
 });
 
 // ------------------------------------------------------------

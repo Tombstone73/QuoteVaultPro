@@ -68,7 +68,7 @@ export function OptionGroupsSidebar({
             const groupOptions = group.optionIds.map(id => options[id]).filter(Boolean);
             const hasPricing = groupOptions.some(opt => opt?.hasPricing);
             const hasProductionFlags = groupOptions.some(opt => opt?.hasProductionFlags);
-            const hasConditionals = groupOptions.some(opt => opt?.hasConditionals);
+            const hasConditionals = groupOptions.some(opt => opt?.hasConditionals) || (Array.isArray(group.visibilityRules) && group.visibilityRules.length > 0);
 
             return (
               <div key={group.id}>

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
+import { Link } from "react-router-dom";
 
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -16,6 +17,9 @@ const optionalNumber = (schema: z.ZodNumber) =>
     (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
     schema.optional()
   );
+
+const LEGACY_UNIT_HELPER_TEXT =
+  "Legacy/default unit for this material. Existing pricing, inventory, CSV, and some usage behavior may still fall back to this.";
 
 const createMaterialSchema = z
   .object({
@@ -196,8 +200,19 @@ export function CreateMaterialDialog({
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>Create Material</DialogTitle>
-          <DialogDescription>Quick add a material, then select it for this product.</DialogDescription>
+          <DialogDescription>
+            Quick add a base material for product setup. Full inventory, supplier, and reorder configuration belongs in Settings &gt; Inventory &amp; Procurement.
+          </DialogDescription>
         </DialogHeader>
+
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          This shortcut creates a permanent catalog material with only the basics needed for product setup. It does not configure supplier assignments, reorder thresholds, or operational inventory behavior.
+          <div className="mt-2">
+            <Button asChild type="button" variant="link" size="sm" className="h-auto px-0 text-amber-900">
+              <Link to="/settings/inventory">Manage full material inventory settings in Settings &gt; Inventory &amp; Procurement.</Link>
+            </Button>
+          </div>
+        </div>
 
         <Form {...form}>
           <form
@@ -262,7 +277,7 @@ export function CreateMaterialDialog({
                 name="unitOfMeasure"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Unit</FormLabel>
+                    <FormLabel>Catalog Unit</FormLabel>
                     <Select value={field.value} onValueChange={field.onChange}>
                       <FormControl>
                         <SelectTrigger>
@@ -277,6 +292,9 @@ export function CreateMaterialDialog({
                         <SelectItem value="ea">Each</SelectItem>
                       </SelectContent>
                     </Select>
+                    <p className="text-xs text-muted-foreground">
+                      {LEGACY_UNIT_HELPER_TEXT}
+                    </p>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -288,7 +306,7 @@ export function CreateMaterialDialog({
               name="costPerUnit"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Cost / Unit</FormLabel>
+                  <FormLabel>Base Sell Price</FormLabel>
                   <FormControl>
                     <Input
                       inputMode="decimal"
@@ -302,6 +320,9 @@ export function CreateMaterialDialog({
                       }}
                     />
                   </FormControl>
+                  <p className="text-xs text-muted-foreground">
+                    Recorded per Sell Price Unit, which falls back to the Catalog Unit when not set. Existing quote pricing math is unchanged in this phase.
+                  </p>
                   <FormMessage />
                 </FormItem>
               )}

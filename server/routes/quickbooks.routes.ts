@@ -512,4 +512,64 @@ export function registerQuickBooksRoutes(
       res.status(500).json({ error: 'Failed to get worker status' });
     }
   });
+
+  /**
+   * GET /api/integrations/quickbooks/import-preview/invoices
+   * Read-only preview of all QB invoices with local match status.
+   * Returns classification (open_ar vs historical), already-imported flag,
+   * and canImport flag. No writes — safe to call repeatedly.
+   *
+   * Query params:
+   *   debugReferenceFields=1  (admin/owner only, already enforced by isAdminOrOwner)
+   *     When present, each preview row includes a `referenceDebug` object with
+   *     custom fields, privateNote, customerMemo, and line descriptions — used
+   *     to inspect where PO/reference data lives before finalising extraction rules.
+   */
+  app.get('/api/integrations/quickbooks/import-preview/invoices', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const includeReferenceDebug = req.query.debugReferenceFields === '1';
+      const rows = await quickbooksService.fetchQBInvoicesForPreview(organizationId, includeReferenceDebug);
+      return res.json({ success: true, data: rows });
+    } catch (error: any) {
+      console.error('[QB Invoice Preview] Error:', error);
+      return res.status(500).json({ success: false, error: error.message || 'Failed to fetch invoice preview' });
+    }
+  });
+
+  /**
+   * POST /api/integrations/quickbooks/import/invoices
+   * Import selected QB invoices into TitanOS.
+   * Body: { quickBooksInvoiceIds: string[], mode: 'auto' | 'open_ar' | 'historical' }
+   *
+   * Safety contract (enforced in quickbooksService.importQBInvoicesByIds):
+   *   - No orders, production jobs, or workflow records created.
+   *   - No invoice email triggers.
+   *   - No QB push sync enqueued for imported invoices.
+   *   - Line items stored as JSON snapshot only (not in invoice_line_items).
+   */
+  app.post('/api/integrations/quickbooks/import/invoices', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const userId: string | undefined = (req as any).user?.id;
+      if (!userId) {
+        return res.status(401).json({ success: false, error: 'Missing user context' });
+      }
+
+      const { quickBooksInvoiceIds, mode } = req.body;
+      if (!Array.isArray(quickBooksInvoiceIds) || quickBooksInvoiceIds.length === 0) {
+        return res.status(400).json({ success: false, error: 'quickBooksInvoiceIds array required' });
+      }
+      const validModes = ['auto', 'open_ar', 'historical'];
+      if (!validModes.includes(mode)) {
+        return res.status(400).json({ success: false, error: `mode must be one of: ${validModes.join(', ')}` });
+      }
+
+      const result = await quickbooksService.importQBInvoicesByIds(organizationId, quickBooksInvoiceIds, mode, userId);
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      console.error('[QB Invoice Import] Error:', error);
+      return res.status(500).json({ success: false, error: error.message || 'Failed to import invoices' });
+    }
+  });
 }

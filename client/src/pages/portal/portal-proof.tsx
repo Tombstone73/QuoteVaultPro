@@ -224,6 +224,31 @@ function AttachmentPreview({ attachment }: { attachment: PortalProofAttachment }
     );
   }
 
+  if (isPdf && attachment.originalUrl) {
+    return (
+      <div className="space-y-3">
+        <div className="overflow-hidden rounded border bg-white">
+          <iframe
+            title={displayName}
+            src={attachment.originalUrl}
+            className="h-[70vh] w-full"
+          />
+        </div>
+        {attachment.downloadUrl && (
+          <a
+            href={attachment.downloadUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-sm text-primary hover:underline"
+          >
+            <Download className="h-3.5 w-3.5" />
+            Download full PDF
+          </a>
+        )}
+      </div>
+    );
+  }
+
   // Image
   if (isImage) {
     const src = attachment.previewUrl ?? attachment.originalUrl;
@@ -322,12 +347,18 @@ const STATUS_CONFIG = {
     color: "text-amber-600",
     bg: "bg-amber-50 border-amber-200",
   },
+  cancelled: {
+    icon: AlertCircle,
+    label: "Cancelled",
+    color: "text-slate-700",
+    bg: "bg-slate-100 border-slate-300",
+  },
 } as const;
 
 function AlreadyReviewedBanner({
   status,
 }: {
-  status: "approved" | "rejected" | "revision_requested";
+  status: "approved" | "rejected" | "revision_requested" | "cancelled";
 }) {
   const cfg = STATUS_CONFIG[status];
   const Icon = cfg.icon;
@@ -337,8 +368,9 @@ function AlreadyReviewedBanner({
       <div>
         <p className={`font-medium ${cfg.color}`}>{cfg.label}</p>
         <p className="text-sm text-muted-foreground mt-0.5">
-          This proof has already been reviewed. Contact your account manager if you need to make
-          a change.
+          {status === "cancelled"
+            ? "This proof version has been cancelled and is no longer available for approval. Please contact us or use the newest proof link."
+            : "This proof has already been reviewed. Contact your account manager if you need to make a change."}
         </p>
       </div>
     </div>
@@ -360,9 +392,11 @@ const COMMENT_REQUIRED_HINT: Partial<Record<ProofAction, string>> = {
 
 function ActionPanel({
   isPending,
+  disableApprove,
   onSubmit,
 }: {
   isPending: boolean;
+  disableApprove: boolean;
   onSubmit: (action: ProofAction, comment: string) => void;
 }) {
   const [selected, setSelected] = useState<ProofAction | null>(null);
@@ -391,7 +425,7 @@ function ActionPanel({
           variant={selected === "approve" ? "default" : "outline"}
           className={selected === "approve" ? "bg-green-600 hover:bg-green-700 text-white" : ""}
           onClick={() => handleSelect("approve")}
-          disabled={isPending}
+          disabled={isPending || disableApprove}
         >
           <CheckCircle2 className="mr-1.5 h-4 w-4" />
           Approve
@@ -521,6 +555,7 @@ export default function PortalProofPage() {
   }
 
   const primaryAttachment = data.attachments[0] ?? null;
+  const proofPreviewUnavailable = !primaryAttachment || primaryAttachment.previewStatus !== "ready";
   const primaryIsImage = (primaryAttachment?.mimeType?.startsWith("image/") ?? false)
     && Boolean(primaryAttachment?.previewUrl ?? primaryAttachment?.originalUrl);
 
@@ -636,14 +671,30 @@ export default function PortalProofPage() {
             <div className="flex items-start gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3">
               <AlertCircle className="h-4 w-4 mt-0.5 shrink-0 text-destructive" />
               <p className="text-sm text-destructive">
-                {mutation.error?.message?.startsWith("409")
-                  ? "This proof has already been reviewed. Please refresh the page."
-                  : "Something went wrong. Please try again or contact your account manager."}
+                {mutation.error?.message === "This proof version has been cancelled and is no longer available for approval."
+                  ? "This proof version has been cancelled and is no longer available for approval. Please use the newest proof link or contact us."
+                  : mutation.error?.message === "This proof does not include an artwork preview and cannot be sent to the customer."
+                  ? "This proof preview is unavailable. Please contact us before approving."
+                  : mutation.error?.message?.startsWith("409")
+                    ? "This proof has already been reviewed. Please refresh the page."
+                    : "Something went wrong. Please try again or contact your account manager."}
               </p>
             </div>
           )}
 
-          <ActionPanel isPending={mutation.isPending} onSubmit={handleSubmit} />
+          {proofPreviewUnavailable ? (
+            <div className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
+              <AlertCircle className="h-4 w-4 mt-0.5 shrink-0 text-amber-700" />
+              <div>
+                <p className="text-sm font-medium text-amber-900">This proof preview is unavailable. Please contact us before approving.</p>
+                {primaryAttachment?.previewError ? (
+                  <p className="mt-1 text-sm text-amber-800">{primaryAttachment.previewError}</p>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
+          <ActionPanel isPending={mutation.isPending} disableApprove={proofPreviewUnavailable} onSubmit={handleSubmit} />
         </div>
       </div>
     </div>

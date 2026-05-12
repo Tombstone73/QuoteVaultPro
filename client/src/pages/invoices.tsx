@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Search, Plus, FileText, DollarSign } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useInvoices } from "@/hooks/useInvoices";
+import { useInvoices, type InvoiceEmailStatus, type ReminderListStatus } from "@/hooks/useInvoices";
 import { format } from "date-fns";
 import { ROUTES } from "@/config/routes";
 import {
@@ -35,6 +35,22 @@ const statusLabels: Record<string, string> = {
   overdue: "Overdue",
   billed: "Billed",
   void: "Void",
+};
+
+const emailStatusMeta: Record<InvoiceEmailStatus, { label: string; variant: "muted" | "info" | "warning" }> = {
+  not_sent: { label: "Not Sent", variant: "muted" },
+  sent_current: { label: "Sent", variant: "info" },
+  sent_outdated: { label: "Updated After Sent", variant: "warning" },
+};
+
+const reminderStatusMeta: Record<ReminderListStatus, { label: string; variant: "muted" | "info" | "warning" | "success" | "error" | "default" }> = {
+  due: { label: "Due", variant: "warning" },
+  sent: { label: "Sent", variant: "info" },
+  disabled: { label: "Disabled", variant: "muted" },
+  not_due: { label: "Not Due", variant: "muted" },
+  stopped: { label: "Stopped", variant: "muted" },
+  maxed_out: { label: "Max Reached", variant: "muted" },
+  blocked: { label: "No Due Date", variant: "muted" },
 };
 
 export default function InvoicesListPage() {
@@ -74,14 +90,14 @@ export default function InvoicesListPage() {
 
   // Calculate stats
   const totalOutstanding = filteredInvoices
-    .filter(inv => inv.status !== 'paid')
-    .reduce((sum, inv) => sum + Number(inv.balanceDue || inv.total), 0);
+    .filter(inv => Number(inv.displayRemaining || 0) > 0)
+    .reduce((sum, inv) => sum + Number(inv.displayRemaining || 0), 0);
   
-  const overdueCount = filteredInvoices.filter(inv => inv.status === 'overdue').length;
+  const overdueCount = filteredInvoices.filter(inv => (inv.displayStatus || '').toLowerCase() === 'overdue' || inv.status === 'overdue').length;
   
   const paidThisMonth = filteredInvoices
-    .filter(inv => inv.status === 'paid')
-    .reduce((sum, inv) => sum + Number(inv.total), 0);
+    .filter(inv => Number(inv.displayRemaining || 0) === 0)
+    .reduce((sum, inv) => sum + Number(inv.displayTotal || inv.total), 0);
 
   return (
     <Page maxWidth="full">
@@ -161,6 +177,8 @@ export default function InvoicesListPage() {
                 <TitanTableHead>Issue Date</TitanTableHead>
                 <TitanTableHead>Due Date</TitanTableHead>
                 <TitanTableHead>Status</TitanTableHead>
+                <TitanTableHead>Last Sent</TitanTableHead>
+                <TitanTableHead>Reminders</TitanTableHead>
                 <TitanTableHead className="text-right">Total</TitanTableHead>
                 <TitanTableHead className="text-right">Paid</TitanTableHead>
                 <TitanTableHead className="text-right">Balance</TitanTableHead>
@@ -168,11 +186,11 @@ export default function InvoicesListPage() {
               </TitanTableRow>
             </TitanTableHeader>
             <TitanTableBody>
-              {isLoading && <TitanTableLoading colSpan={8} message="Loading invoices..." />}
+              {isLoading && <TitanTableLoading colSpan={10} message="Loading invoices..." />}
               
               {!isLoading && filteredInvoices.length === 0 && (
                 <TitanTableEmpty
-                  colSpan={8}
+                  colSpan={10}
                   icon={<FileText className="w-12 h-12" />}
                   message="No invoices found"
                   action={
@@ -203,13 +221,29 @@ export default function InvoicesListPage() {
                   <TitanTableCell>{formatDate(invoice.dueDate)}</TitanTableCell>
                   <TitanTableCell>
                     <StatusPill variant={getStatusVariant(invoice.status)}>
-                      {statusLabels[invoice.status]}
+                      {invoice.displayStatus || statusLabels[invoice.status] || invoice.status}
                     </StatusPill>
                   </TitanTableCell>
-                  <TitanTableCell className="text-right">{formatCurrency(invoice.total)}</TitanTableCell>
-                  <TitanTableCell className="text-right">{formatCurrency(invoice.amountPaid)}</TitanTableCell>
+                  <TitanTableCell>
+                    <div className="space-y-1">
+                      <div>{invoice.lastSentAt ? formatDate(invoice.lastSentAt) : "—"}</div>
+                      <StatusPill variant={emailStatusMeta[invoice.emailStatus].variant}>
+                        {emailStatusMeta[invoice.emailStatus].label}
+                      </StatusPill>
+                    </div>
+                  </TitanTableCell>
+                  <TitanTableCell>
+                    <div className="space-y-1">
+                      <div>{invoice.lastReminderSentAt ? formatDate(invoice.lastReminderSentAt) : "—"}</div>
+                      <StatusPill variant={reminderStatusMeta[invoice.reminderStatus].variant}>
+                        {reminderStatusMeta[invoice.reminderStatus].label}
+                      </StatusPill>
+                    </div>
+                  </TitanTableCell>
+                  <TitanTableCell className="text-right">{formatCurrency(invoice.displayTotal || invoice.total)}</TitanTableCell>
+                  <TitanTableCell className="text-right">{formatCurrency(invoice.displayPaid || invoice.amountPaid)}</TitanTableCell>
                   <TitanTableCell className="text-right font-semibold">
-                    {formatCurrency(invoice.balanceDue || Number(invoice.total) - Number(invoice.amountPaid))}
+                    {formatCurrency(invoice.displayRemaining || invoice.balanceDue || Number(invoice.total) - Number(invoice.amountPaid))}
                   </TitanTableCell>
                   <TitanTableCell onClick={(e) => e.stopPropagation()}>
                     <Button variant="outline" size="sm" asChild>

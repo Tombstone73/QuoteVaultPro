@@ -81,6 +81,15 @@ import BackNavControls from "@/components/BackNavControls";
 
 type SortKey = "date" | "quoteNumber" | "customer" | "total" | "items" | "source" | "createdBy" | "listLabel" | "jobLabel";
 
+type InboundReviewLink = {
+  inboundRecordId: string;
+  status: string;
+  reviewOutcome: string | null;
+  isActive: boolean;
+  convertedLineItemCount: number | null;
+  skippedLineItemCount: number | null;
+};
+
 type QuoteRow = QuoteWithRelations & {
   label?: string | null; // This is the job label from quote record
   listLabel?: string | null; // List-only note, always editable
@@ -88,6 +97,7 @@ type QuoteRow = QuoteWithRelations & {
   thumbsCount?: number;
   lineItemsCount?: number;
   workflowState?: QuoteWorkflowState | null;
+  inboundReview?: InboundReviewLink | null;
 };
 
 type QuotesListResponse = {
@@ -129,6 +139,25 @@ function NewQuoteButton() {
       <Plus className="mr-2 h-4 w-4" />
       New Quote
     </Button>
+  );
+}
+
+function InboundReviewBadge({ inboundReview }: { inboundReview?: InboundReviewLink | null }) {
+  if (!inboundReview?.isActive) return null;
+
+  const skipped = inboundReview.skippedLineItemCount ?? 0;
+
+  return (
+    <Badge
+      variant="secondary"
+      title={
+        skipped > 0
+          ? `${skipped} inbound line item${skipped === 1 ? "" : "s"} were skipped during quote draft creation.`
+          : "Created from an inbound review record that remains available as the intake artifact."
+      }
+    >
+      Inbound Review
+    </Badge>
   );
 }
 
@@ -653,9 +682,12 @@ export default function InternalQuotes() {
       case "quoteNumber":
         return (
           <TableCell style={getColStyle("quoteNumber")}>
-            <span className="font-medium text-titan-accent hover:text-titan-accent-hover hover:underline cursor-pointer block truncate">
-              {quote.quoteNumber || "N/A"}
-            </span>
+            <div className="flex min-w-0 flex-col gap-1">
+              <span className="font-medium text-titan-accent hover:text-titan-accent-hover hover:underline cursor-pointer block truncate">
+                {quote.quoteNumber || "N/A"}
+              </span>
+              <InboundReviewBadge inboundReview={quote.inboundReview} />
+            </div>
           </TableCell>
         );
       
@@ -877,7 +909,10 @@ export default function InternalQuotes() {
       case "status":
         return (
           <TableCell style={getColStyle("status")}>
-            {workflowState && <QuoteWorkflowBadge state={workflowState} />}
+            <div className="flex flex-col items-start gap-1">
+              {workflowState && <QuoteWorkflowBadge state={workflowState} />}
+              <InboundReviewBadge inboundReview={quote.inboundReview} />
+            </div>
           </TableCell>
         );
       

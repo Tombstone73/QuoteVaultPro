@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
+import type { LineItemProofSummary, OrderProofCounts, OrderProofStatus } from "@shared/orderProofStatus";
 
 // ============================================================
 // QUERY KEY FACTORIES (Single Source of Truth)
@@ -104,10 +105,13 @@ export type OrderLineItem = {
   designStatus?: "needs_design" | "in_design" | "design_complete" | null;
   requiresDesign?: boolean;
   requiresPrepress?: boolean;
+  requiresProofApproval?: boolean;
+  approvedProofVersionId?: string | null;
   nestingConfigSnapshot: any;
   specsJson?: any;
   createdAt: string;
   updatedAt: string;
+  proofSummary?: LineItemProofSummary;
 };
 
 export type LineItemWorkflowState =
@@ -222,6 +226,11 @@ export type OrderWithRelations = Order & {
   contact?: any;
   quote?: any;
   createdByUser: any;
+  proofStatus?: OrderProofStatus;
+  proofStatusLabel?: string;
+  proofActionRequired?: boolean;
+  proofCounts?: OrderProofCounts;
+  proofLineItemId?: string | null;
   lineItems: (OrderLineItem & {
     product: any;
     productVariant?: any;
@@ -233,6 +242,11 @@ export type OrderRow = Order & {
   customer: any;
   contact?: any;
   lineItemsCount?: number;
+  proofStatus?: OrderProofStatus;
+  proofStatusLabel?: string;
+  proofActionRequired?: boolean;
+  proofCounts?: OrderProofCounts;
+  proofLineItemId?: string | null;
   productionSummary?: {
     requiredCount: number;
     handedOffCount: number;

@@ -6,7 +6,7 @@ import {
   lineItemOptionSelectionsV2Schema,
   optionTreeV2Schema,
 } from "../../shared/optionTreeV2";
-import { resolveVisibleNodes, validateOptionTreeV2 } from "../../shared/optionTreeV2Runtime";
+import { resolveRuntimeVisibility, validateOptionTreeV2 } from "../../shared/optionTreeV2Runtime";
 
 type SelectedOptionsSnapshotEntry = {
   optionId: string;
@@ -107,8 +107,11 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
   const inchesPerItem = widthIn;
 
   const baseCents = Math.round(basePrice * 100); // Convert base price to cents
-  const visibleNodeIds = resolveVisibleNodes(tree, selections);
-  const selected = selections.selected ?? {};
+  const runtimeVisibility = resolveRuntimeVisibility(tree, selections);
+  const visibleNodeIds = runtimeVisibility.visibleNodeIds;
+  const selected = Object.fromEntries(
+    Object.entries(runtimeVisibility.effectiveSelections).map(([selectionKey, value]) => [selectionKey, { value }])
+  ) as Record<string, { value?: any }>;
 
   // DEV: Log visible nodes for debugging
   if (process.env.NODE_ENV === "development") {
@@ -503,8 +506,11 @@ export function pbv2ToWeightTotal(input: OptionTreeV2WeightInput): OptionTreeV2W
     breakdown.push({ label: "Base weight", oz: baseWeightOz });
   }
 
-  const visibleNodeIds = resolveVisibleNodes(tree, selections);
-  const selected = selections.selected ?? {};
+  const runtimeVisibility = resolveRuntimeVisibility(tree, selections);
+  const visibleNodeIds = runtimeVisibility.visibleNodeIds;
+  const selected = Object.fromEntries(
+    Object.entries(runtimeVisibility.effectiveSelections).map(([selectionKey, value]) => [selectionKey, { value }])
+  ) as Record<string, { value?: any }>;
 
   // 2) Node weightImpact rules and choice-level weightOz
   for (let i = 0; i < visibleNodeIds.length; i++) {

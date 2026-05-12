@@ -3,7 +3,12 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  FormulaSyntaxSection,
+  FormulaExamplesSection,
+  FormulaMistakesSection,
+} from "@/components/pbv2/FormulaLanguageHelp";
 import {
   PBV2_PRICING_VARIABLES,
   PBV2_PRICING_VARIABLE_CATEGORY_ORDER,
@@ -27,7 +32,7 @@ interface FormulaReferenceModalProps {
 }
 
 export function FormulaReferenceModal({ open, onOpenChange, onInsertText }: FormulaReferenceModalProps) {
-  const [activeTab, setActiveTab] = useState<"variables" | "functions">("variables");
+  const [activeTab, setActiveTab] = useState<"variables" | "functions" | "syntax" | "examples" | "mistakes">("variables");
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [variableSearch, setVariableSearch] = useState("");
   const [functionSearch, setFunctionSearch] = useState("");
@@ -127,36 +132,44 @@ export function FormulaReferenceModal({ open, onOpenChange, onInsertText }: Form
       <DialogContent className="max-h-[85vh] w-[min(900px,95vw)] flex flex-col overflow-hidden">
         <DialogHeader className="shrink-0">
           <DialogTitle>Formula Reference</DialogTitle>
+          <div className="text-sm text-muted-foreground">
+            Use lowercase variable names such as w, h, q, sqft, total_sqft, and base_price. Use formula functions like ceil(...), round(...), and max(...), not Math.ceil(...).
+          </div>
         </DialogHeader>
 
-        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "variables" | "functions")} className="w-full flex-1 min-h-0 flex flex-col">
+        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "variables" | "functions" | "syntax" | "examples" | "mistakes")} className="w-full flex-1 min-h-0 flex flex-col">
           <div className="shrink-0">
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="variables">Variables</TabsTrigger>
-              <TabsTrigger value="functions">Functions</TabsTrigger>
+            <TabsList className="grid w-full grid-cols-5">
+              <TabsTrigger value="variables" className="text-xs px-1">Variables</TabsTrigger>
+              <TabsTrigger value="functions" className="text-xs px-1">Functions</TabsTrigger>
+              <TabsTrigger value="syntax" className="text-xs px-1">Syntax</TabsTrigger>
+              <TabsTrigger value="examples" className="text-xs px-1">Examples</TabsTrigger>
+              <TabsTrigger value="mistakes" className="text-xs px-1">Mistakes</TabsTrigger>
             </TabsList>
           </div>
 
-          <div className="shrink-0 mt-3 pb-2">
-            {activeTab === "variables" ? (
-              <Input
-                value={variableSearch}
-                onChange={(e) => setVariableSearch(e.target.value)}
-                placeholder="Search variables"
-                className="h-8"
-              />
-            ) : (
-              <Input
-                value={functionSearch}
-                onChange={(e) => setFunctionSearch(e.target.value)}
-                placeholder="Search functions"
-                className="h-8"
-              />
-            )}
-          </div>
+          {(activeTab === "variables" || activeTab === "functions") && (
+            <div className="shrink-0 mt-3 pb-2">
+              {activeTab === "variables" ? (
+                <Input
+                  value={variableSearch}
+                  onChange={(e) => setVariableSearch(e.target.value)}
+                  placeholder="Search variables"
+                  className="h-8"
+                />
+              ) : (
+                <Input
+                  value={functionSearch}
+                  onChange={(e) => setFunctionSearch(e.target.value)}
+                  placeholder="Search functions"
+                  className="h-8"
+                />
+              )}
+            </div>
+          )}
 
-          <div className="flex-1 overflow-y-auto overscroll-contain pr-2 min-h-0">
-            {activeTab === "variables" ? (
+          <div className="flex-1 overflow-y-auto overscroll-contain pr-2 min-h-0 mt-3">
+            {activeTab === "variables" && (
               <div className="space-y-3 pb-1">
                 {groupedVariables.length === 0 ? (
                   <div className="text-sm text-muted-foreground">No matching variables.</div>
@@ -202,7 +215,9 @@ export function FormulaReferenceModal({ open, onOpenChange, onInsertText }: Form
                   ))
                 )}
               </div>
-            ) : (
+            )}
+
+            {activeTab === "functions" && (
               <div className="space-y-2 pb-1">
                 {filteredFunctions.length === 0 ? (
                   <div className="text-sm text-muted-foreground">No matching functions.</div>
@@ -224,6 +239,24 @@ export function FormulaReferenceModal({ open, onOpenChange, onInsertText }: Form
                     </div>
                   ))
                 )}
+              </div>
+            )}
+
+            {activeTab === "syntax" && (
+              <div className="pb-1">
+                <FormulaSyntaxSection />
+              </div>
+            )}
+
+            {activeTab === "examples" && (
+              <div className="pb-1">
+                <FormulaExamplesSection onInsert={onInsertText} />
+              </div>
+            )}
+
+            {activeTab === "mistakes" && (
+              <div className="pb-1">
+                <FormulaMistakesSection />
               </div>
             )}
           </div>
