@@ -1,5 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+import { apiFetch } from "@/lib/queryClient";
+import { apiUrl } from "@/lib/apiConfig";
 
 export interface PricingFormula {
   id: string;
@@ -29,9 +31,7 @@ export function usePricingFormulas() {
   return useQuery<PricingFormula[]>({
     queryKey: ["/api/pricing-formulas"],
     queryFn: async () => {
-      const response = await fetch("/api/pricing-formulas", {
-        credentials: "include",
-      });
+      const response = await apiFetch(apiUrl("/api/pricing-formulas"));
       if (!response.ok) throw new Error("Failed to fetch pricing formulas");
       return response.json();
     },
@@ -42,9 +42,7 @@ export function usePricingFormula(id: string | undefined) {
   return useQuery<PricingFormula>({
     queryKey: ["/api/pricing-formulas", id],
     queryFn: async () => {
-      const response = await fetch(`/api/pricing-formulas/${id}`, {
-        credentials: "include",
-      });
+      const response = await apiFetch(apiUrl(`/api/pricing-formulas/${id}`));
       if (!response.ok) throw new Error("Failed to fetch pricing formula");
       return response.json();
     },
@@ -56,9 +54,7 @@ export function usePricingFormulaWithProducts(id: string | undefined) {
   return useQuery<{ formula: PricingFormula; products: unknown[] }>({
     queryKey: ["/api/pricing-formulas", id, "products"],
     queryFn: async () => {
-      const response = await fetch(`/api/pricing-formulas/${id}/products`, {
-        credentials: "include",
-      });
+      const response = await apiFetch(apiUrl(`/api/pricing-formulas/${id}/products`));
       if (!response.ok) throw new Error("Failed to fetch pricing formula with products");
       return response.json();
     },
@@ -72,10 +68,9 @@ export function useCreatePricingFormula() {
 
   return useMutation({
     mutationFn: async (data: PricingFormulaInput) => {
-      const response = await fetch("/api/pricing-formulas", {
+      const response = await apiFetch(apiUrl("/api/pricing-formulas"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify(data),
       });
       if (!response.ok) {
@@ -100,10 +95,9 @@ export function useUpdatePricingFormula() {
 
   return useMutation({
     mutationFn: async ({ id, data }: { id: string; data: Partial<PricingFormulaInput> }) => {
-      const response = await fetch(`/api/pricing-formulas/${id}`, {
+      const response = await apiFetch(apiUrl(`/api/pricing-formulas/${id}`), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify(data),
       });
       if (!response.ok) {
@@ -129,9 +123,8 @@ export function useDeletePricingFormula() {
 
   return useMutation({
     mutationFn: async (id: string) => {
-      const response = await fetch(`/api/pricing-formulas/${id}`, {
+      const response = await apiFetch(apiUrl(`/api/pricing-formulas/${id}`), {
         method: "DELETE",
-        credentials: "include",
       });
       if (!response.ok) {
         const error = await response.json();
