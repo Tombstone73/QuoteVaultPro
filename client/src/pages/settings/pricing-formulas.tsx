@@ -37,7 +37,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Plus, Pencil, Trash2, Eye, Package, Play, AlertTriangle } from "lucide-react";
+import { Loader2, Plus, Pencil, Trash2, Eye, Package, Play, AlertTriangle, Info } from "lucide-react";
 import { TitanCard } from "@/components/ui/TitanCard";
 import { evaluate } from "mathjs";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -94,6 +94,18 @@ const PRICING_PROFILES = [
   { key: "qty_only", label: "Quantity Only", description: "Simple quantity-based pricing, no dimensions" },
   { key: "fee", label: "Fee / Service", description: "Flat fees with no dimensions" },
 ];
+
+type FormulaTestBreakdown = {
+  rawValue: number;
+  expression: string;
+  w: number;
+  h: number;
+  q: number;
+  sqft: number;
+  total_sqft: number;
+  base_price: number;
+  MACHINE_RATE: number;
+};
 
 const emptyFormData: PricingFormulaInput = {
   name: "",
@@ -190,7 +202,7 @@ export default function PricingFormulasSettings() {
     quantity: 100,
     MACHINE_RATE: 75,
   });
-  const [testResult, setTestResult] = useState<string>("");
+  const [testResult, setTestResult] = useState<FormulaTestBreakdown | null>(null);
   const [testError, setTestError] = useState<string>("");
   const expressionInputRef = useRef<HTMLInputElement>(null);
 
@@ -199,29 +211,45 @@ export default function PricingFormulasSettings() {
       const expression = formData.expression || "";
       if (!expression.trim()) {
         setTestError("No formula to test");
-        setTestResult("");
+        setTestResult(null);
         return;
       }
 
-      // Build scope with common aliases
+      const w = testValues.width;
+      const h = testValues.height;
+      const q = testValues.quantity;
+      const sqft = (w * h) / 144;
+      const total_sqft = sqft * q;
+      const MACHINE_RATE = testValues.MACHINE_RATE;
+
       const scope = {
         ...testValues,
-        w: testValues.width,
-        h: testValues.height,
-        q: testValues.quantity,
-        sqft: (testValues.width * testValues.height) / 144,
-        total_sqft: ((testValues.width * testValues.height) / 144) * testValues.quantity,
+        w,
+        h,
+        q,
+        sqft,
+        total_sqft,
         base_price: 1.0,
-        basePricePerSqft: 1.0, // Default for testing
+        basePricePerSqft: 1.0,
         p: 1.0,
+        MACHINE_RATE,
       };
 
       const result = evaluate(expression, scope);
-      setTestResult(typeof result === 'number' ? `$${result.toFixed(2)}` : String(result));
+
+      if (typeof result !== 'number' || !isFinite(result)) {
+        setTestError(
+          `Formula returned ${typeof result === 'number' ? 'a non-finite number' : typeof result} — expected a finite number.`
+        );
+        setTestResult(null);
+        return;
+      }
+
+      setTestResult({ rawValue: result, expression, w, h, q, sqft, total_sqft, base_price: 1.0, MACHINE_RATE });
       setTestError("");
     } catch (error: any) {
       setTestError(error.message || "Invalid formula");
-      setTestResult("");
+      setTestResult(null);
     }
   };
 
@@ -472,6 +500,26 @@ export default function PricingFormulasSettings() {
   );
 }
 
+function BreakdownRow({
+  label,
+  value,
+  note,
+  mono = false,
+}: {
+  label: string;
+  value: string;
+  note?: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="flex items-start px-3 py-1.5 gap-2 text-xs">
+      <span className="text-muted-foreground shrink-0 w-36">{label}</span>
+      <span className={`font-medium flex-1 break-all ${mono ? "font-mono text-[11px]" : ""}`}>{value}</span>
+      {note && <span className="text-muted-foreground text-[10px] shrink-0 text-right">{note}</span>}
+    </div>
+  );
+}
+
 // Separate component to prevent re-mounting on state changes
 type FormulaEditorFieldsProps = {
   formData: PricingFormulaInput;
@@ -484,7 +532,7 @@ type FormulaEditorFieldsProps = {
   insertVariable: (variableKey: string) => void;
   testValues: Record<string, number>;
   setTestValues: (values: Record<string, number>) => void;
-  testResult: string;
+  testResult: FormulaTestBreakdown | null;
   testError: string;
   handleRunTest: () => void;
 };
@@ -752,12 +800,81 @@ function FormulaEditorFields({
                   </div>
                 </div>
 
-                {testResult && (
-                  <div className="bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-800 rounded p-3">
-                    <p className="text-xs text-muted-foreground mb-1">Result:</p>
-                    <p className="text-lg font-semibold text-green-700 dark:text-green-400">{testResult}</p>
-                  </div>
-                )}
+                {testResult && (() => {
+                  const isFeeProfile = formData.pricingProfileKey === "fee";
+                  const displayValue = isFeeProfile
+                    ? `$${testResult.rawValue.toFixed(2)}`
+                    : testResult.rawValue.toLocaleString(undefined, { maximumFractionDigits: 8 });
+                  const resultLabel = isFeeProfile
+                    ? "Formula Result (dollar amount)"
+                    : "Formula Result";
+                  const resultNote = isFeeProfile
+                    ? "Fee profile — result is a dollar amount"
+                    : "Raw expression output — not a final price";
+
+                  return (
+                    <div className="space-y-2">
+                      {/* Result headline */}
+                      <div className="bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-800 rounded p-3">
+                        <p className="text-xs font-medium text-green-800 dark:text-green-300 mb-0.5">{resultLabel}</p>
+                        <p className="text-xl font-bold text-green-700 dark:text-green-400">{displayValue}</p>
+                        <p className="text-[11px] text-muted-foreground mt-1">{resultNote}</p>
+                      </div>
+
+                      {/* Breakdown table */}
+                      <div className="border rounded divide-y text-xs overflow-hidden">
+                        <div className="px-3 py-1.5 bg-muted/50 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                          Test Inputs
+                        </div>
+                        <BreakdownRow label="Width" value={`${testResult.w}"`} />
+                        <BreakdownRow label="Height" value={`${testResult.h}"`} />
+                        <BreakdownRow label="Quantity" value={String(testResult.q)} />
+                        <BreakdownRow label="Machine Rate" value={`$${testResult.MACHINE_RATE.toFixed(2)}`} />
+
+                        <div className="px-3 py-1.5 bg-muted/50 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                          Computed Geometry
+                        </div>
+                        <BreakdownRow
+                          label="Sqft per piece"
+                          value={`${testResult.sqft.toFixed(6).replace(/\.?0+$/, "")} sqft`}
+                          note={`(${testResult.w} × ${testResult.h}) / 144`}
+                        />
+                        <BreakdownRow
+                          label="Total sqft"
+                          value={`${testResult.total_sqft.toFixed(6).replace(/\.?0+$/, "")} sqft`}
+                          note={`${testResult.sqft.toFixed(4).replace(/\.?0+$/, "")} × ${testResult.q}`}
+                        />
+
+                        <div className="px-3 py-1.5 bg-muted/50 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                          Test Context
+                        </div>
+                        <BreakdownRow label="base_price (p)" value="1.00" note="fixed at 1.0 for test" />
+
+                        <div className="px-3 py-1.5 bg-muted/50 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                          Evaluated
+                        </div>
+                        <BreakdownRow label="Expression" value={testResult.expression} mono />
+                        <BreakdownRow label="Raw result" value={String(testResult.rawValue)} />
+                        {testResult.rawValue !== Math.round(testResult.rawValue) && (
+                          <BreakdownRow
+                            label="Rounded"
+                            value={Math.round(testResult.rawValue).toString()}
+                            note="nearest integer"
+                          />
+                        )}
+                      </div>
+
+                      {/* Helper note */}
+                      <div className="flex items-start gap-2 text-xs text-muted-foreground bg-muted/30 rounded px-3 py-2">
+                        <Info className="h-3.5 w-3.5 shrink-0 mt-0.5 text-blue-500" />
+                        <span>
+                          The formula tester evaluates the expression only. Product pricing preview may apply base rates,
+                          minimums, option pricing, and modifiers separately.
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {testError && (
                   <div className="bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 rounded p-3">
