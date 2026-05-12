@@ -4,7 +4,7 @@ import { apiFetch, apiRequest } from "@/lib/queryClient";
 // ---- Types derived from the real server contract ----
 // Source: server/routes/portalProof.routes.ts + server/services/proofAccessTokenService.ts
 
-export type PortalProofStatus = "pending" | "approved" | "rejected" | "revision_requested";
+export type PortalProofStatus = "pending" | "approved" | "rejected" | "revision_requested" | "cancelled";
 export type ProofAction = "approve" | "reject" | "revision_request";
 
 export type PortalProofAttachment = {
@@ -13,6 +13,8 @@ export type PortalProofAttachment = {
   originalFilename: string | null;
   mimeType: string | null;
   createdAt: string;
+  previewStatus: "ready" | "missing_preview" | "generation_failed" | "metadata_only";
+  previewError: string | null;
   originalUrl: string | null;
   downloadUrl: string | null;
   previewUrl: string | null;

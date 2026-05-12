@@ -28,6 +28,8 @@ import {
   jobs,
   jobStatusLog,
   jobStatuses,
+  productionEvents,
+  productionJobs,
   users,
 } from "@shared/schema";
 
@@ -149,6 +151,56 @@ export function registerTimelineRoutes(
       };
 
       const events: TimelineDto[] = [];
+
+      const getProductionEventLabel = (type: string, payload: any, row: any) => {
+        const stationKey = String(payload?.newStation ?? payload?.to?.stationKey ?? payload?.stationKey ?? row.jobStationKey ?? "").trim();
+        const previousStation = String(payload?.previousStation ?? payload?.from?.stationKey ?? payload?.previousStationKey ?? "").trim();
+        const eventType = String(payload?.eventType || "").trim();
+
+        switch (type) {
+          case 'status_changed': {
+            const previousStatus = payload?.previousStatus ?? null;
+            const nextStatus = payload?.newStatus ?? null;
+            if (previousStatus && nextStatus) return `Production status changed: ${previousStatus} → ${nextStatus}`;
+            if (nextStatus) return `Production status changed to ${nextStatus}`;
+            return 'Production status changed';
+          }
+          case 'timer_started':
+            return 'Production timer started';
+          case 'timer_stopped':
+            return payload?.seconds ? `Production timer stopped (${payload.seconds}s)` : 'Production timer stopped';
+          case 'routing_override':
+            if (previousStation || stationKey) {
+              return `Production routing updated: ${previousStation || 'unknown'} → ${stationKey || 'unknown'}`;
+            }
+            return 'Production routing updated';
+          case 'intake':
+            return stationKey ? `Production routed to ${stationKey}` : 'Production job created';
+          case 'reprint_incremented':
+            return 'Reprint count incremented';
+          case 'media_used_set':
+            return 'Production media usage updated';
+          case 'note':
+            switch (eventType) {
+              case 'workflow_transition': {
+                const previousStatus = payload?.fromState ?? payload?.previousStatus ?? null;
+                const nextStatus = payload?.toState ?? payload?.newStatus ?? null;
+                if (previousStatus && nextStatus) return `Workflow transitioned: ${previousStatus} → ${nextStatus}`;
+                return 'Workflow transitioned';
+              }
+              case 'workflow_reconciled':
+                return 'Workflow reconciled';
+              case 'materials_reserved':
+                return 'Materials reserved for production';
+              case 'materials_consumed':
+                return 'Materials consumed in production';
+              default:
+                return String(payload?.message || payload?.note || 'Production note');
+            }
+          default:
+            return type.replace(/_/g, ' ');
+        }
+      };
 
       // 1) Quote audit log via audit_logs
       try {
@@ -307,6 +359,82 @@ export function registerTimelineRoutes(
                   message = 'Note added';
                   break;
 
+                case 'proof_draft_created':
+                  message = 'Proof draft created';
+                  break;
+
+                case 'proof_file_uploaded':
+                  message = 'Proof file uploaded';
+                  break;
+
+                case 'proof_file_generated':
+                  message = 'Proof file generated';
+                  break;
+
+                case 'proof_sent':
+                  message = 'Proof sent for review';
+                  break;
+
+                case 'proof_resent':
+                  message = 'Proof resent for review';
+                  break;
+
+                case 'proof_approved':
+                  message = 'Proof approved';
+                  break;
+
+                case 'proof_rejected':
+                  message = 'Proof rejected';
+                  break;
+
+                case 'proof_revision_requested':
+                  message = 'Proof revision requested';
+                  break;
+
+                case 'proof_superseded':
+                  message = 'Proof superseded';
+                  break;
+
+                case 'design_started':
+                  message = 'Design started';
+                  break;
+
+                case 'design_paused':
+                  message = 'Design paused';
+                  break;
+
+                case 'design_resumed':
+                  message = 'Design resumed';
+                  break;
+
+                case 'design_completed':
+                  message = 'Design completed';
+                  break;
+
+                case 'design_sent_to_proofing':
+                  message = 'Design sent to proofing';
+                  break;
+
+                case 'prepress_started':
+                  message = 'Prepress started';
+                  break;
+
+                case 'prepress_completed':
+                  message = 'Prepress completed';
+                  break;
+
+                case 'prepress_sent_back_for_correction':
+                  message = 'Sent back to prepress for correction';
+                  break;
+
+                case 'prepress_routed':
+                  message = 'Prepress routed to next station';
+                  break;
+
+                case 'prepress_file_prepared':
+                  message = 'Prepress prepared final file';
+                  break;
+
                 default:
                   // Fallback: use status transition if available, else actionType
                   if (row.fromStatus || row.toStatus) {
@@ -327,6 +455,7 @@ export function registerTimelineRoutes(
               message,
               metadata: {
                 orderId: row.orderId,
+                orderLineItemId: (row as any).orderLineItemId ?? null,
                 fromStatus: row.fromStatus,
                 toStatus: row.toStatus,
                 metadata: row.metadata,
@@ -339,7 +468,74 @@ export function registerTimelineRoutes(
         console.warn('[Timeline] orderAuditLog unavailable:', err);
       }
 
-      // 3) Quote workflow state (if present) - current state as an event (best effort)
+      // 3) Production events (routing, timers, materials, direct status changes)
+      try {
+        const oIds = Array.from(orderIds);
+        if (oIds.length) {
+          const prod = await db
+            .select({
+              id: productionEvents.id,
+              type: productionEvents.type,
+              payload: productionEvents.payload,
+              createdAt: productionEvents.createdAt,
+              eventOrderId: productionEvents.orderId,
+              eventOrderLineItemId: productionEvents.orderLineItemId,
+              eventActorUserId: productionEvents.actorUserId,
+              productionJobId: productionEvents.productionJobId,
+              jobOrderId: productionJobs.orderId,
+              jobLineItemId: productionJobs.lineItemId,
+              jobStationKey: productionJobs.stationKey,
+              jobStepKey: productionJobs.stepKey,
+            })
+            .from(productionEvents)
+            .innerJoin(productionJobs, eq(productionJobs.id, productionEvents.productionJobId))
+            .where(
+              and(
+                eq(productionEvents.organizationId, organizationId),
+                inArray(productionJobs.orderId, oIds),
+              ),
+            )
+            .orderBy(desc(productionEvents.createdAt))
+            .limit(Math.min(limit * 4, 400));
+
+          for (const row of prod) {
+            const payload = (row.payload as any) || {};
+            const actorUserId = row.eventActorUserId || payload.actorUserId || null;
+            const resolvedOrderId = row.eventOrderId || row.jobOrderId || payload.orderId || null;
+            const resolvedOrderLineItemId =
+              row.eventOrderLineItemId || row.jobLineItemId || payload.orderLineItemId || payload.lineItemId || null;
+            const eventType = row.type === 'note' ? String(payload.eventType || row.type) : row.type;
+
+            events.push({
+              id: `production_event:${row.id}`,
+              occurredAt: toIso(row.createdAt),
+              actorName: await getActorName(actorUserId, null),
+              actorUserId,
+              entityType: 'production',
+              eventType,
+              message: getProductionEventLabel(row.type, payload, row),
+              metadata: {
+                productionJobId: row.productionJobId,
+                orderId: resolvedOrderId,
+                orderLineItemId: resolvedOrderLineItemId,
+                actorUserId,
+                station: row.jobStationKey,
+                step: row.jobStepKey,
+                previousStatus: payload.previousStatus ?? payload.fromState ?? payload.oldStatus ?? null,
+                newStatus: payload.newStatus ?? payload.toState ?? payload.status ?? null,
+                previousStation: payload.previousStation ?? payload.from?.stationKey ?? payload.previousStationKey ?? null,
+                newStation: payload.newStation ?? payload.to?.stationKey ?? payload.stationKey ?? row.jobStationKey ?? null,
+                waitType: payload.waitType ?? null,
+                payload,
+              },
+            });
+          }
+        }
+      } catch (err) {
+        console.warn('[Timeline] productionEvents unavailable:', err);
+      }
+
+      // 4) Quote workflow state (if present) - current state as an event (best effort)
       try {
         const qIds = Array.from(quoteIds);
         if (qIds.length) {
@@ -376,7 +572,7 @@ export function registerTimelineRoutes(
         console.warn('[Timeline] quoteWorkflowStates unavailable:', err);
       }
 
-      // 4) Shipments (shipped/delivered)
+      // 5) Shipments (shipped/delivered)
       try {
         const oIds = Array.from(orderIds);
         if (oIds.length) {
@@ -420,7 +616,7 @@ export function registerTimelineRoutes(
         console.warn('[Timeline] shipments unavailable:', err);
       }
 
-      // 5) Invoices + payments
+      // 6) Invoices + payments
       const invoiceIdToNumber = new Map<string, number>();
       try {
         const oIds = Array.from(orderIds);
@@ -475,7 +671,7 @@ export function registerTimelineRoutes(
         console.warn('[Timeline] invoices/payments unavailable:', err);
       }
 
-      // 6) Job status log (production)
+      // 7) Job status log (production)
       try {
         const oIds = Array.from(orderIds);
         if (oIds.length) {

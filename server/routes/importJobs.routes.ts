@@ -37,6 +37,20 @@ function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
 }
 
+function getFirstRowValue(row: Record<string, string>, keys: string[]): string {
+  for (const key of keys) {
+    const value = row[key];
+    if (typeof value === "string") {
+      return value;
+    }
+  }
+  return "";
+}
+
+function getTrimmedRowValue(row: Record<string, string>, keys: string[]): string {
+  return getFirstRowValue(row, keys).trim();
+}
+
 export function registerImportJobRoutes(
   app: Express,
   middleware: {
@@ -155,10 +169,11 @@ export function registerImportJobRoutes(
         for (let i = 0; i < rows.length; i++) {
           const row = rows[i];
           const rowNumber = i + 2;
-          const name = (row['Name'] || '').trim();
-          const sku = (row['SKU'] || '').trim();
-          const type = (row['Type'] || '').trim();
-          const unitOfMeasure = (row['Unit Of Measure'] || '').trim();
+          const name = getTrimmedRowValue(row, ['Name', 'material_name']);
+          const sku = getTrimmedRowValue(row, ['SKU', 'sku']);
+          const type = getTrimmedRowValue(row, ['Type', 'material_type']);
+          const unitOfMeasure = getTrimmedRowValue(row, ['Unit Of Measure', 'unit_of_measure']);
+          const sellPriceUnit = getTrimmedRowValue(row, ['Sell Price Unit', 'sell_price_unit']) || unitOfMeasure;
 
           if (!name || !sku || !type || !unitOfMeasure) {
             skippedCount++;
@@ -170,33 +185,38 @@ export function registerImportJobRoutes(
             name,
             sku,
             type,
-            category: (row['Category'] || '').trim() || undefined,
+            category: getTrimmedRowValue(row, ['Category', 'category']) || undefined,
             unitOfMeasure,
-            width: parseNum(row['Width']),
-            height: parseNum(row['Height']),
-            thickness: parseNum(row['Thickness']),
-            thicknessUnit: (row['Thickness Unit'] || '').trim() || undefined,
-            color: (row['Color'] || '').trim() || undefined,
-            costPerUnit: parseNum(row['Cost Per Unit']),
-            wholesaleBaseRate: parseNum(row['Wholesale Base Rate']),
-            wholesaleMinCharge: parseNum(row['Wholesale Min Charge']),
-            retailBaseRate: parseNum(row['Retail Base Rate']),
-            retailMinCharge: parseNum(row['Retail Min Charge']),
-            stockQuantity: parseNum(row['Stock Quantity']),
-            minStockAlert: parseNum(row['Min Stock Alert']),
-            isActive: parseBool(row['Is Active']),
-            preferredVendorId: (row['Preferred Vendor ID'] || '').trim() || undefined,
-            vendorSku: (row['Vendor SKU'] || '').trim() || undefined,
-            vendorCostPerUnit: parseNum(row['Vendor Cost Per Unit']),
-            rollLengthFt: parseNum(row['Roll Length Ft']),
-            costPerRoll: parseNum(row['Cost Per Roll']),
-            edgeWasteInPerSide: parseNum(row['Edge Waste In Per Side']),
-            leadWasteFt: parseNum(row['Lead Waste Ft']),
-            tailWasteFt: parseNum(row['Tail Waste Ft']),
+            inventoryUnit: getTrimmedRowValue(row, ['Inventory Unit', 'inventory_unit']) || unitOfMeasure,
+            sellPriceUnit,
+            wholesalePriceUnit: getTrimmedRowValue(row, ['Wholesale Price Unit', 'wholesale_price_unit']) || sellPriceUnit || unitOfMeasure,
+            vendorCostUnit: getTrimmedRowValue(row, ['Vendor Cost Unit', 'vendor_cost_unit']) || unitOfMeasure,
+            consumptionUnit: getTrimmedRowValue(row, ['Consumption Unit', 'consumption_unit']) || sellPriceUnit || unitOfMeasure,
+            width: parseNum(getFirstRowValue(row, ['Width', 'width'])),
+            height: parseNum(getFirstRowValue(row, ['Height', 'height'])),
+            thickness: parseNum(getFirstRowValue(row, ['Thickness', 'thickness'])),
+            thicknessUnit: getTrimmedRowValue(row, ['Thickness Unit', 'thickness_unit']) || undefined,
+            color: getTrimmedRowValue(row, ['Color', 'color']) || undefined,
+            costPerUnit: parseNum(getFirstRowValue(row, ['Cost Per Unit', 'cost_per_unit'])),
+            wholesaleBaseRate: parseNum(getFirstRowValue(row, ['Wholesale Base Rate', 'wholesale_base_rate'])),
+            wholesaleMinCharge: parseNum(getFirstRowValue(row, ['Wholesale Min Charge', 'wholesale_min_charge'])),
+            retailBaseRate: parseNum(getFirstRowValue(row, ['Retail Base Rate', 'retail_base_rate'])),
+            retailMinCharge: parseNum(getFirstRowValue(row, ['Retail Min Charge', 'retail_min_charge'])),
+            stockQuantity: parseNum(getFirstRowValue(row, ['Stock Quantity', 'stock_quantity'])),
+            minStockAlert: parseNum(getFirstRowValue(row, ['Min Stock Alert', 'reorder_point'])),
+            isActive: parseBool(getFirstRowValue(row, ['Is Active', 'active'])),
+            preferredVendorId: getTrimmedRowValue(row, ['Preferred Vendor ID', 'preferred_vendor_id']) || undefined,
+            vendorSku: getTrimmedRowValue(row, ['Vendor SKU', 'vendor_sku']) || undefined,
+            vendorCostPerUnit: parseNum(getFirstRowValue(row, ['Vendor Cost Per Unit', 'vendor_cost_per_unit'])),
+            rollLengthFt: parseNum(getFirstRowValue(row, ['Roll Length Ft', 'roll_length_ft'])),
+            costPerRoll: parseNum(getFirstRowValue(row, ['Cost Per Roll', 'cost_per_roll'])),
+            edgeWasteInPerSide: parseNum(getFirstRowValue(row, ['Edge Waste In Per Side', 'edge_waste_in_per_side'])),
+            leadWasteFt: parseNum(getFirstRowValue(row, ['Lead Waste Ft', 'lead_waste_ft'])),
+            tailWasteFt: parseNum(getFirstRowValue(row, ['Tail Waste Ft', 'tail_waste_ft'])),
           };
 
           const identifiers = {
-            materialId: (row['Material ID'] || row['ID'] || '').trim() || undefined,
+            materialId: getTrimmedRowValue(row, ['Material ID', 'material_id', 'ID', 'id']) || undefined,
           };
 
           try {

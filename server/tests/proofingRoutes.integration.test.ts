@@ -1,5 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, jest, test } from "@jest/globals";
 import express, { NextFunction, Response } from "express";
+import * as fs from "node:fs/promises";
+import path from "node:path";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -32,14 +34,19 @@ jest.mock("../services/productionRoutingService", () => {
 });
 
 import { db } from "../db";
+import { resolveLocalStoragePath } from "../services/localStoragePath";
 import { tenantContext, getRequestOrganizationId } from "../tenantContext";
 import { auditLogs, lineItemProofManualApprovalOverrides, orderAttachments, orderLineItems, productionJobs } from "../../shared/schema";
 import { proofingQueueResponseSchema, proofingReadModelSchema, type ProofVersionHistoryEntry } from "../../shared/proofing";
 import { createProofAccessToken, validateProofToken } from "../services/proofAccessTokenService";
 import {
+  buildProofArtifactSummary,
   autoSyncCanonicalProofForLineItem,
+  cancelProofVersion,
   createAndSendProofVersion,
   createLineItemProofVersion,
+  generateLineItemArtworkPreviewDerivative,
+  INCOMPLETE_PROOF_MESSAGE,
   listProofingQueue,
   markProofVersionSent,
   recordManualProofApprovalOverride,
@@ -278,6 +285,23 @@ function createTestApp() {
     }
   });
 
+  app.post("/api/proofing/line-items/:lineItemId/generate-preview", isAuthenticated, tenantContext, async (req: any, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const result = await db.transaction(async (tx) => generateLineItemArtworkPreviewDerivative(tx, {
+        organizationId,
+        lineItemId: String(req.params.lineItemId),
+      }));
+
+      return res.json({ success: true, data: result, message: result.message });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || "Failed to generate artwork preview derivative" });
+    }
+  });
+
   app.post("/api/proofing/line-item/:lineItemId/versions", isAuthenticated, tenantContext, async (req: any, res: Response) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -379,6 +403,9 @@ function createTestApp() {
 
       return res.json({ success: true, data: result });
     } catch (error: any) {
+      if ((error?.statusCode || 500) === 400 && error?.message === INCOMPLETE_PROOF_MESSAGE) {
+        return res.status(400).json({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
+      }
       return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to send proof version for review" });
     }
   });
@@ -440,7 +467,71 @@ function createTestApp() {
 
       return res.json({ success: true, data: result });
     } catch (error: any) {
+      if ((error?.statusCode || 500) === 400 && error?.message === INCOMPLETE_PROOF_MESSAGE) {
+        return res.status(400).json({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
+      }
       return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to create and send proof" });
+    }
+  });
+
+  app.post("/api/proofing/versions/:proofVersionId/cancel", isAuthenticated, tenantContext, async (req: any, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.object({
+        reason: z.string().optional().nullable(),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const result = await db.transaction(async (tx) => {
+        const cancelResult = await cancelProofVersion(tx, {
+          organizationId,
+          proofVersionId: String(req.params.proofVersionId),
+          actorUserId: userId,
+          reason: parsed.data.reason ?? null,
+        });
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "UPDATE",
+          entityType: "line_item_proof_version",
+          entityId: cancelResult.proofVersion.id,
+          entityName: `Proof v${cancelResult.proofVersion.versionNumber}`,
+          description: `Cancelled proof version ${cancelResult.proofVersion.versionNumber}`,
+          oldValues: { status: "awaiting_response" },
+          newValues: {
+            status: cancelResult.proofVersion.status,
+            orderId: cancelResult.lineItem.orderId,
+            lineItemId: cancelResult.lineItem.lineItemId,
+            reason: parsed.data.reason ?? null,
+          },
+        } as any);
+
+        const proofing = await resolveLineItemProofingTruth(tx, {
+          organizationId,
+          lineItemId: cancelResult.lineItem.lineItemId,
+        });
+
+        return {
+          proofId: cancelResult.lineItem.lineItemId,
+          versionId: cancelResult.proofVersion.id,
+          status: cancelResult.proofVersion.status,
+          proofing,
+        };
+      });
+
+      return res.json({ success: true, data: result, message: "Proof version cancelled." });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || "Failed to cancel proof version" });
     }
   });
 
@@ -565,6 +656,32 @@ function createTestApp() {
   app.get("/api/portal/proof/:token", async (req: any, res: Response) => {
     try {
       const validation = await validateProofToken(db, String(req.params.token));
+      const [attachment] = await db
+        .select({
+          id: orderAttachments.id,
+          fileName: orderAttachments.fileName,
+          mimeType: orderAttachments.mimeType,
+          description: orderAttachments.description,
+          fileRecordId: orderAttachments.fileRecordId,
+          fileUrl: orderAttachments.fileUrl,
+          thumbKey: orderAttachments.thumbKey,
+          previewKey: orderAttachments.previewKey,
+          thumbnailUrl: orderAttachments.thumbnailUrl,
+        })
+        .from(orderAttachments)
+        .where(eq(orderAttachments.id, validation.proofVersion.proofFileId))
+        .limit(1);
+
+      const artifact = attachment
+        ? buildProofArtifactSummary({
+          attachment: {
+            ...attachment,
+            pagePreviewCount: 0,
+            pageThumbCount: 0,
+          },
+          snapshot: null,
+        })
+        : null;
 
       return res.json({
         success: true,
@@ -578,6 +695,8 @@ function createTestApp() {
             {
               id: validation.proofVersion.proofFileId,
               downloadUrl: `https://example.com/objects/${validation.proofVersion.proofFileId}`,
+              previewStatus: artifact?.previewStatus ?? "missing_preview",
+              previewError: artifact?.previewError ?? null,
             },
           ],
           status: validation.currentApprovalState.status,
@@ -606,8 +725,45 @@ function createTestApp() {
           throw Object.assign(new Error("This proof has already been resolved by manual approval override"), { statusCode: 409 });
         }
 
+        if (validation.currentApprovalState.status === "cancelled") {
+          throw Object.assign(new Error("This proof version has been cancelled and is no longer available for approval."), { statusCode: 409 });
+        }
+
         if (validation.currentApprovalState.status !== "pending") {
           throw Object.assign(new Error("This proof has already been resolved"), { statusCode: 409 });
+        }
+
+        const [attachment] = await tx
+          .select({
+            id: orderAttachments.id,
+            fileName: orderAttachments.fileName,
+            mimeType: orderAttachments.mimeType,
+            description: orderAttachments.description,
+            fileRecordId: orderAttachments.fileRecordId,
+            fileUrl: orderAttachments.fileUrl,
+            thumbKey: orderAttachments.thumbKey,
+            previewKey: orderAttachments.previewKey,
+            thumbnailUrl: orderAttachments.thumbnailUrl,
+          })
+          .from(orderAttachments)
+          .where(eq(orderAttachments.id, validation.proofVersion.proofFileId))
+          .limit(1);
+
+        if (!attachment) {
+          throw Object.assign(new Error("Proof attachment not found"), { statusCode: 404 });
+        }
+
+        const artifact = buildProofArtifactSummary({
+          attachment: {
+            ...attachment,
+            pagePreviewCount: 0,
+            pageThumbCount: 0,
+          },
+          snapshot: null,
+        });
+
+        if (artifact.previewStatus !== "ready") {
+          throw Object.assign(new Error(INCOMPLETE_PROOF_MESSAGE), { statusCode: 400 });
         }
 
         const decision = parsed.data.action === "approve"
@@ -654,6 +810,9 @@ function createTestApp() {
 
       return res.json({ success: true, data: result });
     } catch (error: any) {
+      if ((error?.statusCode || 500) === 400 && error?.message === INCOMPLETE_PROOF_MESSAGE) {
+        return res.status(400).json({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
+      }
       return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to record customer proof action" });
     }
   });
@@ -861,6 +1020,14 @@ describe("proofing route integration", () => {
       requiresPrepress?: boolean;
       attachProofFiles?: boolean;
       addArtwork?: boolean;
+      artworkMimeType?: string;
+      artworkThumbStatus?: string | null;
+      artworkThumbKey?: string | null;
+      artworkPreviewKey?: string | null;
+      artworkThumbError?: string | null;
+      artworkFileName?: string;
+      artworkFileUrl?: string;
+      artworkStorageProvider?: string | null;
     },
   ) {
     const lineItemId = `line_${name}_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
@@ -875,6 +1042,14 @@ describe("proofing route integration", () => {
     const requiresPrepress = options?.requiresPrepress ?? true;
     const attachProofFiles = options?.attachProofFiles ?? true;
     const addArtwork = options?.addArtwork ?? false;
+    const artworkMimeType = options?.artworkMimeType ?? "application/pdf";
+    const artworkThumbStatus = options?.artworkThumbStatus ?? null;
+    const artworkThumbKey = options?.artworkThumbKey ?? null;
+    const artworkPreviewKey = options?.artworkPreviewKey ?? null;
+    const artworkThumbError = options?.artworkThumbError ?? null;
+    const artworkFileName = options?.artworkFileName ?? `${name}-artwork.pdf`;
+    const artworkFileUrl = options?.artworkFileUrl ?? `https://example.com/${artworkFileId}.pdf`;
+    const artworkStorageProvider = options?.artworkStorageProvider ?? null;
 
     await db.execute(sql`
       insert into order_line_items (
@@ -908,11 +1083,12 @@ describe("proofing route integration", () => {
           uploaded_by_name,
           file_name,
           file_url,
-          role
+          role,
+          mime_type
         )
         values
-          (${proofFileA}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-proof-a.pdf`}, ${`https://example.com/${proofFileA}.pdf`}, ${"proof"}),
-          (${proofFileB}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-proof-b.pdf`}, ${`https://example.com/${proofFileB}.pdf`}, ${"proof"})
+          (${proofFileA}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-proof-a.pdf`}, ${`https://example.com/${proofFileA}.pdf`}, ${"proof"}, ${"application/pdf"}),
+          (${proofFileB}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-proof-b.pdf`}, ${`https://example.com/${proofFileB}.pdf`}, ${"proof"}, ${"application/pdf"})
       `);
     }
 
@@ -927,10 +1103,16 @@ describe("proofing route integration", () => {
           file_name,
           file_url,
           role,
-          is_primary
+          mime_type,
+          is_primary,
+          thumb_status,
+          thumb_key,
+          preview_key,
+          thumb_error,
+          storage_provider
         )
         values (
-          ${artworkFileId}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${`${name}-artwork.pdf`}, ${`https://example.com/${artworkFileId}.pdf`}, ${"artwork"}, ${true}
+          ${artworkFileId}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${artworkFileName}, ${artworkFileUrl}, ${"artwork"}, ${artworkMimeType}, ${true}, ${artworkThumbStatus}, ${artworkThumbKey}, ${artworkPreviewKey}, ${artworkThumbError}, ${artworkStorageProvider}
         )
       `);
     }
@@ -978,6 +1160,101 @@ describe("proofing route integration", () => {
     return result.rawToken;
   }
 
+  async function seedLocalImageForPreviewTest(storageKey: string) {
+    const sourcePath = path.join(process.cwd(), "client", "public", "favicon.png");
+    const targetPath = resolveLocalStoragePath(storageKey);
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.copyFile(sourcePath, targetPath);
+    return targetPath;
+  }
+
+  test("returns a safe 400 when no artwork file exists for preview generation", async () => {
+    const { lineItemId } = await createLineItemFixture("generate_preview_missing_art", {
+      addArtwork: false,
+    });
+
+    const res = await request(app)
+      .post(`/api/proofing/line-items/${lineItemId}/generate-preview`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .expect(400);
+
+    expect(res.body).toMatchObject({
+      success: false,
+      message: "No artwork file is attached to this line item.",
+    });
+  });
+
+  test("returns success when a preview derivative already exists", async () => {
+    const { lineItemId } = await createLineItemFixture("generate_preview_exists", {
+      addArtwork: true,
+      artworkThumbStatus: "thumb_ready",
+      artworkThumbKey: "thumbs/existing.jpg",
+      artworkPreviewKey: "previews/existing.jpg",
+    });
+
+    const res = await request(app)
+      .post(`/api/proofing/line-items/${lineItemId}/generate-preview`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .expect(200);
+
+    expect(res.body).toMatchObject({
+      success: true,
+      message: "Preview already exists.",
+      data: {
+        derivativeStatus: "ready",
+        previewStatus: "ready",
+      },
+    });
+  });
+
+  test("generates a missing artwork preview derivative through the existing image pipeline", async () => {
+    const storageKey = `proofing-tests/${Date.now()}-artwork.png`;
+    await seedLocalImageForPreviewTest(storageKey);
+
+    const { lineItemId, artworkFileId } = await createLineItemFixture("generate_preview_pdf", {
+      addArtwork: true,
+      artworkMimeType: "image/png",
+      artworkFileName: "generate-preview-artwork.png",
+      artworkFileUrl: storageKey,
+      artworkStorageProvider: "local",
+      artworkThumbStatus: "uploaded",
+    });
+
+    const res = await request(app)
+      .post(`/api/proofing/line-items/${lineItemId}/generate-preview`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .expect(200);
+
+    expect(res.body).toMatchObject({
+      success: true,
+      message: "Preview generated successfully.",
+      data: {
+        derivativeStatus: "ready",
+        previewStatus: "ready",
+      },
+    });
+
+    const [attachment] = await db
+      .select({
+        thumbStatus: orderAttachments.thumbStatus,
+        thumbKey: orderAttachments.thumbKey,
+        previewKey: orderAttachments.previewKey,
+      })
+      .from(orderAttachments)
+      .where(eq(orderAttachments.id, artworkFileId))
+      .limit(1);
+
+    expect(attachment?.thumbStatus).toBe("thumb_ready");
+    expect(attachment?.thumbKey).toContain(artworkFileId);
+    expect(attachment?.previewKey).toContain(artworkFileId);
+  });
+
   test("creates a proof version and exposes the canonical read model", async () => {
     const { lineItemId, proofFileA } = await createLineItemFixture("create");
 
@@ -1008,6 +1285,166 @@ describe("proofing route integration", () => {
     expect(proofing.currentActionableProofVersion?.status).toBe("awaiting_response");
   });
 
+  test("staff can cancel an active sent proof and return the queue to awaiting send", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("cancel_sent_proof");
+    const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
+
+    const cancelRes = await request(app)
+      .post(`/api/proofing/versions/${proofVersionId}/cancel`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ reason: "Artwork was outdated" })
+      .expect(200);
+
+    expect(cancelRes.body).toMatchObject({
+      success: true,
+      message: "Proof version cancelled.",
+      data: {
+        proofId: lineItemId,
+        versionId: proofVersionId,
+        status: "superseded",
+      },
+    });
+
+    const proofing = proofingReadModelSchema.parse(cancelRes.body.data.proofing);
+    expect(proofing.currentActionableProofVersionId).toBeNull();
+    expect(proofing.workflowState).toBe("awaiting_proof_approval");
+    expect(proofing.requiresProofApproval).toBe(true);
+
+    const queue = proofingQueueResponseSchema.parse((await request(app)
+      .get("/api/proofing/queue")
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .expect(200)).body.data);
+
+    const row = queue.rows.find((item) => item.lineItemId === lineItemId);
+  expect(row?.currentQueueStatus).toBe("no_active_proof");
+
+    const [audit] = await db
+      .select({
+        actionType: auditLogs.actionType,
+        entityType: auditLogs.entityType,
+        entityId: auditLogs.entityId,
+        description: auditLogs.description,
+      })
+      .from(auditLogs)
+      .where(eq(auditLogs.entityId, proofVersionId))
+      .orderBy(sql`${auditLogs.createdAt} desc`)
+      .limit(1);
+
+    expect(audit?.actionType).toBe("UPDATE");
+    expect(audit?.entityType).toBe("line_item_proof_version");
+    expect(audit?.description).toContain("Cancelled proof version");
+  });
+
+  test("staff cannot cancel approved or already-resolved proof versions", async () => {
+    const approvedFixture = await createLineItemFixture("cancel_approved_proof");
+    const approvedSend = await createAndSendProof(approvedFixture.lineItemId, approvedFixture.proofFileA);
+
+    await request(app)
+      .post(`/api/proofing/versions/${approvedSend.proofVersionId}/respond`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ decision: "approved" })
+      .expect(200);
+
+    const approvedRes = await request(app)
+      .post(`/api/proofing/versions/${approvedSend.proofVersionId}/cancel`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ reason: "too late" })
+      .expect(400);
+
+    expect(approvedRes.body.message).toBe("Approved proof versions cannot be cancelled from this workflow.");
+
+    const revisionFixture = await createLineItemFixture("cancel_revision_requested");
+    const revisionSend = await createAndSendProof(revisionFixture.lineItemId, revisionFixture.proofFileA);
+
+    await request(app)
+      .post(`/api/proofing/versions/${revisionSend.proofVersionId}/respond`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ decision: "revision_requested" })
+      .expect(200);
+
+    const revisionRes = await request(app)
+      .post(`/api/proofing/versions/${revisionSend.proofVersionId}/cancel`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ reason: "already handled" })
+      .expect(400);
+
+    expect(revisionRes.body.message).toContain("Only active sent proof versions can be cancelled.");
+  });
+
+  test("cancelled proof tokens become read-only and cannot approve", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("cancelled_portal_token");
+    const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
+    const token = await createPortalToken(lineItemId, proofVersionId);
+
+    await request(app)
+      .post(`/api/proofing/versions/${proofVersionId}/cancel`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ reason: "Wrong proof sent" })
+      .expect(200);
+
+    const getRes = await request(app)
+      .get(`/api/portal/proof/${token}`)
+      .expect(200);
+
+    expect(getRes.body?.data?.status).toBe("cancelled");
+
+    const actionRes = await request(app)
+      .post(`/api/portal/proof/${token}/action`)
+      .send({ action: "approve" })
+      .expect(409);
+
+    expect(actionRes.body?.error).toBe("This proof version has been cancelled and is no longer available for approval.");
+  });
+
+  test("after cancellation, staff can send a corrected proof version", async () => {
+    const { lineItemId, proofFileA, proofFileB } = await createLineItemFixture("cancel_then_replace");
+    const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
+
+    await request(app)
+      .post(`/api/proofing/versions/${proofVersionId}/cancel`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ reason: "Sending corrected file" })
+      .expect(200);
+
+    const createRes = await request(app)
+      .post(`/api/proofing/line-item/${lineItemId}/versions`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ proofFileId: proofFileB, internalNotes: "replacement proof" })
+      .expect(200);
+
+    const replacementVersionId = createRes.body?.data?.proofVersion?.id as string;
+
+    const sendRes = await request(app)
+      .post(`/api/proofing/versions/${replacementVersionId}/send`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ sentToEmail: "customer@example.com" })
+      .expect(200);
+
+    expect(sendRes.body?.data?.proofVersion?.status).toBe("awaiting_response");
+    const proofing = proofingReadModelSchema.parse(sendRes.body?.data?.proofing);
+    expect(proofing.currentActionableProofVersion?.id).toBe(replacementVersionId);
+  });
+
   test("uploads or selects a manual proof file and sends it through the canonical flow", async () => {
     const { lineItemId, proofFileA } = await createLineItemFixture("manual_send");
 
@@ -1023,10 +1460,11 @@ describe("proofing route integration", () => {
     const proofing = proofingReadModelSchema.parse(res.body?.data?.proofing);
     expect(proofing.currentActionableProofVersion?.proofFileId).toBe(proofFileA);
     expect(proofing.currentDisplayedProofArtifact?.artifactKind).toBe("uploaded");
+    expect(proofing.currentDisplayedProofArtifact?.previewStatus).toBe("ready");
     expect(proofing.currentProofInputSnapshot?.lineItemId).toBe(lineItemId);
   });
 
-  test("generates a basic proof from persisted artwork and sends it through the canonical flow", async () => {
+  test("blocks sending a generated proof when the saved artwork cannot produce a preview", async () => {
     const { lineItemId, artworkFileId } = await createLineItemFixture("generated_send", {
       attachProofFiles: false,
       addArtwork: true,
@@ -1041,21 +1479,17 @@ describe("proofing route integration", () => {
       .set("x-test-user-role", "admin")
       .set("x-test-org-id", orgId)
       .send({ mode: "generated", internalNotes: "generated path" })
-      .expect(200);
+      .expect(400);
 
-    expect(res.body?.data?.proofVersion?.status).toBe("awaiting_response");
-    expect(res.body?.data?.proofVersion?.proofFileId).not.toBe(artworkFileId);
-    const proofing = proofingReadModelSchema.parse(res.body?.data?.proofing);
-    expect(proofing.currentDisplayedProofArtifact?.artifactKind).toBe("generated");
-    expect(proofing.currentProofInputSnapshot?.sourceArtwork?.sourceId).toBe(artworkFileId);
+    expect(res.body).toMatchObject({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
 
-    const [generatedAttachment] = await db
-      .select({ mimeType: orderAttachments.mimeType, role: orderAttachments.role })
-      .from(orderAttachments)
-      .where(eq(orderAttachments.id, String(res.body?.data?.proofVersion?.proofFileId)))
-      .limit(1);
+    const truth = await resolveLineItemProofingTruth(db, {
+      organizationId: orgId,
+      lineItemId,
+    });
 
-    expect(generatedAttachment).toMatchObject({ mimeType: "application/pdf", role: "proof" });
+    expect(truth.currentActionableProofVersionId).toBeNull();
+    expect(truth.currentProofInputSnapshot?.sourceArtwork?.sourceId).toBe(artworkFileId);
   });
 
   test("fails clearly when generated proof is requested without a saved artwork source", async () => {
@@ -1119,7 +1553,7 @@ describe("proofing route integration", () => {
       slice: "awaiting_approval",
     });
 
-    expect(queue.rows.some((row) => row.lineItemId === lineItemId)).toBe(true);
+    expect(queue.rows.some((row: any) => row.lineItemId === lineItemId)).toBe(true);
   });
 
   test("approves a proof, advances workflow, and rejects repeated approvals safely", async () => {
@@ -1605,6 +2039,75 @@ describe("proofing route integration", () => {
     const truth = proofingReadModelSchema.parse(truthRes.body?.data);
     expect(truth.approvedProofVersionId).toBe(proofVersionId);
     expect(truth.proofDecisionHistory[0]?.responderSource).toBe("customer");
+  });
+
+  test("blocks portal approval when the proof artifact is metadata-only", async () => {
+    const { lineItemId } = await createLineItemFixture("portal_incomplete", {
+      attachProofFiles: false,
+      requiresProofApproval: true,
+      requiresPrepress: true,
+      workflowState: "awaiting_proof_approval",
+    });
+    const incompleteProofFileId = `proof_incomplete_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+
+    await db.execute(sql`
+      insert into order_attachments (
+        id,
+        order_id,
+        order_line_item_id,
+        uploaded_by_user_id,
+        uploaded_by_name,
+        file_name,
+        role,
+        mime_type,
+        description
+      ) values (
+        ${incompleteProofFileId},
+        ${orderId},
+        ${lineItemId},
+        ${userId},
+        ${"Proof User"},
+        ${"portal-incomplete-proof.pdf"},
+        ${"proof"},
+        ${"application/pdf"},
+        ${"[proof-artifact:generated-basic] [proof-preview:metadata-only] Generated basic proof from persisted line-item truth."}
+      )
+    `);
+
+    const createdDraft = await db.transaction((tx) =>
+      createLineItemProofVersion(tx, {
+        organizationId: orgId,
+        lineItemId,
+        proofFileId: incompleteProofFileId,
+        createdByUserId: userId,
+        internalNotes: "metadata only",
+        sourceAction: "proof_file_generated",
+      }),
+    );
+
+    await db.execute(sql`
+      update line_item_proof_versions
+      set
+        status = 'awaiting_response'::line_item_proof_version_status,
+        sent_to_email = ${"customer@example.com"},
+        sent_at = now()
+      where id = ${createdDraft.id}
+    `);
+
+    const token = await createPortalToken(lineItemId, createdDraft.id);
+
+    const viewRes = await request(app)
+      .get(`/api/portal/proof/${token}`)
+      .expect(200);
+
+    expect(viewRes.body?.data?.attachments?.[0]?.previewStatus).toBe("metadata_only");
+
+    const actionRes = await request(app)
+      .post(`/api/portal/proof/${token}/action`)
+      .send({ action: "approve", comment: "Looks good" })
+      .expect(400);
+
+    expect(actionRes.body).toMatchObject({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
   });
 
   test("blocks customer token actions after manual approval override resolves the proof", async () => {

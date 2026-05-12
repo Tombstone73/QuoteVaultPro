@@ -1,10 +1,41 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Invoice, Payment, InvoiceLineItem } from '@shared/schema';
+import type { InvoiceAccountingDisplay, QuickBooksLineItemDisplay } from '@shared/invoiceAccountingDisplay';
+
+export type InvoiceEmailStatus = 'not_sent' | 'sent_current' | 'sent_outdated';
+
+export type ReminderListStatus =
+  | 'due'
+  | 'sent'
+  | 'disabled'
+  | 'not_due'
+  | 'stopped'
+  | 'maxed_out'
+  | 'blocked';
+
+export interface InvoiceListItem extends Omit<Invoice, 'lastSentAt'>, InvoiceAccountingDisplay {
+  // Email send tracking (original invoice send only — reminders excluded)
+  lastSentAt: string | null;
+  lastInvoiceEmailRecipient: string | null;
+  emailStatus: InvoiceEmailStatus;
+  // Reminder tracking
+  reminderStatus: ReminderListStatus;
+  lastReminderSentAt: string | null;
+  lastReminderRecipient: string | null;
+  nextReminderDueAt: string | null;
+}
+
+export interface InvoiceWithEmailTracking extends Omit<Invoice, 'lastSentAt'>, InvoiceAccountingDisplay {
+  lastSentAt?: string | null;
+  emailStatus?: InvoiceEmailStatus;
+}
 
 interface InvoiceWithRelations {
-  invoice: Invoice;
+  invoice: InvoiceWithEmailTracking;
   lineItems: InvoiceLineItem[];
   payments: Payment[];
+  importedQuickBooksLineItems?: QuickBooksLineItemDisplay[];
+  importedQuickBooksLineItemsUnavailableMessage?: string | null;
 }
 
 export interface InvoicePaymentWithCreatedBy extends Payment {
@@ -13,7 +44,7 @@ export interface InvoicePaymentWithCreatedBy extends Payment {
 
 // List invoices
 export function useInvoices(filters?: { status?: string; customerId?: string; orderId?: string }) {
-  return useQuery({
+  return useQuery<InvoiceListItem[]>({
     queryKey: ['invoices', filters],
     queryFn: async () => {
       const params = new URLSearchParams();
@@ -23,7 +54,7 @@ export function useInvoices(filters?: { status?: string; customerId?: string; or
       const res = await fetch(`/api/invoices?${params}`, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch invoices');
       const data = await res.json();
-      return data.data as Invoice[];
+      return data.data as InvoiceListItem[];
     },
   });
 }
@@ -377,6 +408,56 @@ export function useDeletePayment() {
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
+    },
+  });
+}
+
+// ---- Reminder hooks --------------------------------------------------------
+
+export interface ReminderLogEntry {
+  id: string;
+  sentAt: string;
+  recipientEmail: string | null;
+  status: 'sent' | 'failed';
+  reminderNumber: number;
+  messageId: string | null;
+  failureReason: string | null;
+}
+
+// Fetch reminder history for one invoice
+export function useInvoiceReminderHistory(invoiceId: string | undefined) {
+  return useQuery<ReminderLogEntry[]>({
+    queryKey: ['invoiceReminderHistory', invoiceId],
+    queryFn: async () => {
+      if (!invoiceId) return [];
+      const res = await fetch(`/api/invoices/${invoiceId}/reminder-history`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed to fetch reminder history');
+      const data = await res.json();
+      return (data.data || []) as ReminderLogEntry[];
+    },
+    enabled: !!invoiceId,
+  });
+}
+
+// Manually send a reminder for one invoice
+export function useSendInvoiceReminder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (invoiceId: string) => {
+      const res = await fetch(`/api/invoices/${invoiceId}/send-reminder`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Failed to send reminder');
+      }
+      return data as { success: true; lastReminderSentAt: string | null; reminderCount: number };
+    },
+    onSuccess: (_, invoiceId) => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices', invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ['invoiceReminderHistory', invoiceId] });
     },
   });
 }

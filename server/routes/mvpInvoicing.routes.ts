@@ -1,8 +1,11 @@
 import type { Express } from "express";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db";
-import { auditLogs, companySettings, customers, invoiceLineItems, invoices, orders, organizations, payments, paymentWebhookEvents, users, manualPaymentMethodSchema } from "../../shared/schema";
-import { applyPayment, createInvoiceFromOrder, getInvoiceWithRelations, refreshInvoiceStatus } from "../invoicesService";
+import { auditLogs, companySettings, customers, invoiceLineItems, invoiceReminderLogs, invoices, orders, organizations, payments, paymentWebhookEvents, users, manualPaymentMethodSchema } from "../../shared/schema";
+import { applyPayment, createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, refreshInvoiceStatus } from "../invoicesService";
+import { getInvoiceListReminderInfo, getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
+import { runInvoiceReminderJob, sendManualInvoiceReminder } from "../invoiceReminderJob";
+import { updateInvoiceReminderSettingsSchema } from "../../shared/schema";
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
 import { getValidAccessTokenForOrganization, syncSingleInvoiceToQuickBooksForOrganization, syncSinglePaymentToQuickBooksForOrganization } from "../quickbooksService";
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "../../shared/rollups/invoicePaymentRollup";
@@ -11,6 +14,7 @@ import { generateInvoicePdfBytes } from "../services/invoicePdf";
 import { z } from "zod";
 import { integrationConnections } from "../../shared/schema";
 import { resolveQuickBooksPreferencesFromOrgPreferences, type QuickBooksSyncPolicy } from "../../shared/quickBooksPreferences";
+import { normalizeInvoiceAccountingDisplay, normalizeQuickBooksLineItemsSnapshot } from "../../shared/invoiceAccountingDisplay";
 import { emailService } from "../emailService";
 import { jobs } from "../../shared/schema";
 import { storage } from "../storage";
@@ -26,6 +30,44 @@ function getRequestOrganizationId(req: any): string | undefined {
 
 function paymentsDebugLogsEnabled(): boolean {
   return String(process.env.PAYMENTS_DEBUG_LOGS || '').trim() === '1';
+}
+
+const IMPORTED_QB_PAYMENT_RECONCILIATION_MESSAGE = 'Payments for imported QuickBooks invoices should be reconciled from QuickBooks until payment sync is enabled.';
+
+function isImportedQuickBooksInvoice(invoice: Record<string, any> | null | undefined): boolean {
+  return String(invoice?.importSource || '').trim().toLowerCase() === 'quickbooks';
+}
+
+function toInvoiceAccountingPayments(paymentRows: Array<Record<string, any>> | undefined) {
+  return (paymentRows || []).map((payment) => ({
+    id: payment.id,
+    status: payment.status,
+    amountCents: Number(payment.amountCents || 0),
+    syncStatus: payment.syncStatus,
+    externalAccountingId: payment.externalAccountingId,
+    qbReconciledAt: payment.qbReconciledAt,
+  }));
+}
+
+function withNormalizedInvoiceDisplay<T extends Record<string, any>>(invoice: T, paymentRows?: Array<Record<string, any>>) {
+  return {
+    ...invoice,
+    ...normalizeInvoiceAccountingDisplay({
+      ...invoice,
+      payments: paymentRows ? toInvoiceAccountingPayments(paymentRows) : undefined,
+    }),
+  };
+}
+
+function getImportedQuickBooksPaymentBlockReason(invoice: Record<string, any>, paymentRows: Array<Record<string, any>>) {
+  if (!isImportedQuickBooksInvoice(invoice)) return null;
+
+  const normalized = withNormalizedInvoiceDisplay(invoice, paymentRows) as any;
+  if (Boolean(invoice.isHistorical)) return 'Historical imported QuickBooks invoices cannot accept payments.';
+  if (!String(invoice.qbInvoiceId || '').trim()) return 'Imported QuickBooks invoice is missing its QuickBooks Invoice ID.';
+  if (String(invoice.status || '').trim().toLowerCase() === 'void') return 'Cannot pay a void invoice';
+  if (Number(normalized.displayRemainingCents || 0) <= 0) return 'Invoice is already paid';
+  return null;
 }
 
 async function getQuickBooksSyncPolicyForOrganization(organizationId: string): Promise<QuickBooksSyncPolicy> {
@@ -94,9 +136,10 @@ export async function registerMvpInvoicingRoutes(
   deps: {
     isAuthenticated: any;
     tenantContext: any;
+    isAdmin?: any;
   }
 ) {
-  const { isAuthenticated, tenantContext } = deps;
+  const { isAuthenticated, tenantContext, isAdmin } = deps;
 
   // ------------------------------------------------------------
   // Stripe: Create PaymentIntent for invoice (full payment only)
@@ -130,21 +173,28 @@ export async function registerMvpInvoicingRoutes(
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ success: false, error: "Invoice not found" });
 
-      const status = String(inv.status || '').toLowerCase();
-      if (status === 'void') return res.status(400).json({ success: false, error: "Cannot pay a void invoice" });
-
       const paymentRows = await db
         .select()
         .from(payments)
         .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)))
         .orderBy(desc(payments.createdAt));
 
-      const rollup = computeInvoicePaymentRollup({
-        invoiceTotalCents: Number(inv.totalCents || 0),
-        payments: paymentRows.map((p: any) => ({ id: p.id, status: String(p.status || 'succeeded'), amountCents: Number(p.amountCents || 0) })),
-      });
+      const importedPaymentBlockReason = getImportedQuickBooksPaymentBlockReason(inv, paymentRows as any);
+      if (importedPaymentBlockReason) {
+        return res.status(409).json({
+          success: false,
+          error: importedPaymentBlockReason,
+          code: 'IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED',
+        });
+      }
 
-      if (rollup.amountDueCents <= 0) return res.status(400).json({ success: false, error: "Invoice is already paid" });
+      const status = String(inv.status || '').toLowerCase();
+      if (status === 'void') return res.status(400).json({ success: false, error: "Cannot pay a void invoice" });
+
+      const normalizedInvoice = withNormalizedInvoiceDisplay(inv, paymentRows as any) as any;
+      const amountDueCents = Number(normalizedInvoice.displayRemainingCents || 0);
+
+      if (amountDueCents <= 0) return res.status(400).json({ success: false, error: "Invoice is already paid" });
 
       const currency = String(inv.currency || 'USD');
 
@@ -158,7 +208,7 @@ export async function registerMvpInvoicingRoutes(
             eq(payments.invoiceId, inv.id),
             eq(payments.provider, 'stripe'),
             eq(payments.status, 'pending'),
-            eq(payments.amountCents, rollup.amountDueCents)
+            eq(payments.amountCents, amountDueCents)
           )
         )
         .orderBy(desc(payments.createdAt))
@@ -180,7 +230,7 @@ export async function registerMvpInvoicingRoutes(
                 invoiceId: inv.id,
                 paymentId: String((existingPending as any).id),
                 stripePaymentIntentId: existingIntentId,
-                amountCents: rollup.amountDueCents,
+                amountCents: amountDueCents,
               });
 
               const now = new Date();
@@ -200,7 +250,7 @@ export async function registerMvpInvoicingRoutes(
                 invoiceId: inv.id,
                 paymentId: String((existingPending as any).id),
                 stripePaymentIntentId: existingIntentId,
-                amountCents: rollup.amountDueCents,
+                amountCents: amountDueCents,
               });
 
               return res.json({
@@ -243,12 +293,12 @@ export async function registerMvpInvoicingRoutes(
         }
       }
 
-      const idempotencyKey = `${organizationId}:${inv.id}:${rollup.amountDueCents}`;
+      const idempotencyKey = `${organizationId}:${inv.id}:${amountDueCents}`;
 
       const stripe = getStripeClient();
       const pi = await stripe.paymentIntents.create(
         {
-          amount: rollup.amountDueCents,
+          amount: amountDueCents,
           currency: currency.toLowerCase(),
           description: `Invoice #${inv.invoiceNumber}`,
           automatic_payment_methods: { enabled: true },
@@ -256,6 +306,8 @@ export async function registerMvpInvoicingRoutes(
             organizationId,
             invoiceId: inv.id,
             stripeAccountId,
+            importedQuickBooksInvoice: isImportedQuickBooksInvoice(inv) ? 'true' : 'false',
+            qbInvoiceId: inv.qbInvoiceId || null,
           },
         },
         {
@@ -283,7 +335,7 @@ export async function registerMvpInvoicingRoutes(
           invoiceId: inv.id,
           paymentId: String((existingByIntent as any).id),
           stripePaymentIntentId: paymentIntentId,
-          amountCents: rollup.amountDueCents,
+          amountCents: amountDueCents,
         });
         return res.json({ success: true, data: { clientSecret, paymentId: (existingByIntent as any).id } });
       }
@@ -296,14 +348,16 @@ export async function registerMvpInvoicingRoutes(
           invoiceId: inv.id,
           provider: 'stripe',
           status: 'pending',
-          amount: (rollup.amountDueCents / 100).toFixed(2),
-          amountCents: rollup.amountDueCents,
+          amount: (amountDueCents / 100).toFixed(2),
+          amountCents: amountDueCents,
           currency,
           stripePaymentIntentId: paymentIntentId,
           metadata: {
             invoiceId: inv.id,
             organizationId,
             stripeAccountId,
+            importedQuickBooksInvoice: isImportedQuickBooksInvoice(inv),
+            qbInvoiceId: inv.qbInvoiceId || null,
           },
           method: 'credit_card',
           appliedAt: now,
@@ -333,7 +387,7 @@ export async function registerMvpInvoicingRoutes(
             invoiceId: inv.id,
             paymentId: String((existingAfterConflict as any).id),
             stripePaymentIntentId: paymentIntentId,
-            amountCents: rollup.amountDueCents,
+            amountCents: amountDueCents,
           });
           return res.json({ success: true, data: { clientSecret, paymentId: (existingAfterConflict as any).id } });
         }
@@ -347,7 +401,7 @@ export async function registerMvpInvoicingRoutes(
         invoiceId: inv.id,
         paymentId: String(payment.id),
         stripePaymentIntentId: paymentIntentId,
-        amountCents: rollup.amountDueCents,
+        amountCents: amountDueCents,
       });
 
       try {
@@ -360,7 +414,7 @@ export async function registerMvpInvoicingRoutes(
           entityId: inv.id,
           entityName: String(inv.invoiceNumber),
           description: 'Stripe PaymentIntent created',
-          newValues: { provider: 'stripe', stripePaymentIntentId: paymentIntentId, amountCents: rollup.amountDueCents } as any,
+          newValues: { provider: 'stripe', stripePaymentIntentId: paymentIntentId, amountCents: amountDueCents } as any,
           createdAt: now,
         } as any);
       } catch {}
@@ -392,6 +446,14 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ success: false, error: "Invoice not found" });
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ success: false, error: "Invoice not found" });
+      const importedPaymentBlockReason = getImportedQuickBooksPaymentBlockReason(inv, rel.payments as any);
+      if (importedPaymentBlockReason) {
+        return res.status(409).json({
+          success: false,
+          error: importedPaymentBlockReason,
+          code: 'IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED',
+        });
+      }
 
       const { paymentIntentId } = req.body;
       if (!paymentIntentId || typeof paymentIntentId !== 'string') {
@@ -678,6 +740,13 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ error: 'Invoice not found' });
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ error: 'Invoice not found' });
+      const importedPaymentBlockReason = getImportedQuickBooksPaymentBlockReason(inv, rel.payments as any);
+      if (importedPaymentBlockReason) {
+        return res.status(409).json({
+          error: importedPaymentBlockReason,
+          code: 'IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED',
+        });
+      }
 
       const status = String(inv.status || '').toLowerCase();
       if (status === 'void') return res.status(400).json({ error: 'Cannot record payment on a void invoice' });
@@ -709,6 +778,8 @@ export async function registerMvpInvoicingRoutes(
           succeededAt: appliedAt,
           metadata: {
             ...(body.reference ? { reference: body.reference } : {}),
+            importedQuickBooksInvoice: isImportedQuickBooksInvoice(inv),
+            qbInvoiceId: inv.qbInvoiceId || null,
           },
           createdByUserId: userId,
           syncStatus: 'pending',
@@ -1177,7 +1248,45 @@ export async function registerMvpInvoicingRoutes(
         .offset(offset)
         .orderBy(desc(invoices.issueDate));
 
-      res.json({ success: true, data: rows });
+      const emailStatuses = await getInvoiceEmailStatuses(
+        rows.map((row) => ({ id: row.id, updatedAt: row.updatedAt })),
+        organizationId,
+      );
+
+      // Batch-fetch reminder list info — shares settings fetch with reminder preview
+      const orgSettings = await getInvoiceReminderSettingsForOrg(organizationId);
+      const reminderInfoMap = await getInvoiceListReminderInfo(
+        rows.map((row) => ({
+          id: row.id,
+          invoiceNumber: row.invoiceNumber,
+          status: row.status,
+          dueDate: row.dueDate,
+          totalCents: row.totalCents,
+          balanceDue: (row as any).balanceDue ?? null,
+          customerName: (row as any).customerName ?? '',
+          recipientEmail: null, // not needed for list status derivation
+        })),
+        organizationId,
+        orgSettings,
+      );
+
+      res.json({
+        success: true,
+        data: rows.map((row) => withNormalizedInvoiceDisplay({
+          ...row,
+          ...(emailStatuses.get(row.id) || {
+            lastSentAt: null,
+            lastInvoiceEmailRecipient: null,
+            emailStatus: 'not_sent' as const,
+          }),
+          ...(reminderInfoMap.get(row.id) || {
+            reminderStatus: 'not_due' as const,
+            lastReminderSentAt: null,
+            lastReminderRecipient: null,
+            nextReminderDueAt: null,
+          }),
+        })),
+      });
     } catch (error: any) {
       console.error("Error fetching invoices:", error);
       res.status(500).json({ error: error.message || "Failed to fetch invoices" });
@@ -1193,7 +1302,47 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ error: "Invoice not found" });
       if ((rel.invoice as any).organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
 
-      res.json({ success: true, data: rel });
+      const emailTracking = await getInvoiceEmailStatus(req.params.id);
+      const normalizedInvoice = withNormalizedInvoiceDisplay({ ...(rel.invoice as any), ...emailTracking }, rel.payments as any);
+      const normalizedQuickBooksLines = normalizeQuickBooksLineItemsSnapshot((rel.invoice as any).qbLineItemsSnapshot);
+
+      if (normalizedInvoice.isImportedFromQuickBooks) {
+        try {
+          const userId = getUserId(req.user);
+          const userName = String(req.user?.email || req.user?.claims?.email || req.user?.name || '').trim() || null;
+          await storage.createAuditLog(organizationId, {
+            userId,
+            userName,
+            actionType: 'quickbooks_invoice_detail_normalized',
+            entityType: 'invoice',
+            entityId: String((rel.invoice as any).id || req.params.id),
+            entityName: String((rel.invoice as any).qbDocNumber || (rel.invoice as any).invoiceNumber || req.params.id),
+            description: 'Normalized QuickBooks invoice detail for display',
+            newValues: {
+              displayStatus: normalizedInvoice.displayStatus,
+              displayPaid: normalizedInvoice.displayPaid,
+              displayRemaining: normalizedInvoice.displayRemaining,
+              isHistorical: normalizedInvoice.isHistorical,
+              accountingSource: normalizedInvoice.accountingSource,
+              importedQuickBooksLineItemCount: normalizedQuickBooksLines.lines.length,
+            },
+            ipAddress: req.ip ?? null,
+            userAgent: req.get('user-agent') || null,
+          });
+        } catch (auditError: any) {
+          console.error('[InvoiceDetail] quickbooks_invoice_detail_normalized audit failed:', auditError?.message || auditError);
+        }
+      }
+
+      res.json({
+        success: true,
+        data: {
+          ...rel,
+          invoice: normalizedInvoice,
+          importedQuickBooksLineItems: normalizedQuickBooksLines.lines,
+          importedQuickBooksLineItemsUnavailableMessage: normalizedQuickBooksLines.unavailableMessage,
+        },
+      });
     } catch (error: any) {
       console.error("Error fetching invoice:", error);
       res.status(500).json({ error: error.message || "Failed to fetch invoice" });
@@ -1647,6 +1796,13 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ error: "Invoice not found" });
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
+      const importedPaymentBlockReason = getImportedQuickBooksPaymentBlockReason(inv, rel.payments as any);
+      if (importedPaymentBlockReason) {
+        return res.status(409).json({
+          error: importedPaymentBlockReason,
+          code: 'IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED',
+        });
+      }
 
       const { amountCents, amount, method, note, notes } = req.body || {};
       const amt = amountCents !== undefined ? Number(amountCents) / 100 : Number(amount);
@@ -1694,6 +1850,7 @@ export async function registerMvpInvoicingRoutes(
       if (existing.organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
 
       const existingStatus = String(existing.status || "").toLowerCase();
+      const isImportedQuickBooks = isImportedQuickBooksInvoice(existing);
       const isPaid = existingStatus === "paid";
       const isVoid = existingStatus === "void";
       const balanceDue = Number(existing.balanceDue || Number(existing.total) - Number(existing.amountPaid));
@@ -1717,9 +1874,14 @@ export async function registerMvpInvoicingRoutes(
 
       // Customer/customer-visible identity changes
       if (typeof req.body.customerId === "string" && req.body.customerId && req.body.customerId !== existing.customerId) {
+        if (isImportedQuickBooks) return res.status(400).json({ error: "Imported QuickBooks invoices are read-only for customer/accounting fields" });
         if (isPaid) return res.status(400).json({ error: "Paid invoices are locked" });
         if (isVoid) return res.status(400).json({ error: "Void invoices are locked" });
         updates.customerId = req.body.customerId;
+      }
+
+      if (isImportedQuickBooks && (typeof req.body.terms === "string" || typeof req.body.customDueDate === "string")) {
+        return res.status(400).json({ error: "Imported QuickBooks invoices are read-only for customer/accounting fields" });
       }
 
       const financialUpdates: any = {};
@@ -1754,6 +1916,7 @@ export async function registerMvpInvoicingRoutes(
       }
 
       if (hasFinancialBody) {
+        if (isImportedQuickBooks) return res.status(400).json({ error: "Imported QuickBooks invoices are read-only for customer/accounting fields" });
         if (isPaid) return res.status(400).json({ error: "Paid invoices are locked" });
         if (isVoid) return res.status(400).json({ error: "Void invoices are locked" });
 
@@ -1959,30 +2122,52 @@ export async function registerMvpInvoicingRoutes(
 
       // Send email via email service
       console.log(`[Invoice Send] Sending email to ${recipientEmail} with PDF attachment...`);
-      await emailService.sendEmail(organizationId, {
-        to: recipientEmail,
-        subject: `Invoice #${invoiceNumber} from ${companyName}`,
-        html: emailHtml,
-        attachments: [
-          {
-            filename,
-            content: pdfBase64,
-            encoding: 'base64',
-            contentType: 'application/pdf',
-          },
-        ] as any,
-      });
+      const now = new Date();
+      let messageId: string | null = null;
+      try {
+        messageId = await emailService.sendEmail(organizationId, {
+          to: recipientEmail,
+          subject: `Invoice #${invoiceNumber} from ${companyName}`,
+          html: emailHtml,
+          attachments: [
+            {
+              filename,
+              content: pdfBase64,
+              encoding: 'base64',
+              contentType: 'application/pdf',
+            },
+          ] as any,
+        });
+
+        await createInvoiceEmailLog({
+          organizationId,
+          invoiceId: id,
+          recipientEmail,
+          status: 'sent',
+          type: 'invoice_send',
+          messageId,
+          sentAt: now,
+        });
+      } catch (sendError: any) {
+        try {
+          await createInvoiceEmailLog({
+            organizationId,
+            invoiceId: id,
+            recipientEmail,
+            status: 'failed',
+            type: 'invoice_send',
+            messageId: null,
+            sentAt: now,
+          });
+        } catch (logError) {
+          console.error('[Invoice Send] Failed to write failed email log:', logError);
+        }
+        throw sendError;
+      }
 
       console.log(`[Invoice Send] ✅ Email sent successfully to ${recipientEmail}`);
 
-      // Mark invoice as sent
-      const now = new Date();
       const invoiceVersion = Number(inv.invoiceVersion || 1);
-
-      await db
-        .update(invoices)
-        .set({ lastSentAt: now, lastSentVia: 'email', lastSentVersion: invoiceVersion, updatedAt: now } as any)
-        .where(eq(invoices.id, id));
 
       // Audit log
       try {
@@ -1995,7 +2180,7 @@ export async function registerMvpInvoicingRoutes(
           entityId: id,
           entityName: String(inv.invoiceNumber),
           description: `Invoice sent via email to ${recipientEmail}`,
-          newValues: { via: 'email', invoiceVersion, recipientEmail } as any,
+          newValues: { via: 'email', invoiceVersion, recipientEmail, messageId } as any,
           createdAt: now,
         } as any);
       } catch (auditError) {
@@ -2045,11 +2230,6 @@ export async function registerMvpInvoicingRoutes(
 
       const now = new Date();
       const invoiceVersion = Number(inv.invoiceVersion || 1);
-
-      await db
-        .update(invoices)
-        .set({ lastSentAt: now, lastSentVia: via, lastSentVersion: invoiceVersion, updatedAt: now } as any)
-        .where(eq(invoices.id, id));
 
       try {
         await db.insert(auditLogs).values({
@@ -2172,6 +2352,174 @@ export async function registerMvpInvoicingRoutes(
     } catch (error) {
       console.error('Error deleting payment:', error);
       res.status(500).json({ error: 'Failed to delete payment' });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Invoice reminder settings
+  // ---------------------------------------------------------------------------
+
+  // GET /api/invoices/reminder-settings
+  app.get("/api/invoices/reminder-settings", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const settings = await getInvoiceReminderSettingsForOrg(organizationId);
+      return res.json({ success: true, data: settings ?? null });
+    } catch (error) {
+      console.error("Error fetching reminder settings:", error);
+      return res.status(500).json({ success: false, error: "Failed to fetch reminder settings" });
+    }
+  });
+
+  // PUT /api/invoices/reminder-settings
+  app.put("/api/invoices/reminder-settings", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const parsed = updateInvoiceReminderSettingsSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ success: false, error: "Invalid settings payload", details: parsed.error.flatten() });
+      }
+
+      const updated = await upsertInvoiceReminderSettingsForOrg(organizationId, parsed.data);
+      return res.json({ success: true, data: updated });
+    } catch (error) {
+      console.error("Error saving reminder settings:", error);
+      return res.status(500).json({ success: false, error: "Failed to save reminder settings" });
+    }
+  });
+
+  // GET /api/invoices/reminder-preview
+  // Read-only. Shows eligibility per open invoice. No emails sent. No mutations.
+  app.get("/api/invoices/reminder-preview", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const preview = await getInvoiceReminderPreviewForOrg(organizationId);
+      return res.json({ success: true, data: preview });
+    } catch (error) {
+      console.error("Error generating reminder preview:", error);
+      return res.status(500).json({ success: false, error: "Failed to generate reminder preview" });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Admin: Manual reminder job trigger (testing / ops use only)
+  // ---------------------------------------------------------------------------
+
+  // POST /api/invoices/reminders/run
+  // Runs the reminder job once for the current organization.
+  // Requires admin role. Returns the job summary.
+  // Do not expose a frontend button for this unless a safe admin tools area exists.
+  const adminMiddlewares = isAdmin
+    ? [isAuthenticated, tenantContext, isAdmin]
+    : [isAuthenticated, tenantContext];
+
+  app.post("/api/invoices/reminders/run", ...adminMiddlewares, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      console.log(`[InvoiceReminders] Manual run triggered by user ${getUserId(req.user)} for org ${organizationId}`);
+
+      const summary = await runInvoiceReminderJob();
+      return res.json({ success: true, data: summary });
+    } catch (error: any) {
+      console.error("Error running reminder job:", error);
+      return res.status(500).json({ success: false, error: "Reminder job failed", details: error?.message });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // POST /api/invoices/:id/send-reminder
+  // Manually send a reminder for a single invoice.
+  // Same auth as invoice send. Returns success, lastReminderSentAt, reminderCount.
+  // ---------------------------------------------------------------------------
+  app.post("/api/invoices/:id/send-reminder", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const invoiceId = req.params.id;
+      const userId = getUserId(req.user);
+      const userName = `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email || 'Unknown';
+
+      if (!userId) return res.status(401).json({ success: false, error: "Missing user context" });
+
+      console.log(`[SendReminder] User ${userId} sending manual reminder for invoice ${invoiceId} org ${organizationId}`);
+
+      const result = await sendManualInvoiceReminder({
+        invoiceId,
+        organizationId,
+        userId,
+        userName,
+      });
+
+      if (!result.success) {
+        // Return 409 for idempotency blocks or business-rule blocks; 400 for other failures
+        const status = result.message?.includes('recently sent') ? 409 : 400;
+        return res.status(status).json({ success: false, error: result.message });
+      }
+
+      return res.json({
+        success: true,
+        lastReminderSentAt: result.lastReminderSentAt,
+        reminderCount: result.reminderCount,
+      });
+    } catch (error: any) {
+      console.error("[SendReminder] Unexpected error:", error);
+      return res.status(500).json({ success: false, error: "Failed to send reminder" });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/invoices/:id/reminder-history
+  // Returns all reminder log entries for an invoice (sent + failed), newest first.
+  // ---------------------------------------------------------------------------
+  app.get("/api/invoices/:id/reminder-history", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const invoiceId = req.params.id;
+
+      // Verify the invoice belongs to this org
+      const [inv] = await db
+        .select({ id: invoices.id })
+        .from(invoices)
+        .where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, organizationId)))
+        .limit(1);
+
+      if (!inv) return res.status(404).json({ success: false, error: "Invoice not found" });
+
+      const logs = await db
+        .select({
+          id: invoiceReminderLogs.id,
+          sentAt: invoiceReminderLogs.sentAt,
+          recipientEmail: invoiceReminderLogs.recipientEmail,
+          status: invoiceReminderLogs.status,
+          reminderNumber: invoiceReminderLogs.reminderNumber,
+          messageId: invoiceReminderLogs.messageId,
+          failureReason: invoiceReminderLogs.failureReason,
+        })
+        .from(invoiceReminderLogs)
+        .where(
+          and(
+            eq(invoiceReminderLogs.invoiceId, invoiceId),
+            eq(invoiceReminderLogs.organizationId, organizationId),
+          ),
+        )
+        .orderBy(desc(invoiceReminderLogs.sentAt))
+        .limit(50);
+
+      return res.json({ success: true, data: logs });
+    } catch (error: any) {
+      console.error("[ReminderHistory] Error:", error);
+      return res.status(500).json({ success: false, error: "Failed to fetch reminder history" });
     }
   });
 }

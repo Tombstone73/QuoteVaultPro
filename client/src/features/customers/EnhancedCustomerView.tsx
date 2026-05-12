@@ -76,6 +76,7 @@ import { useInvoices } from "@/hooks/useInvoices";
 import { ROUTES } from "@/config/routes";
 import { cn } from "@/lib/utils";
 import BackNavControls from "@/components/BackNavControls";
+import { ContactFlagPill } from "@/components/ContactFlagPill";
 
 // ============================================================
 // TYPE DEFINITIONS
@@ -625,11 +626,12 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
             {contacts.map((contact) => (
               <div
                 key={contact.id}
-                className="flex items-center justify-between p-3 rounded-titan-lg bg-titan-bg-card-elevated hover:bg-titan-bg-table-row transition-colors"
+                className="flex items-center justify-between p-3 rounded-titan-lg bg-titan-bg-card-elevated hover:bg-titan-bg-table-row transition-colors cursor-pointer"
+                onClick={() => navigate(ROUTES.contacts.detail(contact.id))}
               >
                 {/* Contact Info */}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="text-titan-sm font-medium text-titan-text-primary">
                       {contact.firstName} {contact.lastName}
                     </span>
@@ -638,6 +640,9 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
                         Primary
                       </span>
                     )}
+                    {contact.flags?.map((flag) => (
+                      <ContactFlagPill key={flag} flag={flag} />
+                    ))}
                   </div>
                   <div className="flex items-center gap-3 mt-0.5 text-titan-xs text-titan-text-muted">
                     {contact.title && <span>{contact.title}</span>}
@@ -661,6 +666,7 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
                       variant="ghost"
                       size="icon"
                       className="h-7 w-7 text-titan-text-muted hover:text-titan-text-primary hover:bg-titan-bg-card"
+                      onClick={(e) => e.stopPropagation()}
                     >
                       <MoreHorizontal className="w-4 h-4" />
                     </Button>
@@ -1852,11 +1858,11 @@ function InvoicesTable({
                 {formatDate(inv.createdAt)}
               </td>
               <td className="px-4 py-3 text-titan-sm font-medium text-titan-text-primary">
-                {formatCurrency(inv.total)}
+                {formatCurrency(inv.displayTotal || inv.total)}
               </td>
               {!compact && (
                 <td className="px-4 py-3 text-titan-sm font-medium text-titan-warning">
-                  {formatCurrency(inv.balanceDue || inv.total)}
+                  {formatCurrency(inv.displayRemaining || inv.balanceDue || inv.total)}
                 </td>
               )}
               <td className="px-4 py-3">
@@ -1866,7 +1872,7 @@ function InvoicesTable({
                     getStatusStyle(inv.status)
                   )}
                 >
-                  {formatStatusLabel(inv.status)}
+                  {inv.displayStatus || formatStatusLabel(inv.status)}
                 </span>
               </td>
               <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>

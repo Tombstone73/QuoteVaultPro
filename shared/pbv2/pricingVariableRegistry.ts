@@ -29,20 +29,36 @@ export interface PricingVariableDefinition {
 
 export const PBV2_PRICING_VARIABLES: PricingVariableDefinition[] = [
   {
-    key: "width",
+    key: "w",
     label: "Width",
     description: "Ordered item width input in inches.",
     example: 24,
     category: "Dimensions",
-    aliases: ["w", "ordered_width"],
+    aliases: ["width"],
   },
   {
-    key: "height",
+    key: "ordered_width",
+    label: "Ordered Width",
+    description: "Explicit ordered width input before finished-size trim allowances are applied.",
+    example: 24,
+    category: "Dimensions",
+    aliases: [],
+  },
+  {
+    key: "h",
     label: "Height",
     description: "Ordered item height input in inches.",
     example: 36,
     category: "Dimensions",
-    aliases: ["h", "ordered_height"],
+    aliases: ["height"],
+  },
+  {
+    key: "ordered_height",
+    label: "Ordered Height",
+    description: "Explicit ordered height input before finished-size trim allowances are applied.",
+    example: 36,
+    category: "Dimensions",
+    aliases: [],
   },
   {
     key: "trim_allowance_x",
@@ -77,12 +93,12 @@ export const PBV2_PRICING_VARIABLES: PricingVariableDefinition[] = [
     aliases: ["fh"],
   },
   {
-    key: "quantity",
+    key: "q",
     label: "Quantity",
     description: "Number of pieces being priced.",
     example: 1,
     category: "Quantity",
-    aliases: ["q"],
+    aliases: ["quantity"],
   },
   {
     key: "base_price",

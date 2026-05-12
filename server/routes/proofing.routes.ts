@@ -25,9 +25,12 @@ import { fromZodError } from "zod-validation-error";
 import { proofQueueSliceSchema } from "@shared/proofing";
 import { getRequestOrganizationId } from "../tenantContext";
 import {
+  cancelProofVersion,
   createAndSendProofVersion,
   createGeneratedDraftProofVersion,
   createLineItemProofVersion,
+  generateLineItemArtworkPreviewDerivative,
+  INCOMPLETE_PROOF_MESSAGE,
   listProofingQueue,
   markProofVersionSent,
   recordManualProofApprovalOverride,
@@ -170,6 +173,25 @@ export function registerProofingRoutes(
     }
   });
 
+  app.post("/api/proofing/line-items/:lineItemId/generate-preview", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const result = await db.transaction(async (tx) => generateLineItemArtworkPreviewDerivative(tx, {
+        organizationId,
+        lineItemId: String(req.params.lineItemId),
+      }));
+
+      return res.json({ success: true, data: result, message: result.message });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error generating artwork preview derivative:", error);
+      return res.status(status).json({ success: false, message: error?.message || "Failed to generate artwork preview derivative" });
+    }
+  });
+
   app.post("/api/proofing/line-item/:lineItemId/versions", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -215,6 +237,7 @@ export function registerProofingRoutes(
             proofFileId: parsed.data.proofFileId,
             createdByUserId: userId,
             internalNotes: parsed.data.internalNotes ?? null,
+            sourceAction: "proof_file_uploaded",
           });
           proofing = await resolveLineItemProofingTruth(tx, {
             organizationId,
@@ -381,6 +404,9 @@ export function registerProofingRoutes(
     } catch (error: any) {
       const status = error?.statusCode || 500;
       console.error("[Proofing] Error creating and sending proof:", error);
+      if (status === 400 && error?.message === INCOMPLETE_PROOF_MESSAGE) {
+        return res.status(400).json({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
+      }
       return res.status(status).json({ error: error?.message || "Failed to create and send proof" });
     }
   });
@@ -493,6 +519,9 @@ export function registerProofingRoutes(
     } catch (error: any) {
       const status = error?.statusCode || 500;
       console.error("[Proofing] Error sending proof version for review:", error);
+      if (status === 400 && error?.message === INCOMPLETE_PROOF_MESSAGE) {
+        return res.status(400).json({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
+      }
       return res.status(status).json({ error: error?.message || "Failed to send proof version for review" });
     }
   });
@@ -604,7 +633,78 @@ export function registerProofingRoutes(
     } catch (error: any) {
       const status = error?.statusCode || 500;
       console.error("[Proofing] Error resending proof notification:", error);
+      if (status === 400 && error?.message === INCOMPLETE_PROOF_MESSAGE) {
+        return res.status(400).json({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
+      }
       return res.status(status).json({ error: error?.message || "Failed to resend proof notification" });
+    }
+  });
+
+  app.post("/api/proofing/versions/:proofVersionId/cancel", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.object({
+        reason: z.string().optional().nullable(),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const result = await db.transaction(async (tx) => {
+        const cancelResult = await cancelProofVersion(tx, {
+          organizationId,
+          proofVersionId: String(req.params.proofVersionId),
+          actorUserId: userId,
+          reason: parsed.data.reason ?? null,
+        });
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "UPDATE",
+          entityType: "line_item_proof_version",
+          entityId: cancelResult.proofVersion.id,
+          entityName: `Proof v${cancelResult.proofVersion.versionNumber}`,
+          description: `Cancelled proof version ${cancelResult.proofVersion.versionNumber}`,
+          oldValues: {
+            status: "awaiting_response",
+          },
+          newValues: {
+            status: cancelResult.proofVersion.status,
+            orderId: cancelResult.lineItem.orderId,
+            lineItemId: cancelResult.lineItem.lineItemId,
+            reason: parsed.data.reason ?? null,
+            workflowState: cancelResult.workflowTransition?.toState ?? cancelResult.lineItem.workflowState,
+          },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        const proofing = await resolveLineItemProofingTruth(tx, {
+          organizationId,
+          lineItemId: cancelResult.lineItem.lineItemId,
+        });
+
+        return {
+          proofId: cancelResult.lineItem.lineItemId,
+          versionId: cancelResult.proofVersion.id,
+          status: cancelResult.proofVersion.status,
+          proofing,
+        };
+      });
+
+      return res.json({ success: true, data: result, message: "Proof version cancelled." });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error cancelling proof version:", error);
+      return res.status(status).json({ success: false, message: error?.message || "Failed to cancel proof version" });
     }
   });
 

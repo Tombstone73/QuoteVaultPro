@@ -78,6 +78,25 @@ type PricingPreviewResponse = {
       finished_height?: number;
     };
     pricing?: { basePrice: number; optionsPrice: number; unitPrice: number; totalPrice: number };
+    runtimeSelectionContext?: {
+      selectedChoices?: Record<string, string>;
+      resolvedChoices?: Record<string, unknown>;
+      appliedPricingOverrides?: Array<Record<string, unknown>>;
+      hiddenSelectionWarnings?: Array<{ selectionKey?: string; choiceValue?: string; reason?: string }>;
+    };
+    weight?: {
+      baseWeightInput?: number | string | null;
+      baseWeightSource?: "meta.baseWeightOz" | "shippingConfig.baseWeight" | "none";
+      baseWeightOz?: number | null;
+      shippingConfigBaseWeight?: number | string | null;
+      shippingConfigWeightUnit?: string | null;
+      shippingConfigWeightBasis?: string | null;
+      selectedWeightFields?: Array<{ label: string; oz: number }>;
+      computedShippingWeightOz?: number | null;
+      warningCode?: string;
+      errorCode?: string;
+      errorMessage?: string;
+    };
   };
 };
 
@@ -91,6 +110,7 @@ type PricingPreviewApiResponse = {
 
 type PreviewOption = {
   optionId: string;
+  selectionKey: string;
   optionName: string;
   inputType: string;
   choices: Array<{ value: string; label: string }>;
@@ -155,6 +175,7 @@ function buildPreviewGroups(treeJson: unknown | null): PreviewGroup[] {
 
           return {
             optionId,
+            selectionKey: String(node?.input?.selectionKey ?? node?.key ?? optionId),
             optionName: optionMeta?.name || String(node?.label || "Option"),
             inputType,
             choices,
@@ -217,16 +238,30 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   }, [treeJson, pricingV2Override]);
 
   const previewGroups = useMemo(() => buildPreviewGroups(treeForPreview), [treeForPreview]);
+  const previewSelectionKeys = useMemo(
+    () => new Set(previewGroups.flatMap((group) => group.options.map((option) => option.selectionKey))),
+    [previewGroups],
+  );
+  const previewOptionIdToSelectionKey = useMemo(() => {
+    const next = new Map<string, string>();
+    previewGroups.forEach((group) => {
+      group.options.forEach((option) => {
+        next.set(option.optionId, option.selectionKey);
+      });
+    });
+    return next;
+  }, [previewGroups]);
 
   const selectionPayload = useMemo(() => {
     const selected: Record<string, { value: string | string[] | boolean }> = {};
-    for (const [optionId, value] of Object.entries(previewState.selectedOptionValues)) {
+    for (const [selectionKey, value] of Object.entries(previewState.selectedOptionValues)) {
+      if (!previewSelectionKeys.has(selectionKey)) continue;
       if (Array.isArray(value) && value.length === 0) continue;
       if (typeof value === "string" && value.length === 0) continue;
-      selected[optionId] = { value };
+      selected[selectionKey] = { value };
     }
     return selected;
-  }, [previewState.selectedOptionValues]);
+  }, [previewSelectionKeys, previewState.selectedOptionValues]);
 
   const requestSignature = useMemo(
     () =>
@@ -396,6 +431,66 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
       return a[0].localeCompare(b[0]);
     });
   }, [formulaDebug]);
+  const previewMeta = (treeForPreview as any)?.meta && typeof (treeForPreview as any).meta === "object" ? (treeForPreview as any).meta : {};
+  const previewShippingConfig = previewMeta?.shippingConfig && typeof previewMeta.shippingConfig === "object" ? previewMeta.shippingConfig : null;
+  const weightDebug = result?.debug?.weight ?? formulaDebug?.weight ?? null;
+  const weightFinding = findings.find((finding) => finding.code === "PBV2_W_WEIGHT_MISSING" || finding.code === "PBV2_E_WEIGHT_NEGATIVE") ?? null;
+  const shouldShowWeightDebug = Boolean(weightDebug || previewShippingConfig || previewMeta?.baseWeightOz != null || weightFinding);
+  const selectedWeightFields = Array.isArray(weightDebug?.selectedWeightFields) ? weightDebug.selectedWeightFields : [];
+  const runtimeSelectionDebug = formulaDebug?.runtimeSelectionContext ?? null;
+  const selectedChoiceEntries = Object.entries(runtimeSelectionDebug?.selectedChoices ?? {});
+  const appliedPricingOverrides = Array.isArray(runtimeSelectionDebug?.appliedPricingOverrides)
+    ? runtimeSelectionDebug.appliedPricingOverrides
+    : [];
+  const hiddenSelectionWarnings = Array.isArray(runtimeSelectionDebug?.hiddenSelectionWarnings)
+    ? runtimeSelectionDebug.hiddenSelectionWarnings
+    : [];
+  const hasRuntimeSelectionDebug = Boolean(
+    runtimeSelectionDebug &&
+      (selectedChoiceEntries.length > 0 || appliedPricingOverrides.length > 0 || hiddenSelectionWarnings.length > 0),
+  );
+
+  const displayDebugValue = (value: unknown) => {
+    if (value === null || typeof value === "undefined") return "—";
+    if (typeof value === "string") return value.trim().length > 0 ? value : "—";
+    if (typeof value === "number") return Number.isFinite(value) ? String(value) : "—";
+    return String(value);
+  };
+
+  const displayWeightOz = (value: unknown) => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+    return `${value.toFixed(2)} oz`;
+  };
+
+  useEffect(() => {
+    if (previewGroups.length === 0) return;
+
+    setPreviewState((prev) => {
+      const currentEntries = Object.entries(prev.selectedOptionValues);
+      if (currentEntries.length === 0) return prev;
+
+      const nextSelected: PricingPreviewState["selectedOptionValues"] = {};
+      let changed = false;
+
+      for (const [key, value] of currentEntries) {
+        if (previewSelectionKeys.has(key)) {
+          nextSelected[key] = value;
+        }
+      }
+
+      for (const [key, value] of currentEntries) {
+        if (previewSelectionKeys.has(key)) continue;
+        const selectionKey = previewOptionIdToSelectionKey.get(key);
+        if (selectionKey && !Object.prototype.hasOwnProperty.call(nextSelected, selectionKey)) {
+          nextSelected[selectionKey] = value;
+        }
+        changed = true;
+      }
+
+      if (!changed) return prev;
+      return { ...prev, selectedOptionValues: nextSelected };
+    });
+  }, [previewGroups.length, previewOptionIdToSelectionKey, previewSelectionKeys]);
 
   useEffect(() => {
     if (!treeForPreview || typeof treeForPreview !== "object") {
@@ -618,7 +713,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                         <span className="font-mono text-base text-slate-100">{billedSqftPost.toFixed(0)}</span>
                       </div>
                       <div className="flex items-center justify-between text-sm mt-1">
-                        <span className="text-slate-300">Rate used (base_price / basePricePerSqft)</span>
+                        <span className="text-slate-300">Rate used (base_price / p)</span>
                         <span className="font-mono text-slate-100">{baseRateUsed != null ? currencyFormatter.format(baseRateUsed) : "—"}</span>
                       </div>
                       <div className="text-[11px] text-slate-400 mt-1">
@@ -723,6 +818,51 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                         </div>
                       ) : null}
 
+                      {hasRuntimeSelectionDebug ? (
+                        <div className="space-y-2">
+                          <div className="text-slate-400">Runtime Selection Context</div>
+                          <div className="rounded border border-slate-700/70 bg-slate-900/40 p-2 space-y-2">
+                            <div>
+                              <div className="text-slate-500 mb-1">Selected choices</div>
+                              {selectedChoiceEntries.length === 0 ? (
+                                <div className="font-mono text-slate-500">-</div>
+                              ) : (
+                                selectedChoiceEntries.map(([selectionKey, choiceValue]) => (
+                                  <div key={selectionKey} className="flex items-center justify-between gap-2">
+                                    <span className="font-mono text-slate-400">{selectionKey}</span>
+                                    <span className="font-mono text-slate-200">{choiceValue}</span>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+
+                            <div>
+                              <div className="text-slate-500 mb-1">Applied pricing overrides</div>
+                              {appliedPricingOverrides.length === 0 ? (
+                                <div className="font-mono text-slate-500">-</div>
+                              ) : (
+                                appliedPricingOverrides.map((override, index) => (
+                                  <div key={`pricing-override-${index}`} className="font-mono text-slate-200">
+                                    {displayDebugValue(override.selectionKey)}:{displayDebugValue(override.choiceValue)} {displayDebugValue(override.mode)} {displayDebugValue(override.amount)} {displayDebugValue(override.unit)}
+                                  </div>
+                                ))
+                              )}
+                            </div>
+
+                            {hiddenSelectionWarnings.length > 0 ? (
+                              <div>
+                                <div className="text-slate-500 mb-1">Hidden/stale selections</div>
+                                {hiddenSelectionWarnings.map((warning, index) => (
+                                  <div key={`hidden-selection-${index}`} className="font-mono text-amber-200">
+                                    {displayDebugValue(warning.selectionKey)}:{displayDebugValue(warning.choiceValue)} {displayDebugValue(warning.reason)}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : null}
+
                       {hasFormulaDebugErrors ? (
                         <div className="space-y-1 rounded border border-red-500/40 bg-red-500/10 p-2 text-red-200">
                           {formulaDebugErrors.map((entry, idx) => (
@@ -733,6 +873,46 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     </AccordionContent>
                   </AccordionItem>
                 </Accordion>
+              ) : null}
+
+              {shouldShowWeightDebug ? (
+                <div className="mt-3 rounded border border-slate-700/70 bg-slate-900/40 p-3 text-xs text-slate-300 space-y-2">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-200">Weight Debug</div>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                    <div className="text-slate-400">Base weight input</div>
+                    <div className="font-mono">{displayDebugValue(weightDebug?.baseWeightInput ?? previewShippingConfig?.baseWeight ?? previewMeta?.baseWeightOz ?? null)}</div>
+                    <div className="text-slate-400">baseWeightOz canonical</div>
+                    <div className="font-mono">{displayWeightOz(weightDebug?.baseWeightOz ?? (typeof previewMeta?.baseWeightOz === "number" ? previewMeta.baseWeightOz : null))}</div>
+                    <div className="text-slate-400">shippingConfig.baseWeight</div>
+                    <div className="font-mono">{displayDebugValue(weightDebug?.shippingConfigBaseWeight ?? previewShippingConfig?.baseWeight ?? null)}</div>
+                    <div className="text-slate-400">shippingConfig.weightUnit</div>
+                    <div className="font-mono">{displayDebugValue(weightDebug?.shippingConfigWeightUnit ?? previewShippingConfig?.weightUnit ?? null)}</div>
+                    <div className="text-slate-400">shippingConfig.weightBasis</div>
+                    <div className="font-mono">{displayDebugValue(weightDebug?.shippingConfigWeightBasis ?? previewShippingConfig?.weightBasis ?? null)}</div>
+                    <div className="text-slate-400">Computed shipping weight</div>
+                    <div className="font-mono">{displayWeightOz(weightDebug?.computedShippingWeightOz ?? null)}</div>
+                    <div className="text-slate-400">Weight code</div>
+                    <div className="font-mono">{displayDebugValue(weightDebug?.errorCode ?? weightDebug?.warningCode ?? weightFinding?.code ?? null)}</div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="text-slate-400">Selected material weight fields</div>
+                    {selectedWeightFields.length === 0 ? (
+                      <div className="font-mono">—</div>
+                    ) : (
+                      <div className="rounded border border-slate-700/70 bg-slate-950/40 p-2 space-y-1">
+                        {selectedWeightFields.map((entry, index) => (
+                          <div key={`${entry.label}-${index}`} className="flex items-center justify-between gap-2">
+                            <span>{entry.label}</span>
+                            <span className="font-mono">{displayWeightOz(entry.oz)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {weightDebug?.errorMessage ? <div className="text-red-300">{weightDebug.errorMessage}</div> : null}
+                </div>
               ) : null}
             </div>
           </div>
@@ -752,7 +932,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                   </div>
 
                   {group.options.map((option) => {
-                    const selectedValue = previewState.selectedOptionValues[option.optionId];
+                    const selectedValue = previewState.selectedOptionValues[option.selectionKey];
                     const isMulti = option.inputType === "multiselect" || group.isMultiSelect;
 
                     if (isMulti) {
@@ -769,15 +949,15 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                                     checked={checked}
                                     onCheckedChange={(next) => {
                                       setPreviewState((prev) => {
-                                        const current = Array.isArray(prev.selectedOptionValues[option.optionId])
-                                          ? ([...(prev.selectedOptionValues[option.optionId] as string[])] as string[])
+                                        const current = Array.isArray(prev.selectedOptionValues[option.selectionKey])
+                                          ? ([...(prev.selectedOptionValues[option.selectionKey] as string[])] as string[])
                                           : [];
                                         const updated = next
                                           ? Array.from(new Set([...current, choice.value]))
                                           : current.filter((v) => v !== choice.value);
                                         const nextSelected = { ...prev.selectedOptionValues };
-                                        if (updated.length === 0) delete nextSelected[option.optionId];
-                                        else nextSelected[option.optionId] = updated;
+                                        if (updated.length === 0) delete nextSelected[option.selectionKey];
+                                        else nextSelected[option.selectionKey] = updated;
                                         return { ...prev, selectedOptionValues: nextSelected };
                                       });
                                     }}
@@ -799,8 +979,8 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                           onValueChange={(value) => {
                             setPreviewState((prev) => {
                               const nextSelected = { ...prev.selectedOptionValues };
-                              if (value === "__none__") delete nextSelected[option.optionId];
-                              else nextSelected[option.optionId] = value;
+                              if (value === "__none__") delete nextSelected[option.selectionKey];
+                              else nextSelected[option.selectionKey] = value;
                               return { ...prev, selectedOptionValues: nextSelected };
                             });
                           }}

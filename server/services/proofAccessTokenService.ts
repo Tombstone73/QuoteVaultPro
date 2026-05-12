@@ -11,7 +11,7 @@ import {
 import { sha256Hex } from "../lib/tokenHash";
 import { resolveLineItemProofingTruth } from "./proofingService";
 
-export type PortalProofStatus = "pending" | "approved" | "rejected" | "revision_requested";
+export type PortalProofStatus = "pending" | "approved" | "rejected" | "revision_requested" | "cancelled";
 
 export type ProofTokenApprovalState = {
   status: PortalProofStatus;
@@ -75,10 +75,7 @@ function normalizePortalProofStatus(args: {
   if (args.proofVersionStatus === "approved") return "approved";
   if (args.proofVersionStatus === "rejected") return "rejected";
   if (args.proofVersionStatus === "revision_requested") return "revision_requested";
-  // A superseded proof version (staff sent a newer version) has no recorded decision
-  // against this version, but it is resolved from the customer's perspective.
-  // Show it as read-only "revision_requested" — the closest public-facing resolved state.
-  if (args.proofVersionStatus === "superseded") return "revision_requested";
+  if (args.proofVersionStatus === "superseded" || args.proofVersionStatus === "cancelled") return "cancelled";
   throwConflict("Proof token is not valid for the current proof state");
 }
 

@@ -17,6 +17,9 @@ import { useMaterial, useMaterialsSearch, type MaterialSearchItem } from '@/hook
 import { useAuth } from '@/hooks/useAuth';
 
 type QuantityBasis = 'area_sqft' | 'perimeter_ft' | 'linear_ft' | 'each' | 'fixed';
+type PricingOverrideMode = 'none' | 'set_base_rate' | 'add_base_rate' | 'multiply_base_rate';
+type PricingOverrideUnit = 'perSqft' | 'perPiece' | 'minimumCharge';
+type EditingChoiceValue = { optionId: string; value: string; originalValue?: string };
 
 function impliedUomForBasis(basis: QuantityBasis): 'sqft' | 'ft' | 'each' {
   if (basis === 'area_sqft') return 'sqft';
@@ -33,6 +36,38 @@ function normalizeMaterialUom(value: string | null | undefined): 'sqft' | 'ft' |
   return null;
 }
 
+function formatWorkflowTags(value: unknown): string {
+  if (!Array.isArray(value)) return '';
+  return value
+    .filter((tag): tag is string => typeof tag === 'string')
+    .map((tag) => tag.trim())
+    .filter(Boolean)
+    .join(', ');
+}
+
+function parseWorkflowTags(value: string): string[] {
+  return Array.from(
+    new Set(
+      value
+        .split(/[\n,]+/)
+        .map((tag) => tag.trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function pricingOverrideAppliesToForUnit(unit: PricingOverrideUnit): 'base' | 'area' | 'quantity' {
+  if (unit === 'perSqft') return 'area';
+  if (unit === 'perPiece') return 'quantity';
+  return 'base';
+}
+
+function formatPricingOverrideAmount(mode: PricingOverrideMode, amount: number | undefined): string {
+  if (typeof amount !== 'number' || !Number.isFinite(amount)) return '';
+  if (mode === 'multiply_base_rate') return amount.toString();
+  return Math.round(amount).toString();
+}
+
 interface OptionDetailsEditorProps {
   option: EditorOption;
   treeJson: any;
@@ -44,8 +79,8 @@ interface OptionDetailsEditorProps {
   onUpdateNodePricing: (optionId: string, pricingImpact: Array<{ mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }>) => void;
   onAddPricingRule: (optionId: string, rule: { mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }) => void;
   onDeletePricingRule: (optionId: string, ruleIndex: number) => void;
-  editingChoiceValue: { optionId: string; value: string } | null;
-  setEditingChoiceValue: (val: { optionId: string; value: string } | null) => void;
+  editingChoiceValue: EditingChoiceValue | null;
+  setEditingChoiceValue: (val: EditingChoiceValue | null) => void;
 }
 
 export function OptionDetailsEditor({
@@ -213,7 +248,22 @@ export function OptionDetailsEditor({
               <div className="space-y-2">
                 {choices.map((choice: any, index: number) => {
                   const isDuplicate = duplicateValues.has(choice.value);
-                  const isEditing = editingChoiceValue?.optionId === option.id && editingChoiceValue?.value === choice.value;
+                  const editingOriginalValue = editingChoiceValue?.originalValue ?? editingChoiceValue?.value;
+                  const isEditing = editingChoiceValue?.optionId === option.id && editingOriginalValue === choice.value;
+                  const commitChoiceValueEdit = () => {
+                    if (!editingChoiceValue || !isEditing) return;
+                    onUpdateChoice(option.id, editingOriginalValue ?? choice.value, { value: editingChoiceValue.value });
+                    setEditingChoiceValue(null);
+                  };
+                  const choiceWorkflowTags = Array.isArray(choice.workflowTags) ? choice.workflowTags : [];
+                  const hasVariantContext =
+                    choice.priceDeltaCents !== undefined ||
+                    (choice.pricingOverride?.mode && choice.pricingOverride.mode !== 'none') ||
+                    !!choice.materialOverride?.materialId ||
+                    choiceWorkflowTags.length > 0;
+                  const hasModifierContext =
+                    (Array.isArray(choice.pricingImpact) && choice.pricingImpact.length > 0) ||
+                    (Array.isArray(choice.inventoryConsumption) && choice.inventoryConsumption.length > 0);
 
                   return (
                     <div
@@ -245,6 +295,19 @@ export function OptionDetailsEditor({
                         </div>
 
                         <div className="flex-1 space-y-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            {hasVariantContext ? (
+                              <span className="rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-200">
+                                Variant-defining
+                              </span>
+                            ) : null}
+                            {hasModifierContext ? (
+                              <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-200">
+                                Additive modifier
+                              </span>
+                            ) : null}
+                          </div>
+
                           <div>
                             <Label className="text-xs text-slate-400 mb-1 block">Label *</Label>
                             <Input
@@ -264,21 +327,21 @@ export function OptionDetailsEditor({
                               {isEditing ? (
                                 <>
                                   <Input
-                                    value={choice.value}
+                                    value={editingChoiceValue?.value ?? choice.value}
                                     onChange={(e) => {
                                       const newValue = e.target.value;
-                                      setEditingChoiceValue({ optionId: option.id, value: newValue });
+                                      setEditingChoiceValue({
+                                        optionId: option.id,
+                                        originalValue: editingOriginalValue ?? choice.value,
+                                        value: newValue,
+                                      });
                                     }}
                                     onBlur={() => {
-                                      if (editingChoiceValue) {
-                                        onUpdateChoice(option.id, choice.value, { value: editingChoiceValue.value });
-                                        setEditingChoiceValue(null);
-                                      }
+                                      commitChoiceValueEdit();
                                     }}
                                     onKeyDown={(e) => {
-                                      if (e.key === 'Enter' && editingChoiceValue) {
-                                        onUpdateChoice(option.id, choice.value, { value: editingChoiceValue.value });
-                                        setEditingChoiceValue(null);
+                                      if (e.key === 'Enter') {
+                                        commitChoiceValueEdit();
                                       }
                                       if (e.key === 'Escape') {
                                         setEditingChoiceValue(null);
@@ -291,10 +354,7 @@ export function OptionDetailsEditor({
                                     type="button"
                                     size="sm"
                                     onClick={() => {
-                                      if (editingChoiceValue) {
-                                        onUpdateChoice(option.id, choice.value, { value: editingChoiceValue.value });
-                                        setEditingChoiceValue(null);
-                                      }
+                                      commitChoiceValueEdit();
                                     }}
                                   >
                                     Save
@@ -309,7 +369,7 @@ export function OptionDetailsEditor({
                                     type="button"
                                     size="sm"
                                     variant="outline"
-                                    onClick={() => setEditingChoiceValue({ optionId: option.id, value: choice.value })}
+                                    onClick={() => setEditingChoiceValue({ optionId: option.id, originalValue: choice.value, value: choice.value })}
                                     className="text-xs"
                                   >
                                     Edit
@@ -325,31 +385,175 @@ export function OptionDetailsEditor({
                             )}
                           </div>
 
-                          <div>
-                            <Label className="text-xs text-slate-400 mb-1 block">Price Delta (cents)</Label>
-                            <Input
-                              type="number"
-                              value={choice.priceDeltaCents ?? ''}
-                              onChange={(e) => {
-                                const value = e.target.value;
-                                onUpdateChoice(option.id, choice.value, {
-                                  priceDeltaCents: value === '' ? undefined : parseInt(value, 10) || 0
-                                });
-                              }}
-                              onBlur={(e) => {
-                                const value = e.target.value;
-                                if (value === '') {
-                                  onUpdateChoice(option.id, choice.value, { priceDeltaCents: undefined });
-                                }
-                              }}
-                              placeholder="0 (optional)"
-                              className="bg-[#0f172a] border-slate-600 text-slate-100 text-sm"
-                            />
-                            {choice.priceDeltaCents !== undefined && choice.priceDeltaCents !== null && (
-                              <div className="text-xs text-slate-400 mt-1">
-                                {choice.priceDeltaCents >= 0 ? '+' : ''}${((choice.priceDeltaCents || 0) / 100).toFixed(2)}
+                          <div className="mt-3 pt-3 border-t border-slate-700 space-y-3">
+                            <div>
+                              <Label className="text-xs text-slate-400">Variant Context</Label>
+                              <p className="text-[11px] text-slate-500 mt-0.5">
+                                Use these fields for variant-defining selections. Keep additive logic in Pricing Impacts and Materials below.
+                              </p>
+                            </div>
+
+                            <div className="space-y-2 rounded-md border border-slate-700/80 bg-[#0f172a]/60 p-3">
+                              <div>
+                                <Label className="text-xs text-slate-400 mb-1 block">Pricing Override</Label>
+                                <Select
+                                  value={choice.pricingOverride?.mode ?? 'none'}
+                                  onValueChange={(mode: PricingOverrideMode) => {
+                                    if (mode === 'none') {
+                                      onUpdateChoice(option.id, choice.value, { pricingOverride: undefined });
+                                      return;
+                                    }
+
+                                    const nextUnit: PricingOverrideUnit = choice.pricingOverride?.unit ?? 'perSqft';
+                                    onUpdateChoice(option.id, choice.value, {
+                                      pricingOverride: {
+                                        ...choice.pricingOverride,
+                                        mode,
+                                        unit: nextUnit,
+                                        appliesTo: pricingOverrideAppliesToForUnit(nextUnit),
+                                      },
+                                    });
+                                  }}
+                                >
+                                  <SelectTrigger className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-sm">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="none">None</SelectItem>
+                                    <SelectItem value="set_base_rate">Set Base Rate</SelectItem>
+                                    <SelectItem value="add_base_rate">Add Base Rate</SelectItem>
+                                    <SelectItem value="multiply_base_rate">Multiply Base Rate</SelectItem>
+                                  </SelectContent>
+                                </Select>
                               </div>
-                            )}
+
+                              {choice.pricingOverride?.mode && choice.pricingOverride.mode !== 'none' ? (
+                                <div className="grid gap-2 md:grid-cols-2">
+                                  <div>
+                                    <Label className="text-xs text-slate-400 mb-1 block">
+                                      {choice.pricingOverride.mode === 'multiply_base_rate' ? 'Multiplier' : 'Amount'}
+                                    </Label>
+                                    <Input
+                                      type="number"
+                                      step={choice.pricingOverride.mode === 'multiply_base_rate' ? '0.01' : '1'}
+                                      value={formatPricingOverrideAmount(choice.pricingOverride.mode, choice.pricingOverride.amount)}
+                                      onChange={(e) => {
+                                        const raw = e.target.value;
+                                        const parsed = raw === '' ? undefined : Number(raw);
+                                        onUpdateChoice(option.id, choice.value, {
+                                          pricingOverride: {
+                                            ...choice.pricingOverride,
+                                            amount: parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined,
+                                          },
+                                        });
+                                      }}
+                                      placeholder={choice.pricingOverride.mode === 'multiply_base_rate' ? '1.00' : '0'}
+                                      className="bg-[#0a0f1a] border-slate-700 text-slate-100 text-sm"
+                                    />
+                                    <div className="text-[11px] text-slate-500 mt-1">
+                                      {choice.pricingOverride.mode === 'multiply_base_rate'
+                                        ? 'Use 1.10 to increase the resolved base rate by 10%.'
+                                        : 'Enter cents for the resolved base rate input this choice controls.'}
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <Label className="text-xs text-slate-400 mb-1 block">Pricing Unit</Label>
+                                    <Select
+                                      value={choice.pricingOverride.unit ?? 'perSqft'}
+                                      onValueChange={(unit: PricingOverrideUnit) =>
+                                        onUpdateChoice(option.id, choice.value, {
+                                          pricingOverride: {
+                                            ...choice.pricingOverride,
+                                            unit,
+                                            appliesTo: pricingOverrideAppliesToForUnit(unit),
+                                          },
+                                        })
+                                      }
+                                    >
+                                      <SelectTrigger className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-sm">
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="perSqft">Per Sqft</SelectItem>
+                                        <SelectItem value="perPiece">Per Piece</SelectItem>
+                                        <SelectItem value="minimumCharge">Minimum Charge</SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                </div>
+                              ) : null}
+
+                              <div className="text-[11px] text-slate-500">
+                                Use this when a choice defines the base pricing for the configured product, such as ACM thickness or banner media weight.
+                              </div>
+                            </div>
+
+                            <div>
+                              <Label className="text-xs text-slate-400 mb-1 block">Variant Price Delta (cents)</Label>
+                              <Input
+                                type="number"
+                                value={choice.priceDeltaCents ?? ''}
+                                onChange={(e) => {
+                                  const value = e.target.value;
+                                  onUpdateChoice(option.id, choice.value, {
+                                    priceDeltaCents: value === '' ? undefined : parseInt(value, 10) || 0
+                                  });
+                                }}
+                                onBlur={(e) => {
+                                  const value = e.target.value;
+                                  if (value === '') {
+                                    onUpdateChoice(option.id, choice.value, { priceDeltaCents: undefined });
+                                  }
+                                }}
+                                placeholder="0 (optional)"
+                                className="bg-[#0f172a] border-slate-600 text-slate-100 text-sm"
+                              />
+                              {choice.priceDeltaCents !== undefined && choice.priceDeltaCents !== null ? (
+                                <div className="text-xs text-slate-400 mt-1">
+                                  {choice.priceDeltaCents >= 0 ? '+' : ''}${((choice.priceDeltaCents || 0) / 100).toFixed(2)}
+                                </div>
+                              ) : (
+                                <div className="text-[11px] text-slate-500 mt-1">
+                                  Optional metadata for variant-level pricing context. Existing additive impacts still apply separately.
+                                </div>
+                              )}
+                            </div>
+
+                            <div>
+                              <Label className="text-xs text-slate-400 mb-1 block">Resolved Material Override</Label>
+                              <MaterialIdSearchField
+                                value={choice.materialOverride?.materialId ?? ''}
+                                onChange={(nextMaterialId) =>
+                                  onUpdateChoice(option.id, choice.value, {
+                                    materialOverride: nextMaterialId ? { materialId: nextMaterialId } : undefined,
+                                  })
+                                }
+                                onRequestAddMaterial={() => {}}
+                                canCreateMaterials={false}
+                                showUsageValidation={false}
+                              />
+                              <div className="text-[11px] text-slate-500 mt-1">
+                                Use this when the selected choice should resolve to a canonical material, separate from additive usage rules.
+                              </div>
+                            </div>
+
+                            <div>
+                              <Label className="text-xs text-slate-400 mb-1 block">Workflow Context Tags</Label>
+                              <Textarea
+                                value={formatWorkflowTags(choice.workflowTags)}
+                                onChange={(e) =>
+                                  onUpdateChoice(option.id, choice.value, {
+                                    workflowTags: parseWorkflowTags(e.target.value),
+                                  })
+                                }
+                                placeholder="acm, rigid, thickness:3mm"
+                                className="bg-[#0f172a] border-slate-600 text-slate-100 text-sm min-h-[72px]"
+                              />
+                              <div className="text-[11px] text-slate-500 mt-1">
+                                Comma or newline separated tags for downstream workflow context.
+                              </div>
+                            </div>
                           </div>
 
                           {/* Choice-level Pricing Impacts (v2.1) */}
@@ -978,13 +1182,15 @@ function MaterialIdSearchField({
   onRequestAddMaterial,
   createdMaterialOverride,
   canCreateMaterials,
+  showUsageValidation = true,
 }: {
   value: string;
   onChange: (materialId: string) => void;
-  quantityBasis: QuantityBasis;
+  quantityBasis?: QuantityBasis;
   onRequestAddMaterial: () => void;
   createdMaterialOverride?: MaterialSearchItem | null;
   canCreateMaterials: boolean;
+  showUsageValidation?: boolean;
 }) {
   const [open, setOpen] = React.useState(false);
   const [searchText, setSearchText] = React.useState('');
@@ -1020,9 +1226,14 @@ function MaterialIdSearchField({
 
   const isMissingMaterial = !!value && !selectedMaterial && !materialByIdQuery.isLoading;
 
-  const impliedUom = impliedUomForBasis(quantityBasis);
+  const impliedUom = quantityBasis ? impliedUomForBasis(quantityBasis) : null;
   const selectedMaterialUom = normalizeMaterialUom(selectedMaterial?.unitOfMeasure);
-  const hasUomMismatch = !!selectedMaterial && !!selectedMaterialUom && selectedMaterialUom !== impliedUom;
+  const hasUomMismatch =
+    showUsageValidation &&
+    !!selectedMaterial &&
+    !!selectedMaterialUom &&
+    !!impliedUom &&
+    selectedMaterialUom !== impliedUom;
 
   return (
     <div className="space-y-1">

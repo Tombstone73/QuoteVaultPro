@@ -305,7 +305,14 @@ export async function getDashboardSummary(organizationId: string): Promise<Dashb
       db
         .select({ count: sql<number>`count(*)::int` })
         .from(invoices)
-        .where(and(eq(invoices.organizationId, organizationId), not(inArray(invoices.status, ["paid", "void"])))),
+        .where(
+          and(
+            eq(invoices.organizationId, organizationId),
+            eq(invoices.isHistorical, false),
+            sql`${invoices.balanceDue}::numeric > 0`,
+            not(inArray(invoices.status, ["void"])),
+          ),
+        ),
     );
 
     const overdueAmountRows = await db
@@ -314,7 +321,9 @@ export async function getDashboardSummary(organizationId: string): Promise<Dashb
       .where(
         and(
           eq(invoices.organizationId, organizationId),
-          not(inArray(invoices.status, ["paid", "void"])),
+          eq(invoices.isHistorical, false),
+          sql`${invoices.balanceDue}::numeric > 0`,
+          not(inArray(invoices.status, ["void"])),
           lt(invoices.dueDate, now),
         ),
       );

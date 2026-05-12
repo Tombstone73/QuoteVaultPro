@@ -5,12 +5,40 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ROUTES } from "@/config/routes";
-import { useProductionConfig } from "@/hooks/useProduction";
+import { useProductionConfig, useProductionJobs } from "@/hooks/useProduction";
 import ProductionViewRenderer from "@/features/production/ProductionViewRenderer";
 import ProductionOverviewPage from "@/features/production/views/ProductionOverviewPage";
+import {
+  getProductionTabCounts,
+  persistProductionTab,
+  resolvePersistedProductionTab,
+  type ProductionBoardTab,
+  type ProductionStationPage,
+} from "@/lib/productionBoard";
 
 type ProductionStatus = "queued" | "in_progress" | "done" | "all";
 type ProductionModule = "overview" | "flatbed" | "roll" | "apparel";
+
+function usePersistedProductionTab(station: ProductionStationPage) {
+  const [status, setStatus] = useState<ProductionStatus>(() => resolvePersistedProductionTab(station));
+
+  useEffect(() => {
+    persistProductionTab(station, status);
+  }, [station, status]);
+
+  return [status, setStatus] as const;
+}
+
+function StatusTabLabel(props: { label: string; count: number }) {
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span>{props.label}</span>
+      <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-muted px-1.5 py-0.5 text-[11px] font-semibold leading-none text-muted-foreground">
+        {props.count}
+      </span>
+    </span>
+  );
+}
 
 export default function ProductionBoard() {
   const { data: config, isLoading, error } = useProductionConfig();
@@ -26,8 +54,8 @@ export default function ProductionBoard() {
     return "overview";
   }, [location.pathname]);
 
-  // Default to "in_progress" - operators want to see active jobs first
-  const [status, setStatus] = useState<ProductionStatus>("in_progress");
+  const [flatbedStatus, setFlatbedStatus] = usePersistedProductionTab("flatbed");
+  const [rollStatus, setRollStatus] = usePersistedProductionTab("roll");
   const [viewKey, setViewKey] = useState<string>("flatbed");
 
   useEffect(() => {
@@ -40,7 +68,20 @@ export default function ProductionBoard() {
   const enabledViews = useMemo(() => config?.enabledViews ?? ["flatbed"], [config]);
   const showViewSelector = enabledViews.length > 1;
 
-  const hasImplementedEnabledView = enabledViews.includes("flatbed");
+  const activeStation = activeModule === "flatbed" || activeModule === "roll" ? activeModule : null;
+  const status: ProductionStatus = activeModule === "roll" ? rollStatus : flatbedStatus;
+  const setStatus = activeModule === "roll" ? setRollStatus : setFlatbedStatus;
+  const hasImplementedEnabledView = activeStation ? enabledViews.includes(activeStation) : false;
+
+  const { data: stationJobs, isLoading: jobsLoading, error: jobsError } = useProductionJobs(
+    activeStation ? { view: activeStation } : undefined,
+    { enabled: !!activeStation && !isLoading && !error && hasImplementedEnabledView },
+  );
+
+  const tabCounts = useMemo(
+    () => getProductionTabCounts(stationJobs ?? []),
+    [stationJobs],
+  );
 
   // OVERVIEW MODULE - Render without Page/PageHeader wrapper (uses own internal structure)
   if (activeModule === "overview") {
@@ -108,12 +149,12 @@ export default function ProductionBoard() {
                 {/* Header row with status tabs and view selector */}
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   {/* Status tabs */}
-                  <Tabs value={status} onValueChange={(v) => setStatus(v as ProductionStatus)}>
+                  <Tabs value={status} onValueChange={(v) => setStatus(v as ProductionBoardTab)}>
                     <TabsList>
-                      <TabsTrigger value="all">All</TabsTrigger>
-                      <TabsTrigger value="queued">Queued</TabsTrigger>
-                      <TabsTrigger value="in_progress">In Progress</TabsTrigger>
-                      <TabsTrigger value="done">Done</TabsTrigger>
+                      <TabsTrigger value="all"><StatusTabLabel label="All" count={tabCounts.all} /></TabsTrigger>
+                      <TabsTrigger value="queued"><StatusTabLabel label="Queued" count={tabCounts.queued} /></TabsTrigger>
+                      <TabsTrigger value="in_progress"><StatusTabLabel label="In Progress" count={tabCounts.in_progress} /></TabsTrigger>
+                      <TabsTrigger value="done"><StatusTabLabel label="Done" count={tabCounts.done} /></TabsTrigger>
                     </TabsList>
                   </Tabs>
 
@@ -137,7 +178,17 @@ export default function ProductionBoard() {
                 </div>
 
                 {/* Production view content */}
-                <ProductionViewRenderer viewKey="flatbed" status={status} />
+                {jobsLoading ? (
+                  <Card className="bg-titan-bg-card border-titan-border-subtle">
+                    <CardContent className="p-4 text-sm text-titan-text-muted">Loading production jobs…</CardContent>
+                  </Card>
+                ) : jobsError ? (
+                  <Card className="bg-titan-bg-card border-titan-border-subtle">
+                    <CardContent className="p-4 text-sm text-titan-text-muted">Failed to load production jobs.</CardContent>
+                  </Card>
+                ) : (
+                  <ProductionViewRenderer viewKey="flatbed" status={status} jobs={stationJobs ?? []} />
+                )}
               </div>
             )}
           </>
@@ -179,12 +230,12 @@ export default function ProductionBoard() {
                 {/* Header row with status tabs and view selector */}
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   {/* Status tabs */}
-                  <Tabs value={status} onValueChange={(v) => setStatus(v as ProductionStatus)}>
+                  <Tabs value={status} onValueChange={(v) => setStatus(v as ProductionBoardTab)}>
                     <TabsList>
-                      <TabsTrigger value="all">All</TabsTrigger>
-                      <TabsTrigger value="queued">Queued</TabsTrigger>
-                      <TabsTrigger value="in_progress">In Progress</TabsTrigger>
-                      <TabsTrigger value="done">Done</TabsTrigger>
+                      <TabsTrigger value="all"><StatusTabLabel label="All" count={tabCounts.all} /></TabsTrigger>
+                      <TabsTrigger value="queued"><StatusTabLabel label="Queued" count={tabCounts.queued} /></TabsTrigger>
+                      <TabsTrigger value="in_progress"><StatusTabLabel label="In Progress" count={tabCounts.in_progress} /></TabsTrigger>
+                      <TabsTrigger value="done"><StatusTabLabel label="Done" count={tabCounts.done} /></TabsTrigger>
                     </TabsList>
                   </Tabs>
 
@@ -208,7 +259,17 @@ export default function ProductionBoard() {
                 </div>
 
                 {/* Production view content */}
-                <ProductionViewRenderer viewKey="roll" status={status} />
+                {jobsLoading ? (
+                  <Card className="bg-titan-bg-card border-titan-border-subtle">
+                    <CardContent className="p-4 text-sm text-titan-text-muted">Loading production jobs…</CardContent>
+                  </Card>
+                ) : jobsError ? (
+                  <Card className="bg-titan-bg-card border-titan-border-subtle">
+                    <CardContent className="p-4 text-sm text-titan-text-muted">Failed to load production jobs.</CardContent>
+                  </Card>
+                ) : (
+                  <ProductionViewRenderer viewKey="roll" status={status} jobs={stationJobs ?? []} />
+                )}
               </div>
             )}
           </>

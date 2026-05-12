@@ -39,6 +39,7 @@ import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { ROUTES } from "@/config/routes";
@@ -47,11 +48,28 @@ import { useOrderLineItemFiles, type OrderFileWithUser } from "@/hooks/useOrderF
 import { useOrder, useUpdateOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
+import { canGeneratePreviewRecovery, canRegenerateGeneratedProof } from "@/lib/proofingRecovery";
 import { buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
+import {
+  getInitialProofingFilter,
+  getProofingFilterCount,
+  matchesProofingFilter,
+  matchesProofingSearch,
+  proofingFilterValues,
+  proofingSortValues,
+  sortProofingQueueRows,
+  type ProofingFilterValue,
+  type ProofingSortValue,
+} from "@/lib/proofingQueueControls";
+import {
+  findProofingQueueRowByLineItemId,
+  isRequestedProofingLineItemMissing,
+  PROOFING_MISSING_LINE_ITEM_MESSAGE,
+  resolveProofingActiveRow,
+} from "@/lib/proofingNavigation";
 import { uploadAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
-import { proofQueueSliceValues } from "@shared/proofing";
 import type {
-  ProofQueueSlice,
+  ProofArtifactPreviewStatus,
   ProofQueueStatus,
   ProofVersionHistoryEntry,
   ProofVersionStatus,
@@ -64,6 +82,7 @@ type JsonEnvelope<T> = {
   success: boolean;
   data: T;
   error?: string;
+  message?: string;
 };
 
 type ProofFileRow = OrderFileWithUser & {
@@ -83,12 +102,17 @@ type ProofAttachmentRow = ProofFileRow & {
   role?: string | null;
 };
 
-const queueSliceMeta: Array<{ value: ProofQueueSlice; label: string; countKey: keyof ProofingQueueResponse["counts"] }> = [
-  { value: "all", label: "All", countKey: "all" },
-  { value: "awaiting_send", label: "Awaiting Send", countKey: "awaitingSend" },
-  { value: "awaiting_approval", label: "Awaiting Approval", countKey: "awaitingApproval" },
-  { value: "revision_requested", label: "Revision Requested", countKey: "revisionRequested" },
-  { value: "approved", label: "Approved", countKey: "approved" },
+const proofingFilterMeta: Array<{ value: ProofingFilterValue; label: string }> = [
+  { value: "awaiting_proof", label: "Awaiting Proof" },
+  { value: "sent", label: "Sent" },
+  { value: "approved", label: "Approved" },
+  { value: "rejected", label: "Rejected" },
+];
+
+const proofingSortMeta: Array<{ value: ProofingSortValue; label: string }> = [
+  { value: "newest", label: "Newest first" },
+  { value: "oldest", label: "Oldest first" },
+  { value: "customer", label: "Customer name (A–Z)" },
 ];
 
 type StaffFacingStatus = {
@@ -114,7 +138,9 @@ async function readJson<T>(input: RequestInfo | URL, init?: RequestInit): Promis
 
   const json = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(json.error || "Request failed");
+    const error = new Error(json.message || json.error || "Request failed") as Error & { status?: number };
+    error.status = response.status;
+    throw error;
   }
 
   return json as T;
@@ -191,8 +217,23 @@ function getStaffFacingStatus(args: {
   row: ProofingQueueRow | undefined;
   detail: ProofingReadModel | undefined;
   displayedVersion: ProofVersionHistoryEntry | null;
+  artifact: ProofingReadModel["currentDisplayedProofArtifact"] | null;
 }): StaffFacingStatus {
-  const { row, detail, displayedVersion } = args;
+  const { row, detail, displayedVersion, artifact } = args;
+
+  if (artifact?.previewStatus === "generation_failed") {
+    return {
+      label: "Preview Generation Failed",
+      badgeVariant: "destructive",
+    };
+  }
+
+  if (artifact?.previewStatus === "missing_preview" || artifact?.previewStatus === "metadata_only") {
+    return {
+      label: "Missing Artwork Preview",
+      badgeVariant: "destructive",
+    };
+  }
 
   if (detail?.approvedProofSource || row?.currentQueueStatus === "approved") {
     return {
@@ -274,6 +315,10 @@ function getStatusNote(args: {
 
   if (displayedVersion?.status === "awaiting_response") {
     return displayedVersion.sentAt ? `Sent ${formatRelativeTime(displayedVersion.sentAt)}.` : "Waiting on customer approval.";
+  }
+
+  if (displayedVersion?.status === "superseded") {
+    return "This proof version has been cancelled or replaced and is no longer customer-actionable.";
   }
 
   if (displayedVersion?.status === "draft") {
@@ -457,6 +502,8 @@ function getVersionStatusBadgeClass(status: ProofVersionStatus) {
       return "border-[#244f45] bg-[#102b24] text-[#72d4b8]";
     case "rejected":
       return "border-[#74324d] bg-[#3a1725] text-[#ff7f9f]";
+    case "superseded":
+      return "border-[#4a5568] bg-[#1f2937] text-[#d1d5db]";
     default:
       return "border-[#3b4660] bg-[#1a2236] text-[#d7ddea]";
   }
@@ -467,10 +514,36 @@ function getPrimaryActionLabel(canSendCurrentVersion: boolean, displayedVersion:
   return `Send Draft v${displayedVersion?.versionNumber ?? "?"}`;
 }
 
+function getProofPreviewIssue(args: {
+  artifact: ProofingReadModel["currentDisplayedProofArtifact"] | null;
+  sourceFileName: string | null | undefined;
+}) {
+  const { artifact, sourceFileName } = args;
+  if (!artifact || artifact.previewStatus === "ready") return null;
+
+  if (artifact.previewStatus === "generation_failed") {
+    return {
+      title: "Preview Generation Failed",
+      description: artifact.previewError || "The system could not generate a preview from the saved artwork.",
+      nextAction: "Upload proof manually or check artwork attachment.",
+      sourceFileName: sourceFileName || null,
+    };
+  }
+
+  return {
+    title: "Missing Artwork Preview",
+    description: artifact.previewError || "This proof does not include an artwork preview.",
+    nextAction: "Upload proof manually or check artwork attachment.",
+    sourceFileName: sourceFileName || null,
+  };
+}
+
 function getVersionStatusLabel(status: ProofVersionStatus | null | undefined) {
   switch (status) {
     case "awaiting_response":
       return "Awaiting Customer Approval";
+    case "superseded":
+      return "Cancelled / Superseded";
     case "approved":
       return "Approved";
     case "rejected":
@@ -483,7 +556,7 @@ function getVersionStatusLabel(status: ProofVersionStatus | null | undefined) {
 
 export default function StaffProofingPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { user } = useAuth();
@@ -492,17 +565,14 @@ export default function StaffProofingPage() {
   const { isInternalUser, canOverride } = getRoleSummary(user?.role);
   const requestedLineItemId = searchParams.get("lineItemId");
   const requestedSlice = searchParams.get("slice");
-  const requestedQueueSlice = requestedSlice && (proofQueueSliceValues as readonly string[]).includes(requestedSlice)
-    ? (requestedSlice as ProofQueueSlice)
-    : requestedLineItemId
-      ? "all"
-      : "awaiting_approval";
 
-  const [slice, setSlice] = useState<ProofQueueSlice>(requestedQueueSlice);
+  const [activeFilter, setActiveFilter] = useState<ProofingFilterValue>(() => getInitialProofingFilter(requestedSlice));
+  const [sortOrder, setSortOrder] = useState<ProofingSortValue>("newest");
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
   const [viewerZoom, setViewerZoom] = useState(85);
   const [viewerPage, setViewerPage] = useState(1);
   const [isDragging, setIsDragging] = useState(false);
@@ -515,6 +585,10 @@ export default function StaffProofingPage() {
   const [selectedExistingAttachmentId, setSelectedExistingAttachmentId] = useState<string>("");
   const [createInternalNotes, setCreateInternalNotes] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [previewRecoveryState, setPreviewRecoveryState] = useState<{
+    lineItemId: string;
+    derivativeStatus: "ready" | "pending" | "failed";
+  } | null>(null);
 
   const [sendDialogOpen, setSendDialogOpen] = useState(false);
   // "send" = send a draft for the first time; "resend" = re-notify for an awaiting_response version
@@ -533,10 +607,12 @@ export default function StaffProofingPage() {
   const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
   const [overrideNote, setOverrideNote] = useState("");
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
 
   const queueQuery = useQuery<JsonEnvelope<ProofingQueueResponse>>({
-    queryKey: ["/api/proofing/queue", slice],
-    queryFn: () => readJson(`/api/proofing/queue?slice=${slice}`),
+    queryKey: ["/api/proofing/queue", "all"],
+    queryFn: () => readJson(`/api/proofing/queue?slice=all`),
     enabled: isInternalUser,
     staleTime: 30_000,
     // All local staff actions (create draft, send, override) already invalidate this query immediately.
@@ -547,71 +623,92 @@ export default function StaffProofingPage() {
 
   const queueData = queueQuery.data?.data;
   const queueRows = queueData?.rows ?? [];
-  const sortedQueueRows = useMemo(() => [...queueRows].sort(compareProofQueueRows), [queueRows]);
-  const filteredQueueRows = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    if (!query) return sortedQueueRows;
-
-    return sortedQueueRows.filter((row) => {
-      return [row.lineItemLabel, row.customerDisplayName, row.packageLabel, row.orderNumber]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(query));
-    });
-  }, [searchQuery, sortedQueueRows]);
-
-  const groupedQueueSections = useMemo(
-    () =>
-      queueSectionMeta
-        .map((section) => ({
-          ...section,
-          rows: filteredQueueRows.filter((row) => section.matches(row)),
-        }))
-        .filter((section) => section.rows.length > 0),
-    [filteredQueueRows],
+  const baseQueueRows = useMemo(() => [...queueRows].sort(compareProofQueueRows), [queueRows]);
+  const requestedRow = useMemo(
+    () => findProofingQueueRowByLineItemId(baseQueueRows, requestedLineItemId),
+    [baseQueueRows, requestedLineItemId],
   );
+  const isLineItemOverrideActive = Boolean(requestedLineItemId && requestedRow);
 
   useEffect(() => {
-    setSlice(requestedQueueSlice);
-  }, [requestedQueueSlice]);
+    const timer = window.setTimeout(() => setDebouncedSearchQuery(searchQuery), 350);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery]);
 
   useEffect(() => {
-    if (!filteredQueueRows.length) {
-      if (selectedLineItemId !== null) setSelectedLineItemId(null);
-      return;
-    }
+    if (requestedLineItemId) return;
+    setActiveFilter(getInitialProofingFilter(requestedSlice));
+  }, [requestedLineItemId, requestedSlice]);
 
-    if (requestedLineItemId && filteredQueueRows.some((row) => row.lineItemId === requestedLineItemId)) {
-      if (selectedLineItemId !== requestedLineItemId) {
-        setSelectedLineItemId(requestedLineItemId);
+  const filteredSortedQueueRows = useMemo(() => {
+    const filteredRows = baseQueueRows
+      .filter((row) => matchesProofingFilter(row, activeFilter))
+      .filter((row) => matchesProofingSearch(row, debouncedSearchQuery));
+
+    return sortProofingQueueRows(filteredRows, sortOrder);
+  }, [activeFilter, baseQueueRows, debouncedSearchQuery, sortOrder]);
+
+  const visibleQueueRows = isLineItemOverrideActive && requestedRow
+    ? [requestedRow]
+    : filteredSortedQueueRows;
+
+  const filterCounts = useMemo(() => {
+    return proofingFilterValues.reduce<Record<ProofingFilterValue, number>>((acc, filter) => {
+      acc[filter] = getProofingFilterCount(baseQueueRows, filter);
+      return acc;
+    }, {
+      awaiting_proof: 0,
+      sent: 0,
+      approved: 0,
+      rejected: 0,
+    });
+  }, [baseQueueRows]);
+
+  useEffect(() => {
+    if (requestedLineItemId) {
+      if (selectedLineItemId !== (requestedRow?.lineItemId ?? null)) {
+        setSelectedLineItemId(requestedRow?.lineItemId ?? null);
       }
       return;
     }
 
-    const stillPresent = selectedLineItemId ? filteredQueueRows.some((row) => row.lineItemId === selectedLineItemId) : false;
-    if (!stillPresent) {
-      setSelectedLineItemId(filteredQueueRows[0].lineItemId);
+    if (!visibleQueueRows.length) {
+      if (selectedLineItemId !== null) setSelectedLineItemId(null);
+      return;
     }
-  }, [filteredQueueRows, requestedLineItemId, selectedLineItemId]);
 
-  const selectedRow = filteredQueueRows.find((row) => row.lineItemId === selectedLineItemId) ?? filteredQueueRows[0];
+    const stillPresent = selectedLineItemId ? visibleQueueRows.some((row) => row.lineItemId === selectedLineItemId) : false;
+    if (!stillPresent) {
+      setSelectedLineItemId(visibleQueueRows[0].lineItemId);
+    }
+  }, [requestedLineItemId, requestedRow, selectedLineItemId, visibleQueueRows]);
+
+  const { activeLineItemId, activeRow } = resolveProofingActiveRow({
+    requestedLineItemId,
+    selectedLineItemId,
+    filteredQueueRows: visibleQueueRows,
+    allQueueRows: baseQueueRows,
+  });
+  const selectedRow = activeRow;
 
   const detailQuery = useQuery<JsonEnvelope<ProofingReadModel>>({
-    queryKey: ["/api/proofing/line-item", selectedRow?.lineItemId],
-    queryFn: () => readJson(`/api/proofing/line-item/${selectedRow?.lineItemId}`),
-    enabled: Boolean(isInternalUser && selectedRow?.lineItemId),
+    queryKey: ["/api/proofing/line-item", activeLineItemId],
+    queryFn: () => readJson(`/api/proofing/line-item/${activeLineItemId}`),
+    enabled: Boolean(isInternalUser && activeLineItemId),
   });
 
   const detail = detailQuery.data?.data;
-  const orderQuery = useOrder(selectedRow?.orderId);
-  const updateOrder = useUpdateOrder(selectedRow?.orderId ?? "");
+  const activeOrderId = detail?.orderId ?? activeRow?.orderId ?? null;
+  const orderQuery = useOrder(activeOrderId ?? undefined);
+  const updateOrder = useUpdateOrder(activeOrderId ?? "");
   const selectedOrder = orderQuery.data;
   const selectedLineItem = useMemo(
-    () => selectedOrder?.lineItems?.find((lineItem) => lineItem.id === selectedRow?.lineItemId) ?? null,
-    [selectedOrder, selectedRow?.lineItemId],
+    () => selectedOrder?.lineItems?.find((lineItem) => lineItem.id === activeLineItemId) ?? null,
+    [activeLineItemId, selectedOrder],
   );
 
   useEffect(() => {
-    const defaultVersionId = getDefaultVersionId(detail, selectedRow);
+    const defaultVersionId = getDefaultVersionId(detail, selectedRow ?? undefined);
     if (!detail) {
       if (selectedVersionId !== null) setSelectedVersionId(null);
       return;
@@ -623,7 +720,7 @@ export default function StaffProofingPage() {
     }
   }, [detail, selectedRow, selectedVersionId]);
 
-  const filesQuery = useOrderLineItemFiles(selectedRow?.orderId, selectedRow?.lineItemId);
+  const filesQuery = useOrderLineItemFiles(activeOrderId ?? undefined, activeLineItemId ?? undefined);
   const lineItemFiles = (filesQuery.data?.data ?? []) as ProofFileRow[];
 
   const selectableProofFiles = useMemo(
@@ -648,7 +745,7 @@ export default function StaffProofingPage() {
   const previewName = displayedFile?.originalFilename || displayedFile?.fileName || "Proof";
   const previewIsPdf = Boolean(displayedFile && isPdfFile(displayedFile.mimeType || null, previewName));
   const previewIsImage = Boolean(displayedFile?.mimeType?.startsWith("image/"));
-  const staffStatus = getStaffFacingStatus({ row: selectedRow, detail, displayedVersion });
+  const staffStatus = getStaffFacingStatus({ row: activeRow ?? undefined, detail, displayedVersion, artifact: currentArtifact });
   const latestCustomerFeedback = detail?.proofDecisionHistory?.[0] ?? null;
   const statusNote = getStatusNote({ detail, displayedVersion });
   const [pdfViewerMode, setPdfViewerMode] = useState<"compact" | "default">("compact");
@@ -659,7 +756,7 @@ export default function StaffProofingPage() {
     const separator = url.includes("#") ? "&" : "#";
     return `${url}${separator}page=${viewerPage}&zoom=${viewerZoom}`;
   }, [pdfViewerMode, previewIsPdf, previewUrl, viewerPage, viewerZoom]);
-  const jobSpecificationRows = useMemo(() => getJobSpecificationRows(selectedLineItem, selectedRow), [selectedLineItem, selectedRow]);
+  const jobSpecificationRows = useMemo(() => getJobSpecificationRows(selectedLineItem, activeRow ?? undefined), [activeRow, selectedLineItem]);
   const internalStaffNote = useMemo(() => {
     const candidates = [
       selectedOrder?.notesInternal,
@@ -669,9 +766,49 @@ export default function StaffProofingPage() {
     return candidates.find((value) => value && `${value}`.trim().length > 0) ?? null;
   }, [detail?.manualApprovalOverrideHistory, selectedOrder?.notesInternal, statusNote]);
   const canSendCurrentVersion = displayedVersion?.status === "draft";
+  const currentProofIssue = getProofPreviewIssue({
+    artifact: currentArtifact,
+    sourceFileName: currentSnapshot?.sourceArtwork?.fileName ?? null,
+  });
+  const canSendDisplayedVersion = canSendCurrentVersion && currentArtifact?.previewStatus === "ready";
+  const canResendDisplayedVersion = displayedVersion?.status === "awaiting_response" && currentArtifact?.previewStatus === "ready";
+  const canCancelDisplayedVersion =
+    displayedVersion?.id === detail?.currentActionableProofVersionId &&
+    displayedVersion?.status === "awaiting_response";
   const canRecordDecision =
     displayedVersion?.id === detail?.currentActionableProofVersionId && displayedVersion?.status === "awaiting_response";
   const primaryActionLabel = getPrimaryActionLabel(canSendCurrentVersion, displayedVersion);
+  const hasSourceArtwork = Boolean(currentSnapshot?.sourceArtwork);
+  const canGeneratePreviewAction = canGeneratePreviewRecovery({
+    hasSourceArtwork,
+    previewStatus: currentArtifact?.previewStatus,
+  });
+  const previewRecoveryReady =
+    previewRecoveryState?.lineItemId === selectedRow?.lineItemId &&
+    previewRecoveryState?.derivativeStatus === "ready";
+  const canRegenerateProofAction = canRegenerateGeneratedProof({
+    artifactKind: currentArtifact?.artifactKind,
+    hasSourceArtwork,
+    previewStatus: currentArtifact?.previewStatus,
+    previewRecoveryReady,
+  });
+  const requestedLineItemMissing = isRequestedProofingLineItemMissing({
+    requestedLineItemId,
+    errorStatus: (detailQuery.error as (Error & { status?: number }) | null)?.status ?? null,
+  });
+  const activityTimestamp = activeRow?.lastActivityAt ?? displayedVersion?.updatedAt ?? detail?.currentProofInputSnapshot?.snapshotBasisAt ?? null;
+  const lineItemLabel = activeRow?.lineItemLabel ?? detail?.currentProofInputSnapshot?.lineItemLabel ?? "Proofing";
+  const orderLabel = activeRow?.orderNumber ?? detail?.currentProofInputSnapshot?.orderNumber ?? activeOrderId;
+  const packageLabel = activeRow?.packageLabel ?? null;
+  const customerDisplayName = activeRow?.customerDisplayName ?? selectedOrder?.customer?.name ?? null;
+  const queueBadgeClass = activeRow ? getQueueCardBadgeClass(activeRow) : "border border-slate-700 bg-slate-800 text-slate-300";
+
+  const handleClearLineItemOverride = () => {
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete("lineItemId");
+    nextParams.delete("slice");
+    setSearchParams(nextParams, { replace: true });
+  };
 
   useEffect(() => {
     setInternalNotesDraft(selectedOrder?.notesInternal || "");
@@ -690,6 +827,21 @@ export default function StaffProofingPage() {
       setSelectedExistingAttachmentId(preferred?.id || selectableProofFiles[0]?.id || "");
     }
   }, [createDialogOpen, selectableProofFiles, selectedExistingAttachmentId, displayedFile?.id]);
+
+  useEffect(() => {
+    setPreviewRecoveryState((current) => {
+      if (!selectedRow?.lineItemId) return null;
+      return current?.lineItemId === selectedRow.lineItemId ? current : null;
+    });
+  }, [selectedRow?.lineItemId]);
+
+  useEffect(() => {
+    if (currentArtifact?.previewStatus !== "ready") return;
+    setPreviewRecoveryState((current) => {
+      if (!selectedRow?.lineItemId) return null;
+      return current?.lineItemId === selectedRow.lineItemId ? null : current;
+    });
+  }, [currentArtifact?.previewStatus, selectedRow?.lineItemId]);
 
   async function refreshProofing(lineItemId?: string | null, orderId?: string | null) {
     await queryClient.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
@@ -810,6 +962,68 @@ export default function StaffProofingPage() {
     },
   });
 
+  const generatePreviewMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedRow?.lineItemId) {
+        throw new Error("Select a proofing queue row first");
+      }
+
+      return readJson<JsonEnvelope<{
+        derivativeStatus: "ready" | "pending" | "failed";
+        previewStatus: ProofArtifactPreviewStatus;
+        sourceFileName: string;
+        sourceType: "attachment" | "asset";
+        sourceId: string;
+        message: string;
+      }>>(`/api/proofing/line-items/${selectedRow.lineItemId}/generate-preview`, {
+        method: "POST",
+      });
+    },
+    onSuccess: async (result) => {
+      if (!selectedRow?.lineItemId) return;
+      setPreviewRecoveryState({
+        lineItemId: selectedRow.lineItemId,
+        derivativeStatus: result.data.derivativeStatus,
+      });
+      await refreshProofing(selectedRow.lineItemId, selectedRow.orderId ?? null);
+      toast({
+        title: result.message || "Preview recovery updated",
+        description: result.data.derivativeStatus === "ready"
+          ? "A new artwork preview derivative is available for proof regeneration."
+          : "Preview generation is still running. Refresh proofing in a moment to continue.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Preview generation failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const regenerateProofMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedRow?.lineItemId) {
+        throw new Error("Select a proofing queue row first");
+      }
+
+      return readJson<JsonEnvelope<{ proofVersion: ProofVersionHistoryEntry; proofing: ProofingReadModel }>>(
+        `/api/proofing/line-item/${selectedRow.lineItemId}/versions`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: "generated", internalNotes: null }),
+        },
+      );
+    },
+    onSuccess: async ({ data }) => {
+      await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
+      setSelectedVersionId(data.proofVersion.id);
+      setPreviewRecoveryState(null);
+      toast({ title: "Proof regenerated", description: "A new generated draft is ready for review and send." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to regenerate proof", description: error.message, variant: "destructive" });
+    },
+  });
+
   const sendMutation = useMutation({
     mutationFn: async () => {
       const targetId = versionIdForSend ?? displayedVersion?.id;
@@ -897,6 +1111,35 @@ export default function StaffProofingPage() {
     },
   });
 
+  const cancelProofMutation = useMutation({
+    mutationFn: async () => {
+      if (!displayedVersion?.id) throw new Error("Select an active sent proof version first");
+
+      return readJson<JsonEnvelope<{
+        proofId: string;
+        versionId: string;
+        status: ProofVersionStatus;
+        proofing: ProofingReadModel;
+      }>>(`/api/proofing/versions/${displayedVersion.id}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: cancelReason.trim() || null }),
+      });
+    },
+    onSuccess: async () => {
+      await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
+      setCancelDialogOpen(false);
+      setCancelReason("");
+      toast({
+        title: "Proof cancelled",
+        description: "The active customer proof link is no longer approvable. You can generate and send a corrected proof now.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to cancel proof", description: error.message, variant: "destructive" });
+    },
+  });
+
   if (!isInternalUser) {
     return (
       <div className="p-6">
@@ -927,10 +1170,22 @@ export default function StaffProofingPage() {
                   type="search"
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Search proofs..."
+                  placeholder="Search by order #, customer, or product"
                   className="h-9 w-64 rounded-lg border-none bg-[#141824] pl-9 pr-4 text-sm text-white placeholder:text-slate-600 focus:ring-1 focus:ring-[#1337ec]"
                 />
               </div>
+              <Select value={sortOrder} onValueChange={(value) => setSortOrder(value as ProofingSortValue)}>
+                <SelectTrigger className="h-9 w-[190px] rounded-lg border-[#232948] bg-[#141824] text-sm text-white">
+                  <SelectValue placeholder="Sort" />
+                </SelectTrigger>
+                <SelectContent>
+                  {proofingSortMeta.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <Button
                 className="h-9 rounded-lg bg-[#1337ec] px-4 text-sm font-bold text-white transition-all hover:bg-[#1a43ff]"
                 onClick={() => setCreateDialogOpen(true)}
@@ -943,19 +1198,33 @@ export default function StaffProofingPage() {
           </div>
         </header>
 
-        <Tabs value={slice} onValueChange={(value) => setSlice(value as ProofQueueSlice)} className="shrink-0 bg-[#0B1120] px-6 border-b border-[#232948]">
+        <Tabs value={activeFilter} onValueChange={(value) => setActiveFilter(value as ProofingFilterValue)} className="shrink-0 bg-[#0B1120] px-6 border-b border-[#232948]">
           <TabsList className="h-auto w-full justify-start gap-6 rounded-none bg-transparent px-0 py-0">
-            {queueSliceMeta.map((tab) => (
+            {proofingFilterMeta.map((tab) => (
               <TabsTrigger
                 key={tab.value}
                 value={tab.value}
                 className="rounded-none border-b-2 border-transparent bg-transparent px-0 py-3 text-[11px] font-bold uppercase tracking-wider text-slate-400 shadow-none hover:text-white data-[state=active]:border-[#1337ec] data-[state=active]:bg-transparent data-[state=active]:text-white"
               >
-                {tab.label === "All" ? "All Proofs" : tab.label}
+                {tab.label} ({filterCounts[tab.value]})
               </TabsTrigger>
             ))}
           </TabsList>
         </Tabs>
+
+        {isLineItemOverrideActive ? (
+          <div className="border-b border-[#232948] bg-[#1337ec]/10 px-6 py-3">
+            <div className="flex items-center justify-between gap-4 rounded-lg border border-[#1337ec]/30 bg-[#0B1120]/70 px-4 py-3 text-sm text-slate-100">
+              <div>
+                <p className="font-semibold">Showing result for selected line item</p>
+                <p className="text-xs text-slate-400">Filters and search are temporarily overridden so this item stays visible.</p>
+              </div>
+              <Button type="button" variant="outline" size="sm" className="border-[#3b4660] bg-transparent text-slate-100 hover:bg-[#141824]" onClick={handleClearLineItemOverride}>
+                Clear
+              </Button>
+            </div>
+          </div>
+        ) : null}
 
         <main className="flex min-h-0 flex-1 overflow-hidden">
           <aside className="flex w-80 shrink-0 flex-col border-r border-[#232948] bg-[#0B1120]">
@@ -970,52 +1239,48 @@ export default function StaffProofingPage() {
                 <div className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-4 text-sm text-rose-300">
                   {(queueQuery.error as Error).message}
                 </div>
-              ) : filteredQueueRows.length === 0 ? (
+              ) : visibleQueueRows.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-[#232948] p-4 text-sm text-slate-500">
-                  {searchQuery.trim() ? "No proofs match this search." : "No line items are currently in this proofing slice."}
+                  {requestedLineItemId && requestedLineItemMissing
+                    ? PROOFING_MISSING_LINE_ITEM_MESSAGE
+                    : "No proof items match your current filters"}
                 </div>
               ) : (
-                groupedQueueSections.map((section) => (
-                  <div key={section.key} className="space-y-2">
-                    <p className={`px-2 text-[10px] font-bold uppercase ${getSectionHeadingClass(section.key)}`}>
-                      {section.label} ({section.rows.length})
-                    </p>
-                    {section.rows.map((row) => {
-                      const isSelected = row.lineItemId === selectedRow?.lineItemId;
-                      return (
-                        <button
-                          key={row.lineItemId}
-                          type="button"
-                          onClick={() => setSelectedLineItemId(row.lineItemId)}
-                          className={`group w-full cursor-pointer rounded-lg p-3 text-left transition-all ${
-                            isSelected
-                              ? "border-2 border-[#1337ec] bg-[#1337ec]/10 shadow-[0_0_15px_rgba(19,55,236,0.15)]"
-                              : "border border-[#232948] bg-[#141824]/40 hover:border-slate-600"
-                          }`}
-                        >
-                          <div className="mb-2 flex items-start justify-between">
-                            <span className={`text-[10px] font-mono ${isSelected ? "font-bold text-[#4b7bff]" : "text-slate-400"}`}>
-                              {row.orderNumber ? `#${row.orderNumber}` : row.orderId}
-                            </span>
-                            <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${getQueueCardBadgeClass(row)}`}>
-                              {getQueueCardBadgeLabel(row)}
-                            </span>
-                          </div>
-                          <h4 className="text-xs font-bold text-white transition-colors group-hover:text-[#1337ec]">{row.lineItemLabel}</h4>
-                          <div className="mt-3 flex items-center justify-between">
-                            <div className={`flex size-5 items-center justify-center rounded-full text-[8px] text-white ${getAvatarClass(section.key)}`}>
-                              {getPersonInitials(row.customerDisplayName)}
-                            </div>
-                            <span className={`flex items-center gap-1 text-[10px] ${section.key === "awaiting_approval" ? "text-amber-500/70" : section.key === "revision_requested" ? "font-bold text-rose-400" : "text-slate-500"}`}>
-                              {section.key === "awaiting_approval" ? <Eye className="h-3 w-3" /> : section.key === "revision_requested" ? <AlertCircle className="h-3 w-3" /> : null}
-                              {section.key === "awaiting_approval" ? "Viewed" : formatRelativeTime(row.lastActivityAt)}
-                            </span>
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                ))
+                visibleQueueRows.map((row) => {
+                  const isSelected = row.lineItemId === activeRow?.lineItemId;
+                  return (
+                    <button
+                      key={row.lineItemId}
+                      type="button"
+                      onClick={() => setSelectedLineItemId(row.lineItemId)}
+                      className={`group w-full cursor-pointer rounded-lg p-3 text-left transition-all ${
+                        isSelected
+                          ? "border-2 border-[#1337ec] bg-[#1337ec]/10 shadow-[0_0_15px_rgba(19,55,236,0.15)]"
+                          : "border border-[#232948] bg-[#141824]/40 hover:border-slate-600"
+                      }`}
+                    >
+                      <div className="mb-2 flex items-start justify-between">
+                        <span className={`text-[10px] font-mono ${isSelected ? "font-bold text-[#4b7bff]" : "text-slate-400"}`}>
+                          {row.orderNumber ? `#${row.orderNumber}` : row.orderId}
+                        </span>
+                        <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${getQueueCardBadgeClass(row)}`}>
+                          {getQueueCardBadgeLabel(row)}
+                        </span>
+                      </div>
+                      <h4 className="text-xs font-bold text-white transition-colors group-hover:text-[#1337ec]">{row.lineItemLabel}</h4>
+                      <p className="mt-1 text-[10px] text-slate-500">{row.customerDisplayName || "No customer"}</p>
+                      <div className="mt-3 flex items-center justify-between">
+                        <div className={`flex size-5 items-center justify-center rounded-full text-[8px] text-white ${getAvatarClass(row.currentQueueStatus)}`}>
+                          {getPersonInitials(row.customerDisplayName)}
+                        </div>
+                        <span className={`flex items-center gap-1 text-[10px] ${row.currentQueueStatus === "awaiting_approval" ? "text-amber-500/70" : row.currentQueueStatus === "revision_requested" || row.currentQueueStatus === "rejected" ? "font-bold text-rose-400" : "text-slate-500"}`}>
+                          {row.currentQueueStatus === "awaiting_approval" ? <Eye className="h-3 w-3" /> : row.currentQueueStatus === "revision_requested" || row.currentQueueStatus === "rejected" ? <AlertCircle className="h-3 w-3" /> : null}
+                          {formatRelativeTime(row.lastActivityAt)}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })
               )}
             </div>
           </aside>
@@ -1026,13 +1291,20 @@ export default function StaffProofingPage() {
                 <Skeleton className="h-14 w-full rounded-lg bg-[#141824]" />
                 <Skeleton className="h-full min-h-[34rem] w-full rounded-lg bg-[#141824]" />
               </div>
+            ) : requestedLineItemMissing ? (
+              <div className="p-4">
+                <div className="rounded-lg border border-dashed border-[#232948] bg-[#141824]/40 p-6 text-sm text-slate-300">
+                  <p>{PROOFING_MISSING_LINE_ITEM_MESSAGE}</p>
+                  <p className="mt-2 text-xs text-slate-500">Line item: {requestedLineItemId}</p>
+                </div>
+              </div>
             ) : detailQuery.error ? (
               <div className="p-4">
                 <div className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-4 text-sm text-rose-300">
                   {(detailQuery.error as Error).message}
                 </div>
               </div>
-            ) : !selectedRow || !detail ? (
+            ) : !activeLineItemId || !detail ? (
               <div className="flex h-full items-center justify-center p-8 text-sm text-slate-500">Select a queue row to load proof detail.</div>
             ) : (
               <>
@@ -1044,7 +1316,8 @@ export default function StaffProofingPage() {
                     <div>
                       <h2 className="text-xs font-bold uppercase tracking-tight text-white">{previewName}</h2>
                       <p className="text-[9px] text-slate-500">
-                        {displayedVersion?.sentAt ? `Sent ${formatTimestamp(displayedVersion.sentAt)}` : `Created ${formatTimestamp(displayedVersion?.createdAt)}`} • Last viewed {formatRelativeTime(selectedRow.lastActivityAt)}
+                        {displayedVersion?.sentAt ? `Sent ${formatTimestamp(displayedVersion.sentAt)}` : `Created ${formatTimestamp(displayedVersion?.createdAt)}`}
+                        {activityTimestamp ? ` • Last activity ${formatRelativeTime(activityTimestamp)}` : ""}
                       </p>
                     </div>
                   </div>
@@ -1115,6 +1388,22 @@ export default function StaffProofingPage() {
                     </button>
                   </div>
                 </div>
+
+                {currentProofIssue ? (
+                  <div className="border-t border-[#232948] bg-amber-500/10 px-5 py-4 text-amber-100">
+                    <div className="flex items-start gap-3">
+                      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                      <div className="space-y-1.5">
+                        <p className="text-xs font-bold uppercase tracking-[0.14em]">{currentProofIssue.title}</p>
+                        <p className="text-xs text-amber-50/90">{currentProofIssue.description}</p>
+                        {currentProofIssue.sourceFileName ? (
+                          <p className="text-[11px] text-amber-50/80">Source: {currentProofIssue.sourceFileName}</p>
+                        ) : null}
+                        <p className="text-[11px] font-medium text-amber-50">{currentProofIssue.nextAction}</p>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
 
                 {/* Proof render area — outer div scrolls when content overflows (zoom > fit).
                     No max-width cap here; the proof fills the available pane. */}
@@ -1248,20 +1537,20 @@ export default function StaffProofingPage() {
                     <div className="flex w-full flex-col gap-2">
                       <div className="flex items-center justify-between">
                         <span className="font-mono text-xs font-black uppercase tracking-[0.2em] text-[#1337ec]">
-                          Order {selectedRow?.orderNumber ? `#${selectedRow.orderNumber}` : selectedRow?.orderId}
+                          Order {orderLabel ? `#${orderLabel}` : activeOrderId}
                         </span>
                         <div className="flex gap-2">
                           {displayedVersion ? <span className="rounded-md border border-[#232948] bg-slate-800 px-2 py-0.5 text-[9px] font-bold text-slate-400">v{displayedVersion.versionNumber}</span> : null}
-                          <span className={`rounded-md border px-2 py-0.5 text-[9px] font-bold uppercase tracking-tight ${getQueueCardBadgeClass(selectedRow)}`}>
+                          <span className={`rounded-md px-2 py-0.5 text-[9px] font-bold uppercase tracking-tight ${queueBadgeClass}`}>
                             {staffStatus.label}
                           </span>
                         </div>
                       </div>
                     </div>
                   </div>
-                  <h2 className="mt-2 text-lg font-bold leading-tight text-white">{selectedRow?.lineItemLabel || "Proofing"}</h2>
-                  <p className="mt-1 text-xs font-semibold uppercase tracking-wider text-slate-500">{selectedRow?.packageLabel || "No package linked"}</p>
-                  {selectedRow?.customerDisplayName ? <p className="mt-2 text-sm text-slate-300">{selectedRow.customerDisplayName}</p> : null}
+                  <h2 className="mt-2 text-lg font-bold leading-tight text-white">{lineItemLabel}</h2>
+                  <p className="mt-1 text-xs font-semibold uppercase tracking-wider text-slate-500">{packageLabel || "No package linked"}</p>
+                  {customerDisplayName ? <p className="mt-2 text-sm text-slate-300">{customerDisplayName}</p> : null}
                 </>
               ) : (
                 <div className="text-sm text-slate-500">No line item selected.</div>
@@ -1288,11 +1577,59 @@ export default function StaffProofingPage() {
                         setCreateDialogOpen(true);
                       }
                     }}
-                    disabled={!selectedRow}
+                    disabled={!activeRow || (canSendCurrentVersion && !canSendDisplayedVersion)}
                   >
                     {canSendCurrentVersion ? <Send className="h-4 w-4" /> : <Upload className="h-4 w-4" />}
                     {primaryActionLabel}
                   </Button>
+                  {canSendCurrentVersion && currentProofIssue ? (
+                    <p className="mt-3 text-center text-[10px] text-amber-300">
+                      This proof does not include an artwork preview and cannot be sent to the customer.
+                    </p>
+                  ) : null}
+                  {canGeneratePreviewAction || canRegenerateProofAction ? (
+                    <div className="mt-3 grid grid-cols-1 gap-2">
+                      {canGeneratePreviewAction ? (
+                        <Button
+                          variant="outline"
+                          className="h-10 rounded-xl border-amber-400/40 bg-amber-500/10 text-[10px] font-bold uppercase tracking-wider text-amber-100 transition-all hover:bg-amber-500/15"
+                          onClick={() => generatePreviewMutation.mutate()}
+                          disabled={generatePreviewMutation.isPending || regenerateProofMutation.isPending || !selectedRow?.lineItemId}
+                        >
+                          {generatePreviewMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileImage className="mr-2 h-4 w-4" />}
+                          {generatePreviewMutation.isPending ? "Generating Preview" : "Generate Preview"}
+                        </Button>
+                      ) : null}
+                      {canRegenerateProofAction ? (
+                        <Button
+                          variant="outline"
+                          className="h-10 rounded-xl border-[#1337ec]/50 bg-[#1337ec]/10 text-[10px] font-bold uppercase tracking-wider text-[#b9c7ff] transition-all hover:bg-[#1337ec]/15"
+                          onClick={() => regenerateProofMutation.mutate()}
+                          disabled={regenerateProofMutation.isPending || generatePreviewMutation.isPending || !selectedRow?.lineItemId}
+                        >
+                          {regenerateProofMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+                          {regenerateProofMutation.isPending ? "Regenerating Proof" : "Regenerate Proof"}
+                        </Button>
+                      ) : null}
+                      {previewRecoveryState?.lineItemId === selectedRow?.lineItemId ? (
+                        <p className="text-center text-[10px] text-slate-400">
+                          {previewRecoveryState?.derivativeStatus === "ready"
+                            ? "Preview derivative is ready. Regenerate the proof draft to embed it."
+                            : "Preview generation is still running. Refresh proofing in a moment to continue."}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {canCancelDisplayedVersion ? (
+                    <Button
+                      variant="outline"
+                      className="mt-3 h-10 w-full rounded-xl border-rose-500/40 bg-rose-500/10 text-[10px] font-bold uppercase tracking-wider text-rose-100 transition-all hover:bg-rose-500/15"
+                      onClick={() => setCancelDialogOpen(true)}
+                      disabled={cancelProofMutation.isPending}
+                    >
+                      Cancel / Supersede Proof
+                    </Button>
+                  ) : null}
                   {latestCustomerFeedback ? (
                     <p className="mt-3 text-center text-[10px] text-slate-500">
                       {displayedVersion?.sentAt ? `v${displayedVersion.versionNumber} sent ${formatTimestamp(displayedVersion.sentAt)}` : "Awaiting response"} • Last response: <span className="font-semibold text-rose-400">{getResponseSummary(latestCustomerFeedback)}</span>
@@ -1359,6 +1696,10 @@ export default function StaffProofingPage() {
                     <div>
                       <p className="text-[9px] font-bold uppercase text-slate-500">Artifact</p>
                       <p className="text-xs font-bold text-slate-200">{currentArtifact ? currentArtifact.artifactKind.replace(/_/g, " ") : "Pending"}</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] font-bold uppercase text-slate-500">Preview Status</p>
+                      <p className="text-xs font-bold text-slate-200">{currentArtifact ? currentArtifact.previewStatus.replace(/_/g, " ") : "Pending"}</p>
                     </div>
                     <div>
                       <p className="text-[9px] font-bold uppercase text-slate-500">Preflight</p>
@@ -1773,6 +2114,9 @@ export default function StaffProofingPage() {
                       {displayedFile ? ` — ${displayedFile.originalFilename || displayedFile.fileName || "Proof file"}` : ""}
                     </p>
                     <p className="mt-0.5 text-xs text-muted-foreground capitalize">{displayedVersion.status.replace(/_/g, " ")}</p>
+                    {currentProofIssue ? (
+                      <p className="mt-1 text-xs text-destructive">This proof does not include an artwork preview and cannot be sent to the customer.</p>
+                    ) : null}
                     {downloadUrl && displayedFile ? (
                       <a
                         href={downloadUrl}
@@ -1850,7 +2194,7 @@ export default function StaffProofingPage() {
             {sendDialogMode === "resend" ? (
               <Button
                 onClick={() => resendMutation.mutate()}
-                disabled={resendMutation.isPending || !sendToEmail.trim()}
+                disabled={resendMutation.isPending || !sendToEmail.trim() || !canResendDisplayedVersion}
               >
                 {resendMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
                 Resend notification
@@ -1858,7 +2202,7 @@ export default function StaffProofingPage() {
             ) : (
               <Button
                 onClick={() => sendMutation.mutate()}
-                disabled={sendMutation.isPending || !sendToEmail.trim()}
+                disabled={sendMutation.isPending || !sendToEmail.trim() || !canSendDisplayedVersion}
               >
                 {sendMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
                 Send proof
@@ -1907,6 +2251,39 @@ export default function StaffProofingPage() {
             <Button variant="destructive" onClick={() => overrideMutation.mutate()} disabled={overrideMutation.isPending || !overrideReason.trim()}>
               {overrideMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldAlert className="mr-2 h-4 w-4" />}
               Record manual override
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Cancel / Supersede Proof</DialogTitle>
+            <DialogDescription>
+              This will cancel the active customer proof link. The customer will no longer be able to approve this version. You can generate and send a corrected proof after cancellation.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-2">
+            <Label htmlFor="proof-cancel-reason">Reason</Label>
+            <Textarea
+              id="proof-cancel-reason"
+              rows={4}
+              value={cancelReason}
+              onChange={(event) => setCancelReason(event.target.value)}
+              placeholder="Optional internal reason for cancelling this proof"
+              disabled={cancelProofMutation.isPending}
+            />
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCancelDialogOpen(false)} disabled={cancelProofMutation.isPending}>
+              Keep Proof Active
+            </Button>
+            <Button variant="destructive" onClick={() => cancelProofMutation.mutate()} disabled={cancelProofMutation.isPending || !canCancelDisplayedVersion}>
+              {cancelProofMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Cancel Proof
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -31,6 +31,7 @@ import { emailService } from "../emailService";
 // users.role / users.is_admin are global identity fields and must NOT be used
 // for org invite / role-assignment permission checks.
 import { canAssignOrgRole } from "../lib/orgPermissions";
+import { getPublicWebOrigin } from "../lib/appRuntimeConfig";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -190,7 +191,8 @@ export function registerUsersRoutes(
       setImmediate(async () => {
         console.log(`[Invite] Email attempted: to=${email} orgId=${organizationId}`);
         try {
-          const appUrl = 'https://www.printershero.com';
+          const appUrl = getPublicWebOrigin() || 'https://www.printershero.com';
+          console.log(`[Invite] Login link base: ${appUrl}`);
 
           const msgId = await emailService.sendEmail(organizationId, {
             to: email,
@@ -485,7 +487,8 @@ export function registerUsersRoutes(
       setImmediate(async () => {
         console.log(`[Admin Invite] Email attempted: to=${email} orgId=${organizationId}`);
         try {
-          const appUrl = 'https://www.printershero.com';
+          const appUrl = getPublicWebOrigin() || 'https://www.printershero.com';
+          console.log(`[Admin Invite] Login link base: ${appUrl}`);
 
           const msgId = await emailService.sendEmail(organizationId, {
             to: email,
@@ -606,7 +609,8 @@ export function registerUsersRoutes(
       setImmediate(async () => {
         console.log(`[Admin Reset] Email attempted: to=${user.email} orgId=${organizationId}`);
         try {
-          const appUrl = 'https://www.printershero.com';
+          const appUrl = getPublicWebOrigin() || 'https://www.printershero.com';
+          console.log(`[Admin Reset] Login link base: ${appUrl}`);
 
           const msgId = await emailService.sendEmail(organizationId, {
             to: user.email!,

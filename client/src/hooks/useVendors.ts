@@ -6,10 +6,15 @@ export interface Vendor {
   name: string;
   email?: string | null;
   phone?: string | null;
+  salesRepName?: string | null;
+  salesRepEmail?: string | null;
+  salesRepPhone?: string | null;
   website?: string | null;
   notes?: string | null;
+  additionalContactInfo?: string | null;
   paymentTerms: string;
   defaultLeadTimeDays?: number | null;
+  leadTimeText?: string | null;
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
