@@ -12,7 +12,7 @@ export function PublicFooter() {
   return (
     <footer className="border-t bg-background mt-auto">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-muted-foreground">
-        <p>© 2026 Titan Graphics, LLC. All rights reserved.</p>
+        <p>© 2026 Workflow Dynamics Group, LLC. All rights reserved.</p>
         <nav className="flex flex-wrap gap-x-5 gap-y-2 justify-center">
           <Link to="/privacy" className="hover:text-foreground transition-colors">
             Privacy Policy
