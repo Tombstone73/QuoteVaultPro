@@ -77,6 +77,9 @@ import LabelsPage from "@/pages/labels";
 import ReportsPage from "@/pages/reports";
 import FinancePage from "@/pages/finance";
 import InboundOrdersPage from "@/pages/inbound-orders";
+import PrivacyPage from "@/pages/privacy";
+import TermsPage from "@/pages/terms";
+import SupportPage from "@/pages/support";
 
 function Router() {
   const { user, isAuthenticated, isLoading, mustChangePassword } = useAuth();
@@ -100,6 +103,10 @@ function Router() {
         <Route path="/accept-invite" element={<AcceptInvitePage />} />
         {/* Token-based proof review — no account required; the token IS the auth */}
         <Route path="/portal/proof/:token" element={<PortalProofPage />} />
+        {/* Public legal/support pages */}
+        <Route path="/privacy" element={<PrivacyPage />} />
+        <Route path="/terms" element={<TermsPage />} />
+        <Route path="/support" element={<SupportPage />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     );
@@ -110,6 +117,9 @@ function Router() {
     return (
       <Routes>
         <Route path="/force-password-change" element={<ForcePasswordChange />} />
+        <Route path="/privacy" element={<PrivacyPage />} />
+        <Route path="/terms" element={<TermsPage />} />
+        <Route path="/support" element={<SupportPage />} />
         <Route path="*" element={<Navigate to="/force-password-change" replace />} />
       </Routes>
     );
@@ -120,6 +130,9 @@ function Router() {
     return (
       <Routes>
         <Route path="/set-password" element={<SetPasswordPage />} />
+        <Route path="/privacy" element={<PrivacyPage />} />
+        <Route path="/terms" element={<TermsPage />} />
+        <Route path="/support" element={<SupportPage />} />
         <Route path="*" element={<Navigate to="/set-password" replace />} />
       </Routes>
     );
@@ -269,6 +282,11 @@ function Router() {
       <Route path="/portal" element={<PortalLayout />}>
         <Route path="dashboard" element={<div className="p-4 text-muted-foreground">Portal Dashboard — coming soon</div>} />
       </Route>
+
+      {/* Public legal/support pages — standalone, no app shell */}
+      <Route path="/privacy" element={<PrivacyPage />} />
+      <Route path="/terms" element={<TermsPage />} />
+      <Route path="/support" element={<SupportPage />} />
 
       {/* Catch-all not found */}
       <Route path="*" element={<NotFound />} />
