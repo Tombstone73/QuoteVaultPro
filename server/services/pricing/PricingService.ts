@@ -139,6 +139,7 @@ export type PricingPreviewEvaluationResult = {
       unitPrice: number;
       totalPrice: number;
     };
+    runtimeSelectionContext?: OptionRuntimeSelectionContext;
     weight?: {
       baseWeightInput?: number | string | null;
       baseWeightSource?: 'meta.baseWeightOz' | 'shippingConfig.baseWeight' | 'none';
@@ -638,6 +639,7 @@ export function evaluatePricingPreviewFromTree(input: {
         unitPrice: quantity > 0 ? totalCents / 100 / quantity : 0,
         totalPrice: totalCents / 100,
       },
+      runtimeSelectionContext,
       weight: weightDebug,
     } : undefined,
   };
