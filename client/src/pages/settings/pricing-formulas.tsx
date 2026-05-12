@@ -37,9 +37,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Plus, Pencil, Trash2, Eye, Package, Play } from "lucide-react";
+import { Loader2, Plus, Pencil, Trash2, Eye, Package, Play, AlertTriangle } from "lucide-react";
 import { TitanCard } from "@/components/ui/TitanCard";
 import { evaluate } from "mathjs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { FormulaLanguageHelp } from "@/components/pbv2/FormulaLanguageHelp";
 
 // Variable library for pricing formulas
 type VariableLibraryItem = {
@@ -667,12 +669,34 @@ function FormulaEditorFields({
                   id="expression"
                   value={formData.expression ?? ""}
                   onChange={(e) => setFormData({ ...formData, expression: e.target.value })}
-                  placeholder="e.g., sqft * p * q"
+                  placeholder="e.g., sqft * base_price * q"
                   className="font-mono"
                 />
                 <p className="text-xs text-muted-foreground mt-1">
                   Click variables from the library to insert them →
                 </p>
+                {(() => {
+                  const expr = (formData.expression ?? "").trim();
+                  let warning: string | null = null;
+                  if (expr) {
+                    if (/Math\s*\./.test(expr))
+                      warning = "Use ceil(), floor(), max() etc. directly — Math.ceil() and similar are not supported.";
+                    else if (/\|\|/.test(expr))
+                      warning = "|| is not supported. Use a ternary: condition ? a : b";
+                    else if (/&&/.test(expr))
+                      warning = "&& is not supported. Use a ternary: condition ? a : b";
+                    else if (/\b(var|let|const|function|return)\b/.test(expr))
+                      warning = "JavaScript keywords are not supported. Formulas must be a single expression.";
+                    else if (/\bif\s*\(/.test(expr))
+                      warning = "if/else blocks are not supported. Use a ternary: condition ? a : b";
+                  }
+                  return warning ? (
+                    <div className="flex items-start gap-2 text-xs bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded px-3 py-2 text-amber-700 dark:text-amber-300 mt-1.5">
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                      <span>{warning}</span>
+                    </div>
+                  ) : null;
+                })()}
               </div>
 
               {/* Formula Tester Panel */}
@@ -763,42 +787,52 @@ function FormulaEditorFields({
           )}
         </div>
 
-        {/* Variable Library - Right sidebar */}
+        {/* Variable Library + Formula Help - Right sidebar */}
         {!showFlatGoodsConfig && (
           <div className="lg:col-span-1">
             <div className="sticky top-0">
-              <h4 className="font-medium text-sm mb-3">Variable Library</h4>
-              <div className="border rounded-md overflow-hidden bg-card">
-                <div className="max-h-[500px] overflow-y-auto divide-y">
-                  {VARIABLE_LIBRARY.map((section) => (
-                    <div key={section.section} className="p-3">
-                      <h5 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-                        {section.section}
-                      </h5>
-                      <div className="space-y-1">
-                        {section.variables.map((variable) => (
-                          <button
-                            key={variable.key}
-                            onClick={() => insertVariable(variable.key)}
-                            className="w-full text-left px-2 py-1.5 rounded hover:bg-muted transition-colors group"
-                            type="button"
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="flex-1 min-w-0">
-                                <p className="text-sm font-medium truncate">{variable.label}</p>
-                                <p className="text-xs text-muted-foreground truncate">{variable.description}</p>
-                              </div>
-                              <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-mono shrink-0 group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
-                                {variable.key}
-                              </code>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
+              <Tabs defaultValue="variables" className="w-full">
+                <TabsList className="grid w-full grid-cols-2">
+                  <TabsTrigger value="variables" className="text-xs">Variables</TabsTrigger>
+                  <TabsTrigger value="help" className="text-xs">Formula Help</TabsTrigger>
+                </TabsList>
+                <TabsContent value="variables">
+                  <div className="border rounded-md overflow-hidden bg-card">
+                    <div className="max-h-[500px] overflow-y-auto divide-y">
+                      {VARIABLE_LIBRARY.map((section) => (
+                        <div key={section.section} className="p-3">
+                          <h5 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                            {section.section}
+                          </h5>
+                          <div className="space-y-1">
+                            {section.variables.map((variable) => (
+                              <button
+                                key={variable.key}
+                                onClick={() => insertVariable(variable.key)}
+                                className="w-full text-left px-2 py-1.5 rounded hover:bg-muted transition-colors group"
+                                type="button"
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-medium truncate">{variable.label}</p>
+                                    <p className="text-xs text-muted-foreground truncate">{variable.description}</p>
+                                  </div>
+                                  <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-mono shrink-0 group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
+                                    {variable.key}
+                                  </code>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-              </div>
+                  </div>
+                </TabsContent>
+                <TabsContent value="help">
+                  <FormulaLanguageHelp onInsert={insertVariable} />
+                </TabsContent>
+              </Tabs>
             </div>
           </div>
         )}
