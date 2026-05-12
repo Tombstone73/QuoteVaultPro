@@ -19,6 +19,7 @@ import { useAuth } from '@/hooks/useAuth';
 type QuantityBasis = 'area_sqft' | 'perimeter_ft' | 'linear_ft' | 'each' | 'fixed';
 type PricingOverrideMode = 'none' | 'set_base_rate' | 'add_base_rate' | 'multiply_base_rate';
 type PricingOverrideUnit = 'perSqft' | 'perPiece' | 'minimumCharge';
+type EditingChoiceValue = { optionId: string; value: string; originalValue?: string };
 
 function impliedUomForBasis(basis: QuantityBasis): 'sqft' | 'ft' | 'each' {
   if (basis === 'area_sqft') return 'sqft';
@@ -78,8 +79,8 @@ interface OptionDetailsEditorProps {
   onUpdateNodePricing: (optionId: string, pricingImpact: Array<{ mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }>) => void;
   onAddPricingRule: (optionId: string, rule: { mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }) => void;
   onDeletePricingRule: (optionId: string, ruleIndex: number) => void;
-  editingChoiceValue: { optionId: string; value: string } | null;
-  setEditingChoiceValue: (val: { optionId: string; value: string } | null) => void;
+  editingChoiceValue: EditingChoiceValue | null;
+  setEditingChoiceValue: (val: EditingChoiceValue | null) => void;
 }
 
 export function OptionDetailsEditor({
@@ -247,7 +248,13 @@ export function OptionDetailsEditor({
               <div className="space-y-2">
                 {choices.map((choice: any, index: number) => {
                   const isDuplicate = duplicateValues.has(choice.value);
-                  const isEditing = editingChoiceValue?.optionId === option.id && editingChoiceValue?.value === choice.value;
+                  const editingOriginalValue = editingChoiceValue?.originalValue ?? editingChoiceValue?.value;
+                  const isEditing = editingChoiceValue?.optionId === option.id && editingOriginalValue === choice.value;
+                  const commitChoiceValueEdit = () => {
+                    if (!editingChoiceValue || !isEditing) return;
+                    onUpdateChoice(option.id, editingOriginalValue ?? choice.value, { value: editingChoiceValue.value });
+                    setEditingChoiceValue(null);
+                  };
                   const choiceWorkflowTags = Array.isArray(choice.workflowTags) ? choice.workflowTags : [];
                   const hasVariantContext =
                     choice.priceDeltaCents !== undefined ||
@@ -320,21 +327,21 @@ export function OptionDetailsEditor({
                               {isEditing ? (
                                 <>
                                   <Input
-                                    value={choice.value}
+                                    value={editingChoiceValue?.value ?? choice.value}
                                     onChange={(e) => {
                                       const newValue = e.target.value;
-                                      setEditingChoiceValue({ optionId: option.id, value: newValue });
+                                      setEditingChoiceValue({
+                                        optionId: option.id,
+                                        originalValue: editingOriginalValue ?? choice.value,
+                                        value: newValue,
+                                      });
                                     }}
                                     onBlur={() => {
-                                      if (editingChoiceValue) {
-                                        onUpdateChoice(option.id, choice.value, { value: editingChoiceValue.value });
-                                        setEditingChoiceValue(null);
-                                      }
+                                      commitChoiceValueEdit();
                                     }}
                                     onKeyDown={(e) => {
-                                      if (e.key === 'Enter' && editingChoiceValue) {
-                                        onUpdateChoice(option.id, choice.value, { value: editingChoiceValue.value });
-                                        setEditingChoiceValue(null);
+                                      if (e.key === 'Enter') {
+                                        commitChoiceValueEdit();
                                       }
                                       if (e.key === 'Escape') {
                                         setEditingChoiceValue(null);
@@ -347,10 +354,7 @@ export function OptionDetailsEditor({
                                     type="button"
                                     size="sm"
                                     onClick={() => {
-                                      if (editingChoiceValue) {
-                                        onUpdateChoice(option.id, choice.value, { value: editingChoiceValue.value });
-                                        setEditingChoiceValue(null);
-                                      }
+                                      commitChoiceValueEdit();
                                     }}
                                   >
                                     Save
@@ -365,7 +369,7 @@ export function OptionDetailsEditor({
                                     type="button"
                                     size="sm"
                                     variant="outline"
-                                    onClick={() => setEditingChoiceValue({ optionId: option.id, value: choice.value })}
+                                    onClick={() => setEditingChoiceValue({ optionId: option.id, originalValue: choice.value, value: choice.value })}
                                     className="text-xs"
                                   >
                                     Edit
