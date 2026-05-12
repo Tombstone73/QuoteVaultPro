@@ -278,7 +278,7 @@ export function registerQuickBooksRoutes(
       res.redirect('/settings?qb_connected=true');
     } catch (error: any) {
       console.error('[QB Callback] Error:', error);
-      res.redirect('/settings?qb_error=' + encodeURIComponent(error.message));
+      res.redirect('/settings?qb_error=' + encodeURIComponent('connection_failed'));
     }
   });
 
