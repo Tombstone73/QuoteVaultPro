@@ -123,6 +123,10 @@ export const ROUTES = {
     // edit: (id: string) => `/orders/${id}/edit`,
   },
 
+  inboundOrders: {
+    list: "/inbound-orders",
+  },
+
   // Customers
   customers: {
     list: "/customers",
@@ -187,6 +191,8 @@ export const ROUTES = {
     products: "/admin/products",
     productTypes: "/admin/product-types",
     bugReports: "/admin/bug-reports",
+    pricingAudit: "/admin/pricing-audit",
+    materialsImportExport: "/admin/materials/import-export",
   },
 
   system: {

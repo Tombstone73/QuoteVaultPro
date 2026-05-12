@@ -202,6 +202,29 @@ export async function runMigrations(): Promise<void> {
     console.log(
       `[Migrations] Packaged journal: ${entries.length} entries, highest idx = ${maxIdx} (${lastEntry?.tag ?? "unknown"}), highest when = ${maxWhen} (${maxWhenEntry?.tag ?? "unknown"} — ${new Date(maxWhen).toISOString()})`,
     );
+
+    // Monotonicity audit — log any idx whose 'when' is not strictly greater than
+    // the previous idx's 'when'. These are silent skip risks: if such a migration
+    // hasn't been applied yet and a later migration with a higher 'when' has been,
+    // it will be skipped forever.
+    const sorted = entries.slice().sort((a, b) => a.idx - b.idx);
+    const nonMonotonic: string[] = [];
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i].when <= sorted[i - 1].when) {
+        nonMonotonic.push(
+          `idx=${sorted[i].idx} (${sorted[i].tag}) when=${sorted[i].when} <= idx=${sorted[i-1].idx} (${sorted[i-1].tag}) when=${sorted[i-1].when}`,
+        );
+      }
+    }
+    if (nonMonotonic.length > 0) {
+      console.warn(
+        `[Migrations] WARNING: ${nonMonotonic.length} non-monotonic 'when' value(s) in journal — ` +
+        `migrations with 'when' <= a prior migration's 'when' will be silently skipped if the prior one was applied first:\n` +
+        nonMonotonic.map((m) => `  • ${m}`).join("\n"),
+      );
+    } else {
+      console.log(`[Migrations] Journal 'when' values are strictly monotonic — no silent-skip risk.`);
+    }
   } catch (e: any) {
     console.error(
       `[Migrations] WARNING: could not read packaged journal — ${e?.message}. ` +

@@ -12,7 +12,7 @@
  * - Keep all edits local until "Save Draft" is called
  */
 
-import type { OptionNodeV2, PricingImpact } from '@shared/optionTreeV2';
+import type { ChoiceMaterialOverride, ChoicePricingOverride, OptionNodeV2, PricingImpact, VisibilityRule } from '@shared/optionTreeV2';
 
 /**
  * CANONICAL PBV2 GRAPH RULES (enforced by normalizeTreeJson):
@@ -278,6 +278,7 @@ export type EditorOptionGroup = {
   isRequired: boolean;
   isMultiSelect: boolean;
   optionIds: string[]; // Child node IDs
+  visibilityRules?: VisibilityRule[];
 };
 
 export type EditorOption = {
@@ -329,7 +330,18 @@ type PBV2Node = {
   };
   label?: string;
   description?: string;
-  choices?: Array<{ value: string; label: string; description?: string; sortOrder?: number; weightOz?: number; inventoryConsumption?: Array<{ materialId: string; quantityBasis: "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed"; multiplier: number; wastePercent?: number; fixedQty?: number }> }>;
+  choices?: Array<{
+    value: string;
+    label: string;
+    description?: string;
+    sortOrder?: number;
+    weightOz?: number;
+    priceDeltaCents?: number;
+    pricingOverride?: ChoicePricingOverride;
+    materialOverride?: ChoiceMaterialOverride;
+    workflowTags?: string[];
+    inventoryConsumption?: Array<{ materialId: string; quantityBasis: "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed"; multiplier: number; wastePercent?: number; fixedQty?: number }>;
+  }>;
   data?: any;
   priceComponents?: any[];
   pricingImpact?: any[];
@@ -431,6 +443,7 @@ export function pbv2TreeToEditorModel(treeJson: unknown): EditorModel {
       isRequired: node.input?.required || false,
       isMultiSelect: node.input?.type === 'multiselect',
       optionIds,
+      visibilityRules: Array.isArray((node as any).visibility?.rules) ? (node as any).visibility.rules : undefined,
     };
   });
 
@@ -568,7 +581,7 @@ export function createAddGroupPatch(treeJson: unknown): { patch: any; newGroupId
 export function createUpdateGroupPatch(
   treeJson: unknown,
   groupId: string,
-  updates: Partial<Pick<EditorOptionGroup, 'name' | 'description' | 'isRequired' | 'isMultiSelect'>>
+  updates: Partial<Pick<EditorOptionGroup, 'name' | 'description' | 'isRequired' | 'isMultiSelect' | 'visibilityRules'>>
 ): { patch: any } {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
 
@@ -583,6 +596,23 @@ export function createUpdateGroupPatch(
     }
     if (updates.isMultiSelect !== undefined && updated.input) {
       updated.input = { ...updated.input, type: updates.isMultiSelect ? 'multiselect' : 'select' };
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'visibilityRules')) {
+      const nextRules = updates.visibilityRules;
+      const existingVisibility = typeof updated.visibility === 'object' && updated.visibility ? updated.visibility : {};
+      if (!nextRules || nextRules.length === 0) {
+        if (existingVisibility && Object.prototype.hasOwnProperty.call(existingVisibility, 'rules')) {
+          const { rules: _rules, ...restVisibility } = existingVisibility as any;
+          updated.visibility = Object.keys(restVisibility).length > 0 ? restVisibility : undefined;
+        } else {
+          updated.visibility = Object.keys(existingVisibility).length > 0 ? existingVisibility : undefined;
+        }
+      } else {
+        updated.visibility = {
+          ...existingVisibility,
+          rules: nextRules,
+        };
+      }
     }
 
     return updated;
@@ -734,7 +764,17 @@ export function createUpdateOptionPatch(
     isRequired?: boolean; // UI field
     defaultValue?: any;
     isDefault?: boolean; // UI field
-    choices?: Array<{ value: string; label: string; description?: string; sortOrder?: number; inventoryConsumption?: Array<{ materialId: string; quantityBasis: "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed"; multiplier: number; wastePercent?: number; fixedQty?: number }> }>;
+    choices?: Array<{
+      value: string;
+      label: string;
+      description?: string;
+      sortOrder?: number;
+      priceDeltaCents?: number;
+      pricingOverride?: ChoicePricingOverride;
+      materialOverride?: ChoiceMaterialOverride;
+      workflowTags?: string[];
+      inventoryConsumption?: Array<{ materialId: string; quantityBasis: "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed"; multiplier: number; wastePercent?: number; fixedQty?: number }>;
+    }>;
   }
 ): { patch: any } {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
@@ -868,7 +908,10 @@ export function createUpdateChoicePatch(
     description?: string;
     priceDeltaCents?: number;
     pricingImpact?: PricingImpact[];
+    pricingOverride?: ChoicePricingOverride;
+    materialOverride?: ChoiceMaterialOverride;
     inventoryConsumption?: Array<{ materialId: string; quantityBasis: "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed"; multiplier: number; wastePercent?: number; fixedQty?: number }>;
+    workflowTags?: string[];
   }
 ): { patch: any; validationError?: string } {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
@@ -911,12 +954,33 @@ export function createUpdateChoicePatch(
       if (c.value !== choiceValue) return c;
       
       const updated = { ...c };
-      if (updates.label !== undefined) updated.label = updates.label;
-      if (updates.value !== undefined) updated.value = updates.value;
-      if (updates.description !== undefined) updated.description = updates.description;
-      if (updates.priceDeltaCents !== undefined) updated.priceDeltaCents = updates.priceDeltaCents;
-      if (updates.pricingImpact !== undefined) updated.pricingImpact = updates.pricingImpact;
-      if (updates.inventoryConsumption !== undefined) updated.inventoryConsumption = updates.inventoryConsumption;
+      if (Object.prototype.hasOwnProperty.call(updates, 'label')) updated.label = updates.label;
+      if (Object.prototype.hasOwnProperty.call(updates, 'value')) updated.value = updates.value;
+      if (Object.prototype.hasOwnProperty.call(updates, 'description')) updated.description = updates.description;
+      if (Object.prototype.hasOwnProperty.call(updates, 'priceDeltaCents')) {
+        if (updates.priceDeltaCents === undefined) delete updated.priceDeltaCents;
+        else updated.priceDeltaCents = updates.priceDeltaCents;
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'pricingImpact')) {
+        if (updates.pricingImpact === undefined) delete updated.pricingImpact;
+        else updated.pricingImpact = updates.pricingImpact;
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'pricingOverride')) {
+        if (updates.pricingOverride === undefined) delete updated.pricingOverride;
+        else updated.pricingOverride = updates.pricingOverride;
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'materialOverride')) {
+        if (updates.materialOverride === undefined) delete updated.materialOverride;
+        else updated.materialOverride = updates.materialOverride;
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'inventoryConsumption')) {
+        if (updates.inventoryConsumption === undefined) delete updated.inventoryConsumption;
+        else updated.inventoryConsumption = updates.inventoryConsumption;
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'workflowTags')) {
+        if (!updates.workflowTags || updates.workflowTags.length === 0) delete updated.workflowTags;
+        else updated.workflowTags = updates.workflowTags;
+      }
       return updated;
     });
 

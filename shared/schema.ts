@@ -17,7 +17,12 @@ import {
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+import { normalizeOptionalWebsite } from "./vendorWebsite";
 import { PRICING_PROFILE_KEYS, type FlatGoodsConfig } from "./pricingProfiles";
+import {
+  inventoryMovementTypeValues,
+  materialReorderRequestStatusValues,
+} from "./materialInventory";
 
 // ============================================================
 // DOWNLOAD INTENT (Future-proofing for preflight/print variants)
@@ -2110,6 +2115,75 @@ export type InsertImportJob = typeof importJobs.$inferInsert;
 export type ImportJobRow = typeof importJobRows.$inferSelect;
 export type InsertImportJobRow = typeof importJobRows.$inferInsert;
 
+// ==================== Material Import Batches ====================
+// Dedicated staging tables for the CSV materials import workflow.
+// Permanent materials are only modified during the explicit commit step.
+// Batch status values: uploaded | parsed | validated | review_ready | committed | failed | cancelled
+// Row status values:   pending | valid | invalid | conflict | ready_to_apply | applied | skipped
+
+export type MaterialImportBatchStatus =
+  | 'uploaded'
+  | 'parsed'
+  | 'validated'
+  | 'review_ready'
+  | 'committed'
+  | 'failed'
+  | 'cancelled';
+
+export type MaterialImportRowStatus =
+  | 'pending'
+  | 'valid'
+  | 'invalid'
+  | 'conflict'
+  | 'ready_to_apply'
+  | 'applied'
+  | 'skipped';
+
+export type MaterialImportRowAction = 'create' | 'update' | 'skip' | null;
+
+export const materialImportBatches = pgTable('material_import_batches', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  status: varchar('status', { length: 30 }).notNull().default('uploaded').$type<MaterialImportBatchStatus>(),
+  sourceFilename: varchar('source_filename', { length: 255 }),
+  createdByUserId: varchar('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  totalRows: integer('total_rows').notNull().default(0),
+  validRows: integer('valid_rows').notNull().default(0),
+  invalidRows: integer('invalid_rows').notNull().default(0),
+  conflictRows: integer('conflict_rows').notNull().default(0),
+  skippedRows: integer('skipped_rows').notNull().default(0),
+  errorMessage: text('error_message'),
+  summaryJson: jsonb('summary_json'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  index('material_import_batches_org_idx').on(table.organizationId),
+  index('material_import_batches_status_idx').on(table.status),
+  index('material_import_batches_created_idx').on(table.createdAt),
+]);
+
+export const materialImportRows = pgTable('material_import_rows', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  batchId: varchar('batch_id').notNull().references(() => materialImportBatches.id, { onDelete: 'cascade' }),
+  rowNumber: integer('row_number').notNull(),
+  status: varchar('status', { length: 30 }).notNull().default('pending').$type<MaterialImportRowStatus>(),
+  action: varchar('action', { length: 20 }).$type<'create' | 'update' | 'skip'>(),
+  existingMaterialId: varchar('existing_material_id').references(() => materials.id, { onDelete: 'set null' }),
+  rawJson: jsonb('raw_json'),
+  normalizedJson: jsonb('normalized_json'),
+  validationErrors: jsonb('validation_errors').$type<string[]>(),
+  matchedBy: varchar('matched_by', { length: 30 }).$type<'material_id' | 'sku' | 'vendor_lookup' | 'name' | 'new' | 'conflict'>(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  index('material_import_rows_batch_idx').on(table.batchId),
+  index('material_import_rows_org_idx').on(table.organizationId),
+  index('material_import_rows_status_idx').on(table.status),
+]);
+
+export type MaterialImportBatch = typeof materialImportBatches.$inferSelect;
+export type MaterialImportRow = typeof materialImportRows.$inferSelect;
+
 // Customer Visible Products - Junction table for portal product visibility
 export const customerVisibleProducts = pgTable("customer_visible_products", {
   customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'cascade' }),
@@ -2146,9 +2220,23 @@ export const customerContacts = pgTable("customer_contacts", {
   state: varchar("state", { length: 100 }),
   postalCode: varchar("postal_code", { length: 20 }),
   country: varchar("country", { length: 100 }),
+  // External source tracking for idempotent QB sync
+  externalSource: varchar("external_source", { length: 30 }),
+  externalSourceId: text("external_source_id"),
+  externalSourceType: varchar("external_source_type", { length: 50 }),
+  // Internal CRM fields — staff-only, never exposed to customer-facing views
+  internalNotes: text("internal_notes"),
+  flags: jsonb("flags").$type<string[]>(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (table) => [
+  // Partial unique index: one source-tracked contact per QB identity per customer.
+  // Only enforced when both external_source and external_source_id are non-null,
+  // so manually-created contacts (no source) are never affected.
+  uniqueIndex("customer_contacts_qb_source_uidx")
+    .on(table.customerId, table.externalSource, table.externalSourceId, table.externalSourceType)
+    .where(sql`external_source IS NOT NULL AND external_source_id IS NOT NULL`),
+]);
 
 export const insertCustomerContactSchema = createInsertSchema(customerContacts).omit({
   id: true,
@@ -2162,6 +2250,10 @@ export const insertCustomerContactSchema = createInsertSchema(customerContacts).
   state: z.string().max(100).optional(),
   postalCode: z.string().max(20).optional(),
   country: z.string().max(100).optional(),
+  internalNotes: z.string().max(10000).nullable().optional(),
+  flags: z.array(
+    z.enum(["vip", "billing_contact", "artwork_contact", "do_not_email", "needs_follow_up", "problem_contact"])
+  ).nullable().optional(),
 });
 
 export const updateCustomerContactSchema = insertCustomerContactSchema.partial();
@@ -3321,12 +3413,18 @@ export const productionEvents = pgTable("production_events", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()::text`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   productionJobId: varchar("production_job_id").notNull().references(() => productionJobs.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").references(() => orders.id, { onDelete: 'set null' }),
+  orderLineItemId: varchar("order_line_item_id").references(() => orderLineItems.id, { onDelete: 'set null' }),
+  actorUserId: varchar("actor_user_id").references(() => users.id, { onDelete: 'set null' }),
   type: varchar("type", { length: 40 }).notNull(),
   payload: jsonb("payload").$type<Record<string, any>>().default(sql`'{}'::jsonb`).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   index("production_events_org_job_created_idx").on(table.organizationId, table.productionJobId, table.createdAt),
   index("production_events_org_type_created_idx").on(table.organizationId, table.type, table.createdAt),
+  index("production_events_order_id_idx").on(table.orderId),
+  index("production_events_order_line_item_id_idx").on(table.orderLineItemId),
+  index("production_events_actor_user_id_idx").on(table.actorUserId),
 ]);
 
 export const productionStationSteps = pgTable("production_station_steps", {
@@ -3407,6 +3505,17 @@ export const invoices = pgTable("invoices", {
   qbSyncStatus: varchar("qb_sync_status", { length: 20 }).notNull().default('pending'), // pending | synced | failed
   qbLastError: text("qb_last_error"),
   modifiedAfterBilling: boolean("modified_after_billing").notNull().default(false),
+  // QB import tracking (migration 0042)
+  importSource: varchar("import_source", { length: 30 }),            // 'quickbooks' | null
+  isHistorical: boolean("is_historical").notNull().default(false),   // true = closed/paid, read-only A/R record
+  qbImportBalanceDue: decimal("qb_import_balance_due", { precision: 10, scale: 2 }), // QB Balance snapshot at import time
+  importedAt: timestamp("imported_at", { withTimezone: true }),
+  lockedReason: text("locked_reason"),                               // e.g. 'historical_import'
+  qbDocNumber: text("qb_doc_number"),                                // QB DocNumber (human-readable invoice #)
+  qbLineItemsSnapshot: jsonb("qb_line_items_snapshot").$type<any[]>(), // raw QB Line array snapshot
+  // Customer PO tracking (migration 0043)
+  customerPoNumber: varchar("customer_po_number", { length: 100 }),  // Customer PO/reference number
+  qbPoSource: varchar("qb_po_source", { length: 50 }),               // QB field PO was extracted from: 'custom_field' | 'private_note' | 'customer_memo' | 'line_description'
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -3417,6 +3526,9 @@ export const invoices = pgTable("invoices", {
   index("invoices_status_idx").on(table.status),
   index("invoices_due_date_idx").on(table.dueDate),
   index("invoices_sync_status_idx").on(table.syncStatus),
+  index("invoices_import_source_org_idx").on(table.organizationId, table.importSource),
+  index("invoices_is_historical_org_idx").on(table.organizationId, table.isHistorical),
+  index("invoices_customer_po_number_org_idx").on(table.organizationId, table.customerPoNumber),
 ]);
 
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({
@@ -3465,6 +3577,20 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   qbSyncStatus: z.enum(['pending','synced','failed','needs_resync']).default('pending'),
   qbLastError: z.string().optional().nullable(),
   modifiedAfterBilling: z.boolean().default(false),
+  importSource: z.string().max(30).optional().nullable(),
+  isHistorical: z.boolean().default(false).optional(),
+  qbImportBalanceDue: z.coerce.number().optional().nullable(),
+  importedAt: z.preprocess((val) => {
+    if (!val) return null;
+    if (val instanceof Date) return val;
+    if (typeof val === 'string') return new Date(val);
+    return val;
+  }, z.date().nullable().optional()),
+  lockedReason: z.string().optional().nullable(),
+  qbDocNumber: z.string().optional().nullable(),
+  qbLineItemsSnapshot: z.array(z.any()).optional().nullable(),
+  customerPoNumber: z.string().max(100).optional().nullable(),
+  qbPoSource: z.string().max(50).optional().nullable(),
 });
 
 export const updateInvoiceSchema = insertInvoiceSchema.partial().extend({
@@ -3474,6 +3600,108 @@ export const updateInvoiceSchema = insertInvoiceSchema.partial().extend({
 export type InsertInvoice = z.infer<typeof insertInvoiceSchema>;
 export type UpdateInvoice = z.infer<typeof updateInvoiceSchema>;
 export type Invoice = typeof invoices.$inferSelect;
+
+export const invoiceEmailLogs = pgTable("invoice_email_logs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: 'cascade' }),
+  recipientEmail: text("recipient_email").notNull(),
+  status: text("status").notNull().default('sent'),
+  messageId: text("message_id"),
+  sentAt: timestamp("sent_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  // 'invoice_send' = original invoice email; 'reminder_send' = automated reminder.
+  // Filters in getInvoiceEmailStatuses() must use type = 'invoice_send' so reminder
+  // sends do not falsely mark an invoice as sent_current.
+  type: text("type").notNull().default('invoice_send'),
+}, (table) => [
+  index("invoice_email_logs_organization_id_idx").on(table.organizationId),
+  index("invoice_email_logs_invoice_id_idx").on(table.invoiceId),
+  index("invoice_email_logs_invoice_sent_at_idx").on(table.invoiceId, table.sentAt),
+  index("invoice_email_logs_org_invoice_idx").on(table.organizationId, table.invoiceId),
+  index("invoice_email_logs_type_idx").on(table.organizationId, table.type, table.sentAt),
+]);
+
+export const insertInvoiceEmailLogSchema = createInsertSchema(invoiceEmailLogs).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  status: z.enum(['sent', 'failed']).default('sent'),
+  type: z.enum(['invoice_send', 'reminder_send']).default('invoice_send'),
+  sentAt: z.preprocess((val) => val ? new Date(val as any) : new Date(), z.date()),
+});
+
+export type InsertInvoiceEmailLog = z.infer<typeof insertInvoiceEmailLogSchema>;
+export type InvoiceEmailLog = typeof invoiceEmailLogs.$inferSelect;
+
+export const invoiceReminderLogs = pgTable("invoice_reminder_logs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: 'cascade' }),
+  reminderNumber: integer("reminder_number").notNull(),
+  sentAt: timestamp("sent_at", { withTimezone: true }).notNull(),
+  // Added in migration 0039
+  status: text("status").notNull().default('sent'), // 'sent' | 'failed'
+  recipientEmail: text("recipient_email"),
+  messageId: text("message_id"),
+  failureReason: text("failure_reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("invoice_reminder_logs_invoice_sent_at_idx").on(table.invoiceId, table.sentAt),
+  index("invoice_reminder_logs_org_sent_at_idx").on(table.organizationId, table.sentAt),
+  index("invoice_reminder_logs_status_idx").on(table.organizationId, table.invoiceId, table.status),
+]);
+
+export const insertInvoiceReminderLogSchema = createInsertSchema(invoiceReminderLogs).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  reminderNumber: z.number().int().positive(),
+  sentAt: z.preprocess((val) => val ? new Date(val as any) : new Date(), z.date()),
+  status: z.enum(['sent', 'failed']).default('sent'),
+  recipientEmail: z.string().optional().nullable(),
+  messageId: z.string().optional().nullable(),
+  failureReason: z.string().optional().nullable(),
+});
+
+export type InsertInvoiceReminderLog = z.infer<typeof insertInvoiceReminderLogSchema>;
+export type InvoiceReminderLog = typeof invoiceReminderLogs.$inferSelect;
+
+export const invoiceReminderSettings = pgTable("invoice_reminder_settings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  enabled: boolean("enabled").notNull().default(false),
+  firstReminderDaysAfterDue: integer("first_reminder_days_after_due"),
+  repeatIntervalDays: integer("repeat_interval_days"),
+  maxReminders: integer("max_reminders"),
+  // Added in migration 0038
+  sendCopyToInternalEmail: boolean("send_copy_to_internal_email").notNull().default(false),
+  internalCopyEmail: text("internal_copy_email"),
+  pauseForManualBillingCustomers: boolean("pause_for_manual_billing_customers").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("invoice_reminder_settings_organization_id_uidx").on(table.organizationId),
+]);
+
+export const insertInvoiceReminderSettingsSchema = createInsertSchema(invoiceReminderSettings).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  enabled: z.boolean().optional().default(false),
+  firstReminderDaysAfterDue: z.number().int().optional().nullable(),
+  repeatIntervalDays: z.number().int().optional().nullable(),
+  maxReminders: z.number().int().optional().nullable(),
+  sendCopyToInternalEmail: z.boolean().optional().default(false),
+  internalCopyEmail: z.string().email().optional().nullable(),
+  pauseForManualBillingCustomers: z.boolean().optional().default(false),
+});
+
+export const updateInvoiceReminderSettingsSchema = insertInvoiceReminderSettingsSchema.partial();
+export type InsertInvoiceReminderSettings = z.infer<typeof insertInvoiceReminderSettingsSchema>;
+export type UpdateInvoiceReminderSettings = z.infer<typeof updateInvoiceReminderSettingsSchema>;
+export type InvoiceReminderSettings = typeof invoiceReminderSettings.$inferSelect;
 
 // Invoice Line Items snapshot table
 export const invoiceLineItems = pgTable("invoice_line_items", {
@@ -3559,6 +3787,7 @@ export const payments = pgTable("payments", {
   syncStatus: varchar("sync_status", { length: 50 }).notNull().default('pending'), // pending, synced, error, skipped
   syncError: text("sync_error"),
   syncedAt: timestamp("synced_at", { withTimezone: true }),
+  qbReconciledAt: timestamp("qb_reconciled_at", { withTimezone: true }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -3590,6 +3819,12 @@ export const insertPaymentSchema = createInsertSchema(payments).omit({
   method: z.enum(['cash','check','wire','bank_transfer','credit_card','ach','other']).default('other'),
   notes: z.string().optional().nullable(),
   syncStatus: z.enum(['pending','synced','error','skipped']).default('pending'),
+  qbReconciledAt: z.preprocess((val) => {
+    if (!val) return null;
+    if (val instanceof Date) return val;
+    if (typeof val === 'string') return new Date(val);
+    return val;
+  }, z.date().nullable().optional()),
 });
 
 export const updatePaymentSchema = insertPaymentSchema.partial().extend({
@@ -4234,6 +4469,7 @@ export const orderAttachmentsRelations = relations(orderAttachments, ({ one, man
 export const orderAuditLog = pgTable("order_audit_log", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  orderLineItemId: varchar("order_line_item_id").references(() => orderLineItems.id, { onDelete: 'set null' }),
   userId: varchar("user_id").references(() => users.id, { onDelete: 'set null' }),
   userName: varchar("user_name", { length: 255 }), // Snapshot in case user is deleted
   actionType: varchar("action_type", { length: 100 }).notNull(), // status_change, note_added, file_uploaded, approved, rejected, change_requested
@@ -4244,6 +4480,7 @@ export const orderAuditLog = pgTable("order_audit_log", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
   index("order_audit_log_order_id_idx").on(table.orderId),
+  index("order_audit_log_order_line_item_id_idx").on(table.orderLineItemId),
   index("order_audit_log_created_at_idx").on(table.createdAt),
 ]);
 
@@ -4298,6 +4535,11 @@ export const materials = pgTable("materials", {
   type: varchar("type", { length: 50 }).notNull(), // sheet, roll, ink, consumable
   category: varchar("category", { length: 100 }), // optional category for grouping
   unitOfMeasure: varchar("unit_of_measure", { length: 50 }).notNull(), // sheet, sqft, linear_ft, ml, ea
+  inventoryUnit: varchar("inventory_unit", { length: 50 }),
+  sellPriceUnit: varchar("sell_price_unit", { length: 50 }),
+  wholesalePriceUnit: varchar("wholesale_price_unit", { length: 50 }),
+  vendorCostUnit: varchar("vendor_cost_unit", { length: 50 }),
+  consumptionUnit: varchar("consumption_unit", { length: 50 }),
   width: decimal("width", { precision: 10, scale: 2 }), // nullable for width dimension (sheet width or roll width)
   height: decimal("height", { precision: 10, scale: 2 }), // nullable for height dimension (sheet only)
   thickness: decimal("thickness", { precision: 10, scale: 4 }), // nullable for thickness
@@ -4333,6 +4575,12 @@ export const materials = pgTable("materials", {
   index("materials_preferred_vendor_id_idx").on(table.preferredVendorId),
 ]);
 
+const materialUnitSchema = z.enum(["sheet", "sqft", "linear_ft", "ml", "ea"]);
+const optionalMaterialUnitSchema = z.preprocess(
+  (v) => (v === "" || v == null ? undefined : v),
+  materialUnitSchema.optional().nullable()
+);
+
 const materialBaseSchema = createInsertSchema(materials).omit({
   id: true,
   createdAt: true,
@@ -4340,7 +4588,12 @@ const materialBaseSchema = createInsertSchema(materials).omit({
   organizationId: true,
 }).extend({
   type: z.enum(["sheet", "roll", "ink", "consumable"]),
-  unitOfMeasure: z.enum(["sheet", "sqft", "linear_ft", "ml", "ea"]),
+  unitOfMeasure: materialUnitSchema,
+  inventoryUnit: optionalMaterialUnitSchema,
+  sellPriceUnit: optionalMaterialUnitSchema,
+  wholesalePriceUnit: optionalMaterialUnitSchema,
+  vendorCostUnit: optionalMaterialUnitSchema,
+  consumptionUnit: optionalMaterialUnitSchema,
   thicknessUnit: z.enum(["in", "mm", "mil", "gauge"]).optional().nullable(),
   costPerUnit: z.coerce.number().nonnegative(),
   // Numeric/decimal fields: accept strings from forms, treat "" and NaN as undefined.
@@ -4499,19 +4752,102 @@ export function calculateRollDerivedValues(
 }
 
 // Inventory Adjustments table - logs all inventory changes
+export const materialReorderRequests = pgTable("material_reorder_requests", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  materialId: varchar("material_id").notNull().references(() => materials.id, { onDelete: 'cascade' }),
+  vendorId: varchar("vendor_id").references(() => vendors.id, { onDelete: 'set null' }),
+  status: varchar("status", { length: 20 }).notNull().default("requested"),
+  requestedQuantity: decimal("requested_quantity", { precision: 10, scale: 2 }).notNull(),
+  receivedQuantity: decimal("received_quantity", { precision: 10, scale: 2 }),
+  currentStockQuantity: decimal("current_stock_quantity", { precision: 10, scale: 2 }),
+  minStockAlert: decimal("min_stock_alert", { precision: 10, scale: 2 }),
+  notes: text("notes"),
+  requestedByUserId: varchar("requested_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
+  orderedByUserId: varchar("ordered_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  orderedAt: timestamp("ordered_at", { withTimezone: true }),
+  receivedByUserId: varchar("received_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  receivedAt: timestamp("received_at", { withTimezone: true }),
+  cancelledByUserId: varchar("cancelled_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("material_reorder_requests_org_idx").on(table.organizationId),
+  index("material_reorder_requests_material_idx").on(table.materialId),
+  index("material_reorder_requests_status_idx").on(table.status),
+  index("material_reorder_requests_vendor_idx").on(table.vendorId),
+  index("material_reorder_requests_requested_at_idx").on(table.requestedAt),
+]);
+
+export const insertMaterialReorderRequestSchema = createInsertSchema(materialReorderRequests).omit({
+  id: true,
+  organizationId: true,
+  status: true,
+  requestedByUserId: true,
+  requestedAt: true,
+  orderedByUserId: true,
+  orderedAt: true,
+  receivedByUserId: true,
+  receivedAt: true,
+  cancelledByUserId: true,
+  cancelledAt: true,
+  createdAt: true,
+  updatedAt: true,
+  receivedQuantity: true,
+}).extend({
+  requestedQuantity: z.coerce.number().positive(),
+  currentStockQuantity: z.coerce.number().optional().nullable(),
+  minStockAlert: z.coerce.number().optional().nullable(),
+  vendorId: z.string().optional().nullable(),
+  notes: z.string().trim().optional().nullable(),
+});
+
+export const updateMaterialReorderRequestSchema = createInsertSchema(materialReorderRequests).omit({
+  id: true,
+  organizationId: true,
+  materialId: true,
+  requestedByUserId: true,
+  requestedAt: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  status: z.enum(materialReorderRequestStatusValues),
+  requestedQuantity: z.coerce.number().positive().optional(),
+  receivedQuantity: z.coerce.number().positive().optional().nullable(),
+  currentStockQuantity: z.coerce.number().optional().nullable(),
+  minStockAlert: z.coerce.number().optional().nullable(),
+  vendorId: z.string().optional().nullable(),
+  notes: z.string().trim().optional().nullable(),
+}).partial();
+
+export type InsertMaterialReorderRequest = z.infer<typeof insertMaterialReorderRequestSchema>;
+export type UpdateMaterialReorderRequest = z.infer<typeof updateMaterialReorderRequestSchema>;
+export type MaterialReorderRequest = typeof materialReorderRequests.$inferSelect;
+
 export const inventoryAdjustments = pgTable("inventory_adjustments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").references(() => organizations.id, { onDelete: 'cascade' }),
   materialId: varchar("material_id").notNull().references(() => materials.id, { onDelete: 'cascade' }),
+  movementType: varchar("movement_type", { length: 20 }).notNull().default("adjustment"),
   type: varchar("type", { length: 50 }).notNull(), // manual_increase, manual_decrease, waste, shrinkage, job_usage
   quantityChange: decimal("quantity_change", { precision: 10, scale: 2 }).notNull(), // positive or negative
+  quantityBefore: decimal("quantity_before", { precision: 10, scale: 2 }),
+  quantityAfter: decimal("quantity_after", { precision: 10, scale: 2 }),
   reason: text("reason"),
+  notes: text("notes"),
   orderId: varchar("order_id").references(() => orders.id, { onDelete: 'set null' }), // nullable, for job usage tracking
+  reorderRequestId: varchar("reorder_request_id").references(() => materialReorderRequests.id, { onDelete: 'set null' }),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
+  index("inventory_adjustments_organization_id_idx").on(table.organizationId),
   index("inventory_adjustments_material_id_idx").on(table.materialId),
+  index("inventory_adjustments_movement_type_idx").on(table.movementType),
   index("inventory_adjustments_type_idx").on(table.type),
   index("inventory_adjustments_order_id_idx").on(table.orderId),
+  index("inventory_adjustments_reorder_request_id_idx").on(table.reorderRequestId),
   index("inventory_adjustments_created_at_idx").on(table.createdAt),
 ]);
 
@@ -4519,8 +4855,13 @@ export const insertInventoryAdjustmentSchema = createInsertSchema(inventoryAdjus
   id: true,
   createdAt: true,
 }).extend({
+  movementType: z.enum(inventoryMovementTypeValues).default("adjustment"),
   type: z.enum(["manual_increase", "manual_decrease", "waste", "shrinkage", "job_usage", "purchase_receipt"]),
   quantityChange: z.coerce.number(),
+  quantityBefore: z.coerce.number().optional().nullable(),
+  quantityAfter: z.coerce.number().optional().nullable(),
+  notes: z.string().trim().optional().nullable(),
+  reorderRequestId: z.string().optional().nullable(),
 });
 
 export type InsertInventoryAdjustment = z.infer<typeof insertInventoryAdjustmentSchema>;
@@ -4535,10 +4876,15 @@ export const vendors = pgTable('vendors', {
   name: varchar('name', { length: 255 }).notNull(),
   email: varchar('email', { length: 255 }),
   phone: varchar('phone', { length: 50 }),
+  salesRepName: varchar('sales_rep_name', { length: 255 }),
+  salesRepEmail: varchar('sales_rep_email', { length: 255 }),
+  salesRepPhone: varchar('sales_rep_phone', { length: 50 }),
   website: varchar('website', { length: 255 }),
   notes: text('notes'),
+  additionalContactInfo: text('additional_contact_info'),
   paymentTerms: varchar('payment_terms', { length: 50 }).notNull().default('due_on_receipt'),
   defaultLeadTimeDays: integer('default_lead_time_days'),
+  leadTimeText: varchar('lead_time_text', { length: 120 }),
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
@@ -4548,14 +4894,38 @@ export const vendors = pgTable('vendors', {
   index('vendors_is_active_idx').on(table.isActive)
 ]);
 
+const normalizeOptionalVendorString = (value: unknown) => {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : undefined;
+};
+
 export const insertVendorSchema = createInsertSchema(vendors).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
   organizationId: true,
 }).extend({
+  email: z.preprocess(normalizeOptionalVendorString, z.string().email().optional()),
+  phone: z.preprocess(normalizeOptionalVendorString, z.string().max(50).optional()),
+  website: z.preprocess(
+    (value) => {
+      const normalized = normalizeOptionalWebsite(value);
+      return normalized ?? normalizeOptionalVendorString(value);
+    },
+    z.string().max(255).url('Website must be a valid domain or URL').optional(),
+  ),
+  notes: z.preprocess(normalizeOptionalVendorString, z.string().optional()),
   paymentTerms: z.enum(['due_on_receipt','net_15','net_30','net_45','custom']).default('due_on_receipt'),
   defaultLeadTimeDays: z.number().int().positive().optional(),
+  leadTimeText: z.preprocess(normalizeOptionalVendorString, z.string().max(120).optional()),
+  salesRepName: z.preprocess(normalizeOptionalVendorString, z.string().max(255).optional()),
+  salesRepEmail: z.preprocess(normalizeOptionalVendorString, z.string().email().optional()),
+  salesRepPhone: z.preprocess(normalizeOptionalVendorString, z.string().max(50).optional()),
+  additionalContactInfo: z.preprocess(normalizeOptionalVendorString, z.string().optional()),
   isActive: z.boolean().optional().default(true),
 });
 export const updateVendorSchema = insertVendorSchema.partial();
@@ -4731,8 +5101,24 @@ export const invoicesRelations = relations(invoices, ({ one, many }) => ({
     fields: [invoices.createdByUserId],
     references: [users.id],
   }),
+  emailLogs: many(invoiceEmailLogs),
+  reminderLogs: many(invoiceReminderLogs),
   lineItems: many(invoiceLineItems),
   payments: many(payments),
+}));
+
+export const invoiceEmailLogsRelations = relations(invoiceEmailLogs, ({ one }) => ({
+  invoice: one(invoices, {
+    fields: [invoiceEmailLogs.invoiceId],
+    references: [invoices.id],
+  }),
+}));
+
+export const invoiceReminderLogsRelations = relations(invoiceReminderLogs, ({ one }) => ({
+  invoice: one(invoices, {
+    fields: [invoiceReminderLogs.invoiceId],
+    references: [invoices.id],
+  }),
 }));
 
 export const invoiceLineItemsRelations = relations(invoiceLineItems, ({ one }) => ({
@@ -4849,9 +5235,14 @@ export const fulfillmentEventsRelations = relations(fulfillmentEvents, ({ one })
 export const materialsRelations = relations(materials, ({ many }) => ({
   adjustments: many(inventoryAdjustments),
   orderUsages: many(orderMaterialUsage),
+  reorderRequests: many(materialReorderRequests),
 }));
 
 export const inventoryAdjustmentsRelations = relations(inventoryAdjustments, ({ one }) => ({
+  organization: one(organizations, {
+    fields: [inventoryAdjustments.organizationId],
+    references: [organizations.id],
+  }),
   material: one(materials, {
     fields: [inventoryAdjustments.materialId],
     references: [materials.id],
@@ -4864,6 +5255,42 @@ export const inventoryAdjustmentsRelations = relations(inventoryAdjustments, ({ 
     fields: [inventoryAdjustments.userId],
     references: [users.id],
   }),
+  reorderRequest: one(materialReorderRequests, {
+    fields: [inventoryAdjustments.reorderRequestId],
+    references: [materialReorderRequests.id],
+  }),
+}));
+
+export const materialReorderRequestsRelations = relations(materialReorderRequests, ({ one, many }) => ({
+  organization: one(organizations, {
+    fields: [materialReorderRequests.organizationId],
+    references: [organizations.id],
+  }),
+  material: one(materials, {
+    fields: [materialReorderRequests.materialId],
+    references: [materials.id],
+  }),
+  vendor: one(vendors, {
+    fields: [materialReorderRequests.vendorId],
+    references: [vendors.id],
+  }),
+  requestedByUser: one(users, {
+    fields: [materialReorderRequests.requestedByUserId],
+    references: [users.id],
+  }),
+  orderedByUser: one(users, {
+    fields: [materialReorderRequests.orderedByUserId],
+    references: [users.id],
+  }),
+  receivedByUser: one(users, {
+    fields: [materialReorderRequests.receivedByUserId],
+    references: [users.id],
+  }),
+  cancelledByUser: one(users, {
+    fields: [materialReorderRequests.cancelledByUserId],
+    references: [users.id],
+  }),
+  adjustments: many(inventoryAdjustments),
 }));
 
 export const orderMaterialUsageRelations = relations(orderMaterialUsage, ({ one }) => ({
@@ -5481,6 +5908,603 @@ export type UpdateLineItemProofManualApprovalOverride = z.infer<typeof updateLin
 export type ProofAccessToken = typeof proofAccessTokens.$inferSelect;
 export type InsertProofAccessToken = z.infer<typeof insertProofAccessTokenSchema>;
 export type UpdateProofAccessToken = z.infer<typeof updateProofAccessTokenSchema>;
+
+// ============================================================
+// TITANOS INBOUND ORDERS REVIEW QUEUE FOUNDATION
+// ============================================================
+
+export const inboundOrderSourceTypeValues = [
+  "email",
+  "customer_api",
+  "webhook",
+  "csv_import",
+  "portal",
+  "manual",
+  "n8n",
+  "zapier",
+  "edi",
+] as const;
+
+export const inboundOrderSourceStatusValues = [
+  "active",
+  "paused",
+  "disabled",
+] as const;
+
+export const inboundOrderSourceTrustLevelValues = [
+  "manual_internal",
+  "trusted_customer_api",
+  "trusted_portal",
+  "semi_trusted_email",
+  "untrusted_public",
+] as const;
+
+export const inboundOrderRecordStatusValues = [
+  "received",
+  "processing",
+  "needs_review",
+  "waiting_on_customer",
+  "ready",
+  "approved",
+  "submitted",
+  "failed",
+  "terminal",
+] as const;
+
+export const inboundOrderLineItemStatusValues = [
+  "extracted",
+  "needs_review",
+  "validated",
+  "excluded",
+] as const;
+
+export const inboundOrderFileRoleValues = [
+  "artwork",
+  "po",
+  "reference",
+  "email_attachment",
+  "csv",
+  "source_payload",
+  "other",
+] as const;
+
+export const inboundOrderFileStatusValues = [
+  "uploaded",
+  "scanning",
+  "available",
+  "quarantined",
+  "rejected",
+  "linked",
+] as const;
+
+export const inboundOrderWarningSeverityValues = [
+  "info",
+  "warning",
+  "blocking",
+] as const;
+
+export const inboundOrderReviewItemStatusValues = [
+  "open",
+  "resolved",
+  "ignored",
+] as const;
+
+export const inboundOrderDecisionFlagStatusValues = [
+  "open",
+  "accepted",
+  "overridden",
+  "dismissed",
+] as const;
+
+export const inboundOrderEventActorTypeValues = [
+  "user",
+  "system",
+  "source",
+  "automation",
+] as const;
+
+export const inboundOrderReviewSnapshotTypeValues = [
+  "approval",
+  "submission",
+  "rejection",
+  "customer_reply",
+] as const;
+
+export const inboundOrderSourceTypeSchema = z.enum(inboundOrderSourceTypeValues);
+export const inboundOrderSourceStatusSchema = z.enum(inboundOrderSourceStatusValues);
+export const inboundOrderSourceTrustLevelSchema = z.enum(inboundOrderSourceTrustLevelValues);
+export const inboundOrderRecordStatusSchema = z.enum(inboundOrderRecordStatusValues);
+export const inboundOrderLineItemStatusSchema = z.enum(inboundOrderLineItemStatusValues);
+export const inboundOrderFileRoleSchema = z.enum(inboundOrderFileRoleValues);
+export const inboundOrderFileStatusSchema = z.enum(inboundOrderFileStatusValues);
+export const inboundOrderWarningSeveritySchema = z.enum(inboundOrderWarningSeverityValues);
+export const inboundOrderReviewItemStatusSchema = z.enum(inboundOrderReviewItemStatusValues);
+export const inboundOrderDecisionFlagStatusSchema = z.enum(inboundOrderDecisionFlagStatusValues);
+export const inboundOrderEventActorTypeSchema = z.enum(inboundOrderEventActorTypeValues);
+export const inboundOrderReviewSnapshotTypeSchema = z.enum(inboundOrderReviewSnapshotTypeValues);
+
+export type InboundOrderSourceType = (typeof inboundOrderSourceTypeValues)[number];
+export type InboundOrderSourceStatus = (typeof inboundOrderSourceStatusValues)[number];
+export type InboundOrderSourceTrustLevel = (typeof inboundOrderSourceTrustLevelValues)[number];
+export type InboundOrderRecordStatus = (typeof inboundOrderRecordStatusValues)[number];
+export type InboundOrderLineItemStatus = (typeof inboundOrderLineItemStatusValues)[number];
+export type InboundOrderFileRole = (typeof inboundOrderFileRoleValues)[number];
+export type InboundOrderFileStatus = (typeof inboundOrderFileStatusValues)[number];
+export type InboundOrderWarningSeverity = (typeof inboundOrderWarningSeverityValues)[number];
+export type InboundOrderReviewItemStatus = (typeof inboundOrderReviewItemStatusValues)[number];
+export type InboundOrderDecisionFlagStatus = (typeof inboundOrderDecisionFlagStatusValues)[number];
+export type InboundOrderEventActorType = (typeof inboundOrderEventActorTypeValues)[number];
+export type InboundOrderReviewSnapshotType = (typeof inboundOrderReviewSnapshotTypeValues)[number];
+
+export const inboundOrderSourceTypeEnum = pgEnum("inbound_order_source_type", inboundOrderSourceTypeValues);
+export const inboundOrderSourceStatusEnum = pgEnum("inbound_order_source_status", inboundOrderSourceStatusValues);
+export const inboundOrderSourceTrustLevelEnum = pgEnum("inbound_order_source_trust_level", inboundOrderSourceTrustLevelValues);
+export const inboundOrderRecordStatusEnum = pgEnum("inbound_order_record_status", inboundOrderRecordStatusValues);
+export const inboundOrderLineItemStatusEnum = pgEnum("inbound_order_line_item_status", inboundOrderLineItemStatusValues);
+export const inboundOrderFileRoleEnum = pgEnum("inbound_order_file_role", inboundOrderFileRoleValues);
+export const inboundOrderFileStatusEnum = pgEnum("inbound_order_file_status", inboundOrderFileStatusValues);
+export const inboundOrderWarningSeverityEnum = pgEnum("inbound_order_warning_severity", inboundOrderWarningSeverityValues);
+export const inboundOrderReviewItemStatusEnum = pgEnum("inbound_order_review_item_status", inboundOrderReviewItemStatusValues);
+export const inboundOrderDecisionFlagStatusEnum = pgEnum("inbound_order_decision_flag_status", inboundOrderDecisionFlagStatusValues);
+export const inboundOrderEventActorTypeEnum = pgEnum("inbound_order_event_actor_type", inboundOrderEventActorTypeValues);
+export const inboundOrderReviewSnapshotTypeEnum = pgEnum("inbound_order_review_snapshot_type", inboundOrderReviewSnapshotTypeValues);
+
+export const inboundOrderSources = pgTable("inbound_order_sources", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  sourceType: inboundOrderSourceTypeEnum("source_type").notNull().default("manual"),
+  name: varchar("name", { length: 255 }).notNull(),
+  status: inboundOrderSourceStatusEnum("status").notNull().default("active"),
+  sourceTrustLevel: inboundOrderSourceTrustLevelEnum("source_trust_level").notNull().default("manual_internal"),
+  authMode: varchar("auth_mode", { length: 50 }).notNull().default("system"),
+  externalAccountId: varchar("external_account_id", { length: 255 }),
+  settingsJson: jsonb("settings_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("inbound_order_sources_org_type_idx").on(table.organizationId, table.sourceType),
+  index("inbound_order_sources_org_status_idx").on(table.organizationId, table.status),
+  index("inbound_order_sources_org_trust_idx").on(table.organizationId, table.sourceTrustLevel),
+  uniqueIndex("inbound_order_sources_org_type_name_uidx").on(table.organizationId, table.sourceType, table.name),
+]);
+
+export const inboundOrderRecords = pgTable("inbound_order_records", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  sourceId: varchar("source_id").references(() => inboundOrderSources.id, { onDelete: "set null" }),
+  sourceType: inboundOrderSourceTypeEnum("source_type").notNull().default("manual"),
+  sourceLabel: varchar("source_label", { length: 255 }),
+  sourceTrustLevel: inboundOrderSourceTrustLevelEnum("source_trust_level").notNull().default("manual_internal"),
+  sourceRecordId: varchar("source_record_id", { length: 255 }),
+  sourceMessageId: varchar("source_message_id", { length: 255 }),
+  status: inboundOrderRecordStatusEnum("status").notNull().default("received"),
+  reviewOutcome: varchar("review_outcome", { length: 50 }),
+  requiresHumanDecision: boolean("requires_human_decision").notNull().default(false),
+  reviewRequiredReason: text("review_required_reason"),
+  externalReference: varchar("external_reference", { length: 255 }),
+  idempotencyKey: varchar("idempotency_key", { length: 255 }),
+  payloadHash: varchar("payload_hash", { length: 128 }),
+  rawPayloadJson: jsonb("raw_payload_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  normalizedPayloadJson: jsonb("normalized_payload_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  extractedCustomerJson: jsonb("extracted_customer_json").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+  extractedOrderJson: jsonb("extracted_order_json").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+  extractedShippingJson: jsonb("extracted_shipping_json").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+  confidenceScore: decimal("confidence_score", { precision: 5, scale: 4 }),
+  duplicateScore: decimal("duplicate_score", { precision: 5, scale: 4 }),
+  matchedCustomerId: varchar("matched_customer_id").references(() => customers.id, { onDelete: "set null" }),
+  matchedContactId: varchar("matched_contact_id").references(() => customerContacts.id, { onDelete: "set null" }),
+  matchedQuoteId: varchar("matched_quote_id").references(() => quotes.id, { onDelete: "set null" }),
+  matchedOrderId: varchar("matched_order_id").references(() => orders.id, { onDelete: "set null" }),
+  createdQuoteId: varchar("created_quote_id").references(() => quotes.id, { onDelete: "set null" }),
+  createdOrderId: varchar("created_order_id").references(() => orders.id, { onDelete: "set null" }),
+  assignedToUserId: varchar("assigned_to_user_id").references(() => users.id, { onDelete: "set null" }),
+  submittedByUserId: varchar("submitted_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  rejectedByUserId: varchar("rejected_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  rejectionReason: text("rejection_reason"),
+  receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
+  parsedAt: timestamp("parsed_at", { withTimezone: true }),
+  reviewStartedAt: timestamp("review_started_at", { withTimezone: true }),
+  approvedAt: timestamp("approved_at", { withTimezone: true }),
+  submittedAt: timestamp("submitted_at", { withTimezone: true }),
+  rejectedAt: timestamp("rejected_at", { withTimezone: true }),
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("inbound_order_records_org_status_received_idx").on(table.organizationId, table.status, table.receivedAt),
+  index("inbound_order_records_org_source_type_received_idx").on(table.organizationId, table.sourceType, table.receivedAt),
+  index("inbound_order_records_org_assigned_status_idx").on(table.organizationId, table.assignedToUserId, table.status),
+  index("inbound_order_records_org_source_idx").on(table.organizationId, table.sourceId),
+  index("inbound_order_records_org_matched_customer_idx").on(table.organizationId, table.matchedCustomerId),
+  index("inbound_order_records_org_created_quote_idx").on(table.organizationId, table.createdQuoteId),
+  index("inbound_order_records_org_created_order_idx").on(table.organizationId, table.createdOrderId),
+  index("inbound_order_records_org_payload_hash_idx").on(table.organizationId, table.payloadHash),
+  index("inbound_order_records_org_external_ref_idx").on(table.organizationId, table.externalReference),
+  uniqueIndex("inbound_order_records_org_source_idempotency_uidx").on(table.organizationId, table.sourceId, table.idempotencyKey),
+]);
+
+export const inboundOrderLineItems = pgTable("inbound_order_line_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  inboundRecordId: varchar("inbound_record_id").notNull().references(() => inboundOrderRecords.id, { onDelete: "cascade" }),
+  sortOrder: integer("sort_order").notNull().default(0),
+  status: inboundOrderLineItemStatusEnum("status").notNull().default("extracted"),
+  rawLineJson: jsonb("raw_line_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  normalizedLineJson: jsonb("normalized_line_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  productId: varchar("product_id").references(() => products.id, { onDelete: "set null" }),
+  variantId: varchar("variant_id").references(() => productVariants.id, { onDelete: "set null" }),
+  productNameRaw: text("product_name_raw"),
+  description: text("description"),
+  width: decimal("width", { precision: 10, scale: 2 }),
+  height: decimal("height", { precision: 10, scale: 2 }),
+  quantity: integer("quantity"),
+  optionSelectionsJson: jsonb("option_selections_json").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+  pbv2TreeVersionId: varchar("pbv2_tree_version_id").references(() => pbv2TreeVersions.id, { onDelete: "set null" }),
+  pricingPreviewJson: jsonb("pricing_preview_json").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+  confidenceScore: decimal("confidence_score", { precision: 5, scale: 4 }),
+  warningsJson: jsonb("warnings_json").$type<Array<Record<string, unknown>>>().notNull().default(sql`'[]'::jsonb`),
+  reviewedByUserId: varchar("reviewed_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdQuoteLineItemId: varchar("created_quote_line_item_id").references(() => quoteLineItems.id, { onDelete: "set null" }),
+  createdOrderLineItemId: varchar("created_order_line_item_id").references(() => orderLineItems.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("inbound_order_line_items_org_record_sort_idx").on(table.organizationId, table.inboundRecordId, table.sortOrder),
+  index("inbound_order_line_items_org_product_idx").on(table.organizationId, table.productId),
+  index("inbound_order_line_items_org_status_idx").on(table.organizationId, table.status),
+]);
+
+export const inboundOrderFiles = pgTable("inbound_order_files", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  inboundRecordId: varchar("inbound_record_id").notNull().references(() => inboundOrderRecords.id, { onDelete: "cascade" }),
+  inboundLineItemId: varchar("inbound_line_item_id").references(() => inboundOrderLineItems.id, { onDelete: "set null" }),
+  fileRecordId: varchar("file_record_id").references(() => fileRecords.id, { onDelete: "set null" }),
+  sourceFilename: varchar("source_filename", { length: 512 }),
+  role: inboundOrderFileRoleEnum("role").notNull().default("other"),
+  mimeType: varchar("mime_type", { length: 255 }),
+  sizeBytes: integer("size_bytes"),
+  checksum: varchar("checksum", { length: 128 }),
+  status: inboundOrderFileStatusEnum("status").notNull().default("uploaded"),
+  reviewNotes: text("review_notes"),
+  createdQuoteAttachmentId: varchar("created_quote_attachment_id").references(() => quoteAttachments.id, { onDelete: "set null" }),
+  createdOrderAttachmentId: varchar("created_order_attachment_id").references(() => orderAttachments.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("inbound_order_files_org_record_idx").on(table.organizationId, table.inboundRecordId),
+  index("inbound_order_files_org_line_item_idx").on(table.organizationId, table.inboundLineItemId),
+  index("inbound_order_files_org_file_record_idx").on(table.organizationId, table.fileRecordId),
+  index("inbound_order_files_org_status_idx").on(table.organizationId, table.status),
+  index("inbound_order_files_org_checksum_idx").on(table.organizationId, table.checksum),
+]);
+
+export const inboundOrderWarnings = pgTable("inbound_order_warnings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  inboundRecordId: varchar("inbound_record_id").notNull().references(() => inboundOrderRecords.id, { onDelete: "cascade" }),
+  inboundLineItemId: varchar("inbound_line_item_id").references(() => inboundOrderLineItems.id, { onDelete: "set null" }),
+  severity: inboundOrderWarningSeverityEnum("severity").notNull().default("warning"),
+  code: varchar("code", { length: 100 }).notNull(),
+  message: text("message").notNull(),
+  fieldPath: text("field_path"),
+  status: inboundOrderReviewItemStatusEnum("status").notNull().default("open"),
+  resolutionNote: text("resolution_note"),
+  resolvedByUserId: varchar("resolved_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+}, (table) => [
+  index("inbound_order_warnings_org_record_status_idx").on(table.organizationId, table.inboundRecordId, table.status),
+  index("inbound_order_warnings_org_severity_status_idx").on(table.organizationId, table.severity, table.status),
+  index("inbound_order_warnings_org_code_idx").on(table.organizationId, table.code),
+  index("inbound_order_warnings_org_line_item_idx").on(table.organizationId, table.inboundLineItemId),
+]);
+
+export const inboundOrderDecisionFlags = pgTable("inbound_order_decision_flags", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  inboundRecordId: varchar("inbound_record_id").notNull().references(() => inboundOrderRecords.id, { onDelete: "cascade" }),
+  inboundLineItemId: varchar("inbound_line_item_id").references(() => inboundOrderLineItems.id, { onDelete: "set null" }),
+  flagType: varchar("flag_type", { length: 100 }).notNull(),
+  fieldPath: text("field_path"),
+  summary: text("summary").notNull(),
+  suggestedValueJson: jsonb("suggested_value_json").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+  candidateValuesJson: jsonb("candidate_values_json").$type<Array<Record<string, unknown>>>().notNull().default(sql`'[]'::jsonb`),
+  confidenceScore: decimal("confidence_score", { precision: 5, scale: 4 }),
+  status: inboundOrderDecisionFlagStatusEnum("status").notNull().default("open"),
+  decisionValueJson: jsonb("decision_value_json").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+  decisionNote: text("decision_note"),
+  decidedByUserId: varchar("decided_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  decidedAt: timestamp("decided_at", { withTimezone: true }),
+}, (table) => [
+  index("inbound_order_decision_flags_org_record_status_idx").on(table.organizationId, table.inboundRecordId, table.status),
+  index("inbound_order_decision_flags_org_type_status_idx").on(table.organizationId, table.flagType, table.status),
+  index("inbound_order_decision_flags_org_confidence_idx").on(table.organizationId, table.confidenceScore),
+  index("inbound_order_decision_flags_org_line_item_idx").on(table.organizationId, table.inboundLineItemId),
+]);
+
+export const inboundOrderEvents = pgTable("inbound_order_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  inboundRecordId: varchar("inbound_record_id").notNull().references(() => inboundOrderRecords.id, { onDelete: "cascade" }),
+  actorUserId: varchar("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+  actorType: inboundOrderEventActorTypeEnum("actor_type").notNull().default("system"),
+  eventType: varchar("event_type", { length: 100 }).notNull(),
+  fromStatus: inboundOrderRecordStatusEnum("from_status"),
+  toStatus: inboundOrderRecordStatusEnum("to_status"),
+  message: text("message"),
+  metadataJson: jsonb("metadata_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("inbound_order_events_org_record_created_idx").on(table.organizationId, table.inboundRecordId, table.createdAt),
+  index("inbound_order_events_org_type_created_idx").on(table.organizationId, table.eventType, table.createdAt),
+]);
+
+export const inboundOrderReviewSnapshots = pgTable("inbound_order_review_snapshots", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  inboundRecordId: varchar("inbound_record_id").notNull().references(() => inboundOrderRecords.id, { onDelete: "cascade" }),
+  snapshotType: inboundOrderReviewSnapshotTypeEnum("snapshot_type").notNull(),
+  snapshotVersion: integer("snapshot_version").notNull().default(1),
+  payloadJson: jsonb("payload_json").$type<Record<string, unknown>>().notNull(),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("inbound_order_review_snapshots_org_record_created_idx").on(table.organizationId, table.inboundRecordId, table.createdAt),
+  index("inbound_order_review_snapshots_org_type_created_idx").on(table.organizationId, table.snapshotType, table.createdAt),
+]);
+
+export const inboundOrderSourcesRelations = relations(inboundOrderSources, ({ one, many }) => ({
+  organization: one(organizations, {
+    fields: [inboundOrderSources.organizationId],
+    references: [organizations.id],
+  }),
+  records: many(inboundOrderRecords),
+}));
+
+export const inboundOrderRecordsRelations = relations(inboundOrderRecords, ({ one, many }) => ({
+  organization: one(organizations, {
+    fields: [inboundOrderRecords.organizationId],
+    references: [organizations.id],
+  }),
+  source: one(inboundOrderSources, {
+    fields: [inboundOrderRecords.sourceId],
+    references: [inboundOrderSources.id],
+  }),
+  lineItems: many(inboundOrderLineItems),
+  files: many(inboundOrderFiles),
+  warnings: many(inboundOrderWarnings),
+  decisionFlags: many(inboundOrderDecisionFlags),
+  events: many(inboundOrderEvents),
+  reviewSnapshots: many(inboundOrderReviewSnapshots),
+}));
+
+export const inboundOrderLineItemsRelations = relations(inboundOrderLineItems, ({ one, many }) => ({
+  record: one(inboundOrderRecords, {
+    fields: [inboundOrderLineItems.inboundRecordId],
+    references: [inboundOrderRecords.id],
+  }),
+  product: one(products, {
+    fields: [inboundOrderLineItems.productId],
+    references: [products.id],
+  }),
+  variant: one(productVariants, {
+    fields: [inboundOrderLineItems.variantId],
+    references: [productVariants.id],
+  }),
+  files: many(inboundOrderFiles),
+  warnings: many(inboundOrderWarnings),
+  decisionFlags: many(inboundOrderDecisionFlags),
+}));
+
+export const inboundOrderFilesRelations = relations(inboundOrderFiles, ({ one }) => ({
+  record: one(inboundOrderRecords, {
+    fields: [inboundOrderFiles.inboundRecordId],
+    references: [inboundOrderRecords.id],
+  }),
+  lineItem: one(inboundOrderLineItems, {
+    fields: [inboundOrderFiles.inboundLineItemId],
+    references: [inboundOrderLineItems.id],
+  }),
+  fileRecord: one(fileRecords, {
+    fields: [inboundOrderFiles.fileRecordId],
+    references: [fileRecords.id],
+  }),
+}));
+
+export const inboundOrderWarningsRelations = relations(inboundOrderWarnings, ({ one }) => ({
+  record: one(inboundOrderRecords, {
+    fields: [inboundOrderWarnings.inboundRecordId],
+    references: [inboundOrderRecords.id],
+  }),
+  lineItem: one(inboundOrderLineItems, {
+    fields: [inboundOrderWarnings.inboundLineItemId],
+    references: [inboundOrderLineItems.id],
+  }),
+}));
+
+export const inboundOrderDecisionFlagsRelations = relations(inboundOrderDecisionFlags, ({ one }) => ({
+  record: one(inboundOrderRecords, {
+    fields: [inboundOrderDecisionFlags.inboundRecordId],
+    references: [inboundOrderRecords.id],
+  }),
+  lineItem: one(inboundOrderLineItems, {
+    fields: [inboundOrderDecisionFlags.inboundLineItemId],
+    references: [inboundOrderLineItems.id],
+  }),
+}));
+
+export const inboundOrderEventsRelations = relations(inboundOrderEvents, ({ one }) => ({
+  record: one(inboundOrderRecords, {
+    fields: [inboundOrderEvents.inboundRecordId],
+    references: [inboundOrderRecords.id],
+  }),
+}));
+
+export const inboundOrderReviewSnapshotsRelations = relations(inboundOrderReviewSnapshots, ({ one }) => ({
+  record: one(inboundOrderRecords, {
+    fields: [inboundOrderReviewSnapshots.inboundRecordId],
+    references: [inboundOrderRecords.id],
+  }),
+}));
+
+export const insertInboundOrderSourceSchema = createInsertSchema(inboundOrderSources).omit({
+  id: true,
+  organizationId: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  sourceType: inboundOrderSourceTypeSchema.default("manual"),
+  status: inboundOrderSourceStatusSchema.default("active"),
+  sourceTrustLevel: inboundOrderSourceTrustLevelSchema.default("manual_internal"),
+});
+
+export const updateInboundOrderSourceSchema = insertInboundOrderSourceSchema.partial().extend({
+  id: z.string(),
+});
+
+export const insertInboundOrderRecordSchema = createInsertSchema(inboundOrderRecords).omit({
+  id: true,
+  organizationId: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  sourceType: inboundOrderSourceTypeSchema.default("manual"),
+  sourceTrustLevel: inboundOrderSourceTrustLevelSchema.default("manual_internal"),
+  status: inboundOrderRecordStatusSchema.default("received"),
+  requiresHumanDecision: z.boolean().default(false),
+});
+
+export const updateInboundOrderRecordSchema = insertInboundOrderRecordSchema.partial().extend({
+  id: z.string(),
+});
+
+export const insertInboundOrderLineItemSchema = createInsertSchema(inboundOrderLineItems).omit({
+  id: true,
+  organizationId: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  sortOrder: z.coerce.number().int().default(0),
+  status: inboundOrderLineItemStatusSchema.default("extracted"),
+  width: z.coerce.number().positive().optional().nullable(),
+  height: z.coerce.number().positive().optional().nullable(),
+  quantity: z.coerce.number().int().positive().optional().nullable(),
+});
+
+export const updateInboundOrderLineItemSchema = insertInboundOrderLineItemSchema.partial().extend({
+  id: z.string(),
+});
+
+export const insertInboundOrderFileSchema = createInsertSchema(inboundOrderFiles).omit({
+  id: true,
+  organizationId: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  role: inboundOrderFileRoleSchema.default("other"),
+  status: inboundOrderFileStatusSchema.default("uploaded"),
+});
+
+export const updateInboundOrderFileSchema = insertInboundOrderFileSchema.partial().extend({
+  id: z.string(),
+});
+
+export const insertInboundOrderWarningSchema = createInsertSchema(inboundOrderWarnings).omit({
+  id: true,
+  organizationId: true,
+  createdAt: true,
+  resolvedAt: true,
+}).extend({
+  severity: inboundOrderWarningSeveritySchema.default("warning"),
+  status: inboundOrderReviewItemStatusSchema.default("open"),
+});
+
+export const updateInboundOrderWarningSchema = insertInboundOrderWarningSchema.partial().extend({
+  id: z.string(),
+});
+
+export const insertInboundOrderDecisionFlagSchema = createInsertSchema(inboundOrderDecisionFlags).omit({
+  id: true,
+  organizationId: true,
+  createdAt: true,
+  decidedAt: true,
+}).extend({
+  status: inboundOrderDecisionFlagStatusSchema.default("open"),
+});
+
+export const updateInboundOrderDecisionFlagSchema = insertInboundOrderDecisionFlagSchema.partial().extend({
+  id: z.string(),
+});
+
+export const insertInboundOrderEventSchema = createInsertSchema(inboundOrderEvents).omit({
+  id: true,
+  organizationId: true,
+  createdAt: true,
+}).extend({
+  actorType: inboundOrderEventActorTypeSchema.default("system"),
+  fromStatus: inboundOrderRecordStatusSchema.optional().nullable(),
+  toStatus: inboundOrderRecordStatusSchema.optional().nullable(),
+});
+
+export const updateInboundOrderEventSchema = insertInboundOrderEventSchema.partial().extend({
+  id: z.string(),
+});
+
+export const insertInboundOrderReviewSnapshotSchema = createInsertSchema(inboundOrderReviewSnapshots).omit({
+  id: true,
+  organizationId: true,
+  createdAt: true,
+}).extend({
+  snapshotType: inboundOrderReviewSnapshotTypeSchema,
+  snapshotVersion: z.coerce.number().int().positive().default(1),
+});
+
+export const updateInboundOrderReviewSnapshotSchema = insertInboundOrderReviewSnapshotSchema.partial().extend({
+  id: z.string(),
+});
+
+export type SelectInboundOrderSource = typeof inboundOrderSources.$inferSelect;
+export type InsertInboundOrderSource = z.infer<typeof insertInboundOrderSourceSchema>;
+export type UpdateInboundOrderSource = z.infer<typeof updateInboundOrderSourceSchema>;
+export type InboundOrderSource = SelectInboundOrderSource;
+
+export type SelectInboundOrderRecord = typeof inboundOrderRecords.$inferSelect;
+export type InsertInboundOrderRecord = z.infer<typeof insertInboundOrderRecordSchema>;
+export type UpdateInboundOrderRecord = z.infer<typeof updateInboundOrderRecordSchema>;
+export type InboundOrderRecord = SelectInboundOrderRecord;
+
+export type SelectInboundOrderLineItem = typeof inboundOrderLineItems.$inferSelect;
+export type InsertInboundOrderLineItem = z.infer<typeof insertInboundOrderLineItemSchema>;
+export type UpdateInboundOrderLineItem = z.infer<typeof updateInboundOrderLineItemSchema>;
+export type InboundOrderLineItem = SelectInboundOrderLineItem;
+
+export type SelectInboundOrderFile = typeof inboundOrderFiles.$inferSelect;
+export type InsertInboundOrderFile = z.infer<typeof insertInboundOrderFileSchema>;
+export type UpdateInboundOrderFile = z.infer<typeof updateInboundOrderFileSchema>;
+export type InboundOrderFile = SelectInboundOrderFile;
+
+export type SelectInboundOrderWarning = typeof inboundOrderWarnings.$inferSelect;
+export type InsertInboundOrderWarning = z.infer<typeof insertInboundOrderWarningSchema>;
+export type UpdateInboundOrderWarning = z.infer<typeof updateInboundOrderWarningSchema>;
+export type InboundOrderWarning = SelectInboundOrderWarning;
+
+export type SelectInboundOrderDecisionFlag = typeof inboundOrderDecisionFlags.$inferSelect;
+export type InsertInboundOrderDecisionFlag = z.infer<typeof insertInboundOrderDecisionFlagSchema>;
+export type UpdateInboundOrderDecisionFlag = z.infer<typeof updateInboundOrderDecisionFlagSchema>;
+export type InboundOrderDecisionFlag = SelectInboundOrderDecisionFlag;
+
+export type SelectInboundOrderEvent = typeof inboundOrderEvents.$inferSelect;
+export type InsertInboundOrderEvent = z.infer<typeof insertInboundOrderEventSchema>;
+export type UpdateInboundOrderEvent = z.infer<typeof updateInboundOrderEventSchema>;
+export type InboundOrderEvent = SelectInboundOrderEvent;
+
+export type SelectInboundOrderReviewSnapshot = typeof inboundOrderReviewSnapshots.$inferSelect;
+export type InsertInboundOrderReviewSnapshot = z.infer<typeof insertInboundOrderReviewSnapshotSchema>;
+export type UpdateInboundOrderReviewSnapshot = z.infer<typeof updateInboundOrderReviewSnapshotSchema>;
+export type InboundOrderReviewSnapshot = SelectInboundOrderReviewSnapshot;
 
 // ============================================================
 // REPRINT REQUESTS

@@ -225,6 +225,9 @@ import { registerSystemRoutes } from './routes/system.routes';
 import { registerAuthRoutes } from './routes/auth.routes';
 import { registerSearchRoutes } from './routes/search.routes';
 import { registerDebugRoutes } from './routes/debug.routes';
+import { registerPricingAuditRoutes } from './routes/pricingAudit.routes';
+import { registerMaterialsImportExportRoutes } from './routes/materialsImportExport.routes';
+import { registerInboundOrderRoutes } from './routes/inboundOrders.routes';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -268,6 +271,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Auth routes extracted to ./routes/auth.routes.ts (do NOT re-add here)
   registerAuthRoutes(app, { isAuthenticated });
+
+  // Public invite routes (no auth required — new-user accept-invite flow)
+  registerInviteRoutes(app);
+
+  // Platform-admin routes (step-up auth; org creation + bootstrap)
+  registerPlatformRoutes(app);
+
+  // Me routes (authenticated, not org-scoped — org list + active-org selection)
+  registerMeRoutes(app);
 
   // Attachment routes extracted to ./routes/attachments.routes.ts (do NOT re-add here)
   await registerAttachmentRoutes(app, { isAuthenticated, tenantContext, isAdmin });
@@ -343,6 +355,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Debug routes extracted to ./routes/debug.routes.ts (do NOT re-add here)
   registerDebugRoutes(app, { isAuthenticated });
 
+  // Pricing audit route (admin only, read-only)
+  registerPricingAuditRoutes(app, { isAuthenticated, tenantContext, isAdmin });
+
+  // Materials CSV import/export routes (admin only, staged workflow)
+  registerMaterialsImportExportRoutes(app, { isAuthenticated, tenantContext, isAdmin });
+
   const assertInternalUser = (req: any, res: any) => {
     const role = req.user?.role || "";
     if (role === "customer") {
@@ -366,6 +384,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerPrepressQueueRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner, assertInternalUser });
   // Prepress file transport routes extracted to ./routes/prepressFiles.routes.ts (do NOT re-add here)
   registerPrepressFileRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });
+
+  // Inbound Orders Review Queue routes extracted to ./routes/inboundOrders.routes.ts (do NOT re-add here)
+  registerInboundOrderRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });
 
   // Job Status Config + Line Item Workflow Transition + Jobs routes extracted to ./routes/jobs.routes.ts (do NOT re-add here)
 

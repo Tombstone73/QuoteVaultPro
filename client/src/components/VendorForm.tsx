@@ -8,16 +8,54 @@ import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useCreateVendor, useUpdateVendor, Vendor } from "@/hooks/useVendors";
 import { useToast } from "@/hooks/use-toast";
+import { normalizeOptionalWebsite } from "@shared/vendorWebsite";
+
+function normalizeOptionalString(value: unknown) {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : undefined;
+}
+
+const optionalEmailSchema = z.preprocess(
+  normalizeOptionalString,
+  z.string().email("Enter a valid email address").optional(),
+);
+
+const optionalTextSchema = (maxLength?: number) => z.preprocess(
+  normalizeOptionalString,
+  typeof maxLength === "number"
+    ? z.string().max(maxLength, `Must be ${maxLength} characters or fewer`).optional()
+    : z.string().optional(),
+);
+
+const optionalWebsiteSchema = z.preprocess(
+  (value) => {
+    const normalized = normalizeOptionalWebsite(value);
+    return normalized ?? normalizeOptionalString(value);
+  },
+  z.string()
+    .max(255, "Website must be 255 characters or fewer")
+    .url("Enter a valid website like example.com or https://example.com")
+    .optional(),
+);
 
 const vendorSchema = z.object({
   name: z.string().min(1, "Name required"),
-  email: z.string().email().optional().or(z.literal("")),
-  phone: z.string().optional().or(z.literal("")),
-  website: z.string().url().optional().or(z.literal("")),
-  notes: z.string().optional().or(z.literal("")),
+  email: optionalEmailSchema,
+  phone: optionalTextSchema(50),
+  salesRepName: optionalTextSchema(255),
+  salesRepEmail: optionalEmailSchema,
+  salesRepPhone: optionalTextSchema(50),
+  website: optionalWebsiteSchema,
+  notes: optionalTextSchema(),
+  additionalContactInfo: optionalTextSchema(),
   paymentTerms: z.enum(['due_on_receipt','net_15','net_30','net_45','custom']).default('due_on_receipt'),
-  defaultLeadTimeDays: z.coerce.number().int().positive().optional().or(z.nan()).transform(v => isNaN(v as any) ? undefined : v),
-  isActive: z.boolean().default(true),
+  defaultLeadTimeDays: z.coerce.number().int().positive("Lead time days must be greater than 0").optional().or(z.nan()).transform(v => isNaN(v as any) ? undefined : v),
+  leadTimeText: optionalTextSchema(120),
+  isActive: z.preprocess((value) => value === "true" ? true : value === "false" ? false : value, z.boolean().default(true)),
 });
 
 export type VendorFormValues = z.infer<typeof vendorSchema>;
@@ -34,44 +72,72 @@ export function VendorForm({ open, onOpenChange, vendor }: Props) {
       name: vendor.name,
       email: vendor.email || "",
       phone: vendor.phone || "",
+      salesRepName: vendor.salesRepName || "",
+      salesRepEmail: vendor.salesRepEmail || "",
+      salesRepPhone: vendor.salesRepPhone || "",
       website: vendor.website || "",
       notes: vendor.notes || "",
+      additionalContactInfo: vendor.additionalContactInfo || "",
       paymentTerms: vendor.paymentTerms as any,
       defaultLeadTimeDays: vendor.defaultLeadTimeDays || undefined,
+      leadTimeText: vendor.leadTimeText || "",
       isActive: vendor.isActive,
     } : {
       name: "",
       email: "",
       phone: "",
+      salesRepName: "",
+      salesRepEmail: "",
+      salesRepPhone: "",
       website: "",
       notes: "",
+      additionalContactInfo: "",
       paymentTerms: 'due_on_receipt',
       defaultLeadTimeDays: undefined,
+      leadTimeText: "",
       isActive: true,
     }
   });
+  const errors = form.formState.errors;
+
+  function renderFieldError(message?: string) {
+    if (!message) return null;
+    return <p className="mt-1 text-xs text-destructive">{message}</p>;
+  }
 
   async function onSubmit(values: VendorFormValues) {
     const payload: any = {
       ...values,
-      email: values.email || undefined,
-      phone: values.phone || undefined,
-      website: values.website || undefined,
-      notes: values.notes || undefined,
+      email: values.email ?? undefined,
+      phone: values.phone ?? undefined,
+      salesRepName: values.salesRepName ?? undefined,
+      salesRepEmail: values.salesRepEmail ?? undefined,
+      salesRepPhone: values.salesRepPhone ?? undefined,
+      website: values.website ?? undefined,
+      notes: values.notes ?? undefined,
+      additionalContactInfo: values.additionalContactInfo ?? undefined,
       defaultLeadTimeDays: values.defaultLeadTimeDays,
+      leadTimeText: values.leadTimeText ?? undefined,
+      isActive: values.isActive,
     };
     try {
       if (vendor) {
         await updateMutation.mutateAsync(payload);
-        toast({ title: "Vendor updated" });
       } else {
         await createMutation.mutateAsync(payload);
-        toast({ title: "Vendor created" });
       }
       onOpenChange(false);
-    } catch (e:any) {
-      toast({ title: "Error", description: e.message, variant: "destructive" });
+    } catch {
+      return;
     }
+  }
+
+  function onInvalidSubmit() {
+    toast({
+      title: "Fix vendor form errors",
+      description: "Check the highlighted fields and try again.",
+      variant: "destructive",
+    });
   }
 
   return (
@@ -81,23 +147,42 @@ export function VendorForm({ open, onOpenChange, vendor }: Props) {
           <DialogTitle>{vendor?"Edit Vendor":"Create Vendor"}</DialogTitle>
           <DialogDescription>Manage supplier information.</DialogDescription>
         </DialogHeader>
-        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+        <form onSubmit={form.handleSubmit(onSubmit, onInvalidSubmit)} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="text-sm font-medium">Name</label>
               <Input {...form.register("name")}/>
+              {renderFieldError(errors.name?.message)}
             </div>
             <div>
               <label className="text-sm font-medium">Email</label>
               <Input type="email" {...form.register("email")}/>
+              {renderFieldError(errors.email?.message)}
             </div>
             <div>
               <label className="text-sm font-medium">Phone</label>
               <Input {...form.register("phone")}/>
+              {renderFieldError(errors.phone?.message)}
+            </div>
+            <div>
+              <label className="text-sm font-medium">Sales Rep Name</label>
+              <Input {...form.register("salesRepName")}/>
+              {renderFieldError(errors.salesRepName?.message)}
+            </div>
+            <div>
+              <label className="text-sm font-medium">Sales Rep Email</label>
+              <Input type="email" {...form.register("salesRepEmail")}/>
+              {renderFieldError(errors.salesRepEmail?.message)}
+            </div>
+            <div>
+              <label className="text-sm font-medium">Sales Rep Phone</label>
+              <Input {...form.register("salesRepPhone")}/>
+              {renderFieldError(errors.salesRepPhone?.message)}
             </div>
             <div>
               <label className="text-sm font-medium">Website</label>
               <Input {...form.register("website")}/>
+              {renderFieldError(errors.website?.message)}
             </div>
             <div>
               <label className="text-sm font-medium">Payment Terms</label>
@@ -111,14 +196,27 @@ export function VendorForm({ open, onOpenChange, vendor }: Props) {
                   <SelectItem value="custom">Custom</SelectItem>
                 </SelectContent>
               </Select>
+              {renderFieldError(errors.paymentTerms?.message)}
             </div>
             <div>
               <label className="text-sm font-medium">Lead Time (Days)</label>
               <Input type="number" {...form.register("defaultLeadTimeDays", { valueAsNumber: true })}/>
+              {renderFieldError(errors.defaultLeadTimeDays?.message)}
+            </div>
+            <div className="col-span-2">
+              <label className="text-sm font-medium">Lead Time Notes</label>
+              <Input placeholder="Same day, 2-4 days, call rep first" {...form.register("leadTimeText")}/>
+              {renderFieldError(errors.leadTimeText?.message)}
             </div>
             <div className="col-span-2">
               <label className="text-sm font-medium">Notes</label>
               <Textarea rows={3} {...form.register("notes")}/>
+              {renderFieldError(errors.notes?.message)}
+            </div>
+            <div className="col-span-2">
+              <label className="text-sm font-medium">Additional Contact Info</label>
+              <Textarea rows={3} {...form.register("additionalContactInfo")}/>
+              {renderFieldError(errors.additionalContactInfo?.message)}
             </div>
             <div>
               <label className="text-sm font-medium">Active?</label>
@@ -126,6 +224,7 @@ export function VendorForm({ open, onOpenChange, vendor }: Props) {
                 <option value={true as any}>Yes</option>
                 <option value={false as any}>No</option>
               </select>
+              {renderFieldError(errors.isActive?.message)}
             </div>
           </div>
           <div className="flex justify-end gap-2">

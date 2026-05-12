@@ -28,6 +28,34 @@ type QuoteDetailRouteParams = {
   quoteId?: string;
 };
 
+type InboundReviewLink = {
+  inboundRecordId: string;
+  status: string;
+  reviewOutcome: string | null;
+  isActive: boolean;
+  convertedLineItemCount: number | null;
+  skippedLineItemCount: number | null;
+};
+
+function InboundReviewBadge({ inboundReview }: { inboundReview?: InboundReviewLink | null }) {
+  if (!inboundReview?.isActive) return null;
+
+  const skipped = inboundReview.skippedLineItemCount ?? 0;
+
+  return (
+    <Badge
+      variant="secondary"
+      title={
+        skipped > 0
+          ? `${skipped} inbound line item${skipped === 1 ? "" : "s"} were skipped during quote draft creation.`
+          : "Created from an inbound review record that remains available as the intake artifact."
+      }
+    >
+      Inbound Review
+    </Badge>
+  );
+}
+
 export default function QuoteDetail() {
   const params = useParams<QuoteDetailRouteParams>();
   const navigate = useNavigate();
@@ -52,7 +80,7 @@ export default function QuoteDetail() {
     );
   }
 
-  const { data: quote, isLoading } = useQuery<QuoteWithRelations>({
+  const { data: quote, isLoading } = useQuery<QuoteWithRelations & { inboundReview?: InboundReviewLink | null }>({
     queryKey: ["/api/quotes", quoteId],
     queryFn: async () => {
       if (!quoteId) throw new Error("Quote ID is required");
@@ -180,6 +208,7 @@ export default function QuoteDetail() {
           <div className="flex items-center gap-2">
             {workflowState && <QuoteWorkflowBadge state={workflowState} />}
             <QuoteSourceBadge source={quote.source} />
+            <InboundReviewBadge inboundReview={quote.inboundReview} />
             {isInternalUser && quote.source === 'internal' && !isApprovedLocked && (
               <Button
                 variant="outline"

@@ -1,21 +1,33 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useToast } from "@/hooks/use-toast";
+import type { MaterialInventoryStatus, MaterialReorderRequestStatus } from "@shared/materialInventory";
 
 export interface Material {
   id: string;
   name: string;
   sku: string;
   type: "sheet" | "roll" | "ink" | "consumable";
+  category?: string | null;
   unitOfMeasure: string;
+  inventoryUnit?: string | null;
+  sellPriceUnit?: string | null;
+  wholesalePriceUnit?: string | null;
+  vendorCostUnit?: string | null;
+  consumptionUnit?: string | null;
   width?: string | null;
   height?: string | null;
   thickness?: string | null;
   thicknessUnit?: "in" | "mm" | "mil" | "gauge" | null;
   color?: string | null;
   costPerUnit: string;
+  wholesaleBaseRate?: string | null;
+  wholesaleMinCharge?: string | null;
+  retailBaseRate?: string | null;
+  retailMinCharge?: string | null;
   stockQuantity: string;
   minStockAlert: string;
+  isActive: boolean;
   vendorId?: string | null; // legacy placeholder
   preferredVendorId?: string | null;
   vendorSku?: string | null;
@@ -65,13 +77,65 @@ export function calculateRollDerivedValues(
 
 export interface InventoryAdjustment {
   id: string;
+  organizationId?: string | null;
+  movementType?: string | null;
   materialId: string;
   type: string;
   quantityChange: string;
+  quantityBefore?: string | null;
+  quantityAfter?: string | null;
   reason?: string | null;
+  notes?: string | null;
   orderId?: string | null;
+  reorderRequestId?: string | null;
   userId: string;
   createdAt: string;
+}
+
+export interface MaterialReorderRequest {
+  id: string;
+  materialId: string;
+  materialName: string;
+  materialSku?: string | null;
+  vendorId?: string | null;
+  vendorName?: string | null;
+  status: MaterialReorderRequestStatus;
+  requestedQuantity: string;
+  receivedQuantity?: string | null;
+  currentStockQuantity?: string | null;
+  currentMaterialQuantity?: string | null;
+  minStockAlert?: string | null;
+  notes?: string | null;
+  requestedByUserId?: string | null;
+  requestedByName?: string | null;
+  orderedByName?: string | null;
+  receivedByName?: string | null;
+  cancelledByName?: string | null;
+  requestedAt: string;
+  orderedAt?: string | null;
+  receivedAt?: string | null;
+  cancelledAt?: string | null;
+}
+
+export interface ManualInventoryAdjustmentRequest {
+  adjustmentMode: "set_quantity" | "add_quantity" | "subtract_quantity";
+  quantity: number;
+  reason: "damage" | "miscount" | "scrap" | "correction" | "received_outside_reorder" | "other";
+  otherReason?: string;
+  notes?: string;
+}
+
+export interface CreateMaterialReorderRequestInput {
+  requestedQuantity: number;
+  currentStockQuantity?: number | null;
+  minStockAlert?: number | null;
+  vendorId?: string | null;
+  notes?: string;
+}
+
+export interface ReceiveMaterialReorderRequestInput {
+  receivedQuantity: number;
+  notes?: string;
 }
 
 export interface MaterialUsage {
@@ -89,6 +153,7 @@ interface MaterialFilters {
   search?: string;
   type?: string;
   lowStockOnly?: boolean;
+  includeInactive?: boolean;
 }
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
@@ -104,6 +169,11 @@ export interface MaterialSearchItem {
   id: string;
   name: string;
   unitOfMeasure: string;
+  inventoryUnit?: string | null;
+  sellPriceUnit?: string | null;
+  wholesalePriceUnit?: string | null;
+  vendorCostUnit?: string | null;
+  consumptionUnit?: string | null;
   isActive: boolean;
 }
 
@@ -131,6 +201,11 @@ export function useMaterialsSearch(searchText: string, options?: { limit?: numbe
         id: String(m.id || ""),
         name: String(m.name || ""),
         unitOfMeasure: String(m.unitOfMeasure || ""),
+        inventoryUnit: m.inventoryUnit ?? m.unitOfMeasure ?? null,
+        sellPriceUnit: m.sellPriceUnit ?? m.unitOfMeasure ?? null,
+        wholesalePriceUnit: m.wholesalePriceUnit ?? m.sellPriceUnit ?? m.unitOfMeasure ?? null,
+        vendorCostUnit: m.vendorCostUnit ?? m.unitOfMeasure ?? null,
+        consumptionUnit: m.consumptionUnit ?? m.sellPriceUnit ?? m.unitOfMeasure ?? null,
         isActive: m?.isActive !== false,
       })).filter((m) => !!m.id && !!m.name);
     },
@@ -141,7 +216,11 @@ export function useMaterials(filters?: MaterialFilters) {
   return useQuery<Material[]>({
     queryKey: ["/api/materials", filters],
     queryFn: async () => {
-      const response = await fetch("/api/materials", { credentials: "include" });
+      const params = new URLSearchParams();
+      if (filters?.includeInactive) params.set("includeInactive", "true");
+
+      const url = params.toString() ? `/api/materials?${params.toString()}` : "/api/materials";
+      const response = await fetch(url, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch materials");
       const json = await response.json();
       const payload = json?.success ? json.data : json;
@@ -156,7 +235,7 @@ export function useMaterials(filters?: MaterialFilters) {
         if (filters?.lowStockOnly) {
           const stock = parseFloat(m.stockQuantity || "0");
           const min = parseFloat(m.minStockAlert || "0");
-            if (!(stock < min)) return false;
+            if (!(stock <= min && min > 0)) return false;
         }
         return true;
       });
@@ -215,6 +294,18 @@ export function useMaterialAdjustments(materialId: string | undefined) {
       return json.success ? json.data : json;
     },
     enabled: !!materialId,
+  });
+}
+
+export function useMaterialReorderRequests() {
+  return useQuery<MaterialReorderRequest[]>({
+    queryKey: ["/api/material-reorder-requests"],
+    queryFn: async () => {
+      const response = await fetch("/api/material-reorder-requests", { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch reorder requests");
+      const json = await response.json();
+      return json.success ? json.data : json;
+    },
   });
 }
 
@@ -299,7 +390,7 @@ export function useAdjustInventory(materialId: string) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   return useMutation({
-    mutationFn: async (data: { type: string; quantityChange: number; reason?: string }) => {
+    mutationFn: async (data: ManualInventoryAdjustmentRequest) => {
       const response = await fetch(`/api/materials/${materialId}/adjust`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -318,7 +409,110 @@ export function useAdjustInventory(materialId: string) {
       queryClient.invalidateQueries({ queryKey: ["/api/materials", materialId, "usage"] });
       queryClient.invalidateQueries({ queryKey: ["/api/materials"] });
       queryClient.invalidateQueries({ queryKey: ["/api/materials/low-stock"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/material-reorder-requests"] });
       toast({ title: "Inventory adjusted" });
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+}
+
+export function useCreateMaterialReorderRequest(materialId: string) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (data: CreateMaterialReorderRequestInput) => {
+      const response = await fetch(`/api/materials/${materialId}/reorder-requests`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(data),
+      });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || "Failed to create reorder request");
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/materials"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/materials/low-stock"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/material-reorder-requests"] });
+      toast({ title: "Reorder request created" });
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+}
+
+export function useMarkMaterialReorderRequestOrdered() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (reorderRequestId: string) => {
+      const response = await fetch(`/api/material-reorder-requests/${reorderRequestId}/mark-ordered`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || "Failed to mark reorder request ordered");
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/materials"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/material-reorder-requests"] });
+      toast({ title: "Reorder request marked ordered" });
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+}
+
+export function useCancelMaterialReorderRequest() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (reorderRequestId: string) => {
+      const response = await fetch(`/api/material-reorder-requests/${reorderRequestId}/cancel`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || "Failed to cancel reorder request");
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/materials"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/material-reorder-requests"] });
+      toast({ title: "Reorder request cancelled" });
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+}
+
+export function useReceiveMaterialReorderRequest() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { reorderRequestId: string; data: ReceiveMaterialReorderRequestInput }) => {
+      const response = await fetch(`/api/material-reorder-requests/${args.reorderRequestId}/receive`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(args.data),
+      });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || "Failed to receive reorder request");
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/materials"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/materials/low-stock"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/material-reorder-requests"] });
+      toast({ title: "Reorder request received" });
     },
     onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });

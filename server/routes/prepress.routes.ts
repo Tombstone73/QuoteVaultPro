@@ -29,6 +29,7 @@ import {
   lineItemFiles,
   materials,
   orderAttachments,
+  orderAuditLog,
   orderLineItems,
   orderMaterialUsage,
   orders,
@@ -71,6 +72,7 @@ import {
   enrichAttachmentWithUrls,
   resolveDerivativeFileAccess,
 } from "../lib/supabaseObjectHelpers";
+import { canAutoDeductMaterialStock } from "../lib/materialStockDeductionGuard";
 
 // ---------------------------------------------------------------------------
 // Local utility (mirrors top-level helper in routes.ts)
@@ -79,6 +81,44 @@ import {
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub ?? user?.id;
 }
+
+const insertPrepressTimelineLog = async (args: {
+  orderId: string;
+  orderLineItemId: string;
+  actorUserId: string;
+  actionType: string;
+  previousStatus?: string | null;
+  newStatus?: string | null;
+  previousStation?: string | null;
+  newStation?: string | null;
+  sessionId?: string | null;
+  note?: string | null;
+  reason?: string | null;
+  metadata?: Record<string, unknown>;
+}) => {
+  await db.insert(orderAuditLog).values({
+    orderId: args.orderId,
+    orderLineItemId: args.orderLineItemId,
+    userId: args.actorUserId,
+    actionType: args.actionType,
+    fromStatus: args.previousStatus ?? null,
+    toStatus: args.newStatus ?? null,
+    note: args.note ?? args.reason ?? null,
+    metadata: {
+      orderId: args.orderId,
+      orderLineItemId: args.orderLineItemId,
+      previousStatus: args.previousStatus ?? null,
+      newStatus: args.newStatus ?? null,
+      previousStation: args.previousStation ?? null,
+      newStation: args.newStation ?? null,
+      actorUserId: args.actorUserId,
+      sessionId: args.sessionId ?? null,
+      note: args.note ?? null,
+      reason: args.reason ?? null,
+      ...(args.metadata ?? {}),
+    },
+  } as any);
+};
 
 // ---------------------------------------------------------------------------
 // Module-private constants
@@ -431,8 +471,18 @@ const listReservedMaterialsForLineItem = async (tx: any, args: { organizationId:
       sourceKey: inventoryReservations.sourceKey,
       uom: inventoryReservations.uom,
       qty: inventoryReservations.qty,
+      materialType: materials.type,
+      materialUnitOfMeasure: materials.unitOfMeasure,
+      materialInventoryUnit: materials.inventoryUnit,
     })
     .from(inventoryReservations)
+    .leftJoin(
+      materials,
+      and(
+        eq(materials.organizationId, inventoryReservations.organizationId),
+        eq(materials.id, inventoryReservations.sourceKey),
+      ),
+    )
     .where(
       and(
         eq(inventoryReservations.organizationId, args.organizationId),
@@ -609,38 +659,75 @@ const consumeReservedMaterialsForLineItem = async (
 
   const now = new Date();
   let consumedCount = 0;
+  let deductedCount = 0;
+  let skippedStockDeductionCount = 0;
+  const stockDeductionWarnings: Array<{
+    materialId: string;
+    materialUom: string | null;
+    usageUom: string | null;
+    reason: string;
+  }> = [];
 
   for (const row of reserved) {
     const materialId = String(row.sourceKey || "").trim();
     if (!materialId) continue;
     const qty = toQtyNumber2dp(row.qty);
     if (!Number.isFinite(qty) || qty <= 0) continue;
+    const usageUom = String(row.uom || "each");
+    const deductionDecision = canAutoDeductMaterialStock(
+      {
+        type: (row as any).materialType,
+        unitOfMeasure: (row as any).materialUnitOfMeasure,
+        inventoryUnit: (row as any).materialInventoryUnit,
+      },
+      usageUom,
+    );
 
     await tx.insert(orderMaterialUsage).values({
       orderId: args.orderId,
       orderLineItemId: args.lineItemId,
       materialId,
       quantityUsed: normalizeQty2dp(qty),
-      unitOfMeasure: String(row.uom || "each"),
+      unitOfMeasure: usageUom,
       calculatedBy: "auto",
     } as any);
 
-    await tx.insert(inventoryAdjustments).values({
-      materialId,
-      type: "job_usage",
-      quantityChange: normalizeQty2dp(-qty),
-      reason: `Auto-consumed from reservation for line item ${args.lineItemId}`,
-      orderId: args.orderId,
-      userId: args.userId,
-    } as any);
+    if (deductionDecision.allowed) {
+      await tx.insert(inventoryAdjustments).values({
+        materialId,
+        type: "job_usage",
+        quantityChange: normalizeQty2dp(-qty),
+        reason: `Auto-consumed from reservation for line item ${args.lineItemId}`,
+        orderId: args.orderId,
+        userId: args.userId,
+      } as any);
 
-    await tx
-      .update(materials)
-      .set({
-        stockQuantity: sql`${materials.stockQuantity} - ${normalizeQty2dp(qty)}`,
-        updatedAt: now,
-      } as any)
-      .where(and(eq(materials.organizationId, args.organizationId), eq(materials.id, materialId)));
+      await tx
+        .update(materials)
+        .set({
+          stockQuantity: sql`${materials.stockQuantity} - ${normalizeQty2dp(qty)}`,
+          updatedAt: now,
+        } as any)
+        .where(and(eq(materials.organizationId, args.organizationId), eq(materials.id, materialId)));
+      deductedCount += 1;
+    } else {
+      skippedStockDeductionCount += 1;
+      stockDeductionWarnings.push({
+        materialId,
+        materialUom: deductionDecision.materialUom,
+        usageUom: deductionDecision.usageUom,
+        reason: deductionDecision.reason,
+      });
+      console.warn("[InventoryDeductionGuard] Skipped automatic stock deduction", {
+        organizationId: args.organizationId,
+        orderId: args.orderId,
+        lineItemId: args.lineItemId,
+        materialId,
+        materialUom: deductionDecision.materialUom,
+        usageUom: deductionDecision.usageUom,
+        reason: deductionDecision.reason,
+      });
+    }
 
     consumedCount += 1;
   }
@@ -661,6 +748,9 @@ const consumeReservedMaterialsForLineItem = async (
   await tx.insert(productionEvents).values({
     organizationId: args.organizationId,
     productionJobId: args.productionJobId,
+    orderId: args.orderId,
+    orderLineItemId: args.lineItemId,
+    actorUserId: args.userId,
     type: "note",
     payload: {
       eventType: "materials_consumed",
@@ -668,10 +758,13 @@ const consumeReservedMaterialsForLineItem = async (
       orderId: args.orderId,
       materialFingerprint: fingerprint,
       consumedCount,
+      deductedCount,
+      skippedStockDeductionCount,
+      stockDeductionWarnings,
     },
   });
 
-  return { consumed: true, reason: "ok" as const, fingerprint, consumedCount };
+  return { consumed: true, reason: "ok" as const, fingerprint, consumedCount, deductedCount, skippedStockDeductionCount, stockDeductionWarnings };
 };
 
 // ---------------------------------------------------------------------------
@@ -1423,6 +1516,9 @@ export function registerPrepressQueueRoutes(
           await tx.insert(productionEvents).values({
             organizationId,
             productionJobId,
+            orderId: context.lineItem.orderId,
+            orderLineItemId: lineItemId,
+            actorUserId: userId ?? null,
             type: "note",
             payload: {
               eventType: "materials_rebalanced",
@@ -1441,6 +1537,9 @@ export function registerPrepressQueueRoutes(
         await tx.insert(productionEvents).values({
           organizationId,
           productionJobId,
+          orderId: context.lineItem.orderId,
+          orderLineItemId: lineItemId,
+          actorUserId: userId ?? null,
           type: "note",
           payload: {
             eventType: "material_override",
@@ -1947,6 +2046,18 @@ export function registerPrepressQueueRoutes(
           userAgent: req.headers["user-agent"] || null,
         } as any);
 
+        await insertPrepressTimelineLog({
+          orderId: order.id,
+          orderLineItemId: lineItemId,
+          actorUserId: userId,
+          actionType: "prepress_started",
+          previousStatus: lineItem.workflowState,
+          newStatus: "in_prepress",
+          previousStation: activeOwner?.stationKey ?? null,
+          newStation: activeOwner?.stationKey ?? "prepress",
+          sessionId: session.id,
+        });
+
         return {
           ...session,
           lineItemId,
@@ -2191,6 +2302,41 @@ export function registerPrepressQueueRoutes(
           userAgent: req.headers["user-agent"] || null,
         } as any);
 
+        await insertPrepressTimelineLog({
+          orderId: session.orderId,
+          orderLineItemId: session.lineItemId,
+          actorUserId: userId,
+          actionType: "prepress_completed",
+          previousStatus: "in_prepress",
+          newStatus: "in_prepress",
+          previousStation: activeOwner?.stationKey ?? "prepress",
+          newStation: activeOwner?.stationKey ?? "prepress",
+          sessionId,
+          metadata: {
+            finalArtworkSource: finalArtwork.source,
+            finalFileId: finalArtwork.file.id,
+            createdFinalFile: finalArtwork.created,
+          },
+        });
+
+        if (finalArtwork.created) {
+          await insertPrepressTimelineLog({
+            orderId: session.orderId,
+            orderLineItemId: session.lineItemId,
+            actorUserId: userId,
+            actionType: "prepress_file_prepared",
+            previousStatus: "in_prepress",
+            newStatus: "in_prepress",
+            previousStation: activeOwner?.stationKey ?? "prepress",
+            newStation: activeOwner?.stationKey ?? "prepress",
+            sessionId,
+            metadata: {
+              finalArtworkSource: finalArtwork.source,
+              finalFileId: finalArtwork.file.id,
+            },
+          });
+        }
+
         return {
           ...session,
           lineItemId: session.lineItemId,
@@ -2364,6 +2510,9 @@ export function registerPrepressQueueRoutes(
             await tx.insert(productionEvents).values({
               organizationId,
               productionJobId,
+              orderId: materialContext.lineItem.orderId,
+              orderLineItemId: lineItemId,
+              actorUserId: userId ?? null,
               type: "note",
               payload: {
                 eventType: "materials_reserved",
@@ -2400,6 +2549,23 @@ export function registerPrepressQueueRoutes(
           ipAddress: req.ip || null,
           userAgent: req.headers["user-agent"] || null,
         } as any);
+
+        await insertPrepressTimelineLog({
+          orderId: item.orderId,
+          orderLineItemId: lineItemId,
+          actorUserId: userId,
+          actionType: "prepress_routed",
+          previousStatus: item.workflowState,
+          newStatus: workflowTransition.toState,
+          previousStation: activeJob.stationKey,
+          newStation: workflowTransition.activeOwnerStationKey ?? downstreamRoute.stationKey,
+          reason: downstreamRoute.reason,
+          metadata: {
+            targetStation: downstreamRoute.stationKey,
+            targetStepKey: downstreamRoute.stepKey,
+            productionJobId,
+          },
+        });
 
         return workflowTransition;
       });
@@ -2565,6 +2731,23 @@ export function registerPrepressQueueRoutes(
           ipAddress: req.ip || null,
           userAgent: req.headers["user-agent"] || null,
         } as any);
+
+        await insertPrepressTimelineLog({
+          orderId: lineItem.orderId,
+          orderLineItemId: lineItemId,
+          actorUserId: userId,
+          actionType: "prepress_sent_back_for_correction",
+          previousStatus: lineItem.workflowState,
+          newStatus: "in_prepress",
+          previousStation: activeJob?.stationKey ?? null,
+          newStation: workflowTransition.activeOwnerStationKey ?? "prepress",
+          note: note.trim(),
+          metadata: {
+            noPrintsCompletedYet: noPrintsCompletedYet || false,
+            prepressJobId,
+            sessionId,
+          },
+        });
 
         return { sessionId, prepressJobId };
       });

@@ -37,13 +37,19 @@ async function processSyncJob(job: any): Promise<void> {
     // Route to appropriate processor based on resource type and direction
     if (job.resourceType === 'customers') {
       if (job.direction === 'pull') {
-        await qbService.processPullCustomers(job.id);
+        if (!job.organizationId) {
+          throw new Error(`Cannot process pull job ${job.id}: missing organizationId`);
+        }
+        await qbService.processPullCustomers(job.id, job.organizationId);
       } else if (job.direction === 'push') {
         await qbService.processPushCustomers(job.id);
       }
     } else if (job.resourceType === 'invoices') {
       if (job.direction === 'pull') {
-        await qbService.processPullInvoices(job.id);
+        if (!job.organizationId) {
+          throw new Error(`Cannot process pull job ${job.id}: missing organizationId`);
+        }
+        await qbService.processPullInvoices(job.id, job.organizationId);
       } else if (job.direction === 'push') {
         await qbService.processPushInvoices(job.id);
       }

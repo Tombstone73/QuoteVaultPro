@@ -46,6 +46,7 @@ import {
 } from "@shared/schema";
 import { eq, desc, and, inArray, sql } from "drizzle-orm";
 import { storage } from "../storage";
+import { inboundOrdersRepository } from "../storage/inboundOrders.repo";
 import { getRequestOrganizationId } from "../tenantContext";
 import { calculateQuoteOrderTotals, getOrganizationTaxSettings, type LineItemInput } from "../quoteOrderPricing";
 import {
@@ -69,6 +70,24 @@ import { ensureCustomerForUser } from "../db/syncUsersToCustomers";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
+}
+
+async function syncInboundCompletionForQuote(args: {
+  organizationId: string;
+  quoteId: string;
+  actorUserId?: string | null;
+  quoteStatus: string;
+  completionSource: "quote_status" | "quote_staff_approval";
+}) {
+  if (args.completionSource === "quote_status" && args.quoteStatus === "draft") return;
+
+  await inboundOrdersRepository.markLinkedQuoteCompleted({
+    organizationId: args.organizationId,
+    quoteId: args.quoteId,
+    actorUserId: args.actorUserId ?? null,
+    quoteStatus: args.quoteStatus,
+    completionSource: args.completionSource,
+  });
 }
 
 /**
@@ -1170,6 +1189,16 @@ export function registerQuoteRoutes(
 
       const updatedQuote = await storage.updateQuote(organizationId, id, updateData);
 
+      if (status !== undefined && status !== existing.status) {
+        await syncInboundCompletionForQuote({
+          organizationId,
+          quoteId: id,
+          actorUserId: userId ?? null,
+          quoteStatus: updatedQuote.status,
+          completionSource: "quote_status",
+        });
+      }
+
       // Upsert flags/tags into quote_list_notes if provided
       if (normalizedListLabel !== undefined) {
         try {
@@ -1387,6 +1416,13 @@ export function registerQuoteRoutes(
       const updatedQuote = await storage.updateQuote(organizationId, quoteId, {
         status: newDbStatus as any
       });
+      await syncInboundCompletionForQuote({
+        organizationId,
+        quoteId,
+        actorUserId: userId,
+        quoteStatus: updatedQuote.status,
+        completionSource: "quote_status",
+      });
 
       // Create timeline event
       try {
@@ -1483,6 +1519,13 @@ export function registerQuoteRoutes(
       } else {
         state = await storage.updateQuoteWorkflowState(id, { status: 'staff_approved', approvedByStaffUserId: getUserId(req.user) });
       }
+      await syncInboundCompletionForQuote({
+        organizationId,
+        quoteId: id,
+        actorUserId: getUserId(req.user) ?? null,
+        quoteStatus: quote.status,
+        completionSource: "quote_staff_approval",
+      });
       res.json({ success: true, data: state });
     } catch (error) {
       console.error('Error approving quote:', error);

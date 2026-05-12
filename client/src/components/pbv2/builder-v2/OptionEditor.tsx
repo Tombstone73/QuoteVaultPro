@@ -11,6 +11,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import type { EditorOptionGroup, EditorOption } from '@/lib/pbv2/pbv2ViewModel';
 import { OptionDetailsEditor } from './OptionDetailsEditor';
+import type { VisibilityRule } from '@shared/optionTreeV2';
 
 interface OptionEditorProps {
   selectedGroup: EditorOptionGroup | undefined;
@@ -50,7 +51,29 @@ export function OptionEditor({
   treeJson
 }: OptionEditorProps) {
   const [expandedOptions, setExpandedOptions] = React.useState<Set<string>>(new Set());
-  const [editingChoiceValue, setEditingChoiceValue] = React.useState<{ optionId: string; value: string } | null>(null);
+  const [editingChoiceValue, setEditingChoiceValue] = React.useState<{ optionId: string; value: string; originalValue?: string } | null>(null);
+  const selectionKeyOptions = React.useMemo(() => {
+    const nodesRaw = treeJson?.nodes;
+    const nodes = Array.isArray(nodesRaw) ? nodesRaw : Object.values(nodesRaw || {});
+    return nodes
+      .map((node: any) => ({
+        nodeId: node?.id,
+        selectionKey: node?.input?.selectionKey,
+        label: node?.label || node?.input?.selectionKey || node?.id,
+      }))
+      .filter((entry: any) => typeof entry.selectionKey === 'string' && entry.selectionKey.trim().length > 0)
+      .sort((a: any, b: any) => String(a.label).localeCompare(String(b.label)));
+  }, [treeJson]);
+
+  const groupVisibilityRules = Array.isArray(selectedGroup?.visibilityRules) ? selectedGroup.visibilityRules : [];
+
+  const updateGroupVisibilityRule = (ruleIndex: number, updates: Partial<VisibilityRule>) => {
+    const nextRules = groupVisibilityRules.map((rule, idx) => {
+      if (idx !== ruleIndex) return rule;
+      return { ...rule, ...updates } as VisibilityRule;
+    });
+    onUpdateGroup(selectedGroup!.id, { visibilityRules: nextRules });
+  };
 
   const toggleOption = (optionId: string) => {
     const newExpanded = new Set(expandedOptions);
@@ -121,6 +144,159 @@ export function OptionEditor({
               Multi-select
             </Label>
           </div>
+        </div>
+
+        <div className="mt-5 rounded-lg border border-slate-700 bg-[#111827]/70 p-4 space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <Label className="text-sm text-slate-200">Show This Group When...</Label>
+              <p className="text-xs text-slate-400 mt-1">
+                These rules control whether the whole group is visible at runtime. Hidden groups and stale selections are ignored by pricing and workflow.
+              </p>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                onUpdateGroup(selectedGroup.id, {
+                  visibilityRules: [...groupVisibilityRules, { type: 'equals', selectionKey: '', value: '' }],
+                })
+              }
+              className="gap-1.5 text-xs"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Add Rule
+            </Button>
+          </div>
+
+          {groupVisibilityRules.length > 0 ? (
+            <div className="space-y-2">
+              {groupVisibilityRules.map((rule, ruleIndex) => {
+                const simpleRule =
+                  rule.type === 'equals' || rule.type === 'notEquals' || rule.type === 'in' || rule.type === 'truthy'
+                    ? rule
+                    : null;
+
+                return (
+                  <div key={ruleIndex} className="rounded-md border border-slate-700 bg-[#0f172a] p-3 space-y-2">
+                    {simpleRule ? (
+                      <>
+                        <div className="grid gap-2 md:grid-cols-[1.3fr_1fr_1.3fr_auto] md:items-end">
+                          <div>
+                            <Label className="text-xs text-slate-400 mb-1 block">Selection</Label>
+                            <Select
+                              value={simpleRule.selectionKey || '__empty__'}
+                              onValueChange={(value) =>
+                                updateGroupVisibilityRule(ruleIndex, { selectionKey: value === '__empty__' ? '' : value } as any)
+                              }
+                            >
+                              <SelectTrigger className="bg-[#020617] border-slate-700 text-slate-200 text-sm">
+                                <SelectValue placeholder="Choose a selection..." />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="__empty__">Select a field</SelectItem>
+                                {selectionKeyOptions.map((entry: any) => (
+                                  <SelectItem key={`${entry.nodeId}:${entry.selectionKey}`} value={entry.selectionKey}>
+                                    {entry.label} ({entry.selectionKey})
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+
+                          <div>
+                            <Label className="text-xs text-slate-400 mb-1 block">Operator</Label>
+                            <Select
+                              value={simpleRule.type}
+                              onValueChange={(value: 'equals' | 'notEquals' | 'in' | 'truthy') =>
+                                updateGroupVisibilityRule(ruleIndex, value === 'truthy'
+                                  ? ({ type: value, selectionKey: simpleRule.selectionKey } as any)
+                                  : ({ type: value, selectionKey: simpleRule.selectionKey, value: 'value' in simpleRule ? (simpleRule as any).value ?? '' : '', values: value === 'in' ? ('values' in simpleRule ? (simpleRule as any).values ?? [] : []) : undefined } as any))
+                              }
+                            >
+                              <SelectTrigger className="bg-[#020617] border-slate-700 text-slate-200 text-sm">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="equals">Equals</SelectItem>
+                                <SelectItem value="notEquals">Does Not Equal</SelectItem>
+                                <SelectItem value="in">Is Any Of</SelectItem>
+                                <SelectItem value="truthy">Has Any Value</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+
+                          <div>
+                            <Label className="text-xs text-slate-400 mb-1 block">Value</Label>
+                            {simpleRule.type === 'truthy' ? (
+                              <div className="h-10 rounded-md border border-dashed border-slate-700 bg-[#020617] px-3 text-xs text-slate-500 flex items-center">
+                                No value needed
+                              </div>
+                            ) : (
+                              <Input
+                                value={simpleRule.type === 'in' ? ((simpleRule as any).values || []).join(', ') : ((simpleRule as any).value ?? '')}
+                                onChange={(e) =>
+                                  updateGroupVisibilityRule(
+                                    ruleIndex,
+                                    simpleRule.type === 'in'
+                                      ? ({ values: e.target.value.split(',').map((entry) => entry.trim()).filter(Boolean) } as any)
+                                      : ({ value: e.target.value } as any)
+                                  )
+                                }
+                                placeholder={simpleRule.type === 'in' ? 'ACM, Acrylic' : 'ACM'}
+                                className="bg-[#020617] border-slate-700 text-slate-100 text-sm"
+                              />
+                            )}
+                          </div>
+
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={() =>
+                              onUpdateGroup(selectedGroup.id, {
+                                visibilityRules: groupVisibilityRules.filter((_, idx) => idx !== ruleIndex),
+                              })
+                            }
+                            className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        {ruleIndex === 0 ? null : (
+                          <div className="text-[11px] uppercase tracking-wide text-slate-500">AND</div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-xs text-amber-300">
+                          This group uses a nested visibility rule. Runtime support is enabled, but the lightweight editor only edits simple rules.
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          onClick={() =>
+                            onUpdateGroup(selectedGroup.id, {
+                              visibilityRules: groupVisibilityRules.filter((_, idx) => idx !== ruleIndex),
+                            })
+                          }
+                          className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="text-xs text-slate-500">
+              This group is always visible unless you add a rule.
+            </div>
+          )}
         </div>
       </div>
 

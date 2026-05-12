@@ -26,7 +26,7 @@ import {
 import { ArrowLeft, Mail, DollarSign, Trash2, RefreshCw, CreditCard, HandCoins, AlertCircle, ExternalLink } from "lucide-react";
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "@shared/rollups/invoicePaymentRollup";
 import { useAuth } from "@/hooks/useAuth";
-import { useInvoice, useBillInvoice, useRetryInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment } from "@/hooks/useInvoices";
+import { useInvoice, useBillInvoice, useRetryInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInvoiceReminderHistory, useSendInvoiceReminder } from "@/hooks/useInvoices";
 import { useOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
 import { Page } from "@/components/titan/Page";
@@ -174,6 +174,8 @@ export default function InvoiceDetailPage() {
   const invoicePayments = useInvoicePayments(invoiceId);
   const recordManualPayment = useRecordManualInvoicePayment();
   const voidInvoicePayment = useVoidInvoicePayment();
+  const reminderHistory = useInvoiceReminderHistory(invoiceId);
+  const sendReminder = useSendInvoiceReminder();
 
   const [addPaymentDialogOpen, setAddPaymentDialogOpen] = useState(false);
   const [stripePayOpen, setStripePayOpen] = useState(false);
@@ -202,6 +204,8 @@ export default function InvoiceDetailPage() {
   const lineItems = data?.lineItems ?? [];
   const payments = data?.payments ?? [];
   const paymentsList: any[] = (invoicePayments.data as any[]) ?? payments;
+  const importedQuickBooksLineItems = data?.importedQuickBooksLineItems ?? [];
+  const importedQuickBooksLineItemsUnavailableMessage = data?.importedQuickBooksLineItemsUnavailableMessage ?? null;
 
   // Orders Detail parity: when invoice is tied to an order, pull customer/contact + metadata from the order.
   const orderId = invoice?.orderId ?? undefined;
@@ -236,12 +240,34 @@ export default function InvoiceDetailPage() {
     : { amountPaidCents: 0, amountDueCents: 0, paymentStatus: 'unpaid' as const };
 
   const paidCents = paymentRollup.amountPaidCents;
-  const remainingCents = paymentRollup.amountDueCents;
+  const displayPaidCents = Number((invoice as any)?.displayPaidCents ?? paymentRollup.amountPaidCents ?? 0);
+  const remainingCents = Number((invoice as any)?.displayRemainingCents ?? paymentRollup.amountDueCents ?? 0);
+  const displayTotalCents = Number((invoice as any)?.displayTotalCents ?? (invoice as any)?.totalCents ?? 0);
   const balanceDue = remainingCents / 100;
-  const paymentStatusLabel = getInvoicePaymentStatusLabel({
+  const fallbackPaymentStatusLabel = getInvoicePaymentStatusLabel({
     invoiceStatus: invoice?.status,
     rollup: paymentRollup as any,
   });
+  const paymentStatusLabel = String((invoice as any)?.displayStatus || fallbackPaymentStatusLabel);
+  const isImportedFromQuickBooks = !!invoice && Boolean((invoice as any)?.isImportedFromQuickBooks);
+  const isHistoricalImport = !!invoice && Boolean((invoice as any)?.isHistorical);
+  const importedQuickBooksPaymentSummary = (invoice as any)?.importedQuickBooksPaymentSummary;
+  const importedQuickBooksPaymentsEnabled = isImportedFromQuickBooks && !isHistoricalImport && !!String((invoice as any)?.qbInvoiceId || '').trim();
+  const importedQbPendingSyncCents = Number(importedQuickBooksPaymentSummary?.pendingSyncCents || 0);
+  const importedQbFailedSyncCents = Number(importedQuickBooksPaymentSummary?.failedSyncCents || 0);
+  const importedQbSyncedUnreconciledCents = Number(importedQuickBooksPaymentSummary?.syncedUnreconciledCents || 0);
+  const importedQbReconciledCents = Number(importedQuickBooksPaymentSummary?.reconciledCents || 0);
+  const hasImportedQbPaymentSummary =
+    importedQuickBooksPaymentsEnabled &&
+    (importedQbPendingSyncCents > 0 || importedQbFailedSyncCents > 0 || importedQbSyncedUnreconciledCents > 0 || importedQbReconciledCents > 0);
+  const paymentActionsLocked = isImportedFromQuickBooks && !importedQuickBooksPaymentsEnabled;
+  const canSendInvoiceEmail = isAdminOrOwner && !isImportedFromQuickBooks;
+  const canMarkInvoiceSent = isAdminOrOwner && !isImportedFromQuickBooks;
+  const canFinalizeInvoice = invoiceStatus === 'draft' && !isImportedFromQuickBooks;
+  const canDeleteDraftInvoice = invoice?.status === 'draft' && payments.length === 0 && !isImportedFromQuickBooks;
+  const accountingModeLabel = isImportedFromQuickBooks
+    ? (isHistoricalImport ? 'Historical' : 'Active A/R')
+    : 'TitanOS';
 
   const invoicePdfViewUrl = invoiceId ? `/api/invoices/${encodeURIComponent(invoiceId)}/pdf` : '';
   const invoicePdfDownloadUrl = invoiceId ? `/api/invoices/${encodeURIComponent(invoiceId)}/pdf?download=1` : '';
@@ -249,12 +275,11 @@ export default function InvoiceDetailPage() {
     ? `invoice-${String((invoice as any).invoiceNumber)}.pdf`
     : 'invoice.pdf';
 
-  // Manual payments may intentionally exceed remaining (rollup clamps). Keep available for staff unless void.
-  const canRecordPayment = !!invoice && isStaffUser && invoiceStatus !== 'void';
+  const canRecordPayment = !!invoice && isStaffUser && invoiceStatus !== 'void' && remainingCents > 0 && !paymentActionsLocked;
 
-  const canEditInvoice = !!invoice && isStaffUser && invoiceStatus !== 'paid' && invoiceStatus !== 'void';
+  const canEditInvoice = !!invoice && isStaffUser && invoiceStatus !== 'paid' && invoiceStatus !== 'void' && !(isImportedFromQuickBooks && isHistoricalImport);
   const isBilledUnpaid = !!invoice && invoiceStatus === 'billed' && balanceDue > 0;
-  const canEditFinancial = canEditInvoice && (invoiceStatus === 'draft' || isBilledUnpaid);
+  const canEditFinancial = canEditInvoice && !isImportedFromQuickBooks && (invoiceStatus === 'draft' || isBilledUnpaid);
 
   const [termsDraft, setTermsDraft] = useState<string>('due_on_receipt');
   const [dueDateDraft, setDueDateDraft] = useState<string>('');
@@ -312,7 +337,7 @@ export default function InvoiceDetailPage() {
   const [taxDraft, setTaxDraft] = useState<string>('');
   const [shippingDraft, setShippingDraft] = useState<string>('');
 
-  const [bottomPanel, setBottomPanel] = useState<"collapsed" | "timeline" | "payments" | "material">("timeline");
+  const [bottomPanel, setBottomPanel] = useState<"collapsed" | "timeline" | "payments" | "material" | "reminders">("timeline");
 
   const formatCurrency = (amount: string | number) => {
     return new Intl.NumberFormat("en-US", {
@@ -333,6 +358,12 @@ export default function InvoiceDetailPage() {
     } catch {
       return "-";
     }
+  };
+
+  const formatPoSource = (source: string | null | undefined) => {
+    const raw = String(source || '').trim();
+    if (!raw) return '';
+    return raw.replaceAll('_', ' ').replace(/\b\w/g, (char) => char.toUpperCase());
   };
 
   const openRecordPayment = () => {
@@ -621,19 +652,22 @@ export default function InvoiceDetailPage() {
   const qbSyncStatusRaw = String((invoice as any)?.qbSyncStatus || '').toLowerCase();
 
   const invoiceVersion = Number((invoice as any)?.invoiceVersion || 1);
-  const lastSentVersion = (invoice as any)?.lastSentVersion == null ? null : Number((invoice as any)?.lastSentVersion);
+  const emailStatus = String((invoice as any)?.emailStatus || 'not_sent').toLowerCase();
+  const lastSentAt = (invoice as any)?.lastSentAt || null;
   const lastQbSyncedVersion = (invoice as any)?.lastQbSyncedVersion == null ? null : Number((invoice as any)?.lastQbSyncedVersion);
 
-  const customerHasLatest = lastSentVersion === invoiceVersion;
+  const customerHasLatest = emailStatus === 'sent_current';
   const qbUpToDate = lastQbSyncedVersion === invoiceVersion;
   const qbSyncLabel = qbFailed
     ? 'Failed'
-    : (qbUpToDate
-      ? 'Synced'
-      : (qbSyncStatusRaw === 'pending'
-        ? 'Queued for QB'
-        : (qbSyncStatusRaw ? qbSyncStatusRaw.replaceAll('_', ' ') : 'Needs resync')));
-  const showRetrySync = isAdminOrOwner && (qbFailed || !qbUpToDate);
+    : (isImportedFromQuickBooks
+      ? 'Imported'
+      : (qbUpToDate
+        ? 'Synced'
+        : (qbSyncStatusRaw === 'pending'
+          ? 'Queued for QB'
+          : (qbSyncStatusRaw ? qbSyncStatusRaw.replaceAll('_', ' ') : 'Needs resync'))));
+  const showRetrySync = isAdminOrOwner && !isImportedFromQuickBooks && (qbFailed || !qbUpToDate);
 
   const qbWarningMessage = (() => {
     const qb = String((invoice as any)?.qbLastError || '').trim();
@@ -641,6 +675,7 @@ export default function InvoiceDetailPage() {
     const sync = String((invoice as any)?.syncError || '').trim();
     if (sync) return sync;
     if (qbFailed) return 'QuickBooks sync failed';
+    if (isImportedFromQuickBooks) return '';
     if (!qbUpToDate && invoiceStatus !== 'draft') return 'QuickBooks out of date';
     return '';
   })();
@@ -694,8 +729,8 @@ export default function InvoiceDetailPage() {
     isStaffUser &&
     invoiceStatus !== 'void' &&
     invoiceStatus !== 'draft' &&
-    paymentRollup.paymentStatus === 'unpaid' &&
     remainingCents > 0 &&
+    !paymentActionsLocked &&
     stripeConnected &&
     stripeChargesEnabled;
 
@@ -1109,6 +1144,13 @@ export default function InvoiceDetailPage() {
                 <div className="text-sm text-muted-foreground truncate">
                   Issued {formatDate((invoice as any).issuedAt || invoice.issueDate)}
                 </div>
+                {isImportedFromQuickBooks ? (
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                    <Badge variant="secondary">Imported from QuickBooks</Badge>
+                    <Badge variant="outline">{accountingModeLabel}</Badge>
+                    <Badge variant="outline">Production workflow disabled</Badge>
+                  </div>
+                ) : null}
               </div>
             </div>
 
@@ -1150,40 +1192,44 @@ export default function InvoiceDetailPage() {
                       Refresh
                     </Button>
 
-                    <Button variant="outline" onClick={handleMarkSent} disabled={markSent.isPending}>
-                      {markSent.isPending ? 'Marking…' : 'Mark as Sent'}
-                    </Button>
+                    {canMarkInvoiceSent ? (
+                      <Button variant="outline" onClick={handleMarkSent} disabled={markSent.isPending}>
+                        {markSent.isPending ? 'Marking…' : 'Mark as Sent'}
+                      </Button>
+                    ) : null}
 
-                    <Dialog open={emailDialogOpen} onOpenChange={setEmailDialogOpen}>
-                      <DialogTrigger asChild>
-                        <Button variant="outline">
-                          <Mail className="mr-2 h-4 w-4" />
-                          Send Email
-                        </Button>
-                      </DialogTrigger>
-                      <DialogContent>
-                        <DialogHeader>
-                          <DialogTitle>Send Invoice</DialogTitle>
-                        </DialogHeader>
-                        <div className="space-y-4">
-                          <div>
-                            <Label htmlFor="email">Recipient Email (optional)</Label>
-                            <Input
-                              id="email"
-                              type="email"
-                              value={recipientEmail}
-                              onChange={(e) => setRecipientEmail(e.target.value)}
-                              placeholder="Leave blank to use customer email"
-                            />
-                          </div>
-                        </div>
-                        <DialogFooter>
-                          <Button onClick={handleSendEmail} disabled={sendInvoice.isPending}>
-                            {sendInvoice.isPending ? "Sending..." : "Send"}
+                    {canSendInvoiceEmail ? (
+                      <Dialog open={emailDialogOpen} onOpenChange={setEmailDialogOpen}>
+                        <DialogTrigger asChild>
+                          <Button variant="outline">
+                            <Mail className="mr-2 h-4 w-4" />
+                            Send Email
                           </Button>
-                        </DialogFooter>
-                      </DialogContent>
-                    </Dialog>
+                        </DialogTrigger>
+                        <DialogContent>
+                          <DialogHeader>
+                            <DialogTitle>Send Invoice</DialogTitle>
+                          </DialogHeader>
+                          <div className="space-y-4">
+                            <div>
+                              <Label htmlFor="email">Recipient Email (optional)</Label>
+                              <Input
+                                id="email"
+                                type="email"
+                                value={recipientEmail}
+                                onChange={(e) => setRecipientEmail(e.target.value)}
+                                placeholder="Leave blank to use customer email"
+                              />
+                            </div>
+                          </div>
+                          <DialogFooter>
+                            <Button onClick={handleSendEmail} disabled={sendInvoice.isPending}>
+                              {sendInvoice.isPending ? "Sending..." : "Send"}
+                            </Button>
+                          </DialogFooter>
+                        </DialogContent>
+                      </Dialog>
+                    ) : null}
 
                     {canPayInvoice ? (
                       <Button onClick={() => setStripePayOpen(true)}>
@@ -1192,12 +1238,14 @@ export default function InvoiceDetailPage() {
                       </Button>
                     ) : null}
 
-                    <Button onClick={openRecordPayment} disabled={!canRecordPayment}>
-                      <DollarSign className="mr-2 h-4 w-4" />
-                      Record Payment
-                    </Button>
+                    {canRecordPayment ? (
+                      <Button onClick={openRecordPayment}>
+                        <DollarSign className="mr-2 h-4 w-4" />
+                        Record Payment
+                      </Button>
+                    ) : null}
 
-                    {invoiceStatus === 'draft' && (
+                    {canFinalizeInvoice && (
                       <TooltipProvider>
                         <Tooltip>
                           <TooltipTrigger asChild>
@@ -1212,7 +1260,7 @@ export default function InvoiceDetailPage() {
                       </TooltipProvider>
                     )}
 
-                    {invoice.status === 'draft' && payments.length === 0 && (
+                    {canDeleteDraftInvoice && (
                       <Button variant="destructive" onClick={handleDelete}>
                         <Trash2 className="mr-2 h-4 w-4" />
                         Delete
@@ -1267,13 +1315,13 @@ export default function InvoiceDetailPage() {
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <div className="rounded-md border bg-card/50 p-3">
                 <div className="text-xs font-medium text-muted-foreground">Total</div>
-                <div className="mt-1 text-xl font-semibold">{formatCurrency(invoice.total)}</div>
+                <div className="mt-1 text-xl font-semibold">{formatCurrency((invoice as any).displayTotal ?? invoice.total)}</div>
               </div>
 
               <div className="rounded-md border bg-card/50 p-3">
                 <div className="text-xs font-medium text-muted-foreground">Paid</div>
-                <div className={paidCents > 0 ? "mt-1 text-xl font-semibold text-green-600" : "mt-1 text-xl font-semibold"}>
-                  {formatCurrencyFromCents(paidCents)}
+                <div className={displayPaidCents > 0 ? "mt-1 text-xl font-semibold text-green-600" : "mt-1 text-xl font-semibold"}>
+                  {formatCurrencyFromCents(displayPaidCents)}
                 </div>
               </div>
 
@@ -1306,14 +1354,14 @@ export default function InvoiceDetailPage() {
         <StatusStrip>
           <StatusTile
             label="Total"
-            value={formatCurrency(invoice.total)}
+            value={formatCurrency((invoice as any).displayTotal ?? invoice.total)}
             valueClassName="mt-1 text-base font-semibold"
           />
           <StatusTile
             label="Paid"
-            value={formatCurrencyFromCents(paidCents)}
+            value={formatCurrencyFromCents(displayPaidCents)}
             valueClassName={
-              paidCents > 0
+              displayPaidCents > 0
                 ? "mt-1 text-base font-semibold text-green-600"
                 : "mt-1 text-base font-semibold"
             }
@@ -1333,11 +1381,11 @@ export default function InvoiceDetailPage() {
           />
           <StatusTile
             label="Customer Status"
-            value={<Badge variant="secondary">{customerHasLatest ? 'Sent latest' : 'Not sent latest'}</Badge>}
+            value={<Badge variant={emailStatus === 'sent_outdated' ? 'outline' : 'secondary'}>{customerHasLatest ? 'Sent latest' : emailStatus === 'sent_outdated' ? 'Updated After Sent' : 'Not sent'}</Badge>}
           />
           <StatusTile
             label="Accounting Status"
-            value={<Badge variant="secondary">{qbUpToDate ? 'QB up to date' : 'QB out of date'}</Badge>}
+            value={<Badge variant="secondary">{isImportedFromQuickBooks ? `QuickBooks ${accountingModeLabel}` : (qbUpToDate ? 'QB up to date' : 'QB out of date')}</Badge>}
           />
           <StatusTile
             label="QB Sync"
@@ -1375,10 +1423,60 @@ export default function InvoiceDetailPage() {
           />
           <StatusTile
             label="Last Sent"
-            value={formatDate((invoice as any).lastSentAt || null)}
+            value={formatDate(lastSentAt)}
             valueClassName="mt-1 text-sm font-medium"
           />
         </StatusStrip>
+
+        {(isImportedFromQuickBooks || invoice.customerPoNumber) ? (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Accounting Import Details</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded-md border bg-card/50 p-3">
+                  <div className="text-xs font-medium text-muted-foreground">Source</div>
+                  <div className="mt-1 text-sm font-semibold">{isImportedFromQuickBooks ? 'QuickBooks' : 'TitanOS'}</div>
+                </div>
+                <div className="rounded-md border bg-card/50 p-3">
+                  <div className="text-xs font-medium text-muted-foreground">Lifecycle</div>
+                  <div className="mt-1 text-sm font-semibold">{accountingModeLabel}</div>
+                </div>
+                <div className="rounded-md border bg-card/50 p-3">
+                  <div className="text-xs font-medium text-muted-foreground">QuickBooks Doc #</div>
+                  <div className="mt-1 text-sm font-semibold">{(invoice as any).qbDocNumber || '—'}</div>
+                </div>
+                <div className="rounded-md border bg-card/50 p-3">
+                  <div className="text-xs font-medium text-muted-foreground">QuickBooks Invoice ID</div>
+                  <div className="mt-1 break-all text-sm font-semibold">{(invoice as any).qbInvoiceId || (invoice as any).externalAccountingId || '—'}</div>
+                </div>
+                <div className="rounded-md border bg-card/50 p-3">
+                  <div className="text-xs font-medium text-muted-foreground">Imported At</div>
+                  <div className="mt-1 text-sm font-semibold">{formatDate((invoice as any).importedAt || null)}</div>
+                </div>
+                <div className="rounded-md border bg-card/50 p-3">
+                  <div className="text-xs font-medium text-muted-foreground">QB Balance at Import</div>
+                  <div className="mt-1 text-sm font-semibold">{formatCurrency((invoice as any).qbImportBalanceDue ?? (invoice as any).displayRemaining ?? 0)}</div>
+                </div>
+                <div className="rounded-md border bg-card/50 p-3 sm:col-span-2">
+                  <div className="text-xs font-medium text-muted-foreground">Customer PO / Description</div>
+                  <div className="mt-1 text-sm font-semibold">{invoice.customerPoNumber || '—'}</div>
+                  {invoice.qbPoSource ? (
+                    <div className="mt-1 text-xs text-muted-foreground">Source: {formatPoSource(invoice.qbPoSource)}</div>
+                  ) : null}
+                </div>
+                <div className="rounded-md border bg-card/50 p-3 sm:col-span-2">
+                  <div className="text-xs font-medium text-muted-foreground">Workflow Lock</div>
+                  <div className="mt-1 text-sm font-semibold">{(invoice as any).lockedReason ? formatPoSource((invoice as any).lockedReason) : 'Production workflow disabled'}</div>
+                </div>
+              </div>
+              {isImportedFromQuickBooks ? (
+                <div className="mt-3 text-xs text-muted-foreground">Imported QuickBooks invoices are accounting history or active A/R snapshots only. Production workflow is disabled for this record.</div>
+              ) : null}
+            </CardContent>
+          </Card>
+        ) : null}
 
         {/* Details + Line Items (Order-style layout) */}
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_400px]">
@@ -1514,7 +1612,13 @@ export default function InvoiceDetailPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {lineItems.map((item) => (
+                      {lineItems.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={4} className="py-8 text-center text-sm text-muted-foreground">
+                            {isImportedFromQuickBooks ? 'No TitanOS production line items for this imported invoice.' : 'No line items recorded.'}
+                          </TableCell>
+                        </TableRow>
+                      ) : lineItems.map((item) => (
                         <TableRow key={item.id}>
                           <TableCell>
                             <div className="font-medium">{item.description}</div>
@@ -1536,6 +1640,42 @@ export default function InvoiceDetailPage() {
                 </div>
               </CardContent>
             </Card>
+
+            {isImportedFromQuickBooks && (importedQuickBooksLineItems.length > 0 || importedQuickBooksLineItemsUnavailableMessage) ? (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Imported QuickBooks Line Items</CardTitle>
+                </CardHeader>
+                <CardContent className="p-0">
+                  {importedQuickBooksLineItems.length > 0 ? (
+                    <div className="w-full overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Description</TableHead>
+                            <TableHead>Quantity</TableHead>
+                            <TableHead>Unit Price</TableHead>
+                            <TableHead className="text-right">Amount</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {importedQuickBooksLineItems.map((item: any, index: number) => (
+                            <TableRow key={`${item.description}-${index}`}>
+                              <TableCell className="font-medium">{item.description}</TableCell>
+                              <TableCell>{item.quantity == null ? '—' : item.quantity}</TableCell>
+                              <TableCell>{item.unitPrice == null ? '—' : formatCurrency(item.unitPrice)}</TableCell>
+                              <TableCell className="text-right font-medium">{item.amount == null ? '—' : formatCurrency(item.amount)}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  ) : (
+                    <div className="px-6 py-4 text-sm text-muted-foreground">{importedQuickBooksLineItemsUnavailableMessage}</div>
+                  )}
+                </CardContent>
+              </Card>
+            ) : null}
 
             <Card>
               <CardHeader className="pb-2">
@@ -1725,6 +1865,25 @@ export default function InvoiceDetailPage() {
                   >
                     Material Usage
                   </button>
+
+                  <div className="h-4 w-px bg-muted-foreground/30" aria-hidden="true" />
+
+                  <button
+                    type="button"
+                    onClick={() => setBottomPanel(prev => prev === "reminders" ? "collapsed" : "reminders")}
+                    className={
+                      `text-lg font-medium transition-colors hover:text-foreground cursor-pointer ${
+                        bottomPanel === "reminders" ? "text-foreground" : "text-muted-foreground"
+                      }`
+                    }
+                  >
+                    Reminders
+                    {reminderHistory.data && reminderHistory.data.filter(l => l.status === 'sent').length > 0 && (
+                      <span className="ml-1.5 text-sm font-normal text-muted-foreground">
+                        ({reminderHistory.data.filter(l => l.status === 'sent').length})
+                      </span>
+                    )}
+                  </button>
                 </div>
               </CardHeader>
 
@@ -1742,9 +1901,9 @@ export default function InvoiceDetailPage() {
                     <div className="space-y-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="text-sm text-muted-foreground">
-                          Total: <span className="font-medium text-foreground">{formatCurrency(invoice.total)}</span>
+                          Total: <span className="font-medium text-foreground">{formatCurrency((invoice as any).displayTotal ?? invoice.total)}</span>
                           <span className="mx-2 text-muted-foreground/50">•</span>
-                          Paid: <span className="font-medium text-foreground">{formatCurrencyFromCents(paidCents)}</span>
+                          Paid: <span className="font-medium text-foreground">{formatCurrencyFromCents(displayPaidCents)}</span>
                           <span className="mx-2 text-muted-foreground/50">•</span>
                           Remaining: <span className="font-medium text-foreground">{formatCurrencyFromCents(remainingCents)}</span>
                           <span className="mx-2 text-muted-foreground/50">•</span>
@@ -1763,6 +1922,44 @@ export default function InvoiceDetailPage() {
                           )}
                         </div>
                       </div>
+
+                      {importedQuickBooksPaymentsEnabled ? (
+                        <Alert>
+                          <AlertCircle className="h-4 w-4" />
+                          <AlertTitle>Imported QuickBooks payment reconciliation</AlertTitle>
+                          <AlertDescription>
+                            <div className="space-y-2">
+                              <div>
+                                TitanOS reduces A/R immediately for local payments on imported QuickBooks invoices. Those payments still need to sync to QuickBooks and later reconcile against the refreshed QuickBooks balance snapshot.
+                              </div>
+                              {hasImportedQbPaymentSummary ? (
+                                <div className="flex flex-wrap gap-2 text-xs">
+                                  {importedQbPendingSyncCents > 0 ? (
+                                    <Badge variant="outline">
+                                      Pending sync {formatCurrencyFromCents(importedQbPendingSyncCents)}
+                                    </Badge>
+                                  ) : null}
+                                  {importedQbFailedSyncCents > 0 ? (
+                                    <Badge variant="destructive">
+                                      Sync failed {formatCurrencyFromCents(importedQbFailedSyncCents)}
+                                    </Badge>
+                                  ) : null}
+                                  {importedQbSyncedUnreconciledCents > 0 ? (
+                                    <Badge variant="secondary">
+                                      Synced, awaiting reconciliation {formatCurrencyFromCents(importedQbSyncedUnreconciledCents)}
+                                    </Badge>
+                                  ) : null}
+                                  {importedQbReconciledCents > 0 ? (
+                                    <Badge variant="secondary">
+                                      Reconciled in QuickBooks {formatCurrencyFromCents(importedQbReconciledCents)}
+                                    </Badge>
+                                  ) : null}
+                                </div>
+                              ) : null}
+                            </div>
+                          </AlertDescription>
+                        </Alert>
+                      ) : null}
 
                       {showQbNeedsReauthBanner ? (
                         <Alert variant="destructive">
@@ -1788,9 +1985,15 @@ export default function InvoiceDetailPage() {
                         </Alert>
                       ) : null}
 
-                      {isStaffUser && qbConnected ? (
+                      {isStaffUser && qbConnected && !isImportedFromQuickBooks ? (
                         <div className="text-xs text-muted-foreground">
                           Queued for QuickBooks — run “Process Pending Jobs / Sync now” to push now.
+                        </div>
+                      ) : null}
+
+                      {paymentActionsLocked ? (
+                        <div className="text-xs text-muted-foreground">
+                          Payments for imported QuickBooks invoices should be reconciled from QuickBooks until payment sync is enabled.
                         </div>
                       ) : null}
 
@@ -1993,6 +2196,94 @@ export default function InvoiceDetailPage() {
                   {bottomPanel === "material" && (
                     <div className="text-sm text-muted-foreground">
                       Material usage is tracked on Orders. Coming soon for invoices.
+                    </div>
+                  )}
+
+                  {bottomPanel === "reminders" && (
+                    <div className="space-y-4">
+                      {/* Summary + send button */}
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="text-sm text-muted-foreground">
+                          {reminderHistory.data && reminderHistory.data.filter(l => l.status === 'sent').length > 0 ? (
+                            <>
+                              Last reminder sent:{" "}
+                              <span className="text-foreground font-medium">
+                                {format(new Date(reminderHistory.data.filter(l => l.status === 'sent')[0].sentAt), "MMM d, yyyy 'at' h:mm a")}
+                              </span>
+                              <span className="mx-2 text-muted-foreground/50">•</span>
+                              Total sent:{" "}
+                              <span className="text-foreground font-medium">
+                                {reminderHistory.data.filter(l => l.status === 'sent').length}
+                              </span>
+                            </>
+                          ) : (
+                            "No reminders have been sent for this invoice."
+                          )}
+                        </div>
+                        {isStaffUser && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={
+                              invoiceStatus === 'paid' ||
+                              invoiceStatus === 'void' ||
+                              sendReminder.isPending
+                            }
+                            onClick={() => {
+                              if (!invoiceId) return;
+                              sendReminder.mutate(invoiceId, {
+                                onSuccess: () => {
+                                  toast({ title: "Reminder sent", description: "The customer has been emailed." });
+                                },
+                                onError: (err: any) => {
+                                  toast({ title: "Could not send reminder", description: err?.message || "An error occurred.", variant: "destructive" });
+                                },
+                              });
+                            }}
+                          >
+                            <Mail className="mr-2 h-4 w-4" />
+                            {sendReminder.isPending ? "Sending…" : "Send Reminder"}
+                          </Button>
+                        )}
+                      </div>
+
+                      {/* Reminder history table */}
+                      {reminderHistory.isLoading ? (
+                        <div className="text-sm text-muted-foreground">Loading reminder history…</div>
+                      ) : !reminderHistory.data || reminderHistory.data.length === 0 ? (
+                        <div className="text-center py-8 text-muted-foreground">No reminder history yet</div>
+                      ) : (
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>#</TableHead>
+                              <TableHead>Date</TableHead>
+                              <TableHead>Recipient</TableHead>
+                              <TableHead>Status</TableHead>
+                              <TableHead>Failure Reason</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {reminderHistory.data.map((log) => (
+                              <TableRow key={log.id} className={log.status === 'failed' ? 'opacity-60' : undefined}>
+                                <TableCell className="font-medium">#{log.reminderNumber}</TableCell>
+                                <TableCell>{format(new Date(log.sentAt), "MMM d, yyyy 'at' h:mm a")}</TableCell>
+                                <TableCell className="text-sm">{log.recipientEmail ?? "—"}</TableCell>
+                                <TableCell>
+                                  {log.status === 'sent' ? (
+                                    <Badge variant="secondary">Sent</Badge>
+                                  ) : (
+                                    <Badge variant="destructive">Failed</Badge>
+                                  )}
+                                </TableCell>
+                                <TableCell className="text-sm text-muted-foreground">
+                                  {log.failureReason ?? "—"}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      )}
                     </div>
                   )}
                 </CardContent>

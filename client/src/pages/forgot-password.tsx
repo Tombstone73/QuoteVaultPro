@@ -19,14 +19,42 @@ export default function ForgotPassword() {
     setLoading(true);
 
     try {
-      const response = await fetch(getApiUrl("/api/auth/forgot-password"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
-        credentials: "include",
-      });
+      let response: Response;
+      try {
+        response = await fetch(getApiUrl("/api/auth/forgot-password"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email }),
+          credentials: "include",
+        });
+      } catch (networkErr) {
+        // fetch() itself threw — network failure or CORS block
+        const isNetworkErr = networkErr instanceof TypeError;
+        console.error(
+          isNetworkErr
+            ? "Forgot password: network/CORS failure — check VITE_API_BASE_URL, APP_PUBLIC_WEB_ORIGIN, and APP_EXTRA_ORIGINS"
+            : "Forgot password: unexpected fetch error",
+          networkErr,
+        );
+        toast({
+          title: "Connection error",
+          description: "Unable to reach the server. Please check your connection and try again.",
+          variant: "destructive",
+        });
+        return;
+      }
 
-      const data = await response.json();
+      // Parse JSON; guard against non-JSON responses (e.g. proxy error pages)
+      let data: { success?: boolean; message?: string } = {};
+      const contentType = response.headers.get("content-type") ?? "";
+      if (contentType.includes("application/json")) {
+        data = await response.json();
+      } else {
+        console.error(
+          `Forgot password: server returned non-JSON (status=${response.status} content-type=${contentType}) — likely a proxy or backend error`,
+        );
+        throw new Error(`Server error (${response.status}). Please try again later.`);
+      }
 
       if (response.ok && data.success) {
         setSubmitted(true);

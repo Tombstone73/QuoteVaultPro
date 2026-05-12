@@ -6,6 +6,8 @@ type BasicProofPreview = {
   fileName: string;
 };
 
+export type BasicProofRenderStatus = "ready" | "metadata_only";
+
 type BasicProofPdfArgs = {
   orderNumber: string | null;
   lineItemLabel: string;
@@ -16,6 +18,7 @@ type BasicProofPdfArgs = {
   sourceFileName: string | null;
   generatedAt: Date;
   preview: BasicProofPreview | null;
+  previewError?: string | null;
 };
 
 function drawWrappedText(args: {
@@ -55,7 +58,7 @@ function drawWrappedText(args: {
   return cursorY;
 }
 
-export async function generateBasicProofPdfBytes(args: BasicProofPdfArgs): Promise<Uint8Array> {
+export async function generateBasicProofPdfBytes(args: BasicProofPdfArgs): Promise<{ bytes: Uint8Array; renderStatus: BasicProofRenderStatus }> {
   const pdfDoc = await PDFDocument.create();
   const page = pdfDoc.addPage([612, 792]);
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -95,21 +98,32 @@ export async function generateBasicProofPdfBytes(args: BasicProofPdfArgs): Promi
   if (args.preview?.bytes?.length) {
     try {
       const mime = String(args.preview.mimeType || "").toLowerCase();
-      const image = mime.includes("png")
-        ? await pdfDoc.embedPng(args.preview.bytes)
-        : mime.includes("jpeg") || mime.includes("jpg")
-          ? await pdfDoc.embedJpg(args.preview.bytes)
-          : null;
-
-      if (image) {
-        const dims = image.scale(1);
-        const scale = Math.min((previewWidth - 24) / dims.width, (previewHeight - 24) / dims.height);
-        const drawWidth = dims.width * scale;
-        const drawHeight = dims.height * scale;
+      if (mime.includes("application/pdf")) {
+        const [embeddedPage] = await pdfDoc.embedPdf(args.preview.bytes, [0]);
+        const scale = Math.min((previewWidth - 24) / embeddedPage.width, (previewHeight - 24) / embeddedPage.height);
+        const drawWidth = embeddedPage.width * scale;
+        const drawHeight = embeddedPage.height * scale;
         const drawX = margin + (previewWidth - drawWidth) / 2;
         const drawY = pageHeight - 132 - previewHeight + (previewHeight - drawHeight) / 2;
-        page.drawImage(image, { x: drawX, y: drawY, width: drawWidth, height: drawHeight });
+        page.drawPage(embeddedPage, { x: drawX, y: drawY, xScale: scale, yScale: scale });
         previewRendered = true;
+      } else {
+        const image = mime.includes("png")
+          ? await pdfDoc.embedPng(args.preview.bytes)
+          : mime.includes("jpeg") || mime.includes("jpg")
+            ? await pdfDoc.embedJpg(args.preview.bytes)
+            : null;
+
+        if (image) {
+          const dims = image.scale(1);
+          const scale = Math.min((previewWidth - 24) / dims.width, (previewHeight - 24) / dims.height);
+          const drawWidth = dims.width * scale;
+          const drawHeight = dims.height * scale;
+          const drawX = margin + (previewWidth - drawWidth) / 2;
+          const drawY = pageHeight - 132 - previewHeight + (previewHeight - drawHeight) / 2;
+          page.drawImage(image, { x: drawX, y: drawY, width: drawWidth, height: drawHeight });
+          previewRendered = true;
+        }
       }
     } catch {
       previewRendered = false;
@@ -117,20 +131,22 @@ export async function generateBasicProofPdfBytes(args: BasicProofPdfArgs): Promi
   }
 
   if (!previewRendered) {
-    page.drawRectangle({ x: margin + 18, y: pageHeight - 132 - previewHeight + 18, width: previewWidth - 36, height: previewHeight - 36, color: rgb(0.97, 0.98, 1) });
-    page.drawText("Source Preview", { x: margin + 32, y: pageHeight - 188, font: fontBold, size: 16, color: rgb(0.21, 0.27, 0.39) });
+    page.drawRectangle({ x: margin + 18, y: pageHeight - 132 - previewHeight + 18, width: previewWidth - 36, height: previewHeight - 36, color: rgb(1, 0.97, 0.93) });
+    page.drawText("Incomplete Draft Proof", { x: margin + 32, y: pageHeight - 188, font: fontBold, size: 16, color: rgb(0.66, 0.21, 0.07) });
     drawWrappedText({
       page,
-      text: args.sourceFileName
-        ? `Preview unavailable in this runtime. Source file: ${args.sourceFileName}`
-        : "Preview unavailable in this runtime. The proof is based on the currently persisted artwork source.",
+      text: args.previewError
+        ? `Artwork preview could not be embedded. ${args.previewError} Do not send this draft to the customer.`
+        : args.sourceFileName
+          ? `Artwork preview could not be embedded for ${args.sourceFileName}. Do not send this draft to the customer.`
+          : "Artwork preview could not be embedded from the persisted source. Do not send this draft to the customer.",
       x: margin + 32,
       y: pageHeight - 218,
       maxWidth: previewWidth - 64,
       lineHeight: 16,
       font,
       size: 11,
-      color: rgb(0.35, 0.41, 0.5),
+      color: rgb(0.48, 0.24, 0.12),
     });
   }
 
@@ -189,5 +205,8 @@ export async function generateBasicProofPdfBytes(args: BasicProofPdfArgs): Promi
     color: rgb(0.43, 0.48, 0.58),
   });
 
-  return pdfDoc.save({ useObjectStreams: false });
+  return {
+    bytes: await pdfDoc.save({ useObjectStreams: false }),
+    renderStatus: previewRendered ? "ready" : "metadata_only",
+  };
 }

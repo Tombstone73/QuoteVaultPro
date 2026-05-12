@@ -17,6 +17,21 @@ const THICKNESS_UNITS: Record<string, string> = {
   gauge: 'ga',
 };
 
+const ROLL_UNIT_WARNING =
+  "Roll inventory units are currently ambiguous. Stock quantity, vendor cost, and usage reservations may not all use the same unit. Review before relying on automated inventory depletion.";
+const SHEET_SQFT_WARNING =
+  "Sheet materials priced by sqft still need explicit conversion/yield handling before inventory depletion can be trusted.";
+
+function effectiveMaterialUnits(material: any) {
+  const catalogUnit = material.unitOfMeasure;
+  const inventoryUnit = material.inventoryUnit || catalogUnit;
+  const sellPriceUnit = material.sellPriceUnit || catalogUnit;
+  const wholesalePriceUnit = material.wholesalePriceUnit || sellPriceUnit || catalogUnit;
+  const vendorCostUnit = material.vendorCostUnit || catalogUnit;
+  const consumptionUnit = material.consumptionUnit || sellPriceUnit || catalogUnit;
+  return { catalogUnit, inventoryUnit, sellPriceUnit, wholesalePriceUnit, vendorCostUnit, consumptionUnit };
+}
+
 interface Props { params: { id: string }; }
 export default function MaterialDetailPage({ params }: Props) {
   const { user } = useAuth();
@@ -35,6 +50,13 @@ export default function MaterialDetailPage({ params }: Props) {
   const stock = parseFloat(material.stockQuantity || "0");
   const min = parseFloat(material.minStockAlert || "0");
   const isPrivileged = user?.role === 'owner' || user?.role === 'admin';
+  const units = effectiveMaterialUnits(material);
+  const showRollUnitWarning =
+    material.type === "roll" &&
+    ["sqft", "linear_ft", "ft"].includes(String(units.inventoryUnit)) &&
+    Number.isFinite(stock) &&
+    stock > 0;
+  const showSheetSqftWarning = material.type === "sheet" && units.inventoryUnit === "sqft";
 
   async function handleDelete() {
     if (!confirm("Delete this material?")) return;
@@ -62,13 +84,23 @@ export default function MaterialDetailPage({ params }: Props) {
           {isPrivileged && <Button variant="destructive" onClick={handleDelete}>Delete</Button>}
         </div>
       </div>
+      {(showRollUnitWarning || showSheetSqftWarning) ? (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+          {showRollUnitWarning ? ROLL_UNIT_WARNING : SHEET_SQFT_WARNING}
+        </div>
+      ) : null}
       <div className="grid md:grid-cols-3 gap-4">
         <Card className="p-4 space-y-2">
           <h2 className="font-medium">Material Info</h2>
           <div className="text-sm space-y-1">
             <div><strong>Type:</strong> {material.type}</div>
-            <div><strong>Unit:</strong> {material.unitOfMeasure}</div>
-            <div><strong>Cost/Unit:</strong> {material.costPerUnit}</div>
+            <div><strong>Catalog Unit:</strong> {units.catalogUnit}</div>
+            <div><strong>Inventory Unit:</strong> {units.inventoryUnit}</div>
+            <div><strong>Sell Price Unit:</strong> {units.sellPriceUnit}</div>
+            <div><strong>Wholesale Price Unit:</strong> {units.wholesalePriceUnit}</div>
+            <div><strong>Vendor Cost Unit:</strong> {units.vendorCostUnit}</div>
+            <div><strong>Consumption Unit:</strong> {units.consumptionUnit}</div>
+            <div><strong>Base Sell Price:</strong> {material.costPerUnit} per Sell Price Unit</div>
             {material.color && <div><strong>Color:</strong> {material.color}</div>}
             {material.width && <div><strong>Width:</strong> {material.width}</div>}
             {material.height && <div><strong>Height:</strong> {material.height}</div>}
@@ -84,8 +116,8 @@ export default function MaterialDetailPage({ params }: Props) {
         <Card className="p-4 space-y-2">
           <h2 className="font-medium flex items-center gap-2">Stock Levels {<LowStockBadge stock={stock} min={min}/>}</h2>
           <div className="text-sm space-y-1">
-            <div><strong>On Hand:</strong> {stock}</div>
-            <div><strong>Min Alert:</strong> {min}</div>
+            <div><strong>Stock Quantity:</strong> {stock} per Inventory Unit</div>
+            <div><strong>Minimum Stock Alert:</strong> {min} per Inventory Unit</div>
             <div><strong>Updated:</strong> {new Date(material.updatedAt).toLocaleString()}</div>
           </div>
         </Card>
@@ -110,7 +142,7 @@ export default function MaterialDetailPage({ params }: Props) {
                 <th className="p-2">Order</th>
                 <th className="p-2">Line Item</th>
                 <th className="p-2">Qty Used</th>
-                <th className="p-2">Unit</th>
+                <th className="p-2">Usage Unit</th>
                 <th className="p-2">Date</th>
               </tr>
             </thead>

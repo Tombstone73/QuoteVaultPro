@@ -73,7 +73,10 @@ export function registerInviteRoutes(app: import("express").Express): void {
         .json({ success: false, status: "invalid", message: "Token is required." });
     }
 
+    // Fingerprint: first 8 chars of hash — enough to correlate logs without exposing token
     const tokenHash = sha256Hex(parse.data.token);
+    const tokenFp = tokenHash.slice(0, 8);
+    console.log(`[Invite Preview] token received fingerprint=${tokenFp}`);
 
     try {
       const [invite] = await db
@@ -89,6 +92,7 @@ export function registerInviteRoutes(app: import("express").Express): void {
         .limit(1);
 
       if (!invite) {
+        console.log(`[Invite Preview] invalid — not found fingerprint=${tokenFp}`);
         return res.status(404).json({
           success: false,
           status: "invalid",
@@ -97,6 +101,7 @@ export function registerInviteRoutes(app: import("express").Express): void {
       }
 
       if (invite.acceptedAt) {
+        console.log(`[Invite Preview] invalid — already accepted inviteId=${invite.id} fingerprint=${tokenFp}`);
         return res.status(409).json({
           success: false,
           status: "used",
@@ -105,6 +110,7 @@ export function registerInviteRoutes(app: import("express").Express): void {
       }
 
       if (new Date(invite.expiresAt) < new Date()) {
+        console.log(`[Invite Preview] invalid — expired inviteId=${invite.id} expiresAt=${invite.expiresAt} fingerprint=${tokenFp}`);
         return res.status(410).json({
           success: false,
           status: "expired",
@@ -126,6 +132,7 @@ export function registerInviteRoutes(app: import("express").Express): void {
         .where(eq(users.email, invite.email))
         .limit(1);
 
+      console.log(`[Invite Preview] valid inviteId=${invite.id} orgId=${invite.orgId} emailAlreadyRegistered=${!!existingUser} fingerprint=${tokenFp}`);
       return res.json({
         success: true,
         status: "valid",
@@ -168,6 +175,8 @@ export function registerInviteRoutes(app: import("express").Express): void {
 
     const { token, password } = parse.data;
     const tokenHash = sha256Hex(token);
+    const tokenFp = tokenHash.slice(0, 8);
+    console.log(`[Invite Accept] token received fingerprint=${tokenFp}`);
 
     // ── Validate invite ───────────────────────────────────────────────────────
     let invite: typeof orgInvites.$inferSelect;
@@ -180,25 +189,28 @@ export function registerInviteRoutes(app: import("express").Express): void {
         .limit(1);
 
       if (!rows[0]) {
+        console.log(`[Invite Accept] invalid — not found fingerprint=${tokenFp}`);
         return res
           .status(404)
           .json({ success: false, message: "Invite not found or is invalid." });
       }
       invite = rows[0];
     } catch (err) {
-      console.error("[invites/accept] lookup error:", err);
+      console.error("[Invite Accept] lookup error:", err);
       return res
         .status(500)
         .json({ success: false, message: "Failed to accept invite. Please try again." });
     }
 
     if (invite.acceptedAt) {
+      console.log(`[Invite Accept] invalid — already accepted inviteId=${invite.id} fingerprint=${tokenFp}`);
       return res
         .status(409)
         .json({ success: false, message: "This invite has already been accepted." });
     }
 
     if (new Date(invite.expiresAt) < new Date()) {
+      console.log(`[Invite Accept] invalid — expired inviteId=${invite.id} fingerprint=${tokenFp}`);
       return res
         .status(410)
         .json({
@@ -206,6 +218,8 @@ export function registerInviteRoutes(app: import("express").Express): void {
           message: "This invite has expired. Please ask your administrator for a new one.",
         });
     }
+
+    console.log(`[Invite Accept] token valid inviteId=${invite.id} orgId=${invite.orgId} fingerprint=${tokenFp}`);
 
     const { orgId, email, role: inviteRole } = invite;
     let userId: string;
@@ -221,9 +235,11 @@ export function registerInviteRoutes(app: import("express").Express): void {
 
       if (existingUser) {
         userId = existingUser.id;
+        console.log(`[Invite Accept] user resolved — existing userId=${userId} fingerprint=${tokenFp}`);
       } else {
         // New user — password required
         if (!password) {
+          console.log(`[Invite Accept] failed — password required for new user email (masked) fingerprint=${tokenFp}`);
           return res.status(400).json({
             success: false,
             code: "PASSWORD_REQUIRED",
@@ -250,17 +266,19 @@ export function registerInviteRoutes(app: import("express").Express): void {
 
         userId = newUser.id;
         createdUser = true;
+        console.log(`[Invite Accept] user created userId=${userId} fingerprint=${tokenFp}`);
 
-        // Create auth identity
+        // Create auth identity — passwordSetAt=now() means permanent, not forced-change
         await db.insert(authIdentities).values({
           userId,
           provider: "password",
           passwordHash,
           passwordSetAt: new Date(), // explicit set — not a temp/forced password
         });
+        console.log(`[Invite Accept] password setup completed userId=${userId} fingerprint=${tokenFp}`);
       }
     } catch (err: any) {
-      console.error("[invites/accept] user resolution error:", err);
+      console.error(`[Invite Accept] failed — user resolution error fingerprint=${tokenFp}:`, err);
       await writePlatformAuditLog({
         action: "org.invite.accept.failed",
         actorEmail: email,
@@ -349,6 +367,7 @@ export function registerInviteRoutes(app: import("express").Express): void {
       console.error("[invites/accept] auto-login failed:", err);
     }
 
+    console.log(`[Invite Accept] completed — userId=${userId} orgId=${orgId} createdUser=${createdUser} fingerprint=${tokenFp}`);
     return res.json({
       success: true,
       data: { orgId, userId, email },

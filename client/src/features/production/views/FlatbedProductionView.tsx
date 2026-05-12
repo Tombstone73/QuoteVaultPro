@@ -65,6 +65,7 @@ import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
 import { sanitizeDisplayText } from "@/lib/sanitizeDisplayText";
+import { filterProductionJobsForTab } from "@/lib/productionBoard";
 
 type ProductionStatus = "queued" | "in_progress" | "done" | "all";
 
@@ -1381,16 +1382,20 @@ function PreviewPanel({
   );
 }
 
-export default function FlatbedProductionView(props: { viewKey: string; status: ProductionStatus }) {
-  const { data, isLoading, error } = useProductionJobs({ 
-    status: props.status === "all" ? undefined : props.status, 
-    view: props.viewKey 
-  });
+export default function FlatbedProductionView(props: { viewKey: string; status: ProductionStatus; jobs?: ProductionJobListItem[] }) {
+  const shouldFetchJobs = !props.jobs;
+  const { data, isLoading, error } = useProductionJobs(
+    { view: props.viewKey },
+    { enabled: shouldFetchJobs },
+  );
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewSide, setPreviewSide] = useState<"front" | "back">("front");
 
-  const jobsSafe = data ?? [];
+  const jobsSafe = useMemo(
+    () => filterProductionJobsForTab(props.jobs ?? data ?? [], props.status),
+    [data, props.jobs, props.status],
+  );
 
   const sortedJobs = useMemo(() => {
     return [...jobsSafe].sort((a, b) => {

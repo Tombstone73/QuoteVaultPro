@@ -1,10 +1,11 @@
 import OAuthClient from 'intuit-oauth';
 import crypto from 'crypto';
 import { db } from './db';
-import { oauthConnections, accountingSyncJobs, customers, invoices, orders, payments, invoiceLineItems, type OAuthConnection } from '../shared/schema';
-import { eq, and, desc, or, isNull, sql } from 'drizzle-orm';
+import { oauthConnections, accountingSyncJobs, customers, customerContacts, invoices, orders, payments, invoiceLineItems, type OAuthConnection } from '../shared/schema';
+import { eq, and, asc, desc, or, isNull, isNotNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
 import { DEFAULT_ORGANIZATION_ID } from './tenantContext';
+import { generateNextInvoiceNumber } from './invoicesService';
 
 // Initialize QuickBooks OAuth client
 const getOAuthClient = (): any => {
@@ -688,6 +689,215 @@ function mapQBCustomerToLocal(qbCustomer: any): Partial<Customer> {
   };
 }
 
+// ==================== QB Contact Mapping Helpers ====================
+
+/**
+ * Derive a contact person name from QuickBooks Customer fields.
+ * Returns null when no person-level name can be identified.
+ */
+function deriveQBContactName(
+  qbCustomer: any,
+): { firstName: string; lastName: string } | null {
+  const givenName = String(qbCustomer.GivenName || '').trim();
+  const familyName = String(qbCustomer.FamilyName || '').trim();
+
+  if (givenName || familyName) {
+    // Prefer structured name fields; fill missing half with a safe default
+    return {
+      firstName: givenName || 'Contact',
+      lastName: familyName || '',
+    };
+  }
+
+  // Fall back to DisplayName only when it is not identical to the company name
+  const displayName = String(qbCustomer.DisplayName || '').trim();
+  const companyName = String(qbCustomer.CompanyName || '').trim();
+
+  if (displayName && displayName.toLowerCase() !== companyName.toLowerCase()) {
+    return { firstName: displayName, lastName: '' };
+  }
+
+  return null;
+}
+
+type QBContactPayload = {
+  customerId: string;
+  firstName: string;
+  lastName: string;
+  email: string | null;
+  phone: string | null;
+  mobile: string | null;
+  isPrimary: boolean;
+  externalSource: string;      // 'quickbooks'
+  externalSourceId: string;    // QB Customer.Id
+  externalSourceType: string;  // 'customer_primary_contact'
+};
+
+/**
+ * Build a TitanOS contact payload from a QuickBooks Customer.
+ * Returns null when there is no useful contact-level data to store
+ * (no email, phone, mobile, or person name).
+ */
+function mapQBCustomerToContact(
+  qbCustomer: any,
+  customerId: string,
+): QBContactPayload | null {
+  const email = String(qbCustomer.PrimaryEmailAddr?.Address || '').trim() || null;
+  const phone = String(qbCustomer.PrimaryPhone?.FreeFormNumber || '').trim() || null;
+  const mobile = String(qbCustomer.Mobile?.FreeFormNumber || '').trim() || null;
+
+  const name = deriveQBContactName(qbCustomer);
+
+  // Only create a contact if there is something useful to store
+  if (!email && !phone && !mobile && !name) {
+    return null;
+  }
+
+  // If we have useful data but no name, fall back to "Primary Contact"
+  const { firstName, lastName } = name ?? { firstName: 'Primary Contact', lastName: '' };
+
+  return {
+    customerId,
+    firstName,
+    lastName,
+    email,
+    phone,
+    mobile,
+    isPrimary: true,
+    externalSource: 'quickbooks',
+    externalSourceId: String(qbCustomer.Id),
+    externalSourceType: 'customer_primary_contact',
+  };
+}
+
+type ContactUpsertOutcome = 'created' | 'updated';
+
+/**
+ * Idempotent upsert of a primary contact for a QB-imported customer.
+ *
+ * Match order (first match wins):
+ *   0. customerId + externalSource + externalSourceId + externalSourceType
+ *      → definitive QB identity; updates all safe fields including name
+ *   1. customerId + email (case-insensitive) — no source fields yet
+ *      → attaches QB source fields; conservatively updates phone/mobile
+ *   2. customerId + normalized firstName/lastName — no source fields yet
+ *      → attaches QB source fields; updates email/phone/mobile
+ *   3. No match → INSERT with all fields including source tracking
+ */
+async function upsertQBContact(payload: QBContactPayload): Promise<ContactUpsertOutcome> {
+  const { customerId, firstName, lastName, email, phone, mobile, isPrimary,
+          externalSource, externalSourceId, externalSourceType } = payload;
+
+  // Pass 0: match by definitive QB source identity
+  const [bySource] = await db
+    .select()
+    .from(customerContacts)
+    .where(
+      and(
+        eq(customerContacts.customerId, customerId),
+        eq(customerContacts.externalSource, externalSource),
+        eq(customerContacts.externalSourceId, externalSourceId),
+        eq(customerContacts.externalSourceType, externalSourceType),
+      ),
+    )
+    .limit(1);
+
+  if (bySource) {
+    // Definitive match — safe to update name since we hold the source ID
+    await db
+      .update(customerContacts)
+      .set({
+        firstName,
+        lastName,
+        email: email ?? bySource.email,
+        phone: phone ?? bySource.phone,
+        mobile: mobile ?? bySource.mobile,
+        isPrimary: isPrimary || bySource.isPrimary,
+        updatedAt: new Date(),
+      })
+      .where(eq(customerContacts.id, bySource.id));
+    return 'updated';
+  }
+
+  // Pass 1: match by email (contact predates source tracking)
+  if (email) {
+    const [byEmail] = await db
+      .select()
+      .from(customerContacts)
+      .where(
+        and(
+          eq(customerContacts.customerId, customerId),
+          sql`${customerContacts.externalSource} IS NULL`,
+          sql`LOWER(TRIM(${customerContacts.email})) = LOWER(TRIM(${email}))`,
+        ),
+      )
+      .limit(1);
+
+    if (byEmail) {
+      // Attach source fields; conservatively do not overwrite name (may be Titan-edited)
+      await db
+        .update(customerContacts)
+        .set({
+          externalSource,
+          externalSourceId,
+          externalSourceType,
+          phone: phone ?? byEmail.phone,
+          mobile: mobile ?? byEmail.mobile,
+          updatedAt: new Date(),
+        })
+        .where(eq(customerContacts.id, byEmail.id));
+      return 'updated';
+    }
+  }
+
+  // Pass 2: match by normalized name (contact predates source tracking)
+  const [byName] = await db
+    .select()
+    .from(customerContacts)
+    .where(
+      and(
+        eq(customerContacts.customerId, customerId),
+        sql`${customerContacts.externalSource} IS NULL`,
+        sql`LOWER(TRIM(${customerContacts.firstName})) = LOWER(${firstName.trim()})`,
+        sql`LOWER(TRIM(${customerContacts.lastName})) = LOWER(${lastName.trim()})`,
+      ),
+    )
+    .limit(1);
+
+  if (byName) {
+    // Attach source fields; update email/phone/mobile
+    await db
+      .update(customerContacts)
+      .set({
+        externalSource,
+        externalSourceId,
+        externalSourceType,
+        email: email ?? byName.email,
+        phone: phone ?? byName.phone,
+        mobile: mobile ?? byName.mobile,
+        isPrimary: isPrimary || byName.isPrimary,
+        updatedAt: new Date(),
+      })
+      .where(eq(customerContacts.id, byName.id));
+    return 'updated';
+  }
+
+  // Pass 3: no match — create with full source tracking
+  await db.insert(customerContacts).values({
+    customerId,
+    firstName,
+    lastName,
+    email,
+    phone,
+    mobile,
+    isPrimary,
+    externalSource,
+    externalSourceId,
+    externalSourceType,
+  });
+  return 'created';
+}
+
 /**
  * Map local Customer to QuickBooks Customer format
  */
@@ -1142,17 +1352,18 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
 // ==================== Customer Sync Processors ====================
 
 /**
- * Process pull sync: Fetch customers from QuickBooks and upsert into local DB
+ * Process pull sync: Fetch customers from QuickBooks and upsert into local DB.
+ * Also creates or updates a primary contact record when QB provides contact-level data.
  */
-export async function processPullCustomers(jobId: string): Promise<void> {
+export async function processPullCustomers(jobId: string, organizationId: string): Promise<void> {
   try {
-    console.log(`[QB Pull Customers] Starting job ${jobId}`);
+    console.log(`[QB Pull Customers] Starting job ${jobId}`, { organizationId });
 
-    const connection = await getActiveConnection();
+    const connection = await getActiveConnection(organizationId);
     if (!connection) {
-      throw new Error('QuickBooks not connected');
+      console.warn('[QB Pull Customers] No active QuickBooks connection found', { organizationId, jobId });
+      throw new Error(`QuickBooks not connected for organization ${organizationId}`);
     }
-    const organizationId = connection.organizationId || DEFAULT_ORGANIZATION_ID;
 
     // Update job status to processing
     await db
@@ -1162,19 +1373,23 @@ export async function processPullCustomers(jobId: string): Promise<void> {
 
     // Fetch all customers from QuickBooks
     const query = "SELECT * FROM Customer";
-    const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`);
+    const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
 
     const qbCustomers = response.QueryResponse?.Customer || [];
     console.log(`[QB Pull Customers] Found ${qbCustomers.length} customers in QuickBooks`);
 
-    let syncedCount = 0;
+    let customersCreated = 0;
+    let customersUpdated = 0;
+    let contactsCreated = 0;
+    let contactsUpdated = 0;
+    let skippedContacts = 0;
     let errorCount = 0;
 
     for (const qbCustomer of qbCustomers) {
       try {
         const localData = mapQBCustomerToLocal(qbCustomer);
 
-        // Check if customer exists by external ID or email
+        // Check if customer exists by external ID or email (org-scoped)
         const [existing] = await db
           .select()
           .from(customers)
@@ -1186,10 +1401,12 @@ export async function processPullCustomers(jobId: string): Promise<void> {
           )
           .limit(1);
 
+        let customerId: string;
+
         if (existing) {
           const overrides: Record<string, boolean> = (existing as any).qbFieldOverrides || {};
           const filteredLocalData: any = { ...localData };
-          // QB wins by default, unless overridden.
+          // QB wins by default, unless the field is Titan-overridden.
           if (overrides.email) delete filteredLocalData.email;
           if (overrides.phone) delete filteredLocalData.phone;
           if (overrides.website) delete filteredLocalData.website;
@@ -1197,32 +1414,56 @@ export async function processPullCustomers(jobId: string): Promise<void> {
           if (overrides.shippingAddress) delete filteredLocalData.shippingAddress;
           if (overrides.notes) delete filteredLocalData.notes;
 
-          // Update existing customer
           await db
             .update(customers)
-            .set({
-              ...filteredLocalData,
-              updatedAt: new Date(),
-            })
+            .set({ ...filteredLocalData, updatedAt: new Date() })
             .where(eq(customers.id, existing.id));
+
+          customerId = existing.id;
+          customersUpdated++;
           console.log(`[QB Pull Customers] Updated customer: ${localData.companyName}`);
         } else {
-          // Create new customer
-          await db.insert(customers).values({
-            ...localData,
-            customerType: 'business',
-            status: 'active',
-            organizationId,
-          } as any);
+          const [created] = await db
+            .insert(customers)
+            .values({
+              ...localData,
+              customerType: 'business',
+              status: 'active',
+              organizationId,
+            } as any)
+            .returning({ id: customers.id });
+
+          customerId = created.id;
+          customersCreated++;
           console.log(`[QB Pull Customers] Created customer: ${localData.companyName}`);
         }
 
-        syncedCount++;
+        // --- Contact upsert ---
+        const contactPayload = mapQBCustomerToContact(qbCustomer, customerId);
+        if (!contactPayload) {
+          skippedContacts++;
+        } else {
+          try {
+            const outcome = await upsertQBContact(contactPayload);
+            if (outcome === 'created') {
+              contactsCreated++;
+              console.log(`[QB Pull Customers] Created contact for: ${localData.companyName}`);
+            } else if (outcome === 'updated') {
+              contactsUpdated++;
+            }
+          } catch (contactErr: any) {
+            console.error(`[QB Pull Customers] Contact upsert failed for customer ${localData.companyName}:`, contactErr.message);
+            errorCount++;
+          }
+        }
       } catch (error: any) {
         console.error(`[QB Pull Customers] Error syncing customer ${qbCustomer.DisplayName}:`, error);
         errorCount++;
       }
     }
+
+    // syncedCount kept for UI backward compat (Sync History shows "N synced")
+    const syncedCount = customersCreated + customersUpdated;
 
     // Update job status to completed
     await db
@@ -1230,11 +1471,24 @@ export async function processPullCustomers(jobId: string): Promise<void> {
       .set({
         status: 'synced',
         updatedAt: new Date(),
-        payloadJson: { syncedCount, errorCount, total: qbCustomers.length } as any,
+        payloadJson: {
+          syncedCount,
+          customersCreated,
+          customersUpdated,
+          contactsCreated,
+          contactsUpdated,
+          skippedContacts,
+          errorCount,
+          totalQuickBooksCustomers: qbCustomers.length,
+        } as any,
       })
       .where(eq(accountingSyncJobs.id, jobId));
 
-    console.log(`[QB Pull Customers] Completed: ${syncedCount} synced, ${errorCount} errors`);
+    console.log(
+      `[QB Pull Customers] Completed: ${customersCreated} created, ${customersUpdated} updated, ` +
+      `${contactsCreated} contacts created, ${contactsUpdated} contacts updated, ` +
+      `${skippedContacts} contacts skipped, ${errorCount} errors`,
+    );
   } catch (error: any) {
     console.error(`[QB Pull Customers] Job failed:`, error);
     await db
@@ -1361,9 +1615,15 @@ export async function processPushCustomers(jobId: string): Promise<void> {
 /**
  * Process pull sync: Fetch invoices from QuickBooks
  */
-export async function processPullInvoices(jobId: string): Promise<void> {
+export async function processPullInvoices(jobId: string, organizationId: string): Promise<void> {
   try {
-    console.log(`[QB Pull Invoices] Starting job ${jobId}`);
+    console.log(`[QB Pull Invoices] Starting job ${jobId}`, { organizationId });
+
+    const connection = await getActiveConnection(organizationId);
+    if (!connection) {
+      console.warn('[QB Pull Invoices] No active QuickBooks connection found', { organizationId, jobId });
+      throw new Error(`QuickBooks not connected for organization ${organizationId}`);
+    }
 
     await db
       .update(accountingSyncJobs)
@@ -1371,7 +1631,7 @@ export async function processPullInvoices(jobId: string): Promise<void> {
       .where(eq(accountingSyncJobs.id, jobId));
 
     const query = "SELECT * FROM Invoice";
-    const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`);
+    const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
 
     const qbInvoices = response.QueryResponse?.Invoice || [];
     console.log(`[QB Pull Invoices] Found ${qbInvoices.length} invoices in QuickBooks`);
@@ -1406,12 +1666,17 @@ export async function processPullInvoices(jobId: string): Promise<void> {
           externalAccountingId: qbInvoice.Id,
         };
 
-        // Try to find matching local customer by QB customer ID
+        // Try to find matching local customer by QB customer ID, scoped to this org
         if (qbInvoice.CustomerRef?.value) {
           const [matchedCustomer] = await db
             .select()
             .from(customers)
-            .where(eq(customers.externalAccountingId, qbInvoice.CustomerRef.value))
+            .where(
+              and(
+                eq(customers.organizationId, organizationId),
+                eq(customers.externalAccountingId, qbInvoice.CustomerRef.value)
+              )
+            )
             .limit(1);
 
           if (matchedCustomer) {
@@ -1421,15 +1686,20 @@ export async function processPullInvoices(jobId: string): Promise<void> {
 
         // Skip if no customer match found
         if (!localData.customerId) {
-          console.warn(`[QB Pull Invoices] Skipping invoice ${qbInvoice.DocNumber} - no matching customer`);
+          console.warn(`[QB Pull Invoices] Skipping invoice ${qbInvoice.DocNumber} - no matching customer`, { organizationId });
           continue;
         }
 
-        // Check if invoice exists
+        // Check if invoice exists, scoped to this org
         const [existing] = await db
           .select()
           .from(invoices)
-          .where(eq(invoices.externalAccountingId, qbInvoice.Id))
+          .where(
+            and(
+              eq(invoices.organizationId, organizationId),
+              eq(invoices.externalAccountingId, qbInvoice.Id)
+            )
+          )
           .limit(1);
 
         if (existing) {
@@ -1815,4 +2085,592 @@ export async function processPushOrders(jobId: string): Promise<void> {
       .where(eq(accountingSyncJobs.id, jobId));
     throw error;
   }
+}
+
+// ==================== QB Invoice Preview & Import ====================
+
+export type QBReferenceDebugField = {
+  name: string | null;
+  type: string | null;
+  value: string | null;
+};
+
+export type QBReferenceDebug = {
+  customFields: QBReferenceDebugField[];
+  privateNote: string | null;
+  customerMemo: string | null;
+  lineDescriptions: string[];
+  docNumber: string | null;
+  txnDate: string | null;
+};
+
+export type QBInvoicePreviewRow = {
+  qbInvoiceId: string;
+  qbDocNumber: string;
+  customerRefName: string;
+  qbCustomerRefId: string | null;
+  localCustomerId: string | null;
+  localCustomerName: string | null;
+  txnDate: string;
+  dueDate: string | null;
+  totalAmt: number;
+  balance: number;
+  classification: 'open_ar' | 'historical';
+  alreadyImported: boolean;
+  localInvoiceId: string | null;
+  canImport: boolean;
+  cannotImportReason?: string;
+  customerPoNumber: string | null;
+  customerPoSource: string | null;
+  referenceDebug?: QBReferenceDebug;
+};
+
+/**
+ * Classify a QB invoice as open A/R or historical based on its balance.
+ */
+function classifyQBInvoice(qbInvoice: any): 'open_ar' | 'historical' {
+  return Number(qbInvoice.Balance ?? 0) > 0 ? 'open_ar' : 'historical';
+}
+
+/**
+ * Custom field names that indicate an explicit customer PO number.
+ * Checked case-insensitively after normalizing internal whitespace.
+ */
+const QB_PO_FIELD_NAMES = new Set([
+  'po', 'p.o.', 'po number', 'p.o. number',
+  'purchase order', 'purchase order number',
+  'customer po', 'customer po number',
+  'client po', 'buyer po',
+]);
+
+/**
+ * Custom field names that indicate a useful job/reference description.
+ * Used as a fallback when no explicit PO is found.
+ * Checked case-insensitively after normalizing internal whitespace.
+ */
+const QB_REFERENCE_FIELD_NAMES = new Set([
+  'ref', 'ref #', 'reference',
+  'customer reference', 'client reference',
+  'job', 'job name', 'job description',
+  'project', 'project name',
+  'description', 'work description',
+  'order description', 'invoice description',
+]);
+
+/**
+ * Conservative regex for extracting an explicit PO value from free-text fields.
+ * Requires a recognizable PO label followed by a separator and a value token.
+ * Does NOT match bare numbers or unlabelled text.
+ */
+const QB_PO_TEXT_PATTERN = /(?:PO|P\.O\.|Purchase\s+Order(?:\s+Number)?|Customer\s+PO(?:\s+Number)?|Client\s+PO|Buyer\s+PO)\s*[:#\s]\s*([A-Za-z0-9\-\/]{1,50})/i;
+
+/**
+ * Generic boilerplate phrases that should NOT be stored as a job description.
+ * Tested case-insensitively as a substring match against the memo/note text.
+ */
+const QB_GENERIC_MEMO_FRAGMENTS = [
+  'thank you for your business',
+  'have a great day',
+  'we appreciate your business',
+  'thanks for your order',
+  'please remit payment',
+  'payment is due',
+  'terms and conditions',
+  'thank you for choosing',
+];
+
+/**
+ * Returns true if the text is likely generic boilerplate with no useful reference content.
+ * A short text with at least one generic fragment is rejected.
+ */
+function isGenericBoilerplate(text: string): boolean {
+  const lower = text.toLowerCase();
+  return QB_GENERIC_MEMO_FRAGMENTS.some(fragment => lower.includes(fragment));
+}
+
+/**
+ * Returns true if a line description string contains useful textual content.
+ * Rejects: empty, whitespace-only, numeric-only, and very short strings.
+ */
+function isMeaningfulLineDesc(desc: string): boolean {
+  const trimmed = desc.trim();
+  if (trimmed.length < 2) return false;
+  // Must contain at least one letter
+  if (!/[A-Za-z]/.test(trimmed)) return false;
+  return true;
+}
+
+/**
+ * Join up to maxItems meaningful descriptions with ' / ', truncated to maxLen chars.
+ * Truncates cleanly at a word boundary with '...' if needed.
+ */
+function joinLineDescs(descs: string[], maxItems: number, maxLen: number): string {
+  const joined = descs.slice(0, maxItems).join(' / ');
+  if (joined.length <= maxLen) return joined;
+  // Truncate at last word boundary before maxLen - 3 (room for '...')
+  const cutoff = joined.lastIndexOf(' ', maxLen - 3);
+  return cutoff > 0 ? joined.slice(0, cutoff) + '...' : joined.slice(0, maxLen - 3) + '...';
+}
+
+/**
+ * Extract a customer PO / Description from a QB invoice.
+ *
+ * The stored field (customer_po_number) is treated as "PO / Description":
+ * - If an explicit PO is found, use it (highest fidelity).
+ * - If not, fall back to useful reference/description data in priority order.
+ *
+ * Extraction priority:
+ *   A. CustomField with PO name       → source: 'custom_field'
+ *   B. Explicit PO pattern in PrivateNote → source: 'private_note'
+ *   C. Explicit PO pattern in CustomerMemo → source: 'customer_memo'
+ *   D. Explicit PO pattern in any Line description → source: 'line_description'
+ *   E. CustomField with reference name → source: 'custom_field_reference'
+ *   F. CustomerMemo if concise and not generic boilerplate → source: 'customer_memo'
+ *   G. PrivateNote if concise and not generic boilerplate → source: 'private_note'
+ *   H. Joined meaningful line descriptions → source: 'line_description'
+ *   I. Nothing reliable found → null / null
+ *
+ * Returns { poNumber, source } or { null, null }.
+ * Never logs raw invoice payloads.
+ */
+export function extractQBInvoiceCustomerPo(qbInvoice: any): { poNumber: string | null; source: string | null } {
+  // ── A. CustomField with explicit PO name ──────────────────────────────────
+  let referenceFieldValue: string | null = null; // save any reference field for step E
+  if (Array.isArray(qbInvoice.CustomField)) {
+    for (const field of qbInvoice.CustomField) {
+      const name = String(field.Name ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+      const value = String(field.StringValue ?? '').trim();
+      if (!value) continue;
+      if (QB_PO_FIELD_NAMES.has(name)) {
+        return { poNumber: value.slice(0, 100), source: 'custom_field' };
+      }
+      // Collect first non-empty reference field value for step E
+      if (referenceFieldValue === null && QB_REFERENCE_FIELD_NAMES.has(name)) {
+        referenceFieldValue = value;
+      }
+    }
+  }
+
+  // ── B. Explicit PO pattern in PrivateNote ────────────────────────────────
+  const privateNote = String(qbInvoice.PrivateNote ?? '').trim();
+  if (privateNote) {
+    const m = privateNote.match(QB_PO_TEXT_PATTERN);
+    if (m?.[1]) {
+      return { poNumber: m[1].trim().slice(0, 100), source: 'private_note' };
+    }
+  }
+
+  // ── C. Explicit PO pattern in CustomerMemo ───────────────────────────────
+  const customerMemoValue = qbInvoice.CustomerMemo?.value ?? qbInvoice.CustomerMemo ?? '';
+  const customerMemo = String(customerMemoValue).trim();
+  if (customerMemo) {
+    const m = customerMemo.match(QB_PO_TEXT_PATTERN);
+    if (m?.[1]) {
+      return { poNumber: m[1].trim().slice(0, 100), source: 'customer_memo' };
+    }
+  }
+
+  // ── D. Explicit PO pattern in any Line description ───────────────────────
+  if (Array.isArray(qbInvoice.Line)) {
+    for (const line of qbInvoice.Line) {
+      const desc = String(line.Description ?? '').trim();
+      if (desc) {
+        const m = desc.match(QB_PO_TEXT_PATTERN);
+        if (m?.[1]) {
+          return { poNumber: m[1].trim().slice(0, 100), source: 'line_description' };
+        }
+      }
+    }
+  }
+
+  // ── E. CustomField with reference/description name ───────────────────────
+  if (referenceFieldValue) {
+    return { poNumber: referenceFieldValue.slice(0, 100), source: 'custom_field_reference' };
+  }
+
+  // ── F. CustomerMemo — useful and not generic boilerplate ─────────────────
+  if (customerMemo && !isGenericBoilerplate(customerMemo)) {
+    return { poNumber: customerMemo.slice(0, 100), source: 'customer_memo' };
+  }
+
+  // ── G. PrivateNote — useful and not generic boilerplate ──────────────────
+  if (privateNote && !isGenericBoilerplate(privateNote)) {
+    return { poNumber: privateNote.slice(0, 100), source: 'private_note' };
+  }
+
+  // ── H. Meaningful line descriptions joined as fallback ───────────────────
+  if (Array.isArray(qbInvoice.Line)) {
+    const seen = new Set<string>();
+    const meaningful: string[] = [];
+    for (const line of qbInvoice.Line) {
+      const desc = String(line.Description ?? '').trim();
+      if (isMeaningfulLineDesc(desc) && !seen.has(desc)) {
+        seen.add(desc);
+        meaningful.push(desc);
+      }
+    }
+    if (meaningful.length > 0) {
+      const joined = joinLineDescs(meaningful, 5, 100);
+      return { poNumber: joined, source: 'line_description' };
+    }
+  }
+
+  // ── I. Nothing found ─────────────────────────────────────────────────────
+  return { poNumber: null, source: null };
+}
+
+/**
+ * Produce a safe diagnostic summary of QB invoice fields relevant to PO / reference detection.
+ *
+ * Rules:
+ *   - Only surfaces fields useful for understanding where PO/reference data lives.
+ *   - Trims and collapses whitespace; limits each string to 300 characters.
+ *   - Never includes tokens, auth headers, realmId, or connection metadata.
+ *   - Does not include the full raw invoice payload.
+ */
+export function summarizeQBInvoiceReferenceFields(qbInvoice: any): QBReferenceDebug {
+  const cap = (s: string | null | undefined): string | null => {
+    if (s == null) return null;
+    const trimmed = String(s).replace(/\s+/g, ' ').trim();
+    return trimmed.length > 0 ? trimmed.slice(0, 300) : null;
+  };
+
+  // CustomField array — include all entries (not just PO-matching ones, so admin sees everything)
+  const customFields: QBReferenceDebugField[] = Array.isArray(qbInvoice.CustomField)
+    ? qbInvoice.CustomField.map((f: any): QBReferenceDebugField => ({
+        name: cap(f.Name) ?? null,
+        type: cap(f.Type) ?? null,
+        value: cap(f.StringValue) ?? cap(f.DateValue) ?? cap(f.NumberValue) ?? null,
+      }))
+    : [];
+
+  // PrivateNote
+  const privateNote = cap(qbInvoice.PrivateNote);
+
+  // CustomerMemo — handles both { value: "..." } and plain string
+  const customerMemoRaw = qbInvoice.CustomerMemo?.value ?? qbInvoice.CustomerMemo ?? null;
+  const customerMemo = cap(customerMemoRaw);
+
+  // Line descriptions — collect unique non-empty Description values from all lines
+  const lineDescriptions: string[] = [];
+  if (Array.isArray(qbInvoice.Line)) {
+    const seen = new Set<string>();
+    for (const line of qbInvoice.Line) {
+      const desc = cap(line.Description);
+      if (desc && !seen.has(desc)) {
+        seen.add(desc);
+        lineDescriptions.push(desc);
+      }
+      if (lineDescriptions.length >= 10) break; // cap at 10 lines
+    }
+  }
+
+  return {
+    customFields,
+    privateNote,
+    customerMemo,
+    lineDescriptions,
+    docNumber: cap(qbInvoice.DocNumber),
+    txnDate: cap(qbInvoice.TxnDate),
+  };
+}
+
+/**
+ * Fetch all QB invoices and return a preview with local match status.
+ * Read-only — no writes to any table.
+ */
+export async function fetchQBInvoicesForPreview(organizationId: string, includeReferenceDebug = false): Promise<QBInvoicePreviewRow[]> {
+  const query = 'SELECT * FROM Invoice MAXRESULTS 1000';
+  const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
+  const qbInvoices: any[] = response.QueryResponse?.Invoice || [];
+
+  // All QB-linked local customers for this org
+  const localCustomers = await db
+    .select({ id: customers.id, companyName: customers.companyName, externalAccountingId: customers.externalAccountingId })
+    .from(customers)
+    .where(and(
+      eq(customers.organizationId, organizationId),
+      isNotNull(customers.externalAccountingId),
+    ));
+
+  const customerByQBId = new Map(localCustomers.map(c => [c.externalAccountingId!, c]));
+
+  // All QB-linked local invoices for this org
+  const localInvoices = await db
+    .select({ id: invoices.id, externalAccountingId: invoices.externalAccountingId })
+    .from(invoices)
+    .where(and(
+      eq(invoices.organizationId, organizationId),
+      isNotNull(invoices.externalAccountingId),
+    ));
+
+  const invoiceByQBId = new Map(localInvoices.map(i => [i.externalAccountingId!, i.id]));
+
+  return qbInvoices.map((qbInvoice): QBInvoicePreviewRow => {
+    const qbCustomerRefId: string | null = qbInvoice.CustomerRef?.value ?? null;
+    const localCustomer = qbCustomerRefId ? (customerByQBId.get(qbCustomerRefId) ?? null) : null;
+    const alreadyImported = invoiceByQBId.has(qbInvoice.Id);
+    const classification = classifyQBInvoice(qbInvoice);
+    const { poNumber: customerPoNumber, source: customerPoSource } = extractQBInvoiceCustomerPo(qbInvoice);
+
+    let canImport = true;
+    let cannotImportReason: string | undefined;
+    if (!localCustomer) {
+      canImport = false;
+      cannotImportReason = 'No matching local customer — pull customers first';
+    }
+
+    return {
+      qbInvoiceId: qbInvoice.Id,
+      qbDocNumber: qbInvoice.DocNumber ?? '',
+      customerRefName: qbInvoice.CustomerRef?.name ?? '',
+      qbCustomerRefId,
+      localCustomerId: localCustomer?.id ?? null,
+      localCustomerName: localCustomer?.companyName ?? null,
+      txnDate: qbInvoice.TxnDate ?? '',
+      dueDate: qbInvoice.DueDate ?? null,
+      totalAmt: Number(qbInvoice.TotalAmt ?? 0),
+      balance: Number(qbInvoice.Balance ?? 0),
+      classification,
+      alreadyImported,
+      localInvoiceId: invoiceByQBId.get(qbInvoice.Id) ?? null,
+      canImport,
+      cannotImportReason,
+      customerPoNumber,
+      customerPoSource,
+      ...(includeReferenceDebug ? { referenceDebug: summarizeQBInvoiceReferenceFields(qbInvoice) } : {}),
+    };
+  });
+}
+
+/**
+ * Import a list of QB invoices (identified by QB Invoice Id) into TitanOS.
+ *
+ * Safety contract:
+ *   - Does NOT create orders, production jobs, or any workflow records.
+ *   - Does NOT trigger invoice email send or reminder logic.
+ *   - Does NOT enqueue a QB push sync for the imported invoices.
+ *   - Line items are NOT imported into invoice_line_items (production-coupled table);
+ *     the raw QB Line array is stored as qbLineItemsSnapshot on the invoice row.
+ *   - createdByUserId must be supplied by the caller (the admin user from req.user).
+ *
+ * PO preservation rules on update:
+ *   - If existing invoice has a manually-entered PO (importSource != 'quickbooks') → keep it.
+ *   - If existing invoice is QB-imported and QB now provides a PO → update it.
+ *   - If existing invoice is QB-imported and QB provides null PO → leave existing PO as-is.
+ */
+export async function importQBInvoicesByIds(
+  organizationId: string,
+  qbInvoiceIds: string[],
+  mode: 'auto' | 'open_ar' | 'historical',
+  createdByUserId: string,
+): Promise<{ created: number; updated: number; skipped: number; errors: string[] }> {
+  const result = { created: 0, updated: 0, skipped: 0, errors: [] as string[] };
+
+  if (qbInvoiceIds.length === 0) return result;
+
+  // Fetch the specified invoices from QB (QB query API supports WHERE Id IN (...))
+  const idList = qbInvoiceIds.map(id => `'${String(id).replace(/'/g, '')}'`).join(', ');
+  const query = `SELECT * FROM Invoice WHERE Id IN (${idList}) MAXRESULTS 200`;
+  const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
+  const qbInvoices: any[] = response.QueryResponse?.Invoice || [];
+
+  if (qbLogsEnabled()) {
+    console.log(`[QB Import Invoices] Requested ${qbInvoiceIds.length} IDs, QB returned ${qbInvoices.length}`, { organizationId });
+  }
+
+  for (const qbInvoice of qbInvoices) {
+    try {
+      const classification: 'open_ar' | 'historical' = mode === 'auto' ? classifyQBInvoice(qbInvoice) : mode;
+      const isHistorical = classification === 'historical';
+      const balance = Number(qbInvoice.Balance ?? 0);
+      const totalAmt = Number(qbInvoice.TotalAmt ?? 0);
+      const taxAmt = Number(qbInvoice.TxnTaxDetail?.TotalTax ?? 0);
+      const amountPaid = Math.max(0, totalAmt - balance);
+      const qbCustomerRefId: string | null = qbInvoice.CustomerRef?.value ?? null;
+      const lineItemsSnapshot: any[] | null = Array.isArray(qbInvoice.Line) ? qbInvoice.Line : null;
+      const { poNumber: extractedPo, source: extractedPoSource } = extractQBInvoiceCustomerPo(qbInvoice);
+
+      // Find local customer (org-scoped)
+      let localCustomerId: string | null = null;
+      if (qbCustomerRefId) {
+        const [match] = await db
+          .select({ id: customers.id })
+          .from(customers)
+          .where(and(
+            eq(customers.organizationId, organizationId),
+            eq(customers.externalAccountingId, qbCustomerRefId),
+          ))
+          .limit(1);
+        localCustomerId = match?.id ?? null;
+      }
+
+      if (!localCustomerId) {
+        result.skipped++;
+        result.errors.push(`Invoice ${qbInvoice.DocNumber ?? qbInvoice.Id}: no local customer for QB customer ${qbCustomerRefId}`);
+        continue;
+      }
+
+      const status = isHistorical ? 'paid' : (balance > 0 ? 'billed' : 'paid');
+      const issueDate = qbInvoice.TxnDate ? new Date(qbInvoice.TxnDate) : new Date();
+      const dueDate = qbInvoice.DueDate ? new Date(qbInvoice.DueDate) : null;
+      const lockedReason = isHistorical ? 'historical_import' : 'quickbooks_import';
+
+      const reconcileImportedInvoicePayments = async (params: {
+        invoiceId: string;
+        previousBalanceDue: string | null;
+        nextBalanceDue: string;
+      }) => {
+        const previousBalanceCents = Math.max(0, Math.round(Number(params.previousBalanceDue ?? 0) * 100));
+        const nextBalanceCents = Math.max(0, Math.round(Number(params.nextBalanceDue || 0) * 100));
+        const reflectedDeltaCents = previousBalanceCents - nextBalanceCents;
+        if (reflectedDeltaCents <= 0) return;
+
+        const syncedUnreconciledPayments = await db
+          .select({
+            id: payments.id,
+            amountCents: payments.amountCents,
+          })
+          .from(payments)
+          .where(and(
+            eq(payments.organizationId, organizationId),
+            eq(payments.invoiceId, params.invoiceId),
+            eq(payments.status, 'succeeded'),
+            eq(payments.syncStatus, 'synced'),
+            isNotNull(payments.externalAccountingId),
+            isNull(payments.qbReconciledAt),
+          ))
+          .orderBy(asc(payments.appliedAt), asc(payments.createdAt));
+
+        let remainingReflectedCents = reflectedDeltaCents;
+        const paymentIdsToReconcile: string[] = [];
+        for (const payment of syncedUnreconciledPayments) {
+          const amountCents = Number(payment.amountCents || 0);
+          if (amountCents <= 0 || amountCents > remainingReflectedCents) continue;
+          paymentIdsToReconcile.push(payment.id);
+          remainingReflectedCents -= amountCents;
+          if (remainingReflectedCents <= 0) break;
+        }
+
+        if (paymentIdsToReconcile.length === 0) return;
+
+        await db
+          .update(payments)
+          .set({
+            qbReconciledAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(payments.organizationId, organizationId),
+            sql`${payments.id} = ANY(${paymentIdsToReconcile})`,
+          ));
+      };
+
+      // Check for existing invoice (by QB Invoice Id, org-scoped)
+      // Fetch customerPoNumber and importSource to apply PO preservation rules.
+      const [existing] = await db
+        .select({
+          id: invoices.id,
+          customerPoNumber: invoices.customerPoNumber,
+          importSource: invoices.importSource,
+          qbImportBalanceDue: invoices.qbImportBalanceDue,
+        })
+        .from(invoices)
+        .where(and(
+          eq(invoices.organizationId, organizationId),
+          or(
+            eq(invoices.qbInvoiceId, qbInvoice.Id),
+            eq(invoices.externalAccountingId, qbInvoice.Id),
+          ),
+        ))
+        .limit(1);
+
+      if (existing) {
+        // PO preservation: only update PO if QB has a value AND (invoice is QB-imported OR had no PO before)
+        const isQBImported = existing.importSource === 'quickbooks';
+        const existingHasPo = !!existing.customerPoNumber;
+        const shouldUpdatePo = extractedPo !== null && (isQBImported || !existingHasPo);
+        const newPoNumber = shouldUpdatePo ? extractedPo : existing.customerPoNumber ?? null;
+        const newPoSource = shouldUpdatePo ? extractedPoSource : null;
+
+        await db
+          .update(invoices)
+          .set({
+            customerId: localCustomerId,
+            status,
+            issueDate,
+            dueDate,
+            subtotal: totalAmt.toFixed(2),
+            tax: taxAmt.toFixed(2),
+            total: totalAmt.toFixed(2),
+            amountPaid: amountPaid.toFixed(2),
+            balanceDue: balance.toFixed(2),
+            importSource: 'quickbooks',
+            isHistorical,
+            qbImportBalanceDue: balance.toFixed(2),
+            qbDocNumber: qbInvoice.DocNumber ?? null,
+            qbLineItemsSnapshot: lineItemsSnapshot,
+            lockedReason,
+            customerPoNumber: newPoNumber,
+            qbPoSource: newPoSource,
+            updatedAt: new Date(),
+          })
+          .where(eq(invoices.id, existing.id));
+
+        if (!isHistorical) {
+          await reconcileImportedInvoicePayments({
+            invoiceId: existing.id,
+            previousBalanceDue: existing.qbImportBalanceDue,
+            nextBalanceDue: balance.toFixed(2),
+          });
+        }
+        result.updated++;
+      } else {
+        const invoiceNumber = await generateNextInvoiceNumber(organizationId);
+
+        await db.insert(invoices).values({
+          organizationId,
+          invoiceNumber,
+          customerId: localCustomerId,
+          status,
+          issueDate,
+          dueDate,
+          subtotal: totalAmt.toFixed(2),
+          tax: taxAmt.toFixed(2),
+          total: totalAmt.toFixed(2),
+          subtotalCents: Math.round(totalAmt * 100),
+          taxCents: Math.round(taxAmt * 100),
+          totalCents: Math.round(totalAmt * 100),
+          currency: 'USD',
+          amountPaid: amountPaid.toFixed(2),
+          balanceDue: balance.toFixed(2),
+          externalAccountingId: qbInvoice.Id,
+          qbInvoiceId: qbInvoice.Id,
+          // Already in QB — do not enqueue a push back to QB
+          qbSyncStatus: 'synced',
+          syncStatus: 'synced',
+          importSource: 'quickbooks',
+          isHistorical,
+          qbImportBalanceDue: balance.toFixed(2),
+          importedAt: new Date(),
+          qbDocNumber: qbInvoice.DocNumber ?? null,
+          qbLineItemsSnapshot: lineItemsSnapshot,
+          lockedReason,
+          customerPoNumber: extractedPo,
+          qbPoSource: extractedPoSource,
+          createdByUserId,
+        });
+        result.created++;
+      }
+    } catch (error: any) {
+      console.error(`[QB Import Invoices] Error on invoice ${qbInvoice.DocNumber ?? qbInvoice.Id}:`, {
+        organizationId,
+        message: error.message,
+      });
+      result.errors.push(`Invoice ${qbInvoice.DocNumber ?? qbInvoice.Id}: ${error.message}`);
+    }
+  }
+
+  console.log(`[QB Import Invoices] Done — created: ${result.created}, updated: ${result.updated}, skipped: ${result.skipped}, errors: ${result.errors.length}`, { organizationId });
+  return result;
 }
