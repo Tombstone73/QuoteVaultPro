@@ -2,6 +2,7 @@ import { PublicPageLayout } from "@/components/layout/PublicPageLayout";
 
 const LAST_UPDATED = "May 2026";
 const CONTACT_EMAIL = "support@printershero.com";
+const COMPANY_NAME = "Workflow Dynamics Group, LLC";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -16,7 +17,7 @@ export default function PrivacyPage() {
   return (
     <PublicPageLayout title="Privacy Policy" description={`Last updated: ${LAST_UPDATED}`}>
       <p className="text-sm text-muted-foreground mb-8 leading-relaxed">
-        PrintersHero (operated by Titan Graphics, LLC) provides a print shop management and quoting
+        PrintersHero, a {COMPANY_NAME} platform, provides a print shop management and quoting
         platform ("TitanOS") for printing businesses and their teams. This Privacy Policy describes how
         we collect, use, and protect information when you use our platform.
       </p>
@@ -257,7 +258,7 @@ export default function PrivacyPage() {
           </a>
         </p>
         <p>
-          <strong className="text-foreground">Company:</strong> Titan Graphics, LLC
+          <strong className="text-foreground">Company:</strong> {COMPANY_NAME}
         </p>
         <p className="text-xs mt-4 text-muted-foreground/70">
           We may update this Privacy Policy from time to time. The "Last updated" date at the top of
