@@ -152,6 +152,76 @@ describe("pbv2/validator/validatePublish", () => {
     expect(result.errors.some((f) => f.code === "PBV2_W_EDGE_AMBIGUOUS_MATCH")).toBe(true);
   });
 
+  test("Visibility cycle => WARNING", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["material"],
+      nodes: [
+        {
+          id: "material",
+          type: "INPUT",
+          status: "ENABLED",
+          key: "material",
+          input: { selectionKey: "materialFamily", valueType: "TEXT" },
+          visibility: { rules: [{ type: "equals", selectionKey: "printSides", value: "double" }] },
+        },
+        {
+          id: "print",
+          type: "GROUP",
+          status: "ENABLED",
+          key: "print",
+          visibility: { rules: [{ type: "equals", selectionKey: "materialFamily", value: "ACM" }] },
+        },
+        {
+          id: "printSides",
+          type: "INPUT",
+          status: "ENABLED",
+          key: "printSides",
+          input: { selectionKey: "printSides", valueType: "TEXT" },
+        },
+      ],
+      edges: [{ id: "e1", status: "DISABLED", fromNodeId: "print", toNodeId: "printSides", priority: 0 }],
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.warnings.some((f) => f.code === "PBV2_W_VISIBILITY_DEP_CYCLE")).toBe(true);
+  });
+
+  test("Group visibility referencing its own child selection => WARNING", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["material"],
+      nodes: [
+        {
+          id: "material",
+          type: "INPUT",
+          status: "ENABLED",
+          key: "material",
+          input: { selectionKey: "materialFamily", valueType: "TEXT" },
+        },
+        {
+          id: "print",
+          type: "GROUP",
+          status: "ENABLED",
+          key: "print",
+          visibility: { rules: [{ type: "equals", selectionKey: "printSides", value: "double" }] },
+        },
+        {
+          id: "printSides",
+          type: "INPUT",
+          status: "ENABLED",
+          key: "printSides",
+          input: { selectionKey: "printSides", valueType: "TEXT" },
+        },
+      ],
+      edges: [{ id: "e1", status: "DISABLED", fromNodeId: "print", toNodeId: "printSides", priority: 0 }],
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.warnings.some((f) => f.code === "PBV2_W_VISIBILITY_GROUP_SELF_GATE")).toBe(true);
+    expect(result.warnings.some((f) => f.code === "PBV2_W_GROUP_VISIBILITY_UNREACHABLE")).toBe(true);
+  });
+
   test("MaterialEffect qtyRef unresolved => ERROR", () => {
     const tree = {
       status: "DRAFT",

@@ -6,12 +6,14 @@ import {
 } from "./componentDiscounts";
 import { buildSymbolTable } from "./symbolTable";
 import { typeCheckCondition, typeCheckExpression } from "./typeChecker";
+import { resolveRuntimeVisibility } from "../optionTreeV2Runtime";
 import type {
   AppliedChoicePricingOverride,
   ChoicePricingOverride,
   ChoicePricingOverrideAppliesTo,
   ChoicePricingOverrideMode,
   ChoicePricingOverrideUnit,
+  OptionRuntimeSelectionWarning,
   OptionRuntimeSelectionContext,
 } from "../optionTreeV2";
 
@@ -847,6 +849,12 @@ function buildEvalCtxForTree(
   inputDefaultsBySelectionKey: Record<string, unknown>;
   evalCtx: EvalCtx;
   activeNodeIds: Set<string>;
+  runtimeVisibility: {
+    visibleNodeIds: string[];
+    visibleGroupIds: string[];
+    visibleChoiceIds: string[];
+    hiddenSelectionWarnings: OptionRuntimeSelectionWarning[];
+  };
 } {
   const nodes = extractNodes(tree);
   const edges = extractEdges(tree);
@@ -854,7 +862,9 @@ function buildEvalCtxForTree(
   const nodesById: Record<string, NodeRec> = {};
   for (const n of nodes) nodesById[n.id] = n;
 
-  const explicitSelections = normalizeExplicitSelections(selections);
+  const rawSelections = normalizeExplicitSelections(selections);
+  const runtimeVisibility = resolveRuntimeVisibility(tree as any, rawSelections as any);
+  const explicitSelections = runtimeVisibility.effectiveSelections;
   const envMap: Record<string, unknown> = { ...(env ?? {}) };
 
   const inputDefaultsBySelectionKey: Record<string, unknown> = {};
@@ -896,6 +906,12 @@ function buildEvalCtxForTree(
     inputDefaultsBySelectionKey,
     evalCtx,
     activeNodeIds,
+    runtimeVisibility: {
+      visibleNodeIds: runtimeVisibility.visibleNodeIds,
+      visibleGroupIds: runtimeVisibility.visibleGroupIds,
+      visibleChoiceIds: runtimeVisibility.visibleChoiceIds,
+      hiddenSelectionWarnings: runtimeVisibility.hiddenSelectionWarnings,
+    },
   };
 }
 
@@ -1137,9 +1153,11 @@ export function pbv2ToRuntimeSelectionContext(
   const resolvedChoices: OptionRuntimeSelectionContext["resolvedChoices"] = {};
   const workflowTags = new Set<string>();
   const appliedPricingOverrides: AppliedChoicePricingOverride[] = [];
+  const visibleNodeIdSet = new Set<string>(prepared.runtimeVisibility.visibleNodeIds);
+  const visibleChoiceIdSet = new Set<string>(prepared.runtimeVisibility.visibleChoiceIds);
 
   for (const node of prepared.nodes) {
-    if (node.status !== "ENABLED" || node.type !== "INPUT" || !prepared.activeNodeIds.has(node.id)) continue;
+    if (node.status !== "ENABLED" || node.type !== "INPUT" || !prepared.activeNodeIds.has(node.id) || !visibleNodeIdSet.has(node.id)) continue;
 
     const selectionKey = extractSelectionKey(node.raw);
     if (!selectionKey) continue;
@@ -1151,10 +1169,11 @@ export function pbv2ToRuntimeSelectionContext(
     if (resolvedValue === undefined || resolvedValue === null || resolvedValue === "") continue;
 
     const resolvedStringValue = String(resolvedValue);
-    selectedChoices[selectionKey] = resolvedStringValue;
-
     const choice = extractChoiceOptions(node.raw).find((entry) => String((entry as any).value ?? "") === resolvedStringValue);
     if (!choice) continue;
+    if (!visibleChoiceIdSet.has(`${node.id}:${resolvedStringValue}`)) continue;
+
+    selectedChoices[selectionKey] = resolvedStringValue;
 
     const rawWorkflowTags: unknown[] = Array.isArray((choice as any).workflowTags) ? ((choice as any).workflowTags as unknown[]) : [];
     const normalizedWorkflowTags: string[] = Array.from(
@@ -1226,9 +1245,12 @@ export function pbv2ToRuntimeSelectionContext(
   return {
     selectedChoices,
     resolvedChoices,
-    visibleNodeIds: Array.from(prepared.activeNodeIds),
+    visibleNodeIds: prepared.runtimeVisibility.visibleNodeIds.slice(),
+    visibleGroupIds: prepared.runtimeVisibility.visibleGroupIds.slice(),
+    visibleChoiceIds: prepared.runtimeVisibility.visibleChoiceIds.slice(),
     workflowTags: Array.from(workflowTags).sort(),
     appliedPricingOverrides: sortAppliedPricingOverrides(appliedPricingOverrides),
+    hiddenSelectionWarnings: prepared.runtimeVisibility.hiddenSelectionWarnings.slice(),
   };
 }
 
