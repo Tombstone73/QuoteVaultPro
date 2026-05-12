@@ -51,7 +51,7 @@ export function OptionEditor({
   treeJson
 }: OptionEditorProps) {
   const [expandedOptions, setExpandedOptions] = React.useState<Set<string>>(new Set());
-  const [editingChoiceValue, setEditingChoiceValue] = React.useState<{ optionId: string; value: string } | null>(null);
+  const [editingChoiceValue, setEditingChoiceValue] = React.useState<{ optionId: string; value: string; originalValue?: string } | null>(null);
   const selectionKeyOptions = React.useMemo(() => {
     const nodesRaw = treeJson?.nodes;
     const nodes = Array.isArray(nodesRaw) ? nodesRaw : Object.values(nodesRaw || {});
