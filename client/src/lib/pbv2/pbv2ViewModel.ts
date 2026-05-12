@@ -12,7 +12,7 @@
  * - Keep all edits local until "Save Draft" is called
  */
 
-import type { ChoiceMaterialOverride, ChoicePricingOverride, OptionNodeV2, PricingImpact } from '@shared/optionTreeV2';
+import type { ChoiceMaterialOverride, ChoicePricingOverride, OptionNodeV2, PricingImpact, VisibilityRule } from '@shared/optionTreeV2';
 
 /**
  * CANONICAL PBV2 GRAPH RULES (enforced by normalizeTreeJson):
@@ -278,6 +278,7 @@ export type EditorOptionGroup = {
   isRequired: boolean;
   isMultiSelect: boolean;
   optionIds: string[]; // Child node IDs
+  visibilityRules?: VisibilityRule[];
 };
 
 export type EditorOption = {
@@ -442,6 +443,7 @@ export function pbv2TreeToEditorModel(treeJson: unknown): EditorModel {
       isRequired: node.input?.required || false,
       isMultiSelect: node.input?.type === 'multiselect',
       optionIds,
+      visibilityRules: Array.isArray((node as any).visibility?.rules) ? (node as any).visibility.rules : undefined,
     };
   });
 
@@ -579,7 +581,7 @@ export function createAddGroupPatch(treeJson: unknown): { patch: any; newGroupId
 export function createUpdateGroupPatch(
   treeJson: unknown,
   groupId: string,
-  updates: Partial<Pick<EditorOptionGroup, 'name' | 'description' | 'isRequired' | 'isMultiSelect'>>
+  updates: Partial<Pick<EditorOptionGroup, 'name' | 'description' | 'isRequired' | 'isMultiSelect' | 'visibilityRules'>>
 ): { patch: any } {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
 
@@ -594,6 +596,23 @@ export function createUpdateGroupPatch(
     }
     if (updates.isMultiSelect !== undefined && updated.input) {
       updated.input = { ...updated.input, type: updates.isMultiSelect ? 'multiselect' : 'select' };
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'visibilityRules')) {
+      const nextRules = updates.visibilityRules;
+      const existingVisibility = typeof updated.visibility === 'object' && updated.visibility ? updated.visibility : {};
+      if (!nextRules || nextRules.length === 0) {
+        if (existingVisibility && Object.prototype.hasOwnProperty.call(existingVisibility, 'rules')) {
+          const { rules: _rules, ...restVisibility } = existingVisibility as any;
+          updated.visibility = Object.keys(restVisibility).length > 0 ? restVisibility : undefined;
+        } else {
+          updated.visibility = Object.keys(existingVisibility).length > 0 ? existingVisibility : undefined;
+        }
+      } else {
+        updated.visibility = {
+          ...existingVisibility,
+          rules: nextRules,
+        };
+      }
     }
 
     return updated;

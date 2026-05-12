@@ -29,6 +29,7 @@ type EdgeRec = {
 type ChoicePricingOverrideMode = "none" | "set_base_rate" | "add_base_rate" | "multiply_base_rate";
 type ChoicePricingOverrideUnit = "perSqft" | "perPiece" | "minimumCharge";
 type ChoicePricingOverrideAppliesTo = "base" | "area" | "quantity";
+type VisibilityRuleType = "equals" | "notEquals" | "in" | "truthy" | "and" | "or" | "not";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object") return null;
@@ -377,6 +378,148 @@ function inferChoicePricingOverrideUnit(
   if (override.appliesTo === "quantity") return "perPiece";
   if (override.appliesTo === "base") return "minimumCharge";
   return undefined;
+}
+
+function collectGroupChildSelectionKeys(
+  groupId: string,
+  nodesById: Record<string, NodeRec>,
+  edges: EdgeRec[]
+): Set<string> {
+  const selectionKeys = new Set<string>();
+  for (const edge of edges) {
+    if (edge.fromNodeId !== groupId || !edge.toNodeId) continue;
+    const child = nodesById[edge.toNodeId];
+    if (!child || child.type !== "INPUT" || !child.selectionKey) continue;
+    selectionKeys.add(child.selectionKey);
+  }
+  return selectionKeys;
+}
+
+function walkVisibilityRuleSelectionKeys(
+  rule: unknown,
+  visit: (selectionKey: string, ruleType: VisibilityRuleType) => void
+): void {
+  const rec = asRecord(rule);
+  if (!rec) return;
+  const type = typeof (rec as any).type === "string" ? String((rec as any).type) as VisibilityRuleType : null;
+  if (!type) return;
+
+  switch (type) {
+    case "equals":
+    case "notEquals":
+    case "in":
+    case "truthy":
+      if (isNonEmptyString((rec as any).selectionKey)) {
+        visit(String((rec as any).selectionKey), type);
+      }
+      return;
+    case "and":
+    case "or": {
+      const rules = Array.isArray((rec as any).rules) ? (rec as any).rules : [];
+      rules.forEach((child: unknown) => walkVisibilityRuleSelectionKeys(child, visit));
+      return;
+    }
+    case "not":
+      walkVisibilityRuleSelectionKeys((rec as any).rule, visit);
+      return;
+    default:
+      return;
+  }
+}
+
+function validateVisibilityRuleStructure(
+  rule: unknown,
+  path: string,
+  findings: Finding[],
+  entityId: string
+): void {
+  const rec = asRecord(rule);
+  if (!rec) {
+    findings.push(
+      warningFinding({
+        code: "PBV2_W_VISIBILITY_RULE_INVALID",
+        message: "Visibility rule must be an object",
+        path,
+        entityId,
+      })
+    );
+    return;
+  }
+
+  const type = typeof (rec as any).type === "string" ? String((rec as any).type) as VisibilityRuleType : null;
+  if (
+    type !== "equals" &&
+    type !== "notEquals" &&
+    type !== "in" &&
+    type !== "truthy" &&
+    type !== "and" &&
+    type !== "or" &&
+    type !== "not"
+  ) {
+    findings.push(
+      warningFinding({
+        code: "PBV2_W_VISIBILITY_RULE_INVALID",
+        message: "Visibility rule type is invalid",
+        path: `${path}.type`,
+        entityId,
+      })
+    );
+    return;
+  }
+
+  if (type === "equals" || type === "notEquals" || type === "truthy" || type === "in") {
+    if (!isNonEmptyString((rec as any).selectionKey)) {
+      findings.push(
+        warningFinding({
+          code: "PBV2_W_VISIBILITY_RULE_INVALID",
+          message: "Visibility rule requires selectionKey",
+          path: `${path}.selectionKey`,
+          entityId,
+        })
+      );
+    }
+  }
+
+  if (type === "in" && !Array.isArray((rec as any).values)) {
+    findings.push(
+      warningFinding({
+        code: "PBV2_W_VISIBILITY_RULE_INVALID",
+        message: "Visibility rule type 'in' requires values[]",
+        path: `${path}.values`,
+        entityId,
+      })
+    );
+  }
+
+  if (type === "and" || type === "or") {
+    const rules = Array.isArray((rec as any).rules) ? (rec as any).rules : [];
+    if (rules.length === 0) {
+      findings.push(
+        warningFinding({
+          code: "PBV2_W_VISIBILITY_RULE_INVALID",
+          message: `Visibility rule type '${type}' requires at least one child rule`,
+          path: `${path}.rules`,
+          entityId,
+        })
+      );
+    }
+    rules.forEach((child: unknown, idx: number) => validateVisibilityRuleStructure(child, `${path}.rules[${idx}]`, findings, entityId));
+  }
+
+  if (type === "not") {
+    if (!asRecord((rec as any).rule)) {
+      findings.push(
+        warningFinding({
+          code: "PBV2_W_VISIBILITY_RULE_INVALID",
+          message: "Visibility rule type 'not' requires a child rule",
+          path: `${path}.rule`,
+          entityId,
+        })
+      );
+      return;
+    }
+    validateVisibilityRuleStructure((rec as any).rule, `${path}.rule`, findings, entityId);
+  }
 }
 
 function extractEffectOutputs(node: Record<string, unknown>): unknown[] {
@@ -732,6 +875,162 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
         context: { selectionKey: sk, nodeIds: ids },
       })
     );
+  }
+
+  const visibilityDependencyEdges: Array<[string, string]> = [];
+  const groupChildSelectionKeysByNodeId: Record<string, Set<string>> = {};
+  for (const n of nodes) {
+    if (n.status === "DELETED" || n.type !== "GROUP") continue;
+    groupChildSelectionKeysByNodeId[n.id] = collectGroupChildSelectionKeys(n.id, nodesById, edges);
+    for (const edge of edges) {
+      if (edge.fromNodeId !== n.id || !edge.toNodeId) continue;
+      const childNode = nodesById[edge.toNodeId];
+      if (!childNode || childNode.status === "DELETED") continue;
+      visibilityDependencyEdges.push([n.id, childNode.id]);
+    }
+  }
+
+  for (const n of nodes) {
+    if (n.status === "DELETED") continue;
+
+    const visibility = asRecord((n.raw as any).visibility);
+    const visibilityRules = Array.isArray((visibility as any)?.rules) ? ((visibility as any).rules as unknown[]) : [];
+    visibilityRules.forEach((rule, idx) => {
+      validateVisibilityRuleStructure(rule, `tree.nodes[${n.id}].visibility.rules[${idx}]`, findings, n.id);
+      walkVisibilityRuleSelectionKeys(rule, (selectionKey) => {
+        if (!selectionKeyToNodeIds[selectionKey] || selectionKeyToNodeIds[selectionKey].length === 0) {
+          findings.push(
+            warningFinding({
+              code: "PBV2_W_VISIBILITY_SELECTION_KEY_UNKNOWN",
+              message: `Visibility rule references unknown selectionKey '${selectionKey}'`,
+              path: `tree.nodes[${n.id}].visibility.rules[${idx}]`,
+              entityId: n.id,
+              context: { selectionKey },
+            })
+          );
+          return;
+        }
+
+        if (n.selectionKey && selectionKey === n.selectionKey) {
+          findings.push(
+            warningFinding({
+              code: "PBV2_W_VISIBILITY_SELF_REFERENCE",
+              message: "Visibility rule references the node's own selectionKey",
+              path: `tree.nodes[${n.id}].visibility.rules[${idx}]`,
+              entityId: n.id,
+              context: { selectionKey },
+            })
+          );
+        }
+
+        if (n.type === "GROUP" && groupChildSelectionKeysByNodeId[n.id]?.has(selectionKey)) {
+          findings.push(
+            warningFinding({
+              code: "PBV2_W_VISIBILITY_GROUP_SELF_GATE",
+              message: "Group visibility references a selection inside the same group; the group may be unreachable at runtime",
+              path: `tree.nodes[${n.id}].visibility.rules[${idx}]`,
+              entityId: n.id,
+              context: { selectionKey },
+            })
+          );
+        }
+
+        for (const providerNodeId of selectionKeyToNodeIds[selectionKey] ?? []) {
+          visibilityDependencyEdges.push([providerNodeId, n.id]);
+        }
+      });
+    });
+
+    const choices = Array.isArray((n.raw as any).choices) ? ((n.raw as any).choices as unknown[]) : [];
+    choices.forEach((choiceRaw, idx) => {
+      const choice = asRecord(choiceRaw);
+      if (!choice) return;
+      const choiceValue = isNonEmptyString((choice as any).value) ? String((choice as any).value) : `choice_${idx}`;
+      const choiceRules = Array.isArray((choice as any).visibilityRules) ? ((choice as any).visibilityRules as unknown[]) : [];
+      choiceRules.forEach((rule, ruleIdx) => {
+        const choiceEntityId = `${n.id}:${choiceValue}`;
+        validateVisibilityRuleStructure(rule, `tree.nodes[${n.id}].choices[${idx}].visibilityRules[${ruleIdx}]`, findings, n.id);
+        walkVisibilityRuleSelectionKeys(rule, (selectionKey) => {
+          if (!selectionKeyToNodeIds[selectionKey] || selectionKeyToNodeIds[selectionKey].length === 0) {
+            findings.push(
+              warningFinding({
+                code: "PBV2_W_VISIBILITY_SELECTION_KEY_UNKNOWN",
+                message: `Choice visibility references unknown selectionKey '${selectionKey}'`,
+                path: `tree.nodes[${n.id}].choices[${idx}].visibilityRules[${ruleIdx}]`,
+                entityId: n.id,
+                context: { selectionKey, choiceValue },
+              })
+            );
+            return;
+          }
+
+          if (n.selectionKey && selectionKey === n.selectionKey) {
+            findings.push(
+              warningFinding({
+                code: "PBV2_W_VISIBILITY_SELF_REFERENCE",
+                message: "Choice visibility references its own node selectionKey",
+                path: `tree.nodes[${n.id}].choices[${idx}].visibilityRules[${ruleIdx}]`,
+                entityId: n.id,
+                context: { selectionKey, choiceValue },
+              })
+            );
+          }
+
+          for (const providerNodeId of selectionKeyToNodeIds[selectionKey] ?? []) {
+            visibilityDependencyEdges.push([providerNodeId, choiceEntityId]);
+          }
+        });
+      });
+    });
+  }
+
+  const visibilityEntities = Array.from(
+    new Set([
+      ...nodes.filter((n) => n.status !== "DELETED").map((n) => n.id),
+      ...visibilityDependencyEdges.map(([, consumerId]) => consumerId),
+    ])
+  ).sort();
+  const visibilityCycle = detectDirectedCycle(visibilityEntities, visibilityDependencyEdges);
+  if (visibilityCycle) {
+    findings.push(
+      warningFinding({
+        code: "PBV2_W_VISIBILITY_DEP_CYCLE",
+        message: "Visibility dependencies contain a cycle; runtime visibility may be unstable",
+        path: "tree.nodes",
+        context: { cycle: visibilityCycle },
+      })
+    );
+  }
+
+  for (const n of nodes) {
+    if (n.status === "DELETED" || n.type !== "GROUP") continue;
+    const visibility = asRecord((n.raw as any).visibility);
+    const visibilityRules = Array.isArray((visibility as any)?.rules) ? ((visibility as any).rules as unknown[]) : [];
+    if (visibilityRules.length === 0) continue;
+
+    const referencedSelectionKeys = new Set<string>();
+    visibilityRules.forEach((rule) => {
+      walkVisibilityRuleSelectionKeys(rule, (selectionKey) => referencedSelectionKeys.add(selectionKey));
+    });
+
+    if (referencedSelectionKeys.size === 0) continue;
+
+    const allRefsInternalOrUnknown = Array.from(referencedSelectionKeys).every((selectionKey) => {
+      const isInternal = groupChildSelectionKeysByNodeId[n.id]?.has(selectionKey) ?? false;
+      const isKnown = Boolean(selectionKeyToNodeIds[selectionKey]?.length);
+      return isInternal || !isKnown;
+    });
+
+    if (allRefsInternalOrUnknown) {
+      findings.push(
+        warningFinding({
+          code: "PBV2_W_GROUP_VISIBILITY_UNREACHABLE",
+          message: "Group visibility only depends on selections inside the same group or unknown keys, so the group may never become visible",
+          path: `tree.nodes[${n.id}].visibility.rules`,
+          entityId: n.id,
+        })
+      );
+    }
   }
 
   // INPUT constraints validation (minimal)
