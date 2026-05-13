@@ -20,6 +20,8 @@ import { buildSymbolTable } from "@shared/pbv2/symbolTable";
 import { pbv2ToPricingAddons, pbv2ToWeightTotal } from "@shared/pbv2/pricingAdapter";
 import type { Finding } from "@shared/pbv2/findings";
 import type { ValidationResult } from "@shared/pbv2/validator/types";
+import type { ProductOptionRule } from "@shared/productOptionRules";
+import type { ProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
 
 /**
  * Edit-time validation - checks structure without publish-only rules.
@@ -960,6 +962,21 @@ export default function PBV2ProductBuilderSectionV2({
     applyTreeUpdate(tree, 'handleUpdateProduct', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
   };
 
+  const handleUpdateOptionRules = (rules: ProductOptionRule[]) => {
+    if (!localTreeJson) return;
+    const tree = JSON.parse(JSON.stringify(localTreeJson));
+    tree.rules = rules;
+    delete tree.optionRules;
+    applyTreeUpdate(tree, 'handleUpdateOptionRules', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
+  };
+
+  const handleUpdatePricingMatrix = (pricingMatrix: ProductOptionPricingMatrix) => {
+    if (!localTreeJson) return;
+    const tree = JSON.parse(JSON.stringify(localTreeJson));
+    tree.pricingMatrix = pricingMatrix;
+    applyTreeUpdate(tree, 'handleUpdatePricingMatrix', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
+  };
+
   const handleSave = async () => {
     if (!localTreeJson) {
       toast({ title: "No tree data to save", variant: "destructive" });
@@ -1327,6 +1344,8 @@ export default function PBV2ProductBuilderSectionV2({
         onAddPricingV2Tier={handleAddPricingV2Tier}
         onUpdatePricingV2Tier={handleUpdatePricingV2Tier}
         onDeletePricingV2Tier={handleDeletePricingV2Tier}
+        onUpdateOptionRules={handleUpdateOptionRules}
+        onUpdatePricingMatrix={handleUpdatePricingMatrix}
         onUpdateProduct={handleUpdateProduct}
         onSave={handleSave}
         onPublish={handlePublish}
