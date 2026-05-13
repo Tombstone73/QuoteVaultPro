@@ -37,12 +37,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Plus, Pencil, Trash2, Eye, Package, Play, AlertTriangle, Info, ChevronDown } from "lucide-react";
+import { Loader2, Plus, Pencil, Trash2, Eye, Package, Play, AlertTriangle, Info, ChevronDown, Copy } from "lucide-react";
 import { TitanCard } from "@/components/ui/TitanCard";
 import { evaluate } from "mathjs";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FormulaLanguageHelp } from "@/components/pbv2/FormulaLanguageHelp";
 import { formulaHelperScope, extractFormulaVariables } from "@shared/pbv2/formulaHelpers";
+import { buildDuplicateFormulaInput } from "@shared/pbv2/formulaUtils";
 
 // Variable library for pricing formulas
 type VariableLibraryItem = {
@@ -125,6 +126,7 @@ export default function PricingFormulasSettings() {
   const deleteMutation = useDeletePricingFormula();
 
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [isDuplicating, setIsDuplicating] = useState(false);
   const [editingFormula, setEditingFormula] = useState<PricingFormula | null>(null);
   const [viewingFormula, setViewingFormula] = useState<string | null>(null);
   const [formData, setFormData] = useState<PricingFormulaInput>(emptyFormData);
@@ -178,6 +180,13 @@ export default function PricingFormulasSettings() {
 
   const openCreate = () => {
     resetForm();
+    setIsDuplicating(false);
+    setIsCreateOpen(true);
+  };
+
+  const openDuplicate = (formula: PricingFormula) => {
+    setFormData(buildDuplicateFormulaInput(formula));
+    setIsDuplicating(true);
     setIsCreateOpen(true);
   };
 
@@ -308,7 +317,7 @@ export default function PricingFormulasSettings() {
             Define reusable pricing configurations that can be attached to multiple products
           </p>
         </div>
-        <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
+        <Dialog open={isCreateOpen} onOpenChange={(open) => { setIsCreateOpen(open); if (!open) setIsDuplicating(false); }}>
           <DialogTrigger asChild>
             <Button onClick={openCreate}>
               <Plus className="mr-2 h-4 w-4" />
@@ -317,9 +326,11 @@ export default function PricingFormulasSettings() {
           </DialogTrigger>
           <DialogContent className="max-w-6xl max-h-[90vh] overflow-hidden flex flex-col">
             <DialogHeader>
-              <DialogTitle>Create Pricing Formula</DialogTitle>
+              <DialogTitle>{isDuplicating ? "Duplicate Pricing Formula" : "Create Pricing Formula"}</DialogTitle>
               <DialogDescription>
-                Define a reusable pricing configuration that can be attached to multiple products.
+                {isDuplicating
+                  ? "Review the copied formula, adjust the name and code, then save as a new formula."
+                  : "Define a reusable pricing configuration that can be attached to multiple products."}
               </DialogDescription>
             </DialogHeader>
             <FormulaEditorFields
@@ -390,14 +401,23 @@ export default function PricingFormulasSettings() {
                         >
                           <Eye className="h-4 w-4" />
                         </Button>
-                        <Button variant="ghost" size="sm" onClick={() => openEdit(formula)}>
+                        <Button variant="ghost" size="sm" onClick={() => openEdit(formula)} title="Edit formula">
                           <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => openDuplicate(formula)}
+                          title="Duplicate formula"
+                        >
+                          <Copy className="h-4 w-4" />
                         </Button>
                         <Button
                           variant="ghost"
                           size="sm"
                           onClick={() => handleDelete(formula.id)}
                           disabled={deleteMutation.isPending}
+                          title="Delete formula"
                         >
                           <Trash2 className="h-4 w-4 text-destructive" />
                         </Button>
