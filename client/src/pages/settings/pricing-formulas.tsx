@@ -42,6 +42,7 @@ import { TitanCard } from "@/components/ui/TitanCard";
 import { evaluate } from "mathjs";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FormulaLanguageHelp } from "@/components/pbv2/FormulaLanguageHelp";
+import { formulaHelperScope, extractFormulaVariables } from "@shared/pbv2/formulaHelpers";
 
 // Variable library for pricing formulas
 type VariableLibraryItem = {
@@ -127,36 +128,32 @@ export default function PricingFormulasSettings() {
   const [editingFormula, setEditingFormula] = useState<PricingFormula | null>(null);
   const [viewingFormula, setViewingFormula] = useState<string | null>(null);
   const [formData, setFormData] = useState<PricingFormulaInput>(emptyFormData);
-  const [configJson, setConfigJson] = useState<string>("");
 
   // Fetch products linked to formula being viewed
   const { data: formulaWithProducts } = usePricingFormulaWithProducts(viewingFormula ?? undefined);
 
   const resetForm = () => {
     setFormData(emptyFormData);
-    setConfigJson("");
   };
 
   const handleCreate = async () => {
     try {
-      const config = configJson.trim() ? JSON.parse(configJson) : null;
-      await createMutation.mutateAsync({ ...formData, config });
+      await createMutation.mutateAsync(formData);
       setIsCreateOpen(false);
       resetForm();
-    } catch (e) {
-      // Config parse error handled by toast
+    } catch {
+      // error handled by toast
     }
   };
 
   const handleUpdate = async () => {
     if (!editingFormula) return;
     try {
-      const config = configJson.trim() ? JSON.parse(configJson) : null;
-      await updateMutation.mutateAsync({ id: editingFormula.id, data: { ...formData, config } });
+      await updateMutation.mutateAsync({ id: editingFormula.id, data: formData });
       setEditingFormula(null);
       resetForm();
-    } catch (e) {
-      // Config parse error handled by toast
+    } catch {
+      // error handled by toast
     }
   };
 
@@ -177,7 +174,6 @@ export default function PricingFormulasSettings() {
       config: formula.config,
       isActive: formula.isActive,
     });
-    setConfigJson(formula.config ? JSON.stringify(formula.config, null, 2) : "");
   };
 
   const openCreate = () => {
@@ -226,7 +222,9 @@ export default function PricingFormulasSettings() {
 
       const base_price = testValues.basePrice > 0 ? testValues.basePrice : 1.0;
 
+      const formulaVars = extractFormulaVariables(formData.config as Record<string, unknown>);
       const scope = {
+        ...formulaVars,
         ...testValues,
         w,
         h,
@@ -237,6 +235,7 @@ export default function PricingFormulasSettings() {
         basePricePerSqft: base_price,
         p: base_price,
         MACHINE_RATE,
+        ...formulaHelperScope(),
       };
 
       const result = evaluate(expression, scope);
@@ -326,8 +325,6 @@ export default function PricingFormulasSettings() {
             <FormulaEditorFields
               formData={formData}
               setFormData={setFormData}
-              configJson={configJson}
-              setConfigJson={setConfigJson}
               selectedProfile={selectedProfile}
               showFlatGoodsConfig={showFlatGoodsConfig}
               expressionInputRef={expressionInputRef}
@@ -434,8 +431,6 @@ export default function PricingFormulasSettings() {
           <FormulaEditorFields
             formData={formData}
             setFormData={setFormData}
-            configJson={configJson}
-            setConfigJson={setConfigJson}
             selectedProfile={selectedProfile}
             showFlatGoodsConfig={showFlatGoodsConfig}
             expressionInputRef={expressionInputRef}
@@ -563,12 +558,166 @@ function BreakdownRow({
   );
 }
 
+const SHEET_4X8_PRESET: Record<string, number> = {
+  sheet_width: 48,
+  sheet_length: 96,
+  usable_drop_min: 24,
+  billable_length_increment: 12,
+  minimum_billable_sqft: 3,
+};
+
+function FormulaVariablesEditor({
+  config,
+  onConfigChange,
+  onInsertVariable,
+}: {
+  config: Record<string, unknown> | null | undefined;
+  onConfigChange: (config: Record<string, unknown>) => void;
+  onInsertVariable?: (key: string) => void;
+}) {
+  const [newKey, setNewKey] = useState("");
+  const [newValue, setNewValue] = useState("");
+
+  const variables = (
+    config?.variables && typeof config.variables === "object" && !Array.isArray(config.variables)
+      ? config.variables
+      : {}
+  ) as Record<string, number>;
+
+  const entries = Object.entries(variables);
+
+  const setVariable = (key: string, value: number) => {
+    onConfigChange({
+      ...(config ?? {}),
+      variables: { ...variables, [key]: value },
+    });
+  };
+
+  const deleteVariable = (key: string) => {
+    const { [key]: _removed, ...rest } = variables;
+    onConfigChange({ ...(config ?? {}), variables: rest });
+  };
+
+  const addVariable = () => {
+    const k = newKey.trim();
+    const v = parseFloat(newValue);
+    if (!k || !Number.isFinite(v)) return;
+    setVariable(k, v);
+    setNewKey("");
+    setNewValue("");
+  };
+
+  const applyPreset = () => {
+    onConfigChange({
+      ...(config ?? {}),
+      variables: { ...variables, ...SHEET_4X8_PRESET },
+    });
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+          Formula Variables
+        </p>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-6 px-2 text-[10px]"
+          onClick={applyPreset}
+          title="Add sheet_width=48, sheet_length=96, usable_drop_min=24, billable_length_increment=12, minimum_billable_sqft=3"
+        >
+          + 4×8 Sheet Vars
+        </Button>
+      </div>
+
+      {entries.length > 0 && (
+        <div className="border rounded overflow-hidden divide-y text-xs">
+          {entries.map(([key, value]) => (
+            <div key={key} className="flex items-center px-2 py-1 gap-2">
+              <code className="font-mono text-[11px] flex-1 min-w-0 truncate">{key}</code>
+              <Input
+                type="number"
+                value={value}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  if (Number.isFinite(v)) setVariable(key, v);
+                }}
+                className="h-6 w-20 text-xs font-mono px-1"
+              />
+              {onInsertVariable && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 px-1.5 text-[10px] shrink-0"
+                  onClick={() => onInsertVariable(key)}
+                >
+                  Insert
+                </Button>
+              )}
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-6 w-6 p-0 shrink-0"
+                onClick={() => {
+                  if (confirm(`Delete variable "${key}"?`)) deleteVariable(key);
+                }}
+              >
+                <Trash2 className="h-3 w-3 text-destructive" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex items-center gap-2">
+        <Input
+          placeholder="variable_name"
+          value={newKey}
+          onChange={(e) =>
+            setNewKey(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""))
+          }
+          className="h-7 text-xs font-mono flex-1"
+          onKeyDown={(e) => e.key === "Enter" && addVariable()}
+        />
+        <Input
+          type="number"
+          placeholder="0"
+          value={newValue}
+          onChange={(e) => setNewValue(e.target.value)}
+          className="h-7 text-xs w-20"
+          onKeyDown={(e) => e.key === "Enter" && addVariable()}
+        />
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 px-2 text-xs shrink-0"
+          onClick={addVariable}
+          disabled={!newKey.trim() || !newValue.trim()}
+        >
+          <Plus className="h-3 w-3 mr-1" />
+          Add
+        </Button>
+      </div>
+
+      {entries.length === 0 && (
+        <p className="text-[11px] text-muted-foreground">
+          No variables defined. Variables are injected into the formula scope by name. Use "Add
+          4×8 Sheet Vars" for the sheet_consumption_sqft helper.
+        </p>
+      )}
+    </div>
+  );
+}
+
 // Separate component to prevent re-mounting on state changes
 type FormulaEditorFieldsProps = {
   formData: PricingFormulaInput;
   setFormData: (data: PricingFormulaInput) => void;
-  configJson: string;
-  setConfigJson: (json: string) => void;
   selectedProfile: typeof PRICING_PROFILES[0] | undefined;
   showFlatGoodsConfig: boolean;
   expressionInputRef: React.RefObject<HTMLInputElement>;
@@ -583,8 +732,6 @@ type FormulaEditorFieldsProps = {
 function FormulaEditorFields({
   formData,
   setFormData,
-  configJson,
-  setConfigJson,
   selectedProfile,
   showFlatGoodsConfig,
   expressionInputRef,
@@ -980,6 +1127,21 @@ function FormulaEditorFields({
                           value={`$${testResult.base_price.toFixed(2)}`}
                           note="test input value"
                         />
+                        {(() => {
+                          const fv = extractFormulaVariables(formData.config as Record<string, unknown>);
+                          const fvEntries = Object.entries(fv);
+                          if (fvEntries.length === 0) return null;
+                          return (
+                            <>
+                              <div className="px-3 py-1.5 bg-muted/50 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                                Formula Variables
+                              </div>
+                              {fvEntries.map(([k, v]) => (
+                                <BreakdownRow key={k} label={k} value={String(v)} mono />
+                              ))}
+                            </>
+                          );
+                        })()}
 
                         <div className="px-3 py-1.5 bg-muted/50 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
                           Evaluated
@@ -1121,21 +1283,14 @@ function FormulaEditorFields({
             </>
           )}
 
-          {/* Advanced config JSON (hidden for flat_goods which uses structured fields) */}
+          {/* Formula Variables editor (non-flat-goods profiles only) */}
           {!showFlatGoodsConfig && (
-            <div>
-              <Label htmlFor="config">Advanced Config (JSON)</Label>
-              <Textarea
-                id="config"
-                value={configJson}
-                onChange={(e) => setConfigJson(e.target.value)}
-                placeholder='{"key": "value"}'
-                rows={3}
-                className="font-mono text-sm"
+            <div className="border rounded-md p-4 space-y-3 bg-muted/20">
+              <FormulaVariablesEditor
+                config={formData.config as Record<string, unknown>}
+                onConfigChange={(cfg) => setFormData({ ...formData, config: cfg })}
+                onInsertVariable={insertVariable}
               />
-              <p className="text-xs text-muted-foreground mt-1">
-                Optional JSON configuration for advanced pricing logic
-              </p>
             </div>
           )}
         </div>
