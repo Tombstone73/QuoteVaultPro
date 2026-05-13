@@ -433,6 +433,7 @@ export function evaluatePricingPreviewFromTree(input: {
   pricingFormulaOverride?: string | null;
   pricingProfileKey?: string | null;
   pricingProfileConfig?: unknown;
+  formulaVariables?: Record<string, number>;
   debug?: boolean;
 }): PricingPreviewEvaluationResult {
   const widthIn = Number(input.widthIn);
@@ -536,6 +537,7 @@ export function evaluatePricingPreviewFromTree(input: {
         linearFeet: baseDetails.linearFeet,
         usedFallbackFormula,
         fallbackFormula: PBV2_PREVIEW_FALLBACK_FORMULA,
+        formulaVariables: input.formulaVariables,
       });
     } catch (error: any) {
       if (error?.code === 'PBV2_FORMULA_ERROR' && error?.debug) {
@@ -1010,6 +1012,7 @@ function evaluatePreviewFormulaToCents(input: {
   linearFeet: number;
   usedFallbackFormula: boolean;
   fallbackFormula: string;
+  formulaVariables?: Record<string, number>;
 }): {
   resultValue: number;
   formulaResolved?: string;
@@ -1023,6 +1026,7 @@ function evaluatePreviewFormulaToCents(input: {
   let preCeilSqftTotal: number | null = null;
   let postCeilSqftTotal: number | null = null;
   const evalScope: Record<string, any> = {
+    ...(input.formulaVariables ?? {}),
     ...scope,
     ceil: (value: unknown) => {
       const numeric = Number(value);
