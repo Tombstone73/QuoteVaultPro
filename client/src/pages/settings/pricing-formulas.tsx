@@ -42,6 +42,7 @@ import { TitanCard } from "@/components/ui/TitanCard";
 import { evaluate } from "mathjs";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FormulaLanguageHelp } from "@/components/pbv2/FormulaLanguageHelp";
+import { formulaHelperScope } from "@shared/pbv2/formulaHelpers";
 
 // Variable library for pricing formulas
 type VariableLibraryItem = {
@@ -237,6 +238,7 @@ export default function PricingFormulasSettings() {
         basePricePerSqft: base_price,
         p: base_price,
         MACHINE_RATE,
+        ...formulaHelperScope(),
       };
 
       const result = evaluate(expression, scope);
