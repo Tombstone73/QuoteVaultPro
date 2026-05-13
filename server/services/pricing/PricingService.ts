@@ -18,6 +18,7 @@ import type {
 } from '../../../shared/optionTreeV2';
 import { PBV2_PRICING_VARIABLES, type PricingVariableDefinition } from '../../../shared/pbv2/pricingVariableRegistry';
 import { pbv2ToRuntimeSelectionContext, resolvePricingV2BaseRates } from '../../../shared/pbv2/pricingAdapter';
+import { sheetConsumptionSqft } from '../../../shared/pbv2/formulaHelpers';
 // @ts-ignore - NestingCalculator.js is plain JS without exported TS types
 import NestingCalculator from '../../NestingCalculator.js';
 
@@ -432,6 +433,7 @@ export function evaluatePricingPreviewFromTree(input: {
   pricingFormulaOverride?: string | null;
   pricingProfileKey?: string | null;
   pricingProfileConfig?: unknown;
+  formulaVariables?: Record<string, number>;
   debug?: boolean;
 }): PricingPreviewEvaluationResult {
   const widthIn = Number(input.widthIn);
@@ -535,6 +537,7 @@ export function evaluatePricingPreviewFromTree(input: {
         linearFeet: baseDetails.linearFeet,
         usedFallbackFormula,
         fallbackFormula: PBV2_PREVIEW_FALLBACK_FORMULA,
+        formulaVariables: input.formulaVariables,
       });
     } catch (error: any) {
       if (error?.code === 'PBV2_FORMULA_ERROR' && error?.debug) {
@@ -1009,6 +1012,7 @@ function evaluatePreviewFormulaToCents(input: {
   linearFeet: number;
   usedFallbackFormula: boolean;
   fallbackFormula: string;
+  formulaVariables?: Record<string, number>;
 }): {
   resultValue: number;
   formulaResolved?: string;
@@ -1022,6 +1026,7 @@ function evaluatePreviewFormulaToCents(input: {
   let preCeilSqftTotal: number | null = null;
   let postCeilSqftTotal: number | null = null;
   const evalScope: Record<string, any> = {
+    ...(input.formulaVariables ?? {}),
     ...scope,
     ceil: (value: unknown) => {
       const numeric = Number(value);
@@ -1030,6 +1035,26 @@ function evaluatePreviewFormulaToCents(input: {
       postCeilSqftTotal = Math.ceil(numeric);
       return postCeilSqftTotal;
     },
+    sheet_consumption_sqft: (
+      w: unknown,
+      h: unknown,
+      q: unknown,
+      sheet_width: unknown,
+      sheet_length: unknown,
+      usable_drop_min: unknown,
+      billable_length_increment: unknown,
+      minimum_billable_sqft: unknown,
+    ) =>
+      sheetConsumptionSqft(
+        Number(w),
+        Number(h),
+        Number(q),
+        Number(sheet_width),
+        Number(sheet_length),
+        Number(usable_drop_min),
+        Number(billable_length_increment),
+        Number(minimum_billable_sqft),
+      ),
   };
   const formulaResolved = resolveFormulaAliases(input.formula);
   const appliedAs = inferFormulaApplication(input.formula);
