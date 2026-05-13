@@ -1,4 +1,5 @@
 import { useState, useRef } from "react";
+import { PBV2_PRICING_FUNCTIONS } from "@shared/pbv2/pricingFunctionCatalog";
 import { Button } from "@/components/ui/button";
 import { Check, Copy } from "lucide-react";
 
@@ -73,17 +74,10 @@ export function FormulaSyntaxSection() {
           Supported Functions
         </p>
         <div className="border rounded overflow-hidden divide-y text-xs">
-          {[
-            { fn: "max(a, b, ...)", desc: "Largest value" },
-            { fn: "min(a, b, ...)", desc: "Smallest value" },
-            { fn: "ceil(x)", desc: "Round up" },
-            { fn: "floor(x)", desc: "Round down" },
-            { fn: "round(x)", desc: "Round to nearest" },
-            { fn: "abs(x)", desc: "Absolute value" },
-          ].map(({ fn, desc }) => (
-            <div key={fn} className="flex items-center px-2 py-1.5 gap-3">
-              <code className="font-mono text-[11px] shrink-0">{fn}</code>
-              <span className="text-muted-foreground">{desc}</span>
+          {PBV2_PRICING_FUNCTIONS.map(({ key, description }) => (
+            <div key={key} className="flex items-start px-2 py-1.5 gap-3">
+              <code className="font-mono text-[11px] shrink-0">{key}</code>
+              <span className="text-muted-foreground">{description}</span>
             </div>
           ))}
         </div>
