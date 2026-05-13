@@ -13,7 +13,8 @@
  * side strip remaining after pieces is narrower than usableDropMin it is
  * treated as waste and the full sheet width is charged; otherwise only the
  * occupied width is charged. Consumed length is rounded up to the nearest
- * billableLengthIncrement. Returns at least minimumBillableSqft.
+ * billableLengthIncrement. Returns at least minimumBillableSqft, and the
+ * final result is always ceil'd to a whole square foot.
  *
  * Throws an Error if the piece cannot physically fit the sheet in either
  * orientation — callers should surface this as a formula evaluation error.
@@ -59,7 +60,7 @@ export function sheetConsumptionSqft(
       `sheet_consumption_sqft: piece ${w}×${h} exceeds sheet ${sheetWidth}×${sheetLength} in both orientations`,
     );
   }
-  return Math.max(best, minimumBillableSqft);
+  return Math.ceil(Math.max(best, minimumBillableSqft));
 }
 
 /**
