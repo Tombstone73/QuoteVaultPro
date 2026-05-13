@@ -1474,6 +1474,7 @@ export function registerProductRoutes(
         pricingFormulaOverride,
         pricingProfileKey,
         pricingProfileConfig,
+        formulaVariables,
         debug,
       } = req.body ?? {};
 
@@ -1512,6 +1513,9 @@ export function registerProductRoutes(
         pricingFormulaOverride: typeof pricingFormulaOverride === "string" ? pricingFormulaOverride : undefined,
         pricingProfileKey: typeof pricingProfileKey === "string" ? pricingProfileKey : undefined,
         pricingProfileConfig: pricingProfileConfig ?? undefined,
+        formulaVariables: formulaVariables && typeof formulaVariables === "object" && !Array.isArray(formulaVariables)
+          ? formulaVariables as Record<string, number>
+          : undefined,
         debug: Boolean(debug),
       });
 
