@@ -4,8 +4,11 @@ import { ProductHeader } from './ProductHeader';
 import { OptionGroupsSidebar } from './OptionGroupsSidebar';
 import { OptionEditor } from './OptionEditor';
 import { BasePricingEditor } from './BasePricingEditor';
+import { OptionRulesPricingMatrixEditor } from './OptionRulesPricingMatrixEditor';
 import { PBV2EditorErrorBoundary } from './PBV2EditorErrorBoundary';
 import type { EditorModel } from '@/lib/pbv2/pbv2ViewModel';
+import type { ProductOptionRule } from '@shared/productOptionRules';
+import type { ProductOptionPricingMatrix } from '@shared/productOptionPricingMatrix';
 
 export interface PBV2ProductBuilderLayoutProps {
   // Editor model (derived from PBV2 tree)
@@ -38,6 +41,8 @@ export interface PBV2ProductBuilderLayoutProps {
   onAddPricingV2Tier: (kind: 'qty' | 'sqft') => void;
   onUpdatePricingV2Tier: (kind: 'qty' | 'sqft', index: number, tier: any) => void;
   onDeletePricingV2Tier: (kind: 'qty' | 'sqft', index: number) => void;
+  onUpdateOptionRules: (rules: ProductOptionRule[]) => void;
+  onUpdatePricingMatrix: (pricingMatrix: ProductOptionPricingMatrix) => void;
   onSave: () => void;
   onPublish: () => void;
   onExportJson: () => void;
@@ -80,6 +85,8 @@ export function PBV2ProductBuilderLayout({
   onAddPricingV2Tier,
   onUpdatePricingV2Tier,
   onDeletePricingV2Tier,
+  onUpdateOptionRules,
+  onUpdatePricingMatrix,
   onUpdateProduct,
   onSave,
   onPublish,
@@ -128,6 +135,11 @@ export function PBV2ProductBuilderLayout({
                   onUpdateNodePricing={onUpdateNodePricing}
                   onAddPricingRule={onAddPricingRule}
                   onDeletePricingRule={onDeletePricingRule}
+                />
+                <OptionRulesPricingMatrixEditor
+                  treeJson={treeJson}
+                  onUpdateRules={onUpdateOptionRules}
+                  onUpdatePricingMatrix={onUpdatePricingMatrix}
                 />
               </PBV2EditorErrorBoundary>
             )}
