@@ -63,6 +63,26 @@ export function sheetConsumptionSqft(
 }
 
 /**
+ * Extracts formula-scoped variables from a formula's config object.
+ * Returns `Record<string, number>` with only finite numeric values.
+ * Safe to spread directly into a mathjs evalScope.
+ */
+export function extractFormulaVariables(
+  config: Record<string, unknown> | null | undefined,
+): Record<string, number> {
+  const raw = config?.variables;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const result: Record<string, number> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof k === "string" && k.trim()) {
+      const n = Number(v);
+      if (Number.isFinite(n)) result[k] = n;
+    }
+  }
+  return result;
+}
+
+/**
  * Returns the evalScope additions that inject all custom formula helpers into
  * a mathjs evaluate() call.  Pass the result spread into the scope object:
  *
