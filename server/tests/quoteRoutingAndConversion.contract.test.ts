@@ -26,6 +26,18 @@ const organizationId = `org_workflow_contract_${suffix}`;
 const userId = `user_workflow_contract_${suffix}`;
 const customerId = `cust_workflow_contract_${suffix}`;
 const productId = `prod_workflow_contract_${suffix}`;
+const pbv2PricingSnapshotFixture = {
+  pbv2PricingSnapshot: {
+    formula: "sqft * base_price * q",
+    formulaVariables: { sqft: 6, base_price: 5.75, q: 1 },
+    rawSelections: { thickness: "choice_3mm", sides: "choice_double" },
+    effectiveSelections: { thickness: "choice_3mm", sides: "choice_double" },
+    resolvedMatrixRowId: "3mm_double",
+    resolvedMatrixVariables: { base_price: 5.75 },
+    calculatedPrice: 34.5,
+    capturedAt: "2026-05-14T00:00:00.000Z",
+  },
+};
 
 beforeAll(async () => {
   await db.execute(sql`
@@ -171,7 +183,7 @@ function buildQuoteInput(label: string) {
           formula: "contract_test",
         },
         pbv2TreeVersionId: null,
-        pbv2SnapshotJson: {},
+        pbv2SnapshotJson: pbv2PricingSnapshotFixture,
         pricedAt: new Date(),
         taxAmount: 0,
         isTaxableSnapshot: true,
@@ -356,6 +368,7 @@ describe("quote routing persistence and conversion contract", () => {
     const itemC = lineItemsByQuoteLineItemId.get(quoteItemC!.id);
 
     expect(itemA?.workflowState).toBe("needs_design");
+    expect(itemA?.pbv2SnapshotJson).toEqual(pbv2PricingSnapshotFixture);
     expect(itemA?.requiresDesignSnapshot).toBe(true);
     expect(itemA?.designPricingModeSnapshot).toBe("hourly");
     expect(itemA?.hourlyRateSnapshot).toBe("65.00");

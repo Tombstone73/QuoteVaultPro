@@ -1,5 +1,9 @@
 import { describe, expect, test } from "@jest/globals";
-import { evaluatePricingPreviewFromTree, type Pbv2OptionRuleValidationError } from "../PricingService";
+import {
+  evaluatePricingPreviewFromTree,
+  type Pbv2DefinitionValidationError,
+  type Pbv2OptionRuleValidationError,
+} from "../PricingService";
 
 function makeBannerTree(optionRules: any[] = []) {
   return {
@@ -103,6 +107,16 @@ function expectOptionRuleError(fn: () => unknown): Pbv2OptionRuleValidationError
   throw new Error("Expected PBV2 option rule validation error");
 }
 
+function expectDefinitionError(fn: () => unknown): Pbv2DefinitionValidationError {
+  try {
+    fn();
+  } catch (error: any) {
+    expect(error.code).toBe("PBV2_DEFINITION_VALIDATION_FAILED");
+    return error as Pbv2DefinitionValidationError;
+  }
+  throw new Error("Expected PBV2 definition validation error");
+}
+
 describe("PricingService option rule validation gate", () => {
   test("backend rejects a hidden option selection before pricing", () => {
     const error = expectOptionRuleError(() =>
@@ -168,5 +182,26 @@ describe("PricingService option rule validation gate", () => {
     });
 
     expect(result.breakdown.optionsPrice).toBe(5);
+  });
+
+  test("runtime pricing rejects invalid rule definitions before evaluation", () => {
+    const error = expectDefinitionError(() =>
+      runPreview(makeBannerTree([
+        {
+          ...polePocketRules[0],
+          when: {
+            all: [{ optionGroup: "finishing", operator: "bad_operator", value: "pole_pockets" }],
+          },
+        },
+      ]), {
+        finishing: { value: "pole_pockets" },
+      })
+    );
+
+    expect(error.details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "PBV2_E_OPTION_RULE_OPERATOR_INVALID" }),
+      ])
+    );
   });
 });
