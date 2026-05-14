@@ -16,6 +16,12 @@ export function currencyInputToCents(value: string): number | undefined {
   return Math.round(parsed * 100);
 }
 
+export function normalizeVariableDisplay(raw: string): string {
+  const num = parseFloat(raw);
+  if (!Number.isFinite(num)) return raw;
+  return num.toFixed(2);
+}
+
 export function centsToCurrencyLabel(value: number | null | undefined): string {
   const cents = typeof value === "number" && Number.isFinite(value) ? value : 0;
   const sign = cents >= 0 ? "+" : "-";
