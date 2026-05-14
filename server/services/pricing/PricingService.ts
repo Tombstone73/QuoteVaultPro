@@ -22,6 +22,8 @@ import {
   type ProductOptionRule,
   type ProductOptionRuleEvaluationResult,
 } from '../../../shared/productOptionRules';
+import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from '../../../shared/pbv2/validator';
+import type { Finding } from '../../../shared/pbv2/findings';
 import {
   extractProductOptionPricingMatrix,
   resolveProductOptionPricingMatrix,
@@ -85,6 +87,18 @@ export type PBV2PricingSnapshot = {
     nestingDetails?: unknown;
     pricingMethod?: string;
   };
+  pbv2PricingSnapshot?: PBV2RuntimePricingSnapshot;
+};
+
+export type PBV2RuntimePricingSnapshot = {
+  formula: string;
+  formulaVariables: Record<string, number | string | boolean | null>;
+  rawSelections: Record<string, any>;
+  effectiveSelections: Record<string, any>;
+  resolvedMatrixRowId?: string;
+  resolvedMatrixVariables: Record<string, number>;
+  calculatedPrice: number;
+  capturedAt: string;
 };
 
 export type PricingPreviewEvaluationResult = {
@@ -199,6 +213,11 @@ export type Pbv2PricingMatrixError = Error & {
   resolution: ProductOptionPricingMatrixResolution;
 };
 
+export type Pbv2DefinitionValidationError = Error & {
+  code: 'PBV2_DEFINITION_VALIDATION_FAILED';
+  details: Finding[];
+};
+
 export function getPbv2PricingVariableDefinitions(): PricingVariableDefinition[] {
   return PBV2_PRICING_VARIABLES;
 }
@@ -246,7 +265,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
       treeVersion.treeJson as any,
       pbv2ExplicitSelections || {}
     );
-    resolvePricingMatrixVariablesForPricing(
+    const pricingMatrixResolution = resolvePricingMatrixVariablesForPricing(
       treeVersion.treeJson as any,
       ruleValidatedSelections.selected
     );
@@ -266,14 +285,15 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     );
 
     // Build minimal snapshot
+    const pricedAt = new Date().toISOString();
     const snapshot: PBV2PricingSnapshot = {
       treeVersionId,
-      treeJson: treeVersion.treeJson,
-      selections: ruleValidatedSelections.selected,
-      runtimeSelectionContext,
+      treeJson: cloneJsonValue(treeVersion.treeJson),
+      selections: cloneJsonValue(ruleValidatedSelections.selected),
+      runtimeSelectionContext: cloneJsonValue(runtimeSelectionContext),
       selectedOptions: [],
       visibleNodeIds: [],
-      pricedAt: new Date().toISOString(),
+      pricedAt,
       dimensions: {
         widthIn: widthIn ?? undefined,
         heightIn: heightIn ?? undefined,
@@ -285,6 +305,18 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
         totalCents: overridePriceCents,
         pricingMethod,
       },
+      pbv2PricingSnapshot: buildRuntimePricingSnapshot({
+        treeJson: treeVersion.treeJson,
+        product,
+        rawSelections: pbv2ExplicitSelections || {},
+        effectiveSelections: ruleValidatedSelections.selected,
+        pricingMatrixResolution,
+        widthIn: widthIn ?? 0,
+        heightIn: heightIn ?? 0,
+        quantity,
+        calculatedPriceCents: overridePriceCents,
+        capturedAt: pricedAt,
+      }),
     };
 
     return {
@@ -322,7 +354,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     treeVersion.treeJson as any,
     pbv2ExplicitSelections
   );
-  resolvePricingMatrixVariablesForPricing(
+  const pricingMatrixResolution = resolvePricingMatrixVariablesForPricing(
     treeVersion.treeJson as any,
     ruleValidatedSelections.selected
   );
@@ -433,14 +465,15 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
   }
 
   // Step 8: Build snapshot
+  const pricedAt = new Date().toISOString();
   const snapshot: PBV2PricingSnapshot = {
     treeVersionId,
-    treeJson: treeVersion.treeJson,
-    selections: ruleValidatedSelections.selected,
-    runtimeSelectionContext,
-    selectedOptions: evalResult.selectedOptions,
-    visibleNodeIds: evalResult.visibleNodeIds,
-    pricedAt: new Date().toISOString(),
+    treeJson: cloneJsonValue(treeVersion.treeJson),
+    selections: cloneJsonValue(ruleValidatedSelections.selected),
+    runtimeSelectionContext: cloneJsonValue(runtimeSelectionContext),
+    selectedOptions: cloneJsonValue(evalResult.selectedOptions),
+    visibleNodeIds: cloneJsonValue(evalResult.visibleNodeIds),
+    pricedAt,
     dimensions: widthIn || heightIn ? { widthIn, heightIn } : undefined,
     quantity,
     pricing: {
@@ -450,6 +483,19 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
       nestingDetails: baseDetails.nestingDetails,
       pricingMethod,
     },
+    pbv2PricingSnapshot: buildRuntimePricingSnapshot({
+      treeJson: treeVersion.treeJson,
+      product,
+      rawSelections: pbv2ExplicitSelections || {},
+      effectiveSelections: ruleValidatedSelections.selected,
+      pricingMatrixResolution,
+      widthIn: widthIn ?? 0,
+      heightIn: heightIn ?? 0,
+      quantity,
+      baseDetails,
+      calculatedPriceCents: lineTotalCents,
+      capturedAt: pricedAt,
+    }),
   };
 
   return {
@@ -500,6 +546,8 @@ export function evaluatePricingPreviewFromTree(input: {
   if (!pbv2ExplicitSelections || typeof pbv2ExplicitSelections !== "object" || Array.isArray(pbv2ExplicitSelections)) {
     throw new Error("optionSelectionsJson must be an object mapping optionId -> selection");
   }
+
+  assertRuleAndMatrixDefinitionsValidForPricing(input.treeJson);
 
   const selectionsV2: LineItemOptionSelectionsV2 = {
     schemaVersion: 2,
@@ -836,6 +884,21 @@ function pricingMatrixError(
   return error;
 }
 
+function isRuleOrMatrixDefinitionFinding(finding: Finding): boolean {
+  return finding.code.startsWith("PBV2_E_OPTION_RULE_") || finding.code.startsWith("PBV2_E_PRICING_MATRIX_");
+}
+
+function assertRuleAndMatrixDefinitionsValidForPricing(tree: any): void {
+  const validation = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+  const details = validation.errors.filter(isRuleOrMatrixDefinitionFinding);
+  if (details.length === 0) return;
+
+  const error = new Error(details.map((detail) => detail.message).join(" ")) as Pbv2DefinitionValidationError;
+  error.code = "PBV2_DEFINITION_VALIDATION_FAILED";
+  error.details = details;
+  throw error;
+}
+
 function resolvePricingMatrixVariablesForPricing(
   tree: any,
   selections: LineItemOptionSelectionsV2 | Record<string, unknown> | undefined
@@ -1014,6 +1077,8 @@ async function loadTreeVersion(organizationId: string, treeVersionId: string) {
     (error as any).schemaVersion = treeSchemaVersion;
     throw error;
   }
+
+  assertRuleAndMatrixDefinitionsValidForPricing(treeVersion.treeJson as any);
 
   return treeVersion;
 }
@@ -1239,6 +1304,123 @@ function calculateBasePriceDetails(
     totalSqft,
     linearFeet,
   };
+}
+
+type BasePriceDetails = ReturnType<typeof calculateBasePriceDetails>;
+
+function cloneJsonValue<T>(value: T): T {
+  if (value === undefined) return value;
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function toPlainSelectionValues(selections: LineItemOptionSelectionsV2 | Record<string, unknown> | undefined): Record<string, any> {
+  return cloneJsonValue(normalizeSelectionMap(selections));
+}
+
+function numericRecordOrUndefined(value: unknown): Record<string, number> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+
+  const out: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) out[key] = parsed;
+  }
+
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function resolveSnapshotFormulaVariables(treeJson: any, product: any): Record<string, number> | undefined {
+  const meta = treeJson?.meta && typeof treeJson.meta === "object" ? treeJson.meta : {};
+  const pricingProfileConfig = product?.pricingProfileConfig && typeof product.pricingProfileConfig === "object"
+    ? product.pricingProfileConfig
+    : {};
+
+  return (
+    numericRecordOrUndefined((meta as any).formulaVariables) ??
+    numericRecordOrUndefined((meta as any).pricingFormulaVariables) ??
+    numericRecordOrUndefined((pricingProfileConfig as any).formulaVariables)
+  );
+}
+
+function resolveSnapshotFormula(treeJson: any, product: any, pricingProfileKey: string): { formula: string; usedFallbackFormula: boolean } {
+  const profile = getProfile(pricingProfileKey);
+  if (!profile.usesFormula) return { formula: "", usedFallbackFormula: false };
+
+  const formulaFromTree = typeof treeJson?.meta?.pricingFormula === "string"
+    ? treeJson.meta.pricingFormula.trim()
+    : "";
+  const formulaFromProduct = typeof product?.pricingFormula === "string"
+    ? product.pricingFormula.trim()
+    : "";
+  const formulaFromProfile = typeof profile.defaultFormula === "string"
+    ? profile.defaultFormula.trim()
+    : "";
+  const formula = formulaFromTree || formulaFromProduct || formulaFromProfile || PBV2_PREVIEW_FALLBACK_FORMULA;
+
+  return {
+    formula,
+    usedFallbackFormula: !formulaFromTree && !formulaFromProduct && !formulaFromProfile,
+  };
+}
+
+function buildRuntimePricingSnapshot(input: {
+  treeJson: any;
+  product: any;
+  rawSelections: Record<string, any>;
+  effectiveSelections: Record<string, any>;
+  pricingMatrixResolution: ProductOptionPricingMatrixResolution;
+  widthIn: number;
+  heightIn: number;
+  quantity: number;
+  baseDetails?: BasePriceDetails;
+  calculatedPriceCents: number;
+  capturedAt: string;
+}): PBV2RuntimePricingSnapshot {
+  const trimAllowances = getTrimAllowancesInches(input.treeJson);
+  const orderedWidthIn = input.baseDetails?.orderedWidthIn ?? input.widthIn;
+  const orderedHeightIn = input.baseDetails?.orderedHeightIn ?? input.heightIn;
+  const trimAllowanceX = input.baseDetails?.trimAllowanceX ?? trimAllowances.trimAllowanceX;
+  const trimAllowanceY = input.baseDetails?.trimAllowanceY ?? trimAllowances.trimAllowanceY;
+  const finishedWidthIn = input.baseDetails?.finishedWidthIn ?? orderedWidthIn + trimAllowanceX;
+  const finishedHeightIn = input.baseDetails?.finishedHeightIn ?? orderedHeightIn + trimAllowanceY;
+  const sqftPerItem = input.baseDetails?.sqftPerItem ?? (
+    finishedWidthIn > 0 && finishedHeightIn > 0 ? (finishedWidthIn * finishedHeightIn) / 144 : 0
+  );
+  const totalSqft = input.baseDetails?.totalSqft ?? sqftPerItem * input.quantity;
+  const linearFeet = input.baseDetails?.linearFeet ?? (orderedWidthIn > 0 ? orderedWidthIn / 12 : 0);
+  const pricingProfileKey = String(input.baseDetails?.pricingProfileKey ?? input.product?.pricingProfileKey ?? "default");
+  const formulaSnapshot = resolveSnapshotFormula(input.treeJson, input.product, pricingProfileKey);
+  const formulaVariables = resolveSnapshotFormulaVariables(input.treeJson, input.product);
+  const formulaDebug = buildBaseFormulaDebugContext({
+    formulaRaw: formulaSnapshot.formula,
+    orderedWidthIn,
+    orderedHeightIn,
+    trimAllowanceX,
+    trimAllowanceY,
+    finishedWidthIn,
+    finishedHeightIn,
+    quantity: input.quantity,
+    baseRatePerSqft: input.baseDetails ? input.baseDetails.perSqftCents / 100 : 0,
+    sqftPerItem,
+    totalSqft,
+    linearFeet,
+    usedFallbackFormula: formulaSnapshot.usedFallbackFormula,
+    formulaVariables,
+    pricingMatrixVariables: input.pricingMatrixResolution.variables,
+  });
+
+  return cloneJsonValue({
+    formula: formulaSnapshot.formula,
+    formulaVariables: formulaDebug.variables,
+    rawSelections: toPlainSelectionValues(input.rawSelections),
+    effectiveSelections: toPlainSelectionValues(input.effectiveSelections),
+    ...(input.pricingMatrixResolution.matchedRow?.id
+      ? { resolvedMatrixRowId: input.pricingMatrixResolution.matchedRow.id }
+      : {}),
+    resolvedMatrixVariables: input.pricingMatrixResolution.variables,
+    calculatedPrice: input.calculatedPriceCents / 100,
+    capturedAt: input.capturedAt,
+  });
 }
 
 function getTrimAllowancesInches(tree: any): { trimAllowanceX: number; trimAllowanceY: number } {

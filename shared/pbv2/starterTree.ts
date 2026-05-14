@@ -18,6 +18,7 @@ export function createPbv2StarterTreeJson(): Record<string, unknown> {
       },
     ],
     edges: [],
+    meta: { baseWeightOz: 1 },
   };
 
   // Guardrail: ensure this template stays publish-valid as validator evolves.
@@ -109,6 +110,7 @@ export function createPbv2BannerGrommetsTreeJson(): Record<string, unknown> {
         condition: { op: "EXISTS", value: { op: "literal", value: true } },
       },
     ],
+    meta: { baseWeightOz: 1 },
   };
 
   const res = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
@@ -347,6 +349,7 @@ export function createPbv2BannerGrommetsPricingTreeJson(): Record<string, unknow
         condition: { op: "EXISTS", value: { op: "literal", value: true } },
       },
     ],
+    meta: { baseWeightOz: 1 },
   };
 
   const res = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
@@ -431,6 +434,7 @@ export function createPbv2SignExtrusionTreeJson(): Record<string, unknown> {
         },
       },
     ],
+    meta: { baseWeightOz: 1 },
   };
 
   const res = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);

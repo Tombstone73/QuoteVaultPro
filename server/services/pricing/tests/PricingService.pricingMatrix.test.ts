@@ -1,6 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
 import {
   evaluatePricingPreviewFromTree,
+  type Pbv2DefinitionValidationError,
   type Pbv2OptionRuleValidationError,
   type Pbv2PricingMatrixError,
 } from "../PricingService";
@@ -132,6 +133,16 @@ function expectPricingMatrixError(fn: () => unknown): Pbv2PricingMatrixError {
   throw new Error("Expected PBV2 pricing matrix error");
 }
 
+function expectPricingDefinitionError(fn: () => unknown): Pbv2DefinitionValidationError {
+  try {
+    fn();
+  } catch (error: any) {
+    expect(error.code).toBe("PBV2_DEFINITION_VALIDATION_FAILED");
+    return error as Pbv2DefinitionValidationError;
+  }
+  throw new Error("Expected PBV2 definition validation error");
+}
+
 function expectOptionRuleError(fn: () => unknown): Pbv2OptionRuleValidationError {
   try {
     fn();
@@ -239,24 +250,26 @@ describe("PricingService pricing matrix variable resolution", () => {
   });
 
   test("protected dimensional built-ins cannot be shadowed by matrix variables", () => {
-    const result = runPreview(
-      makeAcmTree({
-        dimensions: ["thickness"],
-        rows: [
-          {
-            when: { thickness: "3mm" },
-            variables: { base_price: 5, q: 999, sqft: 999, total_sqft: 999 },
-          },
-        ],
-      }),
-      { thickness: { value: "3mm" } },
-      "q + sqft + total_sqft + base_price"
+    const error = expectPricingDefinitionError(() =>
+      runPreview(
+        makeAcmTree({
+          dimensions: ["thickness"],
+          rows: [
+            {
+              when: { thickness: "3mm" },
+              variables: { base_price: 5, q: 999, sqft: 999, total_sqft: 999 },
+            },
+          ],
+        }),
+        { thickness: { value: "3mm" } },
+        "q + sqft + total_sqft + base_price"
+      )
     );
 
-    expect(result.totalPrice).toBeCloseTo(18, 2);
-    expect(result.debug?.variables.q).toBe(1);
-    expect(result.debug?.variables.sqft).toBe(6);
-    expect(result.debug?.variables.total_sqft).toBe(6);
-    expect(result.debug?.variables.base_price).toBe(5);
+    expect(error.details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "PBV2_E_PRICING_MATRIX_VARIABLE_PROTECTED" }),
+      ])
+    );
   });
 });
