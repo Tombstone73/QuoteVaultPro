@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { centsToCurrencyInput, currencyInputToCents, decimalCurrencyToInput } from "@/lib/pbv2/currency";
+import { centsToCurrencyInput, currencyInputToCents, decimalCurrencyToInput, normalizeVariableDisplay } from "@/lib/pbv2/currency";
 import type { ProductOptionRule } from "@shared/productOptionRules";
 import {
   isProductOptionPricingMatrixCurrencyVariable,
@@ -191,11 +191,11 @@ type MatrixVariableInputProps = {
 };
 
 function MatrixVariableInput({ variableValue, onCommit }: MatrixVariableInputProps) {
-  const [local, setLocal] = React.useState(variableValue);
+  const [local, setLocal] = React.useState(() => normalizeVariableDisplay(variableValue));
   const isFocused = React.useRef(false);
 
   React.useEffect(() => {
-    if (!isFocused.current) setLocal(variableValue);
+    if (!isFocused.current) setLocal(normalizeVariableDisplay(variableValue));
   }, [variableValue]);
 
   return (
@@ -211,7 +211,11 @@ function MatrixVariableInput({ variableValue, onCommit }: MatrixVariableInputPro
       }}
       onBlur={() => {
         isFocused.current = false;
-        if (Number.isFinite(parseFloat(local))) onCommit(local);
+        const formatted = normalizeVariableDisplay(local);
+        if (Number.isFinite(parseFloat(local))) {
+          setLocal(formatted);
+          onCommit(formatted);
+        }
       }}
       className="bg-[#1e293b] border-slate-600 text-slate-100"
     />
