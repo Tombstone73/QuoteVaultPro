@@ -493,7 +493,7 @@ export function OptionDetailsEditor({
                             </div>
 
                             <div>
-                              <Label className="text-xs text-slate-400 mb-1 block">Variant Price Delta</Label>
+                              <Label className="text-xs text-slate-400 mb-1 block">Variant Price Delta ($)</Label>
                               <Input
                                 type="number"
                                 step="0.01"
@@ -616,7 +616,7 @@ export function OptionDetailsEditor({
 
                                           {mode === 'addCents' && (
                                             <div>
-                                              <Label className="text-xs text-slate-500 mb-1 block">Amount (negative = discount)</Label>
+                                              <Label className="text-xs text-slate-500 mb-1 block">Amount in $ (negative = discount)</Label>
                                               <Input
                                                 type="number"
                                                 step="0.01"
@@ -681,7 +681,7 @@ export function OptionDetailsEditor({
                                           {mode === 'addPerUnit' && (
                                             <>
                                               <div>
-                                                <Label className="text-xs text-slate-500 mb-1 block">Amount Per Unit</Label>
+                                                <Label className="text-xs text-slate-500 mb-1 block">Amount Per Unit ($)</Label>
                                                 <Input
                                                   type="number"
                                                   step="0.01"
@@ -1036,7 +1036,7 @@ export function OptionDetailsEditor({
                       </div>
 
                       <div>
-                        <Label className="text-xs text-slate-400 mb-1 block">Amount</Label>
+                        <Label className="text-xs text-slate-400 mb-1 block">Amount ($)</Label>
                         <Input
                           type="number"
                           step="0.01"
@@ -1254,10 +1254,10 @@ function MaterialIdSearchField({
           >
             <span className="truncate text-left">
               {selectedMaterial
-                ? `${selectedMaterial.name}`
+                ? (selectedMaterial.name ?? '—')
                 : value
                   ? `Missing material (${value})`
-                  : 'Select material...'}
+                  : 'None selected'}
             </span>
             <ChevronsUpDown className="ml-2 h-3 w-3 shrink-0 opacity-50" />
           </Button>
@@ -1316,15 +1316,13 @@ function MaterialIdSearchField({
         </PopoverContent>
       </Popover>
 
-      {selectedMaterial ? (
-        <div className="text-[10px] text-slate-500 flex items-center gap-2">
-          <span>ID: {selectedMaterial.id}</span>
-          <span>UOM: {selectedMaterial.unitOfMeasure || '—'}</span>
-          {!selectedMaterial.isActive ? (
-            <span className="text-amber-300">Inactive material</span>
-          ) : null}
-        </div>
-      ) : null}
+      <div className="text-[10px] text-slate-500 flex items-center gap-2">
+        <span>ID: {selectedMaterial?.id ?? '—'}</span>
+        <span>UOM: {selectedMaterial?.unitOfMeasure ?? '—'}</span>
+        {selectedMaterial && !selectedMaterial.isActive ? (
+          <span className="text-amber-300">Inactive material</span>
+        ) : null}
+      </div>
 
       {isMissingMaterial ? (
         <div className="text-[10px] text-amber-300 flex items-center gap-1">

@@ -24,6 +24,7 @@ export interface PBV2ProductBuilderLayoutProps {
   onSelectOption: (optionId: string | null) => void;
   onAddGroup: () => void;
   onDeleteGroup: (groupId: string) => void;
+  onReorderGroup: (fromIndex: number, toIndex: number) => void;
   onAddOption: (groupId: string) => void;
   onDeleteOption: (groupId: string, optionId: string) => void;
   onUpdateGroup: (groupId: string, updates: any) => void;
@@ -69,6 +70,7 @@ export function PBV2ProductBuilderLayout({
   onSelectOption,
   onAddGroup,
   onDeleteGroup,
+  onReorderGroup,
   onAddOption,
   onDeleteOption,
   onUpdateGroup,
@@ -106,51 +108,55 @@ export function PBV2ProductBuilderLayout({
           onSelectGroup={onSelectGroup}
           onAddGroup={onAddGroup}
           onDeleteGroup={onDeleteGroup}
+          onReorderGroup={onReorderGroup}
         />
       </div>
 
       {/* Middle Editor: Flex grow with min-w-0 for proper overflow, single unified scroll */}
       <div className="flex-1 min-w-0 overflow-y-auto bg-[#1e293b]">
-        <div className="p-4">
-            {/* Selected group editor */}
-            {selectedGroup && (
-              <PBV2EditorErrorBoundary
-                key={`${selectedGroupId ?? ''}_${selectedOptionId ?? ''}`}
-                onReset={() => { onSelectGroup(editorModel.groups[0]?.id ?? ''); onSelectOption(null); }}
-              >
-                <OptionEditor
-                  selectedGroup={selectedGroup}
-                  options={editorModel.options}
-                  selectedOptionId={selectedOptionId}
-                  onSelectOption={onSelectOption}
-                  onAddOption={onAddOption}
-                  onDeleteOption={onDeleteOption}
-                  onUpdateGroup={onUpdateGroup}
-                  treeJson={treeJson}
-                  onUpdateOption={onUpdateOption}
-                  onAddChoice={onAddChoice}
-                  onUpdateChoice={onUpdateChoice}
-                  onDeleteChoice={onDeleteChoice}
-                  onReorderChoice={onReorderChoice}
-                  onUpdateNodePricing={onUpdateNodePricing}
-                  onAddPricingRule={onAddPricingRule}
-                  onDeletePricingRule={onDeletePricingRule}
-                />
-                <OptionRulesPricingMatrixEditor
-                  treeJson={treeJson}
-                  onUpdateRules={onUpdateOptionRules}
-                  onUpdatePricingMatrix={onUpdatePricingMatrix}
-                />
-              </PBV2EditorErrorBoundary>
-            )}
-            {!selectedGroup && (
-              <div className="flex items-center justify-center h-full text-slate-400">
-                <div className="text-center">
-                  <Settings className="h-12 w-12 mx-auto mb-3 text-slate-600" />
-                  <p className="text-sm">Select an option group to begin editing</p>
-                </div>
+        <div className="p-4 space-y-4">
+          {/* Selected group editor */}
+          {selectedGroup ? (
+            <PBV2EditorErrorBoundary
+              key={`${selectedGroupId ?? ''}_${selectedOptionId ?? ''}`}
+              onReset={() => { onSelectGroup(editorModel.groups[0]?.id ?? ''); onSelectOption(null); }}
+            >
+              <OptionEditor
+                selectedGroup={selectedGroup}
+                options={editorModel.options}
+                selectedOptionId={selectedOptionId}
+                onSelectOption={onSelectOption}
+                onAddOption={onAddOption}
+                onDeleteOption={onDeleteOption}
+                onUpdateGroup={onUpdateGroup}
+                treeJson={treeJson}
+                onUpdateOption={onUpdateOption}
+                onAddChoice={onAddChoice}
+                onUpdateChoice={onUpdateChoice}
+                onDeleteChoice={onDeleteChoice}
+                onReorderChoice={onReorderChoice}
+                onUpdateNodePricing={onUpdateNodePricing}
+                onAddPricingRule={onAddPricingRule}
+                onDeletePricingRule={onDeletePricingRule}
+              />
+            </PBV2EditorErrorBoundary>
+          ) : (
+            <div className="flex items-center justify-center py-10 text-slate-400">
+              <div className="text-center">
+                <Settings className="h-12 w-12 mx-auto mb-3 text-slate-600" />
+                <p className="text-sm">Select an option group to edit choices, or manage option rules below.</p>
               </div>
-            )}
+            </div>
+          )}
+
+          {/* Option Rules and Pricing Matrix — product-level, always visible */}
+          <PBV2EditorErrorBoundary>
+            <OptionRulesPricingMatrixEditor
+              treeJson={treeJson}
+              onUpdateRules={onUpdateOptionRules}
+              onUpdatePricingMatrix={onUpdatePricingMatrix}
+            />
+          </PBV2EditorErrorBoundary>
         </div>
       </div>
     </div>
