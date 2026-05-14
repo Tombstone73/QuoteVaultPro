@@ -57,6 +57,17 @@ export const PBV2_PRICING_MATRIX_PROTECTED_VARIABLES = new Set([
   "trim_allowance_y",
 ]);
 
+export function isProductOptionPricingMatrixCurrencyVariable(variableKey: string): boolean {
+  const key = variableKey.trim().toLowerCase();
+  return (
+    key === "base_price" ||
+    key.endsWith("_price") ||
+    key.endsWith("_fee") ||
+    key.endsWith("_cost") ||
+    key.endsWith("_modifier")
+  );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -76,6 +87,18 @@ function getRowMatch(row: ProductOptionPricingMatrixRow): Record<string, unknown
 
 function getRowVariables(row: ProductOptionPricingMatrixRow): Record<string, unknown> {
   return row.variables ?? row.values ?? {};
+}
+
+function resolveMatrixVariableValue(key: string, rawValue: unknown): number {
+  const value = Number(rawValue);
+  if (
+    isProductOptionPricingMatrixCurrencyVariable(key) &&
+    Number.isInteger(value) &&
+    Math.abs(value) >= 100
+  ) {
+    return value / 100;
+  }
+  return value;
 }
 
 export function extractProductOptionPricingMatrix(tree: unknown): ProductOptionPricingMatrix | null {
@@ -163,7 +186,7 @@ export function resolveProductOptionPricingMatrix(input: {
       continue;
     }
 
-    const value = Number(rawValue);
+    const value = resolveMatrixVariableValue(key, rawValue);
     if (!Number.isFinite(value)) {
       errors.push({
         code: "PBV2_PRICING_MATRIX_INVALID_VARIABLE",

@@ -3,6 +3,29 @@ import { validateTreeForPublish } from "../../validator/validatePublish";
 import { DEFAULT_VALIDATE_OPTS } from "../../validator/types";
 
 describe("pbv2/validator/validatePublish", () => {
+  const makeMaterialOverrideTree = (choicePatch: Record<string, unknown> = {}) => ({
+    status: "DRAFT",
+    rootNodeIds: ["material"],
+    nodes: [
+      {
+        id: "material",
+        type: "INPUT",
+        status: "ENABLED",
+        key: "material",
+        input: { selectionKey: "material", valueType: "TEXT" },
+        choices: [
+          {
+            value: "acm",
+            label: "ACM",
+            inventoryConsumption: [{ materialId: "mat_a", quantityBasis: "fixed", fixedQty: 1 }],
+            ...choicePatch,
+          },
+        ],
+      },
+    ],
+    edges: [],
+  });
+
   test("Missing roots => ERROR", () => {
     const tree = {
       status: "DRAFT",
@@ -131,6 +154,33 @@ describe("pbv2/validator/validatePublish", () => {
 
     const result = validateTreeForPublish(tree as any, { ...DEFAULT_VALIDATE_OPTS, ambiguousEdgesStrict: false });
     expect(result.warnings.some((f) => f.code === "PBV2_W_EDGE_AMBIGUOUS_MATCH")).toBe(true);
+  });
+
+  test.each([
+    ["undefined", {}],
+    ["null", { materialOverride: null }],
+    ["empty object", { materialOverride: {} }],
+    ["empty materialId", { materialOverride: { materialId: "" } }],
+  ])("empty material override state does not trigger conflict validation: %s", (_label, choicePatch) => {
+    const result = validateTreeForPublish(makeMaterialOverrideTree(choicePatch) as any, DEFAULT_VALIDATE_OPTS);
+
+    expect(result.errors.some((f) => f.code === "PBV2_E_CHOICE_OVERRIDE_INVALID")).toBe(false);
+    expect(result.errors.some((f) => f.code === "PBV2_E_CHOICE_MATERIAL_OVERRIDE_CONFLICT")).toBe(false);
+  });
+
+  test("explicit conflicting material override still triggers conflict validation", () => {
+    const result = validateTreeForPublish(
+      makeMaterialOverrideTree({ materialOverride: { materialId: "mat_b" } }) as any,
+      DEFAULT_VALIDATE_OPTS
+    );
+
+    expect(result.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "PBV2_E_CHOICE_MATERIAL_OVERRIDE_CONFLICT",
+        }),
+      ])
+    );
   });
 
   test("Ambiguous edges => ERROR when ambiguousEdgesStrict=true", () => {

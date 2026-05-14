@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { centsToCurrencyInput, currencyInputToCents } from '@/lib/pbv2/currency';
 
 interface BasePricingEditorProps {
   pricingV2: {
@@ -35,18 +36,6 @@ interface BasePricingEditorProps {
   onDeleteTier: (kind: 'qty' | 'sqft', index: number) => void;
 }
 
-function centsTodollars(cents: number | undefined): string {
-  if (cents === undefined || cents === null) return '';
-  return (cents / 100).toFixed(2);
-}
-
-function dollarsToCents(dollars: string): number | undefined {
-  if (!dollars || dollars.trim() === '') return undefined;
-  const parsed = parseFloat(dollars);
-  if (isNaN(parsed)) return undefined;
-  return Math.round(parsed * 100);
-}
-
 export function BasePricingEditor({
   pricingV2,
   onUpdateBase,
@@ -64,22 +53,22 @@ export function BasePricingEditor({
   const [activeTab, setActiveTab] = React.useState<'qty' | 'sqft'>('qty');
 
   // Local state for input values
-  const [basePerSqft, setBasePerSqft] = React.useState(centsTodollars(base.perSqftCents));
-  const [basePerPiece, setBasePerPiece] = React.useState(centsToWire(base.perPieceCents));
-  const [baseMinCharge, setBaseMinCharge] = React.useState(centsToWire(base.minimumChargeCents));
+  const [basePerSqft, setBasePerSqft] = React.useState(centsToCurrencyInput(base.perSqftCents));
+  const [basePerPiece, setBasePerPiece] = React.useState(centsToCurrencyInput(base.perPieceCents));
+  const [baseMinCharge, setBaseMinCharge] = React.useState(centsToCurrencyInput(base.minimumChargeCents));
 
   // Sync with props when pricingV2 changes
   React.useEffect(() => {
-    setBasePerSqft(centsToWire(base.perSqftCents));
-    setBasePerPiece(centsToWire(base.perPieceCents));
-    setBaseMinCharge(centsToWire(base.minimumChargeCents));
+    setBasePerSqft(centsToCurrencyInput(base.perSqftCents));
+    setBasePerPiece(centsToCurrencyInput(base.perPieceCents));
+    setBaseMinCharge(centsToCurrencyInput(base.minimumChargeCents));
   }, [base.perSqftCents, base.perPieceCents, base.minimumChargeCents]);
 
   const handleBaseBlur = () => {
     onUpdateBase({
-      perSqftCents: dollarsToCents(basePerSqft),
-      perPieceCents: dollarsToCents(basePerPiece),
-      minimumChargeCents: dollarsToCents(baseMinCharge),
+      perSqftCents: currencyInputToCents(basePerSqft),
+      perPieceCents: currencyInputToCents(basePerPiece),
+      minimumChargeCents: currencyInputToCents(baseMinCharge),
     });
   };
 
@@ -231,18 +220,18 @@ function TierRow({
   unitSystem: 'imperial' | 'metric';
 }) {
   const [minValue, setMinValue] = React.useState(kind === 'qty' ? String(tier.minQty || '') : String(tier.minSqft || ''));
-  const [perSqft, setPerSqft] = React.useState(centsToWire(tier.perSqftCents));
-  const [perPiece, setPerPiece] = React.useState(centsToWire(tier.perPieceCents));
-  const [minCharge, setMinCharge] = React.useState(centsToWire(tier.minimumChargeCents));
+  const [perSqft, setPerSqft] = React.useState(centsToCurrencyInput(tier.perSqftCents));
+  const [perPiece, setPerPiece] = React.useState(centsToCurrencyInput(tier.perPieceCents));
+  const [minCharge, setMinCharge] = React.useState(centsToCurrencyInput(tier.minimumChargeCents));
 
   const handleBlur = () => {
     const minNum = parseFloat(minValue);
     onUpdate({
       ...(kind === 'qty' ? { minQty: isNaN(minNum) ? 1 : Math.max(1, Math.round(minNum)) } : {}),
       ...(kind === 'sqft' ? { minSqft: isNaN(minNum) ? 0 : Math.max(0, minNum) } : {}),
-      perSqftCents: dollarsToCents(perSqft),
-      perPieceCents: dollarsToCents(perPiece),
-      minimumChargeCents: dollarsToCents(minCharge),
+      perSqftCents: currencyInputToCents(perSqft),
+      perPieceCents: currencyInputToCents(perPiece),
+      minimumChargeCents: currencyInputToCents(minCharge),
     });
   };
 
@@ -324,7 +313,3 @@ function TierRow({
   );
 }
 
-function centsToWire(cents: number | undefined): string {
-  if (cents === undefined || cents === null) return '';
-  return (cents / 100).toFixed(2);
-}

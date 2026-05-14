@@ -253,6 +253,9 @@ export function OrderLineItemDialog({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isPbv2 && pbv2Tree && !optionsV2Valid) {
+      return;
+    }
     setIsSaving(true);
 
     try {
@@ -389,6 +392,11 @@ export function OrderLineItemDialog({
     const quantityNum = parseInt(formData.quantity);
 
     if (isNaN(widthNum) || widthNum <= 0 || isNaN(heightNum) || heightNum <= 0 || isNaN(quantityNum) || quantityNum <= 0) {
+      setCalculatedPrice(null);
+      return;
+    }
+
+    if (isPbv2 && pbv2Tree && !optionsV2Valid) {
       setCalculatedPrice(null);
       return;
     }

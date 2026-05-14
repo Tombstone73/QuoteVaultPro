@@ -23,10 +23,10 @@ function makeAcmTree(pricingMatrix?: any) {
     pricingMatrix: pricingMatrix ?? {
       dimensions: ["thickness", "sides"],
       rows: [
-        { id: "3mm_single", when: { thickness: "3mm", sides: "single_sided" }, variables: { base_price: 5 } },
-        { id: "3mm_double", when: { thickness: "3mm", sides: "double_sided" }, variables: { base_price: 5.75 } },
-        { id: "6mm_single", when: { thickness: "6mm", sides: "single_sided" }, variables: { base_price: 7 } },
-        { id: "6mm_double", when: { thickness: "6mm", sides: "double_sided" }, variables: { base_price: 8.25 } },
+        { id: "3mm_single", when: { thickness: "3mm", sides: "choice_single" }, variables: { base_price: 500 } },
+        { id: "3mm_double", when: { thickness: "3mm", sides: "choice_double" }, variables: { base_price: 575 } },
+        { id: "6mm_single", when: { thickness: "6mm", sides: "choice_single" }, variables: { base_price: 700 } },
+        { id: "6mm_double", when: { thickness: "6mm", sides: "choice_double" }, variables: { base_price: 825 } },
       ],
     },
     nodes: {
@@ -46,8 +46,8 @@ function makeAcmTree(pricingMatrix?: any) {
         label: "Sides",
         input: { type: "select" as const, selectionKey: "sides" },
         choices: [
-          { value: "single_sided", label: "Single Sided" },
-          { value: "double_sided", label: "Double Sided" },
+          { value: "choice_single", label: "Single sided" },
+          { value: "choice_double", label: "Double sided" },
         ],
       },
     },
@@ -144,10 +144,10 @@ function expectOptionRuleError(fn: () => unknown): Pbv2OptionRuleValidationError
 
 describe("PricingService pricing matrix variable resolution", () => {
   test.each([
-    ["3mm", "single_sided", 30],
-    ["3mm", "double_sided", 34.5],
-    ["6mm", "single_sided", 42],
-    ["6mm", "double_sided", 49.5],
+    ["3mm", "choice_single", 30],
+    ["3mm", "choice_double", 34.5],
+    ["6mm", "choice_single", 42],
+    ["6mm", "choice_double", 49.5],
   ])("ACM %s + %s resolves base_price and evaluates formula", (thickness, sides, expectedTotal) => {
     const result = runPreview(makeAcmTree(), {
       thickness: { value: thickness },
@@ -162,7 +162,7 @@ describe("PricingService pricing matrix variable resolution", () => {
     const error = expectPricingMatrixError(() =>
       runPreview(makeAcmTree(), {
         thickness: { value: "10mm" },
-        sides: { value: "single_sided" },
+        sides: { value: "choice_single" },
       })
     );
 
@@ -220,6 +220,22 @@ describe("PricingService pricing matrix variable resolution", () => {
     );
 
     expect(result.totalPrice).toBeCloseTo(6, 2);
+  });
+
+  test("matrix matching uses stable choice values when labels change", () => {
+    const tree = makeAcmTree();
+    tree.nodes.sides.choices = [
+      { value: "choice_single", label: "Front only" },
+      { value: "choice_double", label: "Front and back" },
+    ];
+
+    const result = runPreview(tree, {
+      thickness: { value: "6mm" },
+      sides: { value: "choice_double" },
+    });
+
+    expect(result.totalPrice).toBeCloseTo(49.5, 2);
+    expect(result.debug?.variables.base_price).toBe(8.25);
   });
 
   test("protected dimensional built-ins cannot be shadowed by matrix variables", () => {
