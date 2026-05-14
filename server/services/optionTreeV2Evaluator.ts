@@ -243,6 +243,9 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
         case "addPerQty":
           nodeCost += ((impact.amountCents ?? 0) / 100) * quantity;
           break;
+        case "addPerSqft":
+          nodeCost += ((impact.amountCents ?? 0) / 100) * sqftPerItem * quantity;
+          break;
         default:
           // MVP: ignore unsupported impact modes.
           break;
@@ -397,6 +400,14 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
               const cents = Number(impact.amountCents ?? 0);
               if (Number.isFinite(cents)) {
                 nodeCost += (cents / 100) * quantity; // Convert to dollars for legacy flow
+              }
+              break;
+            }
+
+            case "addPerSqft": {
+              const cents = Number(impact.amountCents ?? 0);
+              if (Number.isFinite(cents)) {
+                nodeCost += (cents / 100) * sqftPerItem * quantity; // Convert to dollars for legacy flow
               }
               break;
             }

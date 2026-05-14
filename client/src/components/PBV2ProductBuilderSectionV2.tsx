@@ -20,6 +20,8 @@ import { buildSymbolTable } from "@shared/pbv2/symbolTable";
 import { pbv2ToPricingAddons, pbv2ToWeightTotal } from "@shared/pbv2/pricingAdapter";
 import type { Finding } from "@shared/pbv2/findings";
 import type { ValidationResult } from "@shared/pbv2/validator/types";
+import type { ProductOptionRule } from "@shared/productOptionRules";
+import type { ProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
 
 /**
  * Edit-time validation - checks structure without publish-only rules.
@@ -147,6 +149,7 @@ import {
   createAddGroupPatch,
   createUpdateGroupPatch,
   createDeleteGroupPatch,
+  createReorderGroupsPatch,
   createAddOptionPatch,
   createUpdateOptionPatch,
   createDeleteOptionPatch,
@@ -814,6 +817,13 @@ export default function PBV2ProductBuilderSectionV2({
     setDeleteGroupTarget(null);
   };
 
+  const handleReorderGroup = (fromIndex: number, toIndex: number) => {
+    if (!localTreeJson) return;
+    const { patch } = createReorderGroupsPatch(localTreeJson, fromIndex, toIndex);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    applyTreeUpdate(updatedTree, 'handleReorderGroup', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
+  };
+
   const handleAddOption = (groupId: string) => {
     if (!localTreeJson) return;
     const { patch, newOptionId } = createAddOptionPatch(localTreeJson, groupId);
@@ -958,6 +968,21 @@ export default function PBV2ProductBuilderSectionV2({
     if (updates.fulfillment !== undefined) tree.fulfillment = updates.fulfillment;
     if (updates.basePrice !== undefined) tree.basePrice = updates.basePrice;
     applyTreeUpdate(tree, 'handleUpdateProduct', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
+  };
+
+  const handleUpdateOptionRules = (rules: ProductOptionRule[]) => {
+    if (!localTreeJson) return;
+    const tree = JSON.parse(JSON.stringify(localTreeJson));
+    tree.rules = rules;
+    delete tree.optionRules;
+    applyTreeUpdate(tree, 'handleUpdateOptionRules', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
+  };
+
+  const handleUpdatePricingMatrix = (pricingMatrix: ProductOptionPricingMatrix) => {
+    if (!localTreeJson) return;
+    const tree = JSON.parse(JSON.stringify(localTreeJson));
+    tree.pricingMatrix = pricingMatrix;
+    applyTreeUpdate(tree, 'handleUpdatePricingMatrix', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
   };
 
   const handleSave = async () => {
@@ -1311,6 +1336,7 @@ export default function PBV2ProductBuilderSectionV2({
         onSelectOption={setSelectedOptionId}
         onAddGroup={handleAddGroup}
         onDeleteGroup={handleDeleteGroup}
+        onReorderGroup={handleReorderGroup}
         onAddOption={handleAddOption}
         onDeleteOption={handleDeleteOption}
         onUpdateGroup={handleUpdateGroup}
@@ -1327,6 +1353,8 @@ export default function PBV2ProductBuilderSectionV2({
         onAddPricingV2Tier={handleAddPricingV2Tier}
         onUpdatePricingV2Tier={handleUpdatePricingV2Tier}
         onDeletePricingV2Tier={handleDeletePricingV2Tier}
+        onUpdateOptionRules={handleUpdateOptionRules}
+        onUpdatePricingMatrix={handleUpdatePricingMatrix}
         onUpdateProduct={handleUpdateProduct}
         onSave={handleSave}
         onPublish={handlePublish}
