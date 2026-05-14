@@ -750,6 +750,33 @@ export function createDeleteGroupPatch(treeJson: unknown, groupId: string): { pa
 }
 
 /**
+ * Create patch to reorder option groups.
+ * Moves the group at fromIndex to toIndex within the group sublist.
+ * Non-group nodes are preserved in their original relative order.
+ * Group IDs, choice IDs, rule references, and matrix dimensions are unchanged.
+ */
+export function createReorderGroupsPatch(treeJson: unknown, fromIndex: number, toIndex: number): { patch: any } {
+  const { nodes, edges } = normalizeArrays(treeJson);
+
+  const groupNodes = nodes.filter(n => n.type?.toUpperCase() === 'GROUP');
+  const nonGroupNodes = nodes.filter(n => n.type?.toUpperCase() !== 'GROUP');
+
+  if (
+    fromIndex < 0 || fromIndex >= groupNodes.length ||
+    toIndex < 0 || toIndex >= groupNodes.length ||
+    fromIndex === toIndex
+  ) {
+    return { patch: { nodes, edges } };
+  }
+
+  const reordered = [...groupNodes];
+  const [moved] = reordered.splice(fromIndex, 1);
+  reordered.splice(toIndex, 0, moved);
+
+  return { patch: { nodes: [...reordered, ...nonGroupNodes], edges } };
+}
+
+/**
  * Create patch to update an option node
  */
 export function createUpdateOptionPatch(
@@ -919,8 +946,8 @@ export function createUpdateChoicePatch(
   const optionNode = nodes.find(n => n.id === optionId);
   const existingChoices = optionNode?.choices || [];
 
-  // DEV guard: log if node/choice not found
-  if (import.meta.env.DEV) {
+  // DEV guard: log if node/choice not found (compatible with Vite and Jest)
+  if (process.env.NODE_ENV === 'development') {
     if (!optionNode) {
       console.error('[createUpdateChoicePatch] Option node not found', { optionId, availableNodes: nodes.map(n => n.id) });
     } else {
