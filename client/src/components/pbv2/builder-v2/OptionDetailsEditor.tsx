@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command';
 import { cn } from '@/lib/utils';
+import { centsToCurrencyInput, centsToCurrencyLabel, currencyInputToCents } from '@/lib/pbv2/currency';
 import type { EditorOption } from '@/lib/pbv2/pbv2ViewModel';
 import { CreateMaterialDialog } from '@/features/materials/CreateMaterialDialog';
 import { useMaterial, useMaterialsSearch, type MaterialSearchItem } from '@/hooks/useMaterials';
@@ -65,7 +66,7 @@ function pricingOverrideAppliesToForUnit(unit: PricingOverrideUnit): 'base' | 'a
 function formatPricingOverrideAmount(mode: PricingOverrideMode, amount: number | undefined): string {
   if (typeof amount !== 'number' || !Number.isFinite(amount)) return '';
   if (mode === 'multiply_base_rate') return amount.toString();
-  return Math.round(amount).toString();
+  return centsToCurrencyInput(amount);
 }
 
 interface OptionDetailsEditorProps {
@@ -435,11 +436,13 @@ export function OptionDetailsEditor({
                                     </Label>
                                     <Input
                                       type="number"
-                                      step={choice.pricingOverride.mode === 'multiply_base_rate' ? '0.01' : '1'}
+                                      step={choice.pricingOverride.mode === 'multiply_base_rate' ? '0.01' : '0.01'}
                                       value={formatPricingOverrideAmount(choice.pricingOverride.mode, choice.pricingOverride.amount)}
                                       onChange={(e) => {
                                         const raw = e.target.value;
-                                        const parsed = raw === '' ? undefined : Number(raw);
+                                        const parsed = choice.pricingOverride.mode === 'multiply_base_rate'
+                                          ? (raw === '' ? undefined : Number(raw))
+                                          : currencyInputToCents(raw);
                                         onUpdateChoice(option.id, choice.value, {
                                           pricingOverride: {
                                             ...choice.pricingOverride,
@@ -447,13 +450,13 @@ export function OptionDetailsEditor({
                                           },
                                         });
                                       }}
-                                      placeholder={choice.pricingOverride.mode === 'multiply_base_rate' ? '1.00' : '0'}
+                                      placeholder={choice.pricingOverride.mode === 'multiply_base_rate' ? '1.00' : '0.00'}
                                       className="bg-[#0a0f1a] border-slate-700 text-slate-100 text-sm"
                                     />
                                     <div className="text-[11px] text-slate-500 mt-1">
                                       {choice.pricingOverride.mode === 'multiply_base_rate'
                                         ? 'Use 1.10 to increase the resolved base rate by 10%.'
-                                        : 'Enter cents for the resolved base rate input this choice controls.'}
+                                        : 'Enter dollars for the resolved base rate input this choice controls.'}
                                     </div>
                                   </div>
 
@@ -490,14 +493,14 @@ export function OptionDetailsEditor({
                             </div>
 
                             <div>
-                              <Label className="text-xs text-slate-400 mb-1 block">Variant Price Delta (cents)</Label>
+                              <Label className="text-xs text-slate-400 mb-1 block">Variant Price Delta</Label>
                               <Input
                                 type="number"
-                                value={choice.priceDeltaCents ?? ''}
+                                step="0.01"
+                                value={centsToCurrencyInput(choice.priceDeltaCents)}
                                 onChange={(e) => {
-                                  const value = e.target.value;
                                   onUpdateChoice(option.id, choice.value, {
-                                    priceDeltaCents: value === '' ? undefined : parseInt(value, 10) || 0
+                                    priceDeltaCents: currencyInputToCents(e.target.value)
                                   });
                                 }}
                                 onBlur={(e) => {
@@ -506,12 +509,12 @@ export function OptionDetailsEditor({
                                     onUpdateChoice(option.id, choice.value, { priceDeltaCents: undefined });
                                   }
                                 }}
-                                placeholder="0 (optional)"
+                                placeholder="0.00 (optional)"
                                 className="bg-[#0f172a] border-slate-600 text-slate-100 text-sm"
                               />
                               {choice.priceDeltaCents !== undefined && choice.priceDeltaCents !== null ? (
                                 <div className="text-xs text-slate-400 mt-1">
-                                  {choice.priceDeltaCents >= 0 ? '+' : ''}${((choice.priceDeltaCents || 0) / 100).toFixed(2)}
+                                  {centsToCurrencyLabel(choice.priceDeltaCents)}
                                 </div>
                               ) : (
                                 <div className="text-[11px] text-slate-500 mt-1">
@@ -604,7 +607,7 @@ export function OptionDetailsEditor({
                                                 <SelectValue />
                                               </SelectTrigger>
                                               <SelectContent>
-                                                <SelectItem value="addCents">Add Cents</SelectItem>
+                                                <SelectItem value="addCents">Add Amount</SelectItem>
                                                 <SelectItem value="addPercent">Add Percent</SelectItem>
                                                 <SelectItem value="addPerUnit">Per Unit</SelectItem>
                                               </SelectContent>
@@ -613,12 +616,13 @@ export function OptionDetailsEditor({
 
                                           {mode === 'addCents' && (
                                             <div>
-                                              <Label className="text-xs text-slate-500 mb-1 block">Cents (negative = discount)</Label>
+                                              <Label className="text-xs text-slate-500 mb-1 block">Amount (negative = discount)</Label>
                                               <Input
                                                 type="number"
-                                                value={cents}
+                                                step="0.01"
+                                                value={centsToCurrencyInput(cents)}
                                                 onChange={(e) => {
-                                                  const val = parseInt(e.target.value, 10) || 0;
+                                                  const val = currencyInputToCents(e.target.value) ?? 0;
                                                   const updated = [...(choice.pricingImpact || [])];
                                                   updated[impactIdx] = { ...updated[impactIdx], cents: val };
                                                   onUpdateChoice(option.id, choice.value, { pricingImpact: updated });
@@ -626,7 +630,7 @@ export function OptionDetailsEditor({
                                                 className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7"
                                               />
                                               <div className="text-xs text-slate-500 mt-0.5">
-                                                {cents >= 0 ? '+' : ''}${(cents / 100).toFixed(2)}
+                                                {centsToCurrencyLabel(cents)}
                                               </div>
                                             </div>
                                           )}
@@ -677,12 +681,13 @@ export function OptionDetailsEditor({
                                           {mode === 'addPerUnit' && (
                                             <>
                                               <div>
-                                                <Label className="text-xs text-slate-500 mb-1 block">Cents Per Unit</Label>
+                                                <Label className="text-xs text-slate-500 mb-1 block">Amount Per Unit</Label>
                                                 <Input
                                                   type="number"
-                                                  value={cents}
+                                                  step="0.01"
+                                                  value={centsToCurrencyInput(cents)}
                                                   onChange={(e) => {
-                                                    const val = parseInt(e.target.value, 10) || 0;
+                                                    const val = currencyInputToCents(e.target.value) ?? 0;
                                                     const updated = [...(choice.pricingImpact || [])];
                                                     updated[impactIdx] = { ...updated[impactIdx], centsPerUnit: val };
                                                     onUpdateChoice(option.id, choice.value, { pricingImpact: updated });
@@ -1031,16 +1036,17 @@ export function OptionDetailsEditor({
                       </div>
 
                       <div>
-                        <Label className="text-xs text-slate-400 mb-1 block">Amount (cents)</Label>
+                        <Label className="text-xs text-slate-400 mb-1 block">Amount</Label>
                         <Input
                           type="number"
-                          value={cents === 0 ? '' : cents}
+                          step="0.01"
+                          value={cents === 0 ? '' : centsToCurrencyInput(cents)}
                           onChange={(e) => {
                             const value = e.target.value;
                             if (value === '') return; // Don't update while empty
                             
                             const updatedRules = [...(nodeData.pricingImpact || [])];
-                            updatedRules[index] = { ...updatedRules[index], amountCents: parseInt(value, 10) || 0 };
+                            updatedRules[index] = { ...updatedRules[index], amountCents: currencyInputToCents(value) ?? 0 };
                             onUpdateNodePricing(
                               option.id,
                               updatedRules.map((r: any) => ({
@@ -1066,11 +1072,11 @@ export function OptionDetailsEditor({
                               );
                             }
                           }}
-                          placeholder="0"
+                          placeholder="0.00"
                           className="bg-[#0f172a] border-slate-600 text-slate-100 text-sm"
                         />
                         <div className="text-xs text-slate-400 mt-1">
-                          ${((cents || 0) / 100).toFixed(2)}
+                          {centsToCurrencyLabel(cents || 0)}
                         </div>
                       </div>
 
