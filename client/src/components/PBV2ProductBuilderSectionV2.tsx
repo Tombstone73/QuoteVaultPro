@@ -149,6 +149,7 @@ import {
   createAddGroupPatch,
   createUpdateGroupPatch,
   createDeleteGroupPatch,
+  createReorderGroupsPatch,
   createAddOptionPatch,
   createUpdateOptionPatch,
   createDeleteOptionPatch,
@@ -816,6 +817,13 @@ export default function PBV2ProductBuilderSectionV2({
     setDeleteGroupTarget(null);
   };
 
+  const handleReorderGroup = (fromIndex: number, toIndex: number) => {
+    if (!localTreeJson) return;
+    const { patch } = createReorderGroupsPatch(localTreeJson, fromIndex, toIndex);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    applyTreeUpdate(updatedTree, 'handleReorderGroup', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
+  };
+
   const handleAddOption = (groupId: string) => {
     if (!localTreeJson) return;
     const { patch, newOptionId } = createAddOptionPatch(localTreeJson, groupId);
@@ -1328,6 +1336,7 @@ export default function PBV2ProductBuilderSectionV2({
         onSelectOption={setSelectedOptionId}
         onAddGroup={handleAddGroup}
         onDeleteGroup={handleDeleteGroup}
+        onReorderGroup={handleReorderGroup}
         onAddOption={handleAddOption}
         onDeleteOption={handleDeleteOption}
         onUpdateGroup={handleUpdateGroup}
