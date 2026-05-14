@@ -373,6 +373,25 @@ export async function exchangeCodeForTokens(
     });
   }
 
+  // Always-on safe diagnostic log — never logs tokens or secrets.
+  {
+    const cfgUri = process.env.QUICKBOOKS_REDIRECT_URI || process.env.QB_REDIRECT_URI || '';
+    let cfgHost = '(not set)'; let cfgPath = '(not set)'; let cbHost = '(parse error)'; let hostMatch = false;
+    try { if (cfgUri) { const u = new URL(cfgUri); cfgHost = u.host; cfgPath = u.pathname; } } catch { cfgHost = '(parse error)'; }
+    try { const u = new URL(parseRedirectUrl); cbHost = u.host; hostMatch = cbHost === cfgHost; } catch {}
+    console.log('[QB OAuth] Token exchange starting', {
+      environment: process.env.QUICKBOOKS_ENVIRONMENT || process.env.QB_ENV || 'sandbox (default)',
+      hasClientId: !!(process.env.QUICKBOOKS_CLIENT_ID || process.env.QB_CLIENT_ID),
+      hasClientSecret: !!(process.env.QUICKBOOKS_CLIENT_SECRET || process.env.QB_CLIENT_SECRET),
+      configuredRedirectUriHost: cfgHost,
+      configuredRedirectUriPath: cfgPath,
+      constructedCallbackHost: cbHost,
+      redirectUriHostMatch: hostMatch,
+      organizationId: orgId,
+      realmIdPresent: !!realmId,
+    });
+  }
+
   if (qbLogsEnabled()) {
     console.log('[QB OAuth] Exchanging authorization code', {
       organizationId: orgId,
