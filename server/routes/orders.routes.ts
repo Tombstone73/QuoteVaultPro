@@ -4748,7 +4748,7 @@ export async function registerOrderRoutes(
                 quantity: Number(lineItemData.quantity),
                 widthIn: lineItemData.width ? Number(lineItemData.width) : undefined,
                 heightIn: lineItemData.height ? Number(lineItemData.height) : undefined,
-                pbv2ExplicitSelections: pbv2ExplicitSelections || {},
+                pbv2ExplicitSelections: pbv2ExplicitSelections || lineItemData.optionSelectionsJson?.selected || {},
                 pbv2TreeVersionIdOverride: undefined, // Always use active tree
             });
 
@@ -4934,7 +4934,7 @@ export async function registerOrderRoutes(
                     quantity: updateData.quantity !== undefined ? Number(updateData.quantity) : oldLineItem.quantity,
                     widthIn: updateData.width !== undefined ? Number(updateData.width) : (oldLineItem.width ? Number(oldLineItem.width) : undefined),
                     heightIn: updateData.height !== undefined ? Number(updateData.height) : (oldLineItem.height ? Number(oldLineItem.height) : undefined),
-                    pbv2ExplicitSelections: pbv2ExplicitSelections || (oldLineItem as any).optionSelectionsJson?.selected || {},
+                    pbv2ExplicitSelections: pbv2ExplicitSelections || updateData.optionSelectionsJson?.selected || (oldLineItem as any).optionSelectionsJson?.selected || {},
                     pbv2TreeVersionIdOverride: undefined, // Always reprice with active tree
                 });
 

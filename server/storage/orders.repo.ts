@@ -1134,6 +1134,10 @@ export class OrdersRepository {
                     requiresPrepress: requiresPrepressSafe,
                     specsJson: (li as any).specsJson || null,
                     selectedOptions: selectedOptionsSafe,
+                    optionSelectionsJson: (li as any).optionSelectionsJson ?? null,
+                    pbv2TreeVersionId: (li as any).pbv2TreeVersionId ?? null,
+                    pbv2SnapshotJson: (li as any).pbv2SnapshotJson ?? null,
+                    pricedAt: (li as any).pricedAt ?? null,
                     nestingConfigSnapshot: (li as any).nestingConfigSnapshot || null,
                     sortOrder: (li as any).sortOrder ?? index, // Use provided sortOrder or default to index
                     // Tax fields
