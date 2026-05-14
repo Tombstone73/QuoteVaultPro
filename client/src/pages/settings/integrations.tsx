@@ -34,6 +34,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { format } from "date-fns";
 
 type QBConnectionStatus = {
@@ -46,6 +54,23 @@ type QBConnectionStatus = {
   connectedAt?: string;
   expiresAt?: string;
   message?: string;
+};
+
+type QBCustomerPreviewRow = {
+  qbCustomerId: string;
+  qbDisplayName: string;
+  mappedCompanyName: string;
+  mappedContactFirstName: string | null;
+  mappedContactLastName: string | null;
+  email: string | null;
+  phone: string | null;
+  willCreateCompany: boolean;
+  willUpdateCompany: boolean;
+  willCreateContact: boolean;
+  contactNeedsReview: boolean;
+  suspiciousFields: string[];
+  matchedExistingCustomerId: string | null;
+  matchedExistingContactId: string | null;
 };
 
 type QBSyncQueueEnvelope = {
@@ -174,6 +199,11 @@ export default function SettingsIntegrations() {
   const [isImportingInvoices, setIsImportingInvoices] = useState(false);
   const [showReferenceDiagnostics, setShowReferenceDiagnostics] = useState(false);
   const [expandedDebugIds, setExpandedDebugIds] = useState<Set<string>>(new Set());
+
+  // QB customer preview state
+  const [customerPreview, setCustomerPreview] = useState<QBCustomerPreviewRow[] | null>(null);
+  const [isLoadingCustomerPreview, setIsLoadingCustomerPreview] = useState(false);
+  const [showCustomerPreviewDialog, setShowCustomerPreviewDialog] = useState(false);
 
   const handleImportFile = async (file: File | null) => {
     if (!file) return;
@@ -433,6 +463,30 @@ export default function SettingsIntegrations() {
     } finally {
       setIsLoadingPreview(false);
     }
+  };
+
+  const handlePreviewCustomers = async () => {
+    setIsLoadingCustomerPreview(true);
+    setCustomerPreview(null);
+    try {
+      const response = await fetch('/api/integrations/quickbooks/import-preview/customers', { credentials: 'include' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data?.success === false) {
+        throw new Error(data?.error || 'Failed to fetch customer preview');
+      }
+      setCustomerPreview(data.data ?? []);
+      setShowCustomerPreviewDialog(true);
+    } catch (error: any) {
+      toast({ title: 'Preview failed', description: error.message, variant: 'destructive' });
+    } finally {
+      setIsLoadingCustomerPreview(false);
+    }
+  };
+
+  const handleConfirmCustomerSync = () => {
+    setShowCustomerPreviewDialog(false);
+    setCustomerPreview(null);
+    handleSync('pull', ['customers']);
   };
 
   const handleImportInvoices = async (mode: 'open_ar' | 'historical') => {
@@ -732,13 +786,15 @@ export default function SettingsIntegrations() {
                 )}
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {/* Pull Customers — enabled */}
+                  {/* Pull Customers — preview first, then confirm */}
                   <Button
-                    onClick={() => handleSync('pull', ['customers'])}
-                    disabled={syncMutation.isPending || isSyncing}
+                    onClick={handlePreviewCustomers}
+                    disabled={syncMutation.isPending || isSyncing || isLoadingCustomerPreview}
                     variant="outline"
                   >
-                    <Download className="w-4 h-4 mr-2" />
+                    {isLoadingCustomerPreview
+                      ? <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      : <Download className="w-4 h-4 mr-2" />}
                     Pull Customers
                   </Button>
 
@@ -1430,6 +1486,85 @@ export default function SettingsIntegrations() {
           </CardContent>
         </Card>
       )}
+
+      {/* QB Customer Import Preview Dialog */}
+      <Dialog open={showCustomerPreviewDialog} onOpenChange={setShowCustomerPreviewDialog}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>QuickBooks Customer Import Preview</DialogTitle>
+            <DialogDescription>
+              Review what will be imported before syncing. Contacts without a real person name
+              will not be created — only the company record will be saved.
+            </DialogDescription>
+          </DialogHeader>
+
+          {customerPreview && (() => {
+            const total         = customerPreview.length;
+            const willCreate    = customerPreview.filter(r => r.willCreateCompany).length;
+            const willUpdate    = customerPreview.filter(r => r.willUpdateCompany).length;
+            const withContact   = customerPreview.filter(r => r.willCreateContact).length;
+            const needsReview   = customerPreview.filter(r => r.contactNeedsReview).length;
+            const reviewRows    = customerPreview.filter(r => r.contactNeedsReview);
+            return (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+                  <div className="rounded border p-2 text-center">
+                    <div className="text-2xl font-bold">{total}</div>
+                    <div className="text-muted-foreground">Total</div>
+                  </div>
+                  <div className="rounded border p-2 text-center">
+                    <div className="text-2xl font-bold text-green-600">{willCreate}</div>
+                    <div className="text-muted-foreground">New companies</div>
+                  </div>
+                  <div className="rounded border p-2 text-center">
+                    <div className="text-2xl font-bold">{willUpdate}</div>
+                    <div className="text-muted-foreground">Updates</div>
+                  </div>
+                  <div className="rounded border p-2 text-center">
+                    <div className="text-2xl font-bold text-amber-600">{needsReview}</div>
+                    <div className="text-muted-foreground">No contact name</div>
+                  </div>
+                </div>
+
+                {needsReview > 0 && (
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium flex items-center gap-1 text-amber-700">
+                      <AlertCircle className="w-4 h-4" />
+                      {needsReview} record{needsReview !== 1 ? 's' : ''} will import company only (no contact created)
+                    </p>
+                    <div className="rounded border divide-y max-h-48 overflow-y-auto text-xs">
+                      {reviewRows.map(r => (
+                        <div key={r.qbCustomerId} className="px-3 py-2 flex justify-between gap-2">
+                          <span className="font-medium truncate">{r.mappedCompanyName}</span>
+                          <span className="text-muted-foreground shrink-0">
+                            {r.suspiciousFields.join(', ')}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <p className="text-xs text-muted-foreground">
+                  {withContact} contact{withContact !== 1 ? 's' : ''} will be created alongside their company.
+                  Records with no person name will import as company-only — you can add contacts manually afterward.
+                </p>
+              </div>
+            );
+          })()}
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setShowCustomerPreviewDialog(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleConfirmCustomerSync} disabled={syncMutation.isPending || isSyncing}>
+              {syncMutation.isPending || isSyncing
+                ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Syncing…</>
+                : <><Download className="w-4 h-4 mr-2" />Proceed with Import</>}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
