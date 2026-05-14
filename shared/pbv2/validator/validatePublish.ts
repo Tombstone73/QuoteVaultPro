@@ -3,6 +3,7 @@ import { typeCheckCondition, typeCheckExpression } from "../typeChecker";
 import { errorFinding, warningFinding, infoFinding, type Finding } from "../findings";
 import type { ConditionRule, ExpressionSpec } from "../expressionSpec";
 import { DEFAULT_VALIDATE_OPTS, type ProductOptionTreeV2Json, type ValidateOpts, type ValidationResult } from "./types";
+import { PBV2_PRICING_MATRIX_PROTECTED_VARIABLES } from "../../productOptionPricingMatrix";
 
 type PBV2Status = "ENABLED" | "DISABLED" | "DELETED";
 
@@ -31,6 +32,9 @@ type ChoicePricingOverrideUnit = "perSqft" | "perPiece" | "minimumCharge";
 type ChoicePricingOverrideAppliesTo = "base" | "area" | "quantity";
 type VisibilityRuleType = "equals" | "notEquals" | "in" | "truthy" | "and" | "or" | "not";
 
+const OPTION_RULE_OPERATORS = new Set(["equals", "not_equals", "in", "not_in", "exists", "not_exists"]);
+const OPTION_RULE_ACTIONS = new Set(["show", "hide", "disable", "enable", "require", "optional", "clear", "set_default"]);
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object") return null;
   return value as Record<string, unknown>;
@@ -38,6 +42,23 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function isEmptyOverrideValue(value: unknown): boolean {
+  return value === undefined || value === null || value === "";
+}
+
+function getExplicitMaterialOverride(value: unknown): Record<string, unknown> | null | "invalid" {
+  if (value === undefined || value === null) return null;
+
+  const override = asRecord(value);
+  if (!override) return "invalid";
+
+  const hasConfiguredValue = Object.values(override).some((entry) => !isEmptyOverrideValue(entry));
+  if (!hasConfiguredValue) return null;
+
+  if (!isNonEmptyString((override as any).materialId)) return "invalid";
+  return override;
 }
 
 function normalizeStatus(value: unknown): PBV2Status {
@@ -682,6 +703,594 @@ function toResult(findings: Finding[]): ValidationResult {
   return { ok: errors.length === 0, findings: sorted, errors, warnings, info };
 }
 
+function getRuleCollections(tree: Record<string, unknown>): Array<{ path: string; value: unknown }> {
+  const meta = asRecord((tree as any).meta);
+  return [
+    { path: "tree.rules", value: (tree as any).rules },
+    { path: "tree.optionRules", value: (tree as any).optionRules },
+    { path: "tree.meta.optionRules", value: meta ? (meta as any).optionRules : undefined },
+  ].filter((entry) => entry.value !== undefined);
+}
+
+function getPricingMatrixCandidates(tree: Record<string, unknown>): Array<{ path: string; value: unknown }> {
+  const meta = asRecord((tree as any).meta);
+  return [
+    { path: "tree.pricingMatrix", value: (tree as any).pricingMatrix },
+    { path: "tree.meta.pricingMatrix", value: meta ? (meta as any).pricingMatrix : undefined },
+  ].filter((entry) => entry.value !== undefined);
+}
+
+function getInputOptionContext(nodes: NodeRec[]): {
+  knownSelectionKeys: Set<string>;
+  choiceValuesBySelectionKey: Record<string, Set<string>>;
+  booleanSelectionKeys: Set<string>;
+} {
+  const knownSelectionKeys = new Set<string>();
+  const choiceValuesBySelectionKey: Record<string, Set<string>> = {};
+  const booleanSelectionKeys = new Set<string>();
+
+  for (const node of nodes) {
+    if (node.status === "DELETED" || node.type !== "INPUT" || !node.selectionKey) continue;
+    knownSelectionKeys.add(node.selectionKey);
+
+    const input = asRecord((node.raw as any).input) ?? asRecord((node.raw as any).data);
+    const typeRaw = String((input as any)?.type ?? (input as any)?.valueType ?? "").toLowerCase();
+    if (typeRaw === "boolean" || typeRaw === "bool") booleanSelectionKeys.add(node.selectionKey);
+
+    const choices = (node.raw as any).choices;
+    if (!Array.isArray(choices)) continue;
+    const values = new Set<string>();
+    for (const choiceRaw of choices) {
+      const choice = asRecord(choiceRaw);
+      if (!choice || !Object.prototype.hasOwnProperty.call(choice, "value")) continue;
+      values.add(stableStringify((choice as any).value));
+    }
+    if (values.size > 0) choiceValuesBySelectionKey[node.selectionKey] = values;
+  }
+
+  return { knownSelectionKeys, choiceValuesBySelectionKey, booleanSelectionKeys };
+}
+
+function optionValueIsKnown(
+  optionGroup: string,
+  value: unknown,
+  context: ReturnType<typeof getInputOptionContext>
+): boolean {
+  const choices = context.choiceValuesBySelectionKey[optionGroup];
+  if (choices && choices.size > 0) return choices.has(stableStringify(value));
+  if (context.booleanSelectionKeys.has(optionGroup)) return typeof value === "boolean";
+  return true;
+}
+
+function validateRuleConditionValue(
+  condition: Record<string, unknown>,
+  path: string,
+  findings: Finding[],
+  ruleId: string,
+  context: ReturnType<typeof getInputOptionContext>
+): void {
+  const optionGroup = isNonEmptyString((condition as any).optionGroup) ? String((condition as any).optionGroup) : "";
+  const operator = typeof (condition as any).operator === "string" ? String((condition as any).operator) : "";
+  if (!optionGroup || !OPTION_RULE_OPERATORS.has(operator)) return;
+
+  if (operator === "exists" || operator === "not_exists") return;
+
+  if (!Object.prototype.hasOwnProperty.call(condition, "value")) {
+    findings.push(
+      errorFinding({
+        code: "PBV2_E_OPTION_RULE_CONDITION_INVALID",
+        message: `Rule '${ruleId}' condition using '${operator}' requires a value`,
+        path: `${path}.value`,
+        entityId: ruleId,
+      })
+    );
+    return;
+  }
+
+  const rawValue = (condition as any).value;
+  const values = operator === "in" || operator === "not_in" ? rawValue : [rawValue];
+  if ((operator === "in" || operator === "not_in") && (!Array.isArray(rawValue) || rawValue.length === 0)) {
+    findings.push(
+      errorFinding({
+        code: "PBV2_E_OPTION_RULE_CONDITION_INVALID",
+        message: `Rule '${ruleId}' condition '${operator}' requires a non-empty value array`,
+        path: `${path}.value`,
+        entityId: ruleId,
+      })
+    );
+    return;
+  }
+
+  for (const value of values as unknown[]) {
+    if (!optionValueIsKnown(optionGroup, value, context)) {
+      findings.push(
+        errorFinding({
+          code: "PBV2_E_OPTION_RULE_VALUE_UNKNOWN",
+          message: `Rule '${ruleId}' references value '${String(value)}' that is not valid for option group '${optionGroup}'`,
+          path: `${path}.value`,
+          entityId: ruleId,
+          context: { optionGroup, value },
+        })
+      );
+    }
+  }
+}
+
+function validateRuleActions(
+  actionsRaw: unknown,
+  path: string,
+  findings: Finding[],
+  ruleId: string,
+  context: ReturnType<typeof getInputOptionContext>
+): void {
+  if (!Array.isArray(actionsRaw)) {
+    findings.push(
+      errorFinding({
+        code: "PBV2_E_OPTION_RULE_INVALID_STRUCTURE",
+        message: `Rule '${ruleId}' ${path.endsWith(".then") ? "then" : "else"} actions must be an array`,
+        path,
+        entityId: ruleId,
+      })
+    );
+    return;
+  }
+
+  const actionsByTarget = new Map<string, Set<string>>();
+  actionsRaw.forEach((actionRaw, index) => {
+    const action = asRecord(actionRaw);
+    const actionPath = `${path}[${index}]`;
+    if (!action) {
+      findings.push(
+        errorFinding({
+          code: "PBV2_E_OPTION_RULE_INVALID_STRUCTURE",
+          message: `Rule '${ruleId}' action must be an object`,
+          path: actionPath,
+          entityId: ruleId,
+        })
+      );
+      return;
+    }
+
+    const actionType = typeof (action as any).action === "string" ? String((action as any).action) : "";
+    if (!OPTION_RULE_ACTIONS.has(actionType)) {
+      findings.push(
+        errorFinding({
+          code: "PBV2_E_OPTION_RULE_ACTION_INVALID",
+          message: `Rule '${ruleId}' action must be one of: ${Array.from(OPTION_RULE_ACTIONS).join(", ")}`,
+          path: `${actionPath}.action`,
+          entityId: ruleId,
+          context: { action: actionType },
+        })
+      );
+    }
+
+    const target = isNonEmptyString((action as any).targetOptionGroup) ? String((action as any).targetOptionGroup) : "";
+    if (!target) {
+      findings.push(
+        errorFinding({
+          code: "PBV2_E_OPTION_RULE_TARGET_UNKNOWN",
+          message: `Rule '${ruleId}' action requires targetOptionGroup`,
+          path: `${actionPath}.targetOptionGroup`,
+          entityId: ruleId,
+        })
+      );
+      return;
+    }
+
+    if (!context.knownSelectionKeys.has(target)) {
+      findings.push(
+        errorFinding({
+          code: "PBV2_E_OPTION_RULE_TARGET_UNKNOWN",
+          message: `Rule '${ruleId}' targets unknown option group '${target}'`,
+          path: `${actionPath}.targetOptionGroup`,
+          entityId: ruleId,
+          context: { targetOptionGroup: target },
+        })
+      );
+    }
+
+    if (actionType === "set_default") {
+      if (!Object.prototype.hasOwnProperty.call(action, "value")) {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_OPTION_RULE_DEFAULT_INVALID",
+            message: `Rule '${ruleId}' set_default action requires a value`,
+            path: `${actionPath}.value`,
+            entityId: ruleId,
+          })
+        );
+      } else if (target && !optionValueIsKnown(target, (action as any).value, context)) {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_OPTION_RULE_DEFAULT_INVALID",
+            message: `Rule '${ruleId}' set_default value '${String((action as any).value)}' is not valid for '${target}'`,
+            path: `${actionPath}.value`,
+            entityId: ruleId,
+            context: { targetOptionGroup: target, value: (action as any).value },
+          })
+        );
+      }
+    }
+
+    if (!target || !OPTION_RULE_ACTIONS.has(actionType)) return;
+    const targetActions = actionsByTarget.get(target) ?? new Set<string>();
+    targetActions.add(actionType);
+    actionsByTarget.set(target, targetActions);
+  });
+
+  for (const [target, actions] of Array.from(actionsByTarget.entries())) {
+    if (actions.has("show") && actions.has("hide")) {
+      findings.push(
+        errorFinding({
+          code: "PBV2_E_OPTION_RULE_ACTION_CONFLICT",
+          message: `Rule '${ruleId}' both shows and hides '${target}' in the same action branch`,
+          path,
+          entityId: ruleId,
+          context: { targetOptionGroup: target, actions: ["show", "hide"] },
+        })
+      );
+    }
+    if (actions.has("enable") && actions.has("disable")) {
+      findings.push(
+        errorFinding({
+          code: "PBV2_E_OPTION_RULE_ACTION_CONFLICT",
+          message: `Rule '${ruleId}' both enables and disables '${target}' in the same action branch`,
+          path,
+          entityId: ruleId,
+          context: { targetOptionGroup: target, actions: ["enable", "disable"] },
+        })
+      );
+    }
+  }
+}
+
+function validateProductOptionRules(
+  tree: Record<string, unknown>,
+  findings: Finding[],
+  context: ReturnType<typeof getInputOptionContext>
+): void {
+  for (const collection of getRuleCollections(tree)) {
+    if (!Array.isArray(collection.value)) {
+      findings.push(
+        errorFinding({
+          code: "PBV2_E_OPTION_RULE_INVALID_STRUCTURE",
+          message: "Option rules must be an array",
+          path: collection.path,
+        })
+      );
+      continue;
+    }
+
+    collection.value.forEach((ruleRaw, ruleIndex) => {
+      const rule = asRecord(ruleRaw);
+      const rulePath = `${collection.path}[${ruleIndex}]`;
+      const ruleId = rule && isNonEmptyString((rule as any).id) ? String((rule as any).id) : `rule_${ruleIndex + 1}`;
+
+      if (!rule) {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_OPTION_RULE_INVALID_STRUCTURE",
+            message: "Option rule must be an object",
+            path: rulePath,
+            entityId: ruleId,
+          })
+        );
+        return;
+      }
+
+      if (!isNonEmptyString((rule as any).id)) {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_OPTION_RULE_INVALID_STRUCTURE",
+            message: "Option rule id is required",
+            path: `${rulePath}.id`,
+            entityId: ruleId,
+          })
+        );
+      }
+
+      if ((rule as any).enabled !== undefined && typeof (rule as any).enabled !== "boolean") {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_OPTION_RULE_INVALID_STRUCTURE",
+            message: `Rule '${ruleId}' enabled must be boolean when provided`,
+            path: `${rulePath}.enabled`,
+            entityId: ruleId,
+          })
+        );
+      }
+
+      const when = asRecord((rule as any).when);
+      if (!when) {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_OPTION_RULE_INVALID_STRUCTURE",
+            message: `Rule '${ruleId}' requires a when condition group`,
+            path: `${rulePath}.when`,
+            entityId: ruleId,
+          })
+        );
+      } else {
+        const hasAll = Object.prototype.hasOwnProperty.call(when, "all");
+        const hasAny = Object.prototype.hasOwnProperty.call(when, "any");
+        if (hasAll === hasAny) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_OPTION_RULE_CONDITION_GROUP_INVALID",
+              message: `Rule '${ruleId}' when must contain exactly one of all or any`,
+              path: `${rulePath}.when`,
+              entityId: ruleId,
+            })
+          );
+        }
+
+        const groupKey = hasAll ? "all" : "any";
+        const conditions = (when as any)[groupKey];
+        if (!Array.isArray(conditions) || conditions.length === 0) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_OPTION_RULE_CONDITION_GROUP_INVALID",
+              message: `Rule '${ruleId}' when.${groupKey} must be a non-empty array`,
+              path: `${rulePath}.when.${groupKey}`,
+              entityId: ruleId,
+            })
+          );
+        } else {
+          conditions.forEach((conditionRaw: unknown, conditionIndex: number) => {
+            const condition = asRecord(conditionRaw);
+            const conditionPath = `${rulePath}.when.${groupKey}[${conditionIndex}]`;
+            if (!condition) {
+              findings.push(
+                errorFinding({
+                  code: "PBV2_E_OPTION_RULE_CONDITION_INVALID",
+                  message: `Rule '${ruleId}' condition must be an object`,
+                  path: conditionPath,
+                  entityId: ruleId,
+                })
+              );
+              return;
+            }
+
+            const optionGroup = isNonEmptyString((condition as any).optionGroup) ? String((condition as any).optionGroup) : "";
+            if (!optionGroup || !context.knownSelectionKeys.has(optionGroup)) {
+              findings.push(
+                errorFinding({
+                  code: "PBV2_E_OPTION_RULE_OPTION_GROUP_UNKNOWN",
+                  message: `Rule '${ruleId}' references unknown option group '${optionGroup || "(missing)"}'`,
+                  path: `${conditionPath}.optionGroup`,
+                  entityId: ruleId,
+                  context: { optionGroup },
+                })
+              );
+            }
+
+            const operator = typeof (condition as any).operator === "string" ? String((condition as any).operator) : "";
+            if (!OPTION_RULE_OPERATORS.has(operator)) {
+              findings.push(
+                errorFinding({
+                  code: "PBV2_E_OPTION_RULE_OPERATOR_INVALID",
+                  message: `Rule '${ruleId}' operator must be one of: ${Array.from(OPTION_RULE_OPERATORS).join(", ")}`,
+                  path: `${conditionPath}.operator`,
+                  entityId: ruleId,
+                  context: { operator },
+                })
+              );
+            }
+
+            validateRuleConditionValue(condition, conditionPath, findings, ruleId, context);
+          });
+        }
+      }
+
+      validateRuleActions((rule as any).then, `${rulePath}.then`, findings, ruleId, context);
+      if ((rule as any).else !== undefined) {
+        validateRuleActions((rule as any).else, `${rulePath}.else`, findings, ruleId, context);
+      }
+    });
+  }
+}
+
+function getMatrixRowMatch(row: Record<string, unknown>): { key: "match" | "when" | "combination"; value: unknown } | null {
+  if (Object.prototype.hasOwnProperty.call(row, "match")) return { key: "match", value: (row as any).match };
+  if (Object.prototype.hasOwnProperty.call(row, "when")) return { key: "when", value: (row as any).when };
+  if (Object.prototype.hasOwnProperty.call(row, "combination")) return { key: "combination", value: (row as any).combination };
+  return null;
+}
+
+function getMatrixRowVariables(row: Record<string, unknown>): { key: "variables" | "values"; value: unknown } | null {
+  if (Object.prototype.hasOwnProperty.call(row, "variables")) return { key: "variables", value: (row as any).variables };
+  if (Object.prototype.hasOwnProperty.call(row, "values")) return { key: "values", value: (row as any).values };
+  return null;
+}
+
+function validatePricingMatrices(
+  tree: Record<string, unknown>,
+  findings: Finding[],
+  context: ReturnType<typeof getInputOptionContext>
+): void {
+  for (const candidate of getPricingMatrixCandidates(tree)) {
+    const matrix = asRecord(candidate.value);
+    if (!matrix || Array.isArray(candidate.value)) {
+      findings.push(
+        errorFinding({
+          code: "PBV2_E_PRICING_MATRIX_INVALID_STRUCTURE",
+          message: "Pricing matrix must be an object with dimensions and rows",
+          path: candidate.path,
+        })
+      );
+      continue;
+    }
+
+    const dimensionsRaw = (matrix as any).dimensions;
+    const rowsRaw = (matrix as any).rows;
+    const dimensions = Array.isArray(dimensionsRaw)
+      ? dimensionsRaw.filter(isNonEmptyString).map(String)
+      : [];
+    const dimensionSet = new Set(dimensions);
+
+    if (!Array.isArray(dimensionsRaw) || dimensions.length === 0 || dimensions.length !== dimensionsRaw.length) {
+      findings.push(
+        errorFinding({
+          code: "PBV2_E_PRICING_MATRIX_INVALID_STRUCTURE",
+          message: "Pricing matrix dimensions must be a non-empty array of option groups",
+          path: `${candidate.path}.dimensions`,
+        })
+      );
+    }
+
+    for (const dimension of dimensions) {
+      if (!context.knownSelectionKeys.has(dimension)) {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_PRICING_MATRIX_DIMENSION_UNKNOWN",
+            message: `Pricing matrix dimension '${dimension}' does not match a known option group`,
+            path: `${candidate.path}.dimensions`,
+            context: { dimension },
+          })
+        );
+      }
+    }
+
+    if (!Array.isArray(rowsRaw) || rowsRaw.length === 0) {
+      findings.push(
+        errorFinding({
+          code: "PBV2_E_PRICING_MATRIX_INVALID_STRUCTURE",
+          message: "Pricing matrix rows must be a non-empty array",
+          path: `${candidate.path}.rows`,
+        })
+      );
+      continue;
+    }
+
+    const seenCombinations = new Map<string, number>();
+    rowsRaw.forEach((rowRaw: unknown, rowIndex: number) => {
+      const row = asRecord(rowRaw);
+      const rowPath = `${candidate.path}.rows[${rowIndex}]`;
+      const rowLabel = row && isNonEmptyString((row as any).id) ? String((row as any).id) : `row ${rowIndex + 1}`;
+
+      if (!row) {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_PRICING_MATRIX_INVALID_STRUCTURE",
+            message: "Pricing matrix row must be an object",
+            path: rowPath,
+          })
+        );
+        return;
+      }
+
+      const matchEntry = getMatrixRowMatch(row);
+      const match = matchEntry ? asRecord(matchEntry.value) : null;
+      if (!match) {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_PRICING_MATRIX_ROW_MATCH_INVALID",
+            message: `Pricing matrix ${rowLabel} requires a match object`,
+            path: `${rowPath}.match`,
+            context: { rowId: (row as any).id ?? null },
+          })
+        );
+      } else {
+        for (const key of Object.keys(match)) {
+          if (!dimensionSet.has(key)) {
+            findings.push(
+              errorFinding({
+                code: "PBV2_E_PRICING_MATRIX_ROW_MATCH_INVALID",
+                message: `Pricing matrix ${rowLabel} has match key '${key}' that is not listed in dimensions`,
+                path: `${rowPath}.${matchEntry!.key}.${key}`,
+                context: { rowId: (row as any).id ?? null, dimension: key },
+              })
+            );
+          }
+        }
+
+        for (const dimension of dimensions) {
+          if (!Object.prototype.hasOwnProperty.call(match, dimension)) {
+            findings.push(
+              errorFinding({
+                code: "PBV2_E_PRICING_MATRIX_ROW_MISSING_DIMENSION",
+                message: `Pricing matrix ${rowLabel} is missing required dimension '${dimension}'`,
+                path: `${rowPath}.${matchEntry!.key}`,
+                context: { rowId: (row as any).id ?? null, dimension },
+              })
+            );
+            continue;
+          }
+
+          const value = (match as any)[dimension];
+          if (!optionValueIsKnown(dimension, value, context)) {
+            findings.push(
+              errorFinding({
+                code: "PBV2_E_PRICING_MATRIX_ROW_VALUE_INVALID",
+                message: `Pricing matrix ${rowLabel} uses invalid value '${String(value)}' for '${dimension}'`,
+                path: `${rowPath}.${matchEntry!.key}.${dimension}`,
+                context: { rowId: (row as any).id ?? null, dimension, value },
+              })
+            );
+          }
+        }
+
+        const comboKey = dimensions.map((dimension) => `${dimension}:${stableStringify((match as any)[dimension])}`).join("|");
+        if (dimensions.length > 0 && Array.from(dimensionSet).every((dimension) => Object.prototype.hasOwnProperty.call(match, dimension))) {
+          const existingIndex = seenCombinations.get(comboKey);
+          if (existingIndex !== undefined) {
+            findings.push(
+              errorFinding({
+                code: "PBV2_E_PRICING_MATRIX_ROW_DUPLICATE",
+                message: `Pricing matrix ${rowLabel} duplicates row ${existingIndex + 1} for the same option combination`,
+                path: rowPath,
+                context: { rowId: (row as any).id ?? null, duplicateOfRowIndex: existingIndex, combination: comboKey },
+              })
+            );
+          } else {
+            seenCombinations.set(comboKey, rowIndex);
+          }
+        }
+      }
+
+      const variablesEntry = getMatrixRowVariables(row);
+      const variables = variablesEntry ? asRecord(variablesEntry.value) : null;
+      if (!variables) {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_PRICING_MATRIX_VARIABLE_INVALID",
+            message: `Pricing matrix ${rowLabel} requires numeric variables`,
+            path: `${rowPath}.variables`,
+            context: { rowId: (row as any).id ?? null },
+          })
+        );
+        return;
+      }
+
+      for (const [variable, rawValue] of Object.entries(variables)) {
+        if (!isNonEmptyString(variable)) continue;
+        if (PBV2_PRICING_MATRIX_PROTECTED_VARIABLES.has(variable)) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_PRICING_MATRIX_VARIABLE_PROTECTED",
+              message: `Pricing matrix ${rowLabel} cannot override protected built-in '${variable}'`,
+              path: `${rowPath}.${variablesEntry!.key}.${variable}`,
+              context: { rowId: (row as any).id ?? null, variable },
+            })
+          );
+        }
+
+        const value = Number(rawValue);
+        if (!Number.isFinite(value)) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_PRICING_MATRIX_VARIABLE_INVALID",
+              message: `Pricing matrix ${rowLabel} variable '${variable}' must be a finite number`,
+              path: `${rowPath}.${variablesEntry!.key}.${variable}`,
+              context: { rowId: (row as any).id ?? null, variable },
+            })
+          );
+        }
+      }
+    });
+  }
+}
+
 export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: ValidateOpts): ValidationResult {
   const policy: ValidateOpts = { ...DEFAULT_VALIDATE_OPTS, ...(opts ?? ({} as any)) };
   const findings: Finding[] = [];
@@ -876,6 +1485,10 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
       })
     );
   }
+
+  const optionContext = getInputOptionContext(nodes);
+  validateProductOptionRules(t, findings, optionContext);
+  validatePricingMatrices(t, findings, optionContext);
 
   const visibilityDependencyEdges: Array<[string, string]> = [];
   const groupChildSelectionKeysByNodeId: Record<string, Set<string>> = {};
@@ -2382,18 +2995,16 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
         }
       }
 
-      const materialOverride = asRecord((choice as any).materialOverride);
-      if ((choice as any).materialOverride !== undefined) {
-        if (!materialOverride || !isNonEmptyString((materialOverride as any).materialId)) {
-          findings.push(
-            errorFinding({
-              code: "PBV2_E_CHOICE_OVERRIDE_INVALID",
-              message: "materialOverride.materialId must be a non-empty string",
-              path: `${cPath}.materialOverride.materialId`,
-              entityId: n.id,
-            })
-          );
-        }
+      const materialOverride = getExplicitMaterialOverride((choice as any).materialOverride);
+      if (materialOverride === "invalid") {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_CHOICE_OVERRIDE_INVALID",
+            message: "materialOverride.materialId must be a non-empty string",
+            path: `${cPath}.materialOverride.materialId`,
+            entityId: n.id,
+          })
+        );
       }
 
       const workflowTagsRaw = (choice as any).workflowTags;
@@ -2439,7 +3050,7 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
         }
       }
 
-      if (materialOverride && isNonEmptyString((materialOverride as any).materialId)) {
+      if (materialOverride && materialOverride !== "invalid" && isNonEmptyString((materialOverride as any).materialId)) {
         const inventoryEntries = Array.isArray((choice as any).inventoryConsumption) ? (choice as any).inventoryConsumption : [];
         const distinctInventoryMaterialIds = Array.from(
           new Set(

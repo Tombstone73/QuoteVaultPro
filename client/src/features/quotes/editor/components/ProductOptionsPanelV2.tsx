@@ -8,7 +8,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { LineItemOptionSelectionsV2, OptionNodeV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import { validateOptionTreeV2 } from "@shared/optionTreeV2";
-import { resolveVisibleNodes } from "@shared/optionTreeV2Runtime";
+import { normalizeSelectionMap, resolveRuntimeVisibility } from "@shared/optionTreeV2Runtime";
+import { evaluateProductOptionRules, type ProductOptionRule } from "@shared/productOptionRules";
 
 type ProductOptionsPanelV2Props = {
   tree: OptionTreeV2;
@@ -28,6 +29,38 @@ function isTreeV2Selections(input: any): input is LineItemOptionSelectionsV2 {
  */
 function getSelectionKey(node: OptionNodeV2): string {
   return (node.input as any)?.selectionKey || (node as any).key || node.id;
+}
+
+function getOptionRules(tree: OptionTreeV2): ProductOptionRule[] {
+  const rawTree = tree as any;
+  const rules = Array.isArray(rawTree?.rules)
+    ? rawTree.rules
+    : Array.isArray(rawTree?.optionRules)
+      ? rawTree.optionRules
+      : [];
+  return rules.filter((rule: any): rule is ProductOptionRule => {
+    return Boolean(rule && typeof rule === "object" && rule.when && Array.isArray(rule.then));
+  });
+}
+
+function toSelectionRecord(selected: Record<string, unknown>, prior: LineItemOptionSelectionsV2["selected"]): LineItemOptionSelectionsV2["selected"] {
+  const next: LineItemOptionSelectionsV2["selected"] = {};
+  for (const [selectionKey, value] of Object.entries(selected)) {
+    if (value === undefined) continue;
+    const priorEntry = prior?.[selectionKey];
+    next[selectionKey] = priorEntry?.note ? { value, note: priorEntry.note } : { value };
+  }
+  return next;
+}
+
+function stableSelectionJson(value: unknown): string {
+  if (!value || typeof value !== "object") return JSON.stringify(value);
+  const record = value as Record<string, unknown>;
+  return JSON.stringify(Object.keys(record).sort().map((key) => [key, record[key]]));
+}
+
+function sameStringArray(a: string[] | undefined, b: string[]): boolean {
+  return Array.isArray(a) && a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
 /**
@@ -94,11 +127,78 @@ export function ProductOptionsPanelV2({
   const visibleNodeIds = useMemo(() => {
     if (!graph.ok) return [];
     try {
-      return resolveVisibleNodes(tree, safeSelections);
+      return resolveRuntimeVisibility(tree, safeSelections).visibleNodeIds;
     } catch {
       return [];
     }
   }, [graph.ok, tree, safeSelections]);
+
+  const runtimeVisibility = useMemo(() => {
+    if (!graph.ok) return null;
+    try {
+      return resolveRuntimeVisibility(tree, safeSelections);
+    } catch {
+      return null;
+    }
+  }, [graph.ok, tree, safeSelections]);
+
+  const optionRules = useMemo(() => getOptionRules(tree), [tree]);
+
+  const ruleOptionGroups = useMemo(() => {
+    return Object.values(tree.nodes)
+      .filter((node) => node?.kind === "question" && node.input)
+      .map(getSelectionKey);
+  }, [tree.nodes]);
+
+  const visibleOptionGroups = useMemo(() => {
+    return visibleNodeIds
+      .map((nodeId) => tree.nodes[nodeId])
+      .filter((node): node is OptionNodeV2 => Boolean(node && node.kind === "question" && node.input))
+      .map(getSelectionKey);
+  }, [tree.nodes, visibleNodeIds]);
+
+  const initiallyRequiredOptionGroups = useMemo(() => {
+    return Object.values(tree.nodes)
+      .filter((node) => node?.kind === "question" && node.input?.required)
+      .map(getSelectionKey);
+  }, [tree.nodes]);
+
+  const ruleEvaluation = useMemo(() => {
+    const selectionsForRules = optionRules.length > 0 && runtimeVisibility
+      ? runtimeVisibility.effectiveSelections
+      : normalizeSelectionMap(safeSelections);
+
+    return evaluateProductOptionRules({
+      rules: optionRules,
+      selections: selectionsForRules,
+      optionGroups: ruleOptionGroups,
+      visibleOptionGroups,
+      requiredOptionGroups: initiallyRequiredOptionGroups,
+    });
+  }, [initiallyRequiredOptionGroups, optionRules, ruleOptionGroups, runtimeVisibility, safeSelections, visibleOptionGroups]);
+
+  const hiddenOptionGroupSet = useMemo(() => new Set(ruleEvaluation.hiddenOptionGroups), [ruleEvaluation.hiddenOptionGroups]);
+  const disabledOptionGroupSet = useMemo(() => new Set(ruleEvaluation.disabledOptionGroups), [ruleEvaluation.disabledOptionGroups]);
+  const requiredOptionGroupSet = useMemo(() => new Set(ruleEvaluation.requiredOptionGroups), [ruleEvaluation.requiredOptionGroups]);
+
+  const effectiveVisibleNodeIds = useMemo(() => {
+    return visibleNodeIds.filter((nodeId) => {
+      const node = tree.nodes[nodeId];
+      if (!node) return false;
+      if (hiddenOptionGroupSet.has(node.id) || hiddenOptionGroupSet.has((node as any).key)) return false;
+      if (node.kind === "question" && node.input) return !hiddenOptionGroupSet.has(getSelectionKey(node));
+      return true;
+    });
+  }, [hiddenOptionGroupSet, tree.nodes, visibleNodeIds]);
+
+  const displaySelections = useMemo<LineItemOptionSelectionsV2>(() => ({
+    schemaVersion: 2,
+    selected: toSelectionRecord(ruleEvaluation.effectiveSelections, safeSelections.selected ?? {}),
+    resolved: {
+      ...(safeSelections.resolved ?? {}),
+      visibleNodeIds: effectiveVisibleNodeIds,
+    },
+  }), [effectiveVisibleNodeIds, ruleEvaluation.effectiveSelections, safeSelections.resolved, safeSelections.selected]);
 
   // Prune selections for hidden/missing nodes and store resolved.visibleNodeIds canonically.
   useEffect(() => {
@@ -107,41 +207,41 @@ export function ProductOptionsPanelV2({
       return;
     }
 
-    const visibleSet = new Set(visibleNodeIds);
-    const nextSelected: LineItemOptionSelectionsV2["selected"] = { ...safeSelections.selected };
+    let nextSelected: LineItemOptionSelectionsV2["selected"] = { ...safeSelections.selected };
 
     let changed = false;
 
-    // Prune selections for hidden/missing nodes
-    // Support both selectionKey and legacy id-based keys
-    for (const key of Object.keys(nextSelected)) {
-      // Try to find node by this selection key
-      let nodeFound = false;
-      
-      for (const nodeId of visibleNodeIds) {
-        const node = tree.nodes[nodeId];
-        if (!node) continue;
-        
-        const selectionKey = getSelectionKey(node);
-        const nodeKey = (node as any).key;
-        
-        if (key === selectionKey || key === nodeKey || key === node.id) {
-          nodeFound = true;
-          break;
+    if (optionRules.length > 0) {
+      nextSelected = toSelectionRecord(ruleEvaluation.effectiveSelections, safeSelections.selected ?? {});
+      changed = stableSelectionJson(nextSelected) !== stableSelectionJson(safeSelections.selected ?? {});
+    } else {
+      // Prune selections for hidden/missing nodes.
+      // Support both selectionKey and legacy id-based keys.
+      for (const key of Object.keys(nextSelected)) {
+        let nodeFound = false;
+
+        for (const nodeId of effectiveVisibleNodeIds) {
+          const node = tree.nodes[nodeId];
+          if (!node) continue;
+
+          const selectionKey = getSelectionKey(node);
+          const nodeKey = (node as any).key;
+
+          if (key === selectionKey || key === nodeKey || key === node.id) {
+            nodeFound = true;
+            break;
+          }
         }
-      }
-      
-      if (!nodeFound) {
-        delete nextSelected[key];
-        changed = true;
+
+        if (!nodeFound) {
+          delete nextSelected[key];
+          changed = true;
+        }
       }
     }
 
     const prevResolved = safeSelections.resolved?.visibleNodeIds;
-    const sameResolved =
-      Array.isArray(prevResolved) &&
-      prevResolved.length === visibleNodeIds.length &&
-      prevResolved.every((v, i) => v === visibleNodeIds[i]);
+    const sameResolved = sameStringArray(prevResolved, effectiveVisibleNodeIds);
 
     const next: LineItemOptionSelectionsV2 = changed || !sameResolved
       ? {
@@ -149,7 +249,7 @@ export function ProductOptionsPanelV2({
           selected: nextSelected,
           resolved: {
             ...(safeSelections.resolved ?? {}),
-            visibleNodeIds,
+            visibleNodeIds: effectiveVisibleNodeIds,
           },
         }
       : safeSelections;
@@ -158,26 +258,40 @@ export function ProductOptionsPanelV2({
       onSelectionsChange(next);
     }
 
-    const missingRequired = visibleNodeIds.some((id) => {
+    const missingRequired = effectiveVisibleNodeIds.some((id) => {
       const node = tree.nodes[id];
       if (!node || node.kind !== "question" || !node.input) return false;
+      const selectionKey = getSelectionKey(node);
       const value = getNodeValue(next, node);
-      return requiredMissing(node, value);
+      return requiredMissing(node, value) || (requiredOptionGroupSet.has(selectionKey) && requiredMissing({ ...node, input: { ...node.input, required: true } }, value));
     });
 
-    onValidityChange?.(!missingRequired);
-  }, [graph.ok, onSelectionsChange, onValidityChange, safeSelections, tree.nodes, visibleNodeIds, tree]);
+    onValidityChange?.(!missingRequired && ruleEvaluation.errors.length === 0);
+  }, [
+    effectiveVisibleNodeIds,
+    graph.ok,
+    onSelectionsChange,
+    onValidityChange,
+    optionRules.length,
+    requiredOptionGroupSet,
+    ruleEvaluation.effectiveSelections,
+    ruleEvaluation.errors.length,
+    safeSelections,
+    tree.nodes,
+  ]);
 
   const nodeErrors = useMemo(() => {
     if (!graph.ok) return new Map<string, string>();
     const out = new Map<string, string>();
 
-    for (const nodeId of visibleNodeIds) {
+    for (const nodeId of effectiveVisibleNodeIds) {
       const node = tree.nodes[nodeId];
       if (!node || node.kind !== "question" || !node.input) continue;
-      const value = getNodeValue(safeSelections, node);
+      const selectionKey = getSelectionKey(node);
+      const value = getNodeValue(displaySelections, node);
+      const isRequired = requiredOptionGroupSet.has(selectionKey);
 
-      if (requiredMissing(node, value)) {
+      if (requiredMissing(node, value) || (isRequired && requiredMissing({ ...node, input: { ...node.input, required: true } }, value))) {
         out.set(nodeId, "Required");
         continue;
       }
@@ -201,8 +315,16 @@ export function ProductOptionsPanelV2({
       }
     }
 
+    for (const error of ruleEvaluation.errors) {
+      const nodeId = Object.keys(tree.nodes).find((id) => {
+        const node = tree.nodes[id];
+        return Boolean(node && node.kind === "question" && node.input && getSelectionKey(node) === error.optionGroup);
+      });
+      if (nodeId && !out.has(nodeId)) out.set(nodeId, error.message);
+    }
+
     return out;
-  }, [graph.ok, safeSelections, tree.nodes, visibleNodeIds, tree]);
+  }, [displaySelections, effectiveVisibleNodeIds, graph.ok, requiredOptionGroupSet, ruleEvaluation.errors, tree.nodes]);
 
   const isValid = graph.ok && nodeErrors.size === 0;
 
@@ -211,8 +333,9 @@ export function ProductOptionsPanelV2({
    * Also cleans up legacy keys (id/key) to prevent duplicates.
    */
   const setNodeValue = (node: OptionNodeV2, value: any) => {
-    const nextSelected = { ...(safeSelections.selected ?? {}) };
     const selectionKey = getSelectionKey(node);
+    if (disabledOptionGroupSet.has(selectionKey) || disabledOptionGroupSet.has(node.id) || disabledOptionGroupSet.has((node as any).key)) return;
+    const nextSelected = { ...(safeSelections.selected ?? {}) };
 
     const shouldClear =
       value === undefined ||
@@ -233,7 +356,10 @@ export function ProductOptionsPanelV2({
     onSelectionsChange({
       schemaVersion: 2,
       selected: nextSelected,
-      resolved: safeSelections.resolved,
+      resolved: {
+        ...(safeSelections.resolved ?? {}),
+        visibleNodeIds: effectiveVisibleNodeIds,
+      },
     });
   };
 
@@ -271,11 +397,23 @@ export function ProductOptionsPanelV2({
         </div>
       )}
 
-      {visibleNodeIds.length === 0 ? (
+      {ruleEvaluation.messages.filter((message) => message.code === "OPTION_RULE_CLEARED").length > 0 ? (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
+          Some selections were cleared because they are no longer valid for the current options.
+        </div>
+      ) : null}
+
+      {ruleEvaluation.errors.length > 0 ? (
+        <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">
+          Complete required visible options before pricing or saving.
+        </div>
+      ) : null}
+
+      {effectiveVisibleNodeIds.length === 0 ? (
         <div className="text-xs text-muted-foreground">No options.</div>
       ) : (
         <div className="space-y-3">
-          {visibleNodeIds.map((nodeId) => {
+          {effectiveVisibleNodeIds.map((nodeId) => {
             const node = tree.nodes[nodeId];
             if (!node) return null;
 
@@ -305,15 +443,22 @@ export function ProductOptionsPanelV2({
               return null;
             }
 
-            const currentValue = getNodeValue(safeSelections, node);
+            const selectionKey = getSelectionKey(node);
+            const currentValue = getNodeValue(displaySelections, node);
             const helpText = node.ui?.helpText;
+            const isRuleRequired = requiredOptionGroupSet.has(selectionKey);
+            const isDisabled =
+              disabledOptionGroupSet.has(selectionKey) ||
+              disabledOptionGroupSet.has(node.id) ||
+              disabledOptionGroupSet.has((node as any).key);
 
             const commonHeader = (
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <Label className="text-xs">{node.label}{node.input.required ? " *" : ""}</Label>
+                  <Label className="text-xs">{node.label}{node.input.required || isRuleRequired ? " *" : ""}</Label>
                   {node.description ? <div className="mt-0.5 text-xs text-muted-foreground">{node.description}</div> : null}
                   {helpText ? <div className="mt-0.5 text-xs text-muted-foreground">{helpText}</div> : null}
+                  {isDisabled ? <div className="mt-0.5 text-xs text-muted-foreground">Not available for the current selections.</div> : null}
                 </div>
                 {node.ui?.badge ? <Badge variant="outline" className="text-[11px] shrink-0">{node.ui.badge}</Badge> : null}
               </div>
@@ -321,12 +466,13 @@ export function ProductOptionsPanelV2({
 
             if (node.input.type === "boolean") {
               return (
-                <div key={nodeId} className="rounded-md border border-border/50 p-2">
+                <div key={nodeId} className={cn("rounded-md border border-border/50 p-2", isDisabled && "opacity-70")}>
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">{commonHeader}</div>
                     <Switch
                       checked={currentValue === true}
                       onCheckedChange={(checked) => setNodeValue(node, checked)}
+                      disabled={isDisabled}
                     />
                   </div>
                   {error ? <div className="mt-1 text-xs text-destructive">{error}</div> : null}
@@ -346,7 +492,7 @@ export function ProductOptionsPanelV2({
               const emptyLabel = node.input.constraints?.select?.emptyLabel ?? "(None)";
 
               return (
-                <div key={nodeId} className="rounded-md border border-border/50 p-2 space-y-2">
+                <div key={nodeId} className={cn("rounded-md border border-border/50 p-2 space-y-2", isDisabled && "opacity-70")}>
                   {commonHeader}
                   <Select
                     value={String(currentValue ?? "")}
@@ -355,7 +501,7 @@ export function ProductOptionsPanelV2({
                       else setNodeValue(node, val);
                     }}
                   >
-                    <SelectTrigger className="h-9">
+                    <SelectTrigger className="h-9" disabled={isDisabled}>
                       <SelectValue placeholder="Select" />
                     </SelectTrigger>
                     <SelectContent>
@@ -381,7 +527,7 @@ export function ProductOptionsPanelV2({
               const max = constraints?.max;
 
               return (
-                <div key={nodeId} className="rounded-md border border-border/50 p-2 space-y-2">
+                <div key={nodeId} className={cn("rounded-md border border-border/50 p-2 space-y-2", isDisabled && "opacity-70")}>
                   {commonHeader}
                   <Input
                     type="number"
@@ -390,6 +536,7 @@ export function ProductOptionsPanelV2({
                     min={min}
                     max={max}
                     value={currentValue == null ? "" : String(currentValue)}
+                    disabled={isDisabled}
                     onChange={(e) => {
                       const n = normalizeNumberInput(e.target.value);
                       if (n === null) setNodeValue(node, "");
@@ -403,11 +550,12 @@ export function ProductOptionsPanelV2({
 
             if (node.input.type === "text") {
               return (
-                <div key={nodeId} className="rounded-md border border-border/50 p-2 space-y-2">
+                <div key={nodeId} className={cn("rounded-md border border-border/50 p-2 space-y-2", isDisabled && "opacity-70")}>
                   {commonHeader}
                   <Input
                     className="h-9"
                     value={typeof currentValue === "string" ? currentValue : String(currentValue ?? "")}
+                    disabled={isDisabled}
                     onChange={(e) => setNodeValue(node, e.target.value)}
                   />
                   {error ? <div className="text-xs text-destructive">{error}</div> : null}
@@ -417,11 +565,12 @@ export function ProductOptionsPanelV2({
 
             if (node.input.type === "textarea") {
               return (
-                <div key={nodeId} className="rounded-md border border-border/50 p-2 space-y-2">
+                <div key={nodeId} className={cn("rounded-md border border-border/50 p-2 space-y-2", isDisabled && "opacity-70")}>
                   {commonHeader}
                   <Textarea
                     rows={3}
                     value={typeof currentValue === "string" ? currentValue : String(currentValue ?? "")}
+                    disabled={isDisabled}
                     onChange={(e) => setNodeValue(node, e.target.value)}
                   />
                   {error ? <div className="text-xs text-destructive">{error}</div> : null}

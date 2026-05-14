@@ -1217,6 +1217,10 @@ export function OrderLineItemsSection({
 
   const handleSaveItem = async () => {
     if (!expandedItem) return;
+    if (pbv2SnapshotJson?.treeJson && !optionsV2Valid) {
+      setCalcError("Complete required product options before saving.");
+      return;
+    }
     const itemId = expandedItem.id;
 
     setSavingItemId(itemId);
