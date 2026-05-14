@@ -3,6 +3,7 @@ import {
   centsToCurrencyInput,
   currencyInputToCents,
   centsToCurrencyLabel,
+  normalizeVariableDisplay,
 } from "../pbv2/currency";
 
 describe("currency helpers", () => {
@@ -50,5 +51,43 @@ describe("currency helpers", () => {
     expect(centsToCurrencyLabel(575)).toBe("+$5.75");
     expect(centsToCurrencyLabel(-250)).toBe("-$2.50");
     expect(centsToCurrencyLabel(0)).toBe("+$0.00");
+  });
+});
+
+describe("normalizeVariableDisplay (blur normalization)", () => {
+  test('"5" normalizes to "5.00"', () => {
+    expect(normalizeVariableDisplay("5")).toBe("5.00");
+  });
+
+  test('"5.7" normalizes to "5.70"', () => {
+    expect(normalizeVariableDisplay("5.7")).toBe("5.70");
+  });
+
+  test('"5.75" stays "5.75"', () => {
+    expect(normalizeVariableDisplay("5.75")).toBe("5.75");
+  });
+
+  test('"5." normalizes to "5.00" on blur', () => {
+    // During typing "5." is preserved as raw local state; on blur it normalizes
+    expect(normalizeVariableDisplay("5.")).toBe("5.00");
+  });
+
+  test("empty string passes through unchanged", () => {
+    expect(normalizeVariableDisplay("")).toBe("");
+  });
+
+  test("non-numeric partial (e.g. sign-only) passes through unchanged", () => {
+    // "-" alone is not a finite number — preserved during typing
+    expect(normalizeVariableDisplay("-")).toBe("-");
+  });
+
+  test("negative values normalize correctly", () => {
+    expect(normalizeVariableDisplay("-2.5")).toBe("-2.50");
+    expect(normalizeVariableDisplay("-2.50")).toBe("-2.50");
+  });
+
+  test("already normalized values are stable", () => {
+    const v = normalizeVariableDisplay("12.34");
+    expect(normalizeVariableDisplay(v)).toBe("12.34");
   });
 });
