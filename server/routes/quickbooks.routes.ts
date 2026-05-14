@@ -246,17 +246,17 @@ export function registerQuickBooksRoutes(
 
       if (authError) {
         console.error('[QB Callback] OAuth error:', authError);
-        return res.redirect('/settings?qb_error=' + encodeURIComponent(authError));
+        return res.redirect('/settings/integrations?qb_error=' + encodeURIComponent(authError));
       }
 
       if (!code) {
         console.error('[QB Callback] Missing authorization code');
-        return res.redirect('/settings?qb_error=' + encodeURIComponent('missing_code'));
+        return res.redirect('/settings/integrations?qb_error=' + encodeURIComponent('missing_code'));
       }
 
       if (!realmId) {
         console.error('[QB Callback] Missing realmId');
-        return res.redirect('/settings?qb_error=' + encodeURIComponent('missing_realmId'));
+        return res.redirect('/settings/integrations?qb_error=' + encodeURIComponent('missing_realmId'));
       }
 
       parsedState = quickbooksService.parseOAuthState(state as any);
@@ -265,7 +265,7 @@ export function registerQuickBooksRoutes(
           hasState: typeof state === 'string' && (state as string).length > 0,
           hasSessionSecret: !!process.env.SESSION_SECRET,
         });
-        return res.redirect('/settings?qb_error=' + encodeURIComponent('Invalid OAuth state'));
+        return res.redirect('/settings/integrations?qb_error=' + encodeURIComponent('Invalid OAuth state'));
       }
 
       // Build full callback URL with query params for token exchange
@@ -284,8 +284,8 @@ export function registerQuickBooksRoutes(
 
       await quickbooksService.exchangeCodeForTokens(fullCallbackUrl, realmId as string, parsedState.organizationId);
 
-      // Redirect to settings page with success
-      res.redirect('/settings?qb_connected=true');
+      // Redirect to integrations tab with success — component reads qb_connected param on mount
+      res.redirect('/settings/integrations?qb_connected=true');
     } catch (error: any) {
       const configuredRedirectUri = process.env.QUICKBOOKS_REDIRECT_URI || process.env.QB_REDIRECT_URI || '';
       let configuredHost = '(not set)';
@@ -332,7 +332,7 @@ export function registerQuickBooksRoutes(
         realmIdPresent: !!callbackRealmId,
         callbackUrlBuilt: !!fullCallbackUrl,
       });
-      res.redirect('/settings?qb_error=' + encodeURIComponent('connection_failed'));
+      res.redirect('/settings/integrations?qb_error=' + encodeURIComponent('connection_failed'));
     }
   });
 
