@@ -649,4 +649,36 @@ export function registerQuickBooksRoutes(
       return res.status(500).json({ success: false, error: error.message || 'Failed to import invoices' });
     }
   });
+
+  /**
+   * GET /api/integrations/quickbooks/import-preview/customers
+   * Read-only preview of all QB customers with local match status and contact safety flags.
+   * No writes — safe to call before committing a pull sync.
+   */
+  app.get('/api/integrations/quickbooks/import-preview/customers', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const rows = await quickbooksService.fetchQBCustomersForPreview(organizationId);
+      return res.json({ success: true, data: rows });
+    } catch (error: any) {
+      console.error('[QB Customer Preview] Error:', error);
+      return res.status(500).json({ success: false, error: error.message || 'Failed to fetch customer preview' });
+    }
+  });
+
+  /**
+   * GET /api/integrations/quickbooks/repair/suspicious-contacts
+   * Admin report: contacts already imported via QB whose names are known placeholders.
+   * Read-only — used by staff to identify records that need manual correction.
+   */
+  app.get('/api/integrations/quickbooks/repair/suspicious-contacts', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const rows = await quickbooksService.findSuspiciousQBContacts(organizationId);
+      return res.json({ success: true, count: rows.length, data: rows });
+    } catch (error: any) {
+      console.error('[QB Repair] Error:', error);
+      return res.status(500).json({ success: false, error: error.message || 'Failed to fetch suspicious contacts' });
+    }
+  });
 }
