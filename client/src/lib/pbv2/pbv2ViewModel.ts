@@ -922,6 +922,74 @@ export function createAddChoicePatch(
   };
 }
 
+function cascadeRenameInMatchRecord(
+  match: Record<string, unknown>,
+  optionId: string,
+  oldValue: string,
+  newValue: string
+): Record<string, unknown> {
+  if (match[optionId] !== oldValue) return match;
+  return { ...match, [optionId]: newValue };
+}
+
+function cascadeRenameInConditions(
+  conditions: unknown,
+  optionId: string,
+  oldValue: string,
+  newValue: string
+): unknown {
+  if (!conditions || typeof conditions !== "object") return conditions;
+  if (Array.isArray(conditions)) {
+    return conditions.map((c: any) => cascadeRenameInConditions(c, optionId, oldValue, newValue));
+  }
+  const cond = conditions as Record<string, any>;
+  const updated: Record<string, any> = { ...cond };
+  if (typeof cond.optionGroup === "string" && cond.optionGroup === optionId && cond.value === oldValue) {
+    updated.value = newValue;
+  }
+  if (cond.all) updated.all = cascadeRenameInConditions(cond.all, optionId, oldValue, newValue);
+  if (cond.any) updated.any = cascadeRenameInConditions(cond.any, optionId, oldValue, newValue);
+  if (cond.none) updated.none = cascadeRenameInConditions(cond.none, optionId, oldValue, newValue);
+  return updated;
+}
+
+function cascadeChoiceRenameInTree(
+  tree: Record<string, any>,
+  optionId: string,
+  oldValue: string,
+  newValue: string
+): { pricingMatrix?: any; rules?: any; optionRules?: any } {
+  const changes: { pricingMatrix?: any; rules?: any; optionRules?: any } = {};
+
+  const matrix = tree.pricingMatrix;
+  if (matrix && typeof matrix === "object" && !Array.isArray(matrix) && Array.isArray(matrix.rows)) {
+    const updatedRows = matrix.rows.map((row: any) => {
+      const updatedRow = { ...row };
+      if (row.when) updatedRow.when = cascadeRenameInMatchRecord(row.when, optionId, oldValue, newValue);
+      if (row.match) updatedRow.match = cascadeRenameInMatchRecord(row.match, optionId, oldValue, newValue);
+      if (row.combination) updatedRow.combination = cascadeRenameInMatchRecord(row.combination, optionId, oldValue, newValue);
+      return updatedRow;
+    });
+    changes.pricingMatrix = { ...matrix, rows: updatedRows };
+  }
+
+  const rules = Array.isArray(tree.rules) ? tree.rules : null;
+  if (rules) {
+    changes.rules = rules.map((rule: any) =>
+      rule.when ? { ...rule, when: cascadeRenameInConditions(rule.when, optionId, oldValue, newValue) } : rule
+    );
+  }
+
+  const optionRules = Array.isArray(tree.optionRules) ? tree.optionRules : null;
+  if (optionRules) {
+    changes.optionRules = optionRules.map((rule: any) =>
+      rule.when ? { ...rule, when: cascadeRenameInConditions(rule.when, optionId, oldValue, newValue) } : rule
+    );
+  }
+
+  return changes;
+}
+
 /**
  * Create patch to update a choice
  */
@@ -1024,10 +1092,16 @@ export function createUpdateChoicePatch(
     };
   });
 
+  const cascadeChanges =
+    updates.value !== undefined && updates.value !== choiceValue
+      ? cascadeChoiceRenameInTree(tree, optionId, choiceValue, updates.value)
+      : {};
+
   const patchedTree = {
     ...tree,
     nodes: updatedNodes,
     edges,
+    ...cascadeChanges,
   };
 
   const repairedTree = ensureTreeInvariants(patchedTree);
@@ -1036,6 +1110,7 @@ export function createUpdateChoicePatch(
     patch: {
       nodes: repairedTree.nodes,
       edges: repairedTree.edges,
+      ...cascadeChanges,
     },
   };
 }
@@ -1199,9 +1274,9 @@ export function createDeleteOptionPatch(treeJson: unknown, optionId: string): { 
 }
 
 /**
- * Apply a patch to tree JSON (replaces nodes/edges)
+ * Apply a patch to tree JSON (replaces nodes/edges and optional top-level fields)
  */
-export function applyPatchToTree(treeJson: unknown, patch: { nodes?: PBV2Node[]; edges?: PBV2Edge[] }): any {
+export function applyPatchToTree(treeJson: unknown, patch: { nodes?: PBV2Node[]; edges?: PBV2Edge[]; pricingMatrix?: any; rules?: any; optionRules?: any }): any {
   const tree = asRecord(treeJson) ? { ...(treeJson as any) } : {};
 
   if (patch.nodes !== undefined && patch.edges !== undefined) {
@@ -1216,6 +1291,10 @@ export function applyPatchToTree(treeJson: unknown, patch: { nodes?: PBV2Node[];
   } else if (patch.edges !== undefined) {
     tree.edges = patch.edges;
   }
+
+  if (patch.pricingMatrix !== undefined) tree.pricingMatrix = patch.pricingMatrix;
+  if (patch.rules !== undefined) tree.rules = patch.rules;
+  if (patch.optionRules !== undefined) tree.optionRules = patch.optionRules;
 
   return tree;
 }
