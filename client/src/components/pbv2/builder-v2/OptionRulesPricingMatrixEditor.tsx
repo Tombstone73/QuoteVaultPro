@@ -185,6 +185,39 @@ function variablesToRecord(variables: MatrixVariable[]) {
   return out;
 }
 
+type MatrixVariableInputProps = {
+  variableValue: string;
+  onCommit: (raw: string) => void;
+};
+
+function MatrixVariableInput({ variableValue, onCommit }: MatrixVariableInputProps) {
+  const [local, setLocal] = React.useState(variableValue);
+  const isFocused = React.useRef(false);
+
+  React.useEffect(() => {
+    if (!isFocused.current) setLocal(variableValue);
+  }, [variableValue]);
+
+  return (
+    <Input
+      type="number"
+      step="0.01"
+      value={local}
+      onFocus={() => { isFocused.current = true; }}
+      onChange={(e) => {
+        const val = e.target.value;
+        setLocal(val);
+        if (Number.isFinite(parseFloat(val))) onCommit(val);
+      }}
+      onBlur={() => {
+        isFocused.current = false;
+        if (Number.isFinite(parseFloat(local))) onCommit(local);
+      }}
+      className="bg-[#1e293b] border-slate-600 text-slate-100"
+    />
+  );
+}
+
 function rowKey(row: any, dimensions: string[]): string {
   const match = asRecord(row?.when) ?? asRecord(row?.match) ?? asRecord(row?.combination) ?? {};
   return dimensions.map((dimension) => `${dimension}:${String(match[dimension] ?? "")}`).join("|");
@@ -623,17 +656,15 @@ export function OptionRulesPricingMatrixEditor({
                                 }}
                                 className="bg-[#1e293b] border-slate-600 text-slate-100"
                               />
-                              <Input
-                                value={variable.value}
-                                onChange={(event) => {
+                              <MatrixVariableInput
+                                variableValue={variable.value}
+                                onCommit={(raw) => {
                                   const nextVariables = [...variables];
-                                  nextVariables[variableIndex] = { ...variable, value: event.target.value };
+                                  nextVariables[variableIndex] = { ...variable, value: raw };
                                   const rows = [...pricingMatrix.rows];
                                   rows[rowIndex] = { ...row, when: match, variables: variablesToRecord(nextVariables) };
                                   updateMatrix({ ...pricingMatrix, rows });
                                 }}
-                                className="bg-[#1e293b] border-slate-600 text-slate-100"
-                                inputMode="decimal"
                               />
                               <Button
                                 type="button"
