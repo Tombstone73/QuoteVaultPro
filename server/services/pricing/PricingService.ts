@@ -31,6 +31,12 @@ import {
   type ProductOptionPricingMatrixResolution,
 } from '../../../shared/productOptionPricingMatrix';
 import { PBV2_PRICING_VARIABLES, type PricingVariableDefinition } from '../../../shared/pbv2/pricingVariableRegistry';
+import {
+  buildFormulaScope,
+  buildFormulaEvaluationScope,
+  FORMULA_VARIABLE_PROTECTED_KEYS,
+  MATRIX_VARIABLE_PROTECTED_KEYS,
+} from '../../../shared/pbv2/formulaScope';
 import { pbv2ToRuntimeSelectionContext, resolvePricingV2BaseRates } from '../../../shared/pbv2/pricingAdapter';
 import { sheetConsumptionSqft } from '../../../shared/pbv2/formulaHelpers';
 // @ts-ignore - NestingCalculator.js is plain JS without exported TS types
@@ -899,6 +905,28 @@ function assertRuleAndMatrixDefinitionsValidForPricing(tree: any): void {
   throw error;
 }
 
+/**
+ * Build a map from option group key / selectionKey / node id → human-readable label.
+ * Used to replace raw node IDs in pricing matrix error messages.
+ */
+function buildOptionGroupLabelMap(tree: any): Map<string, string> {
+  const map = new Map<string, string>();
+  const nodesRaw = tree?.nodes;
+  const nodes: any[] = Array.isArray(nodesRaw)
+    ? nodesRaw
+    : nodesRaw && typeof nodesRaw === 'object' ? Object.values(nodesRaw) : [];
+  for (const node of nodes) {
+    if (!node || typeof node !== 'object') continue;
+    const label = String(node.label || node.key || node.id || '');
+    if (!label) continue;
+    const selectionKey = node?.input?.selectionKey;
+    if (selectionKey && typeof selectionKey === 'string') map.set(selectionKey, label);
+    if (node.key && typeof node.key === 'string') map.set(String(node.key), label);
+    if (node.id && typeof node.id === 'string') map.set(String(node.id), label);
+  }
+  return map;
+}
+
 function resolvePricingMatrixVariablesForPricing(
   tree: any,
   selections: LineItemOptionSelectionsV2 | Record<string, unknown> | undefined
@@ -910,6 +938,25 @@ function resolvePricingMatrixVariablesForPricing(
   });
 
   if (resolution.errors.length > 0) {
+    const missingSelections = resolution.errors.filter(
+      (e) => e.code === 'PBV2_PRICING_MATRIX_MISSING_SELECTION'
+    );
+    if (missingSelections.length > 0) {
+      const labelMap = buildOptionGroupLabelMap(tree);
+      const labels = missingSelections.map(
+        (e) => labelMap.get(e.optionGroup ?? '') ?? e.optionGroup ?? 'Unknown option'
+      );
+      const humanMessage = `Select required pricing options to preview pricing: ${labels.join(', ')}.`;
+      const humanDetails = missingSelections.map((e, i) => ({
+        ...e,
+        message: `${labels[i]} is required to resolve pricing matrix variables.`,
+      }));
+      const err = new Error(humanMessage) as Pbv2PricingMatrixError;
+      err.code = 'PBV2_PRICING_MATRIX_ERROR';
+      err.details = humanDetails;
+      err.resolution = resolution;
+      throw err;
+    }
     throw pricingMatrixError(resolution.errors, resolution);
   }
 
@@ -1469,6 +1516,8 @@ function evaluatePreviewFormulaToCents(input: {
     formulaVariables: input.formulaVariables,
     pricingMatrixVariables: input.pricingMatrixVariables,
   });
+  // Use the scope-resolved base_price (matrix may have overridden the tiered fallback).
+  const resolvedBaseRate = typeof formulaScope.base_price === 'number' ? formulaScope.base_price : input.baseRatePerSqft;
   let preCeilSqftTotal: number | null = null;
   let postCeilSqftTotal: number | null = null;
   const evalScope: Record<string, any> = {
@@ -1508,7 +1557,7 @@ function evaluatePreviewFormulaToCents(input: {
     { label: 'finished_w*finished_h', value: input.finishedWidthIn * input.finishedHeightIn },
     { label: '(w*h)/144', value: input.sqftPerItem },
     { label: 'sqft*q', value: input.totalSqft },
-    { label: 'p(base_rate_per_sqft)', value: input.baseRatePerSqft },
+    { label: 'p(base_rate_per_sqft)', value: resolvedBaseRate },
   ];
 
   // Pre-validate: reject JavaScript-style Math.xxx function calls before they hit mathjs
@@ -1537,7 +1586,7 @@ function evaluatePreviewFormulaToCents(input: {
       fallbackFormula: input.usedFallbackFormula ? input.fallbackFormula : undefined,
       preCeilSqftTotal,
       postCeilSqftTotal,
-      baseRateUsed: input.baseRatePerSqft,
+      baseRateUsed: resolvedBaseRate,
     };
     throw formulaError;
   }
@@ -1568,7 +1617,7 @@ function evaluatePreviewFormulaToCents(input: {
       fallbackFormula: input.usedFallbackFormula ? input.fallbackFormula : undefined,
       preCeilSqftTotal,
       postCeilSqftTotal,
-      baseRateUsed: input.baseRatePerSqft,
+      baseRateUsed: resolvedBaseRate,
     };
     throw formulaError;
   }
@@ -1586,7 +1635,7 @@ function evaluatePreviewFormulaToCents(input: {
       steps,
       preCeilSqftTotal,
       postCeilSqftTotal,
-      baseRateUsed: input.baseRatePerSqft,
+      baseRateUsed: resolvedBaseRate,
     };
   } catch (error: any) {
     const message = typeof error?.message === 'string' ? error.message : 'Invalid formula';
@@ -1610,7 +1659,7 @@ function evaluatePreviewFormulaToCents(input: {
       fallbackFormula: input.usedFallbackFormula ? input.fallbackFormula : undefined,
       preCeilSqftTotal,
       postCeilSqftTotal,
-      baseRateUsed: input.baseRatePerSqft,
+      baseRateUsed: resolvedBaseRate,
     };
     throw formulaError;
   }
@@ -1647,29 +1696,32 @@ function buildBaseFormulaDebugContext(input: {
     totalSqft: input.totalSqft,
     linearFeet: input.linearFeet,
   });
+  const variables = buildFormulaEvaluationScope({
+    scope,
+    formulaVariables: input.formulaVariables,
+    pricingMatrixVariables: input.pricingMatrixVariables,
+  });
+  // Read the resolved base_price after matrix overrides (may differ from input.baseRatePerSqft).
+  const resolvedBaseRate = typeof variables.base_price === 'number' ? variables.base_price : input.baseRatePerSqft;
 
   return {
     formulaRaw: input.formulaRaw,
     formulaResolved: input.formulaRaw ? resolveFormulaAliases(input.formulaRaw) : undefined,
-    variables: buildFormulaEvaluationScope({
-      scope,
-      formulaVariables: input.formulaVariables,
-      pricingMatrixVariables: input.pricingMatrixVariables,
-    }),
+    variables,
     appliedAs: input.formulaRaw ? inferFormulaApplication(input.formulaRaw) : 'unknown',
     steps: [
       { label: 'ordered_w*ordered_h', value: input.orderedWidthIn * input.orderedHeightIn },
       { label: 'finished_w*finished_h', value: input.finishedWidthIn * input.finishedHeightIn },
       { label: '(w*h)/144', value: input.sqftPerItem },
       { label: 'sqft*q', value: input.totalSqft },
-      { label: 'p(base_rate_per_sqft)', value: input.baseRatePerSqft },
+      { label: 'p(base_rate_per_sqft)', value: resolvedBaseRate },
     ],
     errors: [],
     usedFallbackFormula: input.usedFallbackFormula,
     fallbackFormula: input.usedFallbackFormula ? PBV2_PREVIEW_FALLBACK_FORMULA : undefined,
     preCeilSqftTotal: null,
     postCeilSqftTotal: null,
-    baseRateUsed: input.baseRatePerSqft,
+    baseRateUsed: resolvedBaseRate,
   };
 }
 
@@ -1793,115 +1845,8 @@ function buildPricingPreviewWeightDebug(input: {
   }
 }
 
-function buildFormulaScope(input: {
-  formula: string;
-  orderedWidthIn: number;
-  orderedHeightIn: number;
-  trimAllowanceX: number;
-  trimAllowanceY: number;
-  finishedWidthIn: number;
-  finishedHeightIn: number;
-  quantity: number;
-  baseRatePerSqft: number;
-  sqftPerItem: number;
-  totalSqft: number;
-  linearFeet: number;
-}): Record<string, number | string | boolean | null> {
-  return {
-    width: input.orderedWidthIn,
-    w: input.orderedWidthIn,
-    ordered_width: input.orderedWidthIn,
-    height: input.orderedHeightIn,
-    h: input.orderedHeightIn,
-    ordered_height: input.orderedHeightIn,
-    trim_allowance: input.trimAllowanceX,
-    trim_allowance_x: input.trimAllowanceX,
-    trim_allowance_y: input.trimAllowanceY,
-    finished_width: input.finishedWidthIn,
-    fw: input.finishedWidthIn,
-    finished_height: input.finishedHeightIn,
-    fh: input.finishedHeightIn,
-    quantity: input.quantity,
-    q: input.quantity,
-    base_price: input.baseRatePerSqft,
-    basePricePerSqft: input.baseRatePerSqft,
-    pricePerSqft: input.baseRatePerSqft,
-    unitPrice: input.baseRatePerSqft,
-    price: input.baseRatePerSqft,
-    p: input.baseRatePerSqft,
-    sqft: input.sqftPerItem,
-    total_sqft: input.totalSqft,
-    linear_feet: input.linearFeet,
-  };
-}
-
-const FORMULA_VARIABLE_PROTECTED_KEYS = new Set([
-  "width",
-  "w",
-  "ordered_width",
-  "height",
-  "h",
-  "ordered_height",
-  "quantity",
-  "q",
-  "base_price",
-  "basePricePerSqft",
-  "pricePerSqft",
-  "unitPrice",
-  "price",
-  "p",
-  "sqft",
-  "total_sqft",
-  "linear_feet",
-  "finished_width",
-  "fw",
-  "finished_height",
-  "fh",
-  "trim_allowance",
-  "trim_allowance_x",
-  "trim_allowance_y",
-]);
-
-const MATRIX_VARIABLE_PROTECTED_KEYS = new Set([
-  "width",
-  "w",
-  "ordered_width",
-  "height",
-  "h",
-  "ordered_height",
-  "quantity",
-  "q",
-  "sqft",
-  "total_sqft",
-  "linear_feet",
-  "finished_width",
-  "fw",
-  "finished_height",
-  "fh",
-  "trim_allowance",
-  "trim_allowance_x",
-  "trim_allowance_y",
-]);
-
-function buildFormulaEvaluationScope(input: {
-  scope: Record<string, number | string | boolean | null>;
-  formulaVariables?: Record<string, number>;
-  pricingMatrixVariables?: Record<string, number>;
-}): Record<string, number | string | boolean | null> {
-  const out: Record<string, number | string | boolean | null> = { ...input.scope };
-
-  for (const [key, value] of Object.entries(input.formulaVariables ?? {})) {
-    if (FORMULA_VARIABLE_PROTECTED_KEYS.has(key)) continue;
-    if (Number.isFinite(Number(value))) out[key] = Number(value);
-  }
-
-  for (const [key, value] of Object.entries(input.pricingMatrixVariables ?? {})) {
-    if (MATRIX_VARIABLE_PROTECTED_KEYS.has(key)) continue;
-    if (Number.isFinite(Number(value))) out[key] = Number(value);
-  }
-
-  return out;
-}
+// buildFormulaScope, buildFormulaEvaluationScope, FORMULA_VARIABLE_PROTECTED_KEYS,
+// and MATRIX_VARIABLE_PROTECTED_KEYS are imported from shared/pbv2/formulaScope.ts.
 
 function inferFormulaApplication(formula: string): 'unitPrice' | 'totalPrice' | 'unknown' {
   const normalized = String(formula || '').toLowerCase();
