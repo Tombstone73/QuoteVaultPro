@@ -491,6 +491,10 @@ export function LineItemsSection({
   // Handle save line item
   const handleSaveItem = async () => {
     if (!expandedKey || !onSaveLineItem || !expandedItem) return;
+    if (isExpandedTreeV2 && !optionsV2Valid) {
+      setCalcError("Complete required product options before saving.");
+      return;
+    }
     setSavingItemKey(expandedKey);
     setSavedItemKey(null);
     try {

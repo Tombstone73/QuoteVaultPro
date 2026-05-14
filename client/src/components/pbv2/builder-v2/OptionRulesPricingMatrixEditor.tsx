@@ -5,8 +5,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { centsToCurrencyInput, currencyInputToCents, decimalCurrencyToInput } from "@/lib/pbv2/currency";
 import type { ProductOptionRule } from "@shared/productOptionRules";
-import type { ProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
+import {
+  isProductOptionPricingMatrixCurrencyVariable,
+  type ProductOptionPricingMatrix,
+} from "@shared/productOptionPricingMatrix";
 
 type OptionKey = {
   selectionKey: string;
@@ -141,7 +145,16 @@ function normalizeMatrixVariables(raw: unknown): MatrixVariable[] {
   if (!variables) return [{ key: MATRIX_VARIABLE_KEY_DEFAULT, value: "" }];
   const entries = Object.entries(variables);
   if (entries.length === 0) return [{ key: MATRIX_VARIABLE_KEY_DEFAULT, value: "" }];
-  return entries.map(([key, value]) => ({ key, value: value === undefined || value === null ? "" : String(value) }));
+  return entries.map(([key, value]) => ({ key, value: formatMatrixVariableInput(key, value) }));
+}
+
+function formatMatrixVariableInput(key: string, rawValue: unknown): string {
+  if (rawValue === undefined || rawValue === null) return "";
+  const value = Number(rawValue);
+  if (!Number.isFinite(value)) return String(rawValue);
+  if (!isProductOptionPricingMatrixCurrencyVariable(key)) return String(rawValue);
+  if (Number.isInteger(value) && Math.abs(value) >= 100) return centsToCurrencyInput(value);
+  return decimalCurrencyToInput(value);
 }
 
 function coerceOptionValue(optionKey: OptionKey | undefined, value: string): unknown {
@@ -164,8 +177,10 @@ function variablesToRecord(variables: MatrixVariable[]) {
   for (const variable of variables) {
     const key = variable.key.trim();
     if (!key) continue;
-    const value = Number(variable.value);
-    if (Number.isFinite(value)) out[key] = value;
+    const parsedValue = isProductOptionPricingMatrixCurrencyVariable(key)
+      ? currencyInputToCents(variable.value)
+      : Number(variable.value);
+    if (typeof parsedValue === "number" && Number.isFinite(parsedValue)) out[key] = parsedValue;
   }
   return out;
 }

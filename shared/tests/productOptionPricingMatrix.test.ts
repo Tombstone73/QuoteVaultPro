@@ -8,19 +8,19 @@ import {
 const acmMatrix: ProductOptionPricingMatrix = {
   dimensions: ["thickness", "sides"],
   rows: [
-    { id: "3mm_single", when: { thickness: "3mm", sides: "single_sided" }, variables: { base_price: 5 } },
-    { id: "3mm_double", when: { thickness: "3mm", sides: "double_sided" }, variables: { base_price: 5.75 } },
-    { id: "6mm_single", when: { thickness: "6mm", sides: "single_sided" }, variables: { base_price: 7 } },
-    { id: "6mm_double", when: { thickness: "6mm", sides: "double_sided" }, variables: { base_price: 8.25 } },
+    { id: "3mm_single", when: { thickness: "3mm", sides: "choice_single" }, variables: { base_price: 500 } },
+    { id: "3mm_double", when: { thickness: "3mm", sides: "choice_double" }, variables: { base_price: 575 } },
+    { id: "6mm_single", when: { thickness: "6mm", sides: "choice_single" }, variables: { base_price: 700 } },
+    { id: "6mm_double", when: { thickness: "6mm", sides: "choice_double" }, variables: { base_price: 825 } },
   ],
 };
 
 describe("product option pricing matrix resolution", () => {
   test.each([
-    ["3mm", "single_sided", 5],
-    ["3mm", "double_sided", 5.75],
-    ["6mm", "single_sided", 7],
-    ["6mm", "double_sided", 8.25],
+    ["3mm", "choice_single", 5],
+    ["3mm", "choice_double", 5.75],
+    ["6mm", "choice_single", 7],
+    ["6mm", "choice_double", 8.25],
   ])("resolves base_price for %s + %s", (thickness, sides, expectedBasePrice) => {
     const result = resolveProductOptionPricingMatrix({
       pricingMatrix: acmMatrix,
@@ -39,7 +39,7 @@ describe("product option pricing matrix resolution", () => {
       pricingMatrix: acmMatrix,
       selections: {
         thickness: { value: "10mm" },
-        sides: { value: "single_sided" },
+        sides: { value: "choice_single" },
       },
     });
 
@@ -67,6 +67,19 @@ describe("product option pricing matrix resolution", () => {
 
     expect(result.variables).toEqual({ base_price: 5 });
     expect(result.ignoredVariables).toEqual(["q", "sqft", "total_sqft", "w"]);
+  });
+
+  test("keeps legacy decimal matrix currency variables working", () => {
+    const result = resolveProductOptionPricingMatrix({
+      pricingMatrix: {
+        dimensions: ["thickness"],
+        rows: [{ when: { thickness: "3mm" }, variables: { base_price: 5.75 } }],
+      },
+      selections: { thickness: { value: "3mm" } },
+    });
+
+    expect(result.errors).toHaveLength(0);
+    expect(result.variables.base_price).toBe(5.75);
   });
 
   test("extracts top-level pricingMatrix from tree JSON", () => {

@@ -40,6 +40,23 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function isEmptyOverrideValue(value: unknown): boolean {
+  return value === undefined || value === null || value === "";
+}
+
+function getExplicitMaterialOverride(value: unknown): Record<string, unknown> | null | "invalid" {
+  if (value === undefined || value === null) return null;
+
+  const override = asRecord(value);
+  if (!override) return "invalid";
+
+  const hasConfiguredValue = Object.values(override).some((entry) => !isEmptyOverrideValue(entry));
+  if (!hasConfiguredValue) return null;
+
+  if (!isNonEmptyString((override as any).materialId)) return "invalid";
+  return override;
+}
+
 function normalizeStatus(value: unknown): PBV2Status {
   if (typeof value !== "string") return "ENABLED";
   const upper = value.toUpperCase();
@@ -2382,18 +2399,16 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
         }
       }
 
-      const materialOverride = asRecord((choice as any).materialOverride);
-      if ((choice as any).materialOverride !== undefined) {
-        if (!materialOverride || !isNonEmptyString((materialOverride as any).materialId)) {
-          findings.push(
-            errorFinding({
-              code: "PBV2_E_CHOICE_OVERRIDE_INVALID",
-              message: "materialOverride.materialId must be a non-empty string",
-              path: `${cPath}.materialOverride.materialId`,
-              entityId: n.id,
-            })
-          );
-        }
+      const materialOverride = getExplicitMaterialOverride((choice as any).materialOverride);
+      if (materialOverride === "invalid") {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_CHOICE_OVERRIDE_INVALID",
+            message: "materialOverride.materialId must be a non-empty string",
+            path: `${cPath}.materialOverride.materialId`,
+            entityId: n.id,
+          })
+        );
       }
 
       const workflowTagsRaw = (choice as any).workflowTags;
@@ -2439,7 +2454,7 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
         }
       }
 
-      if (materialOverride && isNonEmptyString((materialOverride as any).materialId)) {
+      if (materialOverride && materialOverride !== "invalid" && isNonEmptyString((materialOverride as any).materialId)) {
         const inventoryEntries = Array.isArray((choice as any).inventoryConsumption) ? (choice as any).inventoryConsumption : [];
         const distinctInventoryMaterialIds = Array.from(
           new Set(
