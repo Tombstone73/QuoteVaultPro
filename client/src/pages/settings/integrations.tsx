@@ -1,4 +1,5 @@
 import { useState } from "react";
+import qbLogoUrl from '@/assets/integrations/qb-logo-01.png';
 import { usePageVisible } from "@/hooks/usePageVisible";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
@@ -204,6 +205,8 @@ export default function SettingsIntegrations() {
   const [customerPreview, setCustomerPreview] = useState<QBCustomerPreviewRow[] | null>(null);
   const [isLoadingCustomerPreview, setIsLoadingCustomerPreview] = useState(false);
   const [showCustomerPreviewDialog, setShowCustomerPreviewDialog] = useState(false);
+
+  const [qbLogoFailed, setQbLogoFailed] = useState(false);
 
   const handleImportFile = async (file: File | null) => {
     if (!file) return;
@@ -694,13 +697,19 @@ export default function SettingsIntegrations() {
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle className="flex items-center gap-2">
-                <img 
-                  src="https://plugin.intuit.com/favicon.ico" 
-                  alt="QuickBooks" 
-                  className="w-6 h-6"
-                />
-                QuickBooks Online
+              <CardTitle>
+                <span className="bg-white/90 rounded-md px-3 py-1.5 inline-flex items-center shrink-0">
+                  {qbLogoFailed ? (
+                    <span className="text-sm font-semibold text-gray-800">QuickBooks Online</span>
+                  ) : (
+                    <img
+                      src={qbLogoUrl}
+                      alt="QuickBooks Online"
+                      className="h-8 w-auto object-contain select-none"
+                      onError={() => setQbLogoFailed(true)}
+                    />
+                  )}
+                </span>
               </CardTitle>
               <CardDescription>
                 Sync customers, invoices, and orders with QuickBooks
@@ -1166,9 +1175,11 @@ export default function SettingsIntegrations() {
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle className="flex items-center gap-2">
-                <CreditCard className="w-5 h-5" />
-                Stripe (Connect)
+              <CardTitle>
+                <span className="bg-white/90 rounded-md px-3 py-1.5 inline-flex items-center gap-2 shrink-0">
+                  <CreditCard className="w-5 h-5 text-gray-700" />
+                  <span className="text-sm font-semibold text-gray-800">Stripe (Connect)</span>
+                </span>
               </CardTitle>
               <CardDescription>
                 Accept card payments on behalf of each connected organization
