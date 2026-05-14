@@ -192,19 +192,42 @@ export function registerQuickBooksRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
 
-      // Debug logging for auth URL generation config (gated by DEBUG_QB_OAUTH)
-      if (process.env.DEBUG_QB_OAUTH === 'true') {
-        const redirectUriUsed = process.env.QUICKBOOKS_REDIRECT_URI || process.env.QB_REDIRECT_URI;
-        const environmentUsed = process.env.QUICKBOOKS_ENVIRONMENT || process.env.QB_ENV || 'sandbox';
-        console.log('[QB Auth URL] Generating authorization URL', {
-          redirectUriUsed,
-          environmentUsed,
+      const authUrl = await quickbooksService.getAuthorizationUrlForOrganization(organizationId);
+
+      // Always-on safe diagnostic — logs host/path only, never client secret or tokens.
+      {
+        const cfgUri = process.env.QUICKBOOKS_REDIRECT_URI || process.env.QB_REDIRECT_URI || '';
+        const env = process.env.QUICKBOOKS_ENVIRONMENT || process.env.QB_ENV || 'sandbox (default)';
+        let cfgHost = '(not set)'; let cfgPath = '(not set)';
+        try { if (cfgUri) { const u = new URL(cfgUri); cfgHost = u.host; cfgPath = u.pathname; } } catch {}
+        // Parse what the library actually embedded in the authorization URL.
+        let embeddedHost = '(parse error)'; let embeddedPath = '(parse error)';
+        let redirectUriPresent = false; let configuredMatchesEmbedded = false;
+        try {
+          const au = new URL(authUrl);
+          const embedded = au.searchParams.get('redirect_uri');
+          redirectUriPresent = !!embedded;
+          if (embedded) {
+            const eu = new URL(embedded);
+            embeddedHost = eu.host;
+            embeddedPath = eu.pathname;
+            configuredMatchesEmbedded = cfgHost === embeddedHost && cfgPath === embeddedPath;
+          }
+        } catch {}
+        console.log('[QB Auth URL] Authorization URL generated', {
+          environment: env,
+          hasClientId: !!(process.env.QUICKBOOKS_CLIENT_ID || process.env.QB_CLIENT_ID),
           hasSessionSecret: !!process.env.SESSION_SECRET,
+          configuredRedirectUriHost: cfgHost,
+          configuredRedirectUriPath: cfgPath,
+          authUrlContainsRedirectUri: redirectUriPresent,
+          embeddedRedirectUriHost: embeddedHost,
+          embeddedRedirectUriPath: embeddedPath,
+          configuredMatchesEmbedded,
           organizationId,
         });
       }
 
-      const authUrl = await quickbooksService.getAuthorizationUrlForOrganization(organizationId);
       res.json({ authUrl });
     } catch (error: any) {
       console.error('[QB Auth URL] Error:', error);
@@ -246,17 +269,17 @@ export function registerQuickBooksRoutes(
 
       if (authError) {
         console.error('[QB Callback] OAuth error:', authError);
-        return res.redirect('/settings?qb_error=' + encodeURIComponent(authError));
+        return res.redirect('/settings/integrations?qb_error=' + encodeURIComponent(authError));
       }
 
       if (!code) {
         console.error('[QB Callback] Missing authorization code');
-        return res.redirect('/settings?qb_error=' + encodeURIComponent('missing_code'));
+        return res.redirect('/settings/integrations?qb_error=' + encodeURIComponent('missing_code'));
       }
 
       if (!realmId) {
         console.error('[QB Callback] Missing realmId');
-        return res.redirect('/settings?qb_error=' + encodeURIComponent('missing_realmId'));
+        return res.redirect('/settings/integrations?qb_error=' + encodeURIComponent('missing_realmId'));
       }
 
       parsedState = quickbooksService.parseOAuthState(state as any);
@@ -265,7 +288,7 @@ export function registerQuickBooksRoutes(
           hasState: typeof state === 'string' && (state as string).length > 0,
           hasSessionSecret: !!process.env.SESSION_SECRET,
         });
-        return res.redirect('/settings?qb_error=' + encodeURIComponent('Invalid OAuth state'));
+        return res.redirect('/settings/integrations?qb_error=' + encodeURIComponent('Invalid OAuth state'));
       }
 
       // Build full callback URL with query params for token exchange
@@ -284,8 +307,8 @@ export function registerQuickBooksRoutes(
 
       await quickbooksService.exchangeCodeForTokens(fullCallbackUrl, realmId as string, parsedState.organizationId);
 
-      // Redirect to settings page with success
-      res.redirect('/settings?qb_connected=true');
+      // Redirect to integrations tab with success — component reads qb_connected param on mount
+      res.redirect('/settings/integrations?qb_connected=true');
     } catch (error: any) {
       const configuredRedirectUri = process.env.QUICKBOOKS_REDIRECT_URI || process.env.QB_REDIRECT_URI || '';
       let configuredHost = '(not set)';
@@ -332,7 +355,7 @@ export function registerQuickBooksRoutes(
         realmIdPresent: !!callbackRealmId,
         callbackUrlBuilt: !!fullCallbackUrl,
       });
-      res.redirect('/settings?qb_error=' + encodeURIComponent('connection_failed'));
+      res.redirect('/settings/integrations?qb_error=' + encodeURIComponent('connection_failed'));
     }
   });
 
