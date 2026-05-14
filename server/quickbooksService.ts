@@ -6,6 +6,7 @@ import { eq, and, asc, desc, or, isNull, isNotNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
 import { DEFAULT_ORGANIZATION_ID } from './tenantContext';
 import { generateNextInvoiceNumber } from './invoicesService';
+import { isSuspiciousContactName, deriveQBContactName } from './lib/qbContactHelpers';
 
 // Initialize QuickBooks OAuth client
 const getOAuthClient = (): any => {
@@ -709,35 +710,9 @@ function mapQBCustomerToLocal(qbCustomer: any): Partial<Customer> {
 }
 
 // ==================== QB Contact Mapping Helpers ====================
-
-/**
- * Derive a contact person name from QuickBooks Customer fields.
- * Returns null when no person-level name can be identified.
- */
-function deriveQBContactName(
-  qbCustomer: any,
-): { firstName: string; lastName: string } | null {
-  const givenName = String(qbCustomer.GivenName || '').trim();
-  const familyName = String(qbCustomer.FamilyName || '').trim();
-
-  if (givenName || familyName) {
-    // Prefer structured name fields; fill missing half with a safe default
-    return {
-      firstName: givenName || 'Contact',
-      lastName: familyName || '',
-    };
-  }
-
-  // Fall back to DisplayName only when it is not identical to the company name
-  const displayName = String(qbCustomer.DisplayName || '').trim();
-  const companyName = String(qbCustomer.CompanyName || '').trim();
-
-  if (displayName && displayName.toLowerCase() !== companyName.toLowerCase()) {
-    return { firstName: displayName, lastName: '' };
-  }
-
-  return null;
-}
+// isSuspiciousContactName and deriveQBContactName are imported from
+// ./lib/qbContactHelpers (pure, no DB) so they can be unit-tested in isolation.
+export { isSuspiciousContactName, deriveQBContactName };
 
 type QBContactPayload = {
   customerId: string;
@@ -754,26 +729,37 @@ type QBContactPayload = {
 
 /**
  * Build a TitanOS contact payload from a QuickBooks Customer.
- * Returns null when there is no useful contact-level data to store
- * (no email, phone, mobile, or person name).
+ *
+ * Returns null when:
+ *   - there is no person-level name (email/phone already stored on the customer row), OR
+ *   - the derived name is a known generic placeholder.
+ *
+ * This prevents phantom contacts like "Primary Contact" from being created.
+ * Email/phone are still stored on the parent customer record via mapQBCustomerToLocal.
  */
 function mapQBCustomerToContact(
   qbCustomer: any,
   customerId: string,
 ): QBContactPayload | null {
-  const email = String(qbCustomer.PrimaryEmailAddr?.Address || '').trim() || null;
-  const phone = String(qbCustomer.PrimaryPhone?.FreeFormNumber || '').trim() || null;
+  const email  = String(qbCustomer.PrimaryEmailAddr?.Address || '').trim() || null;
+  const phone  = String(qbCustomer.PrimaryPhone?.FreeFormNumber || '').trim() || null;
   const mobile = String(qbCustomer.Mobile?.FreeFormNumber || '').trim() || null;
 
   const name = deriveQBContactName(qbCustomer);
 
-  // Only create a contact if there is something useful to store
-  if (!email && !phone && !mobile && !name) {
-    return null;
-  }
+  // No real person name → skip contact creation entirely.
+  // Falling back to "Primary Contact" would create placeholder rows that staff
+  // would need to manually repair after every sync.
+  if (!name) return null;
 
-  // If we have useful data but no name, fall back to "Primary Contact"
-  const { firstName, lastName } = name ?? { firstName: 'Primary Contact', lastName: '' };
+  const { firstName, lastName } = name;
+
+  // Double-check: even if deriveQBContactName returned something, guard against
+  // any future path that produces a known placeholder.
+  if (isSuspiciousContactName(firstName, lastName)) return null;
+
+  // Need at least one piece of contact data beyond the name.
+  if (!email && !phone && !mobile) return null;
 
   return {
     customerId,
@@ -822,15 +808,18 @@ async function upsertQBContact(payload: QBContactPayload): Promise<ContactUpsert
     .limit(1);
 
   if (bySource) {
-    // Definitive match — safe to update name since we hold the source ID
+    // Definitive match — update name only when the incoming name is not a
+    // placeholder that would overwrite a real person name already on record.
+    const incomingSuspicious  = isSuspiciousContactName(firstName, lastName);
+    const existingSuspicious  = isSuspiciousContactName(bySource.firstName, bySource.lastName ?? '');
+    const shouldUpdateName    = !incomingSuspicious || existingSuspicious;
     await db
       .update(customerContacts)
       .set({
-        firstName,
-        lastName,
-        email: email ?? bySource.email,
-        phone: phone ?? bySource.phone,
-        mobile: mobile ?? bySource.mobile,
+        ...(shouldUpdateName ? { firstName, lastName } : {}),
+        email:     email     ?? bySource.email,
+        phone:     phone     ?? bySource.phone,
+        mobile:    mobile    ?? bySource.mobile,
         isPrimary: isPrimary || bySource.isPrimary,
         updatedAt: new Date(),
       })
@@ -1370,6 +1359,151 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
 
 // ==================== Customer Sync Processors ====================
 
+// ==================== QB Customer Preview (read-only, no writes) ====================
+
+export type QBCustomerPreviewRow = {
+  qbCustomerId: string;
+  qbDisplayName: string;
+  mappedCompanyName: string;
+  mappedContactFirstName: string | null;
+  mappedContactLastName: string | null;
+  email: string | null;
+  phone: string | null;
+  willCreateCompany: boolean;
+  willUpdateCompany: boolean;
+  willCreateContact: boolean;
+  contactNeedsReview: boolean;
+  suspiciousFields: string[];
+  matchedExistingCustomerId: string | null;
+  matchedExistingContactId: string | null;
+};
+
+/**
+ * Fetch all QB customers and return mapping decisions WITHOUT writing anything.
+ * Used by the UI preview step before committing a pull sync.
+ */
+export async function fetchQBCustomersForPreview(organizationId: string): Promise<QBCustomerPreviewRow[]> {
+  const query = 'SELECT * FROM Customer';
+  const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
+  const qbCustomers: any[] = response.QueryResponse?.Customer || [];
+
+  const rows: QBCustomerPreviewRow[] = [];
+
+  for (const qbCustomer of qbCustomers) {
+    const localData  = mapQBCustomerToLocal(qbCustomer);
+    const name       = deriveQBContactName(qbCustomer);
+    const email      = String(qbCustomer.PrimaryEmailAddr?.Address || '').trim() || null;
+    const phone      = String(qbCustomer.PrimaryPhone?.FreeFormNumber || '').trim() || null;
+
+    const [existing] = await db
+      .select({ id: customers.id })
+      .from(customers)
+      .where(
+        or(
+          and(eq(customers.organizationId, organizationId), eq(customers.externalAccountingId, String(qbCustomer.Id))),
+          localData.email
+            ? and(eq(customers.organizationId, organizationId), eq(customers.email, localData.email))
+            : sql`false`,
+        ),
+      )
+      .limit(1);
+
+    let matchedContactId: string | null = null;
+    if (existing) {
+      if (email) {
+        const [byEmail] = await db
+          .select({ id: customerContacts.id })
+          .from(customerContacts)
+          .where(and(
+            eq(customerContacts.customerId, existing.id),
+            sql`LOWER(TRIM(${customerContacts.email})) = LOWER(${email})`,
+          ))
+          .limit(1);
+        if (byEmail) matchedContactId = byEmail.id;
+      }
+      if (!matchedContactId && name) {
+        const [byName] = await db
+          .select({ id: customerContacts.id })
+          .from(customerContacts)
+          .where(and(
+            eq(customerContacts.customerId, existing.id),
+            sql`LOWER(TRIM(${customerContacts.firstName})) = LOWER(${name.firstName.trim()})`,
+          ))
+          .limit(1);
+        if (byName) matchedContactId = byName.id;
+      }
+    }
+
+    const suspiciousFields: string[] = [];
+    const nameIsSuspicious = name ? isSuspiciousContactName(name.firstName, name.lastName) : false;
+    if (!name)            suspiciousFields.push('missing_person_name');
+    else if (nameIsSuspicious) suspiciousFields.push('suspicious_contact_name');
+
+    const willCreateContact = !!name && !nameIsSuspicious && !matchedContactId
+      && !!(email || phone || String(qbCustomer.Mobile?.FreeFormNumber || '').trim());
+
+    rows.push({
+      qbCustomerId:             String(qbCustomer.Id),
+      qbDisplayName:            String(qbCustomer.DisplayName || ''),
+      mappedCompanyName:        localData.companyName as string,
+      mappedContactFirstName:   name?.firstName ?? null,
+      mappedContactLastName:    name?.lastName  ?? null,
+      email,
+      phone,
+      willCreateCompany:        !existing,
+      willUpdateCompany:        !!existing,
+      willCreateContact,
+      contactNeedsReview:       !name || nameIsSuspicious,
+      suspiciousFields,
+      matchedExistingCustomerId: existing?.id         ?? null,
+      matchedExistingContactId:  matchedContactId,
+    });
+  }
+
+  return rows;
+}
+
+// ==================== QB Suspicious-Contact Repair Report ====================
+
+export type SuspiciousContactRow = {
+  contactId: string;
+  firstName: string;
+  lastName: string;
+  email: string | null;
+  phone: string | null;
+  customerId: string;
+  companyName: string;
+  externalSourceId: string | null;
+};
+
+/**
+ * Return contacts linked to QB-sourced customers whose names are known placeholders.
+ * Read-only — used by the repair/report admin endpoint.
+ */
+export async function findSuspiciousQBContacts(organizationId: string): Promise<SuspiciousContactRow[]> {
+  const rows = await db
+    .select({
+      contactId:       customerContacts.id,
+      firstName:       customerContacts.firstName,
+      lastName:        customerContacts.lastName,
+      email:           customerContacts.email,
+      phone:           customerContacts.phone,
+      customerId:      customerContacts.customerId,
+      companyName:     customers.companyName,
+      externalSourceId: customerContacts.externalSourceId,
+    })
+    .from(customerContacts)
+    .innerJoin(customers, and(
+      eq(customerContacts.customerId, customers.id),
+      eq(customers.organizationId, organizationId),
+    ))
+    .where(eq(customerContacts.externalSource, 'quickbooks'));
+
+  return rows.filter(r => isSuspiciousContactName(r.firstName, r.lastName ?? ''));
+}
+
+// ==================== QB Customer Pull Sync (writes) ====================
+
 /**
  * Process pull sync: Fetch customers from QuickBooks and upsert into local DB.
  * Also creates or updates a primary contact record when QB provides contact-level data.
@@ -1402,6 +1536,7 @@ export async function processPullCustomers(jobId: string, organizationId: string
     let contactsCreated = 0;
     let contactsUpdated = 0;
     let skippedContacts = 0;
+    let contactsSkippedSuspicious = 0;
     let errorCount = 0;
 
     for (const qbCustomer of qbCustomers) {
@@ -1460,7 +1595,14 @@ export async function processPullCustomers(jobId: string, organizationId: string
         // --- Contact upsert ---
         const contactPayload = mapQBCustomerToContact(qbCustomer, customerId);
         if (!contactPayload) {
-          skippedContacts++;
+          // Distinguish between "no contact data at all" and "skipped due to suspicious name"
+          const derivedName = deriveQBContactName(qbCustomer);
+          if (derivedName && isSuspiciousContactName(derivedName.firstName, derivedName.lastName)) {
+            contactsSkippedSuspicious++;
+            console.log(`[QB Pull Customers] Skipped placeholder contact for: ${localData.companyName} (suspicious name: "${derivedName.firstName}")`);
+          } else {
+            skippedContacts++;
+          }
         } else {
           try {
             const outcome = await upsertQBContact(contactPayload);
@@ -1497,6 +1639,7 @@ export async function processPullCustomers(jobId: string, organizationId: string
           contactsCreated,
           contactsUpdated,
           skippedContacts,
+          contactsSkippedSuspicious,
           errorCount,
           totalQuickBooksCustomers: qbCustomers.length,
         } as any,
@@ -1506,7 +1649,7 @@ export async function processPullCustomers(jobId: string, organizationId: string
     console.log(
       `[QB Pull Customers] Completed: ${customersCreated} created, ${customersUpdated} updated, ` +
       `${contactsCreated} contacts created, ${contactsUpdated} contacts updated, ` +
-      `${skippedContacts} contacts skipped, ${errorCount} errors`,
+      `${skippedContacts} contacts skipped (no data), ${contactsSkippedSuspicious} skipped (placeholder name), ${errorCount} errors`,
     );
   } catch (error: any) {
     console.error(`[QB Pull Customers] Job failed:`, error);
