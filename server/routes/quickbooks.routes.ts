@@ -219,8 +219,14 @@ export function registerQuickBooksRoutes(
    * The organizationId should be passed via the OAuth state parameter in production.
    */
   app.get('/api/integrations/quickbooks/callback', async (req: any, res) => {
+    // Hoisted so the catch block can emit safe diagnostics regardless of where the throw occurred.
+    let parsedState: { organizationId: string } | null = null;
+    let callbackRealmId: string | undefined;
+    let fullCallbackUrl: string | undefined;
+
     try {
       const { code, realmId, state, error: authError } = req.query;
+      callbackRealmId = typeof realmId === 'string' ? realmId : undefined;
 
       // Debug logging for OAuth callback (gated by DEBUG_QB_OAUTH)
       if (process.env.DEBUG_QB_OAUTH === 'true') {
@@ -253,15 +259,19 @@ export function registerQuickBooksRoutes(
         return res.redirect('/settings?qb_error=' + encodeURIComponent('missing_realmId'));
       }
 
-      const parsed = quickbooksService.parseOAuthState(state as any);
-      if (!parsed?.organizationId) {
+      parsedState = quickbooksService.parseOAuthState(state as any);
+      if (!parsedState?.organizationId) {
+        console.error('[QB Callback] State parse failed', {
+          hasState: typeof state === 'string' && (state as string).length > 0,
+          hasSessionSecret: !!process.env.SESSION_SECRET,
+        });
         return res.redirect('/settings?qb_error=' + encodeURIComponent('Invalid OAuth state'));
       }
 
       // Build full callback URL with query params for token exchange
       const proto = req.headers['x-forwarded-proto'] ?? req.protocol;
       const host = req.headers['x-forwarded-host'] ?? req.get('host');
-      const fullCallbackUrl = `${proto}://${host}${req.originalUrl}`;
+      fullCallbackUrl = `${proto}://${host}${req.originalUrl}`;
 
       if (process.env.DEBUG_QB_OAUTH === 'true') {
         console.log('[QB Callback] Constructed full callback URL', {
@@ -272,12 +282,56 @@ export function registerQuickBooksRoutes(
         });
       }
 
-      await quickbooksService.exchangeCodeForTokens(fullCallbackUrl, realmId as string, parsed.organizationId);
+      await quickbooksService.exchangeCodeForTokens(fullCallbackUrl, realmId as string, parsedState.organizationId);
 
       // Redirect to settings page with success
       res.redirect('/settings?qb_connected=true');
     } catch (error: any) {
-      console.error('[QB Callback] Error:', error);
+      const configuredRedirectUri = process.env.QUICKBOOKS_REDIRECT_URI || process.env.QB_REDIRECT_URI || '';
+      let configuredHost = '(not set)';
+      let configuredPath = '(not set)';
+      let constructedHost = '(not built)';
+      let redirectUriHostMatch: boolean | '(error)' = false;
+      try {
+        if (configuredRedirectUri) {
+          const u = new URL(configuredRedirectUri);
+          configuredHost = u.host;
+          configuredPath = u.pathname;
+        }
+      } catch { configuredHost = '(parse error)'; }
+      try {
+        if (fullCallbackUrl) {
+          constructedHost = new URL(fullCallbackUrl).host;
+          redirectUriHostMatch = constructedHost === configuredHost;
+        }
+      } catch { constructedHost = '(parse error)'; redirectUriHostMatch = '(error)'; }
+
+      const intuitError = error?.response?.data?.error
+        || error?.error_description
+        || error?.intuit_error_code
+        || undefined;
+      const intuitTid = error?.intuit_tid
+        || error?.response?.headers?.['intuit_tid']
+        || undefined;
+
+      console.error('[QB Callback] Token exchange failed', {
+        errorName: error?.name,
+        errorMessage: String(error?.message || '').slice(0, 300),
+        errorStatus: error?.status ?? error?.statusCode ?? error?.response?.status,
+        intuitError,
+        intuitTid,
+        environment: process.env.QUICKBOOKS_ENVIRONMENT || process.env.QB_ENV || 'sandbox (default)',
+        hasClientId: !!(process.env.QUICKBOOKS_CLIENT_ID || process.env.QB_CLIENT_ID),
+        hasClientSecret: !!(process.env.QUICKBOOKS_CLIENT_SECRET || process.env.QB_CLIENT_SECRET),
+        hasRedirectUri: !!configuredRedirectUri,
+        configuredRedirectUriHost: configuredHost,
+        configuredRedirectUriPath: configuredPath,
+        constructedCallbackHost: constructedHost,
+        redirectUriHostMatch,
+        orgIdPresent: !!parsedState?.organizationId,
+        realmIdPresent: !!callbackRealmId,
+        callbackUrlBuilt: !!fullCallbackUrl,
+      });
       res.redirect('/settings?qb_error=' + encodeURIComponent('connection_failed'));
     }
   });
