@@ -36,7 +36,11 @@ import {
 } from "@shared/schema";
 import { eq, and, desc, inArray, ilike } from "drizzle-orm";
 import { getRequestOrganizationId } from "../tenantContext";
-import { parseBool, parseNum } from "../utils/csvImportUtils";
+import {
+  normalizeRow,
+  validateNormalizedRow,
+  buildMaterialPayload,
+} from "../utils/materialsCsvNormalization";
 
 // ─── Template column map ───────────────────────────────────────────────────
 // CSV column name → schema field path (used for template + export)
@@ -74,6 +78,11 @@ const TEMPLATE_COLUMNS = [
   "lead_waste_ft",      // → materials.leadWasteFt
   "tail_waste_ft",      // → materials.tailWasteFt
   "active",             // → materials.isActive (true|false|yes|no|1|0)
+  "weight_value",       // → materials.weightValue (numeric, optional)
+  "weight_unit",        // → materials.weightUnit (oz|lb|g|kg)
+  "weight_basis",       // → materials.weightBasis (each|sqft|sheet|linear_ft|roll)
+  "weight_oz_per_basis",// → materials.weightOzPerBasis — export-visible/debug only;
+                        //   server always recomputes this on import; imported values are ignored
 ] as const;
 
 // A sample row for the template so users see the expected format
@@ -110,187 +119,16 @@ const TEMPLATE_EXAMPLE_ROW: Record<string, string> = {
   lead_waste_ft:          "1",
   tail_waste_ft:          "1",
   active:                 "true",
+  weight_value:           "0.32",
+  weight_unit:            "lb",
+  weight_basis:           "sqft",
+  weight_oz_per_basis:    "",    // leave blank — server always recomputes this
 };
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
-}
-
-/** Normalise a single CSV row into a validated materials payload + metadata */
-function normalizeRow(row: Record<string, string>): {
-  name: string;
-  sku: string;
-  type: string;
-  unitOfMeasure: string;
-  inventoryUnit: string | undefined;
-  sellPriceUnit: string | undefined;
-  wholesalePriceUnit: string | undefined;
-  vendorCostUnit: string | undefined;
-  consumptionUnit: string | undefined;
-  category: string | undefined;
-  color: string | undefined;
-  width: number | undefined;
-  height: number | undefined;
-  thickness: number | undefined;
-  thicknessUnit: string | undefined;
-  costPerUnit: number | undefined;
-  wholesaleBaseRate: number | undefined;
-  wholesaleMinCharge: number | undefined;
-  retailBaseRate: number | undefined;
-  retailMinCharge: number | undefined;
-  stockQuantity: number | undefined;
-  minStockAlert: number | undefined;
-  vendorSku: string | undefined;
-  vendorCostPerUnit: number | undefined;
-  rollLengthFt: number | undefined;
-  costPerRoll: number | undefined;
-  edgeWasteInPerSide: number | undefined;
-  leadWasteFt: number | undefined;
-  tailWasteFt: number | undefined;
-  isActive: boolean | undefined;
-  // metadata (not in materials table)
-  materialId: string | undefined;
-  vendorName: string | undefined;
-} {
-  const unitOfMeasure = (row['unit_of_measure'] || '').trim().toLowerCase();
-  const sellPriceUnit = (row['sell_price_unit'] || '').trim().toLowerCase() || unitOfMeasure || undefined;
-  return {
-    name:             (row['material_name'] || '').trim(),
-    sku:              (row['sku'] || '').trim(),
-    type:             (row['material_type'] || '').trim().toLowerCase(),
-    unitOfMeasure,
-    inventoryUnit:    (row['inventory_unit'] || '').trim().toLowerCase() || unitOfMeasure || undefined,
-    sellPriceUnit,
-    wholesalePriceUnit: (row['wholesale_price_unit'] || '').trim().toLowerCase() || sellPriceUnit || unitOfMeasure || undefined,
-    vendorCostUnit:   (row['vendor_cost_unit'] || '').trim().toLowerCase() || unitOfMeasure || undefined,
-    consumptionUnit:  (row['consumption_unit'] || '').trim().toLowerCase() || sellPriceUnit || unitOfMeasure || undefined,
-    category:         (row['category'] || '').trim() || undefined,
-    color:            (row['color'] || '').trim() || undefined,
-    width:            parseNum(row['width']),
-    height:           parseNum(row['height']),
-    thickness:        parseNum(row['thickness']),
-    thicknessUnit:    (row['thickness_unit'] || '').trim().toLowerCase() || undefined,
-    costPerUnit:      parseNum(row['cost_per_unit']),
-    wholesaleBaseRate: parseNum(row['wholesale_base_rate']),
-    wholesaleMinCharge: parseNum(row['wholesale_min_charge']),
-    retailBaseRate:   parseNum(row['retail_base_rate']),
-    retailMinCharge:  parseNum(row['retail_min_charge']),
-    stockQuantity:    parseNum(row['stock_quantity']),
-    minStockAlert:    parseNum(row['reorder_point']),
-    vendorSku:        (row['vendor_sku'] || '').trim() || undefined,
-    vendorCostPerUnit: parseNum(row['vendor_cost_per_unit']),
-    rollLengthFt:     parseNum(row['roll_length_ft']),
-    costPerRoll:      parseNum(row['cost_per_roll']),
-    edgeWasteInPerSide: parseNum(row['edge_waste_in_per_side']),
-    leadWasteFt:      parseNum(row['lead_waste_ft']),
-    tailWasteFt:      parseNum(row['tail_waste_ft']),
-    isActive:         parseBool(row['active']) ?? true,
-    // metadata
-    materialId:       (row['material_id'] || '').trim() || undefined,
-    vendorName:       (row['vendor_name'] || '').trim() || undefined,
-  };
-}
-
-const VALID_TYPES: string[] = ['sheet', 'roll', 'ink', 'consumable'];
-const VALID_UNITS: string[] = ['sheet', 'sqft', 'linear_ft', 'ml', 'ea'];
-const VALID_THICKNESS_UNITS: string[] = ['in', 'mm', 'mil', 'gauge'];
-
-function validateNormalizedRow(n: ReturnType<typeof normalizeRow>): string[] {
-  const errors: string[] = [];
-
-  if (!n.name) errors.push('material_name is required');
-  if (!n.sku) errors.push('sku is required');
-  if (!n.type) {
-    errors.push('material_type is required');
-  } else if (!VALID_TYPES.includes(n.type)) {
-    errors.push(`material_type must be one of: ${VALID_TYPES.join(', ')} (got "${n.type}")`);
-  }
-  if (!n.unitOfMeasure) {
-    errors.push('unit_of_measure is required');
-  } else if (!VALID_UNITS.includes(n.unitOfMeasure)) {
-    errors.push(`unit_of_measure must be one of: ${VALID_UNITS.join(', ')} (got "${n.unitOfMeasure}")`);
-  }
-  for (const [field, value] of [
-    ['inventory_unit', n.inventoryUnit],
-    ['sell_price_unit', n.sellPriceUnit],
-    ['wholesale_price_unit', n.wholesalePriceUnit],
-    ['vendor_cost_unit', n.vendorCostUnit],
-    ['consumption_unit', n.consumptionUnit],
-  ] as const) {
-    if (value && !VALID_UNITS.includes(value)) {
-      errors.push(`${field} must be one of: ${VALID_UNITS.join(', ')} (got "${value}")`);
-    }
-  }
-  if (n.costPerUnit == null) {
-    errors.push('cost_per_unit is required');
-  } else if (n.costPerUnit < 0) {
-    errors.push('cost_per_unit must be >= 0');
-  }
-  if (n.thicknessUnit && !VALID_THICKNESS_UNITS.includes(n.thicknessUnit)) {
-    errors.push(`thickness_unit must be one of: ${VALID_THICKNESS_UNITS.join(', ')}`);
-  }
-  if (n.type === 'roll' && n.width == null) {
-    errors.push('width (roll_width) is required for roll materials');
-  }
-  if (n.type === 'sheet' && (n.width == null || n.height == null)) {
-    // Only warn, not hard block — some sheet materials may not have dimensions
-  }
-  if (n.wholesaleBaseRate != null && n.wholesaleBaseRate < 0) {
-    errors.push('wholesale_base_rate must be >= 0');
-  }
-  if (n.retailBaseRate != null && n.retailBaseRate < 0) {
-    errors.push('retail_base_rate must be >= 0');
-  }
-  if (n.stockQuantity != null && n.stockQuantity < 0) {
-    errors.push('stock_quantity must be >= 0');
-  }
-  if (n.rollLengthFt != null && n.rollLengthFt <= 0) {
-    errors.push('roll_length_ft must be > 0');
-  }
-
-  return errors;
-}
-
-// Build the DB insert/update payload from a normalized row + resolved vendor ID
-function buildMaterialPayload(
-  n: ReturnType<typeof normalizeRow>,
-  resolvedVendorId: string | null
-): Record<string, any> {
-  return {
-    name: n.name,
-    sku: n.sku,
-    type: n.type,
-    unitOfMeasure: n.unitOfMeasure,
-    inventoryUnit: n.inventoryUnit ?? n.unitOfMeasure,
-    sellPriceUnit: n.sellPriceUnit ?? n.unitOfMeasure,
-    wholesalePriceUnit: n.wholesalePriceUnit ?? n.sellPriceUnit ?? n.unitOfMeasure,
-    vendorCostUnit: n.vendorCostUnit ?? n.unitOfMeasure,
-    consumptionUnit: n.consumptionUnit ?? n.sellPriceUnit ?? n.unitOfMeasure,
-    category: n.category ?? null,
-    color: n.color ?? null,
-    width: n.width ?? null,
-    height: n.height ?? null,
-    thickness: n.thickness ?? null,
-    thicknessUnit: n.thicknessUnit ?? null,
-    costPerUnit: String(n.costPerUnit!),
-    wholesaleBaseRate: n.wholesaleBaseRate != null ? String(n.wholesaleBaseRate) : null,
-    wholesaleMinCharge: n.wholesaleMinCharge != null ? String(n.wholesaleMinCharge) : null,
-    retailBaseRate: n.retailBaseRate != null ? String(n.retailBaseRate) : null,
-    retailMinCharge: n.retailMinCharge != null ? String(n.retailMinCharge) : null,
-    stockQuantity: n.stockQuantity != null ? String(n.stockQuantity) : "0",
-    minStockAlert: n.minStockAlert != null ? String(n.minStockAlert) : "0",
-    isActive: n.isActive ?? true,
-    preferredVendorId: resolvedVendorId,
-    vendorSku: n.vendorSku ?? null,
-    vendorCostPerUnit: n.vendorCostPerUnit != null ? String(n.vendorCostPerUnit) : null,
-    rollLengthFt: n.rollLengthFt != null ? String(n.rollLengthFt) : null,
-    costPerRoll: n.costPerRoll != null ? String(n.costPerRoll) : null,
-    edgeWasteInPerSide: n.edgeWasteInPerSide != null ? String(n.edgeWasteInPerSide) : null,
-    leadWasteFt: n.leadWasteFt != null ? String(n.leadWasteFt) : "0",
-    tailWasteFt: n.tailWasteFt != null ? String(n.tailWasteFt) : "0",
-  };
 }
 
 // ─── Route registration ────────────────────────────────────────────────────
@@ -364,6 +202,10 @@ export function registerMaterialsImportExportRoutes(
           lead_waste_ft: '',
           tail_waste_ft: '',
           active: 'true',
+          weight_value: '0.18',
+          weight_unit: 'lb',
+          weight_basis: 'sqft',
+          weight_oz_per_basis: '',
         },
         // ── Roll media — print vinyl ───────────────────────────────────────
         {
@@ -399,6 +241,10 @@ export function registerMaterialsImportExportRoutes(
           lead_waste_ft: '1',
           tail_waste_ft: '1',
           active: 'true',
+          weight_value: '0.32',
+          weight_unit: 'lb',
+          weight_basis: 'sqft',
+          weight_oz_per_basis: '',
         },
         // ── Roll media — laminate ──────────────────────────────────────────
         {
@@ -434,6 +280,10 @@ export function registerMaterialsImportExportRoutes(
           lead_waste_ft: '1',
           tail_waste_ft: '1',
           active: 'true',
+          weight_value: '',
+          weight_unit: '',
+          weight_basis: '',
+          weight_oz_per_basis: '',
         },
         // ── Consumable — wire stake ────────────────────────────────────────
         {
@@ -469,6 +319,10 @@ export function registerMaterialsImportExportRoutes(
           lead_waste_ft: '',
           tail_waste_ft: '',
           active: 'true',
+          weight_value: '0.15',
+          weight_unit: 'lb',
+          weight_basis: 'each',
+          weight_oz_per_basis: '',
         },
         // ── Ink ───────────────────────────────────────────────────────────
         {
@@ -504,6 +358,10 @@ export function registerMaterialsImportExportRoutes(
           lead_waste_ft: '',
           tail_waste_ft: '',
           active: 'true',
+          weight_value: '',
+          weight_unit: '',
+          weight_basis: '',
+          weight_oz_per_basis: '',
         },
       ];
 
@@ -767,6 +625,42 @@ active
   Notes    : Set to false to deactivate a material. Inactive materials are hidden
              from product builder and pricing lookups but remain in the database.
 
+weight_value
+  Required : No  (all weight fields must be present together or all left blank)
+  Type     : Decimal (positive number)
+  Example  : 0.42
+  Notes    : The weight of one weight_basis unit of this material, expressed in
+             weight_unit units. Must be greater than 0 when provided.
+             Leave blank to indicate this material has no weight configured.
+
+weight_unit
+  Required : No  (required if weight_value is provided)
+  Allowed  : oz | lb | g | kg
+  Example  : lb
+  Notes    : The unit for weight_value. All weight fields must be provided together
+             or all left blank — partial weight data is invalid.
+
+weight_basis
+  Required : No  (required if weight_value is provided)
+  Allowed  : each | sqft | sheet | linear_ft | roll
+  Example  : sqft
+  Notes    : The basis unit that weight_value applies to.
+               each      — weight per individual item (e.g. a stake, a grommet)
+               sqft      — weight per square foot (e.g. vinyl, coroplast, ACM)
+               sheet     — weight per full sheet
+               linear_ft — weight per linear foot (e.g. extrusion, trim)
+               roll      — weight per full roll
+
+weight_oz_per_basis
+  Required : No  — do not fill in; server always recomputes this value.
+  Type     : Decimal
+  Example  : (leave blank on import)
+  Notes    : Canonical normalized weight in ounces per weight_basis unit.
+             This column is EXPORT-ONLY for visibility and debugging.
+             Any value provided here during import is silently ignored.
+             The server always recomputes it from weight_value + weight_unit +
+             weight_basis using the same formula as the runtime weight resolver.
+
 
 COMMIT BEHAVIOR
 ---------------
@@ -864,6 +758,10 @@ TIPS
           lead_waste_ft:          m.leadWasteFt ?? '',
           tail_waste_ft:          m.tailWasteFt ?? '',
           active:                 m.isActive ? 'true' : 'false',
+          weight_value:           m.weightValue ?? '',
+          weight_unit:            m.weightUnit ?? '',
+          weight_basis:           m.weightBasis ?? '',
+          weight_oz_per_basis:    m.weightOzPerBasis ?? '',  // server-computed canonical value
         }));
 
         const csv = Papa.unparse(exportRows, { columns: [...TEMPLATE_COLUMNS] });
