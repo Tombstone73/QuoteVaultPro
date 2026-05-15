@@ -918,6 +918,7 @@ const ProductEditorPage = () => {
             pricingProfileKey={form.watch("pricingProfileKey") || null}
             pricingProfileConfig={form.watch("pricingProfileConfig") || null}
             pricingMode={pbv2PricingMode}
+            productPrimaryMaterialId={form.watch("primaryMaterialId") || null}
             findings={pbv2PricingData.findings}
           />
         }

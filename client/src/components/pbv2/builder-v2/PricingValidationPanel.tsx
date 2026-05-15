@@ -93,6 +93,17 @@ type PricingPreviewResponse = {
       shippingConfigWeightBasis?: string | null;
       selectedWeightFields?: Array<{ label: string; oz: number }>;
       computedShippingWeightOz?: number | null;
+      resolvedWeightSource?: "choice_material" | "product_primary_material" | "product_fallback" | "missing";
+      sourceLabel?: string;
+      materialId?: string;
+      materialName?: string;
+      materialSku?: string | null;
+      weightValue?: number | null;
+      weightUnit?: string | null;
+      weightBasis?: string | null;
+      weightOzPerBasis?: number | null;
+      basisQuantity?: number | null;
+      warnings?: Array<{ code: string; message: string }>;
       warningCode?: string;
       errorCode?: string;
       errorMessage?: string;
@@ -130,6 +141,7 @@ interface PricingValidationPanelProps {
   pricingProfileKey?: string | null;
   pricingProfileConfig?: unknown;
   pricingMode?: "basic" | "advanced";
+  productPrimaryMaterialId?: string | null;
   findings: Finding[];
 }
 
@@ -193,7 +205,7 @@ function buildPreviewGroups(treeJson: unknown | null): PreviewGroup[] {
     .filter((group) => group.options.length > 0);
 }
 
-export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, pricingProfileKey, pricingProfileConfig, pricingMode = "basic", findings }: PricingValidationPanelProps) {
+export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, pricingProfileKey, pricingProfileConfig, pricingMode = "basic", productPrimaryMaterialId, findings }: PricingValidationPanelProps) {
   const currencyFormatter = useMemo(
     () =>
       new Intl.NumberFormat("en-US", {
@@ -437,6 +449,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   const weightFinding = findings.find((finding) => finding.code === "PBV2_W_WEIGHT_MISSING" || finding.code === "PBV2_E_WEIGHT_NEGATIVE") ?? null;
   const shouldShowWeightDebug = Boolean(weightDebug || previewShippingConfig || previewMeta?.baseWeightOz != null || weightFinding);
   const selectedWeightFields = Array.isArray(weightDebug?.selectedWeightFields) ? weightDebug.selectedWeightFields : [];
+  const weightWarnings = Array.isArray(weightDebug?.warnings) ? weightDebug.warnings : [];
   const runtimeSelectionDebug = formulaDebug?.runtimeSelectionContext ?? null;
   const selectedChoiceEntries = Object.entries(runtimeSelectionDebug?.selectedChoices ?? {});
   const appliedPricingOverrides = Array.isArray(runtimeSelectionDebug?.appliedPricingOverrides)
@@ -532,6 +545,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
             pricingFormulaOverride,
             pricingProfileKey,
             pricingProfileConfig,
+            productPrimaryMaterialId,
             debug: true,
             optionSelectionsJson: selectionPayload,
           }),
@@ -889,6 +903,18 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     <div className="font-mono">{displayDebugValue(weightDebug?.shippingConfigWeightUnit ?? previewShippingConfig?.weightUnit ?? null)}</div>
                     <div className="text-slate-400">shippingConfig.weightBasis</div>
                     <div className="font-mono">{displayDebugValue(weightDebug?.shippingConfigWeightBasis ?? previewShippingConfig?.weightBasis ?? null)}</div>
+                    <div className="text-slate-400">Resolved source</div>
+                    <div className="font-mono">{displayDebugValue(weightDebug?.sourceLabel ?? weightDebug?.resolvedWeightSource ?? null)}</div>
+                    <div className="text-slate-400">Material</div>
+                    <div className="font-mono">{displayDebugValue(weightDebug?.materialName ?? weightDebug?.materialId ?? null)}</div>
+                    <div className="text-slate-400">Basis</div>
+                    <div className="font-mono">
+                      {weightDebug?.weightValue != null && weightDebug?.weightUnit && weightDebug?.weightBasis
+                        ? `${weightDebug.weightValue} ${weightDebug.weightUnit} / ${weightDebug.weightBasis}`
+                        : displayDebugValue(null)}
+                    </div>
+                    <div className="text-slate-400">Basis quantity</div>
+                    <div className="font-mono">{displayDebugValue(weightDebug?.basisQuantity ?? null)}</div>
                     <div className="text-slate-400">Computed shipping weight</div>
                     <div className="font-mono">{displayWeightOz(weightDebug?.computedShippingWeightOz ?? null)}</div>
                     <div className="text-slate-400">Weight code</div>
@@ -911,6 +937,15 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     )}
                   </div>
 
+                  {weightWarnings.length > 0 ? (
+                    <div className="rounded border border-amber-800/50 bg-amber-950/20 p-2 space-y-1">
+                      {weightWarnings.map((warning, index) => (
+                        <div key={`${warning.code}-${index}`} className="text-amber-200">
+                          <span className="font-mono">{warning.code}</span>: {warning.message}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                   {weightDebug?.errorMessage ? <div className="text-red-300">{weightDebug.errorMessage}</div> : null}
                 </div>
               ) : null}
