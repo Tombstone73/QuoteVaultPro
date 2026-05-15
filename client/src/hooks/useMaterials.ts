@@ -178,6 +178,10 @@ export interface MaterialSearchItem {
   wholesalePriceUnit?: string | null;
   vendorCostUnit?: string | null;
   consumptionUnit?: string | null;
+  weightValue?: string | null;
+  weightUnit?: "oz" | "lb" | "g" | "kg" | null;
+  weightBasis?: "each" | "sqft" | "sheet" | "linear_ft" | "roll" | null;
+  weightOzPerBasis?: string | null;
   isActive: boolean;
 }
 
@@ -210,6 +214,10 @@ export function useMaterialsSearch(searchText: string, options?: { limit?: numbe
         wholesalePriceUnit: m.wholesalePriceUnit ?? m.sellPriceUnit ?? m.unitOfMeasure ?? null,
         vendorCostUnit: m.vendorCostUnit ?? m.unitOfMeasure ?? null,
         consumptionUnit: m.consumptionUnit ?? m.sellPriceUnit ?? m.unitOfMeasure ?? null,
+        weightValue: m.weightValue ?? null,
+        weightUnit: m.weightUnit ?? null,
+        weightBasis: m.weightBasis ?? null,
+        weightOzPerBasis: m.weightOzPerBasis ?? null,
         isActive: m?.isActive !== false,
       })).filter((m) => !!m.id && !!m.name);
     },
