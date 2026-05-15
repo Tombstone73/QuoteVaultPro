@@ -450,6 +450,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   const shouldShowWeightDebug = Boolean(weightDebug || previewShippingConfig || previewMeta?.baseWeightOz != null || weightFinding);
   const selectedWeightFields = Array.isArray(weightDebug?.selectedWeightFields) ? weightDebug.selectedWeightFields : [];
   const weightWarnings = Array.isArray(weightDebug?.warnings) ? weightDebug.warnings : [];
+  const fallbackUsed = weightDebug?.resolvedWeightSource === "product_fallback";
   const runtimeSelectionDebug = formulaDebug?.runtimeSelectionContext ?? null;
   const selectedChoiceEntries = Object.entries(runtimeSelectionDebug?.selectedChoices ?? {});
   const appliedPricingOverrides = Array.isArray(runtimeSelectionDebug?.appliedPricingOverrides)
@@ -473,6 +474,24 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   const displayWeightOz = (value: unknown) => {
     if (typeof value !== "number" || !Number.isFinite(value)) return "—";
     return `${value.toFixed(2)} oz`;
+  };
+  const displayWeightWarning = (warning: { code: string; message: string }) => {
+    switch (warning.code) {
+      case "PBV2_W_MATERIAL_WEIGHT_MISSING":
+        return fallbackUsed
+          ? "Selected material has no configured weight. Product fallback weight was used."
+          : "Selected material has no configured weight.";
+      case "PBV2_W_MATERIAL_REFERENCE_MISSING":
+        return fallbackUsed
+          ? "Selected material could not be found. Product fallback weight was used."
+          : "Selected material could not be found.";
+      case "PBV2_W_WEIGHT_MISSING":
+        return "No usable weight source is configured for this product.";
+      case "PBV2_W_MULTIPLE_MATERIAL_OVERRIDES":
+        return "Multiple selected choices resolve materials. Product primary material or fallback weight was used.";
+      default:
+        return warning.message || warning.code;
+    }
   };
 
   useEffect(() => {
@@ -893,17 +912,17 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                 <div className="mt-3 rounded border border-slate-700/70 bg-slate-900/40 p-3 text-xs text-slate-300 space-y-2">
                   <div className="text-xs font-semibold uppercase tracking-wide text-slate-200">Weight Debug</div>
                   <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-                    <div className="text-slate-400">Base weight input</div>
+                    <div className="text-slate-400">Fallback weight input</div>
                     <div className="font-mono">{displayDebugValue(weightDebug?.baseWeightInput ?? previewShippingConfig?.baseWeight ?? previewMeta?.baseWeightOz ?? null)}</div>
-                    <div className="text-slate-400">baseWeightOz canonical</div>
+                    <div className="text-slate-400">Fallback canonical</div>
                     <div className="font-mono">{displayWeightOz(weightDebug?.baseWeightOz ?? (typeof previewMeta?.baseWeightOz === "number" ? previewMeta.baseWeightOz : null))}</div>
-                    <div className="text-slate-400">shippingConfig.baseWeight</div>
+                    <div className="text-slate-400">Fallback source value</div>
                     <div className="font-mono">{displayDebugValue(weightDebug?.shippingConfigBaseWeight ?? previewShippingConfig?.baseWeight ?? null)}</div>
-                    <div className="text-slate-400">shippingConfig.weightUnit</div>
+                    <div className="text-slate-400">Fallback unit</div>
                     <div className="font-mono">{displayDebugValue(weightDebug?.shippingConfigWeightUnit ?? previewShippingConfig?.weightUnit ?? null)}</div>
-                    <div className="text-slate-400">shippingConfig.weightBasis</div>
+                    <div className="text-slate-400">Fallback basis</div>
                     <div className="font-mono">{displayDebugValue(weightDebug?.shippingConfigWeightBasis ?? previewShippingConfig?.weightBasis ?? null)}</div>
-                    <div className="text-slate-400">Resolved source</div>
+                    <div className="text-slate-400">Weight source</div>
                     <div className="font-mono">{displayDebugValue(weightDebug?.sourceLabel ?? weightDebug?.resolvedWeightSource ?? null)}</div>
                     <div className="text-slate-400">Material</div>
                     <div className="font-mono">{displayDebugValue(weightDebug?.materialName ?? weightDebug?.materialId ?? null)}</div>
@@ -915,14 +934,14 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     </div>
                     <div className="text-slate-400">Basis quantity</div>
                     <div className="font-mono">{displayDebugValue(weightDebug?.basisQuantity ?? null)}</div>
-                    <div className="text-slate-400">Computed shipping weight</div>
+                    <div className="text-slate-400">Computed weight</div>
                     <div className="font-mono">{displayWeightOz(weightDebug?.computedShippingWeightOz ?? null)}</div>
-                    <div className="text-slate-400">Weight code</div>
-                    <div className="font-mono">{displayDebugValue(weightDebug?.errorCode ?? weightDebug?.warningCode ?? weightFinding?.code ?? null)}</div>
+                    <div className="text-slate-400">Fallback used</div>
+                    <div className="font-mono">{fallbackUsed ? "Yes" : "No"}</div>
                   </div>
 
                   <div className="space-y-1">
-                    <div className="text-slate-400">Selected material weight fields</div>
+                    <div className="text-slate-400">Option weight fields</div>
                     {selectedWeightFields.length === 0 ? (
                       <div className="font-mono">—</div>
                     ) : (
@@ -941,9 +960,17 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     <div className="rounded border border-amber-800/50 bg-amber-950/20 p-2 space-y-1">
                       {weightWarnings.map((warning, index) => (
                         <div key={`${warning.code}-${index}`} className="text-amber-200">
-                          <span className="font-mono">{warning.code}</span>: {warning.message}
+                          {displayWeightWarning(warning)}
                         </div>
                       ))}
+                      <details className="text-[11px] text-amber-300/80">
+                        <summary>Debug codes</summary>
+                        <div className="mt-1 space-y-1">
+                          {weightWarnings.map((warning, index) => (
+                            <div key={`${warning.code}-detail-${index}`} className="font-mono">{warning.code}</div>
+                          ))}
+                        </div>
+                      </details>
                     </div>
                   ) : null}
                   {weightDebug?.errorMessage ? <div className="text-red-300">{weightDebug.errorMessage}</div> : null}
