@@ -6,8 +6,8 @@
  */
 
 import { db } from '../../db';
-import { products, pbv2TreeVersions } from '../../../shared/schema';
-import { eq, and } from 'drizzle-orm';
+import { products, pbv2TreeVersions, materials } from '../../../shared/schema';
+import { eq, and, inArray } from 'drizzle-orm';
 import { evaluate } from 'mathjs';
 import { evaluateOptionTreeV2, pbv2ToWeightTotal } from '../optionTreeV2Evaluator';
 import { buildFlatGoodsInput, flatGoodsCalculator, getProfile, type FlatGoodsConfig } from '../../../shared/pricingProfiles';
@@ -39,6 +39,14 @@ import {
 } from '../../../shared/pbv2/formulaScope';
 import { pbv2ToRuntimeSelectionContext, resolvePricingV2BaseRates } from '../../../shared/pbv2/pricingAdapter';
 import { sheetConsumptionSqft } from '../../../shared/pbv2/formulaHelpers';
+import {
+  collectPbv2WeightMaterialIds,
+  resolvePbv2WeightSource,
+  type Pbv2WeightMaterialRecord,
+  type Pbv2WeightWarning,
+  type Pbv2WeightSource,
+  type ResolvedPbv2WeightSource,
+} from '../pbv2WeightResolver';
 // @ts-ignore - NestingCalculator.js is plain JS without exported TS types
 import NestingCalculator from '../../NestingCalculator.js';
 
@@ -70,6 +78,7 @@ export type PricingOutput = {
     nestingDetails?: unknown;
     pricingMethod?: string;
   };
+  resolvedWeightSource?: ResolvedPbv2WeightSource;
   pricingOverrideApplied?: boolean; // True if overridePriceCents was used
 };
 
@@ -105,6 +114,22 @@ export type PBV2RuntimePricingSnapshot = {
   resolvedMatrixVariables: Record<string, number>;
   calculatedPrice: number;
   capturedAt: string;
+  resolvedWeightDebug?: PBV2ResolvedWeightSnapshotDebug;
+};
+
+export type PBV2ResolvedWeightSnapshotDebug = {
+  totalOz: number | null;
+  source: Pbv2WeightSource;
+  sourceLabel?: string;
+  materialId?: string;
+  materialName?: string;
+  materialSku?: string | null;
+  weightValue?: number | null;
+  weightUnit?: string | null;
+  weightBasis?: string | null;
+  weightOzPerBasis?: number | null;
+  basisQuantity?: number | null;
+  warnings: Pbv2WeightWarning[];
 };
 
 export type PricingPreviewEvaluationResult = {
@@ -182,6 +207,17 @@ export type PricingPreviewEvaluationResult = {
       shippingConfigWeightBasis?: string | null;
       selectedWeightFields?: Array<{ label: string; oz: number }>;
       computedShippingWeightOz?: number | null;
+      resolvedWeightSource?: Pbv2WeightSource;
+      sourceLabel?: string;
+      materialId?: string;
+      materialName?: string;
+      materialSku?: string | null;
+      weightValue?: number | null;
+      weightUnit?: string | null;
+      weightBasis?: string | null;
+      weightOzPerBasis?: number | null;
+      basisQuantity?: number | null;
+      warnings?: Pbv2WeightWarning[];
       warningCode?: string;
       errorCode?: string;
       errorMessage?: string;
@@ -289,6 +325,23 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
         sqft: (widthIn ?? 0) > 0 && (heightIn ?? 0) > 0 ? ((widthIn ?? 0) * (heightIn ?? 0)) / 144 : 0,
       },
     );
+    const weightMaterialRecords = await loadWeightMaterials(
+      organizationId,
+      collectPbv2WeightMaterialIds({
+        runtimeSelectionContext,
+        productPrimaryMaterialId: product.primaryMaterialId,
+      }),
+    );
+    const resolvedWeightSource = resolvePbv2WeightSource({
+      treeJson: treeVersion.treeJson,
+      selections: { schemaVersion: 2, selected: ruleValidatedSelections.selected },
+      runtimeSelectionContext,
+      productPrimaryMaterialId: product.primaryMaterialId,
+      materialRecords: weightMaterialRecords,
+      widthIn: widthIn ?? 0,
+      heightIn: heightIn ?? 0,
+      quantity,
+    });
 
     // Build minimal snapshot
     const pricedAt = new Date().toISOString();
@@ -322,6 +375,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
         quantity,
         calculatedPriceCents: overridePriceCents,
         capturedAt: pricedAt,
+        resolvedWeightSource,
       }),
     };
 
@@ -335,6 +389,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
         totalCents: overridePriceCents,
         pricingMethod,
       },
+      resolvedWeightSource,
       pricingOverrideApplied: true,
     };
   }
@@ -375,6 +430,23 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
       sqft: (widthIn ?? 0) > 0 && (heightIn ?? 0) > 0 ? ((widthIn ?? 0) * (heightIn ?? 0)) / 144 : 0,
     },
   );
+  const weightMaterialRecords = await loadWeightMaterials(
+    organizationId,
+    collectPbv2WeightMaterialIds({
+      runtimeSelectionContext,
+      productPrimaryMaterialId: product.primaryMaterialId,
+    }),
+  );
+  const resolvedWeightSource = resolvePbv2WeightSource({
+    treeJson: treeVersion.treeJson,
+    selections: { schemaVersion: 2, selected: ruleValidatedSelections.selected },
+    runtimeSelectionContext,
+    productPrimaryMaterialId: product.primaryMaterialId,
+    materialRecords: weightMaterialRecords,
+    widthIn: widthIn ?? 0,
+    heightIn: heightIn ?? 0,
+    quantity,
+  });
 
   // Step 4: Calculate base price from tree metadata with dimensions/quantity
   const baseDetails = calculateBasePriceDetails(treeVersion.treeJson, {
@@ -501,6 +573,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
       baseDetails,
       calculatedPriceCents: lineTotalCents,
       capturedAt: pricedAt,
+      resolvedWeightSource,
     }),
   };
 
@@ -515,6 +588,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
       nestingDetails: baseDetails.nestingDetails,
       pricingMethod,
     },
+    resolvedWeightSource,
   };
 }
 
@@ -532,6 +606,8 @@ export function evaluatePricingPreviewFromTree(input: {
   pricingProfileKey?: string | null;
   pricingProfileConfig?: unknown;
   formulaVariables?: Record<string, number>;
+  productPrimaryMaterialId?: string | null;
+  materialRecords?: Pbv2WeightMaterialRecord[];
   debug?: boolean;
 }): PricingPreviewEvaluationResult {
   const widthIn = Number(input.widthIn);
@@ -624,6 +700,9 @@ export function evaluatePricingPreviewFromTree(input: {
       schemaVersion: 2,
       selected: ruleValidatedSelections.selected,
     },
+    runtimeSelectionContext,
+    productPrimaryMaterialId: input.productPrimaryMaterialId,
+    materialRecords: input.materialRecords,
     widthIn,
     heightIn,
     quantity,
@@ -1044,6 +1123,16 @@ async function loadProduct(organizationId: string, productId: string) {
   return product;
 }
 
+async function loadWeightMaterials(organizationId: string, materialIds: string[]): Promise<Pbv2WeightMaterialRecord[]> {
+  const uniqueMaterialIds = Array.from(new Set(materialIds.map((id) => id.trim()).filter(Boolean)));
+  if (uniqueMaterialIds.length === 0) return [];
+
+  return db
+    .select()
+    .from(materials)
+    .where(and(eq(materials.organizationId, organizationId), inArray(materials.id, uniqueMaterialIds)));
+}
+
 /**
  * Check for pbv2Override in product's pricingProfileConfig
  * 
@@ -1410,6 +1499,32 @@ function resolveSnapshotFormula(treeJson: any, product: any, pricingProfileKey: 
   };
 }
 
+export function buildResolvedWeightSnapshotDebug(
+  resolvedWeightSource?: ResolvedPbv2WeightSource | null,
+): PBV2ResolvedWeightSnapshotDebug | undefined {
+  if (!resolvedWeightSource) return undefined;
+
+  return cloneJsonValue({
+    totalOz: resolvedWeightSource.totalOz,
+    source: resolvedWeightSource.source,
+    ...(resolvedWeightSource.sourceLabel !== undefined ? { sourceLabel: resolvedWeightSource.sourceLabel } : {}),
+    ...(resolvedWeightSource.materialId !== undefined ? { materialId: resolvedWeightSource.materialId } : {}),
+    ...(resolvedWeightSource.materialName !== undefined ? { materialName: resolvedWeightSource.materialName } : {}),
+    ...(resolvedWeightSource.materialSku !== undefined ? { materialSku: resolvedWeightSource.materialSku } : {}),
+    ...(resolvedWeightSource.weightValue !== undefined ? { weightValue: resolvedWeightSource.weightValue } : {}),
+    ...(resolvedWeightSource.weightUnit !== undefined ? { weightUnit: resolvedWeightSource.weightUnit } : {}),
+    ...(resolvedWeightSource.weightBasis !== undefined ? { weightBasis: resolvedWeightSource.weightBasis } : {}),
+    ...(resolvedWeightSource.weightOzPerBasis !== undefined ? { weightOzPerBasis: resolvedWeightSource.weightOzPerBasis } : {}),
+    ...(resolvedWeightSource.basisQuantity !== undefined ? { basisQuantity: resolvedWeightSource.basisQuantity } : {}),
+    warnings: Array.isArray(resolvedWeightSource.warnings)
+      ? resolvedWeightSource.warnings.map((warning) => ({
+          code: warning.code,
+          message: warning.message,
+        }))
+      : [],
+  });
+}
+
 function buildRuntimePricingSnapshot(input: {
   treeJson: any;
   product: any;
@@ -1422,6 +1537,7 @@ function buildRuntimePricingSnapshot(input: {
   baseDetails?: BasePriceDetails;
   calculatedPriceCents: number;
   capturedAt: string;
+  resolvedWeightSource?: ResolvedPbv2WeightSource;
 }): PBV2RuntimePricingSnapshot {
   const trimAllowances = getTrimAllowancesInches(input.treeJson);
   const orderedWidthIn = input.baseDetails?.orderedWidthIn ?? input.widthIn;
@@ -1467,6 +1583,9 @@ function buildRuntimePricingSnapshot(input: {
     resolvedMatrixVariables: input.pricingMatrixResolution.variables,
     calculatedPrice: input.calculatedPriceCents / 100,
     capturedAt: input.capturedAt,
+    ...(input.resolvedWeightSource
+      ? { resolvedWeightDebug: buildResolvedWeightSnapshotDebug(input.resolvedWeightSource) }
+      : {}),
   });
 }
 
@@ -1751,6 +1870,9 @@ function convertWeightToOz(value: number, unit: unknown): number {
 function buildPricingPreviewWeightDebug(input: {
   treeJson: any;
   selections: LineItemOptionSelectionsV2;
+  runtimeSelectionContext?: OptionRuntimeSelectionContext | null;
+  productPrimaryMaterialId?: string | null;
+  materialRecords?: Pbv2WeightMaterialRecord[];
   widthIn: number;
   heightIn: number;
   quantity: number;
@@ -1801,6 +1923,17 @@ function buildPricingPreviewWeightDebug(input: {
     }
   }
 
+  const resolvedWeight = resolvePbv2WeightSource({
+    treeJson: input.treeJson,
+    selections: input.selections,
+    runtimeSelectionContext: input.runtimeSelectionContext,
+    productPrimaryMaterialId: input.productPrimaryMaterialId,
+    materialRecords: input.materialRecords,
+    widthIn: input.widthIn,
+    heightIn: input.heightIn,
+    quantity: input.quantity,
+  });
+
   try {
     const rawWeightResult = pbv2ToWeightTotal({
       tree: input.treeJson,
@@ -1811,9 +1944,10 @@ function buildPricingPreviewWeightDebug(input: {
     });
 
     const selectedWeightFields = rawWeightResult.breakdown.filter((entry) => entry.label !== 'Base weight');
-    const computedShippingWeightOz = baseWeightSource === 'shippingConfig.baseWeight'
+    const fallbackComputedShippingWeightOz = baseWeightSource === 'shippingConfig.baseWeight'
       ? rawWeightResult.totalOz + baseWeightContributionOz
       : rawWeightResult.totalOz;
+    const computedShippingWeightOz = resolvedWeight.totalOz ?? fallbackComputedShippingWeightOz;
     const warningCode = !errorCode && computedShippingWeightOz <= 0 ? 'PBV2_W_WEIGHT_MISSING' : undefined;
 
     return {
@@ -1825,7 +1959,18 @@ function buildPricingPreviewWeightDebug(input: {
       shippingConfigWeightBasis,
       selectedWeightFields,
       computedShippingWeightOz,
-      warningCode,
+      resolvedWeightSource: resolvedWeight.source,
+      sourceLabel: resolvedWeight.sourceLabel,
+      materialId: resolvedWeight.materialId,
+      materialName: resolvedWeight.materialName,
+      materialSku: resolvedWeight.materialSku,
+      weightValue: resolvedWeight.weightValue,
+      weightUnit: resolvedWeight.weightUnit,
+      weightBasis: resolvedWeight.weightBasis,
+      weightOzPerBasis: resolvedWeight.weightOzPerBasis,
+      basisQuantity: resolvedWeight.basisQuantity,
+      warnings: resolvedWeight.warnings,
+      warningCode: resolvedWeight.warnings[0]?.code ?? warningCode,
       errorCode,
       errorMessage,
     };
@@ -1838,7 +1983,19 @@ function buildPricingPreviewWeightDebug(input: {
       shippingConfigWeightUnit,
       shippingConfigWeightBasis,
       selectedWeightFields: [],
-      computedShippingWeightOz: baseWeightContributionOz || null,
+      computedShippingWeightOz: resolvedWeight.totalOz ?? (baseWeightContributionOz || null),
+      resolvedWeightSource: resolvedWeight.source,
+      sourceLabel: resolvedWeight.sourceLabel,
+      materialId: resolvedWeight.materialId,
+      materialName: resolvedWeight.materialName,
+      materialSku: resolvedWeight.materialSku,
+      weightValue: resolvedWeight.weightValue,
+      weightUnit: resolvedWeight.weightUnit,
+      weightBasis: resolvedWeight.weightBasis,
+      weightOzPerBasis: resolvedWeight.weightOzPerBasis,
+      basisQuantity: resolvedWeight.basisQuantity,
+      warnings: resolvedWeight.warnings,
+      warningCode: resolvedWeight.warnings[0]?.code,
       errorCode: errorCode || 'PBV2_WEIGHT_DEBUG_UNAVAILABLE',
       errorMessage: errorMessage || (typeof error?.message === 'string' ? error.message : 'Weight debug unavailable'),
     };

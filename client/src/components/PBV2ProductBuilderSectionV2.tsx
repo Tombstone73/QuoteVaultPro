@@ -283,6 +283,7 @@ export default function PBV2ProductBuilderSectionV2({
 
   // Modal state
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [serverPublishWarnings, setServerPublishWarnings] = useState<Finding[] | null>(null);
   const [deleteGroupConfirmOpen, setDeleteGroupConfirmOpen] = useState(false);
   const [deleteGroupTarget, setDeleteGroupTarget] = useState<{ id: string; name: string } | null>(null);
   const [jsonImportOpen, setJsonImportOpen] = useState(false);
@@ -1219,6 +1220,7 @@ export default function PBV2ProductBuilderSectionV2({
 
     // If warnings exist, show confirmation
     if (publishValidation.warnings.length > 0) {
+      setServerPublishWarnings(null);
       setConfirmOpen(true);
       return;
     }
@@ -1260,9 +1262,17 @@ export default function PBV2ProductBuilderSectionV2({
         throw new Error(envelopeMessage(res.status, json, "Publish failed"));
       }
 
+      if (json?.requiresWarningsConfirm && Array.isArray(json?.findings)) {
+        const warnings = json.findings.filter((finding: Finding) => finding?.severity === "WARNING");
+        setServerPublishWarnings(warnings);
+        setConfirmOpen(true);
+        return;
+      }
+
       toast({ title: "Published successfully" });
       setHasLocalChanges(false);
       setConfirmOpen(false);
+      setServerPublishWarnings(null);
       
       // Refetch tree versions to get updated status
       await treeQuery.refetch();
@@ -1377,18 +1387,18 @@ export default function PBV2ProductBuilderSectionV2({
           <DialogHeader>
             <DialogTitle className="text-slate-100">Publish with Warnings?</DialogTitle>
             <DialogDescription className="text-slate-300">
-              {validationResult.warnings.length} warning(s) found. Publishing will make this tree ACTIVE.
+              {(serverPublishWarnings ?? validationResult.warnings).length} warning(s) found. Publishing will make this tree ACTIVE.
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-60 overflow-y-auto space-y-2">
-            {validationResult.warnings.map((w, i) => (
+            {(serverPublishWarnings ?? validationResult.warnings).map((w, i) => (
               <div key={i} className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded p-2">
                 {w.message}
               </div>
             ))}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmOpen(false)}>
+            <Button variant="outline" onClick={() => { setConfirmOpen(false); setServerPublishWarnings(null); }}>
               Cancel
             </Button>
             <Button onClick={() => performPublish(true)} className="bg-blue-600 hover:bg-blue-700">
