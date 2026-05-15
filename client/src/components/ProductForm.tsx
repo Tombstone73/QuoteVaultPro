@@ -18,6 +18,7 @@ import { BasePricingEditor } from "@/components/pbv2/builder-v2/BasePricingEdito
 import { PricingVariableHelper } from "@/components/pbv2/builder-v2/PricingVariableHelper";
 import { FormulaReferenceModal } from "@/components/pbv2/builder-v2/FormulaReferenceModal";
 import { CircleHelp } from "lucide-react";
+import { formatMaterialWeightStatus } from "@/lib/materialWeightDisplay";
 
 // Required field indicator component
 function RequiredIndicator() {
@@ -118,6 +119,10 @@ export const ProductForm = ({
   }, [shippingPolicy, baseWeight, weightUnit, weightBasis, onUpdateTreeMeta, form]);
 
   const isWeightDisabled = shippingPolicy === "pickup_only";
+  const selectedPrimaryMaterialId = form.watch("primaryMaterialId");
+  const selectedPrimaryMaterial = Array.isArray(materials)
+    ? materials.find((mat: any) => mat.id === selectedPrimaryMaterialId)
+    : null;
   const legacyTrimAllowance = Number(treeMeta?.geometry?.trimAllowance ?? 0);
   const normalizedLegacyTrimAllowance = Number.isFinite(legacyTrimAllowance) && legacyTrimAllowance >= 0 ? legacyTrimAllowance : 0;
   const trimAllowanceX = Number(treeMeta?.geometry?.trimAllowanceX);
@@ -278,6 +283,14 @@ export const ProductForm = ({
                     ))}
                   </SelectContent>
                 </Select>
+                <FormDescription className="text-[11px] text-slate-500">
+                  Used as the weight source unless a PBV2 option choice resolves a more specific material.
+                </FormDescription>
+                {selectedPrimaryMaterial ? (
+                  <div className={`text-[11px] ${formatMaterialWeightStatus(selectedPrimaryMaterial) === "Weight not configured" ? "text-amber-300" : "text-emerald-300"}`}>
+                    {formatMaterialWeightStatus(selectedPrimaryMaterial)}
+                  </div>
+                ) : null}
                 <FormMessage />
               </FormItem>
             )}
@@ -308,7 +321,7 @@ export const ProductForm = ({
           {/* Weight row: Base Weight, Unit, Weight Basis */}
           <div className={`grid grid-cols-3 gap-3 ${isWeightDisabled ? "opacity-40 pointer-events-none" : ""}`}>
             <div>
-              <Label className="text-xs text-slate-400 mb-1.5 block">Base weight</Label>
+              <Label className="text-xs text-slate-400 mb-1.5 block">Fallback weight</Label>
               <Input
                 type="number"
                 min="0"
@@ -364,6 +377,9 @@ export const ProductForm = ({
                 </SelectContent>
               </Select>
             </div>
+          </div>
+          <div className="text-[11px] text-slate-500">
+            Used only when no selected material weight is available.
           </div>
         </div>
         </div>
