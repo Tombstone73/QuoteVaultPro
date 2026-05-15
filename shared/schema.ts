@@ -23,6 +23,7 @@ import {
   inventoryMovementTypeValues,
   materialReorderRequestStatusValues,
 } from "./materialInventory";
+import { MATERIAL_WEIGHT_BASES, MATERIAL_WEIGHT_UNITS } from "./materialWeight";
 
 // ============================================================
 // DOWNLOAD INTENT (Future-proofing for preflight/print variants)
@@ -4540,6 +4541,10 @@ export const materials = pgTable("materials", {
   wholesalePriceUnit: varchar("wholesale_price_unit", { length: 50 }),
   vendorCostUnit: varchar("vendor_cost_unit", { length: 50 }),
   consumptionUnit: varchar("consumption_unit", { length: 50 }),
+  weightValue: decimal("weight_value", { precision: 12, scale: 6 }),
+  weightUnit: varchar("weight_unit", { length: 20 }).$type<(typeof MATERIAL_WEIGHT_UNITS)[number]>(),
+  weightBasis: varchar("weight_basis", { length: 30 }).$type<(typeof MATERIAL_WEIGHT_BASES)[number]>(),
+  weightOzPerBasis: decimal("weight_oz_per_basis", { precision: 12, scale: 6 }),
   width: decimal("width", { precision: 10, scale: 2 }), // nullable for width dimension (sheet width or roll width)
   height: decimal("height", { precision: 10, scale: 2 }), // nullable for height dimension (sheet only)
   thickness: decimal("thickness", { precision: 10, scale: 4 }), // nullable for thickness
@@ -4576,9 +4581,19 @@ export const materials = pgTable("materials", {
 ]);
 
 const materialUnitSchema = z.enum(["sheet", "sqft", "linear_ft", "ml", "ea"]);
+const materialWeightUnitSchema = z.enum(MATERIAL_WEIGHT_UNITS);
+const materialWeightBasisSchema = z.enum(MATERIAL_WEIGHT_BASES);
 const optionalMaterialUnitSchema = z.preprocess(
   (v) => (v === "" || v == null ? undefined : v),
   materialUnitSchema.optional().nullable()
+);
+const optionalMaterialWeightUnitSchema = z.preprocess(
+  (v) => (v === "" || v == null ? undefined : v),
+  materialWeightUnitSchema.optional().nullable()
+);
+const optionalMaterialWeightBasisSchema = z.preprocess(
+  (v) => (v === "" || v == null ? undefined : v),
+  materialWeightBasisSchema.optional().nullable()
 );
 
 const materialBaseSchema = createInsertSchema(materials).omit({
@@ -4594,6 +4609,16 @@ const materialBaseSchema = createInsertSchema(materials).omit({
   wholesalePriceUnit: optionalMaterialUnitSchema,
   vendorCostUnit: optionalMaterialUnitSchema,
   consumptionUnit: optionalMaterialUnitSchema,
+  weightValue: z.preprocess(
+    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
+    z.coerce.number().positive().optional().nullable()
+  ),
+  weightUnit: optionalMaterialWeightUnitSchema,
+  weightBasis: optionalMaterialWeightBasisSchema,
+  weightOzPerBasis: z.preprocess(
+    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
+    z.coerce.number().positive().optional().nullable()
+  ),
   thicknessUnit: z.enum(["in", "mm", "mil", "gauge"]).optional().nullable(),
   costPerUnit: z.coerce.number().nonnegative(),
   // Numeric/decimal fields: accept strings from forms, treat "" and NaN as undefined.

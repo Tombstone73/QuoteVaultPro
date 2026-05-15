@@ -39,6 +39,8 @@ import { ObjectStorageService } from "../objectStorage";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/validator";
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "../lib/pbv2OverrideConfig";
 import { productDesignConfigRepository } from "../storage/productDesignConfig.repo";
+import { pbv2ToRuntimeSelectionContext } from "@shared/pbv2/pricingAdapter";
+import { collectPbv2WeightMaterialIds } from "../services/pbv2WeightResolver";
 
 // ---------------------------------------------------------------------------
 // Local JSON typing helpers (do NOT touch shared/schema.ts)
@@ -1475,6 +1477,7 @@ export function registerProductRoutes(
         pricingProfileKey,
         pricingProfileConfig,
         formulaVariables,
+        productPrimaryMaterialId,
         debug,
       } = req.body ?? {};
 
@@ -1504,6 +1507,29 @@ export function registerProductRoutes(
       }
 
       const { evaluatePricingPreviewFromTree } = await import("../services/pricing/PricingService");
+      const normalizedPrimaryMaterialId = typeof productPrimaryMaterialId === "string" && productPrimaryMaterialId.trim()
+        ? productPrimaryMaterialId.trim()
+        : null;
+      let materialRecords: any[] = [];
+      if (debug) {
+        const runtimeSelectionContext = pbv2ToRuntimeSelectionContext(treeJson, pbv2ExplicitSelections, {
+          widthIn: widthNum,
+          heightIn: heightNum,
+          quantity: quantityNum,
+          sqft: (widthNum * heightNum) / 144,
+        });
+        const materialIds = collectPbv2WeightMaterialIds({
+          runtimeSelectionContext,
+          productPrimaryMaterialId: normalizedPrimaryMaterialId,
+        });
+        if (materialIds.length > 0) {
+          materialRecords = await db
+            .select()
+            .from(materials)
+            .where(and(eq(materials.organizationId, organizationId), inArray(materials.id, materialIds)));
+        }
+      }
+
       const result = evaluatePricingPreviewFromTree({
         treeJson,
         widthIn: widthNum,
@@ -1516,6 +1542,8 @@ export function registerProductRoutes(
         formulaVariables: formulaVariables && typeof formulaVariables === "object" && !Array.isArray(formulaVariables)
           ? formulaVariables as Record<string, number>
           : undefined,
+        productPrimaryMaterialId: normalizedPrimaryMaterialId,
+        materialRecords,
         debug: Boolean(debug),
       });
 

@@ -15,6 +15,10 @@ export interface Material {
   wholesalePriceUnit?: string | null;
   vendorCostUnit?: string | null;
   consumptionUnit?: string | null;
+  weightValue?: string | null;
+  weightUnit?: "oz" | "lb" | "g" | "kg" | null;
+  weightBasis?: "each" | "sqft" | "sheet" | "linear_ft" | "roll" | null;
+  weightOzPerBasis?: string | null;
   width?: string | null;
   height?: string | null;
   thickness?: string | null;
