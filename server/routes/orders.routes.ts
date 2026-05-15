@@ -3268,6 +3268,9 @@ export async function registerOrderRoutes(
                 }
             }
             if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
+            if (typeof (err as any)?.code === 'string' && String((err as any).code).startsWith('MATERIAL_WEIGHT_')) {
+                return res.status(400).json({ error: (err as any).message, code: (err as any).code });
+            }
             res.status(500).json({ error: 'Failed to create material' });
         }
     });
@@ -3314,6 +3317,9 @@ export async function registerOrderRoutes(
                 });
             }
             if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
+            if (typeof (err as any)?.code === 'string' && String((err as any).code).startsWith('MATERIAL_WEIGHT_')) {
+                return res.status(400).json({ error: (err as any).message, code: (err as any).code });
+            }
             res.status(500).json({ error: 'Failed to update material' });
         }
     });
