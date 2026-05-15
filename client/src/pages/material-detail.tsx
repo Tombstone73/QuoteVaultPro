@@ -32,6 +32,13 @@ function effectiveMaterialUnits(material: any) {
   return { catalogUnit, inventoryUnit, sellPriceUnit, wholesalePriceUnit, vendorCostUnit, consumptionUnit };
 }
 
+function formatMaterialWeight(material: any) {
+  if (!material.weightValue || !material.weightUnit || !material.weightBasis) return "Not configured";
+  const numericValue = Number.parseFloat(String(material.weightValue));
+  const displayValue = Number.isFinite(numericValue) ? numericValue.toLocaleString(undefined, { maximumFractionDigits: 4 }) : String(material.weightValue);
+  return `${displayValue} ${material.weightUnit} / ${String(material.weightBasis).replace("_", " ")}`;
+}
+
 interface Props { params: { id: string }; }
 export default function MaterialDetailPage({ params }: Props) {
   const { user } = useAuth();
@@ -100,6 +107,7 @@ export default function MaterialDetailPage({ params }: Props) {
             <div><strong>Wholesale Price Unit:</strong> {units.wholesalePriceUnit}</div>
             <div><strong>Vendor Cost Unit:</strong> {units.vendorCostUnit}</div>
             <div><strong>Consumption Unit:</strong> {units.consumptionUnit}</div>
+            <div><strong>Weight:</strong> {formatMaterialWeight(material)}</div>
             <div><strong>Base Sell Price:</strong> {material.costPerUnit} per Sell Price Unit</div>
             {material.color && <div><strong>Color:</strong> {material.color}</div>}
             {material.width && <div><strong>Width:</strong> {material.width}</div>}

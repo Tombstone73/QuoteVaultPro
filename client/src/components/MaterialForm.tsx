@@ -10,6 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { useEffect, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { MATERIAL_WEIGHT_BASES, MATERIAL_WEIGHT_UNITS } from "@shared/materialWeight";
 
 type MaterialWithTierPricing = Material & {
   wholesaleBaseRate?: string | null;
@@ -43,6 +44,29 @@ const MATERIAL_UNIT_OPTIONS = [
   { value: "ml", label: "mL" },
   { value: "ea", label: "Each" },
 ] as const;
+const materialWeightUnitSchema = z.enum(MATERIAL_WEIGHT_UNITS);
+const materialWeightBasisSchema = z.enum(MATERIAL_WEIGHT_BASES);
+const optionalMaterialWeightUnitSchema = z.preprocess(
+  (v) => (v === "" || v == null ? undefined : v),
+  materialWeightUnitSchema.optional()
+);
+const optionalMaterialWeightBasisSchema = z.preprocess(
+  (v) => (v === "" || v == null ? undefined : v),
+  materialWeightBasisSchema.optional()
+);
+const MATERIAL_WEIGHT_UNIT_OPTIONS = [
+  { value: "oz", label: "oz" },
+  { value: "lb", label: "lb" },
+  { value: "g", label: "g" },
+  { value: "kg", label: "kg" },
+] as const;
+const MATERIAL_WEIGHT_BASIS_OPTIONS = [
+  { value: "each", label: "Each" },
+  { value: "sqft", label: "SqFt" },
+  { value: "sheet", label: "Sheet" },
+  { value: "linear_ft", label: "Linear Ft" },
+  { value: "roll", label: "Roll" },
+] as const;
 
 const materialSchema = z
   .object({
@@ -56,6 +80,9 @@ const materialSchema = z
   wholesalePriceUnit: optionalMaterialUnitSchema,
   vendorCostUnit: optionalMaterialUnitSchema,
   consumptionUnit: optionalMaterialUnitSchema,
+  weightValue: optionalNumber(z.coerce.number().positive()),
+  weightUnit: optionalMaterialWeightUnitSchema,
+  weightBasis: optionalMaterialWeightBasisSchema,
   costPerUnit: z.coerce.number().nonnegative(),
   // Tiered pricing fields
   wholesaleBaseRate: optionalNumber(z.coerce.number().nonnegative()),
@@ -140,6 +167,9 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       wholesalePriceUnit: (material.wholesalePriceUnit || material.sellPriceUnit || material.unitOfMeasure) as any,
       vendorCostUnit: (material.vendorCostUnit || material.unitOfMeasure) as any,
       consumptionUnit: (material.consumptionUnit || material.sellPriceUnit || material.unitOfMeasure) as any,
+      weightValue: material.weightValue ? parseFloat(material.weightValue) : undefined,
+      weightUnit: material.weightUnit || undefined,
+      weightBasis: material.weightBasis || undefined,
       costPerUnit: parseFloat(material.costPerUnit),
       // Tiered pricing fields
       wholesaleBaseRate: material.wholesaleBaseRate ? parseFloat(material.wholesaleBaseRate) : undefined,
@@ -175,6 +205,9 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       wholesalePriceUnit: "sheet",
       vendorCostUnit: "sheet",
       consumptionUnit: "sheet",
+      weightValue: undefined,
+      weightUnit: undefined,
+      weightBasis: undefined,
       costPerUnit: 0,
       // Tiered pricing fields
       wholesaleBaseRate: undefined,
@@ -216,6 +249,9 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       wholesalePriceUnit: values.wholesalePriceUnit || undefined,
       vendorCostUnit: values.vendorCostUnit || undefined,
       consumptionUnit: values.consumptionUnit || undefined,
+      weightValue: values.weightValue !== undefined ? values.weightValue.toString() : undefined,
+      weightUnit: values.weightUnit || undefined,
+      weightBasis: values.weightBasis || undefined,
       // Tiered pricing fields
       wholesaleBaseRate: values.wholesaleBaseRate !== undefined ? values.wholesaleBaseRate.toString() : undefined,
       wholesaleMinCharge: values.wholesaleMinCharge !== undefined ? values.wholesaleMinCharge.toString() : undefined,
@@ -426,7 +462,58 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
                 {showRollUnitWarning ? ROLL_UNIT_WARNING : SHEET_SQFT_WARNING}
               </div>
             ) : null}
-            
+
+            <div className="col-span-2 rounded-md border p-3 space-y-3">
+              <div>
+                <h3 className="text-sm font-semibold">Weight</h3>
+                <p className="text-xs text-muted-foreground">
+                  Used for shipping/weight estimates when products resolve this material. Optional for now.
+                </p>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="text-sm font-medium">Weight value</label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="any"
+                    placeholder="Optional"
+                    {...form.register("weightValue", { valueAsNumber: true })}
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium">Weight unit</label>
+                  <Select
+                    onValueChange={(v) => form.setValue("weightUnit", v === "__none__" ? undefined : v as any)}
+                    value={form.watch("weightUnit") || "__none__"}
+                  >
+                    <SelectTrigger><SelectValue placeholder="Unit" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">None</SelectItem>
+                      {MATERIAL_WEIGHT_UNIT_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <label className="text-sm font-medium">Weight basis</label>
+                  <Select
+                    onValueChange={(v) => form.setValue("weightBasis", v === "__none__" ? undefined : v as any)}
+                    value={form.watch("weightBasis") || "__none__"}
+                  >
+                    <SelectTrigger><SelectValue placeholder="Basis" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">None</SelectItem>
+                      {MATERIAL_WEIGHT_BASIS_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </div>
+
           {/* TWO-COLUMN RESPONSIVE LAYOUT: SELL PRICING + VENDOR COST */}
           <div className="col-span-2 grid gap-4 md:grid-cols-[minmax(0,2fr)_minmax(0,1.5fr)]">
             {/* LEFT COLUMN: MATERIAL SELL PRICING */}

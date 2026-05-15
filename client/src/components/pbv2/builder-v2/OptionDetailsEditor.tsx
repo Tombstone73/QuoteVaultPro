@@ -16,6 +16,7 @@ import type { EditorOption } from '@/lib/pbv2/pbv2ViewModel';
 import { CreateMaterialDialog } from '@/features/materials/CreateMaterialDialog';
 import { useMaterial, useMaterialsSearch, type MaterialSearchItem } from '@/hooks/useMaterials';
 import { useAuth } from '@/hooks/useAuth';
+import { formatMaterialWeightStatus } from '@/lib/materialWeightDisplay';
 
 type QuantityBasis = 'area_sqft' | 'perimeter_ft' | 'linear_ft' | 'each' | 'fixed';
 type PricingOverrideMode = 'none' | 'set_base_rate' | 'add_base_rate' | 'multiply_base_rate';
@@ -1226,6 +1227,10 @@ function MaterialIdSearchField({
         id: resolvedById.id,
         name: resolvedById.name,
         unitOfMeasure: resolvedById.unitOfMeasure,
+        weightValue: resolvedById.weightValue ?? null,
+        weightUnit: resolvedById.weightUnit ?? null,
+        weightBasis: resolvedById.weightBasis ?? null,
+        weightOzPerBasis: resolvedById.weightOzPerBasis ?? null,
         isActive: resolvedIsActive,
       }
     : null);
@@ -1324,10 +1329,19 @@ function MaterialIdSearchField({
         ) : null}
       </div>
 
+      {selectedMaterial ? (
+        <div className={cn(
+          "text-[10px]",
+          formatMaterialWeightStatus(selectedMaterial) === "Weight not configured" ? "text-amber-300" : "text-emerald-300"
+        )}>
+          {formatMaterialWeightStatus(selectedMaterial)}
+        </div>
+      ) : null}
+
       {isMissingMaterial ? (
         <div className="text-[10px] text-amber-300 flex items-center gap-1">
           <AlertCircle className="h-3 w-3" />
-          Missing material. Saved ID retained: {value}
+          Material reference missing. Saved ID retained: {value}
         </div>
       ) : null}
 

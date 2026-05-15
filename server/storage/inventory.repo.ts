@@ -24,6 +24,7 @@ import {
     type InventoryAdjustmentDetailType,
 } from "../services/materialInventoryLogic";
 import { canAutoDeductMaterialStock } from "../lib/materialStockDeductionGuard";
+import { normalizeMaterialWeightMetadata } from "../../shared/materialWeight";
 
 type InventoryMovementRecordInput = {
     organizationId: string;
@@ -74,6 +75,54 @@ function withMaterialUnitFallbacks<T extends { unitOfMeasure?: string | null }>(
         // TODO(material-units): consumptionUnit remains informational until conversion factors
         // exist for roll sqft conversion, sheet yield conversion, and partial depletion tracking.
         consumptionUnit: (material as any).consumptionUnit || sellPriceUnit || unitOfMeasure,
+    };
+}
+
+function hasOwn(object: object, key: string): boolean {
+    return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function hasMaterialWeightFields(material: object): boolean {
+    return (
+        hasOwn(material, "weightValue") ||
+        hasOwn(material, "weightUnit") ||
+        hasOwn(material, "weightBasis") ||
+        hasOwn(material, "weightOzPerBasis")
+    );
+}
+
+function normalizeMaterialWeightFields<T extends Record<string, any>>(material: T, opts?: { preserveWhenAbsent?: boolean }): T {
+    if (opts?.preserveWhenAbsent && !hasMaterialWeightFields(material)) {
+        return material;
+    }
+
+    const weightValue = material.weightValue;
+    const valueMissing = weightValue === null || weightValue === undefined || weightValue === "";
+    if (valueMissing) {
+        return {
+            ...material,
+            weightValue: null,
+            weightUnit: null,
+            weightBasis: null,
+            weightOzPerBasis: null,
+        };
+    }
+
+    const result = normalizeMaterialWeightMetadata({
+        weightValue,
+        weightUnit: material.weightUnit,
+        weightBasis: material.weightBasis,
+    });
+
+    if (!result.success || result.weightOzPerBasis === undefined) {
+        const error = new Error(result.message || "Invalid material weight metadata");
+        (error as any).code = result.errorCode || "MATERIAL_WEIGHT_INVALID";
+        throw error;
+    }
+
+    return {
+        ...material,
+        weightOzPerBasis: result.weightOzPerBasis.toFixed(6),
     };
 }
 
@@ -139,13 +188,15 @@ export class InventoryRepository {
 
     async createMaterial(organizationId: string, material: Omit<InsertMaterial, 'organizationId'>): Promise<Material> {
         const materialWithUnitFallbacks = withMaterialUnitFallbacks(material);
-        const [created] = await this.dbInstance.insert(materials).values({ ...materialWithUnitFallbacks, organizationId } as any).returning();
+        const materialWithWeight = normalizeMaterialWeightFields(materialWithUnitFallbacks as any);
+        const [created] = await this.dbInstance.insert(materials).values({ ...materialWithWeight, organizationId } as any).returning();
         return created;
     }
 
     async updateMaterial(organizationId: string, id: string, materialData: Partial<InsertMaterial>): Promise<Material> {
+        const materialWithWeight = normalizeMaterialWeightFields(materialData as any, { preserveWhenAbsent: true });
         const [updated] = await this.dbInstance.update(materials)
-            .set({ ...materialData, updatedAt: new Date() } as any)
+            .set({ ...materialWithWeight, updatedAt: new Date() } as any)
             .where(and(eq(materials.id, id), eq(materials.organizationId, organizationId)))
             .returning();
         if (!updated) throw new Error('Material not found');
