@@ -114,6 +114,22 @@ export type PBV2RuntimePricingSnapshot = {
   resolvedMatrixVariables: Record<string, number>;
   calculatedPrice: number;
   capturedAt: string;
+  resolvedWeightDebug?: PBV2ResolvedWeightSnapshotDebug;
+};
+
+export type PBV2ResolvedWeightSnapshotDebug = {
+  totalOz: number | null;
+  source: Pbv2WeightSource;
+  sourceLabel?: string;
+  materialId?: string;
+  materialName?: string;
+  materialSku?: string | null;
+  weightValue?: number | null;
+  weightUnit?: string | null;
+  weightBasis?: string | null;
+  weightOzPerBasis?: number | null;
+  basisQuantity?: number | null;
+  warnings: Pbv2WeightWarning[];
 };
 
 export type PricingPreviewEvaluationResult = {
@@ -359,6 +375,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
         quantity,
         calculatedPriceCents: overridePriceCents,
         capturedAt: pricedAt,
+        resolvedWeightSource,
       }),
     };
 
@@ -556,6 +573,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
       baseDetails,
       calculatedPriceCents: lineTotalCents,
       capturedAt: pricedAt,
+      resolvedWeightSource,
     }),
   };
 
@@ -1481,6 +1499,32 @@ function resolveSnapshotFormula(treeJson: any, product: any, pricingProfileKey: 
   };
 }
 
+export function buildResolvedWeightSnapshotDebug(
+  resolvedWeightSource?: ResolvedPbv2WeightSource | null,
+): PBV2ResolvedWeightSnapshotDebug | undefined {
+  if (!resolvedWeightSource) return undefined;
+
+  return cloneJsonValue({
+    totalOz: resolvedWeightSource.totalOz,
+    source: resolvedWeightSource.source,
+    ...(resolvedWeightSource.sourceLabel !== undefined ? { sourceLabel: resolvedWeightSource.sourceLabel } : {}),
+    ...(resolvedWeightSource.materialId !== undefined ? { materialId: resolvedWeightSource.materialId } : {}),
+    ...(resolvedWeightSource.materialName !== undefined ? { materialName: resolvedWeightSource.materialName } : {}),
+    ...(resolvedWeightSource.materialSku !== undefined ? { materialSku: resolvedWeightSource.materialSku } : {}),
+    ...(resolvedWeightSource.weightValue !== undefined ? { weightValue: resolvedWeightSource.weightValue } : {}),
+    ...(resolvedWeightSource.weightUnit !== undefined ? { weightUnit: resolvedWeightSource.weightUnit } : {}),
+    ...(resolvedWeightSource.weightBasis !== undefined ? { weightBasis: resolvedWeightSource.weightBasis } : {}),
+    ...(resolvedWeightSource.weightOzPerBasis !== undefined ? { weightOzPerBasis: resolvedWeightSource.weightOzPerBasis } : {}),
+    ...(resolvedWeightSource.basisQuantity !== undefined ? { basisQuantity: resolvedWeightSource.basisQuantity } : {}),
+    warnings: Array.isArray(resolvedWeightSource.warnings)
+      ? resolvedWeightSource.warnings.map((warning) => ({
+          code: warning.code,
+          message: warning.message,
+        }))
+      : [],
+  });
+}
+
 function buildRuntimePricingSnapshot(input: {
   treeJson: any;
   product: any;
@@ -1493,6 +1537,7 @@ function buildRuntimePricingSnapshot(input: {
   baseDetails?: BasePriceDetails;
   calculatedPriceCents: number;
   capturedAt: string;
+  resolvedWeightSource?: ResolvedPbv2WeightSource;
 }): PBV2RuntimePricingSnapshot {
   const trimAllowances = getTrimAllowancesInches(input.treeJson);
   const orderedWidthIn = input.baseDetails?.orderedWidthIn ?? input.widthIn;
@@ -1538,6 +1583,9 @@ function buildRuntimePricingSnapshot(input: {
     resolvedMatrixVariables: input.pricingMatrixResolution.variables,
     calculatedPrice: input.calculatedPriceCents / 100,
     capturedAt: input.capturedAt,
+    ...(input.resolvedWeightSource
+      ? { resolvedWeightDebug: buildResolvedWeightSnapshotDebug(input.resolvedWeightSource) }
+      : {}),
   });
 }
 
