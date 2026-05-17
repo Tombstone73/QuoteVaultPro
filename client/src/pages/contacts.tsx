@@ -6,7 +6,7 @@
  * This centralizes contact management with search by name, email, or company.
  */
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ROUTES } from "@/config/routes";
 import { useContacts, useDeleteContact, useUpdateContact, type ContactWithStats } from "@/hooks/useContacts";
@@ -17,7 +17,7 @@ import { ListViewSettings } from "@/components/list/ListViewSettings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Search, Mail, Phone, Building2, MoreHorizontal, Pencil, Trash2, Eye, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import { Search, Mail, Phone, Building2, MoreHorizontal, Pencil, Trash2, Eye, ArrowUp, ArrowDown, ArrowUpDown, ChevronLeft, ChevronRight } from "lucide-react";
 import { ContactFlagPill } from "@/components/ContactFlagPill";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -73,6 +73,13 @@ export default function ContactsPage() {
   const [deletingContact, setDeletingContact] = useState<ContactWithStats | null>(null);
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 50;
+
+  // Reset to page 1 when the search term changes
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch]);
 
   const deleteContactMutation = useDeleteContact();
   const updateContactMutation = useUpdateContact();
@@ -97,8 +104,8 @@ export default function ContactsPage() {
 
   const { data, isLoading, error } = useContacts({
     search: debouncedSearch || undefined,
-    page: 1,
-    pageSize: 50,
+    page,
+    pageSize: PAGE_SIZE,
   });
 
   const sortedContacts = useMemo(() => {
@@ -358,7 +365,11 @@ export default function ContactsPage() {
           </div>
           {data && (
             <span className="text-titan-sm text-titan-text-muted">
-              {data.total} contact{data.total !== 1 ? "s" : ""}
+              {data.total === 0
+                ? "No contacts"
+                : data.totalPages > 1
+                ? `Showing ${(data.page - 1) * data.pageSize + 1}–${Math.min(data.page * data.pageSize, data.total)} of ${data.total} contacts`
+                : `${data.total} contact${data.total !== 1 ? "s" : ""}`}
             </span>
           )}
           <ListViewSettings
@@ -449,6 +460,35 @@ export default function ContactsPage() {
             </div>
           )}
         </DataCard>
+
+        {/* Pagination controls */}
+        {data && data.totalPages > 1 && (
+          <div className="flex items-center justify-between py-2 px-1">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!data.hasPreviousPage || isLoading}
+              onClick={() => setPage((p) => p - 1)}
+              className="h-8 text-titan-sm"
+            >
+              <ChevronLeft className="w-4 h-4 mr-1" />
+              Previous
+            </Button>
+            <span className="text-titan-sm text-titan-text-muted">
+              Page {data.page} of {data.totalPages}
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!data.hasNextPage || isLoading}
+              onClick={() => setPage((p) => p + 1)}
+              className="h-8 text-titan-sm"
+            >
+              Next
+              <ChevronRight className="w-4 h-4 ml-1" />
+            </Button>
+          </div>
+        )}
       </ContentLayout>
 
       {/* Edit Contact Dialog */}

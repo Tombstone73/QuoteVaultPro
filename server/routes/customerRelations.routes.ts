@@ -78,10 +78,18 @@ export function registerCustomerRelationsRoutes(
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const search = req.query.search as string | undefined;
       const page = req.query.page ? parseInt(req.query.page as string) : 1;
-      const pageSize = req.query.pageSize ? parseInt(req.query.pageSize as string) : 50;
+      const pageSize = Math.min(200, req.query.pageSize ? parseInt(req.query.pageSize as string) : 50);
 
-      const contacts = await storage.getAllContacts(organizationId, { search, page, pageSize });
-      res.json({ contacts, total: contacts.length, page, pageSize });
+      const result = await storage.getContactsPaged(organizationId, { search, page, pageSize });
+      res.json({
+        contacts: result.items,
+        total: result.total,
+        page: result.page,
+        pageSize: result.pageSize,
+        totalPages: result.totalPages,
+        hasNextPage: result.hasNextPage,
+        hasPreviousPage: result.hasPreviousPage,
+      });
     } catch (error) {
       console.error("Error fetching contacts:", error);
       res.status(500).json({ message: "Failed to fetch contacts" });
