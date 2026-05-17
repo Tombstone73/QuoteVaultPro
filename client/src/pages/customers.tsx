@@ -144,11 +144,12 @@ export default function Customers({ embedded = false }: CustomersProps) {
   const handleChangeViewMode = useCallback((mode: CustomersViewMode) => {
     setViewMode(mode);
     setStoredViewMode(mode);
-    // Clear selection when switching to enhanced mode
-    if (mode === "enhanced") {
-      setSelectedCustomerId(null);
+    // When switching to enhanced and a customer is already selected, navigate to their detail page
+    if (mode === "enhanced" && selectedCustomerId) {
+      navigate(ROUTES.customers.detail(selectedCustomerId));
     }
-  }, []);
+    // Intentionally preserve selectedCustomerId so switching back to split restores the panel
+  }, [selectedCustomerId, navigate]);
 
   // Handle customer selection
   const handleSelectCustomer = useCallback((customerId: string) => {

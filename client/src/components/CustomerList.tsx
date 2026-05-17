@@ -4,7 +4,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import { Plus, Building2, MapPin, ShoppingCart, ChevronLeft, ChevronRight } from "lucide-react";
+import { Plus, Building2, MapPin, ShoppingCart, ChevronLeft, ChevronRight, User } from "lucide-react";
 
 const PAGE_SIZE = 50;
 
@@ -24,7 +24,19 @@ type Customer = {
   createdAt: string;
   orderCount?: number;
   lastOrderDate?: string | null;
+  contacts?: { id: string; firstName: string; lastName: string; email: string | null; phone: string | null; isPrimary: boolean }[];
 };
+
+function getContactLabel(customer: Customer): { text: string; muted: boolean } {
+  const primary = customer.contacts?.find((c) => c.isPrimary) || customer.contacts?.[0];
+  if (primary) {
+    const name = `${primary.firstName} ${primary.lastName}`.trim();
+    if (name) return { text: name, muted: false };
+  }
+  if (customer.email) return { text: customer.email, muted: false };
+  if (customer.phone) return { text: customer.phone, muted: false };
+  return { text: "No contact listed", muted: true };
+}
 
 type PaginatedCustomers = {
   items: Customer[];
@@ -212,16 +224,26 @@ export default function CustomerList({
                           {customer.status.replace("_", " ")}
                         </Badge>
                       </div>
-                      {/* Row 2: Location + type + orders */}
+                      {/* Row 2: Contact name + location + orders */}
                       <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
+                        {(() => {
+                          const cl = getContactLabel(customer);
+                          return (
+                            <span className={`flex items-center gap-0.5 truncate ${cl.muted ? "opacity-50 italic" : ""}`}>
+                              <User className="w-3 h-3 flex-shrink-0" />
+                              {cl.text}
+                            </span>
+                          );
+                        })()}
                         {(customer.city || customer.state) && (
-                          <span className="flex items-center gap-0.5 truncate">
-                            <MapPin className="w-3 h-3 flex-shrink-0" />
-                            {[customer.city, customer.state].filter(Boolean).join(", ")}
-                          </span>
+                          <>
+                            <span className="text-muted-foreground/60">·</span>
+                            <span className="flex items-center gap-0.5 truncate">
+                              <MapPin className="w-3 h-3 flex-shrink-0" />
+                              {[customer.city, customer.state].filter(Boolean).join(", ")}
+                            </span>
+                          </>
                         )}
-                        <span className="text-muted-foreground/60">·</span>
-                        <span className="capitalize">{customer.customerType}</span>
                         {customer.orderCount !== undefined && customer.orderCount > 0 && (
                           <>
                             <span className="text-muted-foreground/60">·</span>
