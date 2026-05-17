@@ -55,14 +55,16 @@ export async function computeOperationalSummary(organizationId: string): Promise
     invoiceDraftResult,
     invoiceUnpaidResult,
   ] = await Promise.all([
-    // Inbound Orders — records awaiting staff review
+    // Inbound Orders — records in the "needs_review" group.
+    // Matches InboundOrderRepository.getQueueSummary() line: status in ('received','processing','needs_review').
+    // These are the three statuses the Inbound Orders page treats as actionable queue items.
     db
       .select({ count: sql<number>`count(*)::int` })
       .from(inboundOrderRecords)
       .where(
         and(
           eq(inboundOrderRecords.organizationId, organizationId),
-          eq(inboundOrderRecords.status, "needs_review"),
+          inArray(inboundOrderRecords.status as any, ["received", "processing", "needs_review"]),
         ),
       ),
 
