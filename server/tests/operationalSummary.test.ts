@@ -1,15 +1,15 @@
 /**
  * Unit tests for operational summary badge logic.
  *
- * Tests the badge count mapping, zero-state handling, and invoice breakdown —
- * all pure functions with no DB connections.
+ * Tests the badge count mapping, zero-state handling, inbound order
+ * status grouping, and invoice breakdown — all pure functions, no DB.
  */
 
 import { describe, expect, test } from "@jest/globals";
 
 // ---------------------------------------------------------------------------
 // Re-implement the pure mapping function here to keep tests DB-free.
-// This mirrors the buildBadgeCounts logic in TitanSidebarNav.tsx.
+// Mirrors buildBadgeCounts in TitanSidebarNav.tsx.
 // If the mapping changes, update these tests in tandem.
 // ---------------------------------------------------------------------------
 
@@ -62,13 +62,104 @@ function makeZeroSummary(): OperationalSummary {
 }
 
 // ---------------------------------------------------------------------------
+// Inbound Orders — actionable status group
+//
+// The Inbound Orders page groups "needs_review" as:
+//   status IN ('received', 'processing', 'needs_review')
+// This is canonical in InboundOrderRepository.getQueueSummary() and
+// listRecords(statusGroup: 'needs_review').
+// All three must contribute to the badge; non-actionable ones must not.
+// ---------------------------------------------------------------------------
+
+// Simulate what computeOperationalSummary returns for a given set of records.
+// Pure helper — counts how many fall into the actionable group.
+const ACTIONABLE_INBOUND_STATUSES = ["received", "processing", "needs_review"] as const;
+const NON_ACTIONABLE_INBOUND_STATUSES = [
+  "waiting_on_customer",
+  "ready",
+  "approved",
+  "submitted",
+  "failed",
+  "terminal",
+] as const;
+
+type InboundStatus =
+  | (typeof ACTIONABLE_INBOUND_STATUSES)[number]
+  | (typeof NON_ACTIONABLE_INBOUND_STATUSES)[number];
+
+function simulateInboundCount(records: InboundStatus[]): number {
+  return records.filter((s) => (ACTIONABLE_INBOUND_STATUSES as readonly string[]).includes(s)).length;
+}
+
+describe("inbound orders — actionable status group", () => {
+  test.each(ACTIONABLE_INBOUND_STATUSES)(
+    "status '%s' contributes to the badge",
+    (status) => {
+      expect(simulateInboundCount([status])).toBe(1);
+    },
+  );
+
+  test.each(NON_ACTIONABLE_INBOUND_STATUSES)(
+    "status '%s' does NOT contribute to the badge",
+    (status) => {
+      expect(simulateInboundCount([status])).toBe(0);
+    },
+  );
+
+  test("mixed records: only actionable statuses are counted", () => {
+    const records: InboundStatus[] = [
+      "received",       // actionable
+      "processing",     // actionable
+      "needs_review",   // actionable
+      "ready",          // not actionable — reviewed/ready to convert
+      "terminal",       // not actionable — rejected
+      "submitted",      // not actionable — converted
+      "waiting_on_customer", // not actionable — waiting
+    ];
+    expect(simulateInboundCount(records)).toBe(3);
+  });
+
+  test("two received records match what the user saw (2 items, no badge was bug)", () => {
+    // User reported 2 items in section but no badge — because status was 'received'
+    // not 'needs_review', so the old single-status query returned 0.
+    const records: InboundStatus[] = ["received", "received"];
+    expect(simulateInboundCount(records)).toBe(2);
+  });
+
+  test("all-zero produces zero inbound badge", () => {
+    expect(simulateInboundCount([])).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Frontend mapping — inbound orders nav item ID
+// ---------------------------------------------------------------------------
+
+describe("buildBadgeCounts — inbound orders mapping", () => {
+  test("maps inboundOrders count to 'inbound-orders' nav item ID", () => {
+    const s = { ...makeZeroSummary(), inboundOrders: 2 };
+    expect(buildBadgeCounts(s, 0)["inbound-orders"]).toBe(2);
+  });
+
+  test("zero inbound count maps to 0 (badge hidden)", () => {
+    const s = { ...makeZeroSummary(), inboundOrders: 0 };
+    expect(buildBadgeCounts(s, 0)["inbound-orders"]).toBe(0);
+  });
+
+  test("inbound-orders key exists in badgeCounts output", () => {
+    const counts = buildBadgeCounts(makeZeroSummary(), 0);
+    expect(Object.keys(counts)).toContain("inbound-orders");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Zero-state handling
 // ---------------------------------------------------------------------------
 
 describe("buildBadgeCounts — zero state", () => {
   test("all counts are zero when summary is all zeros", () => {
     const counts = buildBadgeCounts(makeZeroSummary(), 0);
-    for (const [key, val] of Object.entries(counts)) {
+    for (const [, val] of Object.entries(counts)) {
       expect(val).toBe(0);
     }
   });
@@ -86,15 +177,10 @@ describe("buildBadgeCounts — zero state", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Operational count mapping
+// Full operational count mapping
 // ---------------------------------------------------------------------------
 
-describe("buildBadgeCounts — mapping", () => {
-  test("maps inboundOrders to inbound-orders nav id", () => {
-    const s = { ...makeZeroSummary(), inboundOrders: 5 };
-    expect(buildBadgeCounts(s, 0)["inbound-orders"]).toBe(5);
-  });
-
+describe("buildBadgeCounts — full mapping", () => {
   test("maps overview to production-overview nav id", () => {
     const s = { ...makeZeroSummary(), overview: 12 };
     expect(buildBadgeCounts(s, 0)["production-overview"]).toBe(12);
@@ -135,9 +221,7 @@ describe("buildBadgeCounts — mapping", () => {
       ...makeZeroSummary(),
       invoices: { pendingSend: 8, unpaid: 14 },
     };
-    const counts = buildBadgeCounts(s, 0);
-    // Primary invoice badge uses pendingSend (not unpaid)
-    expect(counts.invoices).toBe(8);
+    expect(buildBadgeCounts(s, 0).invoices).toBe(8);
   });
 
   test("approvals count flows through independently", () => {
@@ -174,19 +258,16 @@ describe("invoice badge — pending send vs unpaid", () => {
 // ---------------------------------------------------------------------------
 
 describe("sidebar badge toggle", () => {
-  test("zero badgeCounts object suppresses all badges when showBadges=false", () => {
-    // When showBadges is false, sidebar passes {} to badgeCounts.
-    // NavItem only shows badge when badgeCount > 0 and it's defined.
-    // An empty object means every lookup returns undefined → no badge shown.
+  test("empty badgeCounts object suppresses all badges when showBadges=false", () => {
     const badgeCounts: Record<string, number> = {};
-    const count = badgeCounts["production-design"];
+    const count = badgeCounts["inbound-orders"];
     expect(count).toBeUndefined();
     expect(count !== undefined && count > 0).toBe(false);
   });
 
   test("nonzero count is visible when showBadges=true", () => {
-    const badgeCounts: Record<string, number> = { "production-design": 4 };
-    const count = badgeCounts["production-design"];
+    const badgeCounts: Record<string, number> = { "inbound-orders": 2 };
+    const count = badgeCounts["inbound-orders"];
     expect(count !== undefined && count > 0).toBe(true);
   });
 });
