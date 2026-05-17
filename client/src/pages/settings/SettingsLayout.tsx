@@ -1700,6 +1700,43 @@ export function PreferencesSettings() {
             </div>
           </div>
         </div>
+
+        <div className="h-px bg-titan-border-subtle" />
+
+        {/* Sidebar Section */}
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-titan-base font-medium text-titan-text-primary">Sidebar</h3>
+            <p className="text-titan-sm text-titan-text-muted mt-1">
+              Control sidebar display preferences
+            </p>
+          </div>
+
+          <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+            <div className="flex-1 space-y-1">
+              <Label htmlFor="show-operational-badges" className="text-titan-sm font-medium text-titan-text-primary cursor-pointer">
+                Show operational badges
+              </Label>
+              <p className="text-titan-xs text-titan-text-muted">
+                Display live work-queue counts next to sidebar navigation items so you can see pending workload at a glance.
+              </p>
+            </div>
+            <Switch
+              id="show-operational-badges"
+              checked={preferences?.sidebar?.showOperationalBadges !== false}
+              onCheckedChange={async (checked) => {
+                await updatePreferences({
+                  ...preferences,
+                  sidebar: {
+                    ...preferences?.sidebar,
+                    showOperationalBadges: checked,
+                  },
+                });
+              }}
+              disabled={isUpdating}
+            />
+          </div>
+        </div>
       </div>
     </TitanCard>
   );
