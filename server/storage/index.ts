@@ -229,6 +229,10 @@ export const updateCustomerBalance = customersRepo.updateCustomerBalance.bind(cu
 export const getAllContacts = customersRepo.getAllContacts.bind(customersRepo);
 export const getContactWithRelations = customersRepo.getContactWithRelations.bind(customersRepo);
 
+// Paginated variants (new — do not break existing callers)
+export const getCustomersPaged = customersRepo.getCustomersPaged.bind(customersRepo);
+export const getContactsPaged = customersRepo.getContactsPaged.bind(customersRepo);
+
 // =============================
 // Quotes Repository Exports
 // =============================
@@ -442,6 +446,8 @@ export const storage = {
     updateCustomerBalance,
     getAllContacts,
     getContactWithRelations,
+    getCustomersPaged,
+    getContactsPaged,
 
     // Quotes
     createQuote,

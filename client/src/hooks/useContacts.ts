@@ -45,6 +45,11 @@ export interface ContactWithStats extends Contact {
 export interface ContactsResponse {
   contacts: ContactWithStats[];
   total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPreviousPage: boolean;
 }
 
 export interface ContactDetailResponse {
