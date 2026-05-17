@@ -205,3 +205,48 @@ describe("PricingService option rule validation gate", () => {
     );
   });
 });
+
+describe("PricingService — text input type safety", () => {
+  function makeTreeWithTextOption() {
+    return {
+      schemaVersion: 2 as const,
+      rootNodeIds: ["imprint"],
+      nodes: {
+        imprint: {
+          id: "imprint",
+          kind: "question" as const,
+          label: "Custom Imprint Text",
+          input: {
+            type: "text" as const,
+            selectionKey: "imprint",
+          },
+        },
+      },
+      meta: {
+        pricingV2: {
+          base: { perSqftCents: 100 },
+        },
+      },
+    };
+  }
+
+  test("pricing does not crash when a text option has a string value", () => {
+    const result = runPreview(makeTreeWithTextOption(), {
+      imprint: { value: "Hello World" },
+    });
+    expect(typeof result.unitPrice).toBe("number");
+    expect(Number.isFinite(result.unitPrice)).toBe(true);
+  });
+
+  test("pricing does not crash when an optional text option has no selection", () => {
+    const result = runPreview(makeTreeWithTextOption(), {});
+    expect(typeof result.unitPrice).toBe("number");
+    expect(Number.isFinite(result.unitPrice)).toBe(true);
+  });
+
+  test("text option value does not add to options price", () => {
+    const withText = runPreview(makeTreeWithTextOption(), { imprint: { value: "Custom text" } });
+    const withoutText = runPreview(makeTreeWithTextOption(), {});
+    expect(withText.breakdown.optionsPrice).toBe(withoutText.breakdown.optionsPrice);
+  });
+});
