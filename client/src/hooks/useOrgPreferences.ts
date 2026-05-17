@@ -42,6 +42,10 @@ export interface OrgPreferences {
   proofing?: {
     defaultProofDisclaimerText?: string;
   };
+
+  sidebar?: {
+    showOperationalBadges?: boolean;
+  };
 }
 
 type InventoryPolicyPatch = {

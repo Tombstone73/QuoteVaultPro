@@ -49,8 +49,8 @@ export type NavItemConfig = {
   icon: LucideIcon;
   path: string;
   roles?: string[];
-  badge?: boolean; // If true, fetch badge count from query
-  badgeQuery?: string; // Query key for badge count
+  badge?: boolean; // If true, show operational badge from summary
+  badgeQuery?: string; // Legacy single-item query key (kept for approvals)
   platformAdminOnly?: boolean; // Only shown to platform admins (isPlatformAdmin=true)
   conditional?: {
     requireApproval?: boolean; // Only show if org preference requireApproval=true
@@ -73,10 +73,10 @@ export const NAV_CONFIG: NavSectionConfig[] = [
       { id: "customers", name: "Customers", icon: Users, path: ROUTES.customers.list },
       { id: "contacts", name: "Contacts", icon: Contact2, path: ROUTES.contacts.list },
       { id: "quotes", name: "Quotes", icon: FileText, path: ROUTES.quotes.list },
-      { 
-        id: "approvals", 
-        name: "Approvals", 
-        icon: ClipboardList, 
+      {
+        id: "approvals",
+        name: "Approvals",
+        icon: ClipboardList,
         path: "/approvals",
         badge: true,
         badgeQuery: "/api/quotes/pending-approvals",
@@ -86,19 +86,25 @@ export const NAV_CONFIG: NavSectionConfig[] = [
         },
       },
       { id: "orders", name: "Orders", icon: ShoppingCart, path: ROUTES.orders.list },
-      { id: "inbound-orders", name: "Inbound Orders", icon: Inbox, path: ROUTES.inboundOrders.list },
+      {
+        id: "inbound-orders",
+        name: "Inbound Orders",
+        icon: Inbox,
+        path: ROUTES.inboundOrders.list,
+        badge: true,
+      },
     ],
   },
   {
     section: "PRODUCTION",
     sectionKey: "production",
     items: [
-      { id: "production-overview", name: "Overview", icon: LayoutGrid, path: ROUTES.production.board },
-      { id: "production-design", name: "Design", icon: FileText, path: ROUTES.production.design },
-      { id: "production-proofing", name: "Proofing", icon: ClipboardList, path: ROUTES.production.proofing },
-      { id: "production-prepress", name: "Prepress", icon: FileText, path: ROUTES.production.prepress },
-      { id: "production-flatbed", name: "Flatbed", icon: Factory, path: ROUTES.production.flatbed },
-      { id: "production-roll", name: "Roll", icon: Factory, path: ROUTES.production.roll },
+      { id: "production-overview", name: "Overview", icon: LayoutGrid, path: ROUTES.production.board, badge: true },
+      { id: "production-design", name: "Design", icon: FileText, path: ROUTES.production.design, badge: true },
+      { id: "production-proofing", name: "Proofing", icon: ClipboardList, path: ROUTES.production.proofing, badge: true },
+      { id: "production-prepress", name: "Prepress", icon: FileText, path: ROUTES.production.prepress, badge: true },
+      { id: "production-flatbed", name: "Flatbed", icon: Factory, path: ROUTES.production.flatbed, badge: true },
+      { id: "production-roll", name: "Roll", icon: Factory, path: ROUTES.production.roll, badge: true },
     ],
   },
   {
@@ -114,7 +120,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     section: "SHIPPING & FULFILLMENT",
     sectionKey: "shipping",
     items: [
-      { id: "fulfillment", name: "Fulfillment", icon: Truck, path: ROUTES.fulfillment.list },
+      { id: "fulfillment", name: "Fulfillment", icon: Truck, path: ROUTES.fulfillment.list, badge: true },
       { id: "shipping", name: "Labels", icon: Tag, path: "/shipping" },
       { id: "reports", name: "Reports", icon: BarChart3, path: "/reports" },
     ],
@@ -123,7 +129,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     section: "ACCOUNTING",
     sectionKey: "accounting",
     items: [
-      { id: "invoices", name: "Invoices", icon: Receipt, path: ROUTES.invoices.list },
+      { id: "invoices", name: "Invoices", icon: Receipt, path: ROUTES.invoices.list, badge: true },
       { id: "payments", name: "Finance", icon: CreditCard, path: "/payments" },
     ],
   },
@@ -148,7 +154,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
 
 // Filter nav items by user role and conditional visibility
 function filterNavByRole(
-  sections: NavSectionConfig[], 
+  sections: NavSectionConfig[],
   role?: string | null,
   orgPreferences?: { quotes?: { requireApproval?: boolean } },
   isPlatformAdmin?: boolean
@@ -326,9 +332,9 @@ function NavSection({ section, isCollapsed, isExpanded, onToggle, badgeCounts }:
       {isExpanded && (
         <div id={sectionId} className="space-y-0.5 px-2 mt-1">
           {section.items.map((item) => (
-            <NavItem 
-              key={item.id} 
-              item={item} 
+            <NavItem
+              key={item.id}
+              item={item}
               isCollapsed={isCollapsed}
               badgeCount={item.badge ? badgeCounts[item.id] : undefined}
             />
@@ -337,6 +343,46 @@ function NavSection({ section, isCollapsed, isExpanded, onToggle, badgeCounts }:
       )}
     </div>
   );
+}
+
+// ============================================================
+// OPERATIONAL SUMMARY RESPONSE SHAPE
+// ============================================================
+
+interface OperationalSummaryData {
+  inboundOrders: number;
+  overview: number;
+  design: number;
+  proofing: number;
+  prepress: number;
+  flatbed: number;
+  roll: number;
+  fulfillment: number;
+  invoices: {
+    pendingSend: number;
+    unpaid: number;
+  };
+}
+
+// Map operational summary data to per-nav-item-id counts.
+// Invoice badge shows pendingSend for the primary count.
+function buildBadgeCounts(
+  summary: OperationalSummaryData | undefined,
+  approvalCount: number,
+): Record<string, number> {
+  if (!summary) return { approvals: approvalCount };
+  return {
+    approvals: approvalCount,
+    "inbound-orders": summary.inboundOrders,
+    "production-overview": summary.overview,
+    "production-design": summary.design,
+    "production-proofing": summary.proofing,
+    "production-prepress": summary.prepress,
+    "production-flatbed": summary.flatbed,
+    "production-roll": summary.roll,
+    fulfillment: summary.fulfillment,
+    invoices: summary.invoices.pendingSend,
+  };
 }
 
 // ============================================================
@@ -360,32 +406,44 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
   const isApprover = ['owner', 'admin', 'manager', 'employee'].includes(roleLower);
   const requireApproval = preferences?.quotes?.requireApproval === true;
 
-  // Fetch badge counts for items with badge=true
-  const badgeQueries = filteredSections.flatMap(section => 
-    section.items.filter(item => item.badge && item.badgeQuery)
-  );
+  // Sidebar badge toggle — default ON (true when unset)
+  const showBadges = preferences?.sidebar?.showOperationalBadges !== false;
 
-  const badgeCountsData = useQuery({
+  // Approvals badge (legacy single-item query — kept as separate query per existing pattern)
+  const approvalsQuery = useQuery({
     queryKey: ["/api/quotes/pending-approvals"],
     queryFn: async () => {
-      const res = await fetch("/api/quotes/pending-approvals", {
-        credentials: "include",
-      });
+      const res = await fetch("/api/quotes/pending-approvals", { credentials: "include" });
       if (!res.ok) return { count: 0 };
-      const data = await res.json();
-      return data;
+      return res.json();
     },
-    enabled: badgeQueries.length > 0 && isApprover && requireApproval,
+    enabled: showBadges && isApprover && requireApproval,
     staleTime: 60_000,
     refetchOnWindowFocus: false,
-    // Sidebar stays mounted across the app; avoid background polling noise.
-    // Counts will refresh on explicit invalidation (e.g. after approve actions) or on remount.
     refetchInterval: false,
   });
 
-  const badgeCounts: Record<string, number> = {
-    approvals: badgeCountsData.data?.count || 0,
-  };
+  // Operational summary — single payload for all other sidebar badges
+  const summaryQuery = useQuery({
+    queryKey: ["/api/operational-summary"],
+    queryFn: async () => {
+      const res = await fetch("/api/operational-summary", { credentials: "include" });
+      if (!res.ok) return null;
+      const json = await res.json();
+      return (json.data ?? null) as OperationalSummaryData | null;
+    },
+    enabled: showBadges,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    // Refresh counts every 2 minutes in the background — lightweight count queries,
+    // stays within the 5-minute React Query cache TTL window.
+    refetchInterval: showBadges ? 120_000 : false,
+  });
+
+  const badgeCounts = buildBadgeCounts(
+    summaryQuery.data ?? undefined,
+    approvalsQuery.data?.count ?? 0,
+  );
 
   // Initialize section open/close state
   const [openSections, setOpenSections] = useState<Record<string, boolean>>(() => {
@@ -496,13 +554,13 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
       {/* Navigation Sections */}
       <nav className="flex-1 overflow-y-auto py-1">
         {filteredSections.map((section) => (
-          <NavSection 
-            key={section.section} 
-            section={section} 
+          <NavSection
+            key={section.section}
+            section={section}
             isCollapsed={isCollapsed}
             isExpanded={openSections[section.sectionKey] ?? true}
             onToggle={() => toggleSection(section.sectionKey)}
-            badgeCounts={badgeCounts}
+            badgeCounts={showBadges ? badgeCounts : {}}
           />
         ))}
       </nav>
