@@ -42,6 +42,7 @@ import {
 } from "@shared/inventoryPolicyPreferences";
 import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBooksPreferences";
 import { resolveMaterialsOverrideModeFromOrgPreferences } from "@shared/materialsOverrideMode";
+import { resetTransactionalData, resetQuickBooksImportData } from "../services/orgResetService";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -411,7 +412,7 @@ export function registerOrganizationRoutes(
   /**
    * POST /api/admin/org/reset
    * Reset organization transactional data (orders, invoices, quotes, production records).
-   * Preserves organization, users, and core configuration.
+   * Preserves organization, users, products, materials, pricing, OAuth, and all config.
    * Requires owner/admin role.
    */
   app.post("/api/admin/org/reset", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
@@ -423,25 +424,54 @@ export function registerOrganizationRoutes(
         return res.status(401).json({ message: "User ID not found" });
       }
 
-      // Audit log
-      await db.insert(auditLogs).values({
-        organizationId,
-        userId,
-        actionType: "org.reset.requested",
-        entityType: "organization",
-        entityId: organizationId,
-        description: "Organization data reset requested",
-        newValues: {},
-      });
-
-      // Return 501 Not Implemented
-      return res.status(501).json({
-        code: "NOT_IMPLEMENTED",
-        message: "Organization reset functionality is not yet implemented. Please contact system administrator.",
-      });
+      const result = await resetTransactionalData(organizationId, userId);
+      return res.json(result);
     } catch (error: any) {
       console.error("[Org Reset] Error:", error);
-      res.status(500).json({ message: error.message || "Failed to reset organization" });
+      res.status(500).json({
+        success: false,
+        message: error.message || "Failed to reset organization transactional data",
+      });
+    }
+  });
+
+  /**
+   * POST /api/admin/org/reset-quickbooks-import
+   * Selectively remove QuickBooks-imported data without wiping other tenant data.
+   * Optional body: { disconnectOAuth?: boolean, deleteQBCustomers?: boolean }
+   * Preserves org, users, products, materials, and QB OAuth by default.
+   * Requires owner/admin role.
+   */
+  app.post("/api/admin/org/reset-quickbooks-import", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+
+      if (!userId) {
+        return res.status(401).json({ message: "User ID not found" });
+      }
+
+      const bodySchema = z.object({
+        disconnectOAuth: z.boolean().default(false),
+        deleteQBCustomers: z.boolean().default(true),
+      });
+
+      const parsed = bodySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({
+          success: false,
+          message: fromZodError(parsed.error).message,
+        });
+      }
+
+      const result = await resetQuickBooksImportData(organizationId, userId, parsed.data);
+      return res.json(result);
+    } catch (error: any) {
+      console.error("[QB Import Reset] Error:", error);
+      res.status(500).json({
+        success: false,
+        message: error.message || "Failed to reset QuickBooks import data",
+      });
     }
   });
 
