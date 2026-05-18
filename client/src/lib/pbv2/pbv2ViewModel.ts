@@ -428,7 +428,13 @@ export function pbv2TreeToEditorModel(treeJson: unknown): EditorModel {
 
   // Identify group nodes: ALL nodes with type=GROUP (structural layer)
   // Do NOT filter by rootNodeIds or edges - groups are structural metadata
-  const groupNodes = nodes.filter(n => n.type?.toUpperCase() === 'GROUP');
+  const groupNodes = nodes
+    .filter(n => n.type?.toUpperCase() === 'GROUP')
+    .sort((a, b) => {
+      const aOrder = typeof (a as any).displayOrder === 'number' ? (a as any).displayOrder : Infinity;
+      const bOrder = typeof (b as any).displayOrder === 'number' ? (b as any).displayOrder : Infinity;
+      return aOrder - bOrder;
+    });
 
   // Build groups
   const groups: EditorOptionGroup[] = groupNodes.map((node, index) => {
@@ -774,7 +780,10 @@ export function createReorderGroupsPatch(treeJson: unknown, fromIndex: number, t
   const [moved] = reordered.splice(fromIndex, 1);
   reordered.splice(toIndex, 0, moved);
 
-  return { patch: { nodes: [...reordered, ...nonGroupNodes], edges } };
+  // Stamp displayOrder on each group node so order persists through JSONB round-trips
+  const reorderedWithOrder = reordered.map((n, i) => ({ ...n, displayOrder: i }));
+
+  return { patch: { nodes: [...reorderedWithOrder, ...nonGroupNodes], edges } };
 }
 
 /**
