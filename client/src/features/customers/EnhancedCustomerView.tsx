@@ -3,6 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { formatDistanceToNow, format } from "date-fns";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import CustomerForm from "@/components/customer-form";
+import { CustomerIdentityBlock } from "./CustomerIdentityBlock";
+import { CustomerActionsMenu } from "./CustomerActionsMenu";
+import TransactionsTab from "./TransactionsTab";
 import {
   Building2,
   Mail,
@@ -37,6 +40,7 @@ import {
   Contact2,
   Loader2,
   Save,
+  Filter,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -82,7 +86,7 @@ import { ContactFlagPill } from "@/components/ContactFlagPill";
 // TYPE DEFINITIONS
 // ============================================================
 
-type TabType = "orders" | "quotes" | "invoices" | "statement";
+type TabType = "orders" | "quotes" | "invoices" | "transactions";
 type TimePeriod = "month" | "year" | "all";
 type LayoutMode = "full" | "embedded";
 
@@ -91,6 +95,22 @@ interface EnhancedCustomerViewProps {
   layoutMode?: LayoutMode;
   onBack?: () => void;
   onSectionHome?: () => void;
+}
+
+interface CustomerHeaderProps {
+  customer: CustomerWithRelations;
+  layoutMode: LayoutMode;
+  onBack?: () => void;
+  onSectionHome?: () => void;
+  onSwitchTab?: (tab: string) => void;
+}
+
+interface CustomerHeaderProps {
+  customer: CustomerWithRelations;
+  layoutMode: LayoutMode;
+  onBack?: () => void;
+  onSectionHome?: () => void;
+  onSwitchTab?: (tab: string) => void;
 }
 
 interface StatCardConfig {
@@ -169,12 +189,8 @@ function CustomerHeader({
   layoutMode,
   onBack,
   onSectionHome,
-}: {
-  customer: CustomerWithRelations;
-  layoutMode: LayoutMode;
-  onBack?: () => void;
-  onSectionHome?: () => void;
-}) {
+  onSwitchTab,
+}: CustomerHeaderProps) {
   const [showEditForm, setShowEditForm] = useState(false);
   const [showLocalStorageDialog, setShowLocalStorageDialog] = useState(false);
   const [localCompanyFolderPath, setLocalCompanyFolderPath] = useState(customer.localCompanyFolderPath ?? "");
@@ -259,42 +275,18 @@ function CustomerHeader({
               className="flex-shrink-0"
             />
           )}
-          
-          {!isEmbedded && (
-            <div className="flex-shrink-0 w-8 h-8 bg-titan-bg-card-elevated rounded-full flex items-center justify-center">
-              <Building2 className="w-4 h-4 text-titan-text-secondary" />
-            </div>
-          )}
 
-          <div className="flex-1 min-w-0">
-            {/* Company Name */}
-            <h2 className={cn(
-              "font-bold text-titan-text-primary leading-tight truncate",
-              isEmbedded ? "text-base" : "text-lg"
-            )}>
-              {customer.companyName}
-            </h2>
-            {/* Primary Contact – labeled and clickable */}
-            {primaryContact && (
-              <div className="flex items-center gap-1 text-[11px] text-titan-text-muted mt-0.5">
-                <span className="text-titan-text-secondary font-medium">Primary Contact:</span>
-                <button
-                  type="button"
-                  onClick={() => navigate(ROUTES.contacts.detail(primaryContact.id))}
-                  className="hover:text-titan-accent transition-colors truncate"
-                >
-                  {primaryContact.firstName} {primaryContact.lastName}
-                </button>
-                {accountNumber && isEmbedded && (
-                  <span className="ml-2 text-titan-text-muted/60">#{accountNumber}</span>
-                )}
-              </div>
-            )}
-            
-            {/* Contact Details (email, phone, location) - single row */}
+          <CustomerIdentityBlock
+            customer={customer}
+            mode={isEmbedded ? "compact" : "full"}
+            showAccountNumber={isEmbedded}
+          />
+
+          {/* Legacy dead-code path kept for reference — no longer rendered */}
+          {false && (
             <div className="flex items-center gap-2.5 mt-0.5 text-[11px] text-titan-text-muted flex-wrap">
               {(primaryContact?.email || customer.email) && (
-                <a 
+                <a
                   href={`mailto:${primaryContact?.email || customer.email}`}
                   className="flex items-center gap-1 hover:text-titan-accent transition-colors"
                 >
@@ -302,23 +294,8 @@ function CustomerHeader({
                   <span className="truncate max-w-[160px]">{primaryContact?.email || customer.email}</span>
                 </a>
               )}
-              {(primaryContact?.phone || customer.phone) && (
-                <a 
-                  href={`tel:${(primaryContact?.phone || customer.phone || "").replace(/[^+\d]/g, "")}`}
-                  className="flex items-center gap-1 hover:text-titan-accent transition-colors"
-                >
-                  <Phone className="w-3 h-3 flex-shrink-0" />
-                  {primaryContact?.phone || customer.phone}
-                </a>
-              )}
-              {!isEmbedded && cityState && (
-                <span className="flex items-center gap-1">
-                  <MapPin className="w-3 h-3 flex-shrink-0" />
-                  {cityState}
-                </span>
-              )}
             </div>
-          </div>
+          )}
         </div>
 
         {/* RIGHT: Financial Tags + Actions - all inline */}
@@ -349,60 +326,14 @@ function CustomerHeader({
           {/* Vertical divider */}
           <div className="w-px h-6 bg-titan-border-subtle" />
 
-          {/* Quick Actions */}
-          <div className="flex items-center gap-1.5">
-            {!isEmbedded && (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => setShowLocalStorageDialog(true)}
-                className="h-7 gap-1.5 border-titan-border-subtle px-2 text-[11px] text-titan-text-secondary hover:bg-titan-bg-card-elevated hover:text-titan-text-primary"
-              >
-                <FolderOpen className="h-3 w-3" />
-                <span>Local Storage</span>
-                <span
-                  className={cn(
-                    "rounded-full px-1.5 py-0.5 text-[10px] font-medium",
-                    hasLocalStoragePath
-                      ? "bg-emerald-500/10 text-emerald-400"
-                      : "bg-titan-bg-card-elevated text-titan-text-muted"
-                  )}
-                >
-                  {hasLocalStoragePath ? "Linked" : "Not set"}
-                </span>
-              </Button>
-            )}
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => navigate(`/quotes/new?customerId=${customer.id}`)}
-              disabled={!customer.id}
-              className="h-7 px-2 text-[11px] border-titan-border-subtle text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated"
-            >
-              <FileText className="w-3 h-3 mr-1" />
-              Quote
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => navigate(`/orders/new?customerId=${customer.id}`)}
-              disabled={!customer.id}
-              className="h-7 px-2 text-[11px] border-titan-border-subtle text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated"
-            >
-              <ShoppingCart className="w-3 h-3 mr-1" />
-              Order
-            </Button>
-            <Button 
-              variant="ghost" 
-              size="icon"
-              onClick={() => setShowEditForm(true)}
-              className="h-7 w-7 text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-md flex-shrink-0"
-              aria-label="Edit company"
-            >
-              <Edit className="w-3.5 h-3.5" />
-            </Button>
-          </div>
+          {/* Structured Actions Menu */}
+          <CustomerActionsMenu
+            customerId={customer.id}
+            embedded={isEmbedded}
+            onEditCustomer={() => setShowEditForm(true)}
+            onLocalStorage={!isEmbedded ? () => setShowLocalStorageDialog(true) : undefined}
+            onSwitchTab={onSwitchTab}
+          />
         </div>
       </div>
       
@@ -1089,11 +1020,15 @@ function OrdersTable({
   searchQuery,
   statusFilter,
   compact,
+  customerName,
+  quoteCount,
 }: {
   orders: Order[];
   searchQuery: string;
   statusFilter: string;
   compact?: boolean;
+  customerName?: string;
+  quoteCount?: number;
 }) {
   const navigate = useNavigate();
   const [showColumnSettings, setShowColumnSettings] = useState(false);
@@ -1371,9 +1306,30 @@ function OrdersTable({
   }, [orders, searchQuery, statusFilter, sorting]);
 
   if (filteredOrders.length === 0) {
+    const isFiltered = searchQuery || statusFilter !== "all";
     return (
       <div className="py-12 text-center text-titan-text-secondary">
-        No orders found
+        {isFiltered ? (
+          <>
+            <p className="text-sm">No orders match your filters.</p>
+            <button
+              type="button"
+              onClick={() => {}}
+              className="mt-2 text-xs text-titan-accent hover:underline"
+            >
+              Clear filters
+            </button>
+          </>
+        ) : (
+          <>
+            <p className="text-sm">
+              No orders yet{customerName ? ` for ${customerName}` : ""}.{" "}
+              {quoteCount && quoteCount > 0
+                ? `This customer has ${quoteCount} quote${quoteCount === 1 ? "" : "s"} available.`
+                : ""}
+            </p>
+          </>
+        )}
       </div>
     );
   }
@@ -1653,11 +1609,13 @@ function QuotesTable({
   searchQuery,
   statusFilter,
   compact,
+  customerName,
 }: {
   quotes: any[];
   searchQuery: string;
   statusFilter: string;
   compact?: boolean;
+  customerName?: string;
 }) {
   const navigate = useNavigate();
 
@@ -1673,9 +1631,16 @@ function QuotesTable({
   }, [quotes, searchQuery, statusFilter]);
 
   if (filteredQuotes.length === 0) {
+    const isFiltered = searchQuery || statusFilter !== "all";
     return (
       <div className="py-12 text-center text-titan-text-secondary">
-        No quotes found
+        {isFiltered ? (
+          <p className="text-sm">No quotes match your filters.</p>
+        ) : (
+          <p className="text-sm">
+            No quotes yet{customerName ? ` for ${customerName}` : ""}.
+          </p>
+        )}
       </div>
     );
   }
@@ -1795,11 +1760,13 @@ function InvoicesTable({
   searchQuery,
   statusFilter,
   compact,
+  customerName,
 }: {
   invoices: any[];
   searchQuery: string;
   statusFilter: string;
   compact?: boolean;
+  customerName?: string;
 }) {
   const navigate = useNavigate();
 
@@ -1815,9 +1782,16 @@ function InvoicesTable({
   }, [invoices, searchQuery, statusFilter]);
 
   if (filteredInvoices.length === 0) {
+    const isFiltered = searchQuery || statusFilter !== "all";
     return (
       <div className="py-12 text-center text-titan-text-secondary">
-        No invoices found
+        {isFiltered ? (
+          <p className="text-sm">No invoices match your filters.</p>
+        ) : (
+          <p className="text-sm">
+            No invoices yet{customerName ? ` for ${customerName}` : ""}.
+          </p>
+        )}
       </div>
     );
   }
@@ -2042,7 +2016,7 @@ export default function EnhancedCustomerView({
     { key: "orders" as const, label: "Orders", count: orders.length },
     { key: "quotes" as const, label: "Quotes", count: quotes.length },
     { key: "invoices" as const, label: "Invoices", count: invoices.length },
-    ...(!isEmbedded ? [{ key: "statement" as const, label: "Statement" }] : []),
+    ...(!isEmbedded ? [{ key: "transactions" as const, label: "Transactions" }] : []),
   ];
 
   // Loading state
@@ -2090,6 +2064,7 @@ export default function EnhancedCustomerView({
         layoutMode={layoutMode}
         onBack={onBack}
         onSectionHome={onSectionHome}
+        onSwitchTab={(tab) => setActiveTab(tab as TabType)}
       />
 
       {/* Stats Cards Grid */}
@@ -2112,7 +2087,7 @@ export default function EnhancedCustomerView({
         <div className="flex items-center justify-between gap-4 rounded-t-2xl bg-[#111827] border border-slate-800 px-4 py-2">
           {/* Left: Search Input */}
           <div className="flex items-center">
-            {activeTab !== "statement" && (
+            {activeTab !== "transactions" && (
               <div className="relative w-64 max-w-xs">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                 <Input
@@ -2164,7 +2139,7 @@ export default function EnhancedCustomerView({
 
           {/* Right: Status Filter */}
           <div className="flex items-center">
-            {activeTab !== "statement" && (
+            {activeTab !== "transactions" && (
               <Select value={statusFilter} onValueChange={setStatusFilter}>
                 <SelectTrigger className="w-[140px] h-9 text-sm bg-slate-900/50 border-slate-700 text-white rounded-lg">
                   <SelectValue placeholder="All Status" />
@@ -2215,6 +2190,8 @@ export default function EnhancedCustomerView({
                   searchQuery={searchQuery}
                   statusFilter={statusFilter}
                   compact={isEmbedded}
+                  customerName={customer.companyName}
+                  quoteCount={quotes.length}
                 />
               )
             )}
@@ -2224,6 +2201,7 @@ export default function EnhancedCustomerView({
                 searchQuery={searchQuery}
                 statusFilter={statusFilter}
                 compact={isEmbedded}
+                customerName={customer.companyName}
               />
             )}
             {activeTab === "invoices" && (
@@ -2237,10 +2215,11 @@ export default function EnhancedCustomerView({
                   searchQuery={searchQuery}
                   statusFilter={statusFilter}
                   compact={isEmbedded}
+                  customerName={customer.companyName}
                 />
               )
             )}
-            {activeTab === "statement" && <StatementTab customer={customer} />}
+            {activeTab === "transactions" && <TransactionsTab customerId={customer.id} customer={customer} />}
           </div>
         </div>
       </div>
