@@ -370,7 +370,11 @@ export function LineItemCard({
   ) : secondaryDetailsContent;
 
   return (
-    <div className={cn("rounded-lg border border-border/40 bg-background/30", isExpanded && "bg-background/40 border-border/60")}>
+    <div
+      id={`line-item-${id}`}
+      tabIndex={-1}
+      className={cn("rounded-lg border border-border/40 bg-background/30 focus:outline-none", isExpanded && "bg-background/40 border-border/60")}
+    >
       {/* Collapsed Summary Row - Enterprise Dense Layout */}
       <button
         type="button"

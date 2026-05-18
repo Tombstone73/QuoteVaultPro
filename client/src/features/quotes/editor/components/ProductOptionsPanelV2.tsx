@@ -564,17 +564,10 @@ export function ProductOptionsPanelV2({
 
             const error = nodeErrors.get(nodeId);
 
-            // Structural nodes: render as section headers or skip
+            // Structural group nodes remain part of runtime visibility, but the
+            // order-entry editor should only render actual operator controls.
             if (node.kind === "group") {
-              return (
-                <div key={nodeId} className="rounded-md border border-border/50 bg-muted/20 p-2">
-                  <div className="flex items-center gap-2">
-                    <div className="text-sm font-medium">{node.label}</div>
-                    {node.ui?.badge ? <Badge variant="outline" className="text-[11px]">{node.ui.badge}</Badge> : null}
-                  </div>
-                  {node.description ? <div className="mt-1 text-xs text-muted-foreground">{node.description}</div> : null}
-                </div>
-              );
+              return null;
             }
 
             // "computed" nodes are structural (calculated values, not user inputs) - skip rendering

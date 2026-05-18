@@ -765,10 +765,11 @@ export function OrderLineItemsSection({
     if (!pendingJumpToLineItemId) return;
     if (expandedId !== pendingJumpToLineItemId) return;
 
-    const contentId = `line-item-${pendingJumpToLineItemId}-details`;
-    const el = document.getElementById(contentId);
+    const cardId = `line-item-${pendingJumpToLineItemId}`;
+    const el = document.getElementById(cardId);
     if (el) {
       try {
+        el.focus({ preventScroll: true });
         el.scrollIntoView({ block: "start", behavior: "smooth" });
       } catch {
         // ignore
@@ -1033,6 +1034,7 @@ export function OrderLineItemsSection({
         requiresDesign: boolean;
         requiresPrepress: boolean;
         optionSelections: Record<string, OptionSelection>;
+        optionSelectionsV2: LineItemOptionSelectionsV2["selected"];
         totalPrice: number;
       }
     >
@@ -1144,11 +1146,11 @@ export function OrderLineItemsSection({
     setOptionSelections(selections);
 
     const rawV2 = (expandedItem as any)?.optionSelectionsJson;
-    if (rawV2 && typeof rawV2 === "object" && (rawV2 as any)?.schemaVersion === 2) {
-      setOptionSelectionsV2(rawV2 as LineItemOptionSelectionsV2);
-    } else {
-      setOptionSelectionsV2({ schemaVersion: 2, selected: {} });
-    }
+    const nextSelectionsV2: LineItemOptionSelectionsV2 =
+      rawV2 && typeof rawV2 === "object" && (rawV2 as any)?.schemaVersion === 2
+        ? (rawV2 as LineItemOptionSelectionsV2)
+        : { schemaVersion: 2, selected: {} };
+    setOptionSelectionsV2(nextSelectionsV2);
 
     // Hydrate PBV2 snapshot from line item (used to render option questions)
     const savedSnapshot = getPbv2SnapshotFromLineItem(expandedItem);
@@ -1175,6 +1177,7 @@ export function OrderLineItemsSection({
       requiresDesign: Boolean((expandedItem as any).requiresDesign),
       requiresPrepress: Boolean((expandedItem as any).requiresPrepress),
       optionSelections: selections,
+      optionSelectionsV2: nextSelectionsV2.selected ?? {},
       totalPrice: currentTotal,
     };
   }, [expandedItem?.id, expandedItem?.totalPrice, expandedItem?.unitPrice, (expandedItem as any)?.overridePriceCents]);
@@ -1258,6 +1261,8 @@ export function OrderLineItemsSection({
     const savedProductionNotes = saved.productionNotes || "";
     const currentOptions = JSON.stringify(optionSelections || {});
     const savedOptions = JSON.stringify(saved.optionSelections || {});
+    const currentOptionsV2 = stableStringify(optionSelectionsV2?.selected || {});
+    const savedOptionsV2 = stableStringify(saved.optionSelectionsV2 || {});
     const currentBrief = JSON.stringify(designBriefDraft);
     const persistedBrief = JSON.stringify(savedBrief);
 
@@ -1269,10 +1274,23 @@ export function OrderLineItemsSection({
       currentProductionNotes !== savedProductionNotes ||
       requiresDesignInput !== saved.requiresDesign ||
       requiresPrepressInput !== saved.requiresPrepress ||
-      currentOptions !== savedOptions ||
+      (isPbv2Mode ? currentOptionsV2 !== savedOptionsV2 : currentOptions !== savedOptions) ||
       currentBrief !== persistedBrief
     );
-  }, [expandedItem, widthNum, heightNum, qtyNum, notes, notesDraftById, optionSelections, requiresDesignInput, requiresPrepressInput, designBriefDraft]);
+  }, [
+    expandedItem,
+    widthNum,
+    heightNum,
+    qtyNum,
+    notes,
+    notesDraftById,
+    optionSelections,
+    optionSelectionsV2,
+    isPbv2Mode,
+    requiresDesignInput,
+    requiresPrepressInput,
+    designBriefDraft,
+  ]);
 
   // Debounced price calculation for expanded item
   useDebouncedEffect(
@@ -1445,6 +1463,7 @@ export function OrderLineItemsSection({
         requiresDesign: requiresDesignInput,
         requiresPrepress: requiresPrepressInput,
         optionSelections,
+        optionSelectionsV2: optionSelectionsV2.selected ?? {},
         totalPrice,
       };
       designBriefSnapshotRef.current[itemId] = designBriefDraft;
@@ -1885,7 +1904,14 @@ export function OrderLineItemsSection({
                                 itemKey={itemKey}
                                 contentId={contentId}
                                 isExpanded={isExpanded}
-                                onToggleExpand={() => setExpandedId(isExpanded ? null : itemKey)}
+                                onToggleExpand={() => {
+                                  if (isExpanded) {
+                                    setExpandedId(null);
+                                    return;
+                                  }
+                                  setExpandedId(itemKey);
+                                  setPendingJumpToLineItemId(itemKey);
+                                }}
                                 title={productName}
                                 sizeLabel={`${item.width || "0"}" × ${item.height || "0"}"`}
                                 qtyLabel={`Qty ${item.quantity || 0}`}
@@ -2632,6 +2658,7 @@ export function OrderLineItemsSection({
                               setSearchOpen(false);
                               if (typeof nextId === "string" && nextId.length) {
                                 setExpandedId(nextId);
+                                setPendingJumpToLineItemId(nextId);
                               }
                               if (onAfterLineItemsChange) {
                                 await onAfterLineItemsChange();
