@@ -3144,3 +3144,156 @@ export async function importQBInvoicesByIds(
   console.log(`[QB Import Invoices] Done — created: ${result.created}, updated: ${result.updated}, skipped: ${result.skipped}, errors: ${result.errors.length}`, { organizationId });
   return result;
 }
+
+// ==================== Single Invoice Lookup ====================
+
+export type QBInvoiceLineItemDetail = {
+  lineNum: number;
+  description: string | null;
+  amount: number;
+  qty: number | null;
+  unitPrice: number | null;
+  itemRef: { qbId: string; name: string } | null;
+  serviceDate: string | null;
+};
+
+export type QBInvoiceDetail = {
+  qbId: string;
+  invoiceNumber: string;
+  poNumber: string | null;
+  poSource: string | null;
+  status: string;
+  issueDate: string | null;
+  dueDate: string | null;
+  customer: {
+    qbId: string;
+    displayName: string;
+  } | null;
+  billingEmail: string | null;
+  shipAddress: string | null;
+  billAddress: string | null;
+  customerMemo: string | null;
+  privateNote: string | null;
+  emailStatus: string | null;
+  subtotal: number;
+  tax: number;
+  total: number;
+  balanceDue: number;
+  lineItems: QBInvoiceLineItemDetail[];
+  customFields: Array<{ name: string; value: string | null }>;
+};
+
+function transformQBInvoice(qbInvoice: any): QBInvoiceDetail {
+  const total = Number(qbInvoice.TotalAmt ?? 0);
+  const balance = Number(qbInvoice.Balance ?? 0);
+  const tax = Number(qbInvoice.TxnTaxDetail?.TotalTax ?? 0);
+
+  const { poNumber, source: poSource } = extractQBInvoiceCustomerPo(qbInvoice);
+
+  const lineItems: QBInvoiceLineItemDetail[] = [];
+  if (Array.isArray(qbInvoice.Line)) {
+    for (const line of qbInvoice.Line) {
+      // Skip subtotal lines (DetailType = 'SubTotalLineDetail')
+      if (line.DetailType === 'SubTotalLineDetail') continue;
+      const detail = line.SalesItemLineDetail ?? line.DiscountLineDetail ?? null;
+      lineItems.push({
+        lineNum: Number(line.LineNum ?? 0),
+        description: String(line.Description ?? '').trim() || null,
+        amount: Number(line.Amount ?? 0),
+        qty: detail?.Qty != null ? Number(detail.Qty) : null,
+        unitPrice: detail?.UnitPrice != null ? Number(detail.UnitPrice) : null,
+        itemRef: detail?.ItemRef?.value
+          ? { qbId: String(detail.ItemRef.value), name: String(detail.ItemRef.name ?? '') }
+          : null,
+        serviceDate: detail?.ServiceDate ?? null,
+      });
+    }
+  }
+
+  const customFields: Array<{ name: string; value: string | null }> = [];
+  if (Array.isArray(qbInvoice.CustomField)) {
+    for (const field of qbInvoice.CustomField) {
+      customFields.push({
+        name: String(field.Name ?? ''),
+        value: field.StringValue != null
+          ? String(field.StringValue)
+          : field.DateValue != null
+          ? String(field.DateValue)
+          : field.NumberValue != null
+          ? String(field.NumberValue)
+          : null,
+      });
+    }
+  }
+
+  const billAddr = qbInvoice.BillAddr ? formatQBAddress(qbInvoice.BillAddr) : null;
+  const shipAddr = qbInvoice.ShipAddr ? formatQBAddress(qbInvoice.ShipAddr) : null;
+  const customerMemoRaw = qbInvoice.CustomerMemo?.value ?? qbInvoice.CustomerMemo ?? null;
+
+  return {
+    qbId: String(qbInvoice.Id),
+    invoiceNumber: String(qbInvoice.DocNumber ?? ''),
+    poNumber,
+    poSource,
+    status: balance > 0 ? 'open' : 'paid',
+    issueDate: qbInvoice.TxnDate ?? null,
+    dueDate: qbInvoice.DueDate ?? null,
+    customer: qbInvoice.CustomerRef?.value
+      ? { qbId: String(qbInvoice.CustomerRef.value), displayName: String(qbInvoice.CustomerRef.name ?? '') }
+      : null,
+    billingEmail: qbInvoice.BillEmail?.Address ?? null,
+    shipAddress: shipAddr,
+    billAddress: billAddr,
+    customerMemo: customerMemoRaw ? String(customerMemoRaw).trim() || null : null,
+    privateNote: qbInvoice.PrivateNote ? String(qbInvoice.PrivateNote).trim() || null : null,
+    emailStatus: qbInvoice.EmailStatus ?? null,
+    subtotal: total - tax,
+    tax,
+    total,
+    balanceDue: balance,
+    lineItems,
+    customFields,
+  };
+}
+
+/**
+ * Fetch a single QuickBooks invoice by its DocNumber (invoice number).
+ *
+ * Returns null if no invoice with that DocNumber exists in QuickBooks.
+ * Throws on network/auth errors (consistent with makeQBRequest behaviour).
+ *
+ * Does NOT write to any local table.
+ */
+export async function fetchQBInvoiceByNumber(
+  organizationId: string,
+  invoiceNumber: string,
+): Promise<{ raw: any; transformed: QBInvoiceDetail } | null> {
+  const safeNumber = String(invoiceNumber).trim();
+  if (!safeNumber) throw new Error('invoiceNumber is required');
+
+  // Step 1: resolve QB internal Id via DocNumber query
+  const query = `SELECT Id, DocNumber FROM Invoice WHERE DocNumber = '${escapeQBQueryString(safeNumber)}' MAXRESULTS 1`;
+  const queryResp = await makeQBRequest(
+    'GET',
+    `/query?query=${encodeURIComponent(query)}`,
+    undefined,
+    organizationId,
+  );
+
+  const found = queryResp?.QueryResponse?.Invoice?.[0];
+  if (!found?.Id) {
+    return null; // No invoice with this DocNumber in QB
+  }
+
+  // Step 2: fetch full invoice record by Id
+  const fullResp = await makeQBRequest('GET', `/invoice/${String(found.Id)}`, undefined, organizationId);
+  const qbInvoice = fullResp?.Invoice;
+  if (!qbInvoice) {
+    return null;
+  }
+
+  return {
+    raw: qbInvoice,
+    transformed: transformQBInvoice(qbInvoice),
+  };
+}
