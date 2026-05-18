@@ -1,15 +1,16 @@
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 /**
  * PBV2LineItemOptions - Minimal component to render PBV2 option questions in line items
- * 
+ *
  * Uses pbv2SnapshotJson from /calculate response:
  * - treeJson.nodes contains INPUT nodes with input.selectionKey and choices
  * - visibleNodeIds determines which nodes to show
  * - selections is Record<string, any> mapping selectionKey -> chosen value
- * 
- * For now, only supports type="select" inputs. Extend as needed.
+ *
+ * Supports type="select" (dropdown) and type="text" inputs.
  */
 
 type PBV2Node = {
@@ -21,6 +22,9 @@ type PBV2Node = {
     selectionKey: string;
     type: string;
     required?: boolean;
+    constraints?: {
+      text?: { minLen?: number; maxLen?: number };
+    };
   };
   choices?: Array<{ label: string; value: string }>;
 };
@@ -46,25 +50,44 @@ export function PBV2LineItemOptions({ pbv2SnapshotJson, selections, onSelectionC
   const { treeJson, visibleNodeIds } = pbv2SnapshotJson;
   if (!treeJson?.nodes || !visibleNodeIds) return null;
 
-  // Filter to visible INPUT/question nodes with type=select
-  const selectNodes = visibleNodeIds
+  // Filter to visible INPUT/question nodes with a renderable input type
+  const inputNodes = visibleNodeIds
     .map((id) => treeJson.nodes[id])
     .filter((node): node is PBV2Node => {
       if (!node) return false;
-      // Match nodes that are questions/INPUT nodes with select type
       const isQuestion = node.kind === "question" || node.type === "INPUT";
-      const hasSelectInput = node.input?.type === "select";
-      return isQuestion && hasSelectInput && Array.isArray(node.choices);
+      const inputType = node.input?.type;
+      const hasSelectInput = inputType === "select" && Array.isArray(node.choices);
+      const hasTextInput = inputType === "text";
+      return isQuestion && (hasSelectInput || hasTextInput);
     });
 
-  if (selectNodes.length === 0) return null;
+  if (inputNodes.length === 0) return null;
 
   return (
     <div className={className}>
       <div className="space-y-3">
-        {selectNodes.map((node) => {
+        {inputNodes.map((node) => {
           const selectionKey = node.input!.selectionKey;
           const currentValue = selections[selectionKey] ?? "";
+
+          if (node.input!.type === "text") {
+            const minLen = node.input?.constraints?.text?.minLen;
+            return (
+              <div key={node.id} className="space-y-1.5">
+                <Label htmlFor={`pbv2-${node.id}`}>
+                  {node.label || selectionKey}
+                  {node.input?.required && <span className="text-destructive ml-1">*</span>}
+                </Label>
+                <Input
+                  id={`pbv2-${node.id}`}
+                  value={String(currentValue)}
+                  onChange={(e) => onSelectionChange(selectionKey, e.target.value)}
+                  placeholder={minLen ? `Min ${minLen} characters` : "Enter text..."}
+                />
+              </div>
+            );
+          }
 
           return (
             <div key={node.id} className="space-y-1.5">

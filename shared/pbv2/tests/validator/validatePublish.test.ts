@@ -638,3 +638,45 @@ describe("pbv2/validator/validatePublish", () => {
     expect(result.errors.some((f) => f.code === "PBV2_E_WEIGHT_NEGATIVE")).toBe(true);
   });
 });
+
+describe("pbv2/validator/validatePublish — text input type", () => {
+  test("text input node without choices passes validation without errors", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["imprint"],
+      nodes: [
+        {
+          id: "imprint",
+          type: "INPUT",
+          status: "ENABLED",
+          key: "imprint",
+          input: { selectionKey: "imprint", type: "text" },
+        },
+      ],
+      edges: [],
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.errors.length).toBe(0);
+  });
+
+  test("required text input node without choices passes validation without errors", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["imprint"],
+      nodes: [
+        {
+          id: "imprint",
+          type: "INPUT",
+          status: "ENABLED",
+          key: "imprint",
+          input: { selectionKey: "imprint", type: "text", required: true },
+        },
+      ],
+      edges: [],
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.errors.length).toBe(0);
+  });
+});

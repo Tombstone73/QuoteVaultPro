@@ -203,6 +203,7 @@ export function OptionDetailsEditor({
               <SelectItem value="checkbox">Checkbox (Boolean)</SelectItem>
               <SelectItem value="numeric">Numeric Input</SelectItem>
               <SelectItem value="dimension">Dimension Input</SelectItem>
+              <SelectItem value="text">Text Input</SelectItem>
             </SelectContent>
           </Select>
         </div>

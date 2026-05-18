@@ -267,50 +267,57 @@ function CustomerHeader({
           )}
 
           <div className="flex-1 min-w-0">
-            {/* Company Name + Primary Contact inline */}
-            <div className="flex items-baseline gap-2">
-              <h2 className={cn(
-                "font-bold text-titan-text-primary leading-tight truncate",
-                isEmbedded ? "text-base" : "text-lg"
-              )}>
-                {customer.companyName}
-              </h2>
-              {primaryContact && (
-                <span className="text-titan-xs text-titan-text-muted truncate hidden sm:inline">
-                  ({primaryContact.firstName} {primaryContact.lastName})
-                </span>
-              )}
-            </div>
-            
-            {/* Contact Details (email, phone, location) - single row */}
-            {!isEmbedded && (
-              <div className="flex items-center gap-2.5 mt-0.5 text-[11px] text-titan-text-muted flex-wrap">
-                {(primaryContact?.email || customer.email) && (
-                  <a 
-                    href={`mailto:${primaryContact?.email || customer.email}`}
-                    className="flex items-center gap-1 hover:text-titan-accent transition-colors"
-                  >
-                    <Mail className="w-3 h-3 flex-shrink-0" />
-                    <span className="truncate max-w-[160px]">{primaryContact?.email || customer.email}</span>
-                  </a>
-                )}
-                {(primaryContact?.phone || customer.phone) && (
-                  <a 
-                    href={`tel:${(primaryContact?.phone || customer.phone || "").replace(/[^+\d]/g, "")}`}
-                    className="flex items-center gap-1 hover:text-titan-accent transition-colors"
-                  >
-                    <Phone className="w-3 h-3 flex-shrink-0" />
-                    {primaryContact?.phone || customer.phone}
-                  </a>
-                )}
-                {cityState && (
-                  <span className="flex items-center gap-1">
-                    <MapPin className="w-3 h-3 flex-shrink-0" />
-                    {cityState}
-                  </span>
+            {/* Company Name */}
+            <h2 className={cn(
+              "font-bold text-titan-text-primary leading-tight truncate",
+              isEmbedded ? "text-base" : "text-lg"
+            )}>
+              {customer.companyName}
+            </h2>
+            {/* Primary Contact – labeled and clickable */}
+            {primaryContact && (
+              <div className="flex items-center gap-1 text-[11px] text-titan-text-muted mt-0.5">
+                <span className="text-titan-text-secondary font-medium">Primary Contact:</span>
+                <button
+                  type="button"
+                  onClick={() => navigate(ROUTES.contacts.detail(primaryContact.id))}
+                  className="hover:text-titan-accent transition-colors truncate"
+                >
+                  {primaryContact.firstName} {primaryContact.lastName}
+                </button>
+                {accountNumber && isEmbedded && (
+                  <span className="ml-2 text-titan-text-muted/60">#{accountNumber}</span>
                 )}
               </div>
             )}
+            
+            {/* Contact Details (email, phone, location) - single row */}
+            <div className="flex items-center gap-2.5 mt-0.5 text-[11px] text-titan-text-muted flex-wrap">
+              {(primaryContact?.email || customer.email) && (
+                <a 
+                  href={`mailto:${primaryContact?.email || customer.email}`}
+                  className="flex items-center gap-1 hover:text-titan-accent transition-colors"
+                >
+                  <Mail className="w-3 h-3 flex-shrink-0" />
+                  <span className="truncate max-w-[160px]">{primaryContact?.email || customer.email}</span>
+                </a>
+              )}
+              {(primaryContact?.phone || customer.phone) && (
+                <a 
+                  href={`tel:${(primaryContact?.phone || customer.phone || "").replace(/[^+\d]/g, "")}`}
+                  className="flex items-center gap-1 hover:text-titan-accent transition-colors"
+                >
+                  <Phone className="w-3 h-3 flex-shrink-0" />
+                  {primaryContact?.phone || customer.phone}
+                </a>
+              )}
+              {!isEmbedded && cityState && (
+                <span className="flex items-center gap-1">
+                  <MapPin className="w-3 h-3 flex-shrink-0" />
+                  {cityState}
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -986,7 +993,7 @@ function CustomerStatsGrid({
   return (
     <div className={cn(
       "grid gap-1.5",
-      isEmbedded ? "grid-cols-4" : "grid-cols-7"
+      isEmbedded ? "grid-cols-4" : "grid-flow-col auto-cols-[minmax(80px,1fr)]"
     )}>
       {/* First slot: Overview Controls Card (only in full mode) */}
       {!isEmbedded && (
@@ -2074,7 +2081,7 @@ export default function EnhancedCustomerView({
 
   return (
     <div className={cn(
-      "space-y-6 max-w-[1600px]",
+      "w-full space-y-6",
       isEmbedded ? "p-4" : "p-6"
     )}>
       {/* Customer Header Card */}

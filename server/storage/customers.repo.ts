@@ -570,4 +570,221 @@ export class CustomersRepository {
         const [customer] = contact.customerId ? await this.dbInstance.select().from(customers).where(eq(customers.id, contact.customerId)) : [undefined];
         return { ...contact, customer };
     }
+
+    // --------------------------------------------------------
+    // Paginated customers list
+    // --------------------------------------------------------
+    async getCustomersPaged(
+        organizationId: string,
+        opts: {
+            search?: string;
+            status?: string;
+            customerType?: string;
+            assignedTo?: string;
+            page?: number;
+            pageSize?: number;
+        },
+    ): Promise<{
+        items: (Customer & { contacts?: CustomerContact[] })[];
+        total: number;
+        page: number;
+        pageSize: number;
+        totalPages: number;
+        hasNextPage: boolean;
+        hasPreviousPage: boolean;
+    }> {
+        const page = Math.max(1, opts.page ?? 1);
+        const pageSize = Math.min(200, Math.max(1, opts.pageSize ?? 50));
+
+        // Helper: collect IDs matching non-search filters
+        const buildFilterConditions = () => {
+            const conds: any[] = [eq(customers.organizationId, organizationId)];
+            if (opts.status) conds.push(eq(customers.status, opts.status));
+            if (opts.customerType) conds.push(eq(customers.customerType, opts.customerType as any));
+            if (opts.assignedTo) conds.push(eq(customers.assignedTo, opts.assignedTo));
+            return conds;
+        };
+
+        let matchingIds: string[];
+
+        if (opts.search) {
+            const pattern = `%${opts.search}%`;
+            const filterConds = buildFilterConditions();
+
+            // Customers matching by company or email
+            const byCompany = await this.dbInstance
+                .select({ id: customers.id })
+                .from(customers)
+                .where(and(...filterConds, or(ilike(customers.companyName, pattern), ilike(customers.email, pattern))));
+
+            // Contacts matching by name or email → resolve to customer IDs
+            const byContact = await this.dbInstance
+                .select({ customerId: customerContacts.customerId })
+                .from(customerContacts)
+                .where(or(
+                    ilike(customerContacts.firstName, pattern),
+                    ilike(customerContacts.lastName, pattern),
+                    ilike(customerContacts.email, pattern),
+                ));
+
+            // Union + deduplicate while preserving org filter for contact-derived IDs
+            const seenIds = new Set<string>();
+            for (const r of byCompany) seenIds.add(r.id);
+
+            const contactDerivedIds = byContact.map(r => r.customerId).filter((id): id is string => id != null);
+            if (contactDerivedIds.length > 0) {
+                // Apply remaining filters to contact-derived customers
+                const addlConds = buildFilterConditions();
+                addlConds.push(inArray(customers.id, contactDerivedIds));
+                const addl = await this.dbInstance
+                    .select({ id: customers.id })
+                    .from(customers)
+                    .where(and(...addlConds));
+                for (const r of addl) seenIds.add(r.id);
+            }
+
+            matchingIds = Array.from(seenIds);
+        } else {
+            const filterConds = buildFilterConditions();
+            const rows = await this.dbInstance
+                .select({ id: customers.id })
+                .from(customers)
+                .where(and(...filterConds));
+            matchingIds = rows.map(r => r.id);
+        }
+
+        const total = matchingIds.length;
+        const totalPages = Math.max(1, Math.ceil(total / pageSize));
+        const safePageClamped = Math.min(page, totalPages);
+        const offset = (safePageClamped - 1) * pageSize;
+        const pageIds = matchingIds.slice(offset, offset + pageSize);
+
+        let items: (Customer & { contacts?: CustomerContact[] })[] = [];
+        if (pageIds.length > 0) {
+            const rows = await this.dbInstance
+                .select()
+                .from(customers)
+                .where(inArray(customers.id, pageIds))
+                .orderBy(customers.companyName);
+
+            const allContacts = await this.dbInstance
+                .select()
+                .from(customerContacts)
+                .where(inArray(customerContacts.customerId, pageIds));
+
+            items = rows.map(c => ({
+                ...c,
+                contacts: allContacts.filter(ct => ct.customerId === c.id),
+            }));
+        }
+
+        return {
+            items,
+            total,
+            page: safePageClamped,
+            pageSize,
+            totalPages,
+            hasNextPage: safePageClamped < totalPages,
+            hasPreviousPage: safePageClamped > 1,
+        };
+    }
+
+    // --------------------------------------------------------
+    // Paginated contacts list with correct total count
+    // --------------------------------------------------------
+    async getContactsPaged(
+        organizationId: string,
+        opts: { search?: string; page?: number; pageSize?: number },
+    ): Promise<{
+        items: Array<CustomerContact & { companyName: string; ordersCount: number; quotesCount: number; lastActivityAt: string | null }>;
+        total: number;
+        page: number;
+        pageSize: number;
+        totalPages: number;
+        hasNextPage: boolean;
+        hasPreviousPage: boolean;
+    }> {
+        const page = Math.max(1, opts.page ?? 1);
+        const pageSize = Math.min(200, Math.max(1, opts.pageSize ?? 50));
+
+        // All customers in this org (map by id for enrichment later)
+        const orgCustomers = await this.dbInstance
+            .select()
+            .from(customers)
+            .where(eq(customers.organizationId, organizationId));
+
+        const customerMap = new Map(orgCustomers.map(c => [c.id, c]));
+        const customerIds = orgCustomers.map(c => c.id);
+
+        if (customerIds.length === 0) {
+            return { items: [], total: 0, page: 1, pageSize, totalPages: 1, hasNextPage: false, hasPreviousPage: false };
+        }
+
+        const baseCondition = inArray(customerContacts.customerId, customerIds);
+        const whereClause = opts.search
+            ? and(
+                baseCondition,
+                or(
+                    ilike(customerContacts.firstName, `%${opts.search}%`),
+                    ilike(customerContacts.lastName, `%${opts.search}%`),
+                    ilike(customerContacts.email, `%${opts.search}%`),
+                ),
+            )
+            : baseCondition;
+
+        // True total count
+        const [countRow] = await this.dbInstance
+            .select({ count: sql<number>`count(*)` })
+            .from(customerContacts)
+            .where(whereClause);
+        const total = Number(countRow?.count ?? 0);
+
+        const totalPages = Math.max(1, Math.ceil(total / pageSize));
+        const safePageClamped = Math.min(page, totalPages);
+
+        const contactRows = await this.dbInstance
+            .select()
+            .from(customerContacts)
+            .where(whereClause)
+            .orderBy(desc(customerContacts.createdAt))
+            .limit(pageSize)
+            .offset((safePageClamped - 1) * pageSize);
+
+        const enriched = await Promise.all(contactRows.map(async (contact: CustomerContact) => {
+            const customer = customerMap.get(contact.customerId ?? '');
+            const companyName = customer?.companyName ?? 'Unknown';
+
+            const [ordersRow] = await this.dbInstance.select({ count: sql<number>`count(*)` }).from(orders).where(eq(orders.contactId, contact.id));
+            const ordersCount = Number(ordersRow?.count ?? 0);
+
+            const [quotesRow] = await this.dbInstance.select({ count: sql<number>`count(*)` }).from(quotes).where(eq(quotes.contactId, contact.id));
+            const quotesCount = Number(quotesRow?.count ?? 0);
+
+            const [lastOrder] = await this.dbInstance.select({ createdAt: orders.createdAt }).from(orders).where(eq(orders.contactId, contact.id)).orderBy(desc(orders.createdAt)).limit(1);
+            const [lastQuote] = await this.dbInstance.select({ createdAt: quotes.createdAt }).from(quotes).where(eq(quotes.contactId, contact.id)).orderBy(desc(quotes.createdAt)).limit(1);
+
+            let lastActivityAt: string | null = null;
+            if (lastOrder?.createdAt && lastQuote?.createdAt) {
+                lastActivityAt = new Date(lastOrder.createdAt) > new Date(lastQuote.createdAt)
+                    ? lastOrder.createdAt
+                    : lastQuote.createdAt.toISOString();
+            } else if (lastOrder?.createdAt) {
+                lastActivityAt = lastOrder.createdAt;
+            } else if (lastQuote?.createdAt) {
+                lastActivityAt = lastQuote.createdAt.toISOString();
+            }
+
+            return { ...contact, companyName, ordersCount, quotesCount, lastActivityAt };
+        }));
+
+        return {
+            items: enriched,
+            total,
+            page: safePageClamped,
+            pageSize,
+            totalPages,
+            hasNextPage: safePageClamped < totalPages,
+            hasPreviousPage: safePageClamped > 1,
+        };
+    }
 }
