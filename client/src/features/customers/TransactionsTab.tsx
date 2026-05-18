@@ -305,15 +305,16 @@ export default function TransactionsTab({ customerId, customer }: TransactionsTa
       </div>
 
       {/* Filters Bar */}
-      <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex items-center gap-2 flex-wrap bg-titan-bg-card border border-titan-border-subtle rounded-titan-lg p-3">
         {/* Search */}
         <div className="relative flex-1 min-w-[180px] max-w-xs">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-titan-text-muted" />
           <Input
-            placeholder="Search transactions..."
+            placeholder="Search transactions…"
             value={search}
             onChange={(e) => handleFilterChange(() => setSearch(e.target.value))}
-            className="pl-9 h-8 text-sm bg-titan-bg-card-elevated border-titan-border-subtle text-titan-text-primary"
+            disabled={isLoading}
+            className="pl-9 h-9 text-sm bg-titan-bg-card-elevated border-titan-border-subtle text-titan-text-primary"
           />
         </div>
 
@@ -321,8 +322,9 @@ export default function TransactionsTab({ customerId, customer }: TransactionsTa
         <Select
           value={datePreset}
           onValueChange={(v) => handleFilterChange(() => setDatePreset(v))}
+          disabled={isLoading}
         >
-          <SelectTrigger className="h-8 w-[140px] text-sm bg-titan-bg-card-elevated border-titan-border-subtle text-titan-text-primary">
+          <SelectTrigger className="h-9 w-[140px] text-sm bg-titan-bg-card-elevated border-titan-border-subtle text-titan-text-primary">
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="bg-titan-bg-card border-titan-border">
@@ -338,8 +340,9 @@ export default function TransactionsTab({ customerId, customer }: TransactionsTa
         <Select
           value={typeFilter}
           onValueChange={(v) => handleFilterChange(() => setTypeFilter(v))}
+          disabled={isLoading}
         >
-          <SelectTrigger className="h-8 w-[140px] text-sm bg-titan-bg-card-elevated border-titan-border-subtle text-titan-text-primary">
+          <SelectTrigger className="h-9 w-[140px] text-sm bg-titan-bg-card-elevated border-titan-border-subtle text-titan-text-primary">
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="bg-titan-bg-card border-titan-border">
@@ -360,7 +363,8 @@ export default function TransactionsTab({ customerId, customer }: TransactionsTa
           variant="outline"
           size="sm"
           onClick={() => handleFilterChange(() => setSort((s) => (s === "desc" ? "asc" : "desc")))}
-          className="h-8 gap-1.5 border-titan-border-subtle text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated text-xs"
+          disabled={isLoading}
+          className="h-9 gap-1.5 border-titan-border-subtle text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated text-xs"
         >
           {sort === "desc" ? (
             <>
@@ -374,6 +378,23 @@ export default function TransactionsTab({ customerId, customer }: TransactionsTa
             </>
           )}
         </Button>
+
+        {/* Reset filters */}
+        {(search || typeFilter !== "all" || datePreset !== "all") && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setSearch("");
+              setTypeFilter("all");
+              setDatePreset("all");
+              setPage(1);
+            }}
+            className="h-9 text-xs text-titan-text-muted hover:text-titan-text-primary"
+          >
+            Reset filters
+          </Button>
+        )}
       </div>
 
       {/* Table */}
