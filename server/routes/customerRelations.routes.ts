@@ -29,9 +29,10 @@
 import type { Express } from "express";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, and, sql } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 import { db } from "../db";
-import { orders, quotes } from "@shared/schema";
+import { orders, quotes, invoices, payments, customerCreditTransactions } from "@shared/schema";
 import {
   insertCustomerContactSchema,
   updateCustomerContactSchema,
@@ -335,6 +336,330 @@ export function registerCustomerRelationsRoutes(
     } catch (error) {
       console.error("Error applying credit to customer:", error);
       res.status(500).json({ message: "Failed to apply credit to customer" });
+    }
+  });
+
+  // ============================================================
+  // CUSTOMER TRANSACTION REPORT
+  // GET /api/customers/:id/transactions
+  //
+  // Query params:
+  //   dateFrom   ISO date string (optional)
+  //   dateTo     ISO date string (optional)
+  //   search     string (optional)
+  //   type       comma-separated: quote,order,invoice,payment,credit,adjustment (optional)
+  //   sort       "asc" | "desc"  (default "desc")
+  //   page       integer (default 1)
+  //   pageSize   integer (default 50, max 100)
+  //
+  // Response:
+  //   { rows, summary: { invoicedTotal, paidTotal, openBalance, creditsTotal }, pagination }
+  // ============================================================
+
+  app.get("/api/customers/:id/transactions", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const customerId = req.params.id;
+
+      // Validate customer belongs to this org
+      const customer = await storage.getCustomerById(organizationId, customerId);
+      if (!customer) {
+        return res.status(404).json({ message: "Customer not found" });
+      }
+
+      // Parse filters — keep dateFrom/dateTo as ISO strings (PgTimestampString columns compare with strings)
+      const dateFrom = (req.query.dateFrom as string) || null;
+      const dateTo = (req.query.dateTo as string) || null;
+      const search = ((req.query.search as string) || "").toLowerCase().trim();
+      const typeFilter: string[] | null = req.query.type
+        ? (req.query.type as string).split(",").map((t) => t.trim())
+        : null;
+      const sort = req.query.sort === "asc" ? "asc" : "desc";
+      const page = Math.max(1, parseInt((req.query.page as string) || "1", 10));
+      const pageSize = Math.min(100, Math.max(1, parseInt((req.query.pageSize as string) || "50", 10)));
+
+      type TxRow = {
+        id: string;
+        date: string;
+        type: string;
+        referenceNumber: string;
+        description: string;
+        status: string;
+        amount: string;
+        balanceImpact: string | null;
+        method: string | null;
+        linkType: string | null;
+        linkId: string | null;
+      };
+
+      const rows: TxRow[] = [];
+
+      // ── QUOTES ──
+      if (!typeFilter || typeFilter.includes("quote")) {
+        const dateFilters: SQL<unknown>[] = [];
+        if (dateFrom) dateFilters.push(sql`${quotes.createdAt} >= ${dateFrom}`);
+        if (dateTo) dateFilters.push(sql`${quotes.createdAt} <= ${dateTo}`);
+
+        const quoteRows = await db
+          .select({
+            id: quotes.id,
+            createdAt: quotes.createdAt,
+            quoteNumber: quotes.quoteNumber,
+            label: quotes.label,
+            status: quotes.status,
+            totalPrice: quotes.totalPrice,
+          })
+          .from(quotes)
+          .where(and(eq(quotes.organizationId, organizationId), eq(quotes.customerId, customerId), ...dateFilters));
+
+        for (const q of quoteRows) {
+          const refNum = q.quoteNumber != null ? `Q-${q.quoteNumber}` : "—";
+          const descText = q.label || "Quote";
+          if (search && !refNum.toLowerCase().includes(search) && !descText.toLowerCase().includes(search)) continue;
+          rows.push({
+            id: `quote-${q.id}`,
+            date: new Date(q.createdAt as any).toISOString(),
+            type: "quote",
+            referenceNumber: refNum,
+            description: descText,
+            status: (q.status as string) || "active",
+            amount: q.totalPrice || "0",
+            balanceImpact: null,
+            method: null,
+            linkType: "quote",
+            linkId: q.id,
+          });
+        }
+      }
+
+      // ── ORDERS ──
+      if (!typeFilter || typeFilter.includes("order")) {
+        const dateFilters: SQL<unknown>[] = [];
+        if (dateFrom) dateFilters.push(sql`${orders.createdAt} >= ${dateFrom}`);
+        if (dateTo) dateFilters.push(sql`${orders.createdAt} <= ${dateTo}`);
+
+        const orderRows = await db
+          .select({
+            id: orders.id,
+            createdAt: orders.createdAt,
+            orderNumber: orders.orderNumber,
+            label: orders.label,
+            status: orders.status,
+            total: orders.total,
+          })
+          .from(orders)
+          .where(and(eq(orders.organizationId, organizationId), eq(orders.customerId, customerId), ...dateFilters));
+
+        for (const o of orderRows) {
+          const refNum = `ORD-${o.orderNumber}`;
+          const descText = o.label || "Order";
+          if (search && !refNum.toLowerCase().includes(search) && !descText.toLowerCase().includes(search)) continue;
+          rows.push({
+            id: `order-${o.id}`,
+            date: new Date(o.createdAt as any).toISOString(),
+            type: "order",
+            referenceNumber: refNum,
+            description: descText,
+            status: o.status || "new",
+            amount: o.total || "0",
+            balanceImpact: null,
+            method: null,
+            linkType: "order",
+            linkId: o.id,
+          });
+        }
+      }
+
+      // ── INVOICES ──
+      if (!typeFilter || typeFilter.includes("invoice")) {
+        const dateFilters: SQL<unknown>[] = [];
+        if (dateFrom) dateFilters.push(sql`${invoices.createdAt} >= ${dateFrom}`);
+        if (dateTo) dateFilters.push(sql`${invoices.createdAt} <= ${dateTo}`);
+
+        const invoiceRows = await db
+          .select({
+            id: invoices.id,
+            createdAt: invoices.createdAt,
+            invoiceNumber: invoices.invoiceNumber,
+            status: invoices.status,
+            total: invoices.total,
+            balanceDue: invoices.balanceDue,
+            notesPublic: invoices.notesPublic,
+          })
+          .from(invoices)
+          .where(and(eq(invoices.organizationId, organizationId), eq(invoices.customerId, customerId), ...dateFilters));
+
+        for (const inv of invoiceRows) {
+          const refNum = `INV-${inv.invoiceNumber}`;
+          const descText = inv.notesPublic || "Invoice";
+          if (search && !refNum.toLowerCase().includes(search) && !descText.toLowerCase().includes(search)) continue;
+          rows.push({
+            id: `invoice-${inv.id}`,
+            date: new Date(inv.createdAt as any).toISOString(),
+            type: "invoice",
+            referenceNumber: refNum,
+            description: descText,
+            status: inv.status || "draft",
+            amount: inv.total || "0",
+            balanceImpact: inv.balanceDue || "0",
+            method: null,
+            linkType: "invoice",
+            linkId: inv.id,
+          });
+        }
+      }
+
+      // ── PAYMENTS (via invoice join for customerId) ──
+      if (!typeFilter || typeFilter.includes("payment")) {
+        const dateFilters: SQL<unknown>[] = [];
+        if (dateFrom) dateFilters.push(sql`${payments.createdAt} >= ${dateFrom}`);
+        if (dateTo) dateFilters.push(sql`${payments.createdAt} <= ${dateTo}`);
+
+        const paymentRows = await db
+          .select({
+            id: payments.id,
+            createdAt: payments.createdAt,
+            amount: payments.amount,
+            status: payments.status,
+            method: payments.method,
+            notes: payments.notes,
+            invoiceId: payments.invoiceId,
+            invoiceNumber: invoices.invoiceNumber,
+          })
+          .from(payments)
+          .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
+          .where(
+            and(
+              eq(payments.organizationId, organizationId),
+              eq(invoices.customerId, customerId),
+              ...dateFilters,
+            ),
+          );
+
+        for (const p of paymentRows) {
+          const refNum = p.invoiceNumber != null ? `PMT-INV-${p.invoiceNumber}` : "PMT";
+          const descText = p.notes || `Payment — ${p.method || "other"}`;
+          if (search && !refNum.toLowerCase().includes(search) && !descText.toLowerCase().includes(search)) continue;
+          const amt = p.amount || "0";
+          rows.push({
+            id: `payment-${p.id}`,
+            date: new Date(p.createdAt as any).toISOString(),
+            type: "payment",
+            referenceNumber: refNum,
+            description: descText,
+            status: p.status || "succeeded",
+            amount: amt,
+            balanceImpact: `-${amt}`,
+            method: p.method || null,
+            linkType: "invoice",
+            linkId: p.invoiceId,
+          });
+        }
+      }
+
+      // ── CREDIT / ADJUSTMENT TRANSACTIONS ──
+      if (!typeFilter || typeFilter.includes("credit") || typeFilter.includes("adjustment")) {
+        const creditRows = await storage.getCustomerCreditTransactions(customerId);
+        for (const ct of creditRows) {
+          // In-memory date filter (table has no organizationId so we already validated via customer check)
+          const ctDate = new Date(ct.createdAt);
+          if (dateFrom && ctDate < new Date(dateFrom)) continue;
+          if (dateTo && ctDate > new Date(dateTo)) continue;
+
+          const txType = ct.transactionType || "credit";
+          // Apply type filter when set
+          if (
+            typeFilter &&
+            !typeFilter.includes(txType) &&
+            !typeFilter.includes("credit") &&
+            !typeFilter.includes("adjustment")
+          ) {
+            continue;
+          }
+
+          const refNum = ct.referenceNumber || "—";
+          const descText = ct.description || txType;
+          if (search && !refNum.toLowerCase().includes(search) && !descText.toLowerCase().includes(search)) continue;
+
+          rows.push({
+            id: `credit-${ct.id}`,
+            date: new Date(ct.createdAt).toISOString(),
+            type: txType,
+            referenceNumber: refNum,
+            description: descText,
+            status: "applied",
+            amount: ct.amount || "0",
+            balanceImpact: ct.amount || "0",
+            method: null,
+            linkType: null,
+            linkId: null,
+          });
+        }
+      }
+
+      // Sort all rows by date
+      rows.sort((a, b) => {
+        const diff = new Date(a.date).getTime() - new Date(b.date).getTime();
+        return sort === "desc" ? -diff : diff;
+      });
+
+      // ── SUMMARY TOTALS (computed from full unfiltered data for this customer) ──
+      const allInvoices = await db
+        .select({ total: invoices.total, balanceDue: invoices.balanceDue, status: invoices.status })
+        .from(invoices)
+        .where(and(eq(invoices.organizationId, organizationId), eq(invoices.customerId, customerId)));
+
+      const allPayments = await db
+        .select({ amount: payments.amount })
+        .from(payments)
+        .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
+        .where(
+          and(
+            eq(payments.organizationId, organizationId),
+            eq(invoices.customerId, customerId),
+            eq(payments.status, "succeeded"),
+          ),
+        );
+
+      const allCreditTx = await storage.getCustomerCreditTransactions(customerId);
+
+      const invoicedTotal = allInvoices.reduce((s, inv) => s + parseFloat(inv.total || "0"), 0);
+      const paidTotal = allPayments.reduce((s, p) => s + parseFloat(p.amount || "0"), 0);
+      const openBalance = allInvoices.reduce((s, inv) => {
+        const voidOrPaid = inv.status === "paid" || inv.status === "void";
+        return voidOrPaid ? s : s + parseFloat(inv.balanceDue || "0");
+      }, 0);
+      const creditsTotal = allCreditTx
+        .filter((ct) => ct.transactionType === "payment" || ct.transactionType === "credit")
+        .reduce((s, ct) => s + parseFloat(ct.amount || "0"), 0);
+
+      // Paginate
+      const total = rows.length;
+      const totalPages = Math.max(1, Math.ceil(total / pageSize));
+      const paginatedRows = rows.slice((page - 1) * pageSize, page * pageSize);
+
+      res.json({
+        rows: paginatedRows,
+        summary: {
+          invoicedTotal: invoicedTotal.toFixed(2),
+          paidTotal: paidTotal.toFixed(2),
+          openBalance: openBalance.toFixed(2),
+          creditsTotal: creditsTotal.toFixed(2),
+        },
+        pagination: {
+          total,
+          page,
+          pageSize,
+          totalPages,
+          hasNextPage: page < totalPages,
+          hasPreviousPage: page > 1,
+        },
+      });
+    } catch (error) {
+      console.error("Error fetching customer transactions:", error);
+      res.status(500).json({ message: "Failed to fetch customer transactions" });
     }
   });
 }
