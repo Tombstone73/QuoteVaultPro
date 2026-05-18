@@ -44,11 +44,28 @@ type Props = {
   className?: string;
 };
 
+function SetupWarning({ message, className }: { message: string; className?: string }) {
+  return (
+    <div className={className}>
+      <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-xs text-amber-700 dark:text-amber-300">
+        {message}
+      </div>
+    </div>
+  );
+}
+
 export function PBV2LineItemOptions({ pbv2SnapshotJson, selections, onSelectionChange, className }: Props) {
-  if (!pbv2SnapshotJson) return null;
+  if (!pbv2SnapshotJson) {
+    return <SetupWarning className={className} message="No PBV2 pricing snapshot available yet. Set dimensions and quantity to load options." />;
+  }
 
   const { treeJson, visibleNodeIds } = pbv2SnapshotJson;
-  if (!treeJson?.nodes || !visibleNodeIds) return null;
+  if (!treeJson?.nodes) {
+    return <SetupWarning className={className} message="PBV2 snapshot has no option tree. Open the product and re-save to publish its option tree." />;
+  }
+  if (!visibleNodeIds) {
+    return <SetupWarning className={className} message="PBV2 snapshot is missing visibleNodeIds. Recalculate pricing to refresh the option list." />;
+  }
 
   // Filter to visible INPUT/question nodes with a renderable input type
   const inputNodes = visibleNodeIds
@@ -62,7 +79,14 @@ export function PBV2LineItemOptions({ pbv2SnapshotJson, selections, onSelectionC
       return isQuestion && (hasSelectInput || hasTextInput);
     });
 
-  if (inputNodes.length === 0) return null;
+  if (inputNodes.length === 0) {
+    return (
+      <SetupWarning
+        className={className}
+        message="No selectable PBV2 options are currently visible. Check option visibility rules or product configuration."
+      />
+    );
+  }
 
   return (
     <div className={className}>
