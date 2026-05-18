@@ -606,15 +606,6 @@ export function OrderLineItemDialog({
               </div>
             </div>
 
-            {/* DEBUG: PBV2 Status (temporary) */}
-            {isPbv2 && (
-              <div style={{ padding: 8, background: "#002222", color: "white", fontSize: '12px', fontFamily: 'monospace' }}>
-                PBV2 snapshot={String(Boolean(pbv2SnapshotJson))}
-                {' '}visibleCount={String(pbv2SnapshotJson?.visibleNodeIds?.length ?? 0)}
-                {' '}hasTreeJson={String(Boolean(pbv2SnapshotJson?.treeJson))}
-              </div>
-            )}
-
             {/* Product Options Selection - Conditional PBV2 or Legacy */}
             {selectedProduct && (
               <>
@@ -623,11 +614,11 @@ export function OrderLineItemDialog({
                     <AlertCircle className="h-4 w-4 shrink-0" />
                     <span>PBV2 configuration missing for this product.</span>
                   </div>
-                ) : isPbv2 && pbv2SnapshotJson?.treeJson && (pbv2SnapshotJson.visibleNodeIds?.length ?? 0) > 0 ? (
+                ) : isPbv2 && pbv2Tree ? (
                   <div className="space-y-3 border-t pt-4">
-                    <Label className="text-base font-semibold">Product Options (PBV2 from snapshot)</Label>
+                    <Label className="text-base font-semibold">Product Options</Label>
                     <ProductOptionsPanelV2
-                      tree={pbv2SnapshotJson.treeJson}
+                      tree={pbv2Tree}
                       selections={optionSelectionsJson}
                       onSelectionsChange={setOptionSelectionsJson}
                       onValidityChange={setOptionsV2Valid}
