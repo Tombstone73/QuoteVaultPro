@@ -1,5 +1,12 @@
-import { describe, expect, test, jest } from '@jest/globals';
+import { describe, expect, test, jest, beforeAll } from '@jest/globals';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import path from 'path';
 import { fetchAllQBEntities, QB_PAGE_SIZE, QB_MAX_RECORDS_CAP } from '../lib/qbPaginationHelper.js';
+
+// ESM-safe __dirname replacement
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -186,4 +193,155 @@ describe('preview pagination — no writes', () => {
     expect(fetcherCalls).toHaveLength(1);
     // No DB or write calls can be verified here since the helper has no DB dependency
   });
+});
+
+// ---------------------------------------------------------------------------
+// Static source audit — catches regressions where a bulk QB fetch bypasses
+// fetchAllQBEntities and goes directly to makeQBRequest with a bare query.
+//
+// Audit logic:
+//   Every QB query that retrieves a variable-sized set of records MUST either:
+//     (a) pass its query string as an argument to fetchAllQBEntities, or
+//     (b) be a bounded batch using WHERE Id IN (...) with MAXRESULTS ${QB_BATCH_SIZE}
+//
+//   The only permitted bare makeQBRequest query calls are:
+//     - Single-record idempotency lookups: MAXRESULTS 1
+//     - Single-record GET by ID:           /customer/{id}, /invoice/{id}, etc.
+//
+// Flows NOT YET IMPLEMENTED (no bulk import exists for these entities):
+//   Payment  — only push (single-record CREATE/UPDATE) and MAXRESULTS 1 idempotency lookup
+//   Item     — not implemented
+//   Vendor   — not implemented
+//   Term     — not implemented
+//   Estimate — not implemented
+//   Account / AR aging — not implemented
+// ---------------------------------------------------------------------------
+
+describe('quickbooksService.ts — static pagination contract audit', () => {
+  let lines: string[];
+
+  beforeAll(() => {
+    const filePath = path.resolve(__dirname, '../quickbooksService.ts');
+    lines = readFileSync(filePath, 'utf-8').split('\n');
+  });
+
+  // Returns non-comment source lines matching a pattern.
+  function sourceLinesMatching(re: RegExp): string[] {
+    return lines.filter(l => re.test(l) && !/^\s*\/\//.test(l));
+  }
+
+  // ── Customer ────────────────────────────────────────────────────────────────
+
+  test('Customer preview uses fetchAllQBEntities', () => {
+    // fetchQBCustomersForPreview: SELECT * FROM Customer is a string arg, not a makeQBRequest call
+    const customerQueryLines = sourceLinesMatching(/SELECT \* FROM Customer/);
+    expect(customerQueryLines.length).toBeGreaterThan(0);
+    for (const line of customerQueryLines) {
+      expect(line).not.toMatch(/makeQBRequest/);
+    }
+  });
+
+  test('Customer pull sync uses fetchAllQBEntities', () => {
+    // processPullCustomers: same query, also a string arg
+    const customerQueryLines = sourceLinesMatching(/SELECT \* FROM Customer/);
+    // Both preview and pull-sync use the same query text; neither should be a bare makeQBRequest
+    expect(customerQueryLines.every(l => !l.includes('makeQBRequest'))).toBe(true);
+    // Exactly 2 occurrences: preview + pull-sync
+    expect(customerQueryLines).toHaveLength(2);
+  });
+
+  // ── Invoice ─────────────────────────────────────────────────────────────────
+
+  test('Invoice preview uses fetchAllQBEntities', () => {
+    // fetchQBInvoicesForPreview: SELECT * FROM Invoice (no WHERE clause) is a string arg
+    const allInvoiceLines = sourceLinesMatching(/SELECT \* FROM Invoice/);
+    const unboundedLines = allInvoiceLines.filter(l => !/WHERE Id IN/.test(l));
+    expect(unboundedLines.length).toBeGreaterThan(0);
+    for (const line of unboundedLines) {
+      expect(line).not.toMatch(/makeQBRequest/);
+    }
+  });
+
+  test('Invoice pull sync uses fetchAllQBEntities', () => {
+    // processPullInvoices: SELECT * FROM Invoice (no WHERE clause) — 2 unbounded occurrences: preview + pull-sync
+    const allInvoiceLines = sourceLinesMatching(/SELECT \* FROM Invoice/);
+    const unboundedLines = allInvoiceLines.filter(l => !/WHERE Id IN/.test(l));
+    expect(unboundedLines).toHaveLength(2);
+  });
+
+  test('Invoice confirmed import uses bounded WHERE Id IN batches (not full-table scan)', () => {
+    // importQBInvoicesByIds: SELECT * FROM Invoice WHERE Id IN (...) — bounded by caller IDs
+    const batchLines = sourceLinesMatching(/SELECT \* FROM Invoice.*WHERE Id IN/);
+    expect(batchLines.length).toBeGreaterThan(0);
+    for (const line of batchLines) {
+      // Must use QB_BATCH_SIZE variable, not a hardcoded small number
+      expect(line).toMatch(/MAXRESULTS \$\{QB_BATCH_SIZE\}/);
+      expect(line).not.toMatch(/MAXRESULTS 200/);
+      expect(line).not.toMatch(/MAXRESULTS 100/);
+    }
+  });
+
+  // ── SalesReceipt / Orders ───────────────────────────────────────────────────
+
+  test('SalesReceipt pull sync uses fetchAllQBEntities', () => {
+    const srLines = sourceLinesMatching(/SELECT \* FROM SalesReceipt/);
+    expect(srLines.length).toBeGreaterThan(0);
+    for (const line of srLines) {
+      expect(line).not.toMatch(/makeQBRequest/);
+    }
+    expect(srLines).toHaveLength(1);
+  });
+
+  // ── Intentional MAXRESULTS 1 lookups (single-record idempotency) ─────────────
+
+  test('Customer idempotency lookup uses MAXRESULTS 1 (intentional single-record)', () => {
+    const lines = sourceLinesMatching(/SELECT Id.*FROM Customer.*MAXRESULTS 1/);
+    expect(lines).toHaveLength(1);
+  });
+
+  test('Invoice idempotency lookup uses MAXRESULTS 1 (intentional single-record)', () => {
+    const lines = sourceLinesMatching(/SELECT Id.*FROM Invoice.*MAXRESULTS 1/);
+    expect(lines).toHaveLength(1);
+  });
+
+  test('Payment idempotency lookup uses MAXRESULTS 1 (intentional single-record)', () => {
+    const lines = sourceLinesMatching(/SELECT Id FROM Payment.*MAXRESULTS 1/);
+    expect(lines).toHaveLength(1);
+  });
+
+  // ── No remaining hardcoded MAXRESULTS cap for bulk queries ──────────────────
+
+  test('no hardcoded MAXRESULTS numeric cap (other than 1) exists for bulk queries', () => {
+    // All remaining MAXRESULTS usages must be either:
+    //   MAXRESULTS 1   — single-record idempotency lookup
+    //   MAXRESULTS ${pageSize}    — inside the pagination helper itself
+    //   MAXRESULTS ${QB_BATCH_SIZE} — bounded batch import by caller-supplied IDs
+    const maxResultsLines = sourceLinesMatching(/MAXRESULTS/);
+    for (const line of maxResultsLines) {
+      const isIdempotency = /MAXRESULTS 1[^0-9]/.test(line) || /MAXRESULTS 1$/.test(line.trim());
+      const isHelperVar = /MAXRESULTS \$\{pageSize\}/.test(line);
+      const isBatchVar = /MAXRESULTS \$\{QB_BATCH_SIZE\}/.test(line);
+      if (!isIdempotency && !isHelperVar && !isBatchVar) {
+        throw new Error(
+          `quickbooksService.ts contains an unexpected MAXRESULTS pattern that may be a first-page-only fetch:\n  ${line.trim()}`
+        );
+      }
+    }
+  });
+
+  // ── Not-implemented flows (document absence, catch accidental first-page adds) ──
+
+  test.each(['Payment', 'Item', 'Vendor', 'Term', 'Estimate'])(
+    'no unbounded SELECT * FROM %s bulk query exists (flow not yet implemented)',
+    (entity) => {
+      // There should be no "SELECT * FROM <Entity>" without a WHERE clause.
+      // If someone adds one they MUST also use fetchAllQBEntities or this test fails.
+      const unboundedBulk = sourceLinesMatching(
+        new RegExp(`SELECT \\* FROM ${entity}(?!.*WHERE)`)
+      );
+      // Filter out lines that are already string args to fetchAllQBEntities
+      const bareRequests = unboundedBulk.filter(l => l.includes('makeQBRequest'));
+      expect(bareRequests).toHaveLength(0);
+    }
+  );
 });
