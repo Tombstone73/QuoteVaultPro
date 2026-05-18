@@ -994,10 +994,10 @@ export function registerProductRoutes(
                   })
                   .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, draft.id)));
 
-                // Update product pointer
+                // Update product pointer AND sync optionTreeJson for client-side rendering
                 await tx
                   .update(products)
-                  .set({ pbv2ActiveTreeVersionId: draft.id, updatedAt: publishedAt })
+                  .set({ pbv2ActiveTreeVersionId: draft.id, optionTreeJson: nextTreeJson, updatedAt: publishedAt })
                   .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)));
               });
 
@@ -1172,9 +1172,10 @@ export function registerProductRoutes(
           .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, draft.id)))
           .returning();
 
+        // Sync optionTreeJson so the client product list reflects the active tree
         await tx
           .update(products)
-          .set({ pbv2ActiveTreeVersionId: draft.id, updatedAt: publishedAt })
+          .set({ pbv2ActiveTreeVersionId: draft.id, optionTreeJson: nextTreeJson, updatedAt: publishedAt })
           .where(and(eq(products.id, draft.productId), eq(products.organizationId, organizationId)));
 
         console.log(`[PBV2_PUBLISH_SUCCESS] orgId=${organizationId} productId=${draft.productId} treeVersionId=${draft.id} previousActiveId=${previousActiveId || 'none'}`);
@@ -2067,11 +2068,12 @@ export function registerProductRoutes(
                     })
                     .returning();
 
-                  // STEP 3: Update product pointer to new ACTIVE version
+                  // STEP 3: Update product pointer and sync optionTreeJson
                   await tx
                     .update(products)
                     .set({
                       pbv2ActiveTreeVersionId: newVersion.id,
+                      optionTreeJson: updatedActiveTree,
                       updatedAt: new Date()
                     })
                     .where(

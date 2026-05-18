@@ -121,7 +121,23 @@ export function OrderLineItemDialog({
 
   // Detect PBV2 product and extract tree
   const isPbv2 = isPbv2Product(selectedProduct);
-  const pbv2Tree = getPbv2Tree(selectedProduct);
+  const pbv2TreeDirect = getPbv2Tree(selectedProduct);
+
+  // Fallback: if activated via PBV2 but optionTreeJson wasn't synced yet, fetch live tree
+  const needsLivePbv2Fetch = isPbv2 && !pbv2TreeDirect;
+  const { data: livePbv2Tree } = useQuery({
+    queryKey: ["/api/products", selectedProduct?.id, "pbv2/tree"],
+    enabled: needsLivePbv2Fetch && !!selectedProduct?.id,
+    queryFn: async () => {
+      const res = await fetch(`/api/products/${selectedProduct!.id}/pbv2/tree`, { credentials: "include" });
+      if (!res.ok) return null;
+      const json = await res.json();
+      return (json?.data?.active?.treeJson ?? null) as import("@shared/optionTreeV2").OptionTreeV2 | null;
+    },
+    staleTime: 5 * 60_000,
+  });
+
+  const pbv2Tree = pbv2TreeDirect ?? livePbv2Tree ?? null;
   const pbv2ConfigMissing = isPbv2 && !pbv2Tree;
 
   // Debug logging for PBV2 detection
