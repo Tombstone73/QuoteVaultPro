@@ -6,6 +6,7 @@ import CustomerForm from "@/components/customer-form";
 import { CustomerIdentityBlock } from "./CustomerIdentityBlock";
 import { CustomerActionsMenu } from "./CustomerActionsMenu";
 import TransactionsTab from "./TransactionsTab";
+import StatementTabComponent from "./StatementTab";
 import {
   Building2,
   Mail,
@@ -86,7 +87,7 @@ import { ContactFlagPill } from "@/components/ContactFlagPill";
 // TYPE DEFINITIONS
 // ============================================================
 
-type TabType = "orders" | "quotes" | "invoices" | "transactions";
+type TabType = "orders" | "quotes" | "invoices" | "transactions" | "statement";
 type TimePeriod = "month" | "year" | "all";
 type LayoutMode = "full" | "embedded";
 
@@ -1895,39 +1896,7 @@ function InvoicesTable({
   );
 }
 
-function StatementTab({ customer }: { customer: CustomerWithRelations }) {
-  return (
-    <div className="py-12 text-center">
-      <Receipt className="w-12 h-12 text-titan-text-secondary mx-auto mb-4" />
-      <h3 className="text-titan-lg font-medium text-titan-text-primary mb-2">
-        Statement View
-      </h3>
-      <p className="text-titan-text-secondary mb-4">
-        A summary of all invoices and payments for {customer.companyName}.
-      </p>
-      <div className="grid grid-cols-3 gap-4 max-w-md mx-auto">
-        <div className="bg-titan-bg-card-elevated rounded-titan-lg p-4">
-          <div className="text-titan-sm text-titan-text-secondary">Credit Limit</div>
-          <div className="text-titan-xl font-bold text-titan-text-primary">
-            {formatCurrency(customer.creditLimit)}
-          </div>
-        </div>
-        <div className="bg-titan-bg-card-elevated rounded-titan-lg p-4">
-          <div className="text-titan-sm text-titan-text-secondary">Current Balance</div>
-          <div className="text-titan-xl font-bold text-titan-text-primary">
-            {formatCurrency(customer.currentBalance)}
-          </div>
-        </div>
-        <div className="bg-titan-bg-card-elevated rounded-titan-lg p-4">
-          <div className="text-titan-sm text-titan-text-secondary">Available Credit</div>
-          <div className="text-titan-xl font-bold text-titan-success">
-            {formatCurrency(customer.availableCredit)}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+// StatementTab is now imported from ./StatementTab
 
 // ============================================================
 // LOADING SKELETON
@@ -2017,6 +1986,7 @@ export default function EnhancedCustomerView({
     { key: "quotes" as const, label: "Quotes", count: quotes.length },
     { key: "invoices" as const, label: "Invoices", count: invoices.length },
     ...(!isEmbedded ? [{ key: "transactions" as const, label: "Transactions" }] : []),
+    ...(!isEmbedded ? [{ key: "statement" as const, label: "Statement" }] : []),
   ];
 
   // Loading state
@@ -2087,7 +2057,7 @@ export default function EnhancedCustomerView({
         <div className="flex items-center justify-between gap-4 rounded-t-2xl bg-[#111827] border border-slate-800 px-4 py-2">
           {/* Left: Search Input */}
           <div className="flex items-center">
-            {activeTab !== "transactions" && (
+            {activeTab !== "transactions" && activeTab !== "statement" && (
               <div className="relative w-64 max-w-xs">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                 <Input
@@ -2139,7 +2109,7 @@ export default function EnhancedCustomerView({
 
           {/* Right: Status Filter */}
           <div className="flex items-center">
-            {activeTab !== "transactions" && (
+            {activeTab !== "transactions" && activeTab !== "statement" && (
               <Select value={statusFilter} onValueChange={setStatusFilter}>
                 <SelectTrigger className="w-[140px] h-9 text-sm bg-slate-900/50 border-slate-700 text-white rounded-lg">
                   <SelectValue placeholder="All Status" />
@@ -2220,6 +2190,7 @@ export default function EnhancedCustomerView({
               )
             )}
             {activeTab === "transactions" && <TransactionsTab customerId={customer.id} customer={customer} />}
+            {activeTab === "statement" && <StatementTabComponent customerId={customer.id} customer={customer} />}
           </div>
         </div>
       </div>
