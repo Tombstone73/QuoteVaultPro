@@ -16,6 +16,7 @@
  *   GET  /api/integrations/quickbooks/jobs/:id
  *   POST /api/integrations/quickbooks/jobs/trigger
  *   GET  /api/integrations/quickbooks/worker/status
+ *   GET  /api/integrations/quickbooks/debug/invoice/:invoiceNumber
  *
  * Placement: server/routes/quickbooks.routes.ts
  * Registered by: server/routes.ts via registerQuickBooksRoutes
@@ -692,6 +693,41 @@ export function registerQuickBooksRoutes(
     } catch (error: any) {
       console.error('[QB Repair] Error:', error);
       return res.status(500).json({ success: false, error: error.message || 'Failed to fetch suspicious contacts' });
+    }
+  });
+
+  /**
+   * GET /api/integrations/quickbooks/debug/invoice/:invoiceNumber
+   * Fetch a single QuickBooks invoice by DocNumber (invoice number) and return
+   * both the raw QB payload and a transformed summary for field inspection.
+   *
+   * Read-only — does NOT write to any local table.
+   * Intended for development/admin review of QB field shapes.
+   *
+   * Query params:
+   *   rawOnly=1   — return only the raw QB payload (omit transformed)
+   */
+  app.get('/api/integrations/quickbooks/debug/invoice/:invoiceNumber', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const invoiceNumber = String(req.params.invoiceNumber || '').trim();
+      if (!invoiceNumber) {
+        return res.status(400).json({ success: false, error: 'invoiceNumber param is required' });
+      }
+
+      const result = await quickbooksService.fetchQBInvoiceByNumber(organizationId, invoiceNumber);
+      if (!result) {
+        return res.status(404).json({ success: false, error: `No QuickBooks invoice found with DocNumber "${invoiceNumber}"` });
+      }
+
+      if (req.query.rawOnly === '1') {
+        return res.json({ success: true, invoiceNumber, data: result.raw });
+      }
+
+      return res.json({ success: true, invoiceNumber, data: result.transformed, raw: result.raw });
+    } catch (error: any) {
+      console.error('[QB Debug Invoice] Error:', { message: error.message, invoiceNumber: req.params.invoiceNumber });
+      return res.status(500).json({ success: false, error: error.message || 'Failed to fetch invoice from QuickBooks' });
     }
   });
 }
