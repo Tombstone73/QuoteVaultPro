@@ -605,7 +605,12 @@ export function LineItemCard({
                     </div>
                   )}
                   {!!calcError && calcError !== "PBV2_SCHEMA_MISMATCH" && (
-                    <div className="text-[11px] text-destructive">{calcError}</div>
+                    <div className="text-[11px] text-destructive truncate max-w-[420px]" title={calcError}>
+                      {/* Never show raw JSON in the UI; fall back to a friendly message if it leaks through. */}
+                      {calcError.trim().startsWith("{") || /^\d+:\s*{/.test(calcError)
+                        ? "Calculation failed. Check required options."
+                        : calcError}
+                    </div>
                   )}
                   {!isCalculating && !calcError && <div className="text-[11px] text-transparent">—</div>}
                 </div>
