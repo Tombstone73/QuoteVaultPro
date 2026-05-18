@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { formatDistanceToNow, format } from "date-fns";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import CustomerForm from "@/components/customer-form";
 import { CustomerIdentityBlock } from "./CustomerIdentityBlock";
 import { CustomerActionsMenu } from "./CustomerActionsMenu";
@@ -19,6 +19,8 @@ import {
   DollarSign,
   Clock,
   Star,
+  Briefcase,
+  AlertTriangle,
   FileText,
   ShoppingCart,
   Search,
@@ -98,12 +100,12 @@ interface EnhancedCustomerViewProps {
   onSectionHome?: () => void;
 }
 
-interface CustomerHeaderProps {
-  customer: CustomerWithRelations;
-  layoutMode: LayoutMode;
-  onBack?: () => void;
-  onSectionHome?: () => void;
-  onSwitchTab?: (tab: string) => void;
+interface CustomerActivitySummary {
+  openOrderCount: number;
+  lastOrderDate: string | null;
+  overdueInvoiceCount: number;
+  lastInvoiceDate: string | null;
+  lastPaymentDate: string | null;
 }
 
 interface CustomerHeaderProps {
@@ -112,7 +114,10 @@ interface CustomerHeaderProps {
   onBack?: () => void;
   onSectionHome?: () => void;
   onSwitchTab?: (tab: string) => void;
+  activitySummary?: CustomerActivitySummary | null;
 }
+
+// duplicate removed — kept for back-compat during merge
 
 interface StatCardConfig {
   key: string;
@@ -191,6 +196,7 @@ function CustomerHeader({
   onBack,
   onSectionHome,
   onSwitchTab,
+  activitySummary,
 }: CustomerHeaderProps) {
   const [showEditForm, setShowEditForm] = useState(false);
   const [showLocalStorageDialog, setShowLocalStorageDialog] = useState(false);
@@ -338,6 +344,36 @@ function CustomerHeader({
         </div>
       </div>
       
+      {/* Activity badges — only when meaningful data exists */}
+      {activitySummary && (activitySummary.openOrderCount > 0 || activitySummary.overdueInvoiceCount > 0 || activitySummary.lastOrderDate || activitySummary.lastPaymentDate) && (
+        <div className="flex items-center gap-2 mt-1.5 pt-1.5 border-t border-titan-border-subtle/50 flex-wrap">
+          {activitySummary.openOrderCount > 0 && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-500/15 text-blue-400 border border-blue-500/30">
+              <Briefcase className="w-2.5 h-2.5" />
+              Open Jobs: {activitySummary.openOrderCount}
+            </span>
+          )}
+          {activitySummary.overdueInvoiceCount > 0 && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-500/15 text-red-400 border border-red-500/30">
+              <AlertTriangle className="w-2.5 h-2.5" />
+              Overdue: {activitySummary.overdueInvoiceCount}
+            </span>
+          )}
+          {activitySummary.lastOrderDate && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] text-titan-text-secondary border border-titan-border-subtle">
+              <Clock className="w-2.5 h-2.5" />
+              Last Order: {formatDate(activitySummary.lastOrderDate)}
+            </span>
+          )}
+          {activitySummary.lastPaymentDate && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] text-titan-text-secondary border border-titan-border-subtle">
+              <DollarSign className="w-2.5 h-2.5" />
+              Last Payment: {formatDate(activitySummary.lastPaymentDate)}
+            </span>
+          )}
+        </div>
+      )}
+
       <CustomerForm 
         open={showEditForm} 
         onOpenChange={setShowEditForm}
@@ -1252,7 +1288,8 @@ function OrdersTable({
       const matchesSearch =
         !searchQuery ||
         order.orderNumber?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        order.poNumber?.toLowerCase().includes(searchQuery.toLowerCase());
+        order.poNumber?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        order.label?.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesStatus =
         statusFilter === "all" || order.status === statusFilter;
       return matchesSearch && matchesStatus;
@@ -1980,6 +2017,18 @@ export default function EnhancedCustomerView({
   // Quotes from customer data
   const quotes = customer?.quotes || [];
 
+  // Activity summary (lightweight — open jobs, overdue invoices, last dates)
+  const { data: activitySummary = null } = useQuery<CustomerActivitySummary>({
+    queryKey: ["/api/customers", customerId, "activity"],
+    queryFn: async () => {
+      const res = await fetch(`/api/customers/${customerId}/activity`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch customer activity");
+      return res.json();
+    },
+    staleTime: 60_000,
+    enabled: !!customerId,
+  });
+
   // Tab configuration with counts
   const tabs = [
     { key: "orders" as const, label: "Orders", count: orders.length },
@@ -2035,6 +2084,7 @@ export default function EnhancedCustomerView({
         onBack={onBack}
         onSectionHome={onSectionHome}
         onSwitchTab={(tab) => setActiveTab(tab as TabType)}
+        activitySummary={activitySummary}
       />
 
       {/* Stats Cards Grid */}

@@ -662,6 +662,7 @@ export default function StatementTab({
   const {
     data,
     isLoading,
+    isFetching,
     isError,
     error,
   } = useQuery<StatementResponse>({
@@ -707,37 +708,38 @@ export default function StatementTab({
       {/* ── Filter Bar ──────────────────────────────────────────────────── */}
       <div className="flex flex-wrap items-center gap-3 bg-titan-bg-card border border-titan-border-subtle rounded-titan-lg p-3">
         {/* Date preset */}
-        <Select value={datePreset} onValueChange={setDatePreset}>
-          <SelectTrigger className="w-[130px] h-9 text-sm bg-slate-900/50 border-slate-700 text-white rounded-lg">
+        <Select value={datePreset} onValueChange={setDatePreset} disabled={isFetching}>
+          <SelectTrigger className="w-[130px] h-9 text-sm bg-titan-bg-card-elevated border-titan-border-subtle text-titan-text-primary rounded-lg">
             <SelectValue />
           </SelectTrigger>
-          <SelectContent className="bg-slate-900 border-slate-700">
+          <SelectContent className="bg-titan-bg-card border-titan-border">
             {DATE_PRESETS.map((p) => (
-              <SelectItem key={p.value} value={p.value} className="text-white">{p.label}</SelectItem>
+              <SelectItem key={p.value} value={p.value} className="text-titan-text-primary">{p.label}</SelectItem>
             ))}
           </SelectContent>
         </Select>
 
         {/* Status filter */}
-        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as "open" | "completed" | "all")}>
-          <SelectTrigger className="w-[140px] h-9 text-sm bg-slate-900/50 border-slate-700 text-white rounded-lg">
+        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as "open" | "completed" | "all")} disabled={isFetching}>
+          <SelectTrigger className="w-[140px] h-9 text-sm bg-titan-bg-card-elevated border-titan-border-subtle text-titan-text-primary rounded-lg">
             <SelectValue />
           </SelectTrigger>
-          <SelectContent className="bg-slate-900 border-slate-700">
-            <SelectItem value="all" className="text-white">All Jobs</SelectItem>
-            <SelectItem value="open" className="text-white">Open Only</SelectItem>
-            <SelectItem value="completed" className="text-white">Completed Only</SelectItem>
+          <SelectContent className="bg-titan-bg-card border-titan-border">
+            <SelectItem value="all" className="text-titan-text-primary">All Jobs</SelectItem>
+            <SelectItem value="open" className="text-titan-text-primary">Open Only</SelectItem>
+            <SelectItem value="completed" className="text-titan-text-primary">Completed Only</SelectItem>
           </SelectContent>
         </Select>
 
         {/* Search */}
         <div className="relative flex-1 min-w-[200px]">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-titan-text-muted" />
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            disabled={isFetching}
             placeholder="Order #, PO #, Invoice #, description…"
-            className="pl-9 h-9 text-sm bg-slate-900/50 border-slate-700 text-white placeholder:text-slate-500 rounded-lg"
+            className="pl-9 h-9 text-sm bg-titan-bg-card-elevated border-titan-border-subtle text-titan-text-primary placeholder:text-titan-text-muted rounded-lg"
           />
         </div>
 
@@ -748,6 +750,7 @@ export default function StatementTab({
               id="stmt-include-invoices"
               checked={includeInvoices}
               onCheckedChange={setIncludeInvoices}
+              disabled={isFetching}
             />
             <Label htmlFor="stmt-include-invoices" className="text-titan-xs text-titan-text-secondary cursor-pointer">
               Invoices
@@ -758,12 +761,31 @@ export default function StatementTab({
               id="stmt-include-quotes"
               checked={includeQuotes}
               onCheckedChange={setIncludeQuotes}
+              disabled={isFetching}
             />
             <Label htmlFor="stmt-include-quotes" className="text-titan-xs text-titan-text-secondary cursor-pointer">
               Quotes
             </Label>
           </div>
         </div>
+
+        {/* Reset filters */}
+        {(datePreset !== "all" || statusFilter !== "all" || search || !includeInvoices || includeQuotes) && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setDatePreset("all");
+              setStatusFilter("all");
+              setSearch("");
+              setIncludeInvoices(true);
+              setIncludeQuotes(false);
+            }}
+            className="h-9 text-xs text-titan-text-muted hover:text-titan-text-primary"
+          >
+            Reset filters
+          </Button>
+        )}
       </div>
 
       {/* ── Summary Cards ────────────────────────────────────────────────── */}
