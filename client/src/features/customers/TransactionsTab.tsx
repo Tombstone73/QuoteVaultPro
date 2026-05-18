@@ -51,20 +51,21 @@ import type { CustomerWithRelations } from "@/hooks/useCustomer";
 interface TransactionRow {
   id: string;
   date: string;
-  type: string;
+  type: "quote" | "order" | "invoice" | "payment" | "refund" | "credit" | "adjustment" | "charge";
   referenceNumber: string;
   description: string;
   status: string;
   amount: string;
   balanceImpact: string | null;
   method: string | null;
-  linkType: string | null;
+  linkType: "quote" | "order" | "invoice" | null;
   linkId: string | null;
 }
 
 interface TransactionSummary {
   invoicedTotal: string;
   paidTotal: string;
+  refundedTotal: string;
   openBalance: string;
   creditsTotal: string;
 }
@@ -104,6 +105,7 @@ const TYPE_LABELS: Record<string, string> = {
   order: "Order",
   invoice: "Invoice",
   payment: "Payment",
+  refund: "Refund",
   credit: "Credit",
   adjustment: "Adjustment",
   charge: "Charge",
@@ -114,6 +116,7 @@ const TYPE_STYLES: Record<string, string> = {
   order: "bg-purple-500/15 text-purple-400 border-purple-500/30",
   invoice: "bg-blue-500/15 text-blue-400 border-blue-500/30",
   payment: "bg-titan-success/15 text-titan-success border-titan-success/30",
+  refund: "bg-rose-500/15 text-rose-400 border-rose-500/30",
   credit: "bg-teal-500/15 text-teal-400 border-teal-500/30",
   adjustment: "bg-orange-500/15 text-orange-400 border-orange-500/30",
   charge: "bg-titan-error/15 text-titan-error border-titan-error/30",
@@ -124,6 +127,7 @@ const TYPE_ICONS: Record<string, React.ElementType> = {
   order: ShoppingCart,
   invoice: Receipt,
   payment: DollarSign,
+  refund: ArrowDown,
   credit: CreditCard,
   adjustment: CreditCard,
   charge: DollarSign,
@@ -279,6 +283,14 @@ export default function TransactionsTab({ customerId, customer }: TransactionsTa
           icon={DollarSign}
           variant="success"
         />
+        {summary && parseFloat(summary.refundedTotal) > 0 && (
+          <SummaryCard
+            label="Refunded"
+            value={formatCurrency(summary.refundedTotal)}
+            icon={ArrowDown}
+            variant="warning"
+          />
+        )}
         <SummaryCard
           label="Open Balance"
           value={summary ? formatCurrency(summary.openBalance) : "—"}
@@ -336,8 +348,10 @@ export default function TransactionsTab({ customerId, customer }: TransactionsTa
             <SelectItem value="order" className="text-titan-text-primary">Orders</SelectItem>
             <SelectItem value="invoice" className="text-titan-text-primary">Invoices</SelectItem>
             <SelectItem value="payment" className="text-titan-text-primary">Payments</SelectItem>
+            <SelectItem value="refund" className="text-titan-text-primary">Refunds</SelectItem>
             <SelectItem value="credit" className="text-titan-text-primary">Credits</SelectItem>
             <SelectItem value="adjustment" className="text-titan-text-primary">Adjustments</SelectItem>
+            <SelectItem value="charge" className="text-titan-text-primary">Charges</SelectItem>
           </SelectContent>
         </Select>
 
@@ -477,12 +491,16 @@ export default function TransactionsTab({ customerId, customer }: TransactionsTa
                           "text-titan-xs font-semibold",
                           row.type === "payment" || row.type === "credit"
                             ? "text-titan-success"
-                            : "text-titan-text-primary",
+                            : row.type === "refund" || row.type === "charge"
+                              ? "text-titan-error"
+                              : "text-titan-text-primary",
                         )}
                       >
                         {row.type === "payment" || row.type === "credit"
                           ? `+${formatCurrency(row.amount)}`
-                          : formatCurrency(row.amount)}
+                          : row.type === "refund" || row.type === "charge"
+                            ? `-${formatCurrency(row.amount)}`
+                            : formatCurrency(row.amount)}
                       </span>
                     </td>
                     <td className="px-4 py-3">
