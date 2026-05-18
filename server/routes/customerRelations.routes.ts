@@ -817,6 +817,85 @@ export function registerCustomerRelationsRoutes(
   //
   // Query params:
   //   dateFrom        ISO date/datetime (optional, inclusive)
+  // ============================================================
+  // CUSTOMER ACTIVITY SUMMARY
+  // Lightweight aggregate endpoint: open order count, overdue invoice count,
+  // last order date, last invoice date, last payment date.
+  // Uses 3 cheap aggregate queries against existing tables.
+  // ============================================================
+
+  app.get("/api/customers/:id/activity", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const customerId = req.params.id;
+
+      // Verify customer belongs to this org
+      const [customerRow] = await db
+        .select({ id: customers.id })
+        .from(customers)
+        .where(and(eq(customers.organizationId, organizationId), eq(customers.id, customerId)))
+        .limit(1);
+      if (!customerRow) return res.status(404).json({ message: "Customer not found" });
+
+      // 1. Orders: open count + last order date
+      const [orderAgg] = await db
+        .select({
+          openOrderCount: sql<number>`COUNT(*) FILTER (WHERE ${orders.state} IN ('open','production_complete'))`,
+          lastOrderDate:  sql<string | null>`MAX(${orders.createdAt})`,
+        })
+        .from(orders)
+        .where(
+          and(
+            eq(orders.organizationId, organizationId),
+            eq(orders.customerId, customerId),
+            sql`${orders.state} != 'canceled'`,
+          ),
+        );
+
+      // 2. Invoices: overdue count + last invoice date
+      const [invoiceAgg] = await db
+        .select({
+          overdueInvoiceCount: sql<number>`COUNT(*) FILTER (WHERE ${invoices.status} = 'overdue')`,
+          lastInvoiceDate:     sql<string | null>`MAX(${invoices.issueDate})`,
+        })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.organizationId, organizationId),
+            eq(invoices.customerId, customerId),
+          ),
+        );
+
+      // 3. Payments: last successful payment date
+      const [paymentAgg] = await db
+        .select({
+          lastPaymentDate: sql<string | null>`MAX(COALESCE(${payments.paidAt}, ${payments.appliedAt}))`,
+        })
+        .from(payments)
+        .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
+        .where(
+          and(
+            eq(payments.organizationId, organizationId),
+            eq(invoices.customerId, customerId),
+            sql`${payments.status} != 'refunded'`,
+          ),
+        );
+
+      return res.json({
+        openOrderCount:      Number(orderAgg?.openOrderCount   ?? 0),
+        lastOrderDate:       orderAgg?.lastOrderDate            ?? null,
+        overdueInvoiceCount: Number(invoiceAgg?.overdueInvoiceCount ?? 0),
+        lastInvoiceDate:     invoiceAgg?.lastInvoiceDate         ?? null,
+        lastPaymentDate:     paymentAgg?.lastPaymentDate          ?? null,
+      });
+    } catch (error) {
+      console.error("Error fetching customer activity:", error);
+      return res.status(500).json({ message: "Failed to fetch customer activity" });
+    }
+  });
+
   //   dateTo          ISO date/datetime (optional, inclusive, end-of-day if date-only)
   //   status          "open" | "completed" | "all"  (default: "all")
   //   search          string (optional)
