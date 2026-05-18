@@ -1108,9 +1108,11 @@ export default function PBV2ProductBuilderSectionV2({
             description: "Tree is now active and ready for pricing" 
           });
           // Invalidate product queries so pbv2ActiveTreeVersionId is current
-          queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+          await queryClient.invalidateQueries({ queryKey: ["/api/products"] });
           if (productId) {
-            queryClient.invalidateQueries({ queryKey: ["/api/products", productId] });
+            await queryClient.invalidateQueries({ queryKey: ["/api/products", productId] });
+            await queryClient.invalidateQueries({ queryKey: ["/api/products", productId, "pbv2/tree"] });
+            await queryClient.invalidateQueries({ queryKey: ["/api/products", productId, "pbv2", "tree"] });
           }
         } else {
           // Saved but not activated
@@ -1279,9 +1281,11 @@ export default function PBV2ProductBuilderSectionV2({
       
       // CRITICAL: Invalidate products query so pbv2ActiveTreeVersionId is current
       // This ensures add-item flows see the active tree and don't get 400 errors
-      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/products"] });
       if (productId) {
-        queryClient.invalidateQueries({ queryKey: ["/api/products", productId] });
+        await queryClient.invalidateQueries({ queryKey: ["/api/products", productId] });
+        await queryClient.invalidateQueries({ queryKey: ["/api/products", productId, "pbv2/tree"] });
+        await queryClient.invalidateQueries({ queryKey: ["/api/products", productId, "pbv2", "tree"] });
       }
     } catch (error: any) {
       toast({ title: "Publish failed", description: error.message, variant: "destructive" });

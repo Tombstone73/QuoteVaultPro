@@ -1,7 +1,9 @@
 import { useEffect, useMemo } from "react";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -17,7 +19,14 @@ type ProductOptionsPanelV2Props = {
   selections: LineItemOptionSelectionsV2;
   onSelectionsChange: (next: LineItemOptionSelectionsV2) => void;
   onValidityChange?: (isValid: boolean) => void;
+  onRenderStatsChange?: (stats: ProductOptionsPanelV2RenderStats) => void;
   className?: string;
+};
+
+export type ProductOptionsPanelV2RenderStats = {
+  renderedNodeCount: number;
+  renderedControlCount: number;
+  renderedControlNodeIds: string[];
 };
 
 function isTreeV2Selections(input: any): input is LineItemOptionSelectionsV2 {
@@ -66,6 +75,30 @@ function isQuestionNodeEnabled(node: any): boolean {
   if (!node || node.kind !== "question" || !node.input) return false;
   const status = (typeof node.status === "string" ? node.status : "ENABLED").toUpperCase();
   return status !== "DISABLED" && status !== "DELETED";
+}
+
+function getInputType(node: OptionNodeV2): string {
+  return String((node.input as any)?.type ?? "");
+}
+
+function isRenderableInputType(inputType: string): boolean {
+  return inputType === "boolean"
+    || inputType === "checkbox"
+    || inputType === "select"
+    || inputType === "radio"
+    || inputType === "multiselect"
+    || inputType === "number"
+    || inputType === "text"
+    || inputType === "textarea";
+}
+
+function getSortedChoices(node: OptionNodeV2) {
+  return (node.choices ?? []).slice().sort((a, b) => {
+    const ao = typeof a.sortOrder === "number" ? a.sortOrder : 0;
+    const bo = typeof b.sortOrder === "number" ? b.sortOrder : 0;
+    if (ao !== bo) return ao - bo;
+    return a.value.localeCompare(b.value);
+  });
 }
 
 /**
@@ -138,11 +171,12 @@ function requiredMissing(node: OptionNodeV2, value: any): boolean {
   const required = !!node.input?.required;
   if (!required) return false;
 
-  const t = node.input?.type;
-  if (t === "boolean") return value !== true;
+  const t = getInputType(node);
+  if (t === "boolean" || t === "checkbox") return value !== true;
   if (t === "number") return value === undefined || value === null || !Number.isFinite(Number(value));
   if (t === "text" || t === "textarea") return String(value ?? "").trim().length === 0;
-  if (t === "select") return String(value ?? "").trim().length === 0;
+  if (t === "select" || t === "radio") return String(value ?? "").trim().length === 0;
+  if (t === "multiselect") return !Array.isArray(value) || value.length === 0;
 
   // Unsupported inputs treated as not fulfillable
   return true;
@@ -160,6 +194,7 @@ export function ProductOptionsPanelV2({
   selections,
   onSelectionsChange,
   onValidityChange,
+  onRenderStatsChange,
   className,
 }: ProductOptionsPanelV2Props) {
   const tree = useMemo(() => normalizeIncomingTree(rawTree), [rawTree]);
@@ -275,6 +310,22 @@ export function ProductOptionsPanelV2({
   }, [effectiveVisibleNodeIds, allEnabledQuestionNodeIds]);
 
   const usingFallbackNodeList = renderedNodeIds !== effectiveVisibleNodeIds;
+
+  const renderStats = useMemo<ProductOptionsPanelV2RenderStats>(() => {
+    const renderedControlNodeIds = renderedNodeIds.filter((nodeId) => {
+      const node = tree.nodes[nodeId];
+      return Boolean(node && node.kind === "question" && node.input && isRenderableInputType(getInputType(node)));
+    });
+    return {
+      renderedNodeCount: renderedNodeIds.length,
+      renderedControlCount: renderedControlNodeIds.length,
+      renderedControlNodeIds,
+    };
+  }, [renderedNodeIds, tree.nodes]);
+
+  useEffect(() => {
+    onRenderStatsChange?.(renderStats);
+  }, [onRenderStatsChange, renderStats]);
 
   const displaySelections = useMemo<LineItemOptionSelectionsV2>(() => ({
     schemaVersion: 2,
@@ -394,7 +445,9 @@ export function ProductOptionsPanelV2({
         continue;
       }
 
-      if (node.input.type === "number" && value != null) {
+      const inputType = getInputType(node);
+
+      if (inputType === "number" && value != null) {
         const n = Number(value);
         const constraints = node.input.constraints?.number;
         if (!Number.isFinite(n)) {
@@ -405,7 +458,7 @@ export function ProductOptionsPanelV2({
         if (constraints?.max != null && n > constraints.max) out.set(nodeId, `Max ${constraints.max}`);
       }
 
-      if ((node.input.type === "text" || node.input.type === "textarea") && typeof value === "string") {
+      if ((inputType === "text" || inputType === "textarea") && typeof value === "string") {
         const constraints = node.input.constraints?.text;
         const len = value.length;
         if (constraints?.minLen != null && len < constraints.minLen) out.set(nodeId, `Min length ${constraints.minLen}`);
@@ -439,6 +492,7 @@ export function ProductOptionsPanelV2({
       value === undefined ||
       value === null ||
       (typeof value === "string" && value.trim() === "") ||
+      (Array.isArray(value) && value.length === 0) ||
       value === false;
 
     // Clean up all possible legacy keys
@@ -536,6 +590,7 @@ export function ProductOptionsPanelV2({
 
             const selectionKey = getSelectionKey(node);
             const currentValue = getNodeValue(displaySelections, node);
+            const inputType = getInputType(node);
             const helpText = node.ui?.helpText;
             const isRuleRequired = requiredOptionGroupSet.has(selectionKey);
             const isDisabled =
@@ -555,7 +610,7 @@ export function ProductOptionsPanelV2({
               </div>
             );
 
-            if (node.input.type === "boolean") {
+            if (inputType === "boolean" || inputType === "checkbox") {
               return (
                 <div key={nodeId} className={cn("rounded-md border border-border/50 p-2", isDisabled && "opacity-70")}>
                   <div className="flex items-center justify-between gap-3">
@@ -571,13 +626,8 @@ export function ProductOptionsPanelV2({
               );
             }
 
-            if (node.input.type === "select") {
-              const choices = (node.choices ?? []).slice().sort((a, b) => {
-                const ao = typeof a.sortOrder === "number" ? a.sortOrder : 0;
-                const bo = typeof b.sortOrder === "number" ? b.sortOrder : 0;
-                if (ao !== bo) return ao - bo;
-                return a.value.localeCompare(b.value);
-              });
+            if (inputType === "select") {
+              const choices = getSortedChoices(node);
 
               const allowEmpty = node.input.constraints?.select?.allowEmpty === true;
               const emptyLabel = node.input.constraints?.select?.emptyLabel ?? "(None)";
@@ -611,7 +661,88 @@ export function ProductOptionsPanelV2({
               );
             }
 
-            if (node.input.type === "number") {
+            if (inputType === "radio") {
+              const choices = getSortedChoices(node);
+
+              return (
+                <div key={nodeId} className={cn("rounded-md border border-border/50 p-2 space-y-2", isDisabled && "opacity-70")}>
+                  {commonHeader}
+                  <RadioGroup
+                    value={typeof currentValue === "string" ? currentValue : ""}
+                    onValueChange={(val) => setNodeValue(node, val)}
+                    disabled={isDisabled}
+                    className="grid gap-2 sm:grid-cols-2"
+                  >
+                    {choices.map((choice) => {
+                      const choiceId = `${nodeId}-${choice.value}`;
+                      return (
+                        <Label
+                          key={choice.value}
+                          htmlFor={choiceId}
+                          className={cn(
+                            "flex min-h-9 cursor-pointer items-center gap-2 rounded-md border border-border/60 px-3 py-2 text-xs font-normal",
+                            isDisabled && "cursor-not-allowed"
+                          )}
+                        >
+                          <RadioGroupItem value={choice.value} id={choiceId} disabled={isDisabled} />
+                          <span className="min-w-0">
+                            <span className="block truncate">{choice.label}</span>
+                            {choice.description ? <span className="block text-[11px] text-muted-foreground">{choice.description}</span> : null}
+                          </span>
+                        </Label>
+                      );
+                    })}
+                  </RadioGroup>
+                  {error ? <div className="text-xs text-destructive">{error}</div> : null}
+                </div>
+              );
+            }
+
+            if (inputType === "multiselect") {
+              const choices = getSortedChoices(node);
+              const selectedValues = Array.isArray(currentValue) ? currentValue.map(String) : [];
+
+              return (
+                <div key={nodeId} className={cn("rounded-md border border-border/50 p-2 space-y-2", isDisabled && "opacity-70")}>
+                  {commonHeader}
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {choices.map((choice) => {
+                      const choiceId = `${nodeId}-${choice.value}`;
+                      const checked = selectedValues.includes(choice.value);
+                      return (
+                        <Label
+                          key={choice.value}
+                          htmlFor={choiceId}
+                          className={cn(
+                            "flex min-h-9 cursor-pointer items-center gap-2 rounded-md border border-border/60 px-3 py-2 text-xs font-normal",
+                            isDisabled && "cursor-not-allowed"
+                          )}
+                        >
+                          <Checkbox
+                            id={choiceId}
+                            checked={checked}
+                            disabled={isDisabled}
+                            onCheckedChange={(nextChecked) => {
+                              const nextValues = nextChecked === true
+                                ? Array.from(new Set([...selectedValues, choice.value]))
+                                : selectedValues.filter((value) => value !== choice.value);
+                              setNodeValue(node, nextValues);
+                            }}
+                          />
+                          <span className="min-w-0">
+                            <span className="block truncate">{choice.label}</span>
+                            {choice.description ? <span className="block text-[11px] text-muted-foreground">{choice.description}</span> : null}
+                          </span>
+                        </Label>
+                      );
+                    })}
+                  </div>
+                  {error ? <div className="text-xs text-destructive">{error}</div> : null}
+                </div>
+              );
+            }
+
+            if (inputType === "number") {
               const constraints = node.input.constraints?.number;
               const step = constraints?.step ?? 1;
               const min = constraints?.min;
@@ -639,7 +770,7 @@ export function ProductOptionsPanelV2({
               );
             }
 
-            if (node.input.type === "text") {
+            if (inputType === "text") {
               return (
                 <div key={nodeId} className={cn("rounded-md border border-border/50 p-2 space-y-2", isDisabled && "opacity-70")}>
                   {commonHeader}
@@ -654,7 +785,7 @@ export function ProductOptionsPanelV2({
               );
             }
 
-            if (node.input.type === "textarea") {
+            if (inputType === "textarea") {
               return (
                 <div key={nodeId} className={cn("rounded-md border border-border/50 p-2 space-y-2", isDisabled && "opacity-70")}>
                   {commonHeader}
@@ -673,7 +804,7 @@ export function ProductOptionsPanelV2({
               <div key={nodeId} className="rounded-md border border-border/50 bg-muted/10 p-2 space-y-1">
                 <div className="flex items-center gap-2">
                   <div className="text-sm font-medium">{node.label}</div>
-                  <Badge variant="outline" className="text-[11px]">Unsupported: {node.input.type}</Badge>
+                  <Badge variant="outline" className="text-[11px]">Unsupported: {inputType}</Badge>
                 </div>
                 {node.description ? <div className="text-xs text-muted-foreground">{node.description}</div> : null}
                 {node.input.required ? <div className="text-xs text-muted-foreground">Required field is not supported yet.</div> : null}

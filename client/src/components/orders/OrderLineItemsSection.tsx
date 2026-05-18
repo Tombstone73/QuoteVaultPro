@@ -32,11 +32,11 @@ import { CSS } from "@dnd-kit/utilities";
 import type { OrderLineItem, Product, ProductOptionItem } from "@shared/schema";
 import type { OptionSelection } from "@/features/quotes/editor/types";
 import { ProductOptionsPanel } from "@/features/quotes/editor/components/ProductOptionsPanel";
-import { ProductOptionsPanelV2 } from "@/features/quotes/editor/components/ProductOptionsPanelV2";
+import { ProductOptionsPanelV2, type ProductOptionsPanelV2RenderStats } from "@/features/quotes/editor/components/ProductOptionsPanelV2";
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import { validateOptionTreeV2 } from "@shared/optionTreeV2";
 import { resolveRuntimeVisibility } from "@shared/optionTreeV2Runtime";
-import { isPbv2Product, getPbv2Tree } from "@/lib/pbv2Utils";
+import { isPbv2Product, getPbv2Tree, summarizePbv2Tree } from "@/lib/pbv2Utils";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import { getThumbSrc } from "@/lib/getThumbSrc";
@@ -791,12 +791,15 @@ export function OrderLineItemsSection({
   }, [expandedItem, products]);
 
   const expandedProductPbv2TreeDirect = getPbv2Tree(expandedProduct);
+  const expandedProductActiveTreeVersionId = (expandedProduct as any)?.pbv2ActiveTreeVersionId ?? null;
+  const expandedProductOptionTreeSummary = summarizePbv2Tree((expandedProduct as any)?.optionTreeJson);
 
-  // Fallback: if the product was activated via PBV2 but optionTreeJson wasn't synced yet,
-  // fetch the live active tree from the pbv2TreeVersions table.
-  const needsLivePbv2TreeFetch = isPbv2Product(expandedProduct) && !expandedProductPbv2TreeDirect;
+  // Fallback: if the product was activated via PBV2 but optionTreeJson is missing,
+  // stale, or not renderable, fetch the live active tree from pbv2TreeVersions.
+  const needsLivePbv2TreeFetch = isPbv2Product(expandedProduct)
+    && (!!expandedProductActiveTreeVersionId || !expandedProductPbv2TreeDirect);
   const { data: livePbv2TreeData } = useQuery({
-    queryKey: ["/api/products", expandedProduct?.id, "pbv2/tree"],
+    queryKey: ["/api/products", expandedProduct?.id, "pbv2/tree", expandedProductActiveTreeVersionId],
     enabled: needsLivePbv2TreeFetch && !!expandedProduct?.id,
     queryFn: async () => {
       const res = await fetch(`/api/products/${expandedProduct!.id}/pbv2/tree`, { credentials: "include" });
@@ -804,10 +807,10 @@ export function OrderLineItemsSection({
       const json = await res.json();
       return (json?.data?.active?.treeJson ?? null) as import("@shared/optionTreeV2").OptionTreeV2 | null;
     },
-    staleTime: 5 * 60_000,
+    staleTime: 0,
   });
 
-  const expandedProductPbv2Tree = expandedProductPbv2TreeDirect ?? livePbv2TreeData ?? null;
+  const expandedProductPbv2Tree = livePbv2TreeData ?? expandedProductPbv2TreeDirect ?? null;
 
   const expandedProductOptions = useMemo(() => {
     const base = ((expandedProduct as any)?.optionsJson as ProductOptionItem[] | undefined) || [];
@@ -916,7 +919,6 @@ export function OrderLineItemsSection({
   const effectivePbv2Tree = pbv2SnapshotJson?.treeJson ?? expandedProductPbv2Tree;
 
   const expandedProductIsPbv2 = isPbv2Product(expandedProduct);
-  const expandedProductHasOptionTreeJson = Boolean((expandedProduct as any)?.optionTreeJson);
   const expandedProductLiveTreeLoaded = Boolean(livePbv2TreeData);
 
   const dimsRequired = requiresDimensions(expandedProduct);
@@ -930,6 +932,11 @@ export function OrderLineItemsSection({
   const [optionSelections, setOptionSelections] = useState<Record<string, OptionSelection>>({});
   const [optionSelectionsV2, setOptionSelectionsV2] = useState<LineItemOptionSelectionsV2>({ schemaVersion: 2, selected: {} });
   const [optionsV2Valid, setOptionsV2Valid] = useState(true);
+  const [pbv2PanelRenderStats, setPbv2PanelRenderStats] = useState<ProductOptionsPanelV2RenderStats>({
+    renderedNodeCount: 0,
+    renderedControlCount: 0,
+    renderedControlNodeIds: [],
+  });
   const [isCalculating, setIsCalculating] = useState(false);
   const [calcError, setCalcError] = useState<string | null>(null);
   const [computedTotal, setComputedTotal] = useState<number | null>(null);
@@ -941,9 +948,18 @@ export function OrderLineItemsSection({
       return {
         treeOk: false,
         treeErrors: ["effectivePbv2Tree is null"] as string[],
+        productId: expandedProduct?.id ?? null,
+        productName: (expandedProduct as any)?.name ?? null,
+        isPbv2Product: expandedProductIsPbv2,
+        optionTreeJsonExists: expandedProductOptionTreeSummary.exists,
+        pbv2ActiveTreeVersionId: expandedProductActiveTreeVersionId,
+        liveFallbackRequested: needsLivePbv2TreeFetch,
+        liveFallbackLoaded: expandedProductLiveTreeLoaded,
+        effectivePbv2TreeExists: false,
         groupCount: 0,
         questionCount: 0,
         choiceCount: 0,
+        renderedControlCount: pbv2PanelRenderStats.renderedControlCount,
         visibleNodeIds: [] as string[],
         questionSelectionKeys: [] as string[],
       };
@@ -952,20 +968,15 @@ export function OrderLineItemsSection({
     const validation = validateOptionTreeV2(tree);
     const nodes = tree.nodes && typeof tree.nodes === "object" ? tree.nodes : {};
     const nodeValues = Object.values(nodes) as any[];
+    const summary = summarizePbv2Tree(tree);
 
-    let groupCount = 0;
-    let questionCount = 0;
-    let choiceCount = 0;
     const questionSelectionKeys: string[] = [];
     for (const node of nodeValues) {
       if (!node || typeof node !== "object") continue;
-      if (node.kind === "group") groupCount += 1;
       if (node.kind === "question" && node.input) {
-        questionCount += 1;
         const sk = node.input?.selectionKey || node.key || node.id;
         if (typeof sk === "string") questionSelectionKeys.push(sk);
       }
-      if (Array.isArray(node.choices)) choiceCount += node.choices.length;
     }
 
     let visibleNodeIds: string[] = [];
@@ -980,13 +991,32 @@ export function OrderLineItemsSection({
     return {
       treeOk: validation.ok,
       treeErrors: validation.ok ? [] : validation.errors,
-      groupCount,
-      questionCount,
-      choiceCount,
+      productId: expandedProduct?.id ?? null,
+      productName: (expandedProduct as any)?.name ?? null,
+      isPbv2Product: expandedProductIsPbv2,
+      optionTreeJsonExists: expandedProductOptionTreeSummary.exists,
+      pbv2ActiveTreeVersionId: expandedProductActiveTreeVersionId,
+      liveFallbackRequested: needsLivePbv2TreeFetch,
+      liveFallbackLoaded: expandedProductLiveTreeLoaded,
+      effectivePbv2TreeExists: true,
+      groupCount: summary.groupCount,
+      questionCount: summary.questionCount,
+      choiceCount: summary.choiceCount,
+      renderedControlCount: pbv2PanelRenderStats.renderedControlCount,
       visibleNodeIds,
       questionSelectionKeys,
     };
-  }, [effectivePbv2Tree, optionSelectionsV2]);
+  }, [
+    effectivePbv2Tree,
+    expandedProduct,
+    expandedProductActiveTreeVersionId,
+    expandedProductIsPbv2,
+    expandedProductLiveTreeLoaded,
+    expandedProductOptionTreeSummary.exists,
+    needsLivePbv2TreeFetch,
+    optionSelectionsV2,
+    pbv2PanelRenderStats.renderedControlCount,
+  ]);
 
   const [savingItemId, setSavingItemId] = useState<string | null>(null);
   const [savedItemId, setSavedItemId] = useState<string | null>(null);
@@ -2089,6 +2119,7 @@ export function OrderLineItemsSection({
                                           selections={optionSelectionsV2}
                                           onSelectionsChange={setOptionSelectionsV2}
                                           onValidityChange={setOptionsV2Valid}
+                                          onRenderStatsChange={setPbv2PanelRenderStats}
                                         />
                                       </div>
                                     )}
@@ -2110,19 +2141,25 @@ export function OrderLineItemsSection({
                                           PBV2 diagnostics (dev only)
                                         </summary>
                                         <div className="mt-2 space-y-0.5 font-mono text-muted-foreground">
-                                          <div>isPbv2Product: {String(expandedProductIsPbv2)}</div>
-                                          <div>optionTreeJson on product: {String(expandedProductHasOptionTreeJson)}</div>
-                                          <div>live active tree fallback loaded: {String(expandedProductLiveTreeLoaded)}</div>
-                                          <div>effectivePbv2Tree present: {String(Boolean(effectivePbv2Tree))}</div>
+                                          <div>productId: {String(pbv2Diagnostics.productId ?? "(none)")}</div>
+                                          <div>productName: {String(pbv2Diagnostics.productName ?? "(none)")}</div>
+                                          <div>isPbv2Product: {String(pbv2Diagnostics.isPbv2Product)}</div>
+                                          <div>optionTreeJson exists: {String(pbv2Diagnostics.optionTreeJsonExists)}</div>
+                                          <div>optionTreeJson renderable controls: {expandedProductOptionTreeSummary.renderableControlCount}</div>
+                                          <div>pbv2ActiveTreeVersionId: {String(pbv2Diagnostics.pbv2ActiveTreeVersionId ?? "(none)")}</div>
+                                          <div>live fallback requested: {String(pbv2Diagnostics.liveFallbackRequested)}</div>
+                                          <div>live fallback loaded: {String(pbv2Diagnostics.liveFallbackLoaded)}</div>
+                                          <div>effectivePbv2Tree exists: {String(pbv2Diagnostics.effectivePbv2TreeExists)}</div>
                                           <div>tree valid: {String(pbv2Diagnostics.treeOk)}</div>
                                           {pbv2Diagnostics.treeErrors.length > 0 && (
                                             <div className="text-amber-600 dark:text-amber-400">
                                               tree errors: {pbv2Diagnostics.treeErrors.join("; ")}
                                             </div>
                                           )}
-                                          <div>group nodes: {pbv2Diagnostics.groupCount}</div>
-                                          <div>question nodes: {pbv2Diagnostics.questionCount}</div>
-                                          <div>choices: {pbv2Diagnostics.choiceCount}</div>
+                                          <div>group count: {pbv2Diagnostics.groupCount}</div>
+                                          <div>question count: {pbv2Diagnostics.questionCount}</div>
+                                          <div>choice count: {pbv2Diagnostics.choiceCount}</div>
+                                          <div>ProductOptionsPanelV2 rendered controls count: {pbv2Diagnostics.renderedControlCount}</div>
                                           <div>visible node ids: {pbv2Diagnostics.visibleNodeIds.length}</div>
                                           <div>
                                             question selectionKeys: {pbv2Diagnostics.questionSelectionKeys.join(", ") || "(none)"}
