@@ -7,6 +7,7 @@ import type { Customer } from '../shared/schema';
 import { DEFAULT_ORGANIZATION_ID } from './tenantContext';
 import { generateNextInvoiceNumber } from './invoicesService';
 import { isSuspiciousContactName, deriveQBContactName } from './lib/qbContactHelpers';
+import { fetchAllQBEntities } from './lib/qbPaginationHelper';
 
 // Initialize QuickBooks OAuth client
 const getOAuthClient = (): any => {
@@ -1383,9 +1384,12 @@ export type QBCustomerPreviewRow = {
  * Used by the UI preview step before committing a pull sync.
  */
 export async function fetchQBCustomersForPreview(organizationId: string): Promise<QBCustomerPreviewRow[]> {
-  const query = 'SELECT * FROM Customer';
-  const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
-  const qbCustomers: any[] = response.QueryResponse?.Customer || [];
+  const qbCustomers: any[] = await fetchAllQBEntities(
+    'Customer',
+    'SELECT * FROM Customer',
+    (q) => makeQBRequest('GET', `/query?query=${encodeURIComponent(q)}`, undefined, organizationId),
+  );
+  console.log(`[QB Preview Customers] Fetched ${qbCustomers.length} QuickBooks customers`);
 
   const rows: QBCustomerPreviewRow[] = [];
 
@@ -1524,12 +1528,13 @@ export async function processPullCustomers(jobId: string, organizationId: string
       .set({ status: 'processing', updatedAt: new Date() })
       .where(eq(accountingSyncJobs.id, jobId));
 
-    // Fetch all customers from QuickBooks
-    const query = "SELECT * FROM Customer";
-    const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
-
-    const qbCustomers = response.QueryResponse?.Customer || [];
-    console.log(`[QB Pull Customers] Found ${qbCustomers.length} customers in QuickBooks`);
+    // Fetch all customers from QuickBooks (paginated)
+    const qbCustomers = await fetchAllQBEntities(
+      'Customer',
+      'SELECT * FROM Customer',
+      (q) => makeQBRequest('GET', `/query?query=${encodeURIComponent(q)}`, undefined, organizationId),
+    );
+    console.log(`[QB Pull Customers] Fetched ${qbCustomers.length} QuickBooks customers`);
 
     let customersCreated = 0;
     let customersUpdated = 0;
@@ -1792,11 +1797,12 @@ export async function processPullInvoices(jobId: string, organizationId: string)
       .set({ status: 'processing', updatedAt: new Date() })
       .where(eq(accountingSyncJobs.id, jobId));
 
-    const query = "SELECT * FROM Invoice";
-    const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
-
-    const qbInvoices = response.QueryResponse?.Invoice || [];
-    console.log(`[QB Pull Invoices] Found ${qbInvoices.length} invoices in QuickBooks`);
+    const qbInvoices = await fetchAllQBEntities(
+      'Invoice',
+      'SELECT * FROM Invoice',
+      (q) => makeQBRequest('GET', `/query?query=${encodeURIComponent(q)}`, undefined, organizationId),
+    );
+    console.log(`[QB Pull Invoices] Fetched ${qbInvoices.length} QuickBooks invoices`);
 
     let syncedCount = 0;
     let errorCount = 0;
@@ -2042,11 +2048,12 @@ export async function processPullOrders(jobId: string): Promise<void> {
       .where(eq(accountingSyncJobs.id, jobId));
 
     // QB SalesReceipt is closest to our Order concept
-    const query = "SELECT * FROM SalesReceipt";
-    const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`);
-
-    const qbSalesReceipts = response.QueryResponse?.SalesReceipt || [];
-    console.log(`[QB Pull Orders] Found ${qbSalesReceipts.length} sales receipts in QuickBooks`);
+    const qbSalesReceipts = await fetchAllQBEntities(
+      'SalesReceipt',
+      'SELECT * FROM SalesReceipt',
+      (q) => makeQBRequest('GET', `/query?query=${encodeURIComponent(q)}`),
+    );
+    console.log(`[QB Pull Orders] Fetched ${qbSalesReceipts.length} QuickBooks sales receipts`);
 
     let syncedCount = 0;
     let errorCount = 0;
@@ -2542,9 +2549,12 @@ export function summarizeQBInvoiceReferenceFields(qbInvoice: any): QBReferenceDe
  * Read-only — no writes to any table.
  */
 export async function fetchQBInvoicesForPreview(organizationId: string, includeReferenceDebug = false): Promise<QBInvoicePreviewRow[]> {
-  const query = 'SELECT * FROM Invoice MAXRESULTS 1000';
-  const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
-  const qbInvoices: any[] = response.QueryResponse?.Invoice || [];
+  const qbInvoices: any[] = await fetchAllQBEntities(
+    'Invoice',
+    'SELECT * FROM Invoice',
+    (q) => makeQBRequest('GET', `/query?query=${encodeURIComponent(q)}`, undefined, organizationId),
+  );
+  console.log(`[QB Preview Invoices] Fetched ${qbInvoices.length} QuickBooks invoices`);
 
   // All QB-linked local customers for this org
   const localCustomers = await db
@@ -2631,11 +2641,24 @@ export async function importQBInvoicesByIds(
 
   if (qbInvoiceIds.length === 0) return result;
 
-  // Fetch the specified invoices from QB (QB query API supports WHERE Id IN (...))
-  const idList = qbInvoiceIds.map(id => `'${String(id).replace(/'/g, '')}'`).join(', ');
-  const query = `SELECT * FROM Invoice WHERE Id IN (${idList}) MAXRESULTS 200`;
-  const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
-  const qbInvoices: any[] = response.QueryResponse?.Invoice || [];
+  // Fetch the specified invoices from QB in batches (QB query API: WHERE Id IN (...), max 1000 per request)
+  const QB_BATCH_SIZE = 1000;
+  const qbInvoices: any[] = [];
+  const seenInvoiceIds = new Set<string>();
+
+  for (let i = 0; i < qbInvoiceIds.length; i += QB_BATCH_SIZE) {
+    const batch = qbInvoiceIds.slice(i, i + QB_BATCH_SIZE);
+    const idList = batch.map(id => `'${String(id).replace(/'/g, '')}'`).join(', ');
+    const query = `SELECT * FROM Invoice WHERE Id IN (${idList}) MAXRESULTS ${QB_BATCH_SIZE}`;
+    const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
+    const page: any[] = response.QueryResponse?.Invoice || [];
+    for (const inv of page) {
+      if (!seenInvoiceIds.has(inv.Id)) {
+        seenInvoiceIds.add(inv.Id);
+        qbInvoices.push(inv);
+      }
+    }
+  }
 
   if (qbLogsEnabled()) {
     console.log(`[QB Import Invoices] Requested ${qbInvoiceIds.length} IDs, QB returned ${qbInvoices.length}`, { organizationId });
