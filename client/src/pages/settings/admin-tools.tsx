@@ -3,18 +3,7 @@ import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Database, Users, Package, Building2, Bug, AlertTriangle, Trash2, Ban, Loader2 } from "lucide-react";
+import { Database, Users, Package, Building2, Bug, AlertTriangle, Trash2, Ban } from "lucide-react";
 import { TitanCard } from "@/components/titan";
 import { DestructiveActionModal } from "@/components/DestructiveActionModal";
 import { useToast } from "@/hooks/use-toast";
@@ -25,32 +14,10 @@ type Organization = {
   name: string;
 };
 
-function formatDeletedCounts(counts: Record<string, number>): string {
-  const significant = Object.entries(counts)
-    .filter(([, n]) => n > 0)
-    .sort(([, a], [, b]) => b - a)
-    .slice(0, 5)
-    .map(([k, n]) => `${n} ${k}`)
-    .join(", ");
-  return significant || "nothing";
-}
-
 export default function AdminTools() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-
-  // Transactional reset
   const [resetModalOpen, setResetModalOpen] = useState(false);
-
-  // QB import reset
-  const [qbResetModalOpen, setQBResetModalOpen] = useState(false);
-  const [qbDisconnectOAuth, setQBDisconnectOAuth] = useState(false);
-  const [qbDeleteCustomers, setQBDeleteCustomers] = useState(true);
-  const [qbSlugInput, setQBSlugInput] = useState("");
-  const [qbConfirmChecked, setQBConfirmChecked] = useState(false);
-  const [qbIsSubmitting, setQBIsSubmitting] = useState(false);
-
-  // Other danger zone
   const [disableModalOpen, setDisableModalOpen] = useState(false);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
 
@@ -66,7 +33,7 @@ export default function AdminTools() {
     },
   });
 
-  // Reset organization transactional data
+  // Reset organization mutation
   const resetMutation = useMutation({
     mutationFn: async () => {
       const response = await fetch("/api/admin/org/reset", {
@@ -79,13 +46,10 @@ export default function AdminTools() {
       }
       return response.json();
     },
-    onSuccess: (data) => {
-      const summary = data?.data?.deletedCounts
-        ? `Deleted: ${formatDeletedCounts(data.data.deletedCounts)}.`
-        : "Transactional data cleared.";
+    onSuccess: () => {
       toast({
-        title: "Organization data reset",
-        description: summary,
+        title: "Organization reset initiated",
+        description: "Transactional data is being deleted. This may take a few moments.",
       });
       queryClient.invalidateQueries();
     },
@@ -93,41 +57,6 @@ export default function AdminTools() {
       toast({
         variant: "destructive",
         title: "Reset failed",
-        description: error.message,
-      });
-    },
-  });
-
-  // Reset QuickBooks import data
-  const qbResetMutation = useMutation({
-    mutationFn: async (opts: { disconnectOAuth: boolean; deleteQBCustomers: boolean }) => {
-      const response = await fetch("/api/admin/org/reset-quickbooks-import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(opts),
-        credentials: "include",
-      });
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || "Failed to reset QuickBooks import data");
-      }
-      return response.json();
-    },
-    onSuccess: (data) => {
-      const summary = data?.data?.deletedCounts
-        ? `Deleted: ${formatDeletedCounts(data.data.deletedCounts)}.`
-        : "QuickBooks import data cleared.";
-      const warnings: string[] = data?.data?.warnings ?? [];
-      toast({
-        title: "QuickBooks import data reset",
-        description: warnings.length > 0 ? `${summary} ${warnings[0]}` : summary,
-      });
-      queryClient.invalidateQueries();
-    },
-    onError: (error: Error) => {
-      toast({
-        variant: "destructive",
-        title: "QB reset failed",
         description: error.message,
       });
     },
@@ -162,7 +91,7 @@ export default function AdminTools() {
     },
   });
 
-  // Delete organization mutation (requests deletion)
+  // Delete organization mutation (actually requests deletion)
   const deleteMutation = useMutation({
     mutationFn: async (reason?: string) => {
       const response = await fetch("/api/admin/org", {
@@ -195,29 +124,6 @@ export default function AdminTools() {
 
   const orgSlug = organization?.slug || "";
   const isActionsDisabled = orgLoading || !organization;
-
-  const handleQBResetClose = () => {
-    setQBSlugInput("");
-    setQBConfirmChecked(false);
-    setQBResetModalOpen(false);
-  };
-
-  const handleQBResetConfirm = async () => {
-    if (qbSlugInput !== orgSlug || !qbConfirmChecked) return;
-    setQBIsSubmitting(true);
-    try {
-      await qbResetMutation.mutateAsync({
-        disconnectOAuth: qbDisconnectOAuth,
-        deleteQBCustomers: qbDeleteCustomers,
-      });
-      handleQBResetClose();
-    } catch {
-      // Error shown via onError toast
-    } finally {
-      setQBIsSubmitting(false);
-    }
-  };
-
   return (
     <div className="space-y-6">
       {/* Page Header */}
@@ -382,13 +288,12 @@ export default function AdminTools() {
           <div className="h-px bg-destructive/20" />
 
           <div className="space-y-3">
-            {/* Reset Organization Transactional Data */}
+            {/* Reset Organization Data */}
             <div className="flex items-start justify-between p-4 border border-border rounded-lg">
               <div className="space-y-1 flex-1">
-                <h4 className="text-sm font-semibold text-titan-text-primary">Reset Organization Transactional Data</h4>
+                <h4 className="text-sm font-semibold text-titan-text-primary">Reset Organization Data</h4>
                 <p className="text-xs text-titan-text-secondary">
-                  Permanently deletes all orders, invoices, quotes, customers, production records, jobs, and audit history.
-                  Preserved: organization record, users &amp; memberships, products, product options, PBV2 trees, materials, pricing formulas, company settings, email settings, and QuickBooks OAuth.
+                  Deletes transactional data (orders, invoices, quotes, production records) but preserves organization, users, and core configuration.
                 </p>
               </div>
               <Button
@@ -399,26 +304,6 @@ export default function AdminTools() {
                 className="ml-4 shrink-0"
               >
                 Reset Data
-              </Button>
-            </div>
-
-            {/* Reset QuickBooks Import Data */}
-            <div className="flex items-start justify-between p-4 border border-border rounded-lg">
-              <div className="space-y-1 flex-1">
-                <h4 className="text-sm font-semibold text-titan-text-primary">Reset QuickBooks Import Data</h4>
-                <p className="text-xs text-titan-text-secondary">
-                  Removes QB-imported invoices, sync jobs, and optionally QB-sourced customers. Manually-created customers and orders are never deleted.
-                  Preserved by default: organization, users, products, materials, pricing, and QuickBooks OAuth connection.
-                </p>
-              </div>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => setQBResetModalOpen(true)}
-                disabled={isActionsDisabled}
-                className="ml-4 shrink-0"
-              >
-                Reset QB Data
               </Button>
             </div>
 
@@ -465,121 +350,18 @@ export default function AdminTools() {
         </div>
       </TitanCard>
 
-      {/* Transactional Reset Modal */}
+      {/* Confirmation Modals */}
       <DestructiveActionModal
         open={resetModalOpen}
         onOpenChange={setResetModalOpen}
-        title="Reset Organization Transactional Data"
-        description="Permanently deletes all orders, invoices, quotes, customers, production records, and audit history for this organization. Products, users, company settings, and QuickBooks OAuth are preserved."
+        title="Reset Organization Data"
+        description="This will permanently delete all transactional data including orders, invoices, quotes, and production records. Your organization, users, and core configuration will be preserved."
         confirmationSlug={orgSlug}
-        confirmButtonText="Reset Transactional Data"
+        confirmButtonText="Reset Data"
         onConfirm={async () => {
           await resetMutation.mutateAsync();
         }}
       />
-
-      {/* QuickBooks Import Reset Modal */}
-      <Dialog open={qbResetModalOpen} onOpenChange={handleQBResetClose}>
-        <DialogContent className="sm:max-w-[520px]">
-          <DialogHeader>
-            <div className="flex items-center gap-2 mb-2">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-destructive/10">
-                <AlertTriangle className="h-5 w-5 text-destructive" />
-              </div>
-              <DialogTitle className="text-xl">Reset QuickBooks Import Data</DialogTitle>
-            </div>
-            <DialogDescription className="text-base pt-2">
-              Removes QB-imported invoices, QB sync jobs, and optionally QB-sourced customers. Manually-created customers and orders are never removed.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-4">
-            {/* QB-specific options */}
-            <div className="space-y-3 rounded-lg border border-border p-3">
-              <p className="text-xs font-medium text-titan-text-secondary uppercase tracking-wide">Options</p>
-
-              <div className="flex items-start space-x-2">
-                <Checkbox
-                  id="qb-delete-customers"
-                  checked={qbDeleteCustomers}
-                  onCheckedChange={(v) => setQBDeleteCustomers(v === true)}
-                  disabled={qbIsSubmitting}
-                />
-                <div className="grid gap-0.5">
-                  <label htmlFor="qb-delete-customers" className="text-sm font-medium leading-none">
-                    Remove QB-imported customers
-                  </label>
-                  <p className="text-xs text-titan-text-muted">
-                    Only customers with no linked orders or invoices will be deleted.
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-start space-x-2">
-                <Checkbox
-                  id="qb-disconnect-oauth"
-                  checked={qbDisconnectOAuth}
-                  onCheckedChange={(v) => setQBDisconnectOAuth(v === true)}
-                  disabled={qbIsSubmitting}
-                />
-                <div className="grid gap-0.5">
-                  <label htmlFor="qb-disconnect-oauth" className="text-sm font-medium leading-none">
-                    Also disconnect QuickBooks OAuth connection
-                  </label>
-                  <p className="text-xs text-titan-text-muted">
-                    Removes stored tokens. You'll need to reconnect QB to sync again.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Slug verification */}
-            <div className="space-y-2">
-              <Label htmlFor="qb-slug-confirm" className="text-sm font-medium">
-                Type <span className="font-mono font-semibold text-destructive">{orgSlug}</span> to confirm
-              </Label>
-              <Input
-                id="qb-slug-confirm"
-                value={qbSlugInput}
-                onChange={(e) => setQBSlugInput(e.target.value)}
-                placeholder="Enter organization slug"
-                className="font-mono"
-                disabled={qbIsSubmitting}
-              />
-            </div>
-
-            {/* Irreversible checkbox */}
-            <div className="flex items-start space-x-2">
-              <Checkbox
-                id="qb-understand-irreversible"
-                checked={qbConfirmChecked}
-                onCheckedChange={(v) => setQBConfirmChecked(v === true)}
-                disabled={qbIsSubmitting}
-              />
-              <label
-                htmlFor="qb-understand-irreversible"
-                className="text-sm leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-              >
-                I understand this action cannot be undone
-              </label>
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={handleQBResetClose} disabled={qbIsSubmitting}>
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={handleQBResetConfirm}
-              disabled={qbSlugInput !== orgSlug || !qbConfirmChecked || qbIsSubmitting}
-            >
-              {qbIsSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Reset QuickBooks Data
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <DestructiveActionModal
         open={disableModalOpen}
