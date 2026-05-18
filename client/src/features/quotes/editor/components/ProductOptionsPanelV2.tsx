@@ -10,6 +10,7 @@ import type { LineItemOptionSelectionsV2, OptionNodeV2, OptionTreeV2 } from "@sh
 import { validateOptionTreeV2 } from "@shared/optionTreeV2";
 import { normalizeSelectionMap, resolveRuntimeVisibility } from "@shared/optionTreeV2Runtime";
 import { evaluateProductOptionRules, type ProductOptionRule } from "@shared/productOptionRules";
+import { extractProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
 
 type ProductOptionsPanelV2Props = {
   tree: OptionTreeV2;
@@ -21,6 +22,50 @@ type ProductOptionsPanelV2Props = {
 
 function isTreeV2Selections(input: any): input is LineItemOptionSelectionsV2 {
   return !!input && typeof input === "object" && input.schemaVersion === 2 && !!input.selected && typeof input.selected === "object";
+}
+
+/**
+ * Normalize an incoming tree so the rest of the component can rely on a consistent shape.
+ * Handles `nodes` arriving as either an object map or an array, ensures each node's id matches
+ * its map key, and supplies sensible defaults for schemaVersion/rootNodeIds when missing.
+ */
+function normalizeIncomingTree(input: unknown): OptionTreeV2 {
+  const raw = (input && typeof input === "object" ? input : {}) as Record<string, any>;
+  const nodesRaw = raw.nodes;
+  const nodes: Record<string, OptionNodeV2> = {};
+
+  if (Array.isArray(nodesRaw)) {
+    for (const node of nodesRaw) {
+      if (!node || typeof node !== "object") continue;
+      const id = (node as any).id;
+      if (typeof id !== "string" || !id.trim()) continue;
+      nodes[id] = node as OptionNodeV2;
+    }
+  } else if (nodesRaw && typeof nodesRaw === "object") {
+    for (const [key, value] of Object.entries(nodesRaw as Record<string, unknown>)) {
+      if (!value || typeof value !== "object") continue;
+      const nodeObj = value as Record<string, any>;
+      const id = typeof nodeObj.id === "string" && nodeObj.id.trim() ? nodeObj.id : key;
+      nodes[String(id)] = { ...(nodeObj as any), id: String(id) } as OptionNodeV2;
+    }
+  }
+
+  const rootNodeIds = Array.isArray(raw.rootNodeIds) && raw.rootNodeIds.length > 0
+    ? raw.rootNodeIds.filter((id: unknown) => typeof id === "string" && (id as string).trim().length > 0)
+    : Object.keys(nodes);
+
+  return {
+    ...(raw as any),
+    schemaVersion: 2,
+    rootNodeIds,
+    nodes,
+  } as OptionTreeV2;
+}
+
+function isQuestionNodeEnabled(node: any): boolean {
+  if (!node || node.kind !== "question" || !node.input) return false;
+  const status = (typeof node.status === "string" ? node.status : "ENABLED").toUpperCase();
+  return status !== "DISABLED" && status !== "DELETED";
 }
 
 /**
@@ -111,12 +156,13 @@ function normalizeNumberInput(value: string): number | null {
 }
 
 export function ProductOptionsPanelV2({
-  tree,
+  tree: rawTree,
   selections,
   onSelectionsChange,
   onValidityChange,
   className,
 }: ProductOptionsPanelV2Props) {
+  const tree = useMemo(() => normalizeIncomingTree(rawTree), [rawTree]);
   const graph = useMemo(() => validateOptionTreeV2(tree), [tree]);
 
   const safeSelections: LineItemOptionSelectionsV2 = useMemo(() => {
@@ -125,22 +171,45 @@ export function ProductOptionsPanelV2({
   }, [selections]);
 
   const visibleNodeIds = useMemo(() => {
-    if (!graph.ok) return [];
     try {
       return resolveRuntimeVisibility(tree, safeSelections).visibleNodeIds;
     } catch {
       return [];
     }
-  }, [graph.ok, tree, safeSelections]);
+  }, [tree, safeSelections]);
 
   const runtimeVisibility = useMemo(() => {
-    if (!graph.ok) return null;
     try {
       return resolveRuntimeVisibility(tree, safeSelections);
     } catch {
       return null;
     }
-  }, [graph.ok, tree, safeSelections]);
+  }, [tree, safeSelections]);
+
+  // Pricing-matrix dimensions: their selectionKeys must always be visible so the matrix can resolve.
+  const matrixDimensionKeys = useMemo(() => {
+    const matrix = extractProductOptionPricingMatrix(tree as any);
+    return new Set<string>(matrix?.dimensions ?? []);
+  }, [tree]);
+
+  const matrixRequiredNodeIds = useMemo(() => {
+    if (matrixDimensionKeys.size === 0) return [] as string[];
+    const ids: string[] = [];
+    for (const node of Object.values(tree.nodes)) {
+      if (!isQuestionNodeEnabled(node)) continue;
+      if (matrixDimensionKeys.has(getSelectionKey(node as OptionNodeV2))) {
+        ids.push((node as OptionNodeV2).id);
+      }
+    }
+    return ids;
+  }, [tree.nodes, matrixDimensionKeys]);
+
+  // Fallback list used when validation fails or visibility resolves to zero: every enabled question.
+  const allEnabledQuestionNodeIds = useMemo(() => {
+    return Object.values(tree.nodes)
+      .filter(isQuestionNodeEnabled)
+      .map((n) => (n as OptionNodeV2).id);
+  }, [tree.nodes]);
 
   const optionRules = useMemo(() => getOptionRules(tree), [tree]);
 
@@ -182,28 +251,54 @@ export function ProductOptionsPanelV2({
   const requiredOptionGroupSet = useMemo(() => new Set(ruleEvaluation.requiredOptionGroups), [ruleEvaluation.requiredOptionGroups]);
 
   const effectiveVisibleNodeIds = useMemo(() => {
-    return visibleNodeIds.filter((nodeId) => {
+    const filtered = visibleNodeIds.filter((nodeId) => {
       const node = tree.nodes[nodeId];
       if (!node) return false;
       if (hiddenOptionGroupSet.has(node.id) || hiddenOptionGroupSet.has((node as any).key)) return false;
       if (node.kind === "question" && node.input) return !hiddenOptionGroupSet.has(getSelectionKey(node));
       return true;
     });
-  }, [hiddenOptionGroupSet, tree.nodes, visibleNodeIds]);
+    // Pricing-matrix dimensions must always render so the matrix can resolve its variables.
+    const merged: string[] = filtered.slice();
+    for (const id of matrixRequiredNodeIds) {
+      if (!merged.includes(id)) merged.push(id);
+    }
+    return merged;
+  }, [hiddenOptionGroupSet, matrixRequiredNodeIds, tree.nodes, visibleNodeIds]);
+
+  // Final list used by the render pass. When validation fails or visibility resolves to zero
+  // but the tree still contains enabled question nodes, fall back to rendering all of them so
+  // the user is never left with an empty panel.
+  const renderedNodeIds = useMemo(() => {
+    if (effectiveVisibleNodeIds.length > 0) return effectiveVisibleNodeIds;
+    return allEnabledQuestionNodeIds;
+  }, [effectiveVisibleNodeIds, allEnabledQuestionNodeIds]);
+
+  const usingFallbackNodeList = renderedNodeIds !== effectiveVisibleNodeIds;
 
   const displaySelections = useMemo<LineItemOptionSelectionsV2>(() => ({
     schemaVersion: 2,
     selected: toSelectionRecord(ruleEvaluation.effectiveSelections, safeSelections.selected ?? {}),
     resolved: {
       ...(safeSelections.resolved ?? {}),
-      visibleNodeIds: effectiveVisibleNodeIds,
+      visibleNodeIds: renderedNodeIds,
     },
-  }), [effectiveVisibleNodeIds, ruleEvaluation.effectiveSelections, safeSelections.resolved, safeSelections.selected]);
+  }), [renderedNodeIds, ruleEvaluation.effectiveSelections, safeSelections.resolved, safeSelections.selected]);
 
   // Prune selections for hidden/missing nodes and store resolved.visibleNodeIds canonically.
   useEffect(() => {
+    // Validate selections against whatever set we're actually rendering.
+    const validationNodeIds = renderedNodeIds;
+
     if (!graph.ok) {
-      onValidityChange?.(false);
+      // Best-effort: still report a validity signal based on the fallback list (required-missing only).
+      const missingRequiredFallback = validationNodeIds.some((id) => {
+        const node = tree.nodes[id];
+        if (!node || node.kind !== "question" || !node.input) return false;
+        const value = getNodeValue(displaySelections, node);
+        return requiredMissing(node, value);
+      });
+      onValidityChange?.(!missingRequiredFallback);
       return;
     }
 
@@ -220,7 +315,7 @@ export function ProductOptionsPanelV2({
       for (const key of Object.keys(nextSelected)) {
         let nodeFound = false;
 
-        for (const nodeId of effectiveVisibleNodeIds) {
+        for (const nodeId of renderedNodeIds) {
           const node = tree.nodes[nodeId];
           if (!node) continue;
 
@@ -241,7 +336,7 @@ export function ProductOptionsPanelV2({
     }
 
     const prevResolved = safeSelections.resolved?.visibleNodeIds;
-    const sameResolved = sameStringArray(prevResolved, effectiveVisibleNodeIds);
+    const sameResolved = sameStringArray(prevResolved, renderedNodeIds);
 
     const next: LineItemOptionSelectionsV2 = changed || !sameResolved
       ? {
@@ -249,7 +344,7 @@ export function ProductOptionsPanelV2({
           selected: nextSelected,
           resolved: {
             ...(safeSelections.resolved ?? {}),
-            visibleNodeIds: effectiveVisibleNodeIds,
+            visibleNodeIds: renderedNodeIds,
           },
         }
       : safeSelections;
@@ -258,22 +353,26 @@ export function ProductOptionsPanelV2({
       onSelectionsChange(next);
     }
 
-    const missingRequired = effectiveVisibleNodeIds.some((id) => {
+    const missingRequired = renderedNodeIds.some((id) => {
       const node = tree.nodes[id];
       if (!node || node.kind !== "question" || !node.input) return false;
       const selectionKey = getSelectionKey(node);
       const value = getNodeValue(next, node);
-      return requiredMissing(node, value) || (requiredOptionGroupSet.has(selectionKey) && requiredMissing({ ...node, input: { ...node.input, required: true } }, value));
+      const matrixRequired = matrixDimensionKeys.has(selectionKey);
+      return requiredMissing(node, value)
+        || (requiredOptionGroupSet.has(selectionKey) && requiredMissing({ ...node, input: { ...node.input, required: true } }, value))
+        || (matrixRequired && requiredMissing({ ...node, input: { ...node.input, required: true } }, value));
     });
 
     onValidityChange?.(!missingRequired && ruleEvaluation.errors.length === 0);
   }, [
-    effectiveVisibleNodeIds,
+    renderedNodeIds,
     graph.ok,
     onSelectionsChange,
     onValidityChange,
     optionRules.length,
     requiredOptionGroupSet,
+    matrixDimensionKeys,
     ruleEvaluation.effectiveSelections,
     ruleEvaluation.errors.length,
     safeSelections,
@@ -281,15 +380,14 @@ export function ProductOptionsPanelV2({
   ]);
 
   const nodeErrors = useMemo(() => {
-    if (!graph.ok) return new Map<string, string>();
     const out = new Map<string, string>();
 
-    for (const nodeId of effectiveVisibleNodeIds) {
+    for (const nodeId of renderedNodeIds) {
       const node = tree.nodes[nodeId];
       if (!node || node.kind !== "question" || !node.input) continue;
       const selectionKey = getSelectionKey(node);
       const value = getNodeValue(displaySelections, node);
-      const isRequired = requiredOptionGroupSet.has(selectionKey);
+      const isRequired = requiredOptionGroupSet.has(selectionKey) || matrixDimensionKeys.has(selectionKey);
 
       if (requiredMissing(node, value) || (isRequired && requiredMissing({ ...node, input: { ...node.input, required: true } }, value))) {
         out.set(nodeId, "Required");
@@ -324,7 +422,7 @@ export function ProductOptionsPanelV2({
     }
 
     return out;
-  }, [displaySelections, effectiveVisibleNodeIds, graph.ok, requiredOptionGroupSet, ruleEvaluation.errors, tree.nodes]);
+  }, [displaySelections, matrixDimensionKeys, renderedNodeIds, requiredOptionGroupSet, ruleEvaluation.errors, tree.nodes]);
 
   const isValid = graph.ok && nodeErrors.size === 0;
 
@@ -358,30 +456,10 @@ export function ProductOptionsPanelV2({
       selected: nextSelected,
       resolved: {
         ...(safeSelections.resolved ?? {}),
-        visibleNodeIds: effectiveVisibleNodeIds,
+        visibleNodeIds: renderedNodeIds,
       },
     });
   };
-
-  if (!graph.ok) {
-    return (
-      <div className={cn("space-y-2", className)}>
-        <div className="flex items-center gap-2">
-          <div className="text-sm font-medium">Options</div>
-          <Badge variant="secondary" className="text-[11px]">Tree v2</Badge>
-          <Badge variant="destructive" className="text-[11px]">Invalid tree</Badge>
-        </div>
-        <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">
-          <div className="font-medium mb-1">optionTreeJson errors</div>
-          <ul className="list-disc pl-5 space-y-0.5">
-            {graph.errors.map((e) => (
-              <li key={e}>{e}</li>
-            ))}
-          </ul>
-        </div>
-      </div>
-    );
-  }
 
   // Extract root node label for section header (dynamic from tree structure)
   const rootNodeId = tree.rootNodeIds?.[0];
@@ -397,6 +475,13 @@ export function ProductOptionsPanelV2({
         </div>
       )}
 
+      {!graph.ok && renderedNodeIds.length > 0 ? (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-xs text-amber-700 dark:text-amber-300">
+          <div className="font-medium">Showing options in recovery mode</div>
+          <div className="mt-0.5">The option tree has structural issues; controls below are best-effort.</div>
+        </div>
+      ) : null}
+
       {ruleEvaluation.messages.filter((message) => message.code === "OPTION_RULE_CLEARED").length > 0 ? (
         <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
           Some selections were cleared because they are no longer valid for the current options.
@@ -409,11 +494,17 @@ export function ProductOptionsPanelV2({
         </div>
       ) : null}
 
-      {effectiveVisibleNodeIds.length === 0 ? (
+      {usingFallbackNodeList && renderedNodeIds.length > 0 ? (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
+          No visibility rules matched; showing all available options.
+        </div>
+      ) : null}
+
+      {renderedNodeIds.length === 0 ? (
         <div className="text-xs text-muted-foreground">No options.</div>
       ) : (
         <div className="space-y-3">
-          {effectiveVisibleNodeIds.map((nodeId) => {
+          {renderedNodeIds.map((nodeId) => {
             const node = tree.nodes[nodeId];
             if (!node) return null;
 
