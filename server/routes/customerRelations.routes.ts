@@ -1,4 +1,4 @@
-/**
+﻿/**
  * customerRelations.routes.ts
  *
  * Customer Contacts, Customer Notes, and Customer Credit Transactions routes
@@ -32,7 +32,7 @@ import { fromZodError } from "zod-validation-error";
 import { eq, desc, and, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db } from "../db";
-import { orders, quotes, invoices, payments, customerCreditTransactions } from "@shared/schema";
+import { orders, quotes, invoices, payments, customerCreditTransactions, customers, customerContacts } from "@shared/schema";
 import {
   insertCustomerContactSchema,
   updateCustomerContactSchema,
@@ -43,6 +43,19 @@ import {
 } from "@shared/schema";
 import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
+import {
+  safeIso as stmtSafeIso,
+  normaliseDateTo,
+  orderEffectiveDate,
+  isOpenOrder,
+  isCompletedOrder,
+  filterOrderByStatus,
+  filterOrderByDate,
+  filterOrderBySearch,
+  filterInvoiceBySearch,
+  filterQuoteBySearch,
+  buildStatementSummary,
+} from "../lib/customerStatementHelpers";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -344,9 +357,9 @@ export function registerCustomerRelationsRoutes(
   // GET /api/customers/:id/transactions
   //
   // Query params:
-  //   dateFrom   ISO date or datetime string (optional — inclusive)
-  //   dateTo     ISO date or datetime string (optional — inclusive, end-of-day if date-only)
-  //   search     string (optional — searches ref#, PO#, description)
+  //   dateFrom   ISO date or datetime string (optional â€” inclusive)
+  //   dateTo     ISO date or datetime string (optional â€” inclusive, end-of-day if date-only)
+  //   search     string (optional â€” searches ref#, PO#, description)
   //   type       comma-separated: quote,order,invoice,payment,refund,credit,adjustment,charge
   //   sort       "asc" | "desc"  (default "desc")
   //   page       integer (default 1)
@@ -356,12 +369,12 @@ export function registerCustomerRelationsRoutes(
   //   { rows, summary: { invoicedTotal, paidTotal, refundedTotal, openBalance, creditsTotal }, pagination }
   //
   // Date selection per source:
-  //   quotes    → createdAt
-  //   orders    → createdAt
-  //   invoices  → issueDate  (canonical document date, NOT createdAt)
-  //   payments  → paidAt ?? succeededAt ?? appliedAt ?? createdAt
-  //   refunds   → refundedAt ?? createdAt
-  //   credits   → createdAt
+  //   quotes    â†’ createdAt
+  //   orders    â†’ createdAt
+  //   invoices  â†’ issueDate  (canonical document date, NOT createdAt)
+  //   payments  â†’ paidAt ?? succeededAt ?? appliedAt ?? createdAt
+  //   refunds   â†’ refundedAt ?? createdAt
+  //   credits   â†’ createdAt
   //
   // Sort stability: primary = date desc/asc, secondary = id asc (deterministic tiebreaker)
   // ============================================================
@@ -379,7 +392,7 @@ export function registerCustomerRelationsRoutes(
         return res.status(404).json({ message: "Customer not found" });
       }
 
-      // ── Parse & normalise filters ────────────────────────────────────────────
+      // â”€â”€ Parse & normalise filters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
       const rawDateFrom = (req.query.dateFrom as string) || null;
       const rawDateTo   = (req.query.dateTo   as string) || null;
@@ -401,13 +414,13 @@ export function registerCustomerRelationsRoutes(
       const page      = Math.max(1, parseInt((req.query.page     as string) || "1",  10));
       const pageSize  = Math.min(100, Math.max(1, parseInt((req.query.pageSize as string) || "50", 10)));
 
-      // ── Types ────────────────────────────────────────────────────────────────
+      // â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
       // Canonical transaction type enum used throughout this endpoint.
       // credit-transaction table values are remapped:
-      //   "payment"    → "credit"      (manual credit applied to account)
-      //   "charge"     → "charge"      (debit/charge added to account)
-      //   "adjustment" → "adjustment"  (balance correction)
+      //   "payment"    â†’ "credit"      (manual credit applied to account)
+      //   "charge"     â†’ "charge"      (debit/charge added to account)
+      //   "adjustment" â†’ "adjustment"  (balance correction)
       type TxType = "quote" | "order" | "invoice" | "payment" | "refund" | "credit" | "adjustment" | "charge";
 
       type TxRow = {
@@ -424,7 +437,7 @@ export function registerCustomerRelationsRoutes(
         linkId: string | null;
       };
 
-      // ── Date helpers ─────────────────────────────────────────────────────────
+      // â”€â”€ Date helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
       /** Convert any Date | string | null/undefined to a safe ISO string. */
       const safeIso = (val: Date | string | null | undefined): string => {
@@ -445,10 +458,10 @@ export function registerCustomerRelationsRoutes(
 
       const rows: TxRow[] = [];
 
-      // ── Fetch credit transactions once (no orgId column — validate via customer check above) ──
+      // â”€â”€ Fetch credit transactions once (no orgId column â€” validate via customer check above) â”€â”€
       const allCreditTx = await storage.getCustomerCreditTransactions(customerId);
 
-      // ── QUOTES ──────────────────────────────────────────────────────────────
+      // â”€â”€ QUOTES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       if (!typeFilter || typeFilter.includes("quote")) {
         const dateFilters: SQL<unknown>[] = [];
         if (dateFrom) dateFilters.push(sql`${quotes.createdAt} >= ${dateFrom}`);
@@ -467,7 +480,7 @@ export function registerCustomerRelationsRoutes(
           .where(and(eq(quotes.organizationId, organizationId), eq(quotes.customerId, customerId), ...dateFilters));
 
         for (const q of quoteRows) {
-          const refNum   = q.quoteNumber != null ? `Q-${q.quoteNumber}` : "—";
+          const refNum   = q.quoteNumber != null ? `Q-${q.quoteNumber}` : "â€”";
           const descText = q.label || "Quote";
           if (search) {
             const s = search;
@@ -489,7 +502,7 @@ export function registerCustomerRelationsRoutes(
         }
       }
 
-      // ── ORDERS ──────────────────────────────────────────────────────────────
+      // â”€â”€ ORDERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       if (!typeFilter || typeFilter.includes("order")) {
         const dateFilters: SQL<unknown>[] = [];
         if (dateFrom) dateFilters.push(sql`${orders.createdAt} >= ${dateFrom}`);
@@ -536,7 +549,7 @@ export function registerCustomerRelationsRoutes(
         }
       }
 
-      // ── INVOICES ─────────────────────────────────────────────────────────────
+      // â”€â”€ INVOICES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       // Uses issueDate (document date) not createdAt for chronological accuracy.
       if (!typeFilter || typeFilter.includes("invoice")) {
         const dateFilters: SQL<unknown>[] = [];
@@ -585,9 +598,9 @@ export function registerCustomerRelationsRoutes(
         }
       }
 
-      // ── PAYMENTS & REFUNDS (via invoice join for customerId scope) ────────────
-      // Payments: status = succeeded  → type "payment"
-      // Refunds:  status = refunded   → type "refund"
+      // â”€â”€ PAYMENTS & REFUNDS (via invoice join for customerId scope) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      // Payments: status = succeeded  â†’ type "payment"
+      // Refunds:  status = refunded   â†’ type "refund"
       // Other statuses (pending/failed/canceled) are surfaced only when explicitly filtered.
       const wantPayment = !typeFilter || typeFilter.includes("payment");
       const wantRefund  = !typeFilter || typeFilter.includes("refund");
@@ -621,7 +634,7 @@ export function registerCustomerRelationsRoutes(
             and(
               eq(payments.organizationId, organizationId),
               eq(invoices.customerId, customerId),
-              // Only include terminal statuses — exclude pending/failed/canceled
+              // Only include terminal statuses â€” exclude pending/failed/canceled
               sql`${payments.status} IN ('succeeded', 'refunded')`,
               ...dateFilters,
             ),
@@ -636,7 +649,7 @@ export function registerCustomerRelationsRoutes(
 
           const refNum   = p.invoiceNumber != null ? `PMT-INV-${p.invoiceNumber}` : "PMT";
           const noteText = p.notes || p.note || "";
-          const descText = noteText || `${isRefund ? "Refund" : "Payment"} — ${p.method || "other"}`;
+          const descText = noteText || `${isRefund ? "Refund" : "Payment"} â€” ${p.method || "other"}`;
 
           if (search) {
             const s = search;
@@ -665,11 +678,11 @@ export function registerCustomerRelationsRoutes(
         }
       }
 
-      // ── CREDIT / ADJUSTMENT / CHARGE TRANSACTIONS ────────────────────────────
+      // â”€â”€ CREDIT / ADJUSTMENT / CHARGE TRANSACTIONS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       // Remap transactionType values to canonical TxType:
-      //   "payment"    → "credit"       (manual credit applied to customer account)
-      //   "charge"     → "charge"
-      //   "adjustment" → "adjustment"
+      //   "payment"    â†’ "credit"       (manual credit applied to customer account)
+      //   "charge"     â†’ "charge"
+      //   "adjustment" â†’ "adjustment"
       const creditTypeWanted = !typeFilter || typeFilter.some((t) =>
         ["credit", "adjustment", "charge"].includes(t)
       );
@@ -692,7 +705,7 @@ export function registerCustomerRelationsRoutes(
           if (dateFrom && ctDate < new Date(dateFrom)) continue;
           if (dateTo   && ctDate > new Date(dateTo))   continue;
 
-          const refNum   = ct.referenceNumber || "—";
+          const refNum   = ct.referenceNumber || "â€”";
           const descText = ct.description || rawType;
 
           if (search) {
@@ -717,7 +730,7 @@ export function registerCustomerRelationsRoutes(
         }
       }
 
-      // ── Sort: primary = date, secondary = id (stable tiebreaker) ─────────────
+      // â”€â”€ Sort: primary = date, secondary = id (stable tiebreaker) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       rows.sort((a, b) => {
         const timeDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
         if (timeDiff !== 0) return sort === "desc" ? -timeDiff : timeDiff;
@@ -727,7 +740,7 @@ export function registerCustomerRelationsRoutes(
           : a.id.localeCompare(b.id);
       });
 
-      // ── SUMMARY TOTALS (always from full unfiltered dataset) ─────────────────
+      // â”€â”€ SUMMARY TOTALS (always from full unfiltered dataset) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       const allInvoicesForSummary = await db
         .select({ total: invoices.total, balanceDue: invoices.balanceDue, status: invoices.status })
         .from(invoices)
@@ -745,7 +758,7 @@ export function registerCustomerRelationsRoutes(
           ),
         );
 
-      // invoicedTotal: exclude void invoices (they were cancelled — don't count as revenue)
+      // invoicedTotal: exclude void invoices (they were cancelled â€” don't count as revenue)
       const invoicedTotal = allInvoicesForSummary
         .filter((inv) => inv.status !== "void")
         .reduce((s, inv) => s + parseFloat(inv.total || "0"), 0);
@@ -769,7 +782,7 @@ export function registerCustomerRelationsRoutes(
         .filter((ct) => ct.transactionType === "payment" || ct.transactionType === "credit")
         .reduce((s, ct) => s + parseFloat(ct.amount || "0"), 0);
 
-      // ── Paginate ─────────────────────────────────────────────────────────────
+      // â”€â”€ Paginate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       const total        = rows.length;
       const totalPages   = Math.max(1, Math.ceil(total / pageSize));
       const paginatedRows = rows.slice((page - 1) * pageSize, page * pageSize);
@@ -797,4 +810,358 @@ export function registerCustomerRelationsRoutes(
       res.status(500).json({ message: "Failed to fetch customer transactions" });
     }
   });
+
+  // ============================================================
+  // CUSTOMER STATEMENT
+  // GET /api/customers/:id/statement
+  //
+  // Query params:
+  //   dateFrom        ISO date/datetime (optional, inclusive)
+  //   dateTo          ISO date/datetime (optional, inclusive, end-of-day if date-only)
+  //   status          "open" | "completed" | "all"  (default: "all")
+  //   search          string (optional)
+  //   includeInvoices boolean (default: true)
+  //   includeQuotes   boolean (default: false)
+  //
+  // Response sections:
+  //   openOrders, completedOrders, invoices, quotes (null when excluded)
+  //
+  // Rules:
+  //   - Org scoping enforced on every query
+  //   - Summary totals computed from full unfiltered customer dataset
+  //   - Sections reflect applied filters (date, status, search)
+  //   - includeInvoices=false â†’ sections.invoices = null
+  //   - includeQuotes=false   â†’ sections.quotes = null
+  //   - Canceled orders are excluded from all sections
+  //   - Void invoices are excluded from invoicedTotal / paidTotal
+  //   - Optional date fields (dueDate, closedAt) safely return null when absent
+  // ============================================================
+
+  app.get("/api/customers/:id/statement", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const customerId = req.params.id;
+
+      // â”€â”€ Validate customer belongs to this org â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      const customer = await storage.getCustomerById(organizationId, customerId);
+      if (!customer) return res.status(404).json({ message: "Customer not found" });
+
+      // â”€â”€ Parse filters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      const dateFrom      = (req.query.dateFrom as string) || null;
+      const dateTo        = normaliseDateTo((req.query.dateTo as string) || null);
+      const statusFilter  = (["open", "completed", "all"].includes(req.query.status as string)
+        ? (req.query.status as "open" | "completed" | "all")
+        : "all");
+      const search        = ((req.query.search as string) || "").toLowerCase().trim();
+      const includeInvoices = req.query.includeInvoices !== "false";
+      const includeQuotes   = req.query.includeQuotes === "true";
+
+      // â”€â”€ Customer identity block â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      const primaryContact = ((customer as any).contacts || [])
+        .find((c: any) => c.isPrimary) || null;
+
+      const billingAddress = (
+        customer.billingStreet1 ||
+        customer.billingCity   ||
+        customer.billingState
+      ) ? {
+        street1:    customer.billingStreet1    || null,
+        street2:    customer.billingStreet2    || null,
+        city:       customer.billingCity       || null,
+        state:      customer.billingState      || null,
+        postalCode: customer.billingPostalCode || null,
+        country:    customer.billingCountry    || null,
+      } : null;
+
+      const shippingAddress = (
+        customer.shippingStreet1 ||
+        customer.shippingCity    ||
+        customer.shippingState
+      ) ? {
+        street1:    customer.shippingStreet1    || null,
+        street2:    customer.shippingStreet2    || null,
+        city:       customer.shippingCity       || null,
+        state:      customer.shippingState      || null,
+        postalCode: customer.shippingPostalCode || null,
+        country:    customer.shippingCountry    || null,
+      } : null;
+
+      const customerIdentity = {
+        customerId:     customer.id,
+        companyName:    customer.companyName,
+        primaryContact: primaryContact ? {
+          firstName: primaryContact.firstName,
+          lastName:  primaryContact.lastName,
+          email:     primaryContact.email  || null,
+          phone:     primaryContact.phone  || null,
+        } : null,
+        email:           customer.email   || null,
+        phone:           customer.phone   || null,
+        billingAddress,
+        shippingAddress,
+      };
+
+      // â”€â”€ FETCH: all non-canceled orders (one query) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      const allOrderRows = await db
+        .select({
+          id:          orders.id,
+          orderNumber: orders.orderNumber,
+          poNumber:    orders.poNumber,
+          label:       orders.label,
+          status:      orders.status,
+          state:       orders.state,
+          dueDate:     orders.dueDate,
+          closedAt:    orders.closedAt,
+          shippedAt:   orders.shippedAt,
+          total:       orders.total,
+          createdAt:   orders.createdAt,
+        })
+        .from(orders)
+        .where(
+          and(
+            eq(orders.organizationId, organizationId),
+            eq(orders.customerId, customerId),
+            sql`${orders.state} != 'canceled'`,
+          ),
+        );
+
+      // â”€â”€ FETCH: all invoices for this customer (one query) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      const allInvoiceRows = includeInvoices ? await db
+        .select({
+          id:                invoices.id,
+          invoiceNumber:     invoices.invoiceNumber,
+          orderId:           invoices.orderId,
+          sourceOrderNumber: invoices.sourceOrderNumber,
+          issueDate:         invoices.issueDate,
+          dueDate:           invoices.dueDate,
+          status:            invoices.status,
+          total:             invoices.total,
+          amountPaid:        invoices.amountPaid,
+          balanceDue:        invoices.balanceDue,
+          customerPoNumber:  invoices.customerPoNumber,
+          notesPublic:       invoices.notesPublic,
+        })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.organizationId, organizationId),
+            eq(invoices.customerId, customerId),
+          ),
+        ) : [];
+
+      // â”€â”€ FETCH: quotes (one query, only when requested) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      const allQuoteRows = includeQuotes ? await db
+        .select({
+          id:          quotes.id,
+          quoteNumber: quotes.quoteNumber,
+          label:       quotes.label,
+          status:      quotes.status,
+          totalPrice:  quotes.totalPrice,
+          createdAt:   quotes.createdAt,
+        })
+        .from(quotes)
+        .where(
+          and(
+            eq(quotes.organizationId, organizationId),
+            eq(quotes.customerId, customerId),
+          ),
+        ) : [];
+
+      // â”€â”€ FETCH: credit transactions once (reuse for summary) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      const allCreditTx = await storage.getCustomerCreditTransactions(customerId);
+
+      // â”€â”€ FETCH: refund total from payments (single aggregate) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      const [refundRow] = await db
+        .select({ total: sql<string>`COALESCE(SUM(${payments.amount}::numeric),'0')` })
+        .from(payments)
+        .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
+        .where(
+          and(
+            eq(payments.organizationId, organizationId),
+            eq(invoices.customerId, customerId),
+            eq(payments.status, "refunded"),
+          ),
+        );
+      const refundTotal = parseFloat(refundRow?.total || "0");
+
+      // â”€â”€ Build invoice lookup map (orderId â†’ best invoice summary) â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      // Used to annotate order rows with invoice status without N+1 queries.
+      // If an order has multiple invoices, prefer non-draft / non-void, most recent by issueDate.
+      const invoiceByOrderId = new Map<
+        string,
+        { status: string; balanceDue: string; invoiceNumber: number }
+      >();
+      if (includeInvoices) {
+        // Sort so latest invoice wins (issueDate descending)
+        const sorted = [...allInvoiceRows].sort(
+          (a, b) => new Date(b.issueDate as any).getTime() - new Date(a.issueDate as any).getTime(),
+        );
+        for (const inv of sorted) {
+          if (!inv.orderId) continue;
+          if (inv.status === "void") continue;  // Ignore void invoices for order annotation
+          if (!invoiceByOrderId.has(inv.orderId)) {
+            invoiceByOrderId.set(inv.orderId, {
+              status:        inv.status,
+              balanceDue:    inv.balanceDue || "0",
+              invoiceNumber: inv.invoiceNumber,
+            });
+          }
+        }
+      }
+
+      // â”€â”€ SECTIONS: filter, classify, map orders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      const openOrderSection: any[]      = [];
+      const completedOrderSection: any[] = [];
+
+      for (const o of allOrderRows) {
+        // Status section filter first
+        if (!filterOrderByStatus(o, statusFilter)) continue;
+
+        // Date range filter (uses orderEffectiveDate)
+        if (!filterOrderByDate(o, dateFrom, dateTo)) continue;
+
+        // Search filter
+        if (!filterOrderBySearch(o, search)) continue;
+
+        const linkedInvoice = invoiceByOrderId.get(o.id) || null;
+
+        const row = {
+          orderId:       o.id,
+          orderNumber:   o.orderNumber,
+          poNumber:      o.poNumber    || null,
+          date:          stmtSafeIso(o.createdAt),
+          dueDate:       o.dueDate     ? stmtSafeIso(o.dueDate)   : null,
+          completedAt:   o.closedAt    ? stmtSafeIso(o.closedAt)  : null,
+          shippedAt:     o.shippedAt   ? stmtSafeIso(o.shippedAt) : null,
+          status:        o.state,      // canonical state
+          legacyStatus:  o.status,     // deprecated status field (for display compat)
+          description:   o.label      || null,
+          total:         o.total       || "0",
+          invoiceStatus: linkedInvoice?.status        || null,
+          invoiceNumber: linkedInvoice?.invoiceNumber ?? null,
+          balanceDue:    linkedInvoice?.balanceDue    ?? null,
+          linkId:        o.id,
+        };
+
+        if (isOpenOrder(o.state)) {
+          openOrderSection.push(row);
+        } else if (isCompletedOrder(o.state)) {
+          completedOrderSection.push(row);
+        }
+        // other non-canceled states (e.g. production_complete is already open)
+      }
+
+      // Sort open orders by dueDate asc (soonest first), then createdAt asc
+      openOrderSection.sort((a, b) => {
+        const da = a.dueDate ? new Date(a.dueDate).getTime() : Infinity;
+        const db_ = b.dueDate ? new Date(b.dueDate).getTime() : Infinity;
+        if (da !== db_) return da - db_;
+        return new Date(a.date).getTime() - new Date(b.date).getTime();
+      });
+
+      // Sort completed orders by completedAt desc (most recent first)
+      completedOrderSection.sort((a, b) => {
+        const da = a.completedAt ? new Date(a.completedAt).getTime() : 0;
+        const db_ = b.completedAt ? new Date(b.completedAt).getTime() : 0;
+        return db_ - da;
+      });
+
+      // â”€â”€ SECTIONS: filter, map invoices â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      let invoiceSection: any[] | null = null;
+      if (includeInvoices) {
+        invoiceSection = [];
+        for (const inv of allInvoiceRows) {
+          // Date filter on issueDate
+          const invDateMs = new Date(inv.issueDate as any).getTime();
+          if (dateFrom && invDateMs < new Date(dateFrom).getTime()) continue;
+          if (dateTo   && invDateMs > new Date(dateTo).getTime())   continue;
+
+          // Search filter
+          if (!filterInvoiceBySearch(inv, search)) continue;
+
+          invoiceSection.push({
+            invoiceId:          inv.id,
+            invoiceNumber:      inv.invoiceNumber,
+            issueDate:          stmtSafeIso(inv.issueDate as any),
+            dueDate:            inv.dueDate ? stmtSafeIso(inv.dueDate as any) : null,
+            status:             inv.status,
+            total:              inv.total     || "0",
+            amountPaid:         inv.amountPaid || "0",
+            balanceDue:         inv.balanceDue || "0",
+            customerPoNumber:   inv.customerPoNumber   || null,
+            relatedOrderNumber: inv.sourceOrderNumber  ?? null,
+            orderId:            inv.orderId             || null,
+            linkId:             inv.id,
+          });
+        }
+        // Sort by issueDate desc
+        invoiceSection.sort(
+          (a, b) => new Date(b.issueDate).getTime() - new Date(a.issueDate).getTime(),
+        );
+      }
+
+      // â”€â”€ SECTIONS: filter, map quotes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      let quoteSection: any[] | null = null;
+      if (includeQuotes) {
+        quoteSection = [];
+        for (const q of allQuoteRows) {
+          // Date filter on createdAt
+          const qDateMs = new Date(q.createdAt as any).getTime();
+          if (dateFrom && qDateMs < new Date(dateFrom).getTime()) continue;
+          if (dateTo   && qDateMs > new Date(dateTo).getTime())   continue;
+
+          // Search filter
+          if (!filterQuoteBySearch(q, search)) continue;
+
+          quoteSection.push({
+            quoteId:     q.id,
+            quoteNumber: q.quoteNumber  ?? null,
+            createdAt:   stmtSafeIso(q.createdAt as any),
+            status:      q.status        || "draft",
+            total:       q.totalPrice    || "0",
+            description: q.label         || null,
+            linkId:      q.id,
+          });
+        }
+        // Sort by createdAt desc
+        quoteSection.sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+        );
+      }
+
+      // â”€â”€ Summary (from FULL unfiltered dataset) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      const summary = buildStatementSummary(
+        allOrderRows,
+        allInvoiceRows,
+        allCreditTx,
+        refundTotal,
+      );
+
+      // â”€â”€ Response â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      res.json({
+        customer: customerIdentity,
+        filtersEcho: {
+          dateFrom,
+          dateTo,
+          status:          statusFilter,
+          search,
+          includeInvoices,
+          includeQuotes,
+        },
+        sections: {
+          openOrders:      openOrderSection,
+          completedOrders: completedOrderSection,
+          invoices:        invoiceSection,   // null when includeInvoices=false
+          quotes:          quoteSection,     // null when includeQuotes=false
+        },
+        summary,
+      });
+    } catch (error) {
+      console.error("Error fetching customer statement:", error);
+      res.status(500).json({ message: "Failed to fetch customer statement" });
+    }
+  });
+
 }
