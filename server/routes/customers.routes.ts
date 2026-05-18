@@ -102,16 +102,37 @@ export function registerCustomerRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
       const filters = {
         search: req.query.search as string | undefined,
         status: req.query.status as string | undefined,
         customerType: req.query.customerType as string | undefined,
         assignedTo: req.query.assignedTo as string | undefined,
       };
-      const customers = await storage.getAllCustomers(organizationId, filters);
 
-      // Calculate availableCredit for each customer
-      const customersWithCredit = customers.map(customer => ({
+      // Paginated path: when page/pageSize are explicitly provided the caller expects
+      // a paginated envelope { items, total, page, pageSize, totalPages, … }.
+      const hasPaginationParams = req.query.page !== undefined || req.query.pageSize !== undefined;
+      if (hasPaginationParams) {
+        const page = parseInt(req.query.page as string) || 1;
+        const pageSize = Math.min(200, parseInt(req.query.pageSize as string) || 50);
+        const result = await storage.getCustomersPaged(organizationId, { ...filters, page, pageSize });
+
+        // Attach availableCredit to each item
+        result.items = result.items.map((customer: any) => ({
+          ...customer,
+          availableCredit: (parseFloat(customer.creditLimit || "0") - parseFloat(customer.currentBalance || "0")).toString(),
+        }));
+
+        return res.json(result);
+      }
+
+      // Legacy flat-array path (backward compat for edit-quote, order-detail, customer-form, etc.)
+      // Cap at 500 to avoid unbounded queries.
+      const customers = await storage.getAllCustomers(organizationId, filters);
+      const capped = customers.slice(0, 500);
+
+      const customersWithCredit = capped.map((customer: any) => ({
         ...customer,
         availableCredit: (parseFloat(customer.creditLimit || "0") - parseFloat(customer.currentBalance || "0")).toString(),
       }));

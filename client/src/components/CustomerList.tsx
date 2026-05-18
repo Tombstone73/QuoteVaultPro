@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import { Plus, Building2, MapPin, ShoppingCart } from "lucide-react";
+import { Plus, Building2, MapPin, ShoppingCart, ChevronLeft, ChevronRight, User } from "lucide-react";
+
+const PAGE_SIZE = 50;
 
 type Customer = {
   id: string;
@@ -22,6 +24,28 @@ type Customer = {
   createdAt: string;
   orderCount?: number;
   lastOrderDate?: string | null;
+  contacts?: { id: string; firstName: string; lastName: string; email: string | null; phone: string | null; isPrimary: boolean }[];
+};
+
+function getContactLabel(customer: Customer): { text: string; muted: boolean } {
+  const primary = customer.contacts?.find((c) => c.isPrimary) || customer.contacts?.[0];
+  if (primary) {
+    const name = `${primary.firstName} ${primary.lastName}`.trim();
+    if (name) return { text: name, muted: false };
+  }
+  if (customer.email) return { text: customer.email, muted: false };
+  if (customer.phone) return { text: customer.phone, muted: false };
+  return { text: "No contact listed", muted: true };
+}
+
+type PaginatedCustomers = {
+  items: Customer[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPreviousPage: boolean;
 };
 
 interface CustomerListProps {
@@ -41,14 +65,22 @@ export default function CustomerList({
 }: CustomerListProps) {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [page, setPage] = useState(1);
 
-  const { data: customers = [], isLoading } = useQuery<Customer[]>({
+  // Reset to page 1 whenever any filter changes
+  useEffect(() => {
+    setPage(1);
+  }, [search, statusFilter, typeFilter]);
+
+  const { data, isLoading } = useQuery<PaginatedCustomers>({
     queryKey: [
       "/api/customers",
       {
         search,
         status: statusFilter === "all" ? undefined : statusFilter,
         customerType: typeFilter === "all" ? undefined : typeFilter,
+        page,
+        pageSize: PAGE_SIZE,
       },
     ],
     queryFn: async () => {
@@ -56,13 +88,16 @@ export default function CustomerList({
       if (search) params.append("search", search);
       if (statusFilter !== "all") params.append("status", statusFilter);
       if (typeFilter !== "all") params.append("customerType", typeFilter);
+      params.append("page", String(page));
+      params.append("pageSize", String(PAGE_SIZE));
 
-      const url = `/api/customers${params.toString() ? `?${params.toString()}` : ""}`;
-      const response = await fetch(url, { credentials: "include" });
+      const response = await fetch(`/api/customers?${params.toString()}`, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch customers");
       return response.json();
     },
   });
+
+  const customers = data?.items ?? [];
 
   const getStatusBadgeClass = (status: string) => {
     switch (status) {
@@ -77,16 +112,12 @@ export default function CustomerList({
     }
   };
 
-  const formatCurrency = (amount: string) => {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-    }).format(parseFloat(amount));
-  };
-
   const collapse = Boolean(
     collapseOnSelect && selectedCustomerId && search.trim().length === 0
   );
+
+  const rangeStart = data ? (data.page - 1) * data.pageSize + 1 : 0;
+  const rangeEnd = data ? Math.min(data.page * data.pageSize, data.total) : 0;
 
   return (
     <div className="flex flex-col h-full">
@@ -119,6 +150,16 @@ export default function CustomerList({
               </SelectContent>
             </Select>
           </div>
+          {/* Count indicator */}
+          {data && (
+            <p className="text-[11px] text-muted-foreground mt-1.5 px-0.5">
+              {data.total === 0
+                ? "No customers"
+                : data.totalPages > 1
+                ? `Showing ${rangeStart}–${rangeEnd} of ${data.total} customers`
+                : `${data.total} customer${data.total !== 1 ? "s" : ""}`}
+            </p>
+          )}
         </div>
       )}
 
@@ -183,16 +224,26 @@ export default function CustomerList({
                           {customer.status.replace("_", " ")}
                         </Badge>
                       </div>
-                      {/* Row 2: Location + type + orders */}
+                      {/* Row 2: Contact name + location + orders */}
                       <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
+                        {(() => {
+                          const cl = getContactLabel(customer);
+                          return (
+                            <span className={`flex items-center gap-0.5 truncate ${cl.muted ? "opacity-50 italic" : ""}`}>
+                              <User className="w-3 h-3 flex-shrink-0" />
+                              {cl.text}
+                            </span>
+                          );
+                        })()}
                         {(customer.city || customer.state) && (
-                          <span className="flex items-center gap-0.5 truncate">
-                            <MapPin className="w-3 h-3 flex-shrink-0" />
-                            {[customer.city, customer.state].filter(Boolean).join(", ")}
-                          </span>
+                          <>
+                            <span className="text-muted-foreground/60">·</span>
+                            <span className="flex items-center gap-0.5 truncate">
+                              <MapPin className="w-3 h-3 flex-shrink-0" />
+                              {[customer.city, customer.state].filter(Boolean).join(", ")}
+                            </span>
+                          </>
                         )}
-                        <span className="text-muted-foreground/60">·</span>
-                        <span className="capitalize">{customer.customerType}</span>
                         {customer.orderCount !== undefined && customer.orderCount > 0 && (
                           <>
                             <span className="text-muted-foreground/60">·</span>
@@ -209,6 +260,35 @@ export default function CustomerList({
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Pagination footer — only shown when there is more than one page */}
+      {!collapse && data && data.totalPages > 1 && (
+        <div className="border-t border-border/40 px-3 py-2 flex items-center justify-between">
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2 text-xs"
+            disabled={!data.hasPreviousPage || isLoading}
+            onClick={() => setPage((p) => p - 1)}
+          >
+            <ChevronLeft className="w-3.5 h-3.5 mr-1" />
+            Prev
+          </Button>
+          <span className="text-[11px] text-muted-foreground">
+            {data.page} / {data.totalPages}
+          </span>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2 text-xs"
+            disabled={!data.hasNextPage || isLoading}
+            onClick={() => setPage((p) => p + 1)}
+          >
+            Next
+            <ChevronRight className="w-3.5 h-3.5 ml-1" />
+          </Button>
         </div>
       )}
     </div>

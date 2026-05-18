@@ -228,6 +228,7 @@ import { registerDebugRoutes } from './routes/debug.routes';
 import { registerPricingAuditRoutes } from './routes/pricingAudit.routes';
 import { registerMaterialsImportExportRoutes } from './routes/materialsImportExport.routes';
 import { registerInboundOrderRoutes } from './routes/inboundOrders.routes';
+import { registerOperationalSummaryRoutes } from './routes/operationalSummary.routes';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -387,6 +388,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Inbound Orders Review Queue routes extracted to ./routes/inboundOrders.routes.ts (do NOT re-add here)
   registerInboundOrderRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });
+
+  // Operational summary — single aggregation endpoint for sidebar badges
+  registerOperationalSummaryRoutes(app, { isAuthenticated, tenantContext });
 
   // Job Status Config + Line Item Workflow Transition + Jobs routes extracted to ./routes/jobs.routes.ts (do NOT re-add here)
 
