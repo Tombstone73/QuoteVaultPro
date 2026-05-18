@@ -10,6 +10,7 @@ import type { CustomerWithContacts } from "@/components/CustomerSelect";
 import type { Product, ProductVariant, QuoteWithRelations, ProductOptionItem, Organization } from "@shared/schema";
 import type { LineItemOptionSelectionsV2 } from "@shared/optionTreeV2";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
+import { isPbv2Product } from "@/lib/pbv2Utils";
 import type { QuoteLineItemDraft, Address, OptionSelection } from "./types";
 
 type QuoteEditorRouteParams = {
@@ -1095,9 +1096,7 @@ export function useQuoteEditorState() {
         try {
             // Detect PBV2 product
             const selectedProduct = products?.find((p: any) => p.id === selectedProductId);
-            const isPbv2 = selectedProduct?.optionTreeJson && 
-                typeof selectedProduct.optionTreeJson === 'object' && 
-                (selectedProduct.optionTreeJson as any)?.schemaVersion === 2;
+            const isPbv2 = isPbv2Product(selectedProduct);
 
             const payload: any = {
                 productId: selectedProductId,
@@ -1148,7 +1147,21 @@ export function useQuoteEditorState() {
 
             // Only update error if this is still the latest request
             if (requestId === calcRequestIdRef.current) {
-                setCalcError(error instanceof Error ? error.message : "Calculation failed");
+                let errorMsg = error instanceof Error ? error.message : "Calculation failed";
+                try {
+                    const jsonMatch = errorMsg.match(/\d+:\s*(\{[\s\S]*\})/);
+                    if (jsonMatch) {
+                        const parsed = JSON.parse(jsonMatch[1]);
+                        if (parsed.code === "PBV2_PRICING_MATRIX_ERROR" && parsed.message) {
+                            errorMsg = parsed.message;
+                        } else if (parsed.code === "PBV2_E_SCHEMA_VERSION_MISMATCH") {
+                            errorMsg = "PBV2_SCHEMA_MISMATCH";
+                        } else if (parsed.message) {
+                            errorMsg = parsed.message;
+                        }
+                    }
+                } catch { /* keep original message */ }
+                setCalcError(errorMsg);
                 // Keep calculatedPrice as-is (preserve last known valid price)
             }
         } finally {

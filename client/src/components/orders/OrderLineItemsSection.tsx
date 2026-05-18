@@ -788,7 +788,24 @@ export function OrderLineItemsSection({
     return products.find((p) => p.id === expandedItem.productId) ?? null;
   }, [expandedItem, products]);
 
-  const expandedProductPbv2Tree = getPbv2Tree(expandedProduct);
+  const expandedProductPbv2TreeDirect = getPbv2Tree(expandedProduct);
+
+  // Fallback: if the product was activated via PBV2 but optionTreeJson wasn't synced yet,
+  // fetch the live active tree from the pbv2TreeVersions table.
+  const needsLivePbv2TreeFetch = isPbv2Product(expandedProduct) && !expandedProductPbv2TreeDirect;
+  const { data: livePbv2TreeData } = useQuery({
+    queryKey: ["/api/products", expandedProduct?.id, "pbv2/tree"],
+    enabled: needsLivePbv2TreeFetch && !!expandedProduct?.id,
+    queryFn: async () => {
+      const res = await fetch(`/api/products/${expandedProduct!.id}/pbv2/tree`, { credentials: "include" });
+      if (!res.ok) return null;
+      const json = await res.json();
+      return (json?.data?.active?.treeJson ?? null) as import("@shared/optionTreeV2").OptionTreeV2 | null;
+    },
+    staleTime: 5 * 60_000,
+  });
+
+  const expandedProductPbv2Tree = expandedProductPbv2TreeDirect ?? livePbv2TreeData ?? null;
 
   const expandedProductOptions = useMemo(() => {
     const base = ((expandedProduct as any)?.optionsJson as ProductOptionItem[] | undefined) || [];
