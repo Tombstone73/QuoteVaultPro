@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import qbLogoUrl from '@/assets/integrations/qb-logo-01.png';
 import { usePageVisible } from "@/hooks/usePageVisible";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
@@ -144,9 +145,12 @@ type QBInvoicePreviewRow = {
   localInvoiceId: string | null;
   canImport: boolean;
   cannotImportReason?: string;
+  exclusionReasons: string[];
+  warningReasons: string[];
   customerPoNumber: string | null;
   customerPoSource: string | null;
   referenceDebug?: QBReferenceDebug;
+  inspection?: QBInvoicePayloadInspection;
 };
 
 type QBInvoiceImportResult = {
@@ -169,6 +173,40 @@ type QBReferenceDebug = {
   lineDescriptions: string[];
   docNumber: string | null;
   txnDate: string | null;
+};
+
+type QBInvoiceMappingDiagnostic = {
+  qbField: string;
+  titanField: string | null;
+  status: 'mapped' | 'ignored' | 'empty' | 'unknown';
+  fallbackBehavior: string | null;
+  truncationBehavior: string | null;
+  valuePreview: string | null;
+};
+
+type QBInvoicePayloadInspection = {
+  rawPayload: unknown;
+  mappedDraft: Record<string, unknown>;
+  classification: {
+    suggested: 'open_ar' | 'historical';
+    rationale: string;
+  };
+  exclusionReasons: string[];
+  warningReasons: string[];
+  unmappedFields: string[];
+  mappingCoverage: {
+    mapped: string[];
+    ignored: string[];
+    empty: string[];
+    unknown: string[];
+  };
+  mappingDiagnostics: QBInvoiceMappingDiagnostic[];
+  poLikeCandidates: Array<{
+    qbField: string;
+    value: string;
+    mapped: boolean;
+    destination: string | null;
+  }>;
 };
 
 export default function SettingsIntegrations() {
@@ -200,6 +238,8 @@ export default function SettingsIntegrations() {
   const [isImportingInvoices, setIsImportingInvoices] = useState(false);
   const [showReferenceDiagnostics, setShowReferenceDiagnostics] = useState(false);
   const [expandedDebugIds, setExpandedDebugIds] = useState<Set<string>>(new Set());
+  const [invoiceFilter, setInvoiceFilter] = useState<'all' | 'open_ar' | 'historical' | 'excluded' | 'warnings'>('all');
+  const [invoiceOverrides, setInvoiceOverrides] = useState<Record<string, 'suggested' | 'open_ar' | 'historical' | 'skip'>>({});
 
   // QB customer preview state
   const [customerPreview, setCustomerPreview] = useState<QBCustomerPreviewRow[] | null>(null);
@@ -440,11 +480,57 @@ export default function SettingsIntegrations() {
     syncMutation.mutate({ direction, resources });
   };
 
+  const invoicePreviewStats = useMemo(() => {
+    const rows = invoicePreview ?? [];
+    return {
+      all: rows.length,
+      open_ar: rows.filter(r => r.classification === 'open_ar').length,
+      historical: rows.filter(r => r.classification === 'historical').length,
+      excluded: rows.filter(r => !r.canImport).length,
+      warnings: rows.filter(r => (r.warningReasons?.length ?? 0) > 0 || (r.exclusionReasons?.length ?? 0) > 0).length,
+    };
+  }, [invoicePreview]);
+
+  const filteredInvoicePreview = useMemo(() => {
+    const rows = invoicePreview ?? [];
+    switch (invoiceFilter) {
+      case 'open_ar':
+        return rows.filter(r => r.classification === 'open_ar');
+      case 'historical':
+        return rows.filter(r => r.classification === 'historical');
+      case 'excluded':
+        return rows.filter(r => !r.canImport);
+      case 'warnings':
+        return rows.filter(r => (r.warningReasons?.length ?? 0) > 0 || (r.exclusionReasons?.length ?? 0) > 0);
+      default:
+        return rows;
+    }
+  }, [invoiceFilter, invoicePreview]);
+
+  const getEffectiveInvoiceMode = (row: QBInvoicePreviewRow): 'open_ar' | 'historical' | 'skip' => {
+    const override = invoiceOverrides[row.qbInvoiceId];
+    if (override === 'open_ar' || override === 'historical' || override === 'skip') return override;
+    return row.classification;
+  };
+
+  const buildInvoiceModePayload = () => {
+    const invoiceModes: Record<string, 'open_ar' | 'historical' | 'skip'> = {};
+    for (const row of invoicePreview ?? []) {
+      const override = invoiceOverrides[row.qbInvoiceId];
+      if (override === 'open_ar' || override === 'historical' || override === 'skip') {
+        invoiceModes[row.qbInvoiceId] = override;
+      }
+    }
+    return invoiceModes;
+  };
+
   const handlePreviewInvoices = async () => {
     setIsLoadingPreview(true);
     setInvoicePreview(null);
     setSelectedQBIds(new Set());
     setExpandedDebugIds(new Set());
+    setInvoiceOverrides({});
+    setInvoiceFilter('all');
     try {
       const url = showReferenceDiagnostics
         ? '/api/integrations/quickbooks/import-preview/invoices?debugReferenceFields=1'
@@ -456,6 +542,7 @@ export default function SettingsIntegrations() {
       }
       const rows: QBInvoicePreviewRow[] = data.data ?? [];
       setInvoicePreview(rows);
+      setInvoiceOverrides({});
       // Auto-select all importable, not-yet-imported rows
       const autoSelected = new Set<string>(
         rows.filter(r => r.canImport && !r.alreadyImported).map(r => r.qbInvoiceId)
@@ -492,9 +579,15 @@ export default function SettingsIntegrations() {
     handleSync('pull', ['customers']);
   };
 
-  const handleImportInvoices = async (mode: 'open_ar' | 'historical') => {
+  const handleImportInvoices = async (mode: 'auto' | 'open_ar' | 'historical') => {
     if (selectedQBIds.size === 0) {
       toast({ title: 'Nothing selected', description: 'Select invoices to import first.', variant: 'destructive' });
+      return;
+    }
+    const invoiceModes = buildInvoiceModePayload();
+    const selectedImportIds = Array.from(selectedQBIds).filter(id => invoiceModes[id] !== 'skip');
+    if (selectedImportIds.length === 0) {
+      toast({ title: 'Nothing selected', description: 'All selected invoices are marked Skip.', variant: 'destructive' });
       return;
     }
     setIsImportingInvoices(true);
@@ -503,7 +596,7 @@ export default function SettingsIntegrations() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ quickBooksInvoiceIds: Array.from(selectedQBIds), mode }),
+        body: JSON.stringify({ quickBooksInvoiceIds: selectedImportIds, mode, invoiceModes }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data?.success === false) {
@@ -785,6 +878,7 @@ export default function SettingsIntegrations() {
                         // Clear existing preview so next fetch uses the new setting
                         setInvoicePreview(null);
                         setExpandedDebugIds(new Set());
+                        setInvoiceOverrides({});
                       }}
                       className="cursor-pointer"
                     />
@@ -820,6 +914,17 @@ export default function SettingsIntegrations() {
                   </Button>
 
                   {/* Import Open Invoices — enabled when preview is loaded */}
+                  <Button
+                    onClick={() => handleImportInvoices('auto')}
+                    disabled={!invoicePreview || selectedQBIds.size === 0 || isImportingInvoices || isLoadingPreview}
+                    title={!invoicePreview ? 'Preview invoices first' : undefined}
+                  >
+                    {isImportingInvoices
+                      ? <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      : <Download className="w-4 h-4 mr-2" />}
+                    Import Using Suggested Classification
+                  </Button>
+
                   <Button
                     onClick={() => handleImportInvoices('open_ar')}
                     disabled={!invoicePreview || selectedQBIds.size === 0 || isImportingInvoices || isLoadingPreview}
@@ -875,6 +980,15 @@ export default function SettingsIntegrations() {
                         </Button>
                       </div>
                     </div>
+                    <Tabs value={invoiceFilter} onValueChange={(value) => setInvoiceFilter(value as typeof invoiceFilter)} className="mb-2">
+                      <TabsList className="grid w-full grid-cols-5">
+                        <TabsTrigger value="all" className="text-xs">All ({invoicePreviewStats.all})</TabsTrigger>
+                        <TabsTrigger value="open_ar" className="text-xs">Open A/R ({invoicePreviewStats.open_ar})</TabsTrigger>
+                        <TabsTrigger value="historical" className="text-xs">Historical ({invoicePreviewStats.historical})</TabsTrigger>
+                        <TabsTrigger value="excluded" className="text-xs">Excluded ({invoicePreviewStats.excluded})</TabsTrigger>
+                        <TabsTrigger value="warnings" className="text-xs">Warnings ({invoicePreviewStats.warnings})</TabsTrigger>
+                      </TabsList>
+                    </Tabs>
                     <div className="border rounded-md overflow-auto max-h-80">
                       <Table>
                         <TableHeader>
@@ -887,14 +1001,16 @@ export default function SettingsIntegrations() {
                             <TableHead className="text-xs">Balance</TableHead>
                             <TableHead className="text-xs">Customer PO / Description</TableHead>
                             <TableHead className="text-xs">Type</TableHead>
+                            <TableHead className="text-xs">Override</TableHead>
                             <TableHead className="text-xs">Status</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {invoicePreview.map(row => {
+                          {filteredInvoicePreview.map(row => {
                             const isExpanded = expandedDebugIds.has(row.qbInvoiceId);
-                            const hasDebug = !!row.referenceDebug;
-                            const colSpan = 9;
+                            const hasDebug = !!row.referenceDebug || !!row.inspection;
+                            const colSpan = 10;
+                            const effectiveMode = getEffectiveInvoiceMode(row);
                             return (
                               <>
                                 <TableRow
@@ -913,6 +1029,9 @@ export default function SettingsIntegrations() {
                                           else next.delete(row.qbInvoiceId);
                                           return next;
                                         });
+                                        if (e.target.checked && invoiceOverrides[row.qbInvoiceId] === 'skip') {
+                                          setInvoiceOverrides(prev => ({ ...prev, [row.qbInvoiceId]: 'suggested' }));
+                                        }
                                       }}
                                       className="cursor-pointer"
                                     />
@@ -971,6 +1090,43 @@ export default function SettingsIntegrations() {
                                     </Badge>
                                   </TableCell>
                                   <TableCell className="text-xs">
+                                    <Select
+                                      value={invoiceOverrides[row.qbInvoiceId] ?? 'suggested'}
+                                      onValueChange={(value) => {
+                                        setInvoiceOverrides(prev => ({
+                                          ...prev,
+                                          [row.qbInvoiceId]: value as 'suggested' | 'open_ar' | 'historical' | 'skip',
+                                        }));
+                                        if (value === 'skip') {
+                                          setSelectedQBIds(prev => {
+                                            const next = new Set(prev);
+                                            next.delete(row.qbInvoiceId);
+                                            return next;
+                                          });
+                                        } else if (row.canImport) {
+                                          setSelectedQBIds(prev => {
+                                            const next = new Set(prev);
+                                            next.add(row.qbInvoiceId);
+                                            return next;
+                                          });
+                                        }
+                                      }}
+                                    >
+                                      <SelectTrigger className="h-7 w-[120px] text-xs">
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="suggested">Suggested</SelectItem>
+                                        <SelectItem value="historical">Historical</SelectItem>
+                                        <SelectItem value="open_ar">Open A/R</SelectItem>
+                                        <SelectItem value="skip">Skip</SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                    {effectiveMode !== row.classification && effectiveMode !== 'skip' && (
+                                      <div className="mt-1 text-[11px] text-amber-600">Overrides suggestion</div>
+                                    )}
+                                  </TableCell>
+                                  <TableCell className="text-xs">
                                     <div className="flex items-center gap-1">
                                       {row.alreadyImported
                                         ? <Badge variant="outline" className="text-xs">Imported</Badge>
@@ -978,6 +1134,7 @@ export default function SettingsIntegrations() {
                                           ? <Badge variant="secondary" className="text-xs">New</Badge>
                                           : <span className="text-muted-foreground text-xs" title={row.cannotImportReason}>No match</span>
                                       }
+                                      {effectiveMode === 'skip' && <Badge variant="outline" className="text-xs">Skip</Badge>}
                                       {hasDebug && (
                                         <button
                                           className="text-muted-foreground hover:text-foreground ml-1 text-xs"
@@ -993,11 +1150,16 @@ export default function SettingsIntegrations() {
                                         </button>
                                       )}
                                     </div>
+                                    {((row.exclusionReasons?.length ?? 0) > 0 || (row.warningReasons?.length ?? 0) > 0) && (
+                                      <div className="mt-1 max-w-[180px] text-[11px] text-muted-foreground">
+                                        {[...(row.exclusionReasons ?? []), ...(row.warningReasons ?? [])].join(', ')}
+                                      </div>
+                                    )}
                                   </TableCell>
                                 </TableRow>
 
                                 {/* Expandable diagnostic panel — only shown when debug data is present and row is expanded */}
-                                {hasDebug && isExpanded && row.referenceDebug && (
+                                {hasDebug && isExpanded && (row.referenceDebug || row.inspection) && (
                                   <TableRow key={`${row.qbInvoiceId}-debug`} className="bg-muted/30">
                                     <TableCell colSpan={colSpan} className="py-2 px-4">
                                       <div className="text-xs space-y-2">
@@ -1008,11 +1170,11 @@ export default function SettingsIntegrations() {
                                         {/* Custom fields */}
                                         <div>
                                           <span className="font-medium">Custom Fields: </span>
-                                          {row.referenceDebug.customFields.length === 0
+                                          {(row.referenceDebug?.customFields ?? []).length === 0
                                             ? <span className="text-muted-foreground italic">none</span>
                                             : (
                                               <span className="font-mono">
-                                                {row.referenceDebug.customFields.map((f, i) => (
+                                                {(row.referenceDebug?.customFields ?? []).map((f, i) => (
                                                   <span key={i} className="mr-3">
                                                     <span className="text-muted-foreground">[{f.name ?? '?'}{f.type ? ` (${f.type})` : ''}]</span>
                                                     {' '}{f.value ?? <span className="italic text-muted-foreground">empty</span>}
@@ -1026,7 +1188,7 @@ export default function SettingsIntegrations() {
                                         {/* Customer Memo */}
                                         <div>
                                           <span className="font-medium">Customer Memo: </span>
-                                          {row.referenceDebug.customerMemo
+                                          {row.referenceDebug?.customerMemo
                                             ? <span className="font-mono">{row.referenceDebug.customerMemo}</span>
                                             : <span className="text-muted-foreground italic">empty</span>
                                           }
@@ -1035,7 +1197,7 @@ export default function SettingsIntegrations() {
                                         {/* Private Note */}
                                         <div>
                                           <span className="font-medium">Private Note: </span>
-                                          {row.referenceDebug.privateNote
+                                          {row.referenceDebug?.privateNote
                                             ? <span className="font-mono">{row.referenceDebug.privateNote}</span>
                                             : <span className="text-muted-foreground italic">empty</span>
                                           }
@@ -1044,11 +1206,11 @@ export default function SettingsIntegrations() {
                                         {/* Line descriptions */}
                                         <div>
                                           <span className="font-medium">Line Descriptions: </span>
-                                          {row.referenceDebug.lineDescriptions.length === 0
+                                          {(row.referenceDebug?.lineDescriptions ?? []).length === 0
                                             ? <span className="text-muted-foreground italic">none</span>
                                             : (
                                               <ul className="mt-0.5 ml-4 list-disc">
-                                                {row.referenceDebug.lineDescriptions.map((d, i) => (
+                                                {(row.referenceDebug?.lineDescriptions ?? []).map((d, i) => (
                                                   <li key={i} className="font-mono">{d}</li>
                                                 ))}
                                               </ul>
@@ -1057,6 +1219,52 @@ export default function SettingsIntegrations() {
                                         </div>
 
                                         {/* Detected PO summary */}
+                                        {row.inspection && (
+                                          <div className="grid gap-3 pt-2 md:grid-cols-2">
+                                            <div className="rounded-md border bg-background p-2">
+                                              <div className="mb-1 font-medium">Classification</div>
+                                              <div className="text-muted-foreground">{row.inspection.classification.rationale}</div>
+                                              <div className="mt-2 font-medium">Reasons</div>
+                                              <div className="font-mono text-[11px] text-muted-foreground">
+                                                Excluded: {row.inspection.exclusionReasons.length ? row.inspection.exclusionReasons.join(', ') : 'none'}<br />
+                                                Warnings: {row.inspection.warningReasons.length ? row.inspection.warningReasons.join(', ') : 'none'}
+                                              </div>
+                                            </div>
+                                            <div className="rounded-md border bg-background p-2">
+                                              <div className="mb-1 font-medium">Mapping Coverage</div>
+                                              <div className="grid grid-cols-2 gap-1 font-mono text-[11px]">
+                                                <div>Mapped: {row.inspection.mappingCoverage.mapped.length}</div>
+                                                <div>Ignored: {row.inspection.mappingCoverage.ignored.length}</div>
+                                                <div>Empty: {row.inspection.mappingCoverage.empty.length}</div>
+                                                <div>Unknown: {row.inspection.mappingCoverage.unknown.length}</div>
+                                              </div>
+                                              <div className="mt-2 text-[11px] text-muted-foreground">Unmapped: {row.inspection.unmappedFields.length ? row.inspection.unmappedFields.join(', ') : 'none'}</div>
+                                            </div>
+                                            <div className="rounded-md border bg-background p-2 md:col-span-2">
+                                              <div className="mb-1 font-medium">PO-like Candidates</div>
+                                              {row.inspection.poLikeCandidates.length === 0
+                                                ? <div className="text-muted-foreground italic">none detected in memo, note, custom fields, or line descriptions</div>
+                                                : row.inspection.poLikeCandidates.map((candidate, index) => (
+                                                  <div key={`${candidate.qbField}-${index}`} className="font-mono text-[11px]">
+                                                    <Badge variant={candidate.mapped ? 'default' : 'outline'} className="mr-2 text-[10px]">{candidate.mapped ? 'mapped' : 'unused'}</Badge>
+                                                    {candidate.qbField}: {candidate.value}
+                                                  </div>
+                                                ))}
+                                            </div>
+                                            <div className="rounded-md border bg-background p-2 md:col-span-2">
+                                              <div className="mb-1 font-medium">Mapping Diagnostics</div>
+                                              <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 font-mono text-[11px]">{JSON.stringify(row.inspection.mappingDiagnostics, null, 2)}</pre>
+                                            </div>
+                                            <div className="rounded-md border bg-background p-2 md:col-span-2">
+                                              <div className="mb-1 font-medium">Mapped TitanOS Invoice Draft</div>
+                                              <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 font-mono text-[11px]">{JSON.stringify(row.inspection.mappedDraft, null, 2)}</pre>
+                                            </div>
+                                            <div className="rounded-md border bg-background p-2 md:col-span-2">
+                                              <div className="mb-1 font-medium">Raw QB Invoice Payload</div>
+                                              <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 font-mono text-[11px]">{JSON.stringify(row.inspection.rawPayload, null, 2)}</pre>
+                                            </div>
+                                          </div>
+                                        )}
                                         <div>
                                           <span className="font-medium">Detected PO: </span>
                                           {row.customerPoNumber
