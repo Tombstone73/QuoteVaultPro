@@ -34,6 +34,8 @@ import type { OptionSelection } from "@/features/quotes/editor/types";
 import { ProductOptionsPanel } from "@/features/quotes/editor/components/ProductOptionsPanel";
 import { ProductOptionsPanelV2 } from "@/features/quotes/editor/components/ProductOptionsPanelV2";
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
+import { validateOptionTreeV2 } from "@shared/optionTreeV2";
+import { resolveRuntimeVisibility } from "@shared/optionTreeV2Runtime";
 import { isPbv2Product, getPbv2Tree } from "@/lib/pbv2Utils";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
@@ -913,6 +915,10 @@ export function OrderLineItemsSection({
   // Use product's own tree as fallback before first successful pricing call
   const effectivePbv2Tree = pbv2SnapshotJson?.treeJson ?? expandedProductPbv2Tree;
 
+  const expandedProductIsPbv2 = isPbv2Product(expandedProduct);
+  const expandedProductHasOptionTreeJson = Boolean((expandedProduct as any)?.optionTreeJson);
+  const expandedProductLiveTreeLoaded = Boolean(livePbv2TreeData);
+
   const dimsRequired = requiresDimensions(expandedProduct);
 
   const [widthText, setWidthText] = useState("");
@@ -927,6 +933,60 @@ export function OrderLineItemsSection({
   const [isCalculating, setIsCalculating] = useState(false);
   const [calcError, setCalcError] = useState<string | null>(null);
   const [computedTotal, setComputedTotal] = useState<number | null>(null);
+
+  // Dev-only PBV2 diagnostics: surfaces tree shape, node counts, and visibility resolution.
+  const pbv2Diagnostics = useMemo(() => {
+    const tree = effectivePbv2Tree as any;
+    if (!tree || typeof tree !== "object") {
+      return {
+        treeOk: false,
+        treeErrors: ["effectivePbv2Tree is null"] as string[],
+        groupCount: 0,
+        questionCount: 0,
+        choiceCount: 0,
+        visibleNodeIds: [] as string[],
+        questionSelectionKeys: [] as string[],
+      };
+    }
+
+    const validation = validateOptionTreeV2(tree);
+    const nodes = tree.nodes && typeof tree.nodes === "object" ? tree.nodes : {};
+    const nodeValues = Object.values(nodes) as any[];
+
+    let groupCount = 0;
+    let questionCount = 0;
+    let choiceCount = 0;
+    const questionSelectionKeys: string[] = [];
+    for (const node of nodeValues) {
+      if (!node || typeof node !== "object") continue;
+      if (node.kind === "group") groupCount += 1;
+      if (node.kind === "question" && node.input) {
+        questionCount += 1;
+        const sk = node.input?.selectionKey || node.key || node.id;
+        if (typeof sk === "string") questionSelectionKeys.push(sk);
+      }
+      if (Array.isArray(node.choices)) choiceCount += node.choices.length;
+    }
+
+    let visibleNodeIds: string[] = [];
+    if (validation.ok) {
+      try {
+        visibleNodeIds = resolveRuntimeVisibility(tree, optionSelectionsV2).visibleNodeIds;
+      } catch {
+        visibleNodeIds = [];
+      }
+    }
+
+    return {
+      treeOk: validation.ok,
+      treeErrors: validation.ok ? [] : validation.errors,
+      groupCount,
+      questionCount,
+      choiceCount,
+      visibleNodeIds,
+      questionSelectionKeys,
+    };
+  }, [effectivePbv2Tree, optionSelectionsV2]);
 
   const [savingItemId, setSavingItemId] = useState<string | null>(null);
   const [savedItemId, setSavedItemId] = useState<string | null>(null);
@@ -1089,6 +1149,41 @@ export function OrderLineItemsSection({
     };
   }, [expandedItem?.id, expandedItem?.totalPrice, expandedItem?.unitPrice, (expandedItem as any)?.overridePriceCents]);
 
+  // Hydrate PBV2 defaults from the product tree when a line item is first expanded
+  // with no saved selections. resolveRuntimeVisibility computes effective defaults from
+  // node.input.defaultValue, so we wrap that result into the LineItemOptionSelectionsV2 shape.
+  const pbv2DefaultsHydratedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const lineItemId = expandedItem?.id;
+    if (!lineItemId) return;
+    if (!effectivePbv2Tree) return;
+    if (pbv2DefaultsHydratedRef.current.has(lineItemId)) return;
+
+    const savedSelectedCount = Object.keys(optionSelectionsV2?.selected ?? {}).length;
+    if (savedSelectedCount > 0) {
+      pbv2DefaultsHydratedRef.current.add(lineItemId);
+      return;
+    }
+
+    try {
+      const resolved = resolveRuntimeVisibility(effectivePbv2Tree as OptionTreeV2, { schemaVersion: 2, selected: {} });
+      const defaults = resolved.effectiveSelections ?? {};
+      const defaultKeys = Object.keys(defaults).filter((k) => defaults[k] !== undefined && defaults[k] !== null && defaults[k] !== "");
+      if (defaultKeys.length === 0) {
+        pbv2DefaultsHydratedRef.current.add(lineItemId);
+        return;
+      }
+      const nextSelected: LineItemOptionSelectionsV2["selected"] = {};
+      for (const key of defaultKeys) {
+        nextSelected[key] = { value: defaults[key] };
+      }
+      setOptionSelectionsV2({ schemaVersion: 2, selected: nextSelected });
+    } catch {
+      // Best-effort: never block expansion on default hydration failure.
+    }
+    pbv2DefaultsHydratedRef.current.add(lineItemId);
+  }, [expandedItem?.id, effectivePbv2Tree, optionSelectionsV2]);
+
   const widthNum = dimsRequired ? Number.parseFloat(widthText) || 0 : 1;
   const heightNum = dimsRequired ? Number.parseFloat(heightText) || 0 : 1;
   const qtyNum = Number.isFinite(qty) && qty > 0 ? qty : 1;
@@ -1202,22 +1297,27 @@ export function OrderLineItemsSection({
           }
         })
         .catch((err: any) => {
-          // Parse JSON error for PBV2 schema mismatch
-          let errorMessage = err?.message || "Calculation failed";
-          try {
-            // Error message format: "400: {json}" or similar
-            const jsonMatch = errorMessage.match(/\d+:\s*({.*})/);
-            if (jsonMatch) {
+          // Error message format from apiRequest: "<status>: <responseBody>"
+          // Always extract a friendly message; never leak raw JSON to the UI.
+          const raw: string = (err?.message as string) || "";
+          let errorMessage = "Calculation failed";
+          const jsonMatch = raw.match(/^\d+:\s*({.*})\s*$/);
+          if (jsonMatch) {
+            try {
               const errorData = JSON.parse(jsonMatch[1]);
-              if (errorData.code === "PBV2_E_SCHEMA_VERSION_MISMATCH") {
+              if (errorData?.code === "PBV2_E_SCHEMA_VERSION_MISMATCH") {
                 errorMessage = "PBV2_SCHEMA_MISMATCH";
-              }
-              if (errorData.code === "PBV2_PRICING_MATRIX_ERROR" && errorData.message) {
+              } else if (errorData?.code === "PBV2_PRICING_MATRIX_ERROR" && typeof errorData?.message === "string") {
+                errorMessage = errorData.message;
+              } else if (typeof errorData?.message === "string" && errorData.message.trim()) {
                 errorMessage = errorData.message;
               }
+            } catch {
+              // Couldn't parse JSON body — fall back to generic friendly message.
             }
-          } catch (parseErr) {
-            // Keep original error message if parsing fails
+          } else if (raw && !raw.includes("{")) {
+            // Plain (non-JSON) error: safe to show.
+            errorMessage = raw;
           }
           setCalcError(errorMessage);
         })
@@ -1973,6 +2073,15 @@ export function OrderLineItemsSection({
                                 }
                                 optionsSlot={
                                   <>
+                                    {expandedProductIsPbv2 && !effectivePbv2Tree && (
+                                      <div className="mb-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-xs text-amber-700 dark:text-amber-300">
+                                        <div className="font-medium">PBV2 options unavailable</div>
+                                        <div className="mt-0.5">
+                                          This product is marked as PBV2 but no active option tree was loaded. Open the product and re-save / activate to publish its option tree.
+                                        </div>
+                                      </div>
+                                    )}
+
                                     {effectivePbv2Tree && (
                                       <div className="mb-3">
                                         <ProductOptionsPanelV2
@@ -1993,6 +2102,34 @@ export function OrderLineItemsSection({
                                           onOptionSelectionsChange={setOptionSelections as any}
                                         />
                                       </div>
+                                    )}
+
+                                    {import.meta.env.DEV && expandedProductIsPbv2 && (
+                                      <details className="mb-3 rounded-md border border-border/40 bg-muted/30 p-2 text-[11px]">
+                                        <summary className="cursor-pointer font-medium text-muted-foreground">
+                                          PBV2 diagnostics (dev only)
+                                        </summary>
+                                        <div className="mt-2 space-y-0.5 font-mono text-muted-foreground">
+                                          <div>isPbv2Product: {String(expandedProductIsPbv2)}</div>
+                                          <div>optionTreeJson on product: {String(expandedProductHasOptionTreeJson)}</div>
+                                          <div>live active tree fallback loaded: {String(expandedProductLiveTreeLoaded)}</div>
+                                          <div>effectivePbv2Tree present: {String(Boolean(effectivePbv2Tree))}</div>
+                                          <div>tree valid: {String(pbv2Diagnostics.treeOk)}</div>
+                                          {pbv2Diagnostics.treeErrors.length > 0 && (
+                                            <div className="text-amber-600 dark:text-amber-400">
+                                              tree errors: {pbv2Diagnostics.treeErrors.join("; ")}
+                                            </div>
+                                          )}
+                                          <div>group nodes: {pbv2Diagnostics.groupCount}</div>
+                                          <div>question nodes: {pbv2Diagnostics.questionCount}</div>
+                                          <div>choices: {pbv2Diagnostics.choiceCount}</div>
+                                          <div>visible node ids: {pbv2Diagnostics.visibleNodeIds.length}</div>
+                                          <div>
+                                            question selectionKeys: {pbv2Diagnostics.questionSelectionKeys.join(", ") || "(none)"}
+                                          </div>
+                                          <div>pbv2 snapshot from calc: {String(Boolean(pbv2SnapshotJson?.treeJson))}</div>
+                                        </div>
+                                      </details>
                                     )}
 
                                     {showDesignBriefEditor && (

@@ -1025,7 +1025,7 @@ function resolvePricingMatrixVariablesForPricing(
       const labels = missingSelections.map(
         (e) => labelMap.get(e.optionGroup ?? '') ?? e.optionGroup ?? 'Unknown option'
       );
-      const humanMessage = `Select required pricing options to preview pricing: ${labels.join(', ')}.`;
+      const humanMessage = `Select required options before pricing: ${labels.join(', ')}.`;
       const humanDetails = missingSelections.map((e, i) => ({
         ...e,
         message: `${labels[i]} is required to resolve pricing matrix variables.`,
