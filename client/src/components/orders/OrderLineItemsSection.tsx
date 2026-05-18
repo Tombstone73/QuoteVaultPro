@@ -788,6 +788,8 @@ export function OrderLineItemsSection({
     return products.find((p) => p.id === expandedItem.productId) ?? null;
   }, [expandedItem, products]);
 
+  const expandedProductPbv2Tree = getPbv2Tree(expandedProduct);
+
   const expandedProductOptions = useMemo(() => {
     const base = ((expandedProduct as any)?.optionsJson as ProductOptionItem[] | undefined) || [];
     return injectDerivedMaterialOptionIntoProductOptions(expandedProduct, base);
@@ -890,6 +892,9 @@ export function OrderLineItemsSection({
 
   // PBV2 snapshot from /calculate response (contains treeJson, visibleNodeIds, selections)
   const [pbv2SnapshotJson, setPbv2SnapshotJson] = useState<any>(null);
+
+  // Use product's own tree as fallback before first successful pricing call
+  const effectivePbv2Tree = pbv2SnapshotJson?.treeJson ?? expandedProductPbv2Tree;
 
   const dimsRequired = requiresDimensions(expandedProduct);
 
@@ -1080,7 +1085,7 @@ export function OrderLineItemsSection({
   const overridePriceCents = Number(
     ((expandedItem as any)?.overridePriceCents as number | undefined) || 0
   );
-  const isPbv2Mode = Boolean(pbv2SnapshotJson?.treeJson);
+  const isPbv2Mode = Boolean(effectivePbv2Tree);
   const calcKey = useMemo(
     () =>
       [
@@ -1134,7 +1139,7 @@ export function OrderLineItemsSection({
       if (dimsRequired && (!Number.isFinite(widthNum) || widthNum <= 0 || !Number.isFinite(heightNum) || heightNum <= 0)) return;
       if (!Number.isFinite(qtyNum) || qtyNum <= 0) return;
 
-      const isPbv2 = Boolean(pbv2SnapshotJson?.treeJson);
+      const isPbv2 = Boolean(pbv2SnapshotJson?.treeJson ?? expandedProductPbv2Tree);
       if (isPbv2 && !optionsV2Valid) {
         setCalcError(null);
         return;
@@ -1190,6 +1195,9 @@ export function OrderLineItemsSection({
               if (errorData.code === "PBV2_E_SCHEMA_VERSION_MISMATCH") {
                 errorMessage = "PBV2_SCHEMA_MISMATCH";
               }
+              if (errorData.code === "PBV2_PRICING_MATRIX_ERROR" && errorData.message) {
+                errorMessage = errorData.message;
+              }
             }
           } catch (parseErr) {
             // Keep original error message if parsing fails
@@ -1207,6 +1215,7 @@ export function OrderLineItemsSection({
       optionSelections,
       optionSelectionsV2, // PBV2: reprice when selections change
       pbv2SnapshotJson?.treeJson, // Detect PBV2 mode
+      expandedProductPbv2Tree,
       optionsV2Valid,
       expandedItem?.id,
       customerId,
@@ -1947,16 +1956,10 @@ export function OrderLineItemsSection({
                                 }
                                 optionsSlot={
                                   <>
-                                    {pbv2SnapshotJson?.treeJson && pbv2SnapshotJson?.visibleNodeIds?.length > 0 && (
+                                    {effectivePbv2Tree && (
                                       <div className="mb-3">
-                                        {import.meta.env.DEV && (
-                                          <div className="text-xs text-muted-foreground mb-2 font-mono bg-muted/30 p-2 rounded">
-                                            PBV2: snapshot={String(Boolean(pbv2SnapshotJson))}, visibleNodes={pbv2SnapshotJson?.visibleNodeIds?.length || 0}
-                                          </div>
-                                        )}
-
                                         <ProductOptionsPanelV2
-                                          tree={pbv2SnapshotJson.treeJson}
+                                          tree={effectivePbv2Tree}
                                           selections={optionSelectionsV2}
                                           onSelectionsChange={setOptionSelectionsV2}
                                           onValidityChange={setOptionsV2Valid}
@@ -1964,7 +1967,7 @@ export function OrderLineItemsSection({
                                       </div>
                                     )}
 
-                                    {!pbv2SnapshotJson?.treeJson && expandedProductOptions.length > 0 && (
+                                    {!effectivePbv2Tree && expandedProductOptions.length > 0 && (
                                       <div className="mb-3">
                                         <ProductOptionsPanel
                                           product={expandedProduct}

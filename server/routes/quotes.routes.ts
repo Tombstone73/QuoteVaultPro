@@ -355,6 +355,15 @@ export function registerQuoteRoutes(
           });
         }
 
+        // Convert PBV2 missing required selections error to 422 with friendly message
+        if (pricingError.code === 'PBV2_PRICING_MATRIX_ERROR') {
+          return res.status(422).json({
+            message: pricingError.message,
+            code: 'PBV2_PRICING_MATRIX_ERROR',
+            details: pricingError.details ?? [],
+          });
+        }
+
         // Re-throw other pricing errors (will be caught by outer handler)
         throw pricingError;
       }
