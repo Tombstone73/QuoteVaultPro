@@ -2273,6 +2273,43 @@ export type QBReferenceDebug = {
   txnDate: string | null;
 };
 
+export type QBInvoiceImportClassification = 'open_ar' | 'historical';
+export type QBInvoiceImportOverride = QBInvoiceImportClassification | 'skip';
+
+export type QBInvoiceMappingDiagnostic = {
+  qbField: string;
+  titanField: string | null;
+  status: 'mapped' | 'ignored' | 'empty' | 'unknown';
+  fallbackBehavior: string | null;
+  truncationBehavior: string | null;
+  valuePreview: string | null;
+};
+
+export type QBInvoicePayloadInspection = {
+  rawPayload: any;
+  mappedDraft: Record<string, any>;
+  classification: {
+    suggested: QBInvoiceImportClassification;
+    rationale: string;
+  };
+  exclusionReasons: string[];
+  warningReasons: string[];
+  unmappedFields: string[];
+  mappingCoverage: {
+    mapped: string[];
+    ignored: string[];
+    empty: string[];
+    unknown: string[];
+  };
+  mappingDiagnostics: QBInvoiceMappingDiagnostic[];
+  poLikeCandidates: Array<{
+    qbField: string;
+    value: string;
+    mapped: boolean;
+    destination: string | null;
+  }>;
+};
+
 export type QBInvoicePreviewRow = {
   qbInvoiceId: string;
   qbDocNumber: string;
@@ -2289,9 +2326,12 @@ export type QBInvoicePreviewRow = {
   localInvoiceId: string | null;
   canImport: boolean;
   cannotImportReason?: string;
+  exclusionReasons: string[];
+  warningReasons: string[];
   customerPoNumber: string | null;
   customerPoSource: string | null;
   referenceDebug?: QBReferenceDebug;
+  inspection?: QBInvoicePayloadInspection;
 };
 
 /**
@@ -2548,6 +2588,209 @@ export function summarizeQBInvoiceReferenceFields(qbInvoice: any): QBReferenceDe
  * Fetch all QB invoices and return a preview with local match status.
  * Read-only — no writes to any table.
  */
+function previewScalar(value: unknown, maxLen = 220): string | null {
+  if (value == null) return null;
+  const raw = typeof value === 'string' ? value : JSON.stringify(value);
+  const trimmed = String(raw ?? '').replace(/\s+/g, ' ').trim();
+  if (!trimmed) return null;
+  return trimmed.length > maxLen ? `${trimmed.slice(0, maxLen - 3)}...` : trimmed;
+}
+
+function hasQBValue(value: unknown): boolean {
+  if (value == null) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0;
+  return String(value).trim().length > 0;
+}
+
+function pushMappingDiagnostic(
+  diagnostics: QBInvoiceMappingDiagnostic[],
+  coverage: QBInvoicePayloadInspection['mappingCoverage'],
+  diagnostic: QBInvoiceMappingDiagnostic,
+) {
+  diagnostics.push(diagnostic);
+  coverage[diagnostic.status].push(diagnostic.qbField);
+}
+
+function collectQBInvoicePoLikeCandidates(qbInvoice: any, mappedSource: string | null): QBInvoicePayloadInspection['poLikeCandidates'] {
+  const candidates: QBInvoicePayloadInspection['poLikeCandidates'] = [];
+  const add = (qbField: string, rawValue: unknown, source: string | null) => {
+    const value = previewScalar(rawValue, 300);
+    if (!value) return;
+    const looksUseful = /po|p\.o\.|purchase|ref|reference|job|project|description|proof|poster|podium|sign/i.test(`${qbField} ${value}`);
+    if (!looksUseful) return;
+    candidates.push({
+      qbField,
+      value,
+      mapped: source !== null && source === mappedSource,
+      destination: source !== null && source === mappedSource ? 'invoices.customerPoNumber' : null,
+    });
+  };
+
+  add('CustomerMemo', qbInvoice.CustomerMemo?.value ?? qbInvoice.CustomerMemo, 'customer_memo');
+  add('PrivateNote', qbInvoice.PrivateNote, 'private_note');
+
+  if (Array.isArray(qbInvoice.CustomField)) {
+    qbInvoice.CustomField.forEach((field: any, index: number) => {
+      add(
+        `CustomField[${index}]${field?.Name ? `.${field.Name}` : ''}`,
+        field?.StringValue ?? field?.DateValue ?? field?.NumberValue,
+        mappedSource === 'custom_field' || mappedSource === 'custom_field_reference' ? mappedSource : null,
+      );
+    });
+  }
+
+  if (Array.isArray(qbInvoice.Line)) {
+    qbInvoice.Line.forEach((line: any, index: number) => {
+      add(`Line[${index}].Description`, line?.Description, 'line_description');
+    });
+  }
+
+  return candidates;
+}
+
+function buildQBInvoiceMappedDraft(params: {
+  qbInvoice: any;
+  localCustomerId: string | null;
+  classification: QBInvoiceImportClassification;
+  customerPoNumber: string | null;
+  customerPoSource: string | null;
+}): Record<string, any> {
+  const { qbInvoice, localCustomerId, classification, customerPoNumber, customerPoSource } = params;
+  const balance = Number(qbInvoice.Balance ?? 0);
+  const totalAmt = Number(qbInvoice.TotalAmt ?? 0);
+  const taxAmt = Number(qbInvoice.TxnTaxDetail?.TotalTax ?? 0);
+  const amountPaid = Math.max(0, totalAmt - balance);
+  const isHistorical = classification === 'historical';
+
+  return {
+    customerId: localCustomerId,
+    status: isHistorical ? 'paid' : (balance > 0 ? 'billed' : 'paid'),
+    issueDate: qbInvoice.TxnDate ?? null,
+    dueDate: qbInvoice.DueDate ?? null,
+    subtotal: totalAmt.toFixed(2),
+    tax: taxAmt.toFixed(2),
+    total: totalAmt.toFixed(2),
+    amountPaid: amountPaid.toFixed(2),
+    balanceDue: balance.toFixed(2),
+    externalAccountingId: qbInvoice.Id ?? null,
+    qbInvoiceId: qbInvoice.Id ?? null,
+    qbSyncStatus: 'synced',
+    syncStatus: 'synced',
+    importSource: 'quickbooks',
+    isHistorical,
+    qbImportBalanceDue: balance.toFixed(2),
+    qbDocNumber: qbInvoice.DocNumber ?? null,
+    qbLineItemsSnapshot: Array.isArray(qbInvoice.Line) ? qbInvoice.Line : null,
+    lockedReason: isHistorical ? 'historical_import' : 'quickbooks_import',
+    customerPoNumber,
+    qbPoSource: customerPoSource,
+  };
+}
+
+function buildQBInvoicePayloadInspection(params: {
+  qbInvoice: any;
+  localCustomerId: string | null;
+  classification: QBInvoiceImportClassification;
+  exclusionReasons: string[];
+  warningReasons: string[];
+  customerPoNumber: string | null;
+  customerPoSource: string | null;
+}): QBInvoicePayloadInspection {
+  const { qbInvoice, localCustomerId, classification, exclusionReasons, warningReasons, customerPoNumber, customerPoSource } = params;
+  const mappedDraft = buildQBInvoiceMappedDraft({ qbInvoice, localCustomerId, classification, customerPoNumber, customerPoSource });
+  const coverage: QBInvoicePayloadInspection['mappingCoverage'] = { mapped: [], ignored: [], empty: [], unknown: [] };
+  const diagnostics: QBInvoiceMappingDiagnostic[] = [];
+
+  const addField = (
+    qbField: string,
+    value: unknown,
+    titanField: string | null,
+    statusWhenPresent: 'mapped' | 'ignored',
+    fallbackBehavior: string | null = null,
+    truncationBehavior: string | null = null,
+  ) => {
+    const present = hasQBValue(value);
+    pushMappingDiagnostic(diagnostics, coverage, {
+      qbField,
+      titanField: present ? titanField : null,
+      status: present ? statusWhenPresent : 'empty',
+      fallbackBehavior,
+      truncationBehavior,
+      valuePreview: previewScalar(value),
+    });
+  };
+
+  addField('Id', qbInvoice.Id, 'invoices.externalAccountingId / invoices.qbInvoiceId', 'mapped');
+  addField('DocNumber', qbInvoice.DocNumber, 'invoices.qbDocNumber', 'mapped');
+  addField('CustomerRef', qbInvoice.CustomerRef, 'invoices.customerId', 'mapped', 'Matched by CustomerRef.value to org-scoped customers.externalAccountingId.');
+  addField('TxnDate', qbInvoice.TxnDate, 'invoices.issueDate', 'mapped');
+  addField('DueDate', qbInvoice.DueDate, 'invoices.dueDate', 'mapped');
+  addField('TotalAmt', qbInvoice.TotalAmt, 'invoices.subtotal / invoices.total / invoices.totalCents', 'mapped');
+  addField('Balance', qbInvoice.Balance, 'invoices.balanceDue / invoices.qbImportBalanceDue / classification', 'mapped');
+  addField('TxnTaxDetail.TotalTax', qbInvoice.TxnTaxDetail?.TotalTax, 'invoices.tax / invoices.taxCents', 'mapped');
+  addField('Line', qbInvoice.Line, 'invoices.qbLineItemsSnapshot', 'mapped', 'Stored as raw line snapshot only; not written to production-coupled invoice_line_items.');
+  addField('Line[].Description', Array.isArray(qbInvoice.Line) ? qbInvoice.Line.map((line: any) => line?.Description).filter(hasQBValue) : null, customerPoSource === 'line_description' ? 'invoices.customerPoNumber' : null, customerPoSource === 'line_description' ? 'mapped' : 'ignored', 'Can be fallback source for customerPoNumber when useful line descriptions are found.', 'Joined fallback is capped at 100 characters.');
+  addField('CustomerMemo', qbInvoice.CustomerMemo?.value ?? qbInvoice.CustomerMemo, customerPoSource === 'customer_memo' ? 'invoices.customerPoNumber' : null, customerPoSource === 'customer_memo' ? 'mapped' : 'ignored', 'Can be fallback source for customerPoNumber unless it looks like boilerplate.', 'Stored customerPoNumber is capped at 100 characters.');
+  addField('PrivateNote', qbInvoice.PrivateNote, customerPoSource === 'private_note' ? 'invoices.customerPoNumber' : null, customerPoSource === 'private_note' ? 'mapped' : 'ignored', 'Can be fallback source for customerPoNumber when an explicit PO or useful note is found.', 'Stored customerPoNumber is capped at 100 characters.');
+  addField('CustomField[]', qbInvoice.CustomField, customerPoSource === 'custom_field' || customerPoSource === 'custom_field_reference' ? 'invoices.customerPoNumber' : null, customerPoSource === 'custom_field' || customerPoSource === 'custom_field_reference' ? 'mapped' : 'ignored', 'PO-named fields win; reference-named fields are fallback sources.', 'Stored customerPoNumber is capped at 100 characters.');
+  addField('BillAddr', qbInvoice.BillAddr, null, 'ignored');
+  addField('ShipAddr', qbInvoice.ShipAddr, null, 'ignored');
+
+  const knownTopLevelFields = new Set([
+    'Id', 'DocNumber', 'CustomerRef', 'TxnDate', 'DueDate', 'TotalAmt', 'Balance',
+    'TxnTaxDetail', 'Line', 'CustomerMemo', 'PrivateNote', 'CustomField', 'BillAddr', 'ShipAddr',
+    'SyncToken', 'MetaData', 'domain', 'sparse', 'LinkedTxn', 'EmailStatus', 'PrintStatus',
+    'AllowIPNPayment', 'AllowOnlinePayment', 'AllowOnlineCreditCardPayment', 'AllowOnlineACHPayment',
+    'CurrencyRef', 'ExchangeRate', 'HomeTotalAmt', 'HomeBalance', 'Deposit', 'ApplyTaxAfterDiscount',
+    'SalesTermRef', 'BillEmail', 'DeliveryInfo', 'TxnSource', 'GlobalTaxCalculation',
+  ]);
+
+  for (const fieldName of ['SyncToken', 'MetaData', 'domain', 'sparse', 'LinkedTxn', 'EmailStatus', 'PrintStatus', 'CurrencyRef', 'ExchangeRate', 'HomeTotalAmt', 'HomeBalance', 'BillEmail', 'SalesTermRef']) {
+    if (fieldName in qbInvoice) {
+      addField(fieldName, qbInvoice[fieldName], null, 'ignored');
+    }
+  }
+
+  for (const fieldName of Object.keys(qbInvoice)) {
+    if (!knownTopLevelFields.has(fieldName)) {
+      const present = hasQBValue(qbInvoice[fieldName]);
+      pushMappingDiagnostic(diagnostics, coverage, {
+        qbField: fieldName,
+        titanField: null,
+        status: present ? 'unknown' : 'empty',
+        fallbackBehavior: null,
+        truncationBehavior: null,
+        valuePreview: previewScalar(qbInvoice[fieldName]),
+      });
+    }
+  }
+
+  const unmappedFields = Array.from(new Set([...coverage.ignored, ...coverage.unknown]));
+
+  return {
+    rawPayload: qbInvoice,
+    mappedDraft,
+    classification: {
+      suggested: classification,
+      rationale: Number(qbInvoice.Balance ?? 0) > 0
+        ? 'Balance is greater than 0, so the existing backend logic classifies this invoice as Open A/R.'
+        : 'Balance is 0 or missing, so the existing backend logic classifies this invoice as Historical.',
+    },
+    exclusionReasons,
+    warningReasons,
+    unmappedFields,
+    mappingCoverage: {
+      mapped: Array.from(new Set(coverage.mapped)),
+      ignored: Array.from(new Set(coverage.ignored)),
+      empty: Array.from(new Set(coverage.empty)),
+      unknown: Array.from(new Set(coverage.unknown)),
+    },
+    mappingDiagnostics: diagnostics,
+    poLikeCandidates: collectQBInvoicePoLikeCandidates(qbInvoice, customerPoSource),
+  };
+}
+
 export async function fetchQBInvoicesForPreview(organizationId: string, includeReferenceDebug = false): Promise<QBInvoicePreviewRow[]> {
   const qbInvoices: any[] = await fetchAllQBEntities(
     'Invoice',
@@ -2584,9 +2827,27 @@ export async function fetchQBInvoicesForPreview(organizationId: string, includeR
     const alreadyImported = invoiceByQBId.has(qbInvoice.Id);
     const classification = classifyQBInvoice(qbInvoice);
     const { poNumber: customerPoNumber, source: customerPoSource } = extractQBInvoiceCustomerPo(qbInvoice);
+    const exclusionReasons: string[] = [];
+    const warningReasons: string[] = [];
 
     let canImport = true;
     let cannotImportReason: string | undefined;
+    if (!localCustomer) {
+      exclusionReasons.push('missing_customer');
+    }
+    if (alreadyImported) {
+      warningReasons.push('already_imported');
+    }
+    if (!qbInvoice.Id) {
+      canImport = false;
+      exclusionReasons.push('validation_error');
+      cannotImportReason = 'QuickBooks invoice is missing Id';
+    }
+    if (!hasQBValue(qbInvoice.CustomerRef)) {
+      canImport = false;
+      if (!exclusionReasons.includes('missing_customer')) exclusionReasons.push('missing_customer');
+      cannotImportReason = 'QuickBooks invoice is missing CustomerRef';
+    }
     if (!localCustomer) {
       canImport = false;
       cannotImportReason = 'No matching local customer — pull customers first';
@@ -2608,9 +2869,22 @@ export async function fetchQBInvoicesForPreview(organizationId: string, includeR
       localInvoiceId: invoiceByQBId.get(qbInvoice.Id) ?? null,
       canImport,
       cannotImportReason,
+      exclusionReasons,
+      warningReasons,
       customerPoNumber,
       customerPoSource,
       ...(includeReferenceDebug ? { referenceDebug: summarizeQBInvoiceReferenceFields(qbInvoice) } : {}),
+      ...(includeReferenceDebug ? {
+        inspection: buildQBInvoicePayloadInspection({
+          qbInvoice,
+          localCustomerId: localCustomer?.id ?? null,
+          classification,
+          exclusionReasons,
+          warningReasons,
+          customerPoNumber,
+          customerPoSource,
+        }),
+      } : {}),
     };
   });
 }
@@ -2636,6 +2910,7 @@ export async function importQBInvoicesByIds(
   qbInvoiceIds: string[],
   mode: 'auto' | 'open_ar' | 'historical',
   createdByUserId: string,
+  perInvoiceModes: Record<string, QBInvoiceImportOverride> = {},
 ): Promise<{ created: number; updated: number; skipped: number; errors: string[] }> {
   const result = { created: 0, updated: 0, skipped: 0, errors: [] as string[] };
 
@@ -2666,7 +2941,17 @@ export async function importQBInvoicesByIds(
 
   for (const qbInvoice of qbInvoices) {
     try {
-      const classification: 'open_ar' | 'historical' = mode === 'auto' ? classifyQBInvoice(qbInvoice) : mode;
+      const rowOverride = perInvoiceModes[String(qbInvoice.Id)] ?? null;
+      if (rowOverride === 'skip') {
+        result.skipped++;
+        continue;
+      }
+      const classification: 'open_ar' | 'historical' =
+        rowOverride === 'open_ar' || rowOverride === 'historical'
+          ? rowOverride
+          : mode === 'auto'
+          ? classifyQBInvoice(qbInvoice)
+          : mode;
       const isHistorical = classification === 'historical';
       const balance = Number(qbInvoice.Balance ?? 0);
       const totalAmt = Number(qbInvoice.TotalAmt ?? 0);

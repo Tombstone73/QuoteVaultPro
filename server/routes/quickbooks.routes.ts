@@ -633,7 +633,7 @@ export function registerQuickBooksRoutes(
         return res.status(401).json({ success: false, error: 'Missing user context' });
       }
 
-      const { quickBooksInvoiceIds, mode } = req.body;
+      const { quickBooksInvoiceIds, mode, invoiceModes } = req.body;
       if (!Array.isArray(quickBooksInvoiceIds) || quickBooksInvoiceIds.length === 0) {
         return res.status(400).json({ success: false, error: 'quickBooksInvoiceIds array required' });
       }
@@ -641,8 +641,21 @@ export function registerQuickBooksRoutes(
       if (!validModes.includes(mode)) {
         return res.status(400).json({ success: false, error: `mode must be one of: ${validModes.join(', ')}` });
       }
+      const validInvoiceModes = ['open_ar', 'historical', 'skip'];
+      const perInvoiceModes: Record<string, 'open_ar' | 'historical' | 'skip'> = {};
+      if (invoiceModes != null) {
+        if (typeof invoiceModes !== 'object' || Array.isArray(invoiceModes)) {
+          return res.status(400).json({ success: false, error: 'invoiceModes must be an object keyed by QuickBooks invoice id' });
+        }
+        for (const [invoiceId, invoiceMode] of Object.entries(invoiceModes as Record<string, unknown>)) {
+          if (!validInvoiceModes.includes(String(invoiceMode))) {
+            return res.status(400).json({ success: false, error: `invoiceModes.${invoiceId} must be one of: ${validInvoiceModes.join(', ')}` });
+          }
+          perInvoiceModes[invoiceId] = invoiceMode as 'open_ar' | 'historical' | 'skip';
+        }
+      }
 
-      const result = await quickbooksService.importQBInvoicesByIds(organizationId, quickBooksInvoiceIds, mode, userId);
+      const result = await quickbooksService.importQBInvoicesByIds(organizationId, quickBooksInvoiceIds, mode, userId, perInvoiceModes);
       return res.json({ success: true, data: result });
     } catch (error: any) {
       console.error('[QB Invoice Import] Error:', error);
