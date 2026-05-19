@@ -7,6 +7,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { isPbv2QuestionNode, isRenderablePbv2InputType, normalizePbv2Tree } from "@/lib/pbv2Utils";
 import { cn } from "@/lib/utils";
 import type { LineItemOptionSelectionsV2, OptionNodeV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import { validateOptionTreeV2 } from "@shared/optionTreeV2";
@@ -33,46 +34,8 @@ function isTreeV2Selections(input: any): input is LineItemOptionSelectionsV2 {
   return !!input && typeof input === "object" && input.schemaVersion === 2 && !!input.selected && typeof input.selected === "object";
 }
 
-/**
- * Normalize an incoming tree so the rest of the component can rely on a consistent shape.
- * Handles `nodes` arriving as either an object map or an array, ensures each node's id matches
- * its map key, and supplies sensible defaults for schemaVersion/rootNodeIds when missing.
- */
-function normalizeIncomingTree(input: unknown): OptionTreeV2 {
-  const raw = (input && typeof input === "object" ? input : {}) as Record<string, any>;
-  const nodesRaw = raw.nodes;
-  const nodes: Record<string, OptionNodeV2> = {};
-
-  if (Array.isArray(nodesRaw)) {
-    for (const node of nodesRaw) {
-      if (!node || typeof node !== "object") continue;
-      const id = (node as any).id;
-      if (typeof id !== "string" || !id.trim()) continue;
-      nodes[id] = node as OptionNodeV2;
-    }
-  } else if (nodesRaw && typeof nodesRaw === "object") {
-    for (const [key, value] of Object.entries(nodesRaw as Record<string, unknown>)) {
-      if (!value || typeof value !== "object") continue;
-      const nodeObj = value as Record<string, any>;
-      const id = typeof nodeObj.id === "string" && nodeObj.id.trim() ? nodeObj.id : key;
-      nodes[String(id)] = { ...(nodeObj as any), id: String(id) } as OptionNodeV2;
-    }
-  }
-
-  const rootNodeIds = Array.isArray(raw.rootNodeIds) && raw.rootNodeIds.length > 0
-    ? raw.rootNodeIds.filter((id: unknown) => typeof id === "string" && (id as string).trim().length > 0)
-    : Object.keys(nodes);
-
-  return {
-    ...(raw as any),
-    schemaVersion: 2,
-    rootNodeIds,
-    nodes,
-  } as OptionTreeV2;
-}
-
 function isQuestionNodeEnabled(node: any): boolean {
-  if (!node || node.kind !== "question" || !node.input) return false;
+  if (!isPbv2QuestionNode(node) || !node.input) return false;
   const status = (typeof node.status === "string" ? node.status : "ENABLED").toUpperCase();
   return status !== "DISABLED" && status !== "DELETED";
 }
@@ -82,14 +45,7 @@ function getInputType(node: OptionNodeV2): string {
 }
 
 function isRenderableInputType(inputType: string): boolean {
-  return inputType === "boolean"
-    || inputType === "checkbox"
-    || inputType === "select"
-    || inputType === "radio"
-    || inputType === "multiselect"
-    || inputType === "number"
-    || inputType === "text"
-    || inputType === "textarea";
+  return isRenderablePbv2InputType(inputType);
 }
 
 function getSortedChoices(node: OptionNodeV2) {
@@ -218,7 +174,10 @@ export function ProductOptionsPanelV2({
   onRenderStatsChange,
   className,
 }: ProductOptionsPanelV2Props) {
-  const tree = useMemo(() => normalizeIncomingTree(rawTree), [rawTree]);
+  const tree = useMemo(
+    () => normalizePbv2Tree(rawTree) ?? { schemaVersion: 2 as const, rootNodeIds: [], nodes: {} },
+    [rawTree]
+  );
   const graph = useMemo(() => validateOptionTreeV2(tree), [tree]);
 
   const safeSelections: LineItemOptionSelectionsV2 = useMemo(() => {
@@ -302,20 +261,20 @@ export function ProductOptionsPanelV2({
 
   const ruleOptionGroups = useMemo(() => {
     return Object.values(tree.nodes)
-      .filter((node) => node?.kind === "question" && node.input)
+      .filter((node) => isPbv2QuestionNode(node) && node.input)
       .map(getSelectionKey);
   }, [tree.nodes]);
 
   const visibleOptionGroups = useMemo(() => {
     return visibleNodeIds
       .map((nodeId) => tree.nodes[nodeId])
-      .filter((node): node is OptionNodeV2 => Boolean(node && node.kind === "question" && node.input))
+      .filter((node): node is OptionNodeV2 => Boolean(node && isPbv2QuestionNode(node) && node.input))
       .map(getSelectionKey);
   }, [tree.nodes, visibleNodeIds]);
 
   const initiallyRequiredOptionGroups = useMemo(() => {
     return Object.values(tree.nodes)
-      .filter((node) => node?.kind === "question" && node.input?.required)
+      .filter((node) => isPbv2QuestionNode(node) && node.input?.required)
       .map(getSelectionKey);
   }, [tree.nodes]);
 
@@ -342,7 +301,7 @@ export function ProductOptionsPanelV2({
       const node = tree.nodes[nodeId];
       if (!node) return false;
       if (hiddenOptionGroupSet.has(node.id) || hiddenOptionGroupSet.has((node as any).key)) return false;
-      if (node.kind === "question" && node.input) return !hiddenOptionGroupSet.has(getSelectionKey(node));
+      if (isPbv2QuestionNode(node) && node.input) return !hiddenOptionGroupSet.has(getSelectionKey(node));
       return true;
     });
     // Pricing-matrix dimensions must always render so the matrix can resolve its variables.
@@ -367,7 +326,7 @@ export function ProductOptionsPanelV2({
   const renderStats = useMemo<ProductOptionsPanelV2RenderStats>(() => {
     const renderedControlNodeIds = renderedNodeIds.filter((nodeId) => {
       const node = tree.nodes[nodeId];
-      return Boolean(node && node.kind === "question" && node.input && isRenderableInputType(getInputType(node)));
+      return Boolean(node && isPbv2QuestionNode(node) && node.input && isRenderableInputType(getInputType(node)));
     });
     return {
       renderedNodeCount: renderedNodeIds.length,
@@ -398,7 +357,7 @@ export function ProductOptionsPanelV2({
       // Best-effort: still report a validity signal based on the fallback list (required-missing only).
       const missingRequiredFallback = validationNodeIds.some((id) => {
         const node = tree.nodes[id];
-        if (!node || node.kind !== "question" || !node.input) return false;
+        if (!node || !isPbv2QuestionNode(node) || !node.input) return false;
         const value = getNodeValue(displaySelections, node);
         return requiredMissing(node, value);
       });
@@ -458,10 +417,10 @@ export function ProductOptionsPanelV2({
     }
 
     const missingRequired = renderedNodeIds.some((id) => {
-      const node = tree.nodes[id];
-      if (!node || node.kind !== "question" || !node.input) return false;
-      const selectionKey = getSelectionKey(node);
-      const value = getNodeValue(next, node);
+        const node = tree.nodes[id];
+        if (!node || !isPbv2QuestionNode(node) || !node.input) return false;
+        const selectionKey = getSelectionKey(node);
+        const value = getNodeValue(next, node);
       const matrixRequired = matrixDimensionKeys.has(selectionKey);
       return requiredMissing(node, value)
         || (requiredOptionGroupSet.has(selectionKey) && requiredMissing({ ...node, input: { ...node.input, required: true } }, value))
@@ -488,7 +447,7 @@ export function ProductOptionsPanelV2({
 
     for (const nodeId of renderedNodeIds) {
       const node = tree.nodes[nodeId];
-      if (!node || node.kind !== "question" || !node.input) continue;
+      if (!node || !isPbv2QuestionNode(node) || !node.input) continue;
       const selectionKey = getSelectionKey(node);
       const value = getNodeValue(displaySelections, node);
       const isRequired = requiredOptionGroupSet.has(selectionKey) || matrixDimensionKeys.has(selectionKey);
@@ -522,7 +481,7 @@ export function ProductOptionsPanelV2({
     for (const error of ruleEvaluation.errors) {
       const nodeId = Object.keys(tree.nodes).find((id) => {
         const node = tree.nodes[id];
-        return Boolean(node && node.kind === "question" && node.input && getSelectionKey(node) === error.optionGroup);
+        return Boolean(node && isPbv2QuestionNode(node) && node.input && getSelectionKey(node) === error.optionGroup);
       });
       if (nodeId && !out.has(nodeId)) out.set(nodeId, error.message);
     }
