@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,8 +24,77 @@ import { cn, isValidHttpUrl } from "@/lib/utils";
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
+import { extractProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
+import { buildPbv2DefaultSelections } from "@shared/pbv2OrderEntryRuntime";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
 import { RenderPathBanner } from "@/components/debug/RenderPathBanner";
+
+type RuntimeDebugEvent = {
+  at: string;
+  label: string;
+  data?: unknown;
+};
+
+function debugJson(value: unknown): string {
+  if (value === undefined) return "(undefined)";
+  if (value === null) return "(null)";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function describeDebugElement(el: unknown): Record<string, unknown> {
+  const node = el as HTMLElement | null;
+  if (!node || typeof node !== "object") return { target: String(el) };
+  const rect = typeof node.getBoundingClientRect === "function" ? node.getBoundingClientRect() : null;
+  return {
+    tag: node.tagName,
+    id: node.id || null,
+    role: node.getAttribute?.("role") || null,
+    ariaLabel: node.getAttribute?.("aria-label") || null,
+    text: (node.textContent || "").trim().slice(0, 120),
+    className: typeof node.className === "string" ? node.className.slice(0, 160) : null,
+    top: rect ? Math.round(rect.top) : null,
+    left: rect ? Math.round(rect.left) : null,
+  };
+}
+
+function getNodeSelectionKeyForDebug(node: any): string {
+  return node?.input?.selectionKey || node?.key || node?.id || "";
+}
+
+function isEmptyDebugSelection(value: unknown): boolean {
+  if (value === undefined || value === null || value === "") return true;
+  if (Array.isArray(value)) return value.length === 0;
+  return false;
+}
+
+function getMissingRequiredPbv2Fields(tree: OptionTreeV2 | null, selections: LineItemOptionSelectionsV2): string[] {
+  if (!tree?.nodes) return [];
+  const matrix = extractProductOptionPricingMatrix(tree as any);
+  const matrixDimensions = new Set(matrix?.dimensions ?? []);
+  const visibleIds = selections.resolved?.visibleNodeIds ?? Object.keys(tree.nodes);
+  const missing: string[] = [];
+
+  for (const nodeId of visibleIds) {
+    const node: any = tree.nodes[nodeId];
+    if (!node?.input) continue;
+    const selectionKey = getNodeSelectionKeyForDebug(node);
+    const required = node.input.required === true || matrixDimensions.has(selectionKey);
+    if (!required) continue;
+    const current =
+      selections.selected?.[selectionKey]?.value
+      ?? selections.selected?.[node.key]?.value
+      ?? selections.selected?.[node.id]?.value;
+    if (isEmptyDebugSelection(current)) {
+      missing.push(`${node.label || selectionKey} (${selectionKey})`);
+    }
+  }
+
+  return missing;
+}
 
 type LineItemsSectionProps = {
   quoteId: string | null;
@@ -390,6 +459,40 @@ export function LineItemsSection({
   const [savedItemKey, setSavedItemKey] = useState<string | null>(null);
   const [editingPriceItemKey, setEditingPriceItemKey] = useState<string | null>(null);
   const [priceEditTextByKey, setPriceEditTextByKey] = useState<Record<string, string>>({});
+  const [runtimeDebugEvents, setRuntimeDebugEvents] = useState<RuntimeDebugEvent[]>([]);
+  const [routingInitialDebugByKey, setRoutingInitialDebugByKey] = useState<Record<string, any>>({});
+  const [pricingRuntimeDebug, setPricingRuntimeDebug] = useState<Record<string, any>>({});
+  const [scrollFocusDebug, setScrollFocusDebug] = useState<Record<string, unknown> | null>(null);
+
+  const addRuntimeDebugEvent = useCallback((label: string, data?: unknown) => {
+    const event = { at: new Date().toISOString(), label, data };
+    console.info("[QuoteEditorLineItemsSection.runtime-debug]", event);
+    setRuntimeDebugEvents((prev) => [...prev.slice(-24), event]);
+  }, []);
+
+  useEffect(() => {
+    const originalFocus = HTMLElement.prototype.focus;
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+
+    HTMLElement.prototype.focus = function patchedFocus(this: HTMLElement, ...args: any[]) {
+      const data = { action: "focus", target: describeDebugElement(this), args };
+      console.info("[QuoteEditorLineItemsSection.focus-debug]", data);
+      setScrollFocusDebug({ at: new Date().toISOString(), ...data });
+      return originalFocus.apply(this, args as any);
+    };
+
+    Element.prototype.scrollIntoView = function patchedScrollIntoView(this: Element, ...args: any[]) {
+      const data = { action: "scrollIntoView", target: describeDebugElement(this), args };
+      console.info("[QuoteEditorLineItemsSection.scroll-debug]", data);
+      setScrollFocusDebug({ at: new Date().toISOString(), ...data });
+      return originalScrollIntoView.apply(this, args as any);
+    };
+
+    return () => {
+      HTMLElement.prototype.focus = originalFocus;
+      Element.prototype.scrollIntoView = originalScrollIntoView;
+    };
+  }, []);
   
   // Track saved state snapshot for dirty detection
   const savedSnapshotRef = useRef<
@@ -409,6 +512,37 @@ export function LineItemsSection({
   useEffect(() => {
     if (!expandedItem) return;
     const itemKey = getItemKey(expandedItem);
+    const initializedRouting = {
+      requiresDesign: (expandedItem as any).requiresDesign === true,
+      requiresPrepress: typeof (expandedItem as any).requiresPrepress === 'boolean' ? (expandedItem as any).requiresPrepress : null,
+      requiresProofApproval: (expandedItem as any).requiresProofApproval === true,
+      productDefaultsSource: {
+        productId: expandedProduct?.id ?? expandedItem.productId,
+        productName: expandedProduct?.name ?? expandedItem.productName,
+        requiresDesign: (expandedProduct as any)?.requiresDesign,
+        requiresPrepress: (expandedProduct as any)?.requiresPrepress,
+        requiresProofApproval: (expandedProduct as any)?.requiresProofApproval,
+        requiresProductionJob: (expandedProduct as any)?.requiresProductionJob,
+        productTypeRequiresPrepressOverride: (expandedProduct as any)?.productTypeRequiresPrepressOverride,
+        productDesignRequiresDesign: (expandedProduct as any)?.productDesignRequiresDesign,
+      },
+    };
+    setRoutingInitialDebugByKey((prev) => ({
+      ...prev,
+      [itemKey]: {
+        at: new Date().toISOString(),
+        ...initializedRouting,
+      },
+    }));
+    addRuntimeDebugEvent("expanded line item initialized from item state", {
+      itemKey,
+      lineItemId: expandedItem.id,
+      tempId: expandedItem.tempId,
+      productId: expandedItem.productId,
+      optionSelectionsJson: (expandedItem as any)?.optionSelectionsJson ?? null,
+      selectedOptions: expandedItem.selectedOptions ?? [],
+      initializedRouting,
+    });
     setWidthText(String(expandedItem.width || 1));
     setHeightText(String(expandedItem.height || 1));
     setQty(expandedItem.quantity || 1);
@@ -435,8 +569,19 @@ export function LineItemsSection({
 
     const rawV2 = (expandedItem as any)?.optionSelectionsJson;
     if (rawV2 && typeof rawV2 === "object" && (rawV2 as any)?.schemaVersion === 2) {
+      addRuntimeDebugEvent("optionSelectionsV2 write from expanded item", {
+        source: "expanded item optionSelectionsJson",
+        itemKey,
+        next: rawV2,
+      });
       setOptionSelectionsV2(rawV2 as LineItemOptionSelectionsV2);
     } else {
+      addRuntimeDebugEvent("optionSelectionsV2 write from expanded item", {
+        source: "missing or invalid expanded item optionSelectionsJson",
+        itemKey,
+        rawV2: rawV2 ?? null,
+        next: { schemaVersion: 2, selected: {} },
+      });
       setOptionSelectionsV2({ schemaVersion: 2, selected: {} });
     }
 
@@ -458,12 +603,68 @@ export function LineItemsSection({
       selectedOptions: expandedItem.selectedOptions || [],
       optionSelectionsJson: (expandedItem as any)?.optionSelectionsJson ?? null,
     };
-  }, [expandedItem?.id, expandedItem?.tempId]);
+  }, [
+    addRuntimeDebugEvent,
+    expandedItem?.id,
+    expandedItem?.tempId,
+    expandedProduct?.id,
+    expandedProduct?.name,
+    (expandedProduct as any)?.requiresDesign,
+    (expandedProduct as any)?.requiresPrepress,
+    (expandedProduct as any)?.requiresProofApproval,
+    (expandedProduct as any)?.requiresProductionJob,
+  ]);
 
   const dimsRequired = requiresDimensionsV2(expandedProduct, expandedOptionTreeJson);
   const widthNum = dimsRequired ? Number.parseFloat(widthText) || 0 : 1;
   const heightNum = dimsRequired ? Number.parseFloat(heightText) || 0 : 1;
   const qtyNum = Number.isFinite(qty) && qty > 0 ? qty : 1;
+  const missingRequiredPbv2Fields = useMemo(
+    () => getMissingRequiredPbv2Fields(expandedOptionTreeJson, optionSelectionsV2),
+    [expandedOptionTreeJson, optionSelectionsV2]
+  );
+  const defaultSelectionsComputed = useMemo(
+    () => buildPbv2DefaultSelections(expandedOptionTreeJson),
+    [expandedOptionTreeJson]
+  );
+
+  const handleOptionSelectionsV2Change = useCallback((next: LineItemOptionSelectionsV2) => {
+    addRuntimeDebugEvent("selection state write", {
+      source: "ProductOptionsPanelV2.onSelectionsChange",
+      previous: optionSelectionsV2,
+      next,
+      missingRequiredBefore: missingRequiredPbv2Fields,
+    });
+    setOptionSelectionsV2(next);
+  }, [addRuntimeDebugEvent, missingRequiredPbv2Fields, optionSelectionsV2]);
+
+  const handleOptionsV2ValidityChange = useCallback((nextValid: boolean) => {
+    addRuntimeDebugEvent("options validity write", {
+      source: "ProductOptionsPanelV2.onValidityChange",
+      previous: optionsV2Valid,
+      next: nextValid,
+      missingRequiredPbv2Fields,
+    });
+    setOptionsV2Valid(nextValid);
+  }, [addRuntimeDebugEvent, missingRequiredPbv2Fields, optionsV2Valid]);
+
+  const handleRequiresDesignChange = useCallback((next: boolean) => {
+    addRuntimeDebugEvent("routing state write", {
+      source: "LineItemCard.requiresDesign checkbox",
+      previous: requiresDesign,
+      next,
+    });
+    setRequiresDesign(next);
+  }, [addRuntimeDebugEvent, requiresDesign]);
+
+  const handleRequiresPrepressChange = useCallback((next: boolean) => {
+    addRuntimeDebugEvent("routing state write", {
+      source: "LineItemCard.requiresPrepress checkbox",
+      previous: requiresPrepress,
+      next,
+    });
+    setRequiresPrepress(next);
+  }, [addRuntimeDebugEvent, requiresPrepress]);
 
   // Detect if current item has unsaved changes (dirty state)
   const isDirty = useMemo(() => {
@@ -612,6 +813,15 @@ export function LineItemsSection({
       requiresPrepress,
       ...(v2Patch as any),
     });
+    addRuntimeDebugEvent("line item local overwrite/write", {
+      source: "LineItemsSection sync local edit effect",
+      itemKey: expandedKey,
+      requiresDesign,
+      requiresPrepress,
+      optionSelectionsV2,
+      isExpandedTreeV2,
+      missingRequiredPbv2Fields,
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expandedKey, widthNum, heightNum, qtyNum, notes, description, productionNotes, requiresDesign, requiresPrepress, isExpandedTreeV2, optionSelectionsV2]);
 
@@ -623,11 +833,32 @@ export function LineItemsSection({
   // Debounced price calculation for expanded item
   useDebouncedEffect(
     () => {
-      if (!expandedItem || !expandedProduct) return;
-      if (dimsRequired && (!Number.isFinite(widthNum) || widthNum <= 0 || !Number.isFinite(heightNum) || heightNum <= 0)) return;
-      if (!Number.isFinite(qtyNum) || qtyNum <= 0) return;
+      if (!expandedItem || !expandedProduct) {
+        addRuntimeDebugEvent("pricing recalculation skipped", { reason: "missing expanded item or product" });
+        return;
+      }
+      if (dimsRequired && (!Number.isFinite(widthNum) || widthNum <= 0 || !Number.isFinite(heightNum) || heightNum <= 0)) {
+        const debug = { requestFired: false, reason: "invalid dimensions", widthNum, heightNum, qtyNum };
+        setPricingRuntimeDebug(debug);
+        addRuntimeDebugEvent("pricing recalculation skipped", debug);
+        return;
+      }
+      if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+        const debug = { requestFired: false, reason: "invalid quantity", widthNum, heightNum, qtyNum };
+        setPricingRuntimeDebug(debug);
+        addRuntimeDebugEvent("pricing recalculation skipped", debug);
+        return;
+      }
 
       if (isExpandedTreeV2 && !optionsV2Valid) {
+        const debug = {
+          requestFired: false,
+          reason: "optionsV2Valid false",
+          selectedOptionsPayload: optionSelectionsV2.selected || {},
+          missingRequiredPbv2Fields,
+        };
+        setPricingRuntimeDebug(debug);
+        addRuntimeDebugEvent("pricing recalculation blocked", debug);
         setCalcError(null);
         return;
       }
@@ -651,6 +882,20 @@ export function LineItemsSection({
         ? { optionSelectionsJson: optionSelectionsV2.selected || {} } 
         : {};
       const v1Payload = !isExpandedTreeV2 ? { selectedOptions: optionSelections } : {};
+      const requestDebug = {
+        requestFired: true,
+        at: new Date().toISOString(),
+        productId: expandedItem.productId,
+        lineItemId: expandedItem.id,
+        tempId: expandedItem.tempId,
+        width: widthNum,
+        height: heightNum,
+        quantity: qtyNum,
+        selectedOptionsPayload: isExpandedTreeV2 ? optionSelectionsV2.selected || {} : optionSelections,
+        missingRequiredPbv2Fields,
+      };
+      setPricingRuntimeDebug(requestDebug);
+      addRuntimeDebugEvent("pricing recalculation request fired", requestDebug);
 
       apiRequest("POST", "/api/quotes/calculate", {
         productId: expandedItem.productId,
@@ -669,6 +914,15 @@ export function LineItemsSection({
           // Backend returns 'linePrice' in dollars (legacy compatibility)
           const price = Number(data?.linePrice);
           if (!Number.isFinite(price)) return;
+          const resultDebug = {
+            ...requestDebug,
+            resultAt: new Date().toISOString(),
+            latestPricingResult: data,
+            matchedMatrixRowId: data?.pbv2SnapshotJson?.pbv2PricingSnapshot?.resolvedMatrixRowId ?? null,
+            resolvedMatrixVariables: data?.pbv2SnapshotJson?.pbv2PricingSnapshot?.resolvedMatrixVariables ?? null,
+          };
+          setPricingRuntimeDebug(resultDebug);
+          addRuntimeDebugEvent("pricing recalculation result", resultDebug);
           if (expandedKey) {
             const breakdown = data?.breakdown;
             const snapshotSelectedOptions = Array.isArray(breakdown?.selectedOptions) ? breakdown.selectedOptions : undefined;
@@ -703,6 +957,13 @@ export function LineItemsSection({
           } catch (parseErr) {
             // Keep original error message if parsing fails
           }
+          const errorDebug = {
+            ...requestDebug,
+            errorAt: new Date().toISOString(),
+            errorMessage,
+          };
+          setPricingRuntimeDebug(errorDebug);
+          addRuntimeDebugEvent("pricing recalculation error", errorDebug);
           setCalcError(errorMessage);
         })
         .finally(() => setIsCalculating(false));
@@ -720,6 +981,8 @@ export function LineItemsSection({
       expandedKey,
       customerId,
       quoteId,
+      addRuntimeDebugEvent,
+      missingRequiredPbv2Fields,
     ],
     400
   );
@@ -759,6 +1022,34 @@ export function LineItemsSection({
                     const hasNote = !!(item.notes || (item.specsJson as any)?.notes);
                     const hasOverride = typeof item.overridePriceCents === "number" && Number.isFinite(item.overridePriceCents);
                     const hasProductionNotes = !!(item.productionNotes && item.productionNotes.trim());
+                    const routingInitialDebug = routingInitialDebugByKey[itemKey];
+                    const currentRoutingState = {
+                      requiresDesign,
+                      requiresPrepress,
+                      requiresProofApproval: Boolean((product as any)?.requiresProofApproval ?? (item as any).requiresProofApproval),
+                    };
+                    const routingDebug = {
+                      initializedRequiresDesign: routingInitialDebug?.requiresDesign,
+                      initializedRequiresPrepress: routingInitialDebug?.requiresPrepress,
+                      initializedRequiresProofApproval: routingInitialDebug?.requiresProofApproval,
+                      productDefaultsSource: routingInitialDebug?.productDefaultsSource ?? {
+                        productId: product?.id,
+                        productName: product?.name,
+                        requiresDesign: (product as any)?.requiresDesign,
+                        requiresPrepress: (product as any)?.requiresPrepress,
+                        requiresProofApproval: (product as any)?.requiresProofApproval,
+                        requiresProductionJob: (product as any)?.requiresProductionJob,
+                      },
+                      currentCheckboxState: currentRoutingState,
+                      changedAfterInitialization: {
+                        requiresDesign: routingInitialDebug ? routingInitialDebug.requiresDesign !== requiresDesign : "(unknown)",
+                        requiresPrepress: routingInitialDebug ? routingInitialDebug.requiresPrepress !== requiresPrepress : "(unknown)",
+                        requiresProofApproval: routingInitialDebug
+                          ? routingInitialDebug.requiresProofApproval !== currentRoutingState.requiresProofApproval
+                          : "(unknown)",
+                      },
+                      events: runtimeDebugEvents,
+                    };
 
                     return (
                       <SortableLineItemWrapper key={itemKey} id={itemKey}>
@@ -912,16 +1203,39 @@ export function LineItemsSection({
                             onProductionNotesChange={setProductionNotes}
                             requiresDesign={requiresDesign}
                             requiresPrepress={requiresPrepress}
-                            onRequiresDesignChange={setRequiresDesign}
-                            onRequiresPrepressChange={setRequiresPrepress}
+                            requiresProofApproval={currentRoutingState.requiresProofApproval}
+                            onRequiresDesignChange={handleRequiresDesignChange}
+                            onRequiresPrepressChange={handleRequiresPrepressChange}
+                            routingDebug={routingDebug}
                             optionsSlot={
                               <>
+                                {isExpanded && (
+                                  <div className="mb-3 rounded-md border-2 border-purple-500 bg-purple-50 p-3 text-[11px] text-purple-950">
+                                    <div className="font-bold">QuoteEditorLineItemsSection runtime debug</div>
+                                    <div className="mt-1 grid gap-1 font-mono">
+                                      <div>product id/name: {String(expandedProduct?.id ?? item.productId)} / {String(expandedProduct?.name ?? item.productName)}</div>
+                                      <div>line item id/temp id: {String(item.id ?? "(none)")} / {String(item.tempId ?? "(none)")}</div>
+                                      <div>active tree version id: {String((expandedProduct as any)?.pbv2ActiveTreeVersionId ?? (item as any)?.pbv2TreeVersionId ?? "(none)")}</div>
+                                      <div>option selections state: {debugJson(optionSelectionsV2)}</div>
+                                      <div>default selections computed: {debugJson(defaultSelectionsComputed)}</div>
+                                      <div>selectedOptions payload: {debugJson(optionSelectionsV2.selected ?? {})}</div>
+                                      <div>missing required fields: {missingRequiredPbv2Fields.join(", ") || "(none)"}</div>
+                                      <div>pricing request fired: {String((pricingRuntimeDebug as any).requestFired ?? false)}</div>
+                                      <div>matched matrix row id: {String((pricingRuntimeDebug as any).matchedMatrixRowId ?? "(none)")}</div>
+                                      <div>latest pricing result: {debugJson((pricingRuntimeDebug as any).latestPricingResult ?? null)}</div>
+                                      <div>pricing debug: {debugJson(pricingRuntimeDebug)}</div>
+                                      <div>scroll target line item id: {String(expandedKey ?? "(none)")}</div>
+                                      <div>latest focus/scroll: {debugJson(scrollFocusDebug)}</div>
+                                      <div>runtime event timestamps: {debugJson(runtimeDebugEvents.slice(-12))}</div>
+                                    </div>
+                                  </div>
+                                )}
                                 {isExpandedTreeV2 && expandedOptionTreeJson ? (
                                   <ProductOptionsPanelV2
                                     tree={expandedOptionTreeJson}
                                     selections={optionSelectionsV2}
-                                    onSelectionsChange={setOptionSelectionsV2}
-                                    onValidityChange={setOptionsV2Valid}
+                                    onSelectionsChange={handleOptionSelectionsV2Change}
+                                    onValidityChange={handleOptionsV2ValidityChange}
                                   />
                                 ) : (
                                   <ProductOptionsPanel
@@ -1008,11 +1322,38 @@ export function LineItemsSection({
                           key={p.id}
                           value={`${p.name} ${(p as any).sku || ''} ${(p as any).category || ''}`}
                           onSelect={async () => {
+                            addRuntimeDebugEvent("initial draft creation requested", {
+                              productId: p.id,
+                              productName: p.name,
+                              activeElementBefore: describeDebugElement(document.activeElement),
+                            });
                             const created = await onCreateDraftLineItem(p.id);
+                            addRuntimeDebugEvent("initial draft creation returned", {
+                              productId: p.id,
+                              productName: p.name,
+                              created,
+                              activeElementAfterCreate: describeDebugElement(document.activeElement),
+                            });
                             const k = created ? getItemKey(created) : null;
                             setSearchQuery("");
                             setSearchOpen(false);
                             if (k) onExpandedKeyChange(k);
+                            window.setTimeout(() => {
+                              addRuntimeDebugEvent("post add product focus snapshot", {
+                                productId: p.id,
+                                lineItemKey: k,
+                                activeElement: describeDebugElement(document.activeElement),
+                                scrollY: window.scrollY,
+                              });
+                            }, 0);
+                            window.setTimeout(() => {
+                              addRuntimeDebugEvent("post add product delayed focus snapshot", {
+                                productId: p.id,
+                                lineItemKey: k,
+                                activeElement: describeDebugElement(document.activeElement),
+                                scrollY: window.scrollY,
+                              });
+                            }, 250);
                           }}
                         >
                           <div className="min-w-0 flex-1">

@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import type { LineItemOptionSelectionsV2, OptionNodeV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import { validateOptionTreeV2 } from "@shared/optionTreeV2";
 import { normalizeSelectionMap, resolveRuntimeVisibility } from "@shared/optionTreeV2Runtime";
-import { sortPbv2Choices, sortPbv2NodeIdsByBuilderOrder } from "@shared/pbv2OrderEntryRuntime";
+import { buildPbv2DefaultSelections, sortPbv2Choices, sortPbv2NodeIdsByBuilderOrder } from "@shared/pbv2OrderEntryRuntime";
 import { evaluateProductOptionRules, type ProductOptionRule } from "@shared/productOptionRules";
 import { extractProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
 
@@ -166,6 +166,20 @@ function hierarchicalNodeSort(
     if (sa !== sb) return sa - sb;
     return aIndex - bIndex;
   });
+}
+
+function debugValue(value: unknown): string {
+  if (value === undefined) return "(undefined)";
+  if (value === null) return "(null)";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function debugValuesMatch(a: unknown, b: unknown): boolean {
+  return debugValue(a) === debugValue(b);
 }
 
 export function ProductOptionsPanelV2({
@@ -361,6 +375,68 @@ export function ProductOptionsPanelV2({
     },
   }), [renderedNodeIds, ruleEvaluation.effectiveSelections, safeSelections.resolved, safeSelections.selected]);
 
+  const computedDefaultSelections = useMemo(
+    () => buildPbv2DefaultSelections(tree),
+    [tree]
+  );
+
+  const questionDebugRows = useMemo(() => {
+    return renderedNodeIds
+      .map((nodeId) => tree.nodes[nodeId])
+      .filter((node): node is OptionNodeV2 => Boolean(node && isPbv2QuestionNode(node) && node.input))
+      .map((node) => {
+        const selectionKey = getSelectionKey(node);
+        const currentValue = getNodeValue(displaySelections, node);
+        const defaultEntry =
+          computedDefaultSelections?.selected?.[selectionKey]
+          ?? computedDefaultSelections?.selected?.[(node as any).key]
+          ?? computedDefaultSelections?.selected?.[node.id];
+        const defaultValue = defaultEntry?.value;
+        const choiceIds = (node.choices ?? []).map((choice: any) => String(choice.id ?? choice.value ?? ""));
+        const choiceLabels = (node.choices ?? []).map((choice: any) => String(choice.label ?? choice.value ?? ""));
+        return {
+          label: node.label || selectionKey,
+          id: node.id,
+          selectionKey,
+          inputType: getInputType(node),
+          currentValue,
+          defaultValue,
+          hydrationMatched: defaultValue !== undefined && debugValuesMatch(currentValue, defaultValue),
+          availableChoiceIds: choiceIds,
+          availableChoiceLabels: choiceLabels,
+          runtimeVisibleStatus: {
+            inVisibleNodeIds: visibleNodeIds.includes(node.id),
+            inEffectiveVisibleNodeIds: effectiveVisibleNodeIds.includes(node.id),
+            inRenderedNodeIds: renderedNodeIds.includes(node.id),
+            hiddenByRule: hiddenOptionGroupSet.has(node.id) || hiddenOptionGroupSet.has(selectionKey),
+            disabledByRule: disabledOptionGroupSet.has(node.id) || disabledOptionGroupSet.has(selectionKey),
+            requiredByRule: requiredOptionGroupSet.has(selectionKey),
+            matrixRequired: matrixDimensionKeys.has(selectionKey),
+          },
+        };
+      });
+  }, [
+    computedDefaultSelections,
+    disabledOptionGroupSet,
+    displaySelections,
+    effectiveVisibleNodeIds,
+    hiddenOptionGroupSet,
+    matrixDimensionKeys,
+    renderedNodeIds,
+    requiredOptionGroupSet,
+    tree.nodes,
+    visibleNodeIds,
+  ]);
+
+  useEffect(() => {
+    console.info("[ProductOptionsPanelV2.runtime-debug]", {
+      renderedNodeIds,
+      selectedKeys: Object.keys(safeSelections.selected ?? {}),
+      computedDefaultSelections,
+      questionDebugRows,
+    });
+  }, [computedDefaultSelections, questionDebugRows, renderedNodeIds, safeSelections.selected]);
+
   // Prune selections for hidden/missing nodes and store resolved.visibleNodeIds canonically.
   useEffect(() => {
     // Validate selections against whatever set we're actually rendering.
@@ -549,6 +625,29 @@ export function ProductOptionsPanelV2({
   return (
     <div className={cn("space-y-3", className)}>
       <RenderPathBanner name="ProductOptionsPanelV2" />
+      <div className="rounded-md border-2 border-blue-500 bg-blue-50 p-3 text-[11px] text-blue-950">
+        <div className="font-bold">ProductOptionsPanelV2 runtime selection debug</div>
+        <div className="mt-1 font-mono">selection state: {debugValue(safeSelections)}</div>
+        <div className="font-mono">computed defaults: {debugValue(computedDefaultSelections)}</div>
+        <div className="mt-2 space-y-2">
+          {questionDebugRows.map((row) => (
+            <div key={row.id} className="rounded border border-blue-300 bg-white/70 p-2">
+              <div className="font-semibold">{row.label}</div>
+              <div className="grid gap-0.5 font-mono">
+                <div>question id: {row.id}</div>
+                <div>selectionKey: {row.selectionKey}</div>
+                <div>input type: {row.inputType}</div>
+                <div>current selected value: {debugValue(row.currentValue)}</div>
+                <div>computed default value: {debugValue(row.defaultValue)}</div>
+                <div>hydration matched: {String(row.hydrationMatched)}</div>
+                <div>available choice ids: {row.availableChoiceIds.join(", ") || "(none)"}</div>
+                <div>available choice labels: {row.availableChoiceLabels.join(", ") || "(none)"}</div>
+                <div>runtime visible status: {debugValue(row.runtimeVisibleStatus)}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
       {sectionLabel && (
         <div className="flex items-center gap-2">
           <div className="text-sm font-medium">{sectionLabel}</div>
