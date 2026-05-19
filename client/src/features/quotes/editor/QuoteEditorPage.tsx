@@ -424,6 +424,23 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             // Mark restoration complete and clear storage
             didRestoreRef.current = true;
             clearPendingExpandedLineItemId();
+            // Scroll to the expanded card top instead of raw scrollY restore.
+            // The saved scrollY was captured while the card was already expanded, so
+            // restoring it on a page where the card is initially collapsed puts the
+            // viewport at the footer.  We consume the pending position here so the
+            // raw-scrollTo effect below is a no-op.
+            if (getPendingScrollPosition() !== null) {
+                clearPendingScrollPosition();
+                const restoredId = matchingItem.id;
+                if (restoredId) {
+                    requestAnimationFrame(() => {
+                        requestAnimationFrame(() => {
+                            const el = document.getElementById(`line-item-${restoredId}`);
+                            if (el) el.scrollIntoView({ block: "start", behavior: "instant" as ScrollBehavior });
+                        });
+                    });
+                }
+            }
         } else if (state.lineItems.length > 0) {
             // Data is loaded but target doesn't exist - restoration is invalid
             // Mark as attempted to prevent retries
