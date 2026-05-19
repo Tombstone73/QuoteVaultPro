@@ -20,6 +20,7 @@ type ProductOptionsPanelV2Props = {
   tree: OptionTreeV2;
   selections: LineItemOptionSelectionsV2;
   onSelectionsChange: (next: LineItemOptionSelectionsV2) => void;
+  onUserEdit?: () => void;
   onValidityChange?: (isValid: boolean) => void;
   onRenderStatsChange?: (stats: ProductOptionsPanelV2RenderStats) => void;
   className?: string;
@@ -170,6 +171,7 @@ export function ProductOptionsPanelV2({
   tree: rawTree,
   selections,
   onSelectionsChange,
+  onUserEdit,
   onValidityChange,
   onRenderStatsChange,
   className,
@@ -527,6 +529,7 @@ export function ProductOptionsPanelV2({
       nextSelected[selectionKey] = { value };
     }
 
+    onUserEdit?.();
     onSelectionsChange({
       schemaVersion: 2,
       selected: nextSelected,
