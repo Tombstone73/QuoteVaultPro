@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import type { LineItemOptionSelectionsV2, OptionNodeV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import { validateOptionTreeV2 } from "@shared/optionTreeV2";
 import { normalizeSelectionMap, resolveRuntimeVisibility } from "@shared/optionTreeV2Runtime";
+import { sortPbv2Choices, sortPbv2NodeIdsByBuilderOrder } from "@shared/pbv2OrderEntryRuntime";
 import { evaluateProductOptionRules, type ProductOptionRule } from "@shared/productOptionRules";
 import { extractProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
 
@@ -49,12 +50,7 @@ function isRenderableInputType(inputType: string): boolean {
 }
 
 function getSortedChoices(node: OptionNodeV2) {
-  return (node.choices ?? []).slice().sort((a, b) => {
-    const ao = typeof a.sortOrder === "number" ? a.sortOrder : 0;
-    const bo = typeof b.sortOrder === "number" ? b.sortOrder : 0;
-    if (ao !== bo) return ao - bo;
-    return a.value.localeCompare(b.value);
-  });
+  return sortPbv2Choices(node.choices ?? []);
 }
 
 /**
@@ -154,15 +150,19 @@ function hierarchicalNodeSort(
   ids: string[],
   nodes: Record<string, OptionNodeV2>,
   parentGroupKey: Map<string, number>,
+  tree: OptionTreeV2,
 ): string[] {
-  return ids.slice().sort((a, b) => {
+  const builderSorted = sortPbv2NodeIdsByBuilderOrder(tree, ids);
+  return builderSorted.slice().sort((a, b) => {
     const ga = parentGroupKey.get(a) ?? 0;
     const gb = parentGroupKey.get(b) ?? 0;
     if (ga !== gb) return ga - gb;
-    const sa = typeof (nodes[a] as any)?.ui?.sortOrder === "number" ? (nodes[a] as any).ui.sortOrder : 0;
-    const sb = typeof (nodes[b] as any)?.ui?.sortOrder === "number" ? (nodes[b] as any).ui.sortOrder : 0;
+    const aIndex = builderSorted.indexOf(a);
+    const bIndex = builderSorted.indexOf(b);
+    const sa = typeof (nodes[a] as any)?.ui?.sortOrder === "number" ? (nodes[a] as any).ui.sortOrder : aIndex;
+    const sb = typeof (nodes[b] as any)?.ui?.sortOrder === "number" ? (nodes[b] as any).ui.sortOrder : bIndex;
     if (sa !== sb) return sa - sb;
-    return a.localeCompare(b);
+    return aIndex - bIndex;
   });
 }
 
@@ -224,19 +224,28 @@ export function ProductOptionsPanelV2({
   const nodeToParentGroupSortKey = useMemo(() => {
     const map = new Map<string, number>();
     const nodes = tree.nodes;
+    const groupSortById = new Map<string, number>();
+    sortPbv2NodeIdsByBuilderOrder(
+      tree,
+      Object.values(nodes)
+        .filter((node) => node?.kind === "group")
+        .map((node) => node.id),
+    ).forEach((groupId, index) => {
+      groupSortById.set(groupId, index);
+    });
     // Walk top-level edges array (group → child)
     for (const edge of Array.isArray((tree as any).edges) ? (tree as any).edges : []) {
       if (!edge?.fromNodeId || !edge?.toNodeId) continue;
       const fromNode = nodes[edge.fromNodeId];
       if (!fromNode || fromNode.kind !== "group") continue;
-      const groupSort = (fromNode as any).ui?.sortOrder ?? (fromNode as any).displayOrder ?? 0;
+      const groupSort = groupSortById.get(edge.fromNodeId) ?? 0;
       const existing = map.get(edge.toNodeId);
       if (existing === undefined || groupSort < existing) map.set(edge.toNodeId, groupSort);
     }
     // Walk per-node edges.children (older trees store containment here)
     for (const node of Object.values(nodes)) {
       if (!node || node.kind !== "group") continue;
-      const groupSort = (node as any).ui?.sortOrder ?? (node as any).displayOrder ?? 0;
+      const groupSort = groupSortById.get(node.id) ?? 0;
       for (const edge of Array.isArray(node.edges?.children) ? node.edges!.children! : []) {
         if (!edge?.toNodeId) continue;
         const existing = map.get(edge.toNodeId);
@@ -254,8 +263,9 @@ export function ProductOptionsPanelV2({
         .map((n) => (n as OptionNodeV2).id),
       tree.nodes,
       nodeToParentGroupSortKey,
+      tree,
     );
-  }, [tree.nodes, nodeToParentGroupSortKey]);
+  }, [tree, tree.nodes, nodeToParentGroupSortKey]);
 
   const optionRules = useMemo(() => getOptionRules(tree), [tree]);
 
@@ -310,8 +320,8 @@ export function ProductOptionsPanelV2({
       if (!merged.includes(id)) merged.push(id);
     }
     // Re-sort by parent-group hierarchy so the rendered order matches Product Builder ordering.
-    return hierarchicalNodeSort(merged, tree.nodes, nodeToParentGroupSortKey);
-  }, [hiddenOptionGroupSet, matrixRequiredNodeIds, tree.nodes, visibleNodeIds, nodeToParentGroupSortKey]);
+    return hierarchicalNodeSort(merged, tree.nodes, nodeToParentGroupSortKey, tree);
+  }, [hiddenOptionGroupSet, matrixRequiredNodeIds, tree, tree.nodes, visibleNodeIds, nodeToParentGroupSortKey]);
 
   // Final list used by the render pass. When validation fails or visibility resolves to zero
   // but the tree still contains enabled question nodes, fall back to rendering all of them so

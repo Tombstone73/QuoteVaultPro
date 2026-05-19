@@ -477,6 +477,7 @@ const LAYOUT_STABILIZATION_DELAY_MS = 80;
 
 type OrderLineItemWithPbv2Runtime = OrderLineItem & {
   pbv2ActiveTreeVersionId?: string | null;
+  pbv2TreeVersionId?: string | null;
 };
 
 type ProductWithPbv2Runtime = Product & {
@@ -499,6 +500,8 @@ function getOrderLineItemPbv2TreeVersionId({
   return String(
     product?.pbv2ActiveTreeVersionId
       ?? lineItem?.pbv2ActiveTreeVersionId
+      ?? lineItem?.pbv2TreeVersionId
+      ?? (getPbv2SnapshotFromLineItem(lineItem)?.treeVersionId as string | undefined)
       ?? ""
   );
 }
@@ -1356,6 +1359,7 @@ export function OrderLineItemsSection({
     expandedItem?.id,
     expandedItem?.productId,
     expandedItemPbv2Runtime?.pbv2ActiveTreeVersionId,
+    expandedItemPbv2Runtime?.pbv2TreeVersionId,
     expandedProductPbv2Runtime?.pbv2ActiveTreeVersionId,
     expandedProduct?.id,
     effectivePbv2Tree,
@@ -1563,7 +1567,7 @@ export function OrderLineItemsSection({
         selectedOptions: selectedOptionsArray,
       };
 
-      const isPbv2 = Boolean(pbv2SnapshotJson?.treeJson);
+      const isPbv2 = Boolean(effectivePbv2Tree || pbv2SnapshotJson?.treeJson);
       const v2Patch = isPbv2
         ? { 
             optionSelectionsJson: optionSelectionsV2,

@@ -6,6 +6,7 @@ import {
   getRenderablePbv2QuestionNodeIds,
   hasRenderablePbv2Tree,
   shouldHydratePbv2Defaults,
+  sortPbv2Choices,
 } from "../pbv2OrderEntryRuntime";
 
 function makeTree(): OptionTreeV2 {
@@ -128,5 +129,73 @@ describe("PBV2 order-entry runtime", () => {
       selections: { schemaVersion: 2, selected: {} },
       tree: makeTree(),
     })).toBe(false);
+  });
+
+  test("renderable questions follow Product Builder group, question, and edge fallback order", () => {
+    const tree: OptionTreeV2 = {
+      schemaVersion: 2,
+      rootNodeIds: ["root"],
+      nodes: {
+        root: { id: "root", kind: "group", label: "Root" },
+        group_b: { id: "group_b", kind: "group", label: "Group B", displayOrder: 20 } as any,
+        group_a: { id: "group_a", kind: "group", label: "Group A", ui: { sortOrder: 10 } },
+        beta: {
+          id: "beta",
+          kind: "question",
+          label: "Beta",
+          input: { type: "select", selectionKey: "beta" },
+          choices: [{ value: "b", label: "B" }],
+          displayOrder: 30,
+        } as any,
+        alpha: {
+          id: "alpha",
+          kind: "question",
+          label: "Alpha",
+          input: { type: "select", selectionKey: "alpha" },
+          choices: [{ value: "a", label: "A" }],
+          order: 10,
+        } as any,
+        gamma: {
+          id: "gamma",
+          kind: "question",
+          label: "Gamma",
+          input: { type: "select", selectionKey: "gamma" },
+          choices: [{ value: "g", label: "G" }],
+        },
+        delta: {
+          id: "delta",
+          kind: "question",
+          label: "Delta",
+          input: { type: "select", selectionKey: "delta" },
+          choices: [{ value: "d", label: "D" }],
+        },
+      },
+      edges: [
+        { fromNodeId: "root", toNodeId: "group_b" },
+        { fromNodeId: "root", toNodeId: "group_a" },
+        { fromNodeId: "group_b", toNodeId: "delta" },
+        { fromNodeId: "group_b", toNodeId: "gamma" },
+        { fromNodeId: "group_a", toNodeId: "beta" },
+        { fromNodeId: "group_a", toNodeId: "alpha" },
+      ],
+    };
+
+    expect(getRenderablePbv2QuestionNodeIds(tree)).toEqual(["alpha", "beta", "delta", "gamma"]);
+  });
+
+  test("choices follow explicit display/order fields and otherwise keep original choice order", () => {
+    const sorted = sortPbv2Choices([
+      { value: "fallback-first", label: "Fallback First" },
+      { value: "last", label: "Last", displayOrder: 30 } as any,
+      { value: "first", label: "First", order: 5 } as any,
+      { value: "fallback-second", label: "Fallback Second" },
+    ]);
+
+    expect(sorted.map((choice) => choice.value)).toEqual([
+      "first",
+      "last",
+      "fallback-first",
+      "fallback-second",
+    ]);
   });
 });

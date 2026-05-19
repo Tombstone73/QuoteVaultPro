@@ -76,6 +76,7 @@ import {
     getInventoryReservationsGate,
     resolveInventoryPolicyFromOrgPreferences,
 } from "@shared/inventoryPolicy";
+import { getClientBooleanOverride } from "../lib/clientBooleanOverride";
 import { convertReservationInputToBaseQty } from "@shared/uomConversions";
 import {
     createRequestLogOnce,
@@ -4764,23 +4765,22 @@ export async function registerOrderRoutes(
             // If the client didn't explicitly send requiresDesign, pass null so
             // materializeLineItemDesignSnapshot falls back to the product's design config
             // rather than treating Zod's default(false) as an intentional override.
-            const clientSentRequiresDesign =
-                Object.prototype.hasOwnProperty.call(req.body, 'requiresDesign') &&
-                typeof (req.body as any).requiresDesign === 'boolean';
+            const requestedRequiresDesignOverride = getClientBooleanOverride(req.body, "requiresDesign");
+            const requestedRequiresPrepressOverride = getClientBooleanOverride(req.body, "requiresPrepress");
 
             const designSnapshot = materializeLineItemDesignSnapshot({
                 config: await productDesignConfigRepository.getByProductId(organizationId, String(lineItemData.productId)),
                 requestedNeedsDesignOverride: Object.prototype.hasOwnProperty.call(lineItemData, 'needsDesignOverride')
                     ? ((lineItemData as any).needsDesignOverride ?? null)
                     : undefined,
-                requestedEffectiveRequiresDesign: clientSentRequiresDesign ? lineItemData.requiresDesign : null,
+                requestedEffectiveRequiresDesign: requestedRequiresDesignOverride,
             });
 
             const routing = await resolveEffectiveLineItemRouting({
                 organizationId,
                 productId: String(lineItemData.productId),
                 requestedRequiresDesign: designSnapshot.effectiveRequiresDesign,
-                requestedRequiresPrepress: lineItemData.requiresPrepress,
+                requestedRequiresPrepress: requestedRequiresPrepressOverride,
             });
 
             // Create line item with server-computed pricing
