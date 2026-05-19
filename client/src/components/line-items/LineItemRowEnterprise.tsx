@@ -33,6 +33,7 @@ import type { LineItemFlagVM, LineItemOptionSummaryVM } from "@/lib/lineItems/li
 import type { PBV2Outputs } from "@/lib/pbv2/pbv2Outputs";
 import { assignEffectIndexFallback } from "@shared/pbv2/pbv2EffectIndex";
 import { normalizePbv2DiffComponent, pbv2DiffComponents } from "@shared/pbv2/pbv2ComponentDiff";
+import { RenderPathBanner } from "@/components/debug/RenderPathBanner";
 
 export type LineItemEnterpriseRowModel = {
   id: string;
@@ -306,6 +307,7 @@ export default function LineItemRowEnterprise({
 
   return (
     <div className="liTheme">
+      <RenderPathBanner name="LineItemRowEnterprise" className="mb-2" />
       <div
         className={`${styles.li} ${variant === "flat" ? styles.liFlat : ""} ${className ?? ""}`}
         onClick={handleRowClick}
