@@ -14,10 +14,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Database, Users, Package, Building2, Bug, AlertTriangle, Trash2, Ban, Loader2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Database, Users, Package, Building2, Bug, AlertTriangle, Trash2, Ban, Loader2, Code2 } from "lucide-react";
 import { TitanCard } from "@/components/titan";
 import { DestructiveActionModal } from "@/components/DestructiveActionModal";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/useAuth";
 
 type Organization = {
   id: string;
@@ -38,6 +40,7 @@ function formatDeletedCounts(counts: Record<string, number>): string {
 export default function AdminTools() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { isPlatformDeveloper } = useAuth();
 
   // Transactional reset
   const [resetModalOpen, setResetModalOpen] = useState(false);
@@ -365,6 +368,52 @@ export default function AdminTools() {
           </div>
         </div>
       </TitanCard>
+
+      {/* Developer Tools Section — only visible to platform developers */}
+      {isPlatformDeveloper && (
+        <TitanCard className="p-6 border-amber-500/30">
+          <div className="space-y-6">
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <Code2 className="h-5 w-5 text-amber-500" />
+                <h3 className="text-titan-base font-semibold text-titan-text-primary">Developer Tools</h3>
+                <Badge variant="outline" className="text-[10px] px-1.5 border-amber-500/50 text-amber-500 bg-amber-500/5 ml-1">
+                  DEV ONLY
+                </Badge>
+              </div>
+              <p className="text-titan-sm text-titan-text-secondary">
+                Platform-level diagnostic utilities. Read-only — no data is modified.
+                Visible only to users with <code className="text-xs bg-titan-bg-surface rounded px-1 py-0.5">is_platform_developer = true</code>.
+              </p>
+            </div>
+
+            <div className="h-px bg-amber-500/20" />
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* QB Invoice Inspector */}
+              <Card className="border-amber-500/20 bg-titan-bg-card-elevated">
+                <CardHeader className="pb-3">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Code2 className="h-4 w-4 text-amber-500" />
+                    <CardTitle className="text-titan-sm">QB Invoice Inspector</CardTitle>
+                  </div>
+                  <CardDescription className="text-titan-xs">
+                    Fetch and inspect a single QuickBooks invoice payload — transformed mapping and raw QB fields.
+                    Used to audit field shapes before bulk imports.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <Link to="/admin/developer/qb-invoice-inspector">
+                    <Button variant="outline" size="sm" className="w-full border-amber-500/30 hover:border-amber-500/60">
+                      Open Inspector
+                    </Button>
+                  </Link>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        </TitanCard>
+      )}
 
       {/* Danger Zone Section */}
       <TitanCard className="p-6 border-destructive/50">
