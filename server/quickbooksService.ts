@@ -2429,20 +2429,33 @@ function joinLineDescs(descs: string[], maxItems: number, maxLen: number): strin
  * - If not, fall back to useful reference/description data in priority order.
  *
  * Extraction priority:
- *   A. CustomField with PO name       → source: 'custom_field'
- *   B. Explicit PO pattern in PrivateNote → source: 'private_note'
- *   C. Explicit PO pattern in CustomerMemo → source: 'customer_memo'
- *   D. Explicit PO pattern in any Line description → source: 'line_description'
- *   E. CustomField with reference name → source: 'custom_field_reference'
- *   F. CustomerMemo if concise and not generic boilerplate → source: 'customer_memo'
- *   G. PrivateNote if concise and not generic boilerplate → source: 'private_note'
- *   H. Joined meaningful line descriptions → source: 'line_description'
- *   I. Nothing reliable found → null / null
+ *   A0. CustomField named "sales1" (legacy InfoFloPrint PO/reference) → source: 'custom_field_sales1'
+ *   A.  CustomField with PO name       → source: 'custom_field'
+ *   B.  Explicit PO pattern in PrivateNote → source: 'private_note'
+ *   C.  Explicit PO pattern in CustomerMemo → source: 'customer_memo'
+ *   D.  Explicit PO pattern in any Line description → source: 'line_description'
+ *   E.  CustomField with reference name → source: 'custom_field_reference'
+ *   F.  CustomerMemo if concise and not generic boilerplate → source: 'customer_memo'
+ *   G.  PrivateNote if concise and not generic boilerplate → source: 'private_note'
+ *   H.  Joined meaningful line descriptions → source: 'line_description'
+ *   I.  Nothing reliable found → null / null
  *
  * Returns { poNumber, source } or { null, null }.
  * Never logs raw invoice payloads.
  */
 export function extractQBInvoiceCustomerPo(qbInvoice: any): { poNumber: string | null; source: string | null } {
+  // ── A0. CustomField named "sales1" — legacy InfoFloPrint PO/reference ─────
+  // This field is populated by the legacy InfoFloPrint system and contains the
+  // customer PO or job reference. It must take priority over all other fields.
+  if (Array.isArray(qbInvoice.CustomField)) {
+    for (const field of qbInvoice.CustomField) {
+      const name = String(field.Name ?? '').toLowerCase().trim();
+      if (name !== 'sales1') continue;
+      const value = String(field.StringValue ?? '').trim();
+      if (value) return { poNumber: value.slice(0, 100), source: 'custom_field_sales1' };
+    }
+  }
+
   // ── A. CustomField with explicit PO name ──────────────────────────────────
   let referenceFieldValue: string | null = null; // save any reference field for step E
   if (Array.isArray(qbInvoice.CustomField)) {
@@ -2632,11 +2645,26 @@ function collectQBInvoicePoLikeCandidates(qbInvoice: any, mappedSource: string |
 
   if (Array.isArray(qbInvoice.CustomField)) {
     qbInvoice.CustomField.forEach((field: any, index: number) => {
-      add(
-        `CustomField[${index}]${field?.Name ? `.${field.Name}` : ''}`,
-        field?.StringValue ?? field?.DateValue ?? field?.NumberValue,
-        mappedSource === 'custom_field' || mappedSource === 'custom_field_reference' ? mappedSource : null,
-      );
+      const fieldName = String(field?.Name ?? '').toLowerCase().trim();
+      const qbFieldLabel = `CustomField[${index}]${field?.Name ? `.${field.Name}` : ''}`;
+      const rawValue = field?.StringValue ?? field?.DateValue ?? field?.NumberValue;
+      const isSales1 = fieldName === 'sales1';
+      // sales1 is always included (it is the legacy InfoFloPrint PO/reference field)
+      // Other custom fields are filtered by usefulness
+      if (isSales1) {
+        const value = previewScalar(rawValue, 300);
+        if (value) {
+          candidates.push({
+            qbField: qbFieldLabel,
+            value,
+            mapped: mappedSource === 'custom_field_sales1',
+            destination: mappedSource === 'custom_field_sales1' ? 'invoices.customerPoNumber' : null,
+          });
+        }
+      } else {
+        const cfSource = mappedSource === 'custom_field' || mappedSource === 'custom_field_reference' ? mappedSource : null;
+        add(qbFieldLabel, rawValue, cfSource);
+      }
     });
   }
 
@@ -2729,11 +2757,11 @@ function buildQBInvoicePayloadInspection(params: {
   addField('TotalAmt', qbInvoice.TotalAmt, 'invoices.subtotal / invoices.total / invoices.totalCents', 'mapped');
   addField('Balance', qbInvoice.Balance, 'invoices.balanceDue / invoices.qbImportBalanceDue / classification', 'mapped');
   addField('TxnTaxDetail.TotalTax', qbInvoice.TxnTaxDetail?.TotalTax, 'invoices.tax / invoices.taxCents', 'mapped');
-  addField('Line', qbInvoice.Line, 'invoices.qbLineItemsSnapshot', 'mapped', 'Stored as raw line snapshot only; not written to production-coupled invoice_line_items.');
+  addField('Line', qbInvoice.Line, 'invoices.qbLineItemsSnapshot', 'mapped', 'Stored as structured QBInvoiceLineItemDetail[] snapshot (with parsedDetails); not written to production-coupled invoice_line_items.');
   addField('Line[].Description', Array.isArray(qbInvoice.Line) ? qbInvoice.Line.map((line: any) => line?.Description).filter(hasQBValue) : null, customerPoSource === 'line_description' ? 'invoices.customerPoNumber' : null, customerPoSource === 'line_description' ? 'mapped' : 'ignored', 'Can be fallback source for customerPoNumber when useful line descriptions are found.', 'Joined fallback is capped at 100 characters.');
   addField('CustomerMemo', qbInvoice.CustomerMemo?.value ?? qbInvoice.CustomerMemo, customerPoSource === 'customer_memo' ? 'invoices.customerPoNumber' : null, customerPoSource === 'customer_memo' ? 'mapped' : 'ignored', 'Can be fallback source for customerPoNumber unless it looks like boilerplate.', 'Stored customerPoNumber is capped at 100 characters.');
   addField('PrivateNote', qbInvoice.PrivateNote, customerPoSource === 'private_note' ? 'invoices.customerPoNumber' : null, customerPoSource === 'private_note' ? 'mapped' : 'ignored', 'Can be fallback source for customerPoNumber when an explicit PO or useful note is found.', 'Stored customerPoNumber is capped at 100 characters.');
-  addField('CustomField[]', qbInvoice.CustomField, customerPoSource === 'custom_field' || customerPoSource === 'custom_field_reference' ? 'invoices.customerPoNumber' : null, customerPoSource === 'custom_field' || customerPoSource === 'custom_field_reference' ? 'mapped' : 'ignored', 'PO-named fields win; reference-named fields are fallback sources.', 'Stored customerPoNumber is capped at 100 characters.');
+  addField('CustomField[]', qbInvoice.CustomField, customerPoSource === 'custom_field' || customerPoSource === 'custom_field_reference' || customerPoSource === 'custom_field_sales1' ? 'invoices.customerPoNumber' : null, customerPoSource === 'custom_field' || customerPoSource === 'custom_field_reference' || customerPoSource === 'custom_field_sales1' ? 'mapped' : 'ignored', 'sales1 field (InfoFloPrint legacy) wins first; PO-named fields next; reference-named fields are fallback.', 'Stored customerPoNumber is capped at 100 characters.');
   addField('BillAddr', qbInvoice.BillAddr, null, 'ignored');
   addField('ShipAddr', qbInvoice.ShipAddr, null, 'ignored');
 
@@ -2958,7 +2986,31 @@ export async function importQBInvoicesByIds(
       const taxAmt = Number(qbInvoice.TxnTaxDetail?.TotalTax ?? 0);
       const amountPaid = Math.max(0, totalAmt - balance);
       const qbCustomerRefId: string | null = qbInvoice.CustomerRef?.value ?? null;
-      const lineItemsSnapshot: any[] | null = Array.isArray(qbInvoice.Line) ? qbInvoice.Line : null;
+      // Store structured/parsed line snapshots (not raw QB Line array) so imported invoices
+      // are readable and auditable without re-fetching from QB. rawDescription is always preserved.
+      const lineItemsSnapshot: QBInvoiceLineItemDetail[] | null = Array.isArray(qbInvoice.Line)
+        ? qbInvoice.Line
+            .filter((l: any) => l.DetailType !== 'SubTotalLineDetail')
+            .map((l: any): QBInvoiceLineItemDetail => {
+              const detail = l.SalesItemLineDetail ?? l.DiscountLineDetail ?? null;
+              const description = String(l.Description ?? '').trim() || null;
+              const itemRef: QBInvoiceLineItemDetail['itemRef'] = detail?.ItemRef?.value
+                ? { qbId: String(detail.ItemRef.value), name: String(detail.ItemRef.name ?? '') }
+                : null;
+              const parsedDetails = parseQBLineDescription(description);
+              return {
+                lineNum: Number(l.LineNum ?? 0),
+                description,
+                amount: Number(l.Amount ?? 0),
+                qty: detail?.Qty != null ? Number(detail.Qty) : null,
+                unitPrice: detail?.UnitPrice != null ? Number(detail.UnitPrice) : null,
+                itemRef,
+                serviceDate: detail?.ServiceDate ?? null,
+                parsedDetails,
+                suggestedProductName: itemRef?.name || parsedDetails?.productName || null,
+              };
+            })
+        : null;
       const { poNumber: extractedPo, source: extractedPoSource } = extractQBInvoiceCustomerPo(qbInvoice);
 
       // Find local customer (org-scoped)
@@ -3147,6 +3199,17 @@ export async function importQBInvoicesByIds(
 
 // ==================== Single Invoice Lookup ====================
 
+export type ParsedQBLineDetails = {
+  productName: string | null;
+  sides: string | null;
+  quantity: number | null;
+  measurementUnit: string | null;
+  width: number | null;
+  height: number | null;
+  artFileName: string | null;
+  rawDescription: string;
+};
+
 export type QBInvoiceLineItemDetail = {
   lineNum: number;
   description: string | null;
@@ -3155,7 +3218,94 @@ export type QBInvoiceLineItemDetail = {
   unitPrice: number | null;
   itemRef: { qbId: string; name: string } | null;
   serviceDate: string | null;
+  parsedDetails: ParsedQBLineDetails | null;
+  suggestedProductName: string | null;
 };
+
+// Art file extensions commonly uploaded to InfoFloPrint / TitanOS
+const QB_ART_FILE_PATTERN = /\b([\w.\- ]+?\.(pdf|ai|eps|png|jpg|jpeg|svg|psd|tif|tiff|indd|cdr|zip))\b/i;
+// Dimension pattern: 24 x 36, 24" x 36", 24.5 x 36.5, etc.
+const QB_DIMENSION_PATTERN = /(\d+(?:\.\d+)?)\s*[""']?\s*[xX×]\s*(\d+(?:\.\d+)?)\s*[""']?/;
+// Sidedness: "2 sides", "2-sided", "double sided", "sides: 2", "1 side", "single sided"
+const QB_SIDES_PATTERN = /\b(\d+)\s*[-\s]?sided?\b|\b(single|one|double|two)\s*[-\s]?sided?\b|\bsides?\s*[:\-]?\s*(\d+)\b/i;
+// Measurement units for quantity context
+const QB_MEASURE_UNIT_PATTERN = /\b(sq\.?\s*ft|sq\.?\s*in|square\s+fe?e?t|square\s+inch(?:es)?|sq\.?\s*yd|linear\s+ft|linear\s+feet|each|ea\.?|pieces?|pcs?|units?)\b/i;
+
+/**
+ * Best-effort parser for QB invoice line descriptions.
+ * Extracts structured fields from multiline text like:
+ *   "Foam Board\n2 Sides\n100 sq ft\n24 x 36\nartwork.pdf"
+ *
+ * Never throws — returns null on empty description, partial object on parse failure.
+ * rawDescription is always preserved.
+ */
+export function parseQBLineDescription(description: string | null): ParsedQBLineDetails | null {
+  if (!description || !description.trim()) return null;
+  try {
+    const rawDescription = description;
+    const lines = description.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+
+    // productName: first non-empty line (caller may override with itemRef.name)
+    const productName = lines[0] ?? null;
+
+    // sides
+    let sides: string | null = null;
+    const sidesMatch = description.match(QB_SIDES_PATTERN);
+    if (sidesMatch) {
+      if (sidesMatch[3]) {
+        sides = sidesMatch[3];
+      } else if (sidesMatch[1]) {
+        sides = sidesMatch[1] + '-sided';
+      } else if (sidesMatch[2]) {
+        const word = sidesMatch[2].toLowerCase();
+        sides = (word === 'single' || word === 'one') ? '1-sided' : '2-sided';
+      }
+    }
+
+    // width and height from dimension pattern
+    let width: number | null = null;
+    let height: number | null = null;
+    const dimMatch = description.match(QB_DIMENSION_PATTERN);
+    if (dimMatch) {
+      width = parseFloat(dimMatch[1]);
+      height = parseFloat(dimMatch[2]);
+    }
+
+    // measurementUnit
+    let measurementUnit: string | null = null;
+    const unitMatch = description.match(QB_MEASURE_UNIT_PATTERN);
+    if (unitMatch) {
+      measurementUnit = unitMatch[1].replace(/\s+/g, ' ').trim().toLowerCase();
+    }
+
+    // quantity: standalone number adjacent to unit OR on its own line
+    // Exclude dimension numbers to avoid false positives
+    let quantity: number | null = null;
+    const qtyLinePattern = /^(\d+(?:[,]\d{3})*(?:\.\d+)?)\s*(sq\.?\s*ft|sq\.?\s*in|each|ea|pieces?|pcs?|units?|qty)?$/i;
+    for (const line of lines) {
+      const m = line.match(qtyLinePattern);
+      if (!m) continue;
+      const num = parseFloat(m[1].replace(/,/g, ''));
+      if (isNaN(num) || num <= 0) continue;
+      // Don't pick up dimension numbers as quantity
+      if (dimMatch && (num === width || num === height)) continue;
+      quantity = num;
+      if (m[2]) measurementUnit = measurementUnit ?? m[2].toLowerCase().trim();
+      break;
+    }
+
+    // artFileName
+    let artFileName: string | null = null;
+    const artMatch = description.match(QB_ART_FILE_PATTERN);
+    if (artMatch) {
+      artFileName = artMatch[1].trim();
+    }
+
+    return { productName, sides, quantity, measurementUnit, width, height, artFileName, rawDescription };
+  } catch {
+    return { productName: null, sides: null, quantity: null, measurementUnit: null, width: null, height: null, artFileName: null, rawDescription: String(description) };
+  }
+}
 
 export type QBInvoiceDetail = {
   qbId: string;
@@ -3196,16 +3346,22 @@ function transformQBInvoice(qbInvoice: any): QBInvoiceDetail {
       // Skip subtotal lines (DetailType = 'SubTotalLineDetail')
       if (line.DetailType === 'SubTotalLineDetail') continue;
       const detail = line.SalesItemLineDetail ?? line.DiscountLineDetail ?? null;
+      const description = String(line.Description ?? '').trim() || null;
+      const itemRef: QBInvoiceLineItemDetail['itemRef'] = detail?.ItemRef?.value
+        ? { qbId: String(detail.ItemRef.value), name: String(detail.ItemRef.name ?? '') }
+        : null;
+      const parsedDetails = parseQBLineDescription(description);
+      const suggestedProductName = itemRef?.name || parsedDetails?.productName || null;
       lineItems.push({
         lineNum: Number(line.LineNum ?? 0),
-        description: String(line.Description ?? '').trim() || null,
+        description,
         amount: Number(line.Amount ?? 0),
         qty: detail?.Qty != null ? Number(detail.Qty) : null,
         unitPrice: detail?.UnitPrice != null ? Number(detail.UnitPrice) : null,
-        itemRef: detail?.ItemRef?.value
-          ? { qbId: String(detail.ItemRef.value), name: String(detail.ItemRef.name ?? '') }
-          : null,
+        itemRef,
         serviceDate: detail?.ServiceDate ?? null,
+        parsedDetails,
+        suggestedProductName,
       });
     }
   }
@@ -3295,5 +3451,172 @@ export async function fetchQBInvoiceByNumber(
   return {
     raw: qbInvoice,
     transformed: transformQBInvoice(qbInvoice),
+  };
+}
+
+// ==================== Customer Payload Inspector ====================
+
+export type QBCustomerFieldSource = 'qb_display_name' | 'qb_company_name' | 'qb_given_family_name' | 'qb_primary_email' | 'qb_primary_phone' | 'qb_mobile' | 'qb_bill_addr' | 'qb_ship_addr' | 'qb_balance' | 'qb_notes' | 'qb_web_addr';
+
+export type QBCustomerMappedField = {
+  titanField: string;
+  value: string | null;
+  source: QBCustomerFieldSource | null;
+};
+
+export type QBCustomerUnmappedField = {
+  qbField: string;
+  value: unknown;
+  reason: string;
+};
+
+export type QBCustomerInspectionResult = {
+  qbCustomerId: string;
+  qbDisplayName: string;
+  mapped: QBCustomerMappedField[];
+  unmapped: QBCustomerUnmappedField[];
+  warnings: string[];
+  contactMapped: {
+    firstName: string | null;
+    lastName: string | null;
+    email: string | null;
+    phone: string | null;
+    mobile: string | null;
+    willBeCreated: boolean;
+    skipReason: string | null;
+  };
+};
+
+/**
+ * Fetch a single QB customer by their QB Id and return a full field inspection:
+ * raw payload, mapped TitanOS fields (with source annotation), unmapped QB fields,
+ * and warnings (e.g. missing person name).
+ *
+ * Read-only — does NOT write to any local table.
+ * Restricted to platform developers at the route level.
+ */
+export async function fetchQBCustomerForInspection(
+  organizationId: string,
+  qbCustomerId: string,
+): Promise<{ raw: any; inspection: QBCustomerInspectionResult } | null> {
+  const safeId = String(qbCustomerId).trim();
+  if (!safeId) throw new Error('qbCustomerId is required');
+
+  const resp = await makeQBRequest('GET', `/customer/${encodeURIComponent(safeId)}`, undefined, organizationId);
+  const qbCustomer = resp?.Customer;
+  if (!qbCustomer) return null;
+
+  const warnings: string[] = [];
+
+  // ── Mapped fields ────────────────────────────────────────────────────────
+  const mapped: QBCustomerMappedField[] = [];
+
+  // Company name: prefer DisplayName, fall back to CompanyName
+  const displayName = String(qbCustomer.DisplayName || '').trim();
+  const companyName = String(qbCustomer.CompanyName || '').trim();
+  const resolvedCompanyName = displayName || companyName || null;
+  mapped.push({
+    titanField: 'customers.companyName',
+    value: resolvedCompanyName,
+    source: displayName ? 'qb_display_name' : companyName ? 'qb_company_name' : null,
+  });
+
+  // Email
+  const email = String(qbCustomer.PrimaryEmailAddr?.Address || '').trim() || null;
+  mapped.push({ titanField: 'customers.email', value: email, source: email ? 'qb_primary_email' : null });
+
+  // Phone
+  const phone = String(qbCustomer.PrimaryPhone?.FreeFormNumber || '').trim() || null;
+  mapped.push({ titanField: 'customers.phone', value: phone, source: phone ? 'qb_primary_phone' : null });
+
+  // Website
+  const website = String(qbCustomer.WebAddr?.URI || '').trim() || null;
+  mapped.push({ titanField: 'customers.website', value: website, source: website ? 'qb_web_addr' : null });
+
+  // Billing address
+  const billAddr = qbCustomer.BillAddr ? formatQBAddress(qbCustomer.BillAddr) : null;
+  mapped.push({ titanField: 'customers.billingAddress', value: billAddr, source: billAddr ? 'qb_bill_addr' : null });
+
+  // Shipping address
+  const shipAddr = qbCustomer.ShipAddr ? formatQBAddress(qbCustomer.ShipAddr) : null;
+  mapped.push({ titanField: 'customers.shippingAddress', value: shipAddr, source: shipAddr ? 'qb_ship_addr' : null });
+
+  // Balance
+  const balance = qbCustomer.Balance != null ? String(qbCustomer.Balance) : null;
+  mapped.push({ titanField: 'customers.currentBalance', value: balance, source: balance != null ? 'qb_balance' : null });
+
+  // Notes
+  const notes = String(qbCustomer.Notes || '').trim() || null;
+  mapped.push({ titanField: 'customers.notes', value: notes, source: notes ? 'qb_notes' : null });
+
+  // External accounting ID (QB Id itself)
+  mapped.push({ titanField: 'customers.externalAccountingId', value: safeId, source: 'qb_display_name' });
+
+  // ── Contact mapping ──────────────────────────────────────────────────────
+  const contactName = deriveQBContactName(qbCustomer);
+  const mobile = String(qbCustomer.Mobile?.FreeFormNumber || '').trim() || null;
+  const hasMeaningfulContactData = !!(email || phone || mobile);
+  const nameIsSuspicious = contactName ? isSuspiciousContactName(contactName.firstName, contactName.lastName) : false;
+
+  let skipReason: string | null = null;
+  if (!contactName) {
+    skipReason = 'No person-level name (GivenName/FamilyName) — contact not created to avoid placeholder records';
+    warnings.push('missing_person_name: GivenName and FamilyName are both absent; no contact will be created');
+  } else if (nameIsSuspicious) {
+    skipReason = `Name "${contactName.firstName} ${contactName.lastName}".trim() is a known placeholder — contact creation skipped`;
+    warnings.push(`suspicious_contact_name: "${contactName.firstName} ${contactName.lastName}".trim()`);
+  } else if (!hasMeaningfulContactData) {
+    skipReason = 'No email, phone, or mobile — contact will be created but has no contact info';
+    warnings.push('no_contact_info: contact has no email, phone, or mobile');
+  }
+
+  const contactMapped = {
+    firstName: contactName?.firstName ?? null,
+    lastName: contactName?.lastName ?? null,
+    email,
+    phone,
+    mobile,
+    willBeCreated: !!contactName && !nameIsSuspicious,
+    skipReason,
+  };
+
+  // ── Unmapped QB fields ───────────────────────────────────────────────────
+  const unmapped: QBCustomerUnmappedField[] = [];
+  const hasValue = (v: unknown) => v != null && String(v).trim() !== '';
+
+  const knownMapped = new Set([
+    'Id', 'DisplayName', 'CompanyName', 'GivenName', 'FamilyName', 'MiddleName', 'Suffix', 'Title',
+    'PrimaryEmailAddr', 'PrimaryPhone', 'Mobile', 'WebAddr',
+    'BillAddr', 'ShipAddr', 'Balance', 'Notes',
+    'MetaData', 'SyncToken', 'domain', 'sparse', 'Active', 'Taxable',
+    'Job', 'BillWithParent', 'Level', 'PrintOnCheckName',
+    'FullyQualifiedName', 'DefaultTaxCodeRef', 'CustomerTypeRef',
+  ]);
+
+  for (const [key, value] of Object.entries(qbCustomer)) {
+    if (knownMapped.has(key)) continue;
+    if (!hasValue(value)) continue;
+    unmapped.push({
+      qbField: key,
+      value,
+      reason: 'No TitanOS mapping defined for this QB Customer field',
+    });
+  }
+
+  // Warn if mobile is present but has no contact to attach to
+  if (mobile && !contactName) {
+    warnings.push(`mobile_unreachable: Mobile (${mobile}) present but no contact created — stored on customer row only`);
+  }
+
+  return {
+    raw: qbCustomer,
+    inspection: {
+      qbCustomerId: String(qbCustomer.Id),
+      qbDisplayName: displayName,
+      mapped,
+      unmapped,
+      warnings,
+      contactMapped,
+    },
   };
 }

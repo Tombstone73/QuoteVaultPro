@@ -17,6 +17,7 @@
  *   POST /api/integrations/quickbooks/jobs/trigger
  *   GET  /api/integrations/quickbooks/worker/status
  *   GET  /api/integrations/quickbooks/debug/invoice/:invoiceNumber
+ *   GET  /api/integrations/quickbooks/debug/customer/:customerId
  *
  * Placement: server/routes/quickbooks.routes.ts
  * Registered by: server/routes.ts via registerQuickBooksRoutes
@@ -730,6 +731,34 @@ export function registerQuickBooksRoutes(
     } catch (error: any) {
       console.error('[QB Debug Invoice] Error:', { message: error.message, invoiceNumber: req.params.invoiceNumber });
       return res.status(500).json({ success: false, error: error.message || 'Failed to fetch invoice from QuickBooks' });
+    }
+  });
+
+  /**
+   * GET /api/integrations/quickbooks/debug/customer/:customerId
+   * Fetch a single QuickBooks customer by their QB Id and return both the raw payload
+   * and a structured field inspection: mapped TitanOS fields, unmapped QB fields, warnings.
+   *
+   * Read-only — does NOT write to any local table.
+   * Restricted to platform developers (users.is_platform_developer = true).
+   */
+  app.get('/api/integrations/quickbooks/debug/customer/:customerId', isAuthenticated, requireDeveloperAccess, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const customerId = String(req.params.customerId || '').trim();
+      if (!customerId) {
+        return res.status(400).json({ success: false, error: 'customerId param is required' });
+      }
+
+      const result = await quickbooksService.fetchQBCustomerForInspection(organizationId, customerId);
+      if (!result) {
+        return res.status(404).json({ success: false, error: `No QuickBooks customer found with Id "${customerId}"` });
+      }
+
+      return res.json({ success: true, customerId, data: result.inspection, raw: result.raw });
+    } catch (error: any) {
+      console.error('[QB Debug Customer] Error:', { message: error.message, customerId: req.params.customerId });
+      return res.status(500).json({ success: false, error: error.message || 'Failed to fetch customer from QuickBooks' });
     }
   });
 }
