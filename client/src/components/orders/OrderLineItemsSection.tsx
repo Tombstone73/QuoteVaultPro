@@ -491,16 +491,13 @@ function blurActiveElement() {
 function getOrderLineItemPbv2TreeVersionId({
   product,
   lineItem,
-  snapshot,
 }: {
   product: ProductWithPbv2Runtime | null;
   lineItem: OrderLineItemWithPbv2Runtime | null;
-  snapshot: any;
 }): string {
   return String(
     product?.pbv2ActiveTreeVersionId
       ?? lineItem?.pbv2ActiveTreeVersionId
-      ?? snapshot?.treeVersionId
       ?? ""
   );
 }
@@ -1324,7 +1321,6 @@ export function OrderLineItemsSection({
       activeTreeVersionId: getOrderLineItemPbv2TreeVersionId({
         product: expandedProductPbv2Runtime,
         lineItem: expandedItemPbv2Runtime,
-        snapshot: pbv2SnapshotJson,
       }),
     });
     if (!hydrationKey) return;
@@ -1360,7 +1356,6 @@ export function OrderLineItemsSection({
     expandedProduct?.id,
     effectivePbv2Tree,
     optionSelectionsV2,
-    pbv2SnapshotJson,
   ]);
 
   const widthNum = dimsRequired ? Number.parseFloat(widthText) || 0 : 1;
@@ -1374,7 +1369,6 @@ export function OrderLineItemsSection({
     getOrderLineItemPbv2TreeVersionId({
       product: expandedProductPbv2Runtime,
       lineItem: expandedItemPbv2Runtime,
-      snapshot: pbv2SnapshotJson,
     })
   );
   const overridePriceCents = Number(
