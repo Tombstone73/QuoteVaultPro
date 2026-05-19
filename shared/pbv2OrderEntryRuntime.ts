@@ -58,7 +58,10 @@ function normalizePbv2Tree(tree: unknown): OptionTreeV2 | null {
     if (kind === "question" && input && (!input.selectionKey || typeof input.selectionKey !== "string")) {
       input = { ...input, selectionKey: getSelectionKeyForRuntime(nodeRecord, id) };
     }
-    nodes[id] = { ...(nodeRecord as any), id, ...(kind ? { kind } : {}), ...(input ? { input } : {}) } as OptionNodeV2;
+    const node = { ...(nodeRecord as any), id } as OptionNodeV2;
+    if (kind) node.kind = kind;
+    if (input) node.input = input as OptionNodeV2["input"];
+    nodes[id] = node;
   }
 
   if (Object.keys(nodes).length === 0) return null;
@@ -81,6 +84,13 @@ function isRenderableQuestionNode(node: OptionNodeV2): boolean {
   return status !== "DISABLED"
     && status !== "DELETED"
     && RENDERABLE_INPUT_TYPES.has(String(node.input.type ?? "").toLowerCase());
+}
+
+function isEmptySelectionValue(value: unknown): boolean {
+  return value === undefined
+    || value === null
+    || value === ""
+    || (Array.isArray(value) && value.length === 0);
 }
 
 export function getRenderablePbv2QuestionNodeIds(tree: OptionTreeV2 | null | undefined): string[] {
@@ -135,8 +145,7 @@ export function buildPbv2DefaultSelections(tree: OptionTreeV2 | null | undefined
   const nextSelected: LineItemOptionSelectionsV2["selected"] = {};
 
   for (const [key, value] of Object.entries(resolved.effectiveSelections ?? {})) {
-    if (value === undefined || value === null || value === "") continue;
-    if (Array.isArray(value) && value.length === 0) continue;
+    if (isEmptySelectionValue(value)) continue;
     nextSelected[key] = { value };
   }
 
