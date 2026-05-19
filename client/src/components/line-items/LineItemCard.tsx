@@ -515,6 +515,7 @@ export function LineItemCard({
               id={`line-item-top-anchor-${id}`}
               ref={topAnchorRef}
               tabIndex={-1}
+              aria-hidden="true"
               className="h-0 w-full overflow-hidden outline-none"
             />
             {/* Top editing row */}

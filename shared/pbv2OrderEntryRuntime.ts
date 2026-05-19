@@ -21,6 +21,13 @@ function normalizeNodeKind(node: Record<string, any>): OptionNodeV2["kind"] | un
   return undefined;
 }
 
+function getSelectionKeyForRuntime(nodeRecord: Record<string, any>, nodeId: string): string {
+  // Product Builder V2 stores selection keys on input.selectionKey; older
+  // published trees may only have node.key. Node id is the explicit final
+  // runtime fallback so legacy options still render and save deterministically.
+  return typeof nodeRecord.key === "string" && nodeRecord.key.trim() ? nodeRecord.key : nodeId;
+}
+
 function parseMaybeJson(value: unknown): unknown {
   if (typeof value !== "string") return value;
   try {
@@ -49,7 +56,7 @@ function normalizePbv2Tree(tree: unknown): OptionTreeV2 | null {
     const kind = normalizeNodeKind(nodeRecord);
     let input = nodeRecord.input && typeof nodeRecord.input === "object" ? { ...nodeRecord.input } : undefined;
     if (kind === "question" && input && (!input.selectionKey || typeof input.selectionKey !== "string")) {
-      input = { ...input, selectionKey: nodeRecord.key || id };
+      input = { ...input, selectionKey: getSelectionKeyForRuntime(nodeRecord, id) };
     }
     nodes[id] = { ...(nodeRecord as any), id, ...(kind ? { kind } : {}), ...(input ? { input } : {}) } as OptionNodeV2;
   }

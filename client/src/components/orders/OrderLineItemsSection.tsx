@@ -472,6 +472,12 @@ const DESIGN_BRIEF_STATUS_LABELS: Record<LineItemDesignBriefStatus, string> = {
   captured: "Captured",
 };
 
+const LAYOUT_STABILIZATION_DELAY_MS = 80;
+
+type OrderLineItemWithPbv2Runtime = OrderLineItem & {
+  pbv2ActiveTreeVersionId?: string | null;
+};
+
 function toDesignBriefDraft(detail?: Partial<LineItemDesignBriefDetail> | null): LineItemDesignBriefDraft {
   return {
     keyInstructions: detail?.keyInstructions ?? "",
@@ -814,7 +820,9 @@ export function OrderLineItemsSection({
     const focusTarget = () => {
       const focusEl = lineItemWidthInputRefs.current[pendingJumpToLineItemId]
         ?? (document.getElementById(`line-item-width-input-${pendingJumpToLineItemId}`) as HTMLInputElement | null);
-      const target = focusEl && !focusEl.disabled ? focusEl : el;
+      const target = focusEl && !focusEl.disabled
+        ? focusEl
+        : document.getElementById(`line-item-${pendingJumpToLineItemId}`) ?? el;
       if ("focus" in target && typeof (target as HTMLElement).focus === "function") {
         (target as HTMLElement).focus({ preventScroll: true });
       }
@@ -835,7 +843,7 @@ export function OrderLineItemsSection({
           timeoutId = window.setTimeout(() => {
             scrollToAnchor();
             setPendingJumpToLineItemId(null);
-          }, 80);
+          }, LAYOUT_STABILIZATION_DELAY_MS);
         } catch {
           setPendingJumpToLineItemId(null);
         }
@@ -1287,7 +1295,7 @@ export function OrderLineItemsSection({
       productId: expandedItem?.productId ?? expandedProduct?.id ?? null,
       activeTreeVersionId: String(
         (expandedProduct as any)?.pbv2ActiveTreeVersionId
-          ?? (expandedItem as any)?.pbv2ActiveTreeVersionId
+          ?? (expandedItem as OrderLineItemWithPbv2Runtime | null)?.pbv2ActiveTreeVersionId
           ?? (pbv2SnapshotJson as any)?.treeVersionId
           ?? ""
       ),
@@ -1320,7 +1328,7 @@ export function OrderLineItemsSection({
   }, [
     expandedItem?.id,
     expandedItem?.productId,
-    (expandedItem as any)?.pbv2ActiveTreeVersionId,
+    (expandedItem as OrderLineItemWithPbv2Runtime | null)?.pbv2ActiveTreeVersionId,
     (expandedProduct as any)?.pbv2ActiveTreeVersionId,
     expandedProduct?.id,
     effectivePbv2Tree,
