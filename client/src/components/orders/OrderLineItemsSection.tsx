@@ -478,6 +478,16 @@ type OrderLineItemWithPbv2Runtime = OrderLineItem & {
   pbv2ActiveTreeVersionId?: string | null;
 };
 
+type ProductWithPbv2Runtime = Product & {
+  pbv2ActiveTreeVersionId?: string | null;
+};
+
+function blurActiveElement() {
+  if (document.activeElement instanceof HTMLElement) {
+    document.activeElement.blur();
+  }
+}
+
 function toDesignBriefDraft(detail?: Partial<LineItemDesignBriefDetail> | null): LineItemDesignBriefDraft {
   return {
     keyInstructions: detail?.keyInstructions ?? "",
@@ -828,9 +838,7 @@ export function OrderLineItemsSection({
       }
     };
 
-    if (document.activeElement instanceof HTMLElement) {
-      document.activeElement.blur();
-    }
+    blurActiveElement();
 
     // Double RAF lets Radix/browser focus restoration and expanded layout finish;
     // the timeout is a deterministic fallback for late content height changes.
@@ -870,9 +878,11 @@ export function OrderLineItemsSection({
     if (!expandedItem) return null;
     return products.find((p) => p.id === expandedItem.productId) ?? null;
   }, [expandedItem, products]);
+  const expandedProductPbv2Runtime = expandedProduct as ProductWithPbv2Runtime | null;
+  const expandedItemPbv2Runtime = expandedItem as OrderLineItemWithPbv2Runtime | null;
 
   const expandedProductPbv2TreeDirect = getPbv2Tree(expandedProduct);
-  const expandedProductActiveTreeVersionId = (expandedProduct as any)?.pbv2ActiveTreeVersionId ?? null;
+  const expandedProductActiveTreeVersionId = expandedProductPbv2Runtime?.pbv2ActiveTreeVersionId ?? null;
   const expandedProductOptionTreeSummary = summarizePbv2Tree((expandedProduct as any)?.optionTreeJson);
 
   // Fallback: if the product was activated via PBV2 but optionTreeJson is missing,
@@ -1294,8 +1304,8 @@ export function OrderLineItemsSection({
       lineItemId,
       productId: expandedItem?.productId ?? expandedProduct?.id ?? null,
       activeTreeVersionId: String(
-        (expandedProduct as any)?.pbv2ActiveTreeVersionId
-          ?? (expandedItem as OrderLineItemWithPbv2Runtime | null)?.pbv2ActiveTreeVersionId
+        expandedProductPbv2Runtime?.pbv2ActiveTreeVersionId
+          ?? expandedItemPbv2Runtime?.pbv2ActiveTreeVersionId
           ?? (pbv2SnapshotJson as any)?.treeVersionId
           ?? ""
       ),
@@ -1328,8 +1338,8 @@ export function OrderLineItemsSection({
   }, [
     expandedItem?.id,
     expandedItem?.productId,
-    (expandedItem as OrderLineItemWithPbv2Runtime | null)?.pbv2ActiveTreeVersionId,
-    (expandedProduct as any)?.pbv2ActiveTreeVersionId,
+    expandedItemPbv2Runtime?.pbv2ActiveTreeVersionId,
+    expandedProductPbv2Runtime?.pbv2ActiveTreeVersionId,
     expandedProduct?.id,
     effectivePbv2Tree,
     optionSelectionsV2,
@@ -1344,7 +1354,7 @@ export function OrderLineItemsSection({
   const v1SelectionsKey = useMemo(() => stableStringify(optionSelections || {}), [optionSelections]);
   const v2SelectionsKey = useMemo(() => stableStringify(optionSelectionsV2?.selected || {}), [optionSelectionsV2]);
   const pbv2TreeVersionId = String(
-    (pbv2SnapshotJson as any)?.treeVersionId || (expandedItem as any)?.pbv2ActiveTreeVersionId || ""
+    (pbv2SnapshotJson as any)?.treeVersionId || expandedItemPbv2Runtime?.pbv2ActiveTreeVersionId || ""
   );
   const overridePriceCents = Number(
     ((expandedItem as any)?.overridePriceCents as number | undefined) || 0
@@ -1418,8 +1428,7 @@ export function OrderLineItemsSection({
       if (dimsRequired && (!Number.isFinite(widthNum) || widthNum <= 0 || !Number.isFinite(heightNum) || heightNum <= 0)) return;
       if (!Number.isFinite(qtyNum) || qtyNum <= 0) return;
 
-      const isPbv2 = Boolean(effectivePbv2Tree);
-      if (isPbv2 && !optionsV2Valid) {
+      if (isPbv2Mode && !optionsV2Valid) {
         setCalcError(null);
         return;
       }
@@ -1435,10 +1444,10 @@ export function OrderLineItemsSection({
       // PBV2 request: backend expects optionSelectionsJson as Record<string, any>
       // ProductOptionsPanelV2 manages LineItemOptionSelectionsV2 { schemaVersion: 2, selected: {...} }
       // Extract .selected dict for API
-      const pbv2Payload = isPbv2
+      const pbv2Payload = isPbv2Mode
         ? { optionSelectionsJson: optionSelectionsV2.selected || {} } 
         : {};
-      const v1Payload = !isPbv2 ? { selectedOptions: optionSelections } : {};
+      const v1Payload = !isPbv2Mode ? { selectedOptions: optionSelections } : {};
 
       apiRequest("POST", "/api/quotes/calculate", {
         productId: expandedItem.productId,
@@ -1498,7 +1507,7 @@ export function OrderLineItemsSection({
       qtyNum,
       optionSelections,
       optionSelectionsV2, // PBV2: reprice when selections change
-      effectivePbv2Tree, // Detect PBV2 mode from active product tree, not pricing result
+      isPbv2Mode, // Detect PBV2 mode from active product tree, not pricing result
       expandedProductPbv2Tree,
       optionsV2Valid,
       expandedItem?.id,
@@ -2778,9 +2787,7 @@ export function OrderLineItemsSection({
                           value={p.name + " " + ((p as any).sku || "") + " " + ((p as any).category || "")}
                           onSelect={async () => {
                             try {
-                              if (document.activeElement instanceof HTMLElement) {
-                                document.activeElement.blur();
-                              }
+                              blurActiveElement();
                               const created = await createLineItem.mutateAsync({
                                 orderId,
                                 productId: p.id,
