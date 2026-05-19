@@ -195,6 +195,10 @@ export const ROUTES = {
     materialsImportExport: "/admin/materials/import-export",
   },
 
+  developer: {
+    qbInvoiceInspector: "/admin/developer/qb-invoice-inspector",
+  },
+
   system: {
     adminDashboard: "/system/admin",
   },

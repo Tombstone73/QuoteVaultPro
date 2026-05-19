@@ -76,6 +76,7 @@ export function useAuth() {
     isAuthenticated,
     isAdmin: sessionData?.user?.isAdmin ?? false,
     isPlatformAdmin: sessionData?.user?.isPlatformAdmin ?? false,
+    isPlatformDeveloper: sessionData?.user?.isPlatformDeveloper ?? false,
     mustChangePassword: sessionData?.mustChangePassword ?? false,
   };
 }
