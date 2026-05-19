@@ -132,10 +132,8 @@ describe('normalizeQuickBooksLineItemsSnapshot', () => {
     ]);
 
     expect(normalized.unavailableMessage).toBeNull();
-    expect(normalized.lines).toEqual([
-      { description: 'Install labor', quantity: 2, unitPrice: 40, amount: 80 },
-      { description: 'Garden Rocks', quantity: 1, unitPrice: 23.55, amount: 23.55 },
-    ]);
+    expect(normalized.lines[0]).toMatchObject({ description: 'Install labor', quantity: 2, unitPrice: 40, amount: 80 });
+    expect(normalized.lines[1]).toMatchObject({ description: 'Garden Rocks', quantity: 1, unitPrice: 23.55, amount: 23.55 });
   });
 
   test('fails softly when snapshot is malformed', () => {
@@ -143,5 +141,44 @@ describe('normalizeQuickBooksLineItemsSnapshot', () => {
 
     expect(normalized.lines).toEqual([]);
     expect(normalized.unavailableMessage).toBe('Line details unavailable from QuickBooks snapshot');
+  });
+
+  test('handles enriched QBInvoiceLineItemDetail format with parsedDetails', () => {
+    const normalized = normalizeQuickBooksLineItemsSnapshot([
+      {
+        lineNum: 1,
+        description: 'Foam Board\n2 Sides\n24 x 36\nartwork_proof.pdf',
+        amount: 350,
+        qty: 1,
+        unitPrice: 350,
+        itemRef: { qbId: '42', name: 'Foam Board' },
+        serviceDate: '2025-03-10',
+        suggestedProductName: 'Foam Board',
+        parsedDetails: {
+          productName: 'Foam Board',
+          sides: '2-sided',
+          quantity: null,
+          measurementUnit: null,
+          width: 24,
+          height: 36,
+          artFileName: 'artwork_proof.pdf',
+          rawDescription: 'Foam Board\n2 Sides\n24 x 36\nartwork_proof.pdf',
+        },
+      },
+    ]);
+
+    expect(normalized.unavailableMessage).toBeNull();
+    expect(normalized.lines).toHaveLength(1);
+    const line = normalized.lines[0];
+    expect(line.lineNum).toBe(1);
+    expect(line.suggestedProductName).toBe('Foam Board');
+    expect(line.parsedWidth).toBe(24);
+    expect(line.parsedHeight).toBe(36);
+    expect(line.parsedSides).toBe('2-sided');
+    expect(line.parsedArtFileName).toBe('artwork_proof.pdf');
+    expect(line.rawDescription).toBe('Foam Board\n2 Sides\n24 x 36\nartwork_proof.pdf');
+    expect(line.quantity).toBe(1);
+    expect(line.unitPrice).toBe(350);
+    expect(line.amount).toBe(350);
   });
 });
