@@ -488,6 +488,23 @@ function blurActiveElement() {
   }
 }
 
+function getOrderLineItemPbv2TreeVersionId({
+  product,
+  lineItem,
+  snapshot,
+}: {
+  product: ProductWithPbv2Runtime | null;
+  lineItem: OrderLineItemWithPbv2Runtime | null;
+  snapshot: any;
+}): string {
+  return String(
+    product?.pbv2ActiveTreeVersionId
+      ?? lineItem?.pbv2ActiveTreeVersionId
+      ?? snapshot?.treeVersionId
+      ?? ""
+  );
+}
+
 function toDesignBriefDraft(detail?: Partial<LineItemDesignBriefDetail> | null): LineItemDesignBriefDraft {
   return {
     keyInstructions: detail?.keyInstructions ?? "",
@@ -849,6 +866,7 @@ export function OrderLineItemsSection({
           focusTarget();
           scrollToAnchor();
           timeoutId = window.setTimeout(() => {
+            focusTarget();
             scrollToAnchor();
             setPendingJumpToLineItemId(null);
           }, LAYOUT_STABILIZATION_DELAY_MS);
@@ -1303,12 +1321,11 @@ export function OrderLineItemsSection({
     const hydrationKey = buildPbv2DefaultsHydrationKey({
       lineItemId,
       productId: expandedItem?.productId ?? expandedProduct?.id ?? null,
-      activeTreeVersionId: String(
-        expandedProductPbv2Runtime?.pbv2ActiveTreeVersionId
-          ?? expandedItemPbv2Runtime?.pbv2ActiveTreeVersionId
-          ?? (pbv2SnapshotJson as any)?.treeVersionId
-          ?? ""
-      ),
+      activeTreeVersionId: getOrderLineItemPbv2TreeVersionId({
+        product: expandedProductPbv2Runtime,
+        lineItem: expandedItemPbv2Runtime,
+        snapshot: pbv2SnapshotJson,
+      }),
     });
     if (!hydrationKey) return;
 
@@ -1354,7 +1371,11 @@ export function OrderLineItemsSection({
   const v1SelectionsKey = useMemo(() => stableStringify(optionSelections || {}), [optionSelections]);
   const v2SelectionsKey = useMemo(() => stableStringify(optionSelectionsV2?.selected || {}), [optionSelectionsV2]);
   const pbv2TreeVersionId = String(
-    (pbv2SnapshotJson as any)?.treeVersionId || expandedItemPbv2Runtime?.pbv2ActiveTreeVersionId || ""
+    getOrderLineItemPbv2TreeVersionId({
+      product: expandedProductPbv2Runtime,
+      lineItem: expandedItemPbv2Runtime,
+      snapshot: pbv2SnapshotJson,
+    })
   );
   const overridePriceCents = Number(
     ((expandedItem as any)?.overridePriceCents as number | undefined) || 0
