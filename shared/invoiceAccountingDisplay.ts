@@ -51,10 +51,17 @@ export type InvoiceAccountingDisplay = {
 };
 
 export type QuickBooksLineItemDisplay = {
+  lineNum: number | null;
   description: string;
   quantity: number | null;
   unitPrice: number | null;
   amount: number | null;
+  suggestedProductName: string | null;
+  parsedWidth: number | null;
+  parsedHeight: number | null;
+  parsedSides: string | null;
+  parsedArtFileName: string | null;
+  rawDescription: string | null;
 };
 
 export type QuickBooksLineItemsDisplay = {
@@ -268,6 +275,10 @@ function trimText(value: unknown): string | null {
   return text ? text : null;
 }
 
+function isEnrichedQBLineItem(line: Record<string, any>): boolean {
+  return 'suggestedProductName' in line || 'parsedDetails' in line;
+}
+
 export function normalizeQuickBooksLineItemsSnapshot(snapshot: unknown): QuickBooksLineItemsDisplay {
   if (snapshot == null) {
     return { lines: [], unavailableMessage: null };
@@ -285,6 +296,34 @@ export function normalizeQuickBooksLineItemsSnapshot(snapshot: unknown): QuickBo
       if (!rawLine || typeof rawLine !== 'object') return null;
 
       const line = rawLine as Record<string, any>;
+
+      if (isEnrichedQBLineItem(line)) {
+        // Enriched QBInvoiceLineItemDetail format (post-migration)
+        const parsed = line.parsedDetails as Record<string, any> | null | undefined;
+        const description = trimText(line.description)
+          ?? trimText(line.suggestedProductName)
+          ?? 'Line item';
+
+        const quantity = line.qty == null ? null : toFiniteNumber(line.qty);
+        const unitPrice = line.unitPrice == null ? null : toFiniteNumber(line.unitPrice);
+        const amount = line.amount == null ? null : toFiniteNumber(line.amount);
+
+        return {
+          lineNum: line.lineNum == null ? null : Number(line.lineNum),
+          description,
+          quantity,
+          unitPrice,
+          amount,
+          suggestedProductName: trimText(line.suggestedProductName),
+          parsedWidth: parsed?.width == null ? null : toFiniteNumber(parsed.width),
+          parsedHeight: parsed?.height == null ? null : toFiniteNumber(parsed.height),
+          parsedSides: trimText(parsed?.sides),
+          parsedArtFileName: trimText(parsed?.artFileName),
+          rawDescription: trimText(parsed?.rawDescription) ?? trimText(line.description),
+        } satisfies QuickBooksLineItemDisplay;
+      }
+
+      // Legacy raw QB API line format
       const detailType = trimText(line.DetailType);
       const detail = detailType && typeof line[detailType] === 'object' ? (line[detailType] as Record<string, any>) : null;
 
@@ -308,10 +347,17 @@ export function normalizeQuickBooksLineItemsSnapshot(snapshot: unknown): QuickBo
       }
 
       return {
+        lineNum: null,
         description,
         quantity,
         unitPrice,
         amount,
+        suggestedProductName: null,
+        parsedWidth: null,
+        parsedHeight: null,
+        parsedSides: null,
+        parsedArtFileName: null,
+        rawDescription: null,
       } satisfies QuickBooksLineItemDisplay;
     })
     .filter((line): line is QuickBooksLineItemDisplay => Boolean(line));

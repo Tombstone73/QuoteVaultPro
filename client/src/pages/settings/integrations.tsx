@@ -999,7 +999,7 @@ export default function SettingsIntegrations() {
                             <TableHead className="text-xs">Date</TableHead>
                             <TableHead className="text-xs">Total</TableHead>
                             <TableHead className="text-xs">Balance</TableHead>
-                            <TableHead className="text-xs">Customer PO / Description</TableHead>
+                            <TableHead className="text-xs">PO / Legacy Reference</TableHead>
                             <TableHead className="text-xs">Type</TableHead>
                             <TableHead className="text-xs">Override</TableHead>
                             <TableHead className="text-xs">Status</TableHead>
@@ -1047,7 +1047,9 @@ export default function SettingsIntegrations() {
                                     {row.customerPoNumber
                                       ? (() => {
                                           const sourceLabel =
-                                            row.customerPoSource === 'line_description'
+                                            row.customerPoSource === 'custom_field_sales1'
+                                              ? 'From QuickBooks sales1 field (InfoFloPrint legacy reference)'
+                                              : row.customerPoSource === 'line_description'
                                               ? 'Derived from QuickBooks line descriptions'
                                               : row.customerPoSource === 'custom_field_reference'
                                               ? 'From QuickBooks reference custom field'
