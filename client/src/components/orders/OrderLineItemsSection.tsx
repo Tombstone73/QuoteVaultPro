@@ -2040,6 +2040,16 @@ export function OrderLineItemsSection({
                     ? itemSpecsJson.initialDraft as any
                     : null;
                   const lineItemUserEditedOptions = userEditedOptionsByLineItemId[String(item.id)] === true;
+                  const pricingDebugSnapshot = isExpanded && expandedItem && expandedItem.id === item.id
+                    ? (pbv2SnapshotJson as any)?.pbv2PricingSnapshot
+                    : (item as any)?.pbv2SnapshotJson?.pbv2PricingSnapshot;
+                  const renderedRequiresDesign = isExpanded && expandedItem && expandedItem.id === item.id
+                    ? requiresDesignInput
+                    : Boolean((item as any).requiresDesign);
+                  const renderedRequiresPrepress = isExpanded && expandedItem && expandedItem.id === item.id
+                    ? requiresPrepressInput
+                    : (typeof (item as any).requiresPrepress === "boolean" ? (item as any).requiresPrepress : null);
+                  const renderedRequiresProofApproval = Boolean((expandedProduct as any)?.requiresProofApproval ?? (item as any)?.requiresProofApproval);
 
                   let operationalWarning: string | null = null;
                   let operationalWarningTone: "warning" | "danger" | null = null;
@@ -2322,7 +2332,25 @@ export function OrderLineItemsSection({
                                           <div>initialDraft.optionSelectionsJson: {JSON.stringify(initialDraftSnapshot?.optionSelectionsJson ?? initialDraftDebug?.optionSelectionsJson ?? null)}</div>
                                           <div>rendered option labels in order: {(initialDraftSnapshot?.renderedOptionLabels ?? initialDraftDebug?.sortedOptionLabels ?? []).join(", ") || "(none)"}</div>
                                           <div>product routing defaults used: {JSON.stringify(initialDraftSnapshot?.productRoutingDefaultsUsed ?? initialDraftDebug?.productRoutingDefaultsUsed ?? null)}</div>
+                                          <div>rendered.requiresDesign: {String(renderedRequiresDesign)}</div>
+                                          <div>rendered.requiresPrepress: {String(renderedRequiresPrepress)}</div>
+                                          <div>rendered.requiresProofApproval: {String(renderedRequiresProofApproval)}</div>
                                           <div>userEditedOptions: {String(lineItemUserEditedOptions)}</div>
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {isExpanded && pricingDebugSnapshot && (
+                                      <div className="mb-3 rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 text-[11px]">
+                                        <div className="font-medium text-emerald-700 dark:text-emerald-300">PBV2 pricing runtime debug</div>
+                                        <div className="mt-2 grid gap-1 font-mono text-muted-foreground">
+                                          <div>selected option values: {JSON.stringify(pricingDebugSnapshot.selectedOptionValues ?? pricingDebugSnapshot.effectiveSelections ?? null)}</div>
+                                          <div>matched matrix row id: {String(pricingDebugSnapshot.resolvedMatrixRowId ?? "(none)")}</div>
+                                          <div>resolved matrix variables: {JSON.stringify(pricingDebugSnapshot.resolvedMatrixVariables ?? {})}</div>
+                                          <div>base_price source: {String(pricingDebugSnapshot.basePriceSource ?? "(unknown)")}</div>
+                                          <div>rate used source: {String(pricingDebugSnapshot.rateUsedSource ?? "(unknown)")}</div>
+                                          <div>minimum applied: {String(pricingDebugSnapshot.minimumApplied ?? false)}</div>
+                                          <div>formula scope used: {JSON.stringify(pricingDebugSnapshot.formulaScopeUsed ?? pricingDebugSnapshot.formulaVariables ?? null)}</div>
                                         </div>
                                       </div>
                                     )}
