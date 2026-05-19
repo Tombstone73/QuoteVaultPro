@@ -2093,6 +2093,18 @@ export function useQuoteEditorState() {
                 status: "draft",
                 productOptions: (product.optionsJson as any[]) || [],
             };
+            console.info("[QuoteEditorState.createDraftLineItem.runtime-debug]", {
+                at: new Date().toISOString(),
+                productId: product.id,
+                productName: product.name,
+                pbv2ActiveTreeVersionId: (product as any).pbv2ActiveTreeVersionId,
+                optionTreeJsonPresent: Boolean((product as any).optionTreeJson),
+                requiresDesign: (product as any).requiresDesign,
+                requiresPrepress: (product as any).requiresPrepress,
+                requiresProofApproval: (product as any).requiresProofApproval,
+                requiresProductionJob: (product as any).requiresProductionJob,
+                createdDraft: base,
+            });
 
             // If we have a saved quote, create server-side draft so artwork can be attached immediately.
             if (quoteId) {
