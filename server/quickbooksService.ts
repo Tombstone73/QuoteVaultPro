@@ -2853,10 +2853,18 @@ export async function fetchQBInvoicesForPreview(organizationId: string, includeR
     const qbCustomerRefId: string | null = qbInvoice.CustomerRef?.value ?? null;
     const localCustomer = qbCustomerRefId ? (customerByQBId.get(qbCustomerRefId) ?? null) : null;
     const alreadyImported = invoiceByQBId.has(qbInvoice.Id);
-    const classification = classifyQBInvoice(qbInvoice);
-    const { poNumber: customerPoNumber, source: customerPoSource } = extractQBInvoiceCustomerPo(qbInvoice);
     const exclusionReasons: string[] = [];
     const warningReasons: string[] = [];
+
+    let classification: 'open_ar' | 'historical';
+    try {
+      classification = classifyQBInvoice(qbInvoice);
+    } catch {
+      classification = 'historical';
+      exclusionReasons.push('classification_failed');
+    }
+
+    const { poNumber: customerPoNumber, source: customerPoSource } = extractQBInvoiceCustomerPo(qbInvoice);
 
     let canImport = true;
     let cannotImportReason: string | undefined;
@@ -2879,6 +2887,16 @@ export async function fetchQBInvoicesForPreview(organizationId: string, includeR
     if (!localCustomer) {
       canImport = false;
       cannotImportReason = 'No matching local customer — pull customers first';
+    }
+    if (exclusionReasons.includes('classification_failed')) {
+      canImport = false;
+      cannotImportReason = cannotImportReason ?? 'Could not determine invoice classification';
+    }
+    if (!qbInvoice.DocNumber) {
+      warningReasons.push('missing_invoice_number');
+    }
+    if (qbInvoice.TotalAmt == null) {
+      warningReasons.push('missing_total');
     }
 
     return {
@@ -2933,14 +2951,25 @@ export async function fetchQBInvoicesForPreview(organizationId: string, includeR
  *   - If existing invoice is QB-imported and QB now provides a PO → update it.
  *   - If existing invoice is QB-imported and QB provides null PO → leave existing PO as-is.
  */
+export type QBInvoiceImportResult = {
+  created: number;
+  updated: number;
+  skipped: number;
+  excluded: number;
+  failed: number;
+  importedOpenAr: number;
+  importedHistorical: number;
+  errors: string[];
+};
+
 export async function importQBInvoicesByIds(
   organizationId: string,
   qbInvoiceIds: string[],
   mode: 'auto' | 'open_ar' | 'historical',
   createdByUserId: string,
   perInvoiceModes: Record<string, QBInvoiceImportOverride> = {},
-): Promise<{ created: number; updated: number; skipped: number; errors: string[] }> {
-  const result = { created: 0, updated: 0, skipped: 0, errors: [] as string[] };
+): Promise<QBInvoiceImportResult> {
+  const result: QBInvoiceImportResult = { created: 0, updated: 0, skipped: 0, excluded: 0, failed: 0, importedOpenAr: 0, importedHistorical: 0, errors: [] };
 
   if (qbInvoiceIds.length === 0) return result;
 
@@ -3028,7 +3057,7 @@ export async function importQBInvoicesByIds(
       }
 
       if (!localCustomerId) {
-        result.skipped++;
+        result.excluded++;
         result.errors.push(`Invoice ${qbInvoice.DocNumber ?? qbInvoice.Id}: no local customer for QB customer ${qbCustomerRefId}`);
         continue;
       }
@@ -3147,6 +3176,7 @@ export async function importQBInvoicesByIds(
           });
         }
         result.updated++;
+        if (isHistorical) result.importedHistorical++; else result.importedOpenAr++;
       } else {
         const invoiceNumber = await generateNextInvoiceNumber(organizationId);
 
@@ -3183,8 +3213,10 @@ export async function importQBInvoicesByIds(
           createdByUserId,
         });
         result.created++;
+        if (isHistorical) result.importedHistorical++; else result.importedOpenAr++;
       }
     } catch (error: any) {
+      result.failed++;
       console.error(`[QB Import Invoices] Error on invoice ${qbInvoice.DocNumber ?? qbInvoice.Id}:`, {
         organizationId,
         message: error.message,
@@ -3193,7 +3225,7 @@ export async function importQBInvoicesByIds(
     }
   }
 
-  console.log(`[QB Import Invoices] Done — created: ${result.created}, updated: ${result.updated}, skipped: ${result.skipped}, errors: ${result.errors.length}`, { organizationId });
+  console.log(`[QB Import Invoices] Done — created: ${result.created}, updated: ${result.updated}, skipped: ${result.skipped}, excluded: ${result.excluded}, failed: ${result.failed}, openAr: ${result.importedOpenAr}, historical: ${result.importedHistorical}, errors: ${result.errors.length}`, { organizationId });
   return result;
 }
 

@@ -157,7 +157,27 @@ type QBInvoiceImportResult = {
   created: number;
   updated: number;
   skipped: number;
+  excluded: number;
+  failed: number;
+  importedOpenAr: number;
+  importedHistorical: number;
   errors: string[];
+};
+
+const EXCLUSION_REASON_LABELS: Record<string, string> = {
+  missing_customer: 'No local customer match',
+  validation_error: 'QB data invalid',
+  classification_failed: 'Classification error',
+  missing_invoice_number: 'No QB invoice #',
+  missing_total: 'No QB total',
+  duplicate_doc_number: 'Duplicate doc #',
+  unsupported_state: 'Unsupported state',
+};
+
+const WARNING_REASON_LABELS: Record<string, string> = {
+  already_imported: 'Already imported',
+  missing_invoice_number: 'No QB invoice #',
+  missing_total: 'No QB total',
 };
 
 type QBReferenceDebugField = {
@@ -513,16 +533,21 @@ export default function SettingsIntegrations() {
     return row.classification;
   };
 
-  const buildInvoiceModePayload = () => {
-    const invoiceModes: Record<string, 'open_ar' | 'historical' | 'skip'> = {};
-    for (const row of invoicePreview ?? []) {
+  const importSummary = useMemo(() => {
+    if (!invoicePreview) return null;
+    let openAr = 0, historical = 0, skipped = 0, excluded = 0;
+    for (const row of invoicePreview) {
+      if (!selectedQBIds.has(row.qbInvoiceId)) continue;
+      if (!row.canImport) { excluded++; continue; }
       const override = invoiceOverrides[row.qbInvoiceId];
-      if (override === 'open_ar' || override === 'historical' || override === 'skip') {
-        invoiceModes[row.qbInvoiceId] = override;
-      }
+      const mode = (override === 'open_ar' || override === 'historical' || override === 'skip')
+        ? override : row.classification;
+      if (mode === 'skip') skipped++;
+      else if (mode === 'open_ar') openAr++;
+      else historical++;
     }
-    return invoiceModes;
-  };
+    return { openAr, historical, skipped, excluded, importable: openAr + historical };
+  }, [invoicePreview, selectedQBIds, invoiceOverrides]);
 
   const handlePreviewInvoices = async () => {
     setIsLoadingPreview(true);
@@ -579,35 +604,57 @@ export default function SettingsIntegrations() {
     handleSync('pull', ['customers']);
   };
 
-  const handleImportInvoices = async (mode: 'auto' | 'open_ar' | 'historical') => {
-    if (selectedQBIds.size === 0) {
+  const handleImportInvoices = async (bulkOverride?: 'open_ar' | 'historical') => {
+    if (!invoicePreview || selectedQBIds.size === 0) {
       toast({ title: 'Nothing selected', description: 'Select invoices to import first.', variant: 'destructive' });
       return;
     }
-    const invoiceModes = buildInvoiceModePayload();
-    const selectedImportIds = Array.from(selectedQBIds).filter(id => invoiceModes[id] !== 'skip');
-    if (selectedImportIds.length === 0) {
-      toast({ title: 'Nothing selected', description: 'All selected invoices are marked Skip.', variant: 'destructive' });
+
+    // Build the explicit per-invoice payload
+    const invoicesPayload = invoicePreview
+      .filter(row => selectedQBIds.has(row.qbInvoiceId) && row.canImport)
+      .map(row => {
+        const override = invoiceOverrides[row.qbInvoiceId];
+        const classification: 'open_ar' | 'historical' | 'skip' = bulkOverride ?? (
+          override === 'open_ar' || override === 'historical' ? override :
+          override === 'skip' ? 'skip' :
+          row.classification
+        );
+        return { qbId: row.qbInvoiceId, classification };
+      });
+
+    const toImport = invoicesPayload.filter(i => i.classification !== 'skip');
+    if (toImport.length === 0) {
+      toast({ title: 'Nothing to import', description: 'All selected importable rows are marked Skip.', variant: 'destructive' });
       return;
     }
+
     setIsImportingInvoices(true);
     try {
       const response = await fetch('/api/integrations/quickbooks/import/invoices', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ quickBooksInvoiceIds: selectedImportIds, mode, invoiceModes }),
+        body: JSON.stringify({
+          invoices: invoicesPayload,
+          mode: bulkOverride ?? 'suggested',
+        }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data?.success === false) {
         throw new Error(data?.error || 'Import failed');
       }
-      const r: QBInvoiceImportResult = data.data ?? { created: 0, updated: 0, skipped: 0, errors: [] };
+      const r: QBInvoiceImportResult = data.data ?? { created: 0, updated: 0, skipped: 0, excluded: 0, failed: 0, importedOpenAr: 0, importedHistorical: 0, errors: [] };
+      const parts: string[] = [];
+      if (r.importedOpenAr > 0) parts.push(`${r.importedOpenAr} as Open A/R`);
+      if (r.importedHistorical > 0) parts.push(`${r.importedHistorical} as Historical`);
+      if (r.skipped > 0) parts.push(`${r.skipped} skipped`);
+      if (r.excluded > 0) parts.push(`${r.excluded} excluded`);
+      if (r.failed > 0) parts.push(`${r.failed} failed`);
       toast({
         title: 'Invoice import complete',
-        description: `Created: ${r.created}, Updated: ${r.updated}, Skipped: ${r.skipped}${r.errors.length > 0 ? `, Errors: ${r.errors.length}` : ''}`,
+        description: parts.length > 0 ? parts.join(' · ') : `Created: ${r.created}, Updated: ${r.updated}`,
       });
-      // Refresh preview to reflect newly-imported status
       await handlePreviewInvoices();
     } catch (error: any) {
       toast({ title: 'Import failed', description: error.message, variant: 'destructive' });
@@ -912,11 +959,14 @@ export default function SettingsIntegrations() {
                       : <Download className="w-4 h-4 mr-2" />}
                     Preview Invoices
                   </Button>
+                </div>
 
-                  {/* Import Open Invoices — enabled when preview is loaded */}
+                {/* Primary action — import each invoice using its own suggested/overridden classification */}
+                <div className="mt-3 space-y-1">
                   <Button
-                    onClick={() => handleImportInvoices('auto')}
-                    disabled={!invoicePreview || selectedQBIds.size === 0 || isImportingInvoices || isLoadingPreview}
+                    className="w-full"
+                    onClick={() => handleImportInvoices()}
+                    disabled={!invoicePreview || (importSummary?.importable ?? 0) === 0 || isImportingInvoices || isLoadingPreview}
                     title={!invoicePreview ? 'Preview invoices first' : undefined}
                   >
                     {isImportingInvoices
@@ -924,31 +974,44 @@ export default function SettingsIntegrations() {
                       : <Download className="w-4 h-4 mr-2" />}
                     Import Using Suggested Classification
                   </Button>
+                  {importSummary && importSummary.importable > 0 && (
+                    <p className="text-xs text-center text-muted-foreground">
+                      {[
+                        importSummary.openAr > 0 && `${importSummary.openAr} as Open A/R`,
+                        importSummary.historical > 0 && `${importSummary.historical} as Historical`,
+                        importSummary.skipped > 0 && `${importSummary.skipped} skip`,
+                        importSummary.excluded > 0 && `${importSummary.excluded} excluded`,
+                      ].filter(Boolean).join(' · ')}
+                    </p>
+                  )}
+                </div>
 
-                  <Button
-                    onClick={() => handleImportInvoices('open_ar')}
-                    disabled={!invoicePreview || selectedQBIds.size === 0 || isImportingInvoices || isLoadingPreview}
-                    variant="outline"
-                    title={!invoicePreview ? 'Preview invoices first' : undefined}
-                  >
-                    {isImportingInvoices
-                      ? <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      : <Download className="w-4 h-4 mr-2" />}
-                    Import as Open A/R
-                  </Button>
-
-                  {/* Import Historical Invoices — enabled when preview is loaded */}
-                  <Button
-                    onClick={() => handleImportInvoices('historical')}
-                    disabled={!invoicePreview || selectedQBIds.size === 0 || isImportingInvoices || isLoadingPreview}
-                    variant="outline"
-                    title={!invoicePreview ? 'Preview invoices first' : undefined}
-                  >
-                    {isImportingInvoices
-                      ? <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      : <Download className="w-4 h-4 mr-2" />}
-                    Import as Historical
-                  </Button>
+                {/* Bulk override — intentionally forces all selected rows to one classification */}
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  <div>
+                    <Button
+                      className="w-full"
+                      onClick={() => handleImportInvoices('open_ar')}
+                      disabled={!invoicePreview || selectedQBIds.size === 0 || isImportingInvoices || isLoadingPreview}
+                      variant="outline"
+                      size="sm"
+                      title="Override: import all selected as Open A/R regardless of suggestion"
+                    >
+                      Override → All Open A/R
+                    </Button>
+                  </div>
+                  <div>
+                    <Button
+                      className="w-full"
+                      onClick={() => handleImportInvoices('historical')}
+                      disabled={!invoicePreview || selectedQBIds.size === 0 || isImportingInvoices || isLoadingPreview}
+                      variant="outline"
+                      size="sm"
+                      title="Override: import all selected as Historical regardless of suggestion"
+                    >
+                      Override → All Historical
+                    </Button>
+                  </div>
                 </div>
 
                 {/* Invoice Preview Table */}
@@ -1129,12 +1192,12 @@ export default function SettingsIntegrations() {
                                     )}
                                   </TableCell>
                                   <TableCell className="text-xs">
-                                    <div className="flex items-center gap-1">
+                                    <div className="flex items-center gap-1 flex-wrap">
                                       {row.alreadyImported
                                         ? <Badge variant="outline" className="text-xs">Imported</Badge>
                                         : row.canImport
                                           ? <Badge variant="secondary" className="text-xs">New</Badge>
-                                          : <span className="text-muted-foreground text-xs" title={row.cannotImportReason}>No match</span>
+                                          : <Badge variant="destructive" className="text-xs" title={row.cannotImportReason}>Excluded</Badge>
                                       }
                                       {effectiveMode === 'skip' && <Badge variant="outline" className="text-xs">Skip</Badge>}
                                       {hasDebug && (
@@ -1152,9 +1215,22 @@ export default function SettingsIntegrations() {
                                         </button>
                                       )}
                                     </div>
-                                    {((row.exclusionReasons?.length ?? 0) > 0 || (row.warningReasons?.length ?? 0) > 0) && (
-                                      <div className="mt-1 max-w-[180px] text-[11px] text-muted-foreground">
-                                        {[...(row.exclusionReasons ?? []), ...(row.warningReasons ?? [])].join(', ')}
+                                    {(row.exclusionReasons?.length ?? 0) > 0 && (
+                                      <div className="mt-1 flex flex-wrap gap-0.5">
+                                        {(row.exclusionReasons ?? []).map(r => (
+                                          <span key={r} className="inline-block bg-destructive/10 text-destructive text-[10px] px-1 py-0.5 rounded">
+                                            {EXCLUSION_REASON_LABELS[r] ?? r}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
+                                    {(row.warningReasons?.length ?? 0) > 0 && (
+                                      <div className="mt-1 flex flex-wrap gap-0.5">
+                                        {(row.warningReasons ?? []).map(r => (
+                                          <span key={r} className="inline-block bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 text-[10px] px-1 py-0.5 rounded">
+                                            {WARNING_REASON_LABELS[r] ?? r}
+                                          </span>
+                                        ))}
                                       </div>
                                     )}
                                   </TableCell>

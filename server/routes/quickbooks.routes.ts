@@ -636,29 +636,59 @@ export function registerQuickBooksRoutes(
         return res.status(401).json({ success: false, error: 'Missing user context' });
       }
 
-      const { quickBooksInvoiceIds, mode, invoiceModes } = req.body;
-      if (!Array.isArray(quickBooksInvoiceIds) || quickBooksInvoiceIds.length === 0) {
-        return res.status(400).json({ success: false, error: 'quickBooksInvoiceIds array required' });
-      }
-      const validModes = ['auto', 'open_ar', 'historical'];
-      if (!validModes.includes(mode)) {
-        return res.status(400).json({ success: false, error: `mode must be one of: ${validModes.join(', ')}` });
-      }
-      const validInvoiceModes = ['open_ar', 'historical', 'skip'];
+      const { quickBooksInvoiceIds: rawIds, mode: rawMode, invoiceModes: rawInvoiceModes, invoices: invoicesArray } = req.body;
+      const validClassifications = ['open_ar', 'historical', 'skip'] as const;
+
+      let ids: string[];
+      let resolvedMode: 'auto' | 'open_ar' | 'historical';
       const perInvoiceModes: Record<string, 'open_ar' | 'historical' | 'skip'> = {};
-      if (invoiceModes != null) {
-        if (typeof invoiceModes !== 'object' || Array.isArray(invoiceModes)) {
-          return res.status(400).json({ success: false, error: 'invoiceModes must be an object keyed by QuickBooks invoice id' });
+
+      if (Array.isArray(invoicesArray)) {
+        // New format: { invoices: [{ qbId, classification }], mode: 'suggested'|'open_ar'|'historical' }
+        if (invoicesArray.length === 0) {
+          return res.status(400).json({ success: false, error: 'invoices array is empty' });
         }
-        for (const [invoiceId, invoiceMode] of Object.entries(invoiceModes as Record<string, unknown>)) {
-          if (!validInvoiceModes.includes(String(invoiceMode))) {
-            return res.status(400).json({ success: false, error: `invoiceModes.${invoiceId} must be one of: ${validInvoiceModes.join(', ')}` });
+        for (const item of invoicesArray) {
+          const qbId = String(item?.qbId ?? '').trim();
+          const cls = String(item?.classification ?? '');
+          if (!qbId) return res.status(400).json({ success: false, error: 'invoices[].qbId must be a non-empty string' });
+          if (!(validClassifications as readonly string[]).includes(cls)) {
+            return res.status(400).json({ success: false, error: `invoices[].classification must be one of: ${validClassifications.join(', ')}` });
           }
-          perInvoiceModes[invoiceId] = invoiceMode as 'open_ar' | 'historical' | 'skip';
+          perInvoiceModes[qbId] = cls as 'open_ar' | 'historical' | 'skip';
         }
+        // Non-skip IDs are passed to the service; perInvoiceModes carries the explicit classification for each
+        ids = invoicesArray.filter((i: any) => i.classification !== 'skip').map((i: any) => String(i.qbId));
+        resolvedMode = 'auto'; // each invoice's classification is already in perInvoiceModes
+      } else if (Array.isArray(rawIds) && rawIds.length > 0) {
+        // Legacy format: { quickBooksInvoiceIds, mode, invoiceModes? }
+        ids = rawIds;
+        const validModes = ['auto', 'open_ar', 'historical'];
+        if (!validModes.includes(rawMode)) {
+          return res.status(400).json({ success: false, error: `mode must be one of: ${validModes.join(', ')}` });
+        }
+        resolvedMode = rawMode as 'auto' | 'open_ar' | 'historical';
+        if (rawInvoiceModes != null) {
+          if (typeof rawInvoiceModes !== 'object' || Array.isArray(rawInvoiceModes)) {
+            return res.status(400).json({ success: false, error: 'invoiceModes must be an object keyed by QuickBooks invoice id' });
+          }
+          for (const [invoiceId, invoiceMode] of Object.entries(rawInvoiceModes as Record<string, unknown>)) {
+            if (!(validClassifications as readonly string[]).includes(String(invoiceMode))) {
+              return res.status(400).json({ success: false, error: `invoiceModes.${invoiceId} must be one of: ${validClassifications.join(', ')}` });
+            }
+            perInvoiceModes[invoiceId] = invoiceMode as 'open_ar' | 'historical' | 'skip';
+          }
+        }
+      } else {
+        return res.status(400).json({ success: false, error: 'Provide either invoices[] (new format) or quickBooksInvoiceIds (legacy format)' });
       }
 
-      const result = await quickbooksService.importQBInvoicesByIds(organizationId, quickBooksInvoiceIds, mode, userId, perInvoiceModes);
+      if (ids.length === 0) {
+        // All rows were skip — return empty result rather than error
+        return res.json({ success: true, data: { created: 0, updated: 0, skipped: invoicesArray?.length ?? 0, excluded: 0, failed: 0, importedOpenAr: 0, importedHistorical: 0, errors: [] } });
+      }
+
+      const result = await quickbooksService.importQBInvoicesByIds(organizationId, ids, resolvedMode, userId, perInvoiceModes);
       return res.json({ success: true, data: result });
     } catch (error: any) {
       console.error('[QB Invoice Import] Error:', error);
