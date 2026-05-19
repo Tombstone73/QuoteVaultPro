@@ -14,6 +14,7 @@ import { storage } from "../storage";
 import { db } from "../db";
 import {
   products,
+  productDesignConfigs,
   pbv2TreeVersions,
   productTypes,
   materials,
@@ -237,10 +238,59 @@ export function registerProductRoutes(
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const activeOnly = String(req.query.activeOnly ?? "").trim().toLowerCase();
       const products = await storage.getAllProducts(organizationId);
+      const productIds = products.map((product) => product.id);
+      const productTypeIds = Array.from(
+        new Set(products.map((product) => product.productTypeId).filter((id): id is string => typeof id === "string" && id.length > 0)),
+      );
+
+      const [org] = await db
+        .select({ prepressDefaultEnabled: organizations.prepressDefaultEnabled })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      const designConfigs = productIds.length
+        ? await db
+            .select({
+              productId: productDesignConfigs.productId,
+              requiresDesign: productDesignConfigs.requiresDesign,
+              designBriefRequired: productDesignConfigs.designBriefRequired,
+            })
+            .from(productDesignConfigs)
+            .where(and(eq(productDesignConfigs.organizationId, organizationId), inArray(productDesignConfigs.productId, productIds)))
+        : [];
+
+      const typeRows = productTypeIds.length
+        ? await db
+            .select({
+              id: productTypes.id,
+              requiresPrepressOverride: productTypes.requiresPrepressOverride,
+              sendToProductionDefault: productTypes.sendToProductionDefault,
+            })
+            .from(productTypes)
+            .where(and(eq(productTypes.organizationId, organizationId), inArray(productTypes.id, productTypeIds)))
+        : [];
+
+      const designByProductId = new Map(designConfigs.map((config) => [config.productId, config] as const));
+      const typeById = new Map(typeRows.map((type) => [type.id, type] as const));
+      const enrichedProducts = products.map((product) => {
+        const designConfig = designByProductId.get(product.id);
+        const typeConfig = product.productTypeId ? typeById.get(product.productTypeId) : null;
+        const requiresPrepress = typeConfig?.requiresPrepressOverride ?? org?.prepressDefaultEnabled ?? true;
+        return {
+          ...product,
+          requiresDesign: designConfig?.requiresDesign ?? false,
+          requiresPrepress,
+          productDesignRequiresDesign: designConfig?.requiresDesign ?? false,
+          productDesignBriefRequired: designConfig?.designBriefRequired ?? false,
+          productTypeRequiresPrepressOverride: typeConfig?.requiresPrepressOverride ?? null,
+          productTypeSendToProductionDefault: typeConfig?.sendToProductionDefault ?? false,
+        };
+      });
       res.json(
         activeOnly === "true" || activeOnly === "1"
-          ? products.filter((product) => product.isActive)
-          : products,
+          ? enrichedProducts.filter((product) => product.isActive)
+          : enrichedProducts,
       );
     } catch (error) {
       console.error("Error fetching products:", error);

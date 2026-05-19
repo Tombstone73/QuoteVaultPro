@@ -55,11 +55,14 @@ import { getLineItemProofBadgeClass } from "@/lib/orderProofUi";
 import { computePbv2InputSignature, pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
 import {
-  buildPbv2DefaultSelections,
   buildPbv2DefaultsHydrationKey,
   hasPbv2Selections,
   shouldHydratePbv2Defaults,
 } from "@shared/pbv2OrderEntryRuntime";
+import {
+  buildInitialOrderLineItemDraftFromProduct,
+  type InitialOrderLineItemDraftDebug,
+} from "@shared/orderLineItemInitialization";
 
 type SortableChildRenderProps = {
   dragAttributes: Record<string, any> | undefined;
@@ -1238,6 +1241,12 @@ export function OrderLineItemsSection({
   }, [products, searchQuery]);
 
   const pbv2DefaultsHydratedRef = useRef<Set<string>>(new Set());
+  const [initialDraftDebugByLineItemId, setInitialDraftDebugByLineItemId] = useState<Record<string, InitialOrderLineItemDraftDebug>>({});
+  const [userEditedOptionsByLineItemId, setUserEditedOptionsByLineItemId] = useState<Record<string, boolean>>({});
+  const markUserEditedOptions = useCallback((lineItemId: string | null | undefined) => {
+    if (!lineItemId) return;
+    setUserEditedOptionsByLineItemId((prev) => ({ ...prev, [lineItemId]: true }));
+  }, []);
 
   // Initialize local editor state when expanded item changes
   useEffect(() => {
@@ -1284,6 +1293,10 @@ export function OrderLineItemsSection({
     const nextSelectionsV2: LineItemOptionSelectionsV2 =
       rawV2 && typeof rawV2 === "object" && (rawV2 as any)?.schemaVersion === 2
         ? (rawV2 as LineItemOptionSelectionsV2)
+        : (expandedItem.specsJson as any)?.initialDraft?.optionSelectionsJson &&
+            typeof (expandedItem.specsJson as any).initialDraft.optionSelectionsJson === "object" &&
+            (expandedItem.specsJson as any).initialDraft.optionSelectionsJson.schemaVersion === 2
+          ? ((expandedItem.specsJson as any).initialDraft.optionSelectionsJson as LineItemOptionSelectionsV2)
         : { schemaVersion: 2, selected: {} };
     setOptionSelectionsV2(nextSelectionsV2);
 
@@ -1315,7 +1328,7 @@ export function OrderLineItemsSection({
       optionSelectionsV2: nextSelectionsV2.selected ?? {},
       totalPrice: currentTotal,
     };
-  }, [expandedItem?.id, expandedItem?.totalPrice, expandedItem?.unitPrice, (expandedItem as any)?.overridePriceCents]);
+  }, [expandedItem?.id]);
 
   // Hydrate PBV2 defaults from the product tree when a line item is first expanded
   // with no saved selections. resolveRuntimeVisibility computes effective defaults from
@@ -1330,6 +1343,7 @@ export function OrderLineItemsSection({
         lineItem: expandedItemPbv2Runtime,
       }),
     });
+    if (!lineItemId) return;
     if (!hydrationKey) return;
 
     if (hasPbv2Selections(optionSelectionsV2)) {
@@ -1346,11 +1360,22 @@ export function OrderLineItemsSection({
       })) {
         return;
       }
-      const defaults = buildPbv2DefaultSelections(effectivePbv2Tree as OptionTreeV2 | null);
+      if (userEditedOptionsByLineItemId[lineItemId]) return;
+      if (!expandedProduct) return;
+      const initializedDraft = buildInitialOrderLineItemDraftFromProduct(
+        expandedProduct as any,
+        effectivePbv2Tree as OptionTreeV2 | null,
+        orderId,
+      );
+      const defaults = initializedDraft.optionSelectionsJson;
       if (!defaults) return;
       pbv2DefaultsHydratedRef.current.add(hydrationKey);
       if (hasPbv2Selections(defaults)) {
         setOptionSelectionsV2(defaults);
+        setInitialDraftDebugByLineItemId((prev) => ({
+          ...prev,
+          [lineItemId]: initializedDraft.debug,
+        }));
       }
     } catch {
       // Best-effort: never block expansion on default hydration failure.
@@ -1364,6 +1389,8 @@ export function OrderLineItemsSection({
     expandedProduct?.id,
     effectivePbv2Tree,
     optionSelectionsV2,
+    userEditedOptionsByLineItemId,
+    orderId,
   ]);
 
   const widthNum = dimsRequired ? Number.parseFloat(widthText) || 0 : 1;
@@ -2008,6 +2035,11 @@ export function OrderLineItemsSection({
                   const missingArtworkActive = policy === "required" && canDeriveArtwork && !hasAnyArtwork && !isMissingArtworkSuppressed;
                   const operationalStatusLabel = WORKFLOW_LABELS[workflowState] || workflowState;
                   const operationalNextStep = getOperationalNextStep(workflowState, hasActiveOwner);
+                  const initialDraftDebug = initialDraftDebugByLineItemId[String(item.id)];
+                  const initialDraftSnapshot = (itemSpecsJson?.initialDraft && typeof itemSpecsJson.initialDraft === "object")
+                    ? itemSpecsJson.initialDraft as any
+                    : null;
+                  const lineItemUserEditedOptions = userEditedOptionsByLineItemId[String(item.id)] === true;
 
                   let operationalWarning: string | null = null;
                   let operationalWarningTone: "warning" | "danger" | null = null;
@@ -2280,6 +2312,21 @@ export function OrderLineItemsSection({
                                 }
                                 optionsSlot={
                                   <>
+                                    {isExpanded && (
+                                      <div className="mb-3 rounded-md border border-fuchsia-500/40 bg-fuchsia-500/5 p-3 text-[11px]">
+                                        <div className="font-medium text-fuchsia-700 dark:text-fuchsia-300">Initial line item draft debug</div>
+                                        <div className="mt-2 grid gap-1 font-mono text-muted-foreground">
+                                          <div>initialDraft.requiresDesign: {String(initialDraftSnapshot?.requiresDesign ?? initialDraftDebug?.requiresDesign ?? "(missing)")}</div>
+                                          <div>initialDraft.requiresPrepress: {String(initialDraftSnapshot?.requiresPrepress ?? initialDraftDebug?.requiresPrepress ?? "(missing)")}</div>
+                                          <div>initialDraft.requiresProofApproval: {String(initialDraftSnapshot?.requiresProofApproval ?? initialDraftDebug?.requiresProofApproval ?? "(missing)")}</div>
+                                          <div>initialDraft.optionSelectionsJson: {JSON.stringify(initialDraftSnapshot?.optionSelectionsJson ?? initialDraftDebug?.optionSelectionsJson ?? null)}</div>
+                                          <div>rendered option labels in order: {(initialDraftSnapshot?.renderedOptionLabels ?? initialDraftDebug?.sortedOptionLabels ?? []).join(", ") || "(none)"}</div>
+                                          <div>product routing defaults used: {JSON.stringify(initialDraftSnapshot?.productRoutingDefaultsUsed ?? initialDraftDebug?.productRoutingDefaultsUsed ?? null)}</div>
+                                          <div>userEditedOptions: {String(lineItemUserEditedOptions)}</div>
+                                        </div>
+                                      </div>
+                                    )}
+
                                     {import.meta.env.DEV && expandedProductIsPbv2 && (
                                       <div className="mb-3 rounded-md border border-sky-500/40 bg-sky-500/5 p-3 text-[11px]">
                                         <div className="font-medium text-sky-700 dark:text-sky-300">PBV2 diagnostics (dev only)</div>
@@ -2331,6 +2378,7 @@ export function OrderLineItemsSection({
                                           tree={effectivePbv2Tree}
                                           selections={optionSelectionsV2}
                                           onSelectionsChange={setOptionSelectionsV2}
+                                          onUserEdit={() => markUserEditedOptions(expandedItem?.id)}
                                           onValidityChange={setOptionsV2Valid}
                                           onRenderStatsChange={setPbv2PanelRenderStats}
                                         />
@@ -2343,7 +2391,10 @@ export function OrderLineItemsSection({
                                           product={expandedProduct}
                                           productOptions={expandedProductOptions}
                                           optionSelections={optionSelections as any}
-                                          onOptionSelectionsChange={setOptionSelections as any}
+                                          onOptionSelectionsChange={(next: Record<string, OptionSelection>) => {
+                                            markUserEditedOptions(expandedItem?.id);
+                                            setOptionSelections(next);
+                                          }}
                                         />
                                       </div>
                                     )}
@@ -2811,22 +2862,22 @@ export function OrderLineItemsSection({
                           onSelect={async () => {
                             try {
                               blurActiveElement();
-                              const created = await createLineItem.mutateAsync({
-                                orderId,
-                                productId: p.id,
-                                productVariantId: null,
-                                description: "",
-                                width: 1,
-                                height: 1,
-                                quantity: 1,
-                                unitPrice: "0.00",
-                                totalPrice: "0.00",
-                                specsJson: { notes: "", selectedOptions: [] },
-                              });
+                              const activeTree = normalizePbv2Tree(getPbv2Tree(p));
+                              const initialDraft = buildInitialOrderLineItemDraftFromProduct(p as any, activeTree, orderId);
+                              console.info("[OrderLineItemsSection.addProduct.initialDraft]", initialDraft.debug);
+
+                              const {
+                                debug: _debug,
+                                requiresProductionJob: _requiresProductionJob,
+                                ...createPayload
+                              } = initialDraft;
+                              const created = await createLineItem.mutateAsync(createPayload);
                               const nextId = created?.data?.id ?? created?.id ?? null;
                               setSearchQuery("");
                               setSearchOpen(false);
                               if (typeof nextId === "string" && nextId.length) {
+                                setInitialDraftDebugByLineItemId((prev) => ({ ...prev, [nextId]: initialDraft.debug }));
+                                setUserEditedOptionsByLineItemId((prev) => ({ ...prev, [nextId]: false }));
                                 setExpandedId(nextId);
                                 setPendingJumpToLineItemId(nextId);
                               }
