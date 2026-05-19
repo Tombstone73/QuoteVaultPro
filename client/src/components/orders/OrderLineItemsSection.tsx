@@ -472,6 +472,7 @@ const DESIGN_BRIEF_STATUS_LABELS: Record<LineItemDesignBriefStatus, string> = {
   captured: "Captured",
 };
 
+// Lets Radix focus restoration and expansion reflow finish before the fallback scroll/focus pass.
 const LAYOUT_STABILIZATION_DELAY_MS = 80;
 
 type OrderLineItemWithPbv2Runtime = OrderLineItem & {
@@ -863,9 +864,12 @@ export function OrderLineItemsSection({
           focusTarget();
           scrollToAnchor();
           timeoutId = window.setTimeout(() => {
-            focusTarget();
-            scrollToAnchor();
-            setPendingJumpToLineItemId(null);
+            try {
+              focusTarget();
+              scrollToAnchor();
+            } finally {
+              setPendingJumpToLineItemId(null);
+            }
           }, LAYOUT_STABILIZATION_DELAY_MS);
         } catch {
           setPendingJumpToLineItemId(null);
