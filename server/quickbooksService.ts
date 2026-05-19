@@ -2990,9 +2990,9 @@ export async function importQBInvoicesByIds(
       // are readable and auditable without re-fetching from QB. rawDescription is always preserved.
       const lineItemsSnapshot: QBInvoiceLineItemDetail[] | null = Array.isArray(qbInvoice.Line)
         ? qbInvoice.Line
-            .filter((l: any) => l.DetailType !== 'SubTotalLineDetail')
+            .filter((l: any) => l.DetailType === 'SalesItemLineDetail')
             .map((l: any): QBInvoiceLineItemDetail => {
-              const detail = l.SalesItemLineDetail ?? l.DiscountLineDetail ?? null;
+              const detail = l.SalesItemLineDetail;
               const description = String(l.Description ?? '').trim() || null;
               const itemRef: QBInvoiceLineItemDetail['itemRef'] = detail?.ItemRef?.value
                 ? { qbId: String(detail.ItemRef.value), name: String(detail.ItemRef.name ?? '') }
@@ -3343,9 +3343,10 @@ function transformQBInvoice(qbInvoice: any): QBInvoiceDetail {
   const lineItems: QBInvoiceLineItemDetail[] = [];
   if (Array.isArray(qbInvoice.Line)) {
     for (const line of qbInvoice.Line) {
-      // Skip subtotal lines (DetailType = 'SubTotalLineDetail')
-      if (line.DetailType === 'SubTotalLineDetail') continue;
-      const detail = line.SalesItemLineDetail ?? line.DiscountLineDetail ?? null;
+      // Only map actual product/service lines. Subtotals, tax summaries, and
+      // grouping lines all have a different DetailType and must not become line items.
+      if (line.DetailType !== 'SalesItemLineDetail') continue;
+      const detail = line.SalesItemLineDetail;
       const description = String(line.Description ?? '').trim() || null;
       const itemRef: QBInvoiceLineItemDetail['itemRef'] = detail?.ItemRef?.value
         ? { qbId: String(detail.ItemRef.value), name: String(detail.ItemRef.name ?? '') }

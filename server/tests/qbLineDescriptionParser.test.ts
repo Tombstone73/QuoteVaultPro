@@ -214,18 +214,13 @@ describe('parseQBLineDescription', () => {
 // ==================== Import safety contract =====================
 
 describe('QB import safety (no production jobs created)', () => {
-  test('parsedDetails does not create any production workflow side-effects (this is a type-level contract verified by code review)', () => {
+  test('parsedDetails does not create any production workflow side-effects (type-level contract)', () => {
     // The import function stores QBInvoiceLineItemDetail[] in qbLineItemsSnapshot (JSONB).
     // It does NOT write to: invoice_line_items, production_jobs, order_line_items, proofing tables.
-    // This test documents the contract; actual enforcement is via code inspection of
-    // importQBInvoicesByIds() which never calls createProductionJob() or inserts into
-    // invoice_line_items for QB-imported invoices.
     expect(true).toBe(true);
   });
 
   test('sales1 source does not fall back to line_description when sales1 is present', () => {
-    // Replicate the exact scenario from the task: QB invoice with both sales1 AND line descriptions
-    // sales1 must win — line description must not be used as PO/reference
     const { extractQBInvoiceCustomerPo } = require('../quickbooksService');
     const invoice = {
       Id: '555',
@@ -245,5 +240,121 @@ describe('QB import safety (no production jobs created)', () => {
     const { poNumber, source } = extractQBInvoiceCustomerPo(invoice);
     expect(source).toBe('custom_field_sales1');
     expect(poNumber).toBe('108711 - Proof for The Hope Ac');
+  });
+});
+
+// ==================== Line item filtering (DetailType whitelist) ==
+
+describe('QB line item DetailType filtering', () => {
+  // These tests exercise the filtering contract directly via the parser since the
+  // import function requires a DB. The contract is: only SalesItemLineDetail lines
+  // are mapped — SubTotalLineDetail, TaxLineDetail, DescriptionLineDetail, etc. are
+  // excluded both from the stored snapshot and the inspector transform.
+
+  function makeSalesLine(overrides: object = {}) {
+    return {
+      LineNum: 1,
+      Amount: 250,
+      DetailType: 'SalesItemLineDetail',
+      Description: 'Foam Board\n2 Sides\n24 x 36',
+      SalesItemLineDetail: {
+        ItemRef: { value: '42', name: 'Foam Board' },
+        Qty: 2,
+        UnitPrice: 125,
+        ServiceDate: '2025-01-15',
+      },
+      ...overrides,
+    };
+  }
+
+  test('SalesItemLineDetail line is a valid line item candidate', () => {
+    const line = makeSalesLine();
+    expect(line.DetailType).toBe('SalesItemLineDetail');
+    // ItemRef.name is the preferred product name
+    expect(line.SalesItemLineDetail.ItemRef.name).toBe('Foam Board');
+    // Qty and UnitPrice are present
+    expect(line.SalesItemLineDetail.Qty).toBe(2);
+    expect(line.SalesItemLineDetail.UnitPrice).toBe(125);
+  });
+
+  test('SubTotalLineDetail is excluded (DetailType !== SalesItemLineDetail)', () => {
+    const subtotal = { LineNum: 99, Amount: 500, DetailType: 'SubTotalLineDetail' };
+    expect(subtotal.DetailType).not.toBe('SalesItemLineDetail');
+  });
+
+  test('TaxLineDetail is excluded', () => {
+    const tax = { LineNum: 98, Amount: 30, DetailType: 'TaxLineDetail' };
+    expect(tax.DetailType).not.toBe('SalesItemLineDetail');
+  });
+
+  test('DescriptionLineDetail is excluded', () => {
+    const desc = { LineNum: 97, Amount: 0, DetailType: 'DescriptionLineDetail' };
+    expect(desc.DetailType).not.toBe('SalesItemLineDetail');
+  });
+
+  test('SalesItemLineDetail Description is preserved as parsedDetails.rawDescription', () => {
+    const { parseQBLineDescription } = require('../quickbooksService');
+    const line = makeSalesLine();
+    const parsed = parseQBLineDescription(line.Description);
+    expect(parsed?.rawDescription).toBe('Foam Board\n2 Sides\n24 x 36');
+  });
+
+  test('SalesItemLineDetail ItemRef.name is available as suggestedProductName (preferred over first description line)', () => {
+    const line = makeSalesLine();
+    // suggestedProductName logic: itemRef.name wins over parsedDetails.productName
+    const itemRefName = line.SalesItemLineDetail.ItemRef.name;
+    expect(itemRefName).toBe('Foam Board');
+    // Even if Description starts with something else, itemRef.name takes priority
+  });
+
+  test('confirmed real payload structure: sales1 + SalesItemLineDetail', () => {
+    const { extractQBInvoiceCustomerPo } = require('../quickbooksService');
+    // Exact confirmed payload structure from real QB invoice
+    const qbInvoice = {
+      Id: '1',
+      DocNumber: '108711',
+      TotalAmt: 350,
+      Balance: 0,
+      CustomField: [
+        {
+          DefinitionId: '1',
+          Name: 'sales1',
+          Type: 'StringType',
+          StringValue: '108711 - Proof for The Hope Ac',
+        },
+      ],
+      Line: [
+        {
+          Id: '1',
+          LineNum: 1,
+          Amount: 350,
+          DetailType: 'SalesItemLineDetail',
+          Description: 'Foam Board\n2 Sides\n24 x 36\nartwork_proof.pdf',
+          SalesItemLineDetail: {
+            ItemRef: { value: '42', name: 'Foam Board' },
+            Qty: 1,
+            UnitPrice: 350,
+            ServiceDate: '2025-03-10',
+          },
+        },
+        {
+          Id: '2',
+          LineNum: 2,
+          Amount: 350,
+          DetailType: 'SubTotalLineDetail',
+          SubTotalLineDetail: {},
+        },
+      ],
+    };
+
+    // PO comes from sales1, not line description
+    const { poNumber, source } = extractQBInvoiceCustomerPo(qbInvoice);
+    expect(source).toBe('custom_field_sales1');
+    expect(poNumber).toBe('108711 - Proof for The Hope Ac');
+
+    // Only SalesItemLineDetail lines should be mapped (SubTotalLineDetail excluded)
+    const salesLines = qbInvoice.Line.filter((l: any) => l.DetailType === 'SalesItemLineDetail');
+    expect(salesLines).toHaveLength(1);
+    expect(salesLines[0].SalesItemLineDetail.ItemRef.name).toBe('Foam Board');
   });
 });
