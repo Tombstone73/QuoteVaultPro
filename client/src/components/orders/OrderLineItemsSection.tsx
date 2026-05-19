@@ -767,17 +767,28 @@ export function OrderLineItemsSection({
 
     const cardId = `line-item-${pendingJumpToLineItemId}`;
     const el = document.getElementById(cardId);
-    if (el) {
+    // If the new item isn't in the DOM yet (list hasn't re-rendered), do not clear
+    // the pending target — the effect will retry once orderedKeys updates and the
+    // item appears.
+    if (!el) return;
+
+    // Defer scroll by one animation frame so the expansion can settle before
+    // scrollIntoView measures layout.  block:"start" places the top of the card
+    // (where Width / Height / Qty live) at the top of the viewport.
+    const timerId = setTimeout(() => {
       try {
         el.focus({ preventScroll: true });
         el.scrollIntoView({ block: "start", behavior: "smooth" });
       } catch {
         // ignore
       }
-    }
+    }, 60);
 
     setPendingJumpToLineItemId(null);
-  }, [expandedId, pendingJumpToLineItemId]);
+    return () => clearTimeout(timerId);
+    // orderedKeys changes when a newly-created item is inserted into the list,
+    // which triggers a retry if the element wasn't in the DOM on the first run.
+  }, [expandedId, pendingJumpToLineItemId, orderedKeys]);
 
   const [notesDraftById, setNotesDraftById] = useState<Record<string, string>>({});
 
@@ -1104,6 +1115,8 @@ export function OrderLineItemsSection({
     });
   }, [products, searchQuery]);
 
+  const pbv2DefaultsHydratedRef = useRef<Set<string>>(new Set());
+
   // Initialize local editor state when expanded item changes
   useEffect(() => {
     if (!expandedItem) return;
@@ -1152,6 +1165,12 @@ export function OrderLineItemsSection({
         : { schemaVersion: 2, selected: {} };
     setOptionSelectionsV2(nextSelectionsV2);
 
+    // If there are no saved selections for this item, clear the hydration ref so
+    // PBV2 defaults are applied (or re-applied after collapse/re-expand).
+    if (Object.keys(nextSelectionsV2.selected ?? {}).length === 0) {
+      pbv2DefaultsHydratedRef.current.delete(itemId);
+    }
+
     // Hydrate PBV2 snapshot from line item (used to render option questions)
     const savedSnapshot = getPbv2SnapshotFromLineItem(expandedItem);
     setPbv2SnapshotJson(savedSnapshot);
@@ -1185,7 +1204,6 @@ export function OrderLineItemsSection({
   // Hydrate PBV2 defaults from the product tree when a line item is first expanded
   // with no saved selections. resolveRuntimeVisibility computes effective defaults from
   // node.input.defaultValue, so we wrap that result into the LineItemOptionSelectionsV2 shape.
-  const pbv2DefaultsHydratedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     const lineItemId = expandedItem?.id;
     if (!lineItemId) return;
@@ -2517,6 +2535,11 @@ export function OrderLineItemsSection({
                                     })()}
                                   </>
                                 }
+                                requiresDesign={isExpanded && expandedItem?.id === item.id ? requiresDesignInput : Boolean((item as any).requiresDesign)}
+                                requiresPrepress={isExpanded && expandedItem?.id === item.id ? requiresPrepressInput : ((item as any).requiresPrepress ?? null)}
+                                requiresProofApproval={Boolean((item as any).requiresProofApproval)}
+                                onRequiresDesignChange={!readOnly && isExpanded && expandedItem?.id === item.id ? setRequiresDesignInput : undefined}
+                                onRequiresPrepressChange={!readOnly && isExpanded && expandedItem?.id === item.id ? setRequiresPrepressInput : undefined}
                                 detailsSide="right"
                                 collapseSecondaryDetails={true}
                                 compactExpandedLayout={true}

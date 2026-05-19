@@ -189,6 +189,27 @@ function normalizeNumberInput(value: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * Sort node IDs respecting parent-group hierarchy then per-node sortOrder.
+ * This ensures options from the same group cluster together in the order the
+ * Product Builder assigned to their group.
+ */
+function hierarchicalNodeSort(
+  ids: string[],
+  nodes: Record<string, OptionNodeV2>,
+  parentGroupKey: Map<string, number>,
+): string[] {
+  return ids.slice().sort((a, b) => {
+    const ga = parentGroupKey.get(a) ?? 0;
+    const gb = parentGroupKey.get(b) ?? 0;
+    if (ga !== gb) return ga - gb;
+    const sa = typeof (nodes[a] as any)?.ui?.sortOrder === "number" ? (nodes[a] as any).ui.sortOrder : 0;
+    const sb = typeof (nodes[b] as any)?.ui?.sortOrder === "number" ? (nodes[b] as any).ui.sortOrder : 0;
+    if (sa !== sb) return sa - sb;
+    return a.localeCompare(b);
+  });
+}
+
 export function ProductOptionsPanelV2({
   tree: rawTree,
   selections,
@@ -239,12 +260,43 @@ export function ProductOptionsPanelV2({
     return ids;
   }, [tree.nodes, matrixDimensionKeys]);
 
+  // Build a parent-group sort key for each node so question nodes from the same group
+  // sort together, respecting the group's own ui.sortOrder / displayOrder.
+  const nodeToParentGroupSortKey = useMemo(() => {
+    const map = new Map<string, number>();
+    const nodes = tree.nodes;
+    // Walk top-level edges array (group → child)
+    for (const edge of Array.isArray((tree as any).edges) ? (tree as any).edges : []) {
+      if (!edge?.fromNodeId || !edge?.toNodeId) continue;
+      const fromNode = nodes[edge.fromNodeId];
+      if (!fromNode || fromNode.kind !== "group") continue;
+      const groupSort = (fromNode as any).ui?.sortOrder ?? (fromNode as any).displayOrder ?? 0;
+      const existing = map.get(edge.toNodeId);
+      if (existing === undefined || groupSort < existing) map.set(edge.toNodeId, groupSort);
+    }
+    // Walk per-node edges.children (older trees store containment here)
+    for (const node of Object.values(nodes)) {
+      if (!node || node.kind !== "group") continue;
+      const groupSort = (node as any).ui?.sortOrder ?? (node as any).displayOrder ?? 0;
+      for (const edge of Array.isArray(node.edges?.children) ? node.edges!.children! : []) {
+        if (!edge?.toNodeId) continue;
+        const existing = map.get(edge.toNodeId);
+        if (existing === undefined || groupSort < existing) map.set(edge.toNodeId, groupSort);
+      }
+    }
+    return map;
+  }, [tree]);
+
   // Fallback list used when validation fails or visibility resolves to zero: every enabled question.
   const allEnabledQuestionNodeIds = useMemo(() => {
-    return Object.values(tree.nodes)
-      .filter(isQuestionNodeEnabled)
-      .map((n) => (n as OptionNodeV2).id);
-  }, [tree.nodes]);
+    return hierarchicalNodeSort(
+      Object.values(tree.nodes)
+        .filter(isQuestionNodeEnabled)
+        .map((n) => (n as OptionNodeV2).id),
+      tree.nodes,
+      nodeToParentGroupSortKey,
+    );
+  }, [tree.nodes, nodeToParentGroupSortKey]);
 
   const optionRules = useMemo(() => getOptionRules(tree), [tree]);
 
@@ -298,8 +350,9 @@ export function ProductOptionsPanelV2({
     for (const id of matrixRequiredNodeIds) {
       if (!merged.includes(id)) merged.push(id);
     }
-    return merged;
-  }, [hiddenOptionGroupSet, matrixRequiredNodeIds, tree.nodes, visibleNodeIds]);
+    // Re-sort by parent-group hierarchy so the rendered order matches Product Builder ordering.
+    return hierarchicalNodeSort(merged, tree.nodes, nodeToParentGroupSortKey);
+  }, [hiddenOptionGroupSet, matrixRequiredNodeIds, tree.nodes, visibleNodeIds, nodeToParentGroupSortKey]);
 
   // Final list used by the render pass. When validation fails or visibility resolves to zero
   // but the tree still contains enabled question nodes, fall back to rendering all of them so
