@@ -8,6 +8,7 @@ import {
   shouldHydratePbv2Defaults,
   sortPbv2Choices,
 } from "../pbv2OrderEntryRuntime";
+import { buildInitialOrderLineItemDraftFromProduct } from "../orderLineItemInitialization";
 
 function makeTree(): OptionTreeV2 {
   return {
@@ -197,5 +198,32 @@ describe("PBV2 order-entry runtime", () => {
       "fallback-first",
       "fallback-second",
     ]);
+  });
+
+  test("buildInitialOrderLineItemDraftFromProduct centralizes routing defaults, PBV2 defaults, and render order", () => {
+    const tree = makeTree();
+    const draft = buildInitialOrderLineItemDraftFromProduct(
+      {
+        id: "prod_1",
+        name: "Banner",
+        requiresDesign: true,
+        requiresPrepress: false,
+        requiresProofApproval: true,
+        requiresProductionJob: true,
+        pbv2ActiveTreeVersionId: "tree_v1",
+        optionTreeJson: tree,
+      },
+      tree,
+      "order_1",
+    );
+
+    expect(draft.requiresDesign).toBe(true);
+    expect(draft.requiresPrepress).toBe(false);
+    expect(draft.requiresProofApproval).toBe(true);
+    expect(draft.requiresProductionJob).toBe(true);
+    expect(draft.optionSelectionsJson?.selected.finish?.value).toBe("matte");
+    expect(draft.optionSelectionsJson?.selected.extras?.value).toEqual(["grommets"]);
+    expect(draft.specsJson.initialDraft.renderedOptionLabels).toEqual(["Finish", "Extras", "Note"]);
+    expect(draft.debug.defaultSelectionsFound).toBe(true);
   });
 });
