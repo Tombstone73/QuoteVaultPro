@@ -54,6 +54,12 @@ import { getLineItemProofBadgeClass } from "@/lib/orderProofUi";
 
 import { computePbv2InputSignature, pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
+import {
+  buildPbv2DefaultSelections,
+  buildPbv2DefaultsHydrationKey,
+  hasPbv2Selections,
+  shouldHydratePbv2Defaults,
+} from "@shared/pbv2OrderEntryRuntime";
 
 type SortableChildRenderProps = {
   dragAttributes: Record<string, any> | undefined;
@@ -746,9 +752,16 @@ export function OrderLineItemsSection({
 
   const [pendingJumpToLineItemId, setPendingJumpToLineItemId] = useState<string | null>(null);
   const lineItemTopAnchorRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const lineItemWidthInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const setLineItemTopAnchorRef = useCallback(
     (lineItemId: string) => (node: HTMLDivElement | null) => {
       lineItemTopAnchorRefs.current[lineItemId] = node;
+    },
+    []
+  );
+  const setLineItemWidthInputRef = useCallback(
+    (lineItemId: string) => (node: HTMLInputElement | null) => {
+      lineItemWidthInputRefs.current[lineItemId] = node;
     },
     []
   );
@@ -758,6 +771,7 @@ export function OrderLineItemsSection({
     for (const lineItemId of Object.keys(lineItemTopAnchorRefs.current)) {
       if (!liveIds.has(lineItemId)) {
         delete lineItemTopAnchorRefs.current[lineItemId];
+        delete lineItemWidthInputRefs.current[lineItemId];
       }
     }
   }, [lineItems]);
@@ -793,19 +807,36 @@ export function OrderLineItemsSection({
 
     let raf1 = 0;
     let raf2 = 0;
-    // Double RAF gives the expanded editor one full paint cycle to mount and settle
-    // before we measure and snap the viewport to the top of the new line item.
+    let timeoutId = 0;
+    const scrollToAnchor = () => {
+      el.scrollIntoView({ block: "start", behavior: "auto" });
+    };
+    const focusTarget = () => {
+      const focusEl = lineItemWidthInputRefs.current[pendingJumpToLineItemId]
+        ?? (document.getElementById(`line-item-width-input-${pendingJumpToLineItemId}`) as HTMLInputElement | null);
+      const target = focusEl && !focusEl.disabled ? focusEl : el;
+      if ("focus" in target && typeof (target as HTMLElement).focus === "function") {
+        (target as HTMLElement).focus({ preventScroll: true });
+      }
+    };
+
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+
+    // Double RAF lets Radix/browser focus restoration and expanded layout finish;
+    // the timeout is a deterministic fallback for late content height changes.
     raf1 = requestAnimationFrame(() => {
       raf2 = requestAnimationFrame(() => {
         try {
-          // Use an immediate jump so later async pricing/layout work does not fight a smooth-scroll animation.
-          el.scrollIntoView({ block: "start", behavior: "auto" });
-          if ("focus" in el && typeof (el as HTMLElement).focus === "function") {
-            (el as HTMLElement).focus({ preventScroll: true });
-          }
+          scrollToAnchor();
+          focusTarget();
+          scrollToAnchor();
+          timeoutId = window.setTimeout(() => {
+            scrollToAnchor();
+            setPendingJumpToLineItemId(null);
+          }, 80);
         } catch {
-          // ignore
-        } finally {
           setPendingJumpToLineItemId(null);
         }
       });
@@ -814,6 +845,7 @@ export function OrderLineItemsSection({
     return () => {
       cancelAnimationFrame(raf1);
       cancelAnimationFrame(raf2);
+      window.clearTimeout(timeoutId);
     };
     // orderedKeys changes when a newly-created item is inserted into the list,
     // which triggers a retry if the element wasn't in the DOM on the first run.
@@ -964,10 +996,10 @@ export function OrderLineItemsSection({
   // PBV2 snapshot from /calculate response (contains treeJson, visibleNodeIds, selections)
   const [pbv2SnapshotJson, setPbv2SnapshotJson] = useState<any>(null);
 
-  // Use product's own tree as fallback before first successful pricing call
+  // Render PBV2 controls from the product's active tree, not pricing snapshots/results.
   const effectivePbv2Tree = useMemo(
-    () => normalizePbv2Tree(pbv2SnapshotJson?.treeJson ?? expandedProductPbv2Tree) ?? null,
-    [expandedProductPbv2Tree, pbv2SnapshotJson?.treeJson]
+    () => normalizePbv2Tree(expandedProductPbv2Tree) ?? null,
+    [expandedProductPbv2Tree]
   );
 
   const expandedProductIsPbv2 = isPbv2Product(expandedProduct);
@@ -1215,12 +1247,6 @@ export function OrderLineItemsSection({
         : { schemaVersion: 2, selected: {} };
     setOptionSelectionsV2(nextSelectionsV2);
 
-    // If there are no saved selections for this item, clear the hydration ref so
-    // PBV2 defaults are applied (or re-applied after collapse/re-expand).
-    if (Object.keys(nextSelectionsV2.selected ?? {}).length === 0) {
-      pbv2DefaultsHydratedRef.current.delete(itemId);
-    }
-
     // Hydrate PBV2 snapshot from line item (used to render option questions)
     const savedSnapshot = getPbv2SnapshotFromLineItem(expandedItem);
     setPbv2SnapshotJson(savedSnapshot);
@@ -1256,34 +1282,51 @@ export function OrderLineItemsSection({
   // node.input.defaultValue, so we wrap that result into the LineItemOptionSelectionsV2 shape.
   useEffect(() => {
     const lineItemId = expandedItem?.id;
-    if (!lineItemId) return;
-    if (!effectivePbv2Tree) return;
-    if (pbv2DefaultsHydratedRef.current.has(lineItemId)) return;
+    const hydrationKey = buildPbv2DefaultsHydrationKey({
+      lineItemId,
+      productId: expandedItem?.productId ?? expandedProduct?.id ?? null,
+      activeTreeVersionId: String(
+        (expandedProduct as any)?.pbv2ActiveTreeVersionId
+          ?? (expandedItem as any)?.pbv2ActiveTreeVersionId
+          ?? (pbv2SnapshotJson as any)?.treeVersionId
+          ?? ""
+      ),
+    });
+    if (!hydrationKey) return;
 
-    const savedSelectedCount = Object.keys(optionSelectionsV2?.selected ?? {}).length;
-    if (savedSelectedCount > 0) {
-      pbv2DefaultsHydratedRef.current.add(lineItemId);
+    if (hasPbv2Selections(optionSelectionsV2)) {
+      pbv2DefaultsHydratedRef.current.add(hydrationKey);
       return;
     }
 
     try {
-      const resolved = resolveRuntimeVisibility(effectivePbv2Tree as OptionTreeV2, { schemaVersion: 2, selected: {} });
-      const defaults = resolved.effectiveSelections ?? {};
-      const defaultKeys = Object.keys(defaults).filter((k) => defaults[k] !== undefined && defaults[k] !== null && defaults[k] !== "");
-      if (defaultKeys.length === 0) {
-        pbv2DefaultsHydratedRef.current.add(lineItemId);
+      if (!shouldHydratePbv2Defaults({
+        hydrationKey,
+        hydratedKeys: pbv2DefaultsHydratedRef.current,
+        selections: optionSelectionsV2,
+        tree: effectivePbv2Tree as OptionTreeV2 | null,
+      })) {
         return;
       }
-      const nextSelected: LineItemOptionSelectionsV2["selected"] = {};
-      for (const key of defaultKeys) {
-        nextSelected[key] = { value: defaults[key] };
+      const defaults = buildPbv2DefaultSelections(effectivePbv2Tree as OptionTreeV2 | null);
+      if (!defaults) return;
+      pbv2DefaultsHydratedRef.current.add(hydrationKey);
+      if (hasPbv2Selections(defaults)) {
+        setOptionSelectionsV2(defaults);
       }
-      setOptionSelectionsV2({ schemaVersion: 2, selected: nextSelected });
     } catch {
       // Best-effort: never block expansion on default hydration failure.
     }
-    pbv2DefaultsHydratedRef.current.add(lineItemId);
-  }, [expandedItem?.id, effectivePbv2Tree, optionSelectionsV2]);
+  }, [
+    expandedItem?.id,
+    expandedItem?.productId,
+    (expandedItem as any)?.pbv2ActiveTreeVersionId,
+    (expandedProduct as any)?.pbv2ActiveTreeVersionId,
+    expandedProduct?.id,
+    effectivePbv2Tree,
+    optionSelectionsV2,
+    pbv2SnapshotJson,
+  ]);
 
   const widthNum = dimsRequired ? Number.parseFloat(widthText) || 0 : 1;
   const heightNum = dimsRequired ? Number.parseFloat(heightText) || 0 : 1;
@@ -1367,7 +1410,7 @@ export function OrderLineItemsSection({
       if (dimsRequired && (!Number.isFinite(widthNum) || widthNum <= 0 || !Number.isFinite(heightNum) || heightNum <= 0)) return;
       if (!Number.isFinite(qtyNum) || qtyNum <= 0) return;
 
-      const isPbv2 = Boolean(pbv2SnapshotJson?.treeJson ?? expandedProductPbv2Tree);
+      const isPbv2 = Boolean(effectivePbv2Tree);
       if (isPbv2 && !optionsV2Valid) {
         setCalcError(null);
         return;
@@ -1447,7 +1490,7 @@ export function OrderLineItemsSection({
       qtyNum,
       optionSelections,
       optionSelectionsV2, // PBV2: reprice when selections change
-      pbv2SnapshotJson?.treeJson, // Detect PBV2 mode
+      effectivePbv2Tree, // Detect PBV2 mode from active product tree, not pricing result
       expandedProductPbv2Tree,
       optionsV2Valid,
       expandedItem?.id,
@@ -1459,7 +1502,7 @@ export function OrderLineItemsSection({
 
   const handleSaveItem = async () => {
     if (!expandedItem) return;
-    if (pbv2SnapshotJson?.treeJson && !optionsV2Valid) {
+    if (isPbv2Mode && !optionsV2Valid) {
       setCalcError("Complete required product options before saving.");
       return;
     }
@@ -2593,6 +2636,7 @@ export function OrderLineItemsSection({
                                 onRequiresDesignChange={!readOnly && isExpanded && expandedItem?.id === item.id ? setRequiresDesignInput : undefined}
                                 onRequiresPrepressChange={!readOnly && isExpanded && expandedItem?.id === item.id ? setRequiresPrepressInput : undefined}
                                 topAnchorRef={setLineItemTopAnchorRef(String(item.id))}
+                                widthInputRef={setLineItemWidthInputRef(String(item.id))}
                                 detailsSide="right"
                                 collapseSecondaryDetails={true}
                                 compactExpandedLayout={true}
@@ -2726,6 +2770,9 @@ export function OrderLineItemsSection({
                           value={p.name + " " + ((p as any).sku || "") + " " + ((p as any).category || "")}
                           onSelect={async () => {
                             try {
+                              if (document.activeElement instanceof HTMLElement) {
+                                document.activeElement.blur();
+                              }
                               const created = await createLineItem.mutateAsync({
                                 orderId,
                                 productId: p.id,
