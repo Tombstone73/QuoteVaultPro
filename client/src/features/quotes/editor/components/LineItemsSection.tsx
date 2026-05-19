@@ -550,8 +550,22 @@ export function LineItemsSection({
     setDescription(expandedItem.description || "");
     setProductionNotes(expandedItem.productionNotes || "");
     // Rehydrate routing intent from quote line item (migration 0015)
-    setRequiresDesign((expandedItem as any).requiresDesign === true);
-    setRequiresPrepress(typeof (expandedItem as any).requiresPrepress === 'boolean' ? (expandedItem as any).requiresPrepress : null);
+    // Fall back to product-level defaults for new draft items (requiresDesign/requiresPrepress not yet persisted)
+    const itemRequiresDesign = (expandedItem as any).requiresDesign;
+    const productRequiresDesign = (expandedProduct as any)?.requiresDesign;
+    setRequiresDesign(
+      itemRequiresDesign === true ||
+      (itemRequiresDesign === undefined && productRequiresDesign === true)
+    );
+    const itemRequiresPrepress = (expandedItem as any).requiresPrepress;
+    const productRequiresPrepress = (expandedProduct as any)?.requiresPrepress;
+    setRequiresPrepress(
+      typeof itemRequiresPrepress === 'boolean'
+        ? itemRequiresPrepress
+        : typeof productRequiresPrepress === 'boolean'
+          ? productRequiresPrepress
+          : null
+    );
     const selections: Record<string, OptionSelection> = {};
     (expandedItem.selectedOptions || []).forEach((opt: any) => {
       selections[opt.optionId] = {
@@ -576,13 +590,25 @@ export function LineItemsSection({
       });
       setOptionSelectionsV2(rawV2 as LineItemOptionSelectionsV2);
     } else {
+      // Seed from product tree defaults for new (unsaved) items so options render pre-selected
+      const treeForDefaults = expandedOptionTreeJson;
+      const defaults =
+        treeForDefaults && (treeForDefaults as any).schemaVersion === 2
+          ? buildPbv2DefaultSelections(treeForDefaults)
+          : null;
+      const next: LineItemOptionSelectionsV2 =
+        defaults?.selected && Object.keys(defaults.selected).length > 0
+          ? { schemaVersion: 2, selected: defaults.selected }
+          : { schemaVersion: 2, selected: {} };
       addRuntimeDebugEvent("optionSelectionsV2 write from expanded item", {
-        source: "missing or invalid expanded item optionSelectionsJson",
+        source: defaults?.selected && Object.keys(defaults.selected).length > 0
+          ? "seeded from product tree defaults"
+          : "missing or invalid expanded item optionSelectionsJson",
         itemKey,
         rawV2: rawV2 ?? null,
-        next: { schemaVersion: 2, selected: {} },
+        next,
       });
-      setOptionSelectionsV2({ schemaVersion: 2, selected: {} });
+      setOptionSelectionsV2(next);
     }
 
     // Initialize price edit text from override or calculated price
