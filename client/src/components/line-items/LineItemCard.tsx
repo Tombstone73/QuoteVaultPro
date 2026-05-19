@@ -7,7 +7,6 @@ import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ChevronRight, GripVertical, Loader2, Minus, Plus, Save, Check, Undo2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { RenderPathBanner } from "@/components/debug/RenderPathBanner";
 
 /**
  * LineItemCard - Shared presentational component for Quote and Order line items.
@@ -103,15 +102,6 @@ export type LineItemCardProps = {
   requiresProofApproval?: boolean;
   onRequiresDesignChange?: (value: boolean) => void;
   onRequiresPrepressChange?: (value: boolean) => void;
-  routingDebug?: {
-    initializedRequiresDesign?: unknown;
-    initializedRequiresPrepress?: unknown;
-    initializedRequiresProofApproval?: unknown;
-    productDefaultsSource?: unknown;
-    currentCheckboxState?: unknown;
-    changedAfterInitialization?: unknown;
-    events?: Array<{ at: string; label: string; data?: unknown }>;
-  };
   topAnchorRef?: (node: HTMLDivElement | null) => void;
   widthInputRef?: (node: HTMLInputElement | null) => void;
 
@@ -190,7 +180,6 @@ export function LineItemCard({
   requiresProofApproval = false,
   onRequiresDesignChange,
   onRequiresPrepressChange,
-  routingDebug,
   topAnchorRef,
   widthInputRef,
   optionsSlot,
@@ -239,20 +228,6 @@ export function LineItemCard({
           className="w-full min-h-[60px] px-3 py-2 text-sm rounded-md border border-input bg-background resize-y focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
           disabled={readOnly}
         />
-        {routingDebug && (
-          <div className="mt-2 rounded-md border-2 border-orange-500 bg-orange-50 p-2 text-[11px] text-orange-950">
-            <div className="font-bold">LineItemCard routing debug</div>
-            <div className="mt-1 grid gap-0.5 font-mono">
-              <div>initialized requiresDesign: {JSON.stringify(routingDebug.initializedRequiresDesign)}</div>
-              <div>initialized requiresPrepress: {JSON.stringify(routingDebug.initializedRequiresPrepress)}</div>
-              <div>initialized requiresProofApproval: {JSON.stringify(routingDebug.initializedRequiresProofApproval)}</div>
-              <div>product-level defaults source: {JSON.stringify(routingDebug.productDefaultsSource)}</div>
-              <div>current checkbox state: {JSON.stringify(routingDebug.currentCheckboxState)}</div>
-              <div>changed after initialization: {JSON.stringify(routingDebug.changedAfterInitialization)}</div>
-              <div>events: {JSON.stringify((routingDebug.events ?? []).slice(-8))}</div>
-            </div>
-          </div>
-        )}
       </div>
 
       <div className="mt-3 space-y-1.5">
@@ -415,7 +390,6 @@ export function LineItemCard({
       tabIndex={-1}
       className={cn("rounded-lg border border-border/40 bg-background/30 focus:outline-none", isExpanded && "bg-background/40 border-border/60")}
     >
-      <RenderPathBanner name="LineItemCard" className="m-2" />
       {/* Collapsed Summary Row - Enterprise Dense Layout */}
       <button
         type="button"
