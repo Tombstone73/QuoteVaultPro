@@ -96,10 +96,135 @@ function isEmptySelectionValue(value: unknown): boolean {
     || (Array.isArray(value) && value.length === 0);
 }
 
+function firstFiniteNumber(...values: unknown[]): number | null {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function getTreeNodeOrder(node: any, fallback: number): number {
+  const explicit = firstFiniteNumber(
+    node?.ui?.sortOrder,
+    node?.displayOrder,
+    node?.sortOrder,
+    node?.order,
+    node?.orderIndex,
+    node?.index,
+  );
+  return explicit ?? 1_000_000 + fallback;
+}
+
+function getChoiceOrder(choice: any, fallback: number): number {
+  const explicit = firstFiniteNumber(
+    choice?.sortOrder,
+    choice?.displayOrder,
+    choice?.order,
+    choice?.orderIndex,
+    choice?.index,
+  );
+  return explicit ?? 1_000_000 + fallback;
+}
+
+export function sortPbv2Choices<T extends { value?: string; label?: string }>(choices: T[] | null | undefined): T[] {
+  return (choices ?? [])
+    .map((choice, index) => ({ choice, index }))
+    .sort((a, b) => {
+      const ao = getChoiceOrder(a.choice, a.index);
+      const bo = getChoiceOrder(b.choice, b.index);
+      if (ao !== bo) return ao - bo;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.choice);
+}
+
+export function sortPbv2NodeIdsByBuilderOrder(tree: OptionTreeV2 | null | undefined, nodeIds: string[]): string[] {
+  const normalized = normalizePbv2Tree(tree);
+  if (!normalized) return nodeIds.slice();
+
+  const fallbackNodeOrder = new Map<string, number>();
+  normalized.rootNodeIds.forEach((nodeId, index) => {
+    fallbackNodeOrder.set(nodeId, index);
+  });
+
+  const parentGroupOrder = new Map<string, number>();
+  for (const nodeId of normalized.rootNodeIds) {
+    const node = normalized.nodes[nodeId];
+    if (node?.kind === "group") {
+      parentGroupOrder.set(nodeId, getTreeNodeOrder(node, fallbackNodeOrder.get(nodeId) ?? parentGroupOrder.size));
+    }
+  }
+
+  for (const edge of Array.isArray((normalized as any).edges) ? (normalized as any).edges : []) {
+    if (!edge?.fromNodeId || !edge?.toNodeId) continue;
+    const fromNode = normalized.nodes[edge.fromNodeId];
+    if (!fromNode || fromNode.kind !== "group") continue;
+    const childFallback = fallbackNodeOrder.size;
+    if (!fallbackNodeOrder.has(edge.toNodeId)) {
+      fallbackNodeOrder.set(edge.toNodeId, childFallback);
+    }
+    if (!parentGroupOrder.has(edge.fromNodeId)) {
+      parentGroupOrder.set(edge.fromNodeId, getTreeNodeOrder(fromNode, parentGroupOrder.size));
+    }
+  }
+
+  for (const node of Object.values(normalized.nodes)) {
+    if (!node || node.kind !== "group") continue;
+    if (!parentGroupOrder.has(node.id)) {
+      parentGroupOrder.set(node.id, getTreeNodeOrder(node, parentGroupOrder.size));
+    }
+    const children = Array.isArray(node.edges?.children) ? node.edges!.children! : [];
+    children.forEach((edge, index) => {
+      if (!edge?.toNodeId || fallbackNodeOrder.has(edge.toNodeId)) return;
+      fallbackNodeOrder.set(edge.toNodeId, index);
+    });
+  }
+
+  const nodeToParentGroupOrder = new Map<string, number>();
+  for (const edge of Array.isArray((normalized as any).edges) ? (normalized as any).edges : []) {
+    if (!edge?.fromNodeId || !edge?.toNodeId) continue;
+    const fromNode = normalized.nodes[edge.fromNodeId];
+    if (!fromNode || fromNode.kind !== "group") continue;
+    const groupOrder = parentGroupOrder.get(edge.fromNodeId) ?? getTreeNodeOrder(fromNode, 0);
+    const existing = nodeToParentGroupOrder.get(edge.toNodeId);
+    if (existing === undefined || groupOrder < existing) {
+      nodeToParentGroupOrder.set(edge.toNodeId, groupOrder);
+    }
+  }
+  for (const node of Object.values(normalized.nodes)) {
+    if (!node || node.kind !== "group") continue;
+    const groupOrder = parentGroupOrder.get(node.id) ?? getTreeNodeOrder(node, 0);
+    for (const edge of Array.isArray(node.edges?.children) ? node.edges!.children! : []) {
+      if (!edge?.toNodeId) continue;
+      const existing = nodeToParentGroupOrder.get(edge.toNodeId);
+      if (existing === undefined || groupOrder < existing) {
+        nodeToParentGroupOrder.set(edge.toNodeId, groupOrder);
+      }
+    }
+  }
+
+  return nodeIds
+    .map((nodeId, index) => ({ nodeId, index }))
+    .sort((a, b) => {
+      const nodeA = normalized.nodes[a.nodeId];
+      const nodeB = normalized.nodes[b.nodeId];
+      const ga = nodeToParentGroupOrder.get(a.nodeId) ?? (nodeA?.kind === "group" ? parentGroupOrder.get(a.nodeId) : undefined) ?? 0;
+      const gb = nodeToParentGroupOrder.get(b.nodeId) ?? (nodeB?.kind === "group" ? parentGroupOrder.get(b.nodeId) : undefined) ?? 0;
+      if (ga !== gb) return ga - gb;
+
+      const ao = getTreeNodeOrder(nodeA, fallbackNodeOrder.get(a.nodeId) ?? a.index);
+      const bo = getTreeNodeOrder(nodeB, fallbackNodeOrder.get(b.nodeId) ?? b.index);
+      if (ao !== bo) return ao - bo;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.nodeId);
+}
+
 export function getRenderablePbv2QuestionNodeIds(tree: OptionTreeV2 | null | undefined): string[] {
   const normalized = normalizePbv2Tree(tree);
   if (!normalized) return [];
-  return Object.values(normalized.nodes).filter(isRenderableQuestionNode).map((node) => node.id);
+  const ids = Object.values(normalized.nodes).filter(isRenderableQuestionNode).map((node) => node.id);
+  return sortPbv2NodeIdsByBuilderOrder(normalized, ids);
 }
 
 export function hasRenderablePbv2Tree(tree: OptionTreeV2 | null | undefined): boolean {
