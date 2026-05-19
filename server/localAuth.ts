@@ -196,7 +196,16 @@ export async function setupAuth(app: Express) {
           }
           
           return done(null, user);
-        } catch (error) {
+        } catch (error: unknown) {
+          // LOG: surface the real DB/query error so it's visible in server logs.
+          // Without this the error becomes a generic 500 and the frontend
+          // shows "Invalid credentials", masking root causes (e.g. missing column).
+          const msg = (error as any)?.message ?? String(error);
+          console.error('[LocalAuth] Strategy error during login:', {
+            email: email ? email.substring(0, 3) + '***' : '(missing)',
+            errorMessage: msg,
+            hint: msg.includes('column') ? 'Possible DB schema mismatch — check pending migrations' : undefined,
+          });
           return done(error);
         }
       }
@@ -208,7 +217,14 @@ export async function setupAuth(app: Express) {
     try {
       const user = await storage.getUser(id);
       cb(null, user);
-    } catch (error) {
+    } catch (error: unknown) {
+      // LOG: surface real deserialize errors — missing column = schema not migrated.
+      const msg = (error as any)?.message ?? String(error);
+      console.error('[LocalAuth] deserializeUser error:', {
+        userId: id ? id.substring(0, 8) + '...' : '(missing)',
+        errorMessage: msg,
+        hint: msg.includes('column') ? 'Possible DB schema mismatch — check pending migrations' : undefined,
+      });
       cb(error);
     }
   });
