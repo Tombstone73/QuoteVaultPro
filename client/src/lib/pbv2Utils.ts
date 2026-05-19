@@ -171,5 +171,7 @@ export function getPbv2Tree(product: Product | null | undefined): OptionTreeV2 |
   // Normalize any optionTreeJson payload that contains a renderable PBV2 tree.
   // Order entry must render configuration controls from tree data even when the
   // product's PBV2 pricing/published flags are incomplete or temporarily stale.
+  // Products with partial PBV2 tree data may now enter the PBV2 renderer sooner;
+  // pricing errors remain separate and are surfaced by calculation, not by hiding controls.
   return normalizePbv2Tree((product as any)?.optionTreeJson);
 }

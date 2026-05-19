@@ -22,9 +22,9 @@ function normalizeNodeKind(node: Record<string, any>): OptionNodeV2["kind"] | un
 }
 
 function getSelectionKeyForRuntime(nodeRecord: Record<string, any>, nodeId: string): string {
-  // Product Builder V2 stores selection keys on input.selectionKey; older
-  // published trees may only have node.key. Node id is the explicit final
-  // runtime fallback so legacy options still render and save deterministically.
+  // Selection key precedence is input.selectionKey → node.key → nodeId.
+  // This helper handles the latter two cases after normalizePbv2Tree has
+  // already determined that input.selectionKey is missing.
   if (typeof nodeRecord.key === "string" && nodeRecord.key.trim()) {
     return nodeRecord.key;
   }
@@ -120,7 +120,7 @@ export function buildPbv2DefaultsHydrationKey({
 }
 
 export function hasPbv2Selections(selections: LineItemOptionSelectionsV2 | null | undefined): boolean {
-  return Object.keys(selections?.selected ?? {}).length > 0;
+  return Object.values(selections?.selected ?? {}).some((entry) => !isEmptySelectionValue(entry?.value));
 }
 
 export function shouldHydratePbv2Defaults({
