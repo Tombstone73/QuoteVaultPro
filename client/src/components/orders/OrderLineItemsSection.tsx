@@ -54,7 +54,6 @@ import { getLineItemProofBadgeClass } from "@/lib/orderProofUi";
 
 import { computePbv2InputSignature, pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
-import { RenderPathBanner } from "@/components/debug/RenderPathBanner";
 import {
   buildPbv2DefaultsHydrationKey,
   hasPbv2Selections,
@@ -1819,7 +1818,6 @@ export function OrderLineItemsSection({
 
   return (
     <Card className="border-0 bg-transparent shadow-none">
-      <RenderPathBanner name="OrderLineItemsSection" className="mb-2" />
       <CardHeader className="px-0 pt-0 pb-2">
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/50 bg-muted/15 px-3 py-2.5">
           <div className="min-w-0">

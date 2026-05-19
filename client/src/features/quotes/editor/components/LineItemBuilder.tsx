@@ -16,7 +16,6 @@ import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTre
 import { isPbv2Product, getPbv2Tree } from "@/lib/pbv2Utils";
 import { ProductOptionsPanel } from "./ProductOptionsPanel";
 import { ProductOptionsPanelV2 } from "./ProductOptionsPanelV2";
-import { RenderPathBanner } from "@/components/debug/RenderPathBanner";
 
 type LineItemBuilderProps = {
     products: Product[];
@@ -143,7 +142,6 @@ export function LineItemBuilder({
 
     return (
         <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
-            <RenderPathBanner name="QuoteEditor LineItemBuilder" className="m-4 mb-0" />
             <CardHeader className="pb-2 px-5 pt-4">
                 <CardTitle className="text-sm font-medium">Add Line Item</CardTitle>
             </CardHeader>

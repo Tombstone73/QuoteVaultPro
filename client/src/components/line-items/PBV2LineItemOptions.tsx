@@ -1,7 +1,6 @@
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { RenderPathBanner } from "@/components/debug/RenderPathBanner";
 
 /**
  * PBV2LineItemOptions - Minimal component to render PBV2 option questions in line items
@@ -48,7 +47,6 @@ type Props = {
 function SetupWarning({ message, className }: { message: string; className?: string }) {
   return (
     <div className={className}>
-      <RenderPathBanner name="PBV2LineItemOptions" className="mb-2" />
       <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-xs text-amber-700 dark:text-amber-300">
         {message}
       </div>
@@ -92,7 +90,6 @@ export function PBV2LineItemOptions({ pbv2SnapshotJson, selections, onSelectionC
 
   return (
     <div className={className}>
-      <RenderPathBanner name="PBV2LineItemOptions" className="mb-2" />
       <div className="space-y-3">
         {inputNodes.map((node) => {
           const selectionKey = node.input!.selectionKey;
