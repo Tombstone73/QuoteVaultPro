@@ -19,6 +19,81 @@ function makeQBInvoice(overrides: {
 
 describe('extractQBInvoiceCustomerPo', () => {
 
+  // ==================== A0. sales1 CustomField (InfoFloPrint legacy) =========
+
+  describe('A0 — sales1 custom field (legacy InfoFloPrint PO/reference)', () => {
+    test('maps sales1 value to PO with source custom_field_sales1', () => {
+      expect(extractQBInvoiceCustomerPo(makeQBInvoice({
+        CustomField: [{ Name: 'sales1', StringValue: '108711 - Proof for The Hope Ac' }],
+      }))).toEqual({ poNumber: '108711 - Proof for The Hope Ac', source: 'custom_field_sales1' });
+    });
+
+    test('sales1 wins over explicit PO custom field', () => {
+      expect(extractQBInvoiceCustomerPo(makeQBInvoice({
+        CustomField: [
+          { Name: 'sales1', StringValue: 'LEGACY-REF-001' },
+          { Name: 'PO Number', StringValue: 'PO-REGULAR-999' },
+        ],
+      }))).toEqual({ poNumber: 'LEGACY-REF-001', source: 'custom_field_sales1' });
+    });
+
+    test('sales1 wins over line description fallback', () => {
+      expect(extractQBInvoiceCustomerPo(makeQBInvoice({
+        CustomField: [{ Name: 'sales1', StringValue: 'INFLO-2025-888' }],
+        Line: [{ Description: 'Custom Design' }, { Description: 'Installation' }],
+      }))).toEqual({ poNumber: 'INFLO-2025-888', source: 'custom_field_sales1' });
+    });
+
+    test('sales1 wins over CustomerMemo', () => {
+      expect(extractQBInvoiceCustomerPo(makeQBInvoice({
+        CustomField: [{ Name: 'sales1', StringValue: 'SALES1-WINS' }],
+        CustomerMemo: { value: 'Rooftop signage Q3' },
+      }))).toEqual({ poNumber: 'SALES1-WINS', source: 'custom_field_sales1' });
+    });
+
+    test('sales1 wins over PrivateNote with explicit PO pattern', () => {
+      expect(extractQBInvoiceCustomerPo(makeQBInvoice({
+        CustomField: [{ Name: 'sales1', StringValue: 'SALES1-TOP' }],
+        PrivateNote: 'PO: PRIVATE-NOTE-999',
+      }))).toEqual({ poNumber: 'SALES1-TOP', source: 'custom_field_sales1' });
+    });
+
+    test('sales1 match is case-insensitive', () => {
+      expect(extractQBInvoiceCustomerPo(makeQBInvoice({
+        CustomField: [{ Name: 'Sales1', StringValue: 'CI-MATCH-001' }],
+      }))).toEqual({ poNumber: 'CI-MATCH-001', source: 'custom_field_sales1' });
+
+      expect(extractQBInvoiceCustomerPo(makeQBInvoice({
+        CustomField: [{ Name: 'SALES1', StringValue: 'CI-MATCH-002' }],
+      }))).toEqual({ poNumber: 'CI-MATCH-002', source: 'custom_field_sales1' });
+    });
+
+    test('empty sales1 value falls through to next step', () => {
+      expect(extractQBInvoiceCustomerPo(makeQBInvoice({
+        CustomField: [
+          { Name: 'sales1', StringValue: '' },
+          { Name: 'PO Number', StringValue: 'FALLTHROUGH-PO' },
+        ],
+      }))).toEqual({ poNumber: 'FALLTHROUGH-PO', source: 'custom_field' });
+    });
+
+    test('whitespace-only sales1 falls through', () => {
+      const result = extractQBInvoiceCustomerPo(makeQBInvoice({
+        CustomField: [{ Name: 'sales1', StringValue: '   ' }],
+        Line: [{ Description: 'Banner printing' }],
+      }));
+      expect(result.source).not.toBe('custom_field_sales1');
+    });
+
+    test('truncates sales1 value longer than 100 chars', () => {
+      const result = extractQBInvoiceCustomerPo(makeQBInvoice({
+        CustomField: [{ Name: 'sales1', StringValue: 'X'.repeat(150) }],
+      }));
+      expect(result.source).toBe('custom_field_sales1');
+      expect(result.poNumber).toHaveLength(100);
+    });
+  });
+
   // ==================== A. CustomField PO ========================
 
   describe('A — CustomField with PO name', () => {

@@ -71,6 +71,7 @@ import ProductImportExport from "@/pages/admin/ProductImportExport";
 import PricingAuditPage from "@/pages/admin/PricingAuditPage";
 import MaterialsImportExport from "@/pages/admin/MaterialsImportExport";
 import QBInvoiceInspectorPage from "@/pages/admin/QBInvoiceInspectorPage";
+import QBCustomerInspectorPage from "@/pages/admin/QBCustomerInspectorPage";
 import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
 import FulfillmentPage from "@/pages/fulfillment";
 import FulfillmentShipmentDetailPage from "@/pages/fulfillment-shipment-detail";
@@ -179,6 +180,7 @@ function Router() {
         <Route path="/admin/pricing-audit" element={<PricingAuditPage />} />
         <Route path="/admin/materials/import-export" element={<MaterialsImportExport />} />
         <Route path="/admin/developer/qb-invoice-inspector" element={<QBInvoiceInspectorPage />} />
+        <Route path="/admin/developer/qb-customer-inspector" element={<QBCustomerInspectorPage />} />
         <Route path="/users" element={<UserManagement />} />
         <Route path="/admin" element={<Admin />} />
         
