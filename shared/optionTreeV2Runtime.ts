@@ -152,7 +152,9 @@ export function evaluateVisibilityConfig(config: VisibilityConfig | undefined, s
 }
 
 function nodeSortKey(node: any, nodeId: string): [number, string] {
-  const sortOrderRaw = node?.ui?.sortOrder;
+  // ui.sortOrder is canonical; displayOrder is the legacy field stamped by the
+  // Product Builder's group-reorder operation on older trees.
+  const sortOrderRaw = node?.ui?.sortOrder ?? node?.displayOrder;
   const sortOrder = typeof sortOrderRaw === "number" && Number.isFinite(sortOrderRaw) ? sortOrderRaw : 0;
   return [sortOrder, nodeId];
 }
