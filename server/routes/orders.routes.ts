@@ -4761,12 +4761,19 @@ export async function registerOrderRoutes(
             // Structured logging for PBV2 pricing persistence
             console.log(`[PBV2_PRICE_PERSIST] orderId=${lineItemData.orderId} treeVersionId=${pricingResult.pbv2TreeVersionId} totalCents=${pricingResult.lineTotalCents} pricedAt=${new Date().toISOString()}`);
 
+            // If the client didn't explicitly send requiresDesign, pass null so
+            // materializeLineItemDesignSnapshot falls back to the product's design config
+            // rather than treating Zod's default(false) as an intentional override.
+            const clientSentRequiresDesign =
+                Object.prototype.hasOwnProperty.call(req.body, 'requiresDesign') &&
+                typeof (req.body as any).requiresDesign === 'boolean';
+
             const designSnapshot = materializeLineItemDesignSnapshot({
                 config: await productDesignConfigRepository.getByProductId(organizationId, String(lineItemData.productId)),
                 requestedNeedsDesignOverride: Object.prototype.hasOwnProperty.call(lineItemData, 'needsDesignOverride')
                     ? ((lineItemData as any).needsDesignOverride ?? null)
                     : undefined,
-                requestedEffectiveRequiresDesign: typeof lineItemData.requiresDesign === "boolean" ? lineItemData.requiresDesign : null,
+                requestedEffectiveRequiresDesign: clientSentRequiresDesign ? lineItemData.requiresDesign : null,
             });
 
             const routing = await resolveEffectiveLineItemRouting({

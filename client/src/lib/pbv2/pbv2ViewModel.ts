@@ -780,8 +780,14 @@ export function createReorderGroupsPatch(treeJson: unknown, fromIndex: number, t
   const [moved] = reordered.splice(fromIndex, 1);
   reordered.splice(toIndex, 0, moved);
 
-  // Stamp displayOrder on each group node so order persists through JSONB round-trips
-  const reorderedWithOrder = reordered.map((n, i) => ({ ...n, displayOrder: i }));
+  // Stamp displayOrder and ui.sortOrder on each group node so the Product Builder
+  // ordering persists through JSONB round-trips and the runtime visibility resolver
+  // (which reads ui.sortOrder) renders groups in the correct sequence.
+  const reorderedWithOrder = reordered.map((n, i) => ({
+    ...n,
+    displayOrder: i,
+    ui: { ...(n.ui || {}), sortOrder: i },
+  }));
 
   return { patch: { nodes: [...reorderedWithOrder, ...nonGroupNodes], edges } };
 }

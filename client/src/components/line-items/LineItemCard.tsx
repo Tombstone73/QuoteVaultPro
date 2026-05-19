@@ -99,6 +99,7 @@ export type LineItemCardProps = {
   // Expanded view - Routing intent (migration 0015, internal / staff only)
   requiresDesign?: boolean;
   requiresPrepress?: boolean | null;
+  requiresProofApproval?: boolean;
   onRequiresDesignChange?: (value: boolean) => void;
   onRequiresPrepressChange?: (value: boolean) => void;
 
@@ -174,6 +175,7 @@ export function LineItemCard({
   onProductionNotesChange,
   requiresDesign = false,
   requiresPrepress = null,
+  requiresProofApproval = false,
   onRequiresDesignChange,
   onRequiresPrepressChange,
   optionsSlot,
@@ -207,9 +209,9 @@ export function LineItemCard({
     if (artworkSlot) parts.push("Artwork");
     if (description.trim()) parts.push("Description");
     if (hasProductionNotes) parts.push("Notes");
-    if (!readOnly || requiresDesign || requiresPrepress !== null) parts.push("Setup");
+    if (!readOnly || requiresDesign || requiresPrepress !== null || requiresProofApproval) parts.push("Setup");
     return parts.length > 0 ? parts.join(" · ") : "Artwork, notes, and setup";
-  }, [artworkSlot, description, hasProductionNotes, readOnly, requiresDesign, requiresPrepress]);
+  }, [artworkSlot, description, hasProductionNotes, readOnly, requiresDesign, requiresPrepress, requiresProofApproval]);
 
   const detailsFields = (
     <>
@@ -267,6 +269,15 @@ export function LineItemCard({
               className="h-4 w-4 rounded border-input accent-primary"
             />
             Requires Prepress
+          </label>
+          <label className="flex items-center gap-2 text-sm select-none text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={requiresProofApproval === true}
+              disabled
+              className="h-4 w-4 rounded border-input accent-primary"
+            />
+            Proof Approval
           </label>
         </div>
         {requiresPrepress === null && (
