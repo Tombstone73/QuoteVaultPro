@@ -3,7 +3,7 @@
  */
 
 import type { Product } from "@shared/schema";
-import type { OptionTreeV2 } from "@shared/optionTreeV2";
+import type { OptionNodeV2, OptionTreeV2 } from "@shared/optionTreeV2";
 
 export type Pbv2TreeSummary = {
   exists: boolean;
@@ -33,13 +33,78 @@ function parseMaybeJson(value: unknown): unknown {
   }
 }
 
-function getNodeValues(tree: unknown): any[] {
+function normalizeNodeKind(node: Record<string, any>): OptionNodeV2["kind"] | undefined {
+  if (node.kind === "question" || node.kind === "group" || node.kind === "computed") {
+    return node.kind;
+  }
+
+  const type = typeof node.type === "string" ? node.type.toUpperCase() : "";
+  if (type === "INPUT" || type === "OPTION") return "question";
+  if (type === "GROUP") return "group";
+  if (type === "COMPUTE" || type === "COMPUTED") return "computed";
+  return undefined;
+}
+
+export function isRenderablePbv2InputType(inputType: string): boolean {
+  return RENDERABLE_INPUT_TYPES.has(String(inputType || "").toLowerCase());
+}
+
+export function isPbv2QuestionNode(node: unknown): node is OptionNodeV2 {
+  return Boolean(node && typeof node === "object" && normalizeNodeKind(node as Record<string, any>) === "question");
+}
+
+export function normalizePbv2Tree(tree: unknown): OptionTreeV2 | null {
   const raw = parseMaybeJson(tree);
-  if (!raw || typeof raw !== "object") return [];
-  const nodes = (raw as any).nodes;
-  if (Array.isArray(nodes)) return nodes.filter(Boolean);
-  if (nodes && typeof nodes === "object") return Object.values(nodes).filter(Boolean);
-  return [];
+  if (!raw || typeof raw !== "object") return null;
+
+  const treeRecord = raw as Record<string, any>;
+  const rawNodes = treeRecord.nodes;
+  const normalizedNodes: Record<string, OptionNodeV2> = {};
+
+  const nodeEntries = Array.isArray(rawNodes)
+    ? rawNodes
+        .filter((node): node is Record<string, any> => Boolean(node && typeof node === "object" && typeof (node as any).id === "string"))
+        .map((node) => [String(node.id), node] as const)
+    : Object.entries(rawNodes && typeof rawNodes === "object" ? rawNodes : {});
+
+  for (const [fallbackId, rawNode] of nodeEntries) {
+    if (!rawNode || typeof rawNode !== "object") continue;
+    const nodeRecord = rawNode as Record<string, any>;
+    const id = typeof nodeRecord.id === "string" && nodeRecord.id.trim() ? nodeRecord.id : String(fallbackId);
+    const kind = normalizeNodeKind(nodeRecord);
+    const input = nodeRecord.input && typeof nodeRecord.input === "object" ? { ...nodeRecord.input } : undefined;
+
+    if (kind === "question" && input && (!input.selectionKey || typeof input.selectionKey !== "string")) {
+      input.selectionKey = nodeRecord.key || id;
+    }
+
+    normalizedNodes[id] = {
+      ...(nodeRecord as any),
+      id,
+      ...(kind ? { kind } : {}),
+      ...(input ? { input } : {}),
+    } as OptionNodeV2;
+  }
+
+  const rootNodeIds = Array.isArray(treeRecord.rootNodeIds) && treeRecord.rootNodeIds.length > 0
+    ? treeRecord.rootNodeIds.filter((nodeId: unknown): nodeId is string => typeof nodeId === "string" && nodeId.trim().length > 0)
+    : Object.keys(normalizedNodes);
+
+  if (Object.keys(normalizedNodes).length === 0) {
+    return null;
+  }
+
+  return {
+    ...(treeRecord as any),
+    schemaVersion: 2,
+    rootNodeIds,
+    nodes: normalizedNodes,
+    edges: Array.isArray(treeRecord.edges) ? treeRecord.edges : [],
+  } as OptionTreeV2;
+}
+
+function getNodeValues(tree: unknown): OptionNodeV2[] {
+  return Object.values(normalizePbv2Tree(tree)?.nodes ?? {});
 }
 
 function isEnabledNode(node: any): boolean {
@@ -56,10 +121,11 @@ export function summarizePbv2Tree(tree: unknown): Pbv2TreeSummary {
 
   for (const node of nodes) {
     if (!node || typeof node !== "object") continue;
-    if (node.kind === "group") groupCount += 1;
-    if (node.kind === "question" && node.input) {
+    const kind = normalizeNodeKind(node as Record<string, any>);
+    if (kind === "group") groupCount += 1;
+    if (kind === "question" && node.input) {
       questionCount += 1;
-      if (isEnabledNode(node) && RENDERABLE_INPUT_TYPES.has(String(node.input.type))) {
+      if (isEnabledNode(node) && isRenderablePbv2InputType(String(node.input.type))) {
         renderableControlCount += 1;
       }
     }
@@ -67,7 +133,7 @@ export function summarizePbv2Tree(tree: unknown): Pbv2TreeSummary {
   }
 
   return {
-    exists: Boolean(parseMaybeJson(tree) && typeof parseMaybeJson(tree) === "object"),
+    exists: Boolean(normalizePbv2Tree(tree)),
     groupCount,
     questionCount,
     choiceCount,
@@ -98,11 +164,5 @@ export function isPbv2Product(product: Product | null | undefined): boolean {
 export function getPbv2Tree(product: Product | null | undefined): OptionTreeV2 | null {
   if (!isPbv2Product(product)) return null;
 
-  const optionTreeJson = parseMaybeJson((product as any)?.optionTreeJson);
-  if (!optionTreeJson || typeof optionTreeJson !== "object") return null;
-
-  const summary = summarizePbv2Tree(optionTreeJson);
-  if (summary.renderableControlCount === 0) return null;
-
-  return optionTreeJson as OptionTreeV2;
+  return normalizePbv2Tree((product as any)?.optionTreeJson);
 }

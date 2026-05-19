@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
@@ -36,7 +36,7 @@ import { ProductOptionsPanelV2, type ProductOptionsPanelV2RenderStats } from "@/
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import { validateOptionTreeV2 } from "@shared/optionTreeV2";
 import { resolveRuntimeVisibility } from "@shared/optionTreeV2Runtime";
-import { isPbv2Product, getPbv2Tree, summarizePbv2Tree } from "@/lib/pbv2Utils";
+import { getPbv2Tree, isPbv2Product, isPbv2QuestionNode, normalizePbv2Tree, summarizePbv2Tree } from "@/lib/pbv2Utils";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import { getThumbSrc } from "@/lib/getThumbSrc";
@@ -745,6 +745,13 @@ export function OrderLineItemsSection({
   const [priceEditTextById, setPriceEditTextById] = useState<Record<string, string>>({});
 
   const [pendingJumpToLineItemId, setPendingJumpToLineItemId] = useState<string | null>(null);
+  const lineItemTopAnchorRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const setLineItemTopAnchorRef = useCallback(
+    (lineItemId: string) => (node: HTMLDivElement | null) => {
+      lineItemTopAnchorRefs.current[lineItemId] = node;
+    },
+    []
+  );
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -765,27 +772,35 @@ export function OrderLineItemsSection({
     if (!pendingJumpToLineItemId) return;
     if (expandedId !== pendingJumpToLineItemId) return;
 
-    const cardId = `line-item-${pendingJumpToLineItemId}`;
-    const el = document.getElementById(cardId);
+    const el = lineItemTopAnchorRefs.current[pendingJumpToLineItemId]
+      ?? document.getElementById(`line-item-top-anchor-${pendingJumpToLineItemId}`)
+      ?? document.getElementById(`line-item-${pendingJumpToLineItemId}`);
     // If the new item isn't in the DOM yet (list hasn't re-rendered), do not clear
     // the pending target — the effect will retry once orderedKeys updates and the
     // item appears.
     if (!el) return;
 
-    // Defer scroll by one animation frame so the expansion can settle before
-    // scrollIntoView measures layout.  block:"start" places the top of the card
-    // (where Width / Height / Qty live) at the top of the viewport.
-    const timerId = setTimeout(() => {
-      try {
-        el.focus({ preventScroll: true });
-        el.scrollIntoView({ block: "start", behavior: "smooth" });
-      } catch {
-        // ignore
-      }
-    }, 60);
+    let raf1 = 0;
+    let raf2 = 0;
+    raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        try {
+          el.scrollIntoView({ block: "start", behavior: "auto" });
+          if ("focus" in el && typeof (el as HTMLElement).focus === "function") {
+            (el as HTMLElement).focus({ preventScroll: true });
+          }
+        } catch {
+          // ignore
+        } finally {
+          setPendingJumpToLineItemId(null);
+        }
+      });
+    });
 
-    setPendingJumpToLineItemId(null);
-    return () => clearTimeout(timerId);
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
     // orderedKeys changes when a newly-created item is inserted into the list,
     // which triggers a retry if the element wasn't in the DOM on the first run.
   }, [expandedId, pendingJumpToLineItemId, orderedKeys]);
@@ -810,7 +825,12 @@ export function OrderLineItemsSection({
   // stale, or not renderable, fetch the live active tree from pbv2TreeVersions.
   const needsLivePbv2TreeFetch = isPbv2Product(expandedProduct)
     && (!!expandedProductActiveTreeVersionId || !expandedProductPbv2TreeDirect);
-  const { data: livePbv2TreeData } = useQuery({
+  const {
+    data: livePbv2TreeData,
+    status: livePbv2TreeStatus,
+    fetchStatus: livePbv2TreeFetchStatus,
+    isFetching: livePbv2TreeIsFetching,
+  } = useQuery({
     queryKey: ["/api/products", expandedProduct?.id, "pbv2/tree", expandedProductActiveTreeVersionId],
     enabled: needsLivePbv2TreeFetch && !!expandedProduct?.id,
     queryFn: async () => {
@@ -822,7 +842,10 @@ export function OrderLineItemsSection({
     staleTime: 0,
   });
 
-  const expandedProductPbv2Tree = livePbv2TreeData ?? expandedProductPbv2TreeDirect ?? null;
+  const expandedProductPbv2Tree = useMemo(
+    () => normalizePbv2Tree(livePbv2TreeData ?? expandedProductPbv2TreeDirect) ?? null,
+    [expandedProductPbv2TreeDirect, livePbv2TreeData]
+  );
 
   const expandedProductOptions = useMemo(() => {
     const base = ((expandedProduct as any)?.optionsJson as ProductOptionItem[] | undefined) || [];
@@ -928,11 +951,12 @@ export function OrderLineItemsSection({
   const [pbv2SnapshotJson, setPbv2SnapshotJson] = useState<any>(null);
 
   // Use product's own tree as fallback before first successful pricing call
-  const effectivePbv2Tree = pbv2SnapshotJson?.treeJson ?? expandedProductPbv2Tree;
+  const effectivePbv2Tree = useMemo(
+    () => normalizePbv2Tree(pbv2SnapshotJson?.treeJson ?? expandedProductPbv2Tree) ?? null,
+    [expandedProductPbv2Tree, pbv2SnapshotJson?.treeJson]
+  );
 
   const expandedProductIsPbv2 = isPbv2Product(expandedProduct);
-  const expandedProductLiveTreeLoaded = Boolean(livePbv2TreeData);
-
   const dimsRequired = requiresDimensions(expandedProduct);
 
   const [widthText, setWidthText] = useState("");
@@ -955,7 +979,11 @@ export function OrderLineItemsSection({
 
   // Dev-only PBV2 diagnostics: surfaces tree shape, node counts, and visibility resolution.
   const pbv2Diagnostics = useMemo(() => {
-    const tree = effectivePbv2Tree as any;
+    const tree = normalizePbv2Tree(effectivePbv2Tree);
+    const liveActiveTreeQueryStatus = needsLivePbv2TreeFetch
+      ? `${livePbv2TreeStatus}/${livePbv2TreeFetchStatus}${livePbv2TreeIsFetching ? " (fetching)" : ""}`
+      : "disabled";
+
     if (!tree || typeof tree !== "object") {
       return {
         treeOk: false,
@@ -965,15 +993,17 @@ export function OrderLineItemsSection({
         isPbv2Product: expandedProductIsPbv2,
         optionTreeJsonExists: expandedProductOptionTreeSummary.exists,
         pbv2ActiveTreeVersionId: expandedProductActiveTreeVersionId,
-        liveFallbackRequested: needsLivePbv2TreeFetch,
-        liveFallbackLoaded: expandedProductLiveTreeLoaded,
+        liveActiveTreeQueryStatus,
         effectivePbv2TreeExists: false,
+        totalNodeCount: 0,
         groupCount: 0,
-        questionCount: 0,
+        selectableQuestionCount: 0,
         choiceCount: 0,
+        visibleNodeCount: 0,
         renderedControlCount: pbv2PanelRenderStats.renderedControlCount,
-        visibleNodeIds: [] as string[],
-        questionSelectionKeys: [] as string[],
+        firstQuestionLabels: [] as string[],
+        firstQuestionInputTypes: [] as string[],
+        firstSelectionKeys: [] as string[],
       };
     }
 
@@ -982,13 +1012,15 @@ export function OrderLineItemsSection({
     const nodeValues = Object.values(nodes) as any[];
     const summary = summarizePbv2Tree(tree);
 
+    const questionLabels: string[] = [];
+    const questionInputTypes: string[] = [];
     const questionSelectionKeys: string[] = [];
     for (const node of nodeValues) {
-      if (!node || typeof node !== "object") continue;
-      if (node.kind === "question" && node.input) {
-        const sk = node.input?.selectionKey || node.key || node.id;
-        if (typeof sk === "string") questionSelectionKeys.push(sk);
-      }
+      if (!node || typeof node !== "object" || !isPbv2QuestionNode(node) || !node.input) continue;
+      questionLabels.push(String(node.label || node.id || "(unnamed)"));
+      questionInputTypes.push(String(node.input?.type || "(none)"));
+      const sk = node.input?.selectionKey || node.key || node.id;
+      if (typeof sk === "string") questionSelectionKeys.push(sk);
     }
 
     let visibleNodeIds: string[] = [];
@@ -1008,22 +1040,26 @@ export function OrderLineItemsSection({
       isPbv2Product: expandedProductIsPbv2,
       optionTreeJsonExists: expandedProductOptionTreeSummary.exists,
       pbv2ActiveTreeVersionId: expandedProductActiveTreeVersionId,
-      liveFallbackRequested: needsLivePbv2TreeFetch,
-      liveFallbackLoaded: expandedProductLiveTreeLoaded,
+      liveActiveTreeQueryStatus,
       effectivePbv2TreeExists: true,
+      totalNodeCount: Object.keys(nodes).length,
       groupCount: summary.groupCount,
-      questionCount: summary.questionCount,
+      selectableQuestionCount: summary.questionCount,
       choiceCount: summary.choiceCount,
+      visibleNodeCount: visibleNodeIds.length,
       renderedControlCount: pbv2PanelRenderStats.renderedControlCount,
-      visibleNodeIds,
-      questionSelectionKeys,
+      firstQuestionLabels: questionLabels.slice(0, 10),
+      firstQuestionInputTypes: questionInputTypes.slice(0, 10),
+      firstSelectionKeys: questionSelectionKeys.slice(0, 10),
     };
   }, [
     effectivePbv2Tree,
     expandedProduct,
     expandedProductActiveTreeVersionId,
     expandedProductIsPbv2,
-    expandedProductLiveTreeLoaded,
+    livePbv2TreeFetchStatus,
+    livePbv2TreeIsFetching,
+    livePbv2TreeStatus,
     expandedProductOptionTreeSummary.exists,
     needsLivePbv2TreeFetch,
     optionSelectionsV2,
@@ -2147,6 +2183,42 @@ export function OrderLineItemsSection({
                                 }
                                 optionsSlot={
                                   <>
+                                    {import.meta.env.DEV && expandedProductIsPbv2 && (
+                                      <div className="mb-3 rounded-md border border-sky-500/40 bg-sky-500/5 p-3 text-[11px]">
+                                        <div className="font-medium text-sky-700 dark:text-sky-300">PBV2 diagnostics (dev only)</div>
+                                        <div className="mt-2 space-y-0.5 font-mono text-muted-foreground">
+                                          <div>productId: {String(pbv2Diagnostics.productId ?? "(none)")}</div>
+                                          <div>productName: {String(pbv2Diagnostics.productName ?? "(none)")}</div>
+                                          <div>isPbv2Product: {String(pbv2Diagnostics.isPbv2Product)}</div>
+                                          <div>optionTreeJson present: {String(pbv2Diagnostics.optionTreeJsonExists)}</div>
+                                          <div>pbv2ActiveTreeVersionId: {String(pbv2Diagnostics.pbv2ActiveTreeVersionId ?? "(none)")}</div>
+                                          <div>live active tree query status: {pbv2Diagnostics.liveActiveTreeQueryStatus}</div>
+                                          <div>effectivePbv2Tree exists: {String(pbv2Diagnostics.effectivePbv2TreeExists)}</div>
+                                          <div>total node count: {pbv2Diagnostics.totalNodeCount}</div>
+                                          <div>group count: {pbv2Diagnostics.groupCount}</div>
+                                          <div>selectable question count: {pbv2Diagnostics.selectableQuestionCount}</div>
+                                          <div>choice count: {pbv2Diagnostics.choiceCount}</div>
+                                          <div>visible node count: {pbv2Diagnostics.visibleNodeCount}</div>
+                                          <div>rendered control count: {pbv2Diagnostics.renderedControlCount}</div>
+                                          <div>
+                                            first 10 question labels: {pbv2Diagnostics.firstQuestionLabels.join(", ") || "(none)"}
+                                          </div>
+                                          <div>
+                                            first 10 question input types: {pbv2Diagnostics.firstQuestionInputTypes.join(", ") || "(none)"}
+                                          </div>
+                                          <div>
+                                            first 10 selection keys: {pbv2Diagnostics.firstSelectionKeys.join(", ") || "(none)"}
+                                          </div>
+                                          <div>tree valid: {String(pbv2Diagnostics.treeOk)}</div>
+                                          {pbv2Diagnostics.treeErrors.length > 0 && (
+                                            <div className="text-amber-600 dark:text-amber-400">
+                                              tree errors: {pbv2Diagnostics.treeErrors.join("; ")}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    )}
+
                                     {expandedProductIsPbv2 && !effectivePbv2Tree && (
                                       <div className="mb-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-xs text-amber-700 dark:text-amber-300">
                                         <div className="font-medium">PBV2 options unavailable</div>
@@ -2177,40 +2249,6 @@ export function OrderLineItemsSection({
                                           onOptionSelectionsChange={setOptionSelections as any}
                                         />
                                       </div>
-                                    )}
-
-                                    {import.meta.env.DEV && expandedProductIsPbv2 && (
-                                      <details className="mb-3 rounded-md border border-border/40 bg-muted/30 p-2 text-[11px]">
-                                        <summary className="cursor-pointer font-medium text-muted-foreground">
-                                          PBV2 diagnostics (dev only)
-                                        </summary>
-                                        <div className="mt-2 space-y-0.5 font-mono text-muted-foreground">
-                                          <div>productId: {String(pbv2Diagnostics.productId ?? "(none)")}</div>
-                                          <div>productName: {String(pbv2Diagnostics.productName ?? "(none)")}</div>
-                                          <div>isPbv2Product: {String(pbv2Diagnostics.isPbv2Product)}</div>
-                                          <div>optionTreeJson exists: {String(pbv2Diagnostics.optionTreeJsonExists)}</div>
-                                          <div>optionTreeJson renderable controls: {expandedProductOptionTreeSummary.renderableControlCount}</div>
-                                          <div>pbv2ActiveTreeVersionId: {String(pbv2Diagnostics.pbv2ActiveTreeVersionId ?? "(none)")}</div>
-                                          <div>live fallback requested: {String(pbv2Diagnostics.liveFallbackRequested)}</div>
-                                          <div>live fallback loaded: {String(pbv2Diagnostics.liveFallbackLoaded)}</div>
-                                          <div>effectivePbv2Tree exists: {String(pbv2Diagnostics.effectivePbv2TreeExists)}</div>
-                                          <div>tree valid: {String(pbv2Diagnostics.treeOk)}</div>
-                                          {pbv2Diagnostics.treeErrors.length > 0 && (
-                                            <div className="text-amber-600 dark:text-amber-400">
-                                              tree errors: {pbv2Diagnostics.treeErrors.join("; ")}
-                                            </div>
-                                          )}
-                                          <div>group count: {pbv2Diagnostics.groupCount}</div>
-                                          <div>question count: {pbv2Diagnostics.questionCount}</div>
-                                          <div>choice count: {pbv2Diagnostics.choiceCount}</div>
-                                          <div>ProductOptionsPanelV2 rendered controls count: {pbv2Diagnostics.renderedControlCount}</div>
-                                          <div>visible node ids: {pbv2Diagnostics.visibleNodeIds.length}</div>
-                                          <div>
-                                            question selectionKeys: {pbv2Diagnostics.questionSelectionKeys.join(", ") || "(none)"}
-                                          </div>
-                                          <div>pbv2 snapshot from calc: {String(Boolean(pbv2SnapshotJson?.treeJson))}</div>
-                                        </div>
-                                      </details>
                                     )}
 
                                     {showDesignBriefEditor && (
@@ -2540,6 +2578,7 @@ export function OrderLineItemsSection({
                                 requiresProofApproval={Boolean((item as any).requiresProofApproval)}
                                 onRequiresDesignChange={!readOnly && isExpanded && expandedItem?.id === item.id ? setRequiresDesignInput : undefined}
                                 onRequiresPrepressChange={!readOnly && isExpanded && expandedItem?.id === item.id ? setRequiresPrepressInput : undefined}
+                                topAnchorRef={setLineItemTopAnchorRef(String(item.id))}
                                 detailsSide="right"
                                 collapseSecondaryDetails={true}
                                 compactExpandedLayout={true}
@@ -2652,7 +2691,11 @@ export function OrderLineItemsSection({
                   <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                 </Button>
               </PopoverTrigger>
-              <PopoverContent className="w-[520px] p-0" align="start">
+              <PopoverContent
+                className="w-[520px] p-0"
+                align="start"
+                onCloseAutoFocus={(event) => event.preventDefault()}
+              >
                 <Command shouldFilter={false}>
                   <CommandInput placeholder="Search by name, SKU, or category..." value={searchQuery} onValueChange={setSearchQuery} />
                   <CommandList>
