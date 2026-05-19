@@ -156,6 +156,10 @@ export function isPbv2Product(product: Product | null | undefined): boolean {
     return true;
   }
 
+  if (summarizePbv2Tree(optionTreeJson).renderableControlCount > 0) {
+    return true;
+  }
+
   // Fallback: pbv2ActiveTreeVersionId means the product was published via PBV2 editor
   return !!(product as any)?.pbv2ActiveTreeVersionId;
 }
@@ -164,7 +168,10 @@ export function isPbv2Product(product: Product | null | undefined): boolean {
  * Extract PBV2 option tree from product
  */
 export function getPbv2Tree(product: Product | null | undefined): OptionTreeV2 | null {
-  if (!isPbv2Product(product)) return null;
-
+  // Normalize any optionTreeJson payload that contains a renderable PBV2 tree.
+  // Order entry must render configuration controls from tree data even when the
+  // product's PBV2 pricing/published flags are incomplete or temporarily stale.
+  // Products with partial PBV2 tree data may now enter the PBV2 renderer sooner;
+  // pricing errors remain separate and are surfaced by calculation, not by hiding controls.
   return normalizePbv2Tree((product as any)?.optionTreeJson);
 }
