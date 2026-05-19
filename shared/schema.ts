@@ -3514,10 +3514,10 @@ export const invoices = pgTable("invoices", {
   importedAt: timestamp("imported_at", { withTimezone: true }),
   lockedReason: text("locked_reason"),                               // e.g. 'historical_import'
   qbDocNumber: text("qb_doc_number"),                                // QB DocNumber (human-readable invoice #)
-  qbLineItemsSnapshot: jsonb("qb_line_items_snapshot").$type<any[]>(), // raw QB Line array snapshot
+  qbLineItemsSnapshot: jsonb("qb_line_items_snapshot").$type<any[]>(), // structured QBInvoiceLineItemDetail[] snapshot (parsedDetails included)
   // Customer PO tracking (migration 0043)
   customerPoNumber: varchar("customer_po_number", { length: 100 }),  // Customer PO/reference number
-  qbPoSource: varchar("qb_po_source", { length: 50 }),               // QB field PO was extracted from: 'custom_field' | 'private_note' | 'customer_memo' | 'line_description'
+  qbPoSource: varchar("qb_po_source", { length: 50 }),               // QB field PO was extracted from: 'custom_field_sales1' | 'custom_field' | 'private_note' | 'customer_memo' | 'line_description'
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [

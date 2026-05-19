@@ -410,6 +410,25 @@ export default function AdminTools() {
                   </Link>
                 </CardContent>
               </Card>
+
+              <Card className="border-titan-border bg-titan-bg-card-elevated">
+                <CardHeader className="pb-3">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Code2 className="h-4 w-4 text-amber-500" />
+                    <CardTitle className="text-titan-sm">QB Customer Inspector</CardTitle>
+                  </div>
+                  <CardDescription className="text-titan-xs">
+                    Fetch and inspect a single QuickBooks customer payload — mapped TitanOS fields, unmapped QB fields, and contact creation analysis.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <Link to="/admin/developer/qb-customer-inspector">
+                    <Button variant="outline" size="sm" className="w-full border-amber-500/30 hover:border-amber-500/60">
+                      Open Inspector
+                    </Button>
+                  </Link>
+                </CardContent>
+              </Card>
             </div>
           </div>
         </TitanCard>
