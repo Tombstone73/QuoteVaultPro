@@ -196,6 +196,7 @@ export default function InvoiceDetailPage() {
 
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
   const [recipientEmail, setRecipientEmail] = useState("");
+  const [expandedQBLines, setExpandedQBLines] = useState<Set<number>>(new Set());
 
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
   const isStaffUser = !!user && user.role !== 'customer';
@@ -1644,7 +1645,7 @@ export default function InvoiceDetailPage() {
             {isImportedFromQuickBooks && (importedQuickBooksLineItems.length > 0 || importedQuickBooksLineItemsUnavailableMessage) ? (
               <Card>
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-base">Imported QuickBooks Line Items</CardTitle>
+                  <CardTitle className="text-base">Legacy QuickBooks Lines</CardTitle>
                 </CardHeader>
                 <CardContent className="p-0">
                   {importedQuickBooksLineItems.length > 0 ? (
@@ -1652,21 +1653,68 @@ export default function InvoiceDetailPage() {
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            <TableHead>Description</TableHead>
-                            <TableHead>Quantity</TableHead>
-                            <TableHead>Unit Price</TableHead>
-                            <TableHead className="text-right">Amount</TableHead>
+                            <TableHead className="text-xs w-8">#</TableHead>
+                            <TableHead className="text-xs">Product / Description</TableHead>
+                            <TableHead className="text-xs">Details</TableHead>
+                            <TableHead className="text-xs">Qty</TableHead>
+                            <TableHead className="text-xs">Unit Price</TableHead>
+                            <TableHead className="text-right text-xs">Amount</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {importedQuickBooksLineItems.map((item: any, index: number) => (
-                            <TableRow key={`${item.description}-${index}`}>
-                              <TableCell className="font-medium">{item.description}</TableCell>
-                              <TableCell>{item.quantity == null ? '—' : item.quantity}</TableCell>
-                              <TableCell>{item.unitPrice == null ? '—' : formatCurrency(item.unitPrice)}</TableCell>
-                              <TableCell className="text-right font-medium">{item.amount == null ? '—' : formatCurrency(item.amount)}</TableCell>
-                            </TableRow>
-                          ))}
+                          {importedQuickBooksLineItems.map((item: any, index: number) => {
+                            const isExpanded = expandedQBLines.has(index);
+                            const hasRaw = Boolean(item.rawDescription);
+                            const hasParsed = item.parsedWidth != null || item.parsedSides != null || item.parsedArtFileName != null;
+                            const productLabel = item.suggestedProductName ?? item.description ?? '—';
+                            const descLabel = item.suggestedProductName && item.description !== item.suggestedProductName ? item.description : null;
+                            return (
+                              <>
+                                <TableRow key={`qb-line-${index}`}>
+                                  <TableCell className="text-xs text-muted-foreground">{item.lineNum ?? index + 1}</TableCell>
+                                  <TableCell className="text-xs font-medium">
+                                    <div>{productLabel}</div>
+                                    {descLabel && <div className="text-muted-foreground text-xs truncate max-w-[180px]" title={descLabel}>{descLabel}</div>}
+                                  </TableCell>
+                                  <TableCell className="text-xs text-muted-foreground">
+                                    <div className="flex flex-col gap-0.5">
+                                      {item.parsedWidth != null && item.parsedHeight != null && (
+                                        <span>{item.parsedWidth} × {item.parsedHeight}</span>
+                                      )}
+                                      {item.parsedSides && <span>{item.parsedSides}</span>}
+                                      {item.parsedArtFileName && <span className="truncate max-w-[140px]" title={item.parsedArtFileName}>{item.parsedArtFileName}</span>}
+                                      {!hasParsed && <span className="italic">—</span>}
+                                    </div>
+                                  </TableCell>
+                                  <TableCell className="text-xs">{item.quantity == null ? '—' : item.quantity}</TableCell>
+                                  <TableCell className="text-xs">{item.unitPrice == null ? '—' : formatCurrency(item.unitPrice)}</TableCell>
+                                  <TableCell className="text-right text-xs font-medium">{item.amount == null ? '—' : formatCurrency(item.amount)}</TableCell>
+                                </TableRow>
+                                {hasRaw && (
+                                  <TableRow key={`qb-line-raw-${index}`} className="bg-muted/30">
+                                    <TableCell />
+                                    <TableCell colSpan={5} className="text-xs pb-2 pt-0">
+                                      <button
+                                        className="text-muted-foreground underline decoration-dotted cursor-pointer"
+                                        onClick={() => setExpandedQBLines(prev => {
+                                          const next = new Set(prev);
+                                          if (next.has(index)) next.delete(index); else next.add(index);
+                                          return next;
+                                        })}
+                                      >
+                                        {isExpanded ? 'Hide raw description' : 'Show raw description'}
+                                      </button>
+                                      {isExpanded && (
+                                        <pre className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap font-mono bg-muted rounded px-2 py-1">
+                                          {item.rawDescription}
+                                        </pre>
+                                      )}
+                                    </TableCell>
+                                  </TableRow>
+                                )}
+                              </>
+                            );
+                          })}
                         </TableBody>
                       </Table>
                     </div>
