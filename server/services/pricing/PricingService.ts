@@ -112,6 +112,11 @@ export type PBV2RuntimePricingSnapshot = {
   effectiveSelections: Record<string, any>;
   resolvedMatrixRowId?: string;
   resolvedMatrixVariables: Record<string, number>;
+  selectedOptionValues?: Record<string, any>;
+  basePriceSource?: string;
+  rateUsedSource?: string;
+  minimumApplied?: boolean;
+  formulaScopeUsed?: Record<string, number | string | boolean | null>;
   calculatedPrice: number;
   capturedAt: string;
   resolvedWeightDebug?: PBV2ResolvedWeightSnapshotDebug;
@@ -456,6 +461,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
   }, {
     explicitSelections: ruleValidatedSelections.selected,
     runtimeSelectionContext,
+    pricingMatrixVariables: pricingMatrixResolution.variables,
     pricingProfileKey: product.pricingProfileKey,
     pricingProfileConfig: product.pricingProfileConfig,
     productLegacy: {
@@ -466,7 +472,14 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
       nestingVolumePricing: product.nestingVolumePricing,
     },
   });
-  const basePriceCents = baseDetails.totalCents;
+  const formulaBasePrice = calculateFormulaAwareBasePrice({
+    treeJson: treeVersion.treeJson,
+    product,
+    baseDetails,
+    quantity,
+    pricingMatrixVariables: pricingMatrixResolution.variables,
+  });
+  const basePriceCents = formulaBasePrice.basePriceCents;
   const pricingMethod = String(baseDetails.pricingProfileKey || "default");
 
   // Step 5: Map selections to LineItemOptionSelectionsV2 format
@@ -571,6 +584,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
       heightIn: heightIn ?? 0,
       quantity,
       baseDetails,
+      formulaBasePrice,
       calculatedPriceCents: lineTotalCents,
       capturedAt: pricedAt,
       resolvedWeightSource,
@@ -658,42 +672,11 @@ export function evaluatePricingPreviewFromTree(input: {
   }, {
     explicitSelections: ruleValidatedSelections.selected,
     runtimeSelectionContext,
+    pricingMatrixVariables: pricingMatrixResolution.variables,
     pricingProfileKey: input.pricingProfileKey,
     pricingProfileConfig: input.pricingProfileConfig,
   });
-  let basePriceCents = baseDetails.totalCents;
   const pricingMethod = String(baseDetails.pricingProfileKey || "default");
-
-  const activeProfile = getProfile(baseDetails.pricingProfileKey);
-  const profileUsesFormula = Boolean(activeProfile.usesFormula);
-
-  const formulaFromTree = typeof input?.treeJson?.meta?.pricingFormula === 'string'
-    ? input.treeJson.meta.pricingFormula.trim()
-    : '';
-  const overrideFormula = typeof input.pricingFormulaOverride === 'string'
-    ? input.pricingFormulaOverride.trim()
-    : '';
-  const formulaCandidate = overrideFormula || formulaFromTree;
-  const usedFallbackFormula = profileUsesFormula && !formulaCandidate;
-  const formulaToUse = profileUsesFormula ? (formulaCandidate || PBV2_PREVIEW_FALLBACK_FORMULA) : '';
-
-  const formulaDebug = buildBaseFormulaDebugContext({
-    formulaRaw: formulaToUse,
-    orderedWidthIn: baseDetails.orderedWidthIn,
-    orderedHeightIn: baseDetails.orderedHeightIn,
-    trimAllowanceX: baseDetails.trimAllowanceX,
-    trimAllowanceY: baseDetails.trimAllowanceY,
-    finishedWidthIn: baseDetails.finishedWidthIn,
-    finishedHeightIn: baseDetails.finishedHeightIn,
-    quantity,
-    baseRatePerSqft: baseDetails.perSqftCents / 100,
-    sqftPerItem: baseDetails.sqftPerItem,
-    totalSqft: baseDetails.totalSqft,
-    linearFeet: baseDetails.linearFeet,
-    usedFallbackFormula,
-    formulaVariables: input.formulaVariables,
-    pricingMatrixVariables: pricingMatrixResolution.variables,
-  });
   const weightDebug = buildPricingPreviewWeightDebug({
     treeJson: input.treeJson,
     selections: {
@@ -707,50 +690,29 @@ export function evaluatePricingPreviewFromTree(input: {
     heightIn,
     quantity,
   });
-
-  if (profileUsesFormula) {
-    let formulaEvaluation;
-    try {
-      formulaEvaluation = evaluatePreviewFormulaToCents({
-        formula: formulaToUse,
-        orderedWidthIn: baseDetails.orderedWidthIn,
-        orderedHeightIn: baseDetails.orderedHeightIn,
-        trimAllowanceX: baseDetails.trimAllowanceX,
-        trimAllowanceY: baseDetails.trimAllowanceY,
-        finishedWidthIn: baseDetails.finishedWidthIn,
-        finishedHeightIn: baseDetails.finishedHeightIn,
-        quantity,
-        baseRatePerSqft: baseDetails.perSqftCents / 100,
-        sqftPerItem: baseDetails.sqftPerItem,
-        totalSqft: baseDetails.totalSqft,
-        linearFeet: baseDetails.linearFeet,
-        usedFallbackFormula,
-        fallbackFormula: PBV2_PREVIEW_FALLBACK_FORMULA,
-        formulaVariables: input.formulaVariables,
-        pricingMatrixVariables: pricingMatrixResolution.variables,
-      });
-    } catch (error: any) {
-      if (error?.code === 'PBV2_FORMULA_ERROR' && error?.debug) {
-        error.debug = {
-          ...error.debug,
-          weight: weightDebug,
-        };
-      }
-      throw error;
+  let formulaBasePrice: FormulaAwareBasePriceResult;
+  try {
+    formulaBasePrice = calculateFormulaAwareBasePrice({
+      treeJson: input.treeJson,
+      baseDetails,
+      quantity,
+      pricingFormulaOverride: input.pricingFormulaOverride,
+      formulaVariables: input.formulaVariables,
+      pricingMatrixVariables: pricingMatrixResolution.variables,
+    });
+  } catch (error: any) {
+    if (error?.code === 'PBV2_FORMULA_ERROR' && error?.debug) {
+      error.debug = {
+        ...error.debug,
+        weight: weightDebug,
+      };
     }
-    formulaDebug.formulaResolved = formulaEvaluation.formulaResolved;
-    formulaDebug.resultValue = formulaEvaluation.resultValue;
-    formulaDebug.appliedAs = formulaEvaluation.appliedAs;
-    formulaDebug.steps = formulaEvaluation.steps;
-    formulaDebug.preCeilSqftTotal = formulaEvaluation.preCeilSqftTotal;
-    formulaDebug.postCeilSqftTotal = formulaEvaluation.postCeilSqftTotal;
-    formulaDebug.baseRateUsed = formulaEvaluation.baseRateUsed;
-
-    const formulaValueCents = Math.round(formulaEvaluation.resultValue * 100);
-    basePriceCents = formulaEvaluation.appliedAs === 'unitPrice'
-      ? formulaValueCents * quantity
-      : formulaValueCents;
+    throw error;
   }
+  const basePriceCents = formulaBasePrice.basePriceCents;
+  const formulaToUse = formulaBasePrice.formulaToUse;
+  const usedFallbackFormula = formulaBasePrice.usedFallbackFormula;
+  const formulaDebug = formulaBasePrice.formulaDebug;
 
   const evalResult = evaluateOptionTreeV2({
     tree: input.treeJson,
@@ -1241,6 +1203,7 @@ function calculateBasePrice(
   pricingContext?: {
     explicitSelections?: Record<string, any>;
     runtimeSelectionContext?: OptionRuntimeSelectionContext;
+    pricingMatrixVariables?: Record<string, number>;
     pricingProfileKey?: string | null;
     pricingProfileConfig?: unknown;
     productLegacy?: {
@@ -1261,6 +1224,7 @@ function calculateBasePriceDetails(
   pricingContext?: {
     explicitSelections?: Record<string, any>;
     runtimeSelectionContext?: OptionRuntimeSelectionContext;
+    pricingMatrixVariables?: Record<string, number>;
     pricingProfileKey?: string | null;
     pricingProfileConfig?: unknown;
     productLegacy?: {
@@ -1286,6 +1250,10 @@ function calculateBasePriceDetails(
   sqftPerItem: number;
   totalSqft: number;
   linearFeet: number;
+  preMinimumCents: number;
+  minimumApplied: boolean;
+  basePriceSource: string;
+  rateUsedSource: string;
   nestingDetails?: unknown;
 } {
   const meta = tree?.meta;
@@ -1302,8 +1270,10 @@ function calculateBasePriceDetails(
     );
   }
 
-  const base = pricingV2.base;
-  if (!base || typeof base !== 'object') {
+  const matrixBasePrice = pricingContext?.pricingMatrixVariables?.base_price;
+  const hasMatrixBasePrice = typeof matrixBasePrice === "number" && Number.isFinite(matrixBasePrice) && matrixBasePrice >= 0;
+  const base = pricingV2.base && typeof pricingV2.base === 'object' ? pricingV2.base : {};
+  if (Object.keys(base).length === 0 && !hasMatrixBasePrice) {
     throw new Error(
       'PBV2 tree base pricing (meta.pricingV2.base) not configured. Set at least one of: $/sqft, $/piece, or minimum charge.'
     );
@@ -1346,6 +1316,12 @@ function calculateBasePriceDetails(
   perSqftCents = resolvedBaseRates.perSqftCents;
   perPieceCents = resolvedBaseRates.perPieceCents;
   minimumChargeCents = resolvedBaseRates.minimumChargeCents;
+
+  let basePriceSource = hasMatrixBasePrice ? "pricing_matrix.base_price" : "pricingV2.base";
+  let rateUsedSource = hasMatrixBasePrice ? "pricing_matrix.base_price" : "pricingV2.base";
+  if (hasMatrixBasePrice) {
+    perSqftCents = Math.round(matrixBasePrice * 100);
+  }
 
   if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0) {
     throw new Error(
@@ -1413,6 +1389,10 @@ function calculateBasePriceDetails(
       sqftPerItem,
       totalSqft,
       linearFeet,
+      preMinimumCents: Math.round(flatGoodsResult.totalPrice * 100),
+      minimumApplied: false,
+      basePriceSource,
+      rateUsedSource,
       nestingDetails: {
         ...flatGoodsResult.nestingDetails,
         sheetCount: flatGoodsResult.sheetCount,
@@ -1423,6 +1403,7 @@ function calculateBasePriceDetails(
 
   // Apply minimum charge once per line item (not per unit)
   const total = minimumChargeCents > 0 ? Math.max(lineBaseCents, minimumChargeCents) : lineBaseCents;
+  const minimumApplied = minimumChargeCents > 0 && minimumChargeCents > lineBaseCents;
 
   return {
     totalCents: Math.round(total),
@@ -1439,10 +1420,133 @@ function calculateBasePriceDetails(
     sqftPerItem,
     totalSqft,
     linearFeet,
+    preMinimumCents: Math.round(lineBaseCents),
+    minimumApplied,
+    basePriceSource,
+    rateUsedSource,
   };
 }
 
 type BasePriceDetails = ReturnType<typeof calculateBasePriceDetails>;
+
+type FormulaAwareBasePriceResult = {
+  basePriceCents: number;
+  formulaToUse: string;
+  usedFallbackFormula: boolean;
+  formulaDebug: NonNullable<PricingPreviewEvaluationResult["debug"]>;
+  formulaApplied: boolean;
+  minimumApplied: boolean;
+  preMinimumCents: number;
+};
+
+/**
+ * Shared PBV2 runtime pricing boundary for Product Builder preview and order entry.
+ * Both paths must resolve option rules, resolve the pricing matrix, build this formula
+ * scope, and only then evaluate options against the calculated base line price.
+ */
+function calculateFormulaAwareBasePrice(input: {
+  treeJson: any;
+  product?: any;
+  baseDetails: BasePriceDetails;
+  quantity: number;
+  pricingFormulaOverride?: string | null;
+  formulaVariables?: Record<string, number>;
+  pricingMatrixVariables?: Record<string, number>;
+}): FormulaAwareBasePriceResult {
+  const baseDetails = input.baseDetails;
+  const activeProfile = getProfile(baseDetails.pricingProfileKey);
+  const profileUsesFormula = Boolean(activeProfile.usesFormula);
+  const formulaFromTree = typeof input?.treeJson?.meta?.pricingFormula === "string"
+    ? input.treeJson.meta.pricingFormula.trim()
+    : "";
+  const formulaFromProduct = typeof input.product?.pricingFormula === "string"
+    ? input.product.pricingFormula.trim()
+    : "";
+  const formulaFromProfile = typeof activeProfile.defaultFormula === "string"
+    ? activeProfile.defaultFormula.trim()
+    : "";
+  const overrideFormula = typeof input.pricingFormulaOverride === "string"
+    ? input.pricingFormulaOverride.trim()
+    : "";
+  const formulaCandidate = overrideFormula || formulaFromTree || formulaFromProduct || formulaFromProfile;
+  const usedFallbackFormula = profileUsesFormula && !formulaCandidate;
+  const formulaToUse = profileUsesFormula ? (formulaCandidate || PBV2_PREVIEW_FALLBACK_FORMULA) : "";
+  const formulaVariables = input.formulaVariables
+    ?? (input.product ? resolveSnapshotFormulaVariables(input.treeJson, input.product) : undefined);
+
+  const formulaDebug = buildBaseFormulaDebugContext({
+    formulaRaw: formulaToUse,
+    orderedWidthIn: baseDetails.orderedWidthIn,
+    orderedHeightIn: baseDetails.orderedHeightIn,
+    trimAllowanceX: baseDetails.trimAllowanceX,
+    trimAllowanceY: baseDetails.trimAllowanceY,
+    finishedWidthIn: baseDetails.finishedWidthIn,
+    finishedHeightIn: baseDetails.finishedHeightIn,
+    quantity: input.quantity,
+    baseRatePerSqft: baseDetails.perSqftCents / 100,
+    sqftPerItem: baseDetails.sqftPerItem,
+    totalSqft: baseDetails.totalSqft,
+    linearFeet: baseDetails.linearFeet,
+    usedFallbackFormula,
+    formulaVariables,
+    pricingMatrixVariables: input.pricingMatrixVariables,
+  });
+
+  if (!profileUsesFormula) {
+    return {
+      basePriceCents: baseDetails.totalCents,
+      formulaToUse,
+      usedFallbackFormula,
+      formulaDebug,
+      formulaApplied: false,
+      minimumApplied: baseDetails.minimumApplied,
+      preMinimumCents: baseDetails.preMinimumCents,
+    };
+  }
+
+  const formulaEvaluation = evaluatePreviewFormulaToCents({
+    formula: formulaToUse,
+    orderedWidthIn: baseDetails.orderedWidthIn,
+    orderedHeightIn: baseDetails.orderedHeightIn,
+    trimAllowanceX: baseDetails.trimAllowanceX,
+    trimAllowanceY: baseDetails.trimAllowanceY,
+    finishedWidthIn: baseDetails.finishedWidthIn,
+    finishedHeightIn: baseDetails.finishedHeightIn,
+    quantity: input.quantity,
+    baseRatePerSqft: baseDetails.perSqftCents / 100,
+    sqftPerItem: baseDetails.sqftPerItem,
+    totalSqft: baseDetails.totalSqft,
+    linearFeet: baseDetails.linearFeet,
+    usedFallbackFormula,
+    fallbackFormula: PBV2_PREVIEW_FALLBACK_FORMULA,
+    formulaVariables,
+    pricingMatrixVariables: input.pricingMatrixVariables,
+  });
+
+  formulaDebug.formulaResolved = formulaEvaluation.formulaResolved;
+  formulaDebug.resultValue = formulaEvaluation.resultValue;
+  formulaDebug.appliedAs = formulaEvaluation.appliedAs;
+  formulaDebug.steps = formulaEvaluation.steps;
+  formulaDebug.preCeilSqftTotal = formulaEvaluation.preCeilSqftTotal;
+  formulaDebug.postCeilSqftTotal = formulaEvaluation.postCeilSqftTotal;
+  formulaDebug.baseRateUsed = formulaEvaluation.baseRateUsed;
+
+  const formulaValueCents = Math.round(formulaEvaluation.resultValue * 100);
+  const preMinimumCents = formulaEvaluation.appliedAs === "unitPrice"
+    ? formulaValueCents * input.quantity
+    : formulaValueCents;
+  const minimumApplied = baseDetails.minimumChargeCents > 0 && baseDetails.minimumChargeCents > preMinimumCents;
+
+  return {
+    basePriceCents: minimumApplied ? baseDetails.minimumChargeCents : preMinimumCents,
+    formulaToUse,
+    usedFallbackFormula,
+    formulaDebug,
+    formulaApplied: true,
+    minimumApplied,
+    preMinimumCents,
+  };
+}
 
 function cloneJsonValue<T>(value: T): T {
   if (value === undefined) return value;
@@ -1535,6 +1639,7 @@ function buildRuntimePricingSnapshot(input: {
   heightIn: number;
   quantity: number;
   baseDetails?: BasePriceDetails;
+  formulaBasePrice?: FormulaAwareBasePriceResult;
   calculatedPriceCents: number;
   capturedAt: string;
   resolvedWeightSource?: ResolvedPbv2WeightSource;
@@ -1554,7 +1659,7 @@ function buildRuntimePricingSnapshot(input: {
   const pricingProfileKey = String(input.baseDetails?.pricingProfileKey ?? input.product?.pricingProfileKey ?? "default");
   const formulaSnapshot = resolveSnapshotFormula(input.treeJson, input.product, pricingProfileKey);
   const formulaVariables = resolveSnapshotFormulaVariables(input.treeJson, input.product);
-  const formulaDebug = buildBaseFormulaDebugContext({
+  const formulaDebug = input.formulaBasePrice?.formulaDebug ?? buildBaseFormulaDebugContext({
     formulaRaw: formulaSnapshot.formula,
     orderedWidthIn,
     orderedHeightIn,
@@ -1571,16 +1676,22 @@ function buildRuntimePricingSnapshot(input: {
     formulaVariables,
     pricingMatrixVariables: input.pricingMatrixResolution.variables,
   });
+  const hasMatrixBasePrice = typeof input.pricingMatrixResolution.variables.base_price === "number";
 
   return cloneJsonValue({
     formula: formulaSnapshot.formula,
     formulaVariables: formulaDebug.variables,
     rawSelections: toPlainSelectionValues(input.rawSelections),
     effectiveSelections: toPlainSelectionValues(input.effectiveSelections),
+    selectedOptionValues: toPlainSelectionValues(input.effectiveSelections),
     ...(input.pricingMatrixResolution.matchedRow?.id
       ? { resolvedMatrixRowId: input.pricingMatrixResolution.matchedRow.id }
       : {}),
     resolvedMatrixVariables: input.pricingMatrixResolution.variables,
+    basePriceSource: hasMatrixBasePrice ? "pricing_matrix.base_price" : (input.baseDetails?.basePriceSource ?? "pricingV2.base"),
+    rateUsedSource: hasMatrixBasePrice ? "pricing_matrix.base_price" : (input.baseDetails?.rateUsedSource ?? "pricingV2.base"),
+    minimumApplied: input.formulaBasePrice?.minimumApplied ?? input.baseDetails?.minimumApplied ?? false,
+    formulaScopeUsed: formulaDebug.variables,
     calculatedPrice: input.calculatedPriceCents / 100,
     capturedAt: input.capturedAt,
     ...(input.resolvedWeightSource
