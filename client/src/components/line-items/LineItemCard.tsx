@@ -7,6 +7,7 @@ import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ChevronRight, GripVertical, Loader2, Minus, Plus, Save, Check, Undo2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { RenderPathBanner } from "@/components/debug/RenderPathBanner";
 
 /**
  * LineItemCard - Shared presentational component for Quote and Order line items.
@@ -390,6 +391,7 @@ export function LineItemCard({
       tabIndex={-1}
       className={cn("rounded-lg border border-border/40 bg-background/30 focus:outline-none", isExpanded && "bg-background/40 border-border/60")}
     >
+      <RenderPathBanner name="LineItemCard" className="m-2" />
       {/* Collapsed Summary Row - Enterprise Dense Layout */}
       <button
         type="button"

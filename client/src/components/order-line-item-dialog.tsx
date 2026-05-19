@@ -15,6 +15,7 @@ import type { ProductOptionItem } from "@shared/schema";
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import { isPbv2Product, getPbv2Tree } from "@/lib/pbv2Utils";
 import { ProductOptionsPanelV2 } from "@/features/quotes/editor/components/ProductOptionsPanelV2";
+import { RenderPathBanner } from "@/components/debug/RenderPathBanner";
 
 /**
  * Helper function to format option price label based on priceMode
@@ -515,6 +516,7 @@ export function OrderLineItemDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <RenderPathBanner name="OrderLineItemDialog" />
         <DialogHeader>
           <DialogTitle>{mode === "add" ? "Add Line Item" : "Edit Line Item"}</DialogTitle>
           <DialogDescription>

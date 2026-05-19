@@ -19,6 +19,7 @@ import { choiceValueIsValid } from "@/lib/optionChoiceValidation";
 import type { OptionSelection } from "../types";
 import { formatOptionPriceLabel } from "../utils";
 import { cn } from "@/lib/utils";
+import { RenderPathBanner } from "@/components/debug/RenderPathBanner";
 
 type ProductOptionsPanelProps = {
     product?: unknown;
@@ -612,6 +613,7 @@ export const ProductOptionsPanel = memo(function ProductOptionsPanel({
 
     return (
         <div className="space-y-3">
+            <RenderPathBanner name="ProductOptionsPanel" />
             <div className="flex items-center justify-between gap-2">
                 <div className="text-sm font-medium">{formatGroupHeader(groupedVisible[0]?.[0] ?? "Options")}</div>
                 {missingRequiredLabels.length > 0 && (
