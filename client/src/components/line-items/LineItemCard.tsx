@@ -102,6 +102,7 @@ export type LineItemCardProps = {
   requiresProofApproval?: boolean;
   onRequiresDesignChange?: (value: boolean) => void;
   onRequiresPrepressChange?: (value: boolean) => void;
+  topAnchorRef?: (node: HTMLDivElement | null) => void;
 
   // Expanded view - Options slot (left column)
   optionsSlot?: ReactNode;
@@ -178,6 +179,7 @@ export function LineItemCard({
   requiresProofApproval = false,
   onRequiresDesignChange,
   onRequiresPrepressChange,
+  topAnchorRef,
   optionsSlot,
   artworkSlot,
   detailsSide = "left",
@@ -507,6 +509,12 @@ export function LineItemCard({
       {isExpanded && (
         <div id={contentId} className="px-3 pb-3">
           <div className={cn("rounded-md border border-border/40 bg-muted/20 p-3", !compactExpandedLayout && "min-h-[400px]")}>
+            <div
+              id={`line-item-top-anchor-${id}`}
+              ref={topAnchorRef}
+              tabIndex={-1}
+              className="h-0 w-full overflow-hidden outline-none"
+            />
             {/* Top editing row */}
             <div className="flex flex-wrap items-end gap-3">
               <div className="flex items-center gap-2">
