@@ -782,6 +782,8 @@ export function OrderLineItemsSection({
 
     let raf1 = 0;
     let raf2 = 0;
+    // Double RAF gives the expanded editor one full paint cycle to mount and settle
+    // before we measure and snap the viewport to the top of the new line item.
     raf1 = requestAnimationFrame(() => {
       raf2 = requestAnimationFrame(() => {
         try {
@@ -2694,7 +2696,11 @@ export function OrderLineItemsSection({
               <PopoverContent
                 className="w-[520px] p-0"
                 align="start"
-                onCloseAutoFocus={(event) => event.preventDefault()}
+                onCloseAutoFocus={(event) => {
+                  // Keep focus from snapping back to the footer trigger after add-product;
+                  // the new line-item anchor should own focus/scroll instead.
+                  event.preventDefault();
+                }}
               >
                 <Command shouldFilter={false}>
                   <CommandInput placeholder="Search by name, SKU, or category..." value={searchQuery} onValueChange={setSearchQuery} />
