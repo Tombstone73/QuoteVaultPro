@@ -103,6 +103,7 @@ export type LineItemCardProps = {
   onRequiresDesignChange?: (value: boolean) => void;
   onRequiresPrepressChange?: (value: boolean) => void;
   topAnchorRef?: (node: HTMLDivElement | null) => void;
+  widthInputRef?: (node: HTMLInputElement | null) => void;
 
   // Expanded view - Options slot (left column)
   optionsSlot?: ReactNode;
@@ -180,6 +181,7 @@ export function LineItemCard({
   onRequiresDesignChange,
   onRequiresPrepressChange,
   topAnchorRef,
+  widthInputRef,
   optionsSlot,
   artworkSlot,
   detailsSide = "left",
@@ -523,6 +525,8 @@ export function LineItemCard({
                   <div className="flex flex-col gap-1">
                     <div className="text-xs text-muted-foreground">Width</div>
                     <Input
+                      id={`line-item-width-input-${id}`}
+                      ref={widthInputRef}
                       value={width}
                       onChange={(e) => onWidthChange?.(e.target.value)}
                       className={cn("h-8 w-24 font-mono", !dimsRequired && "opacity-60")}
