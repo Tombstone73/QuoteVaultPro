@@ -29,6 +29,7 @@ import type { QuoteDuplicateMode } from "./useQuoteEditorState";
 import { QuoteHeader } from "./components/QuoteHeader";
 import { CustomerCard, type CustomerCardRef } from "./components/CustomerCard";
 import { LineItemsSection } from "./components/LineItemsSection";
+import { RenderPathBanner } from "@/components/debug/RenderPathBanner";
 import { SummaryCard } from "./components/SummaryCard";
 import { VoidQuoteDialog } from "@/components/VoidQuoteDialog";
 import { getPendingExpandedLineItemId, clearPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
@@ -900,6 +901,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     return (
         <div className="min-h-screen bg-background">
             <div className="mx-auto w-full max-w-[1600px] px-6 py-4">
+                <RenderPathBanner name="QuoteEditorPage" className="mb-4" />
                 {/* Top bar: Back + Quote # + Status + Actions */}
                 <QuoteHeader
                     quoteNumber={(state.quote as any)?.quoteNumber || ""}

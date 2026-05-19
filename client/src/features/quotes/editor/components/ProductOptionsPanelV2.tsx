@@ -7,6 +7,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { RenderPathBanner } from "@/components/debug/RenderPathBanner";
 import { isPbv2QuestionNode, isRenderablePbv2InputType, normalizePbv2Tree } from "@/lib/pbv2Utils";
 import { cn } from "@/lib/utils";
 import type { LineItemOptionSelectionsV2, OptionNodeV2, OptionTreeV2 } from "@shared/optionTreeV2";
@@ -547,6 +548,7 @@ export function ProductOptionsPanelV2({
 
   return (
     <div className={cn("space-y-3", className)}>
+      <RenderPathBanner name="ProductOptionsPanelV2" />
       {sectionLabel && (
         <div className="flex items-center gap-2">
           <div className="text-sm font-medium">{sectionLabel}</div>

@@ -25,6 +25,7 @@ import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
+import { RenderPathBanner } from "@/components/debug/RenderPathBanner";
 
 type LineItemsSectionProps = {
   quoteId: string | null;
@@ -725,6 +726,7 @@ export function LineItemsSection({
 
   return (
     <Card className="rounded-lg border border-border/40 bg-card/50">
+      <RenderPathBanner name="QuoteEditor LineItemsSection" className="m-3 mb-0" />
       <CardHeader className="px-4 py-2.5 border-b border-border/40">
         <div className="flex items-center gap-2">
           <Badge variant="outline" className="border-border/60 text-xs">
