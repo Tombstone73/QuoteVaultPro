@@ -72,12 +72,12 @@ export function normalizePbv2Tree(tree: unknown): OptionTreeV2 | null {
     const nodeRecord = rawNode as Record<string, any>;
     const id = typeof nodeRecord.id === "string" && nodeRecord.id.trim() ? nodeRecord.id : String(fallbackId);
     const kind = normalizeNodeKind(nodeRecord);
-    const input = nodeRecord.input && typeof nodeRecord.input === "object" ? { ...nodeRecord.input } : undefined;
+    let input = nodeRecord.input && typeof nodeRecord.input === "object" ? { ...nodeRecord.input } : undefined;
 
     // Older published PBV2 trees sometimes persisted node.key/id without copying
     // input.selectionKey; preserve those products by backfilling the runtime key here.
     if (kind === "question" && input && (!input.selectionKey || typeof input.selectionKey !== "string")) {
-      input.selectionKey = nodeRecord.key || id;
+      input = { ...input, selectionKey: nodeRecord.key || id };
     }
 
     normalizedNodes[id] = {

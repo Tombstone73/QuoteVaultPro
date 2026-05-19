@@ -754,6 +754,15 @@ export function OrderLineItemsSection({
   );
 
   useEffect(() => {
+    const liveIds = new Set(lineItems.map((item) => String(item.id)));
+    for (const lineItemId of Object.keys(lineItemTopAnchorRefs.current)) {
+      if (!liveIds.has(lineItemId)) {
+        delete lineItemTopAnchorRefs.current[lineItemId];
+      }
+    }
+  }, [lineItems]);
+
+  useEffect(() => {
     const handler = (event: Event) => {
       const e = event as CustomEvent<{ lineItemId?: string }>;
       const rawId = e?.detail?.lineItemId;
@@ -772,6 +781,8 @@ export function OrderLineItemsSection({
     if (!pendingJumpToLineItemId) return;
     if (expandedId !== pendingJumpToLineItemId) return;
 
+    // Prefer the live ref, but fall back to DOM lookup during the first render pass
+    // when the callback ref may not have been populated yet.
     const el = lineItemTopAnchorRefs.current[pendingJumpToLineItemId]
       ?? document.getElementById(`line-item-top-anchor-${pendingJumpToLineItemId}`)
       ?? document.getElementById(`line-item-${pendingJumpToLineItemId}`);
@@ -787,6 +798,7 @@ export function OrderLineItemsSection({
     raf1 = requestAnimationFrame(() => {
       raf2 = requestAnimationFrame(() => {
         try {
+          // Use an immediate jump so later async pricing/layout work does not fight a smooth-scroll animation.
           el.scrollIntoView({ block: "start", behavior: "auto" });
           if ("focus" in el && typeof (el as HTMLElement).focus === "function") {
             (el as HTMLElement).focus({ preventScroll: true });
@@ -1018,7 +1030,7 @@ export function OrderLineItemsSection({
     const questionInputTypes: string[] = [];
     const questionSelectionKeys: string[] = [];
     for (const node of nodeValues) {
-      if (!node || typeof node !== "object" || !isPbv2QuestionNode(node) || !node.input) continue;
+      if (!isPbv2QuestionNode(node) || !node.input) continue;
       questionLabels.push(String(node.label || node.id || "(unnamed)"));
       questionInputTypes.push(String(node.input?.type || "(none)"));
       const sk = node.input?.selectionKey || node.key || node.id;
@@ -2697,8 +2709,9 @@ export function OrderLineItemsSection({
                 className="w-[520px] p-0"
                 align="start"
                 onCloseAutoFocus={(event) => {
-                  // Keep focus from snapping back to the footer trigger after add-product;
-                  // the new line-item anchor should own focus/scroll instead.
+                  // Prevent Radix from restoring focus to the footer trigger when the popover
+                  // closes. The pendingJumpToLineItemId scroll effect moves focus to the new
+                  // line-item anchor so Width / Height / Qty stay in view.
                   event.preventDefault();
                 }}
               >
