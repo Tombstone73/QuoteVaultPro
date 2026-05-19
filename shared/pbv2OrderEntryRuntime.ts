@@ -14,10 +14,10 @@ const RENDERABLE_INPUT_TYPES = new Set([
 
 function normalizeNodeKind(node: Record<string, any>): OptionNodeV2["kind"] | undefined {
   if (node.kind === "question" || node.kind === "group" || node.kind === "computed") return node.kind;
-  const type = typeof node.type === "string" ? node.type.toUpperCase() : "";
-  if (type === "INPUT" || type === "OPTION") return "question";
-  if (type === "GROUP") return "group";
-  if (type === "COMPUTE" || type === "COMPUTED") return "computed";
+  const type = typeof node.type === "string" ? node.type.toLowerCase() : "";
+  if (type === "input" || type === "option") return "question";
+  if (type === "group") return "group";
+  if (type === "compute" || type === "computed") return "computed";
   return undefined;
 }
 
