@@ -34,6 +34,7 @@ import {
   runQuickBooksSyncWorkerForOrg,
 } from "../services/quickbooksSyncQueueWorker";
 import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBooksPreferences";
+import { requireDeveloperAccess } from "../middleware/requireDeveloperAccess";
 
 export function registerQuickBooksRoutes(
   app: Express,
@@ -702,12 +703,13 @@ export function registerQuickBooksRoutes(
    * both the raw QB payload and a transformed summary for field inspection.
    *
    * Read-only — does NOT write to any local table.
-   * Intended for development/admin review of QB field shapes.
+   * Restricted to platform developers (users.is_platform_developer = true).
+   * Tenant owners and admins are NOT granted access by their org role alone.
    *
    * Query params:
    *   rawOnly=1   — return only the raw QB payload (omit transformed)
    */
-  app.get('/api/integrations/quickbooks/debug/invoice/:invoiceNumber', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+  app.get('/api/integrations/quickbooks/debug/invoice/:invoiceNumber', isAuthenticated, requireDeveloperAccess, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       const invoiceNumber = String(req.params.invoiceNumber || '').trim();

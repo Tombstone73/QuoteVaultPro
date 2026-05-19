@@ -358,6 +358,13 @@
       "when": 1779494400000,
       "tag": "0055_material_weight_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1747526400000,
+      "tag": "0056_platform_developer_flag",
+      "breakpoints": true
     }
   ]
 }
