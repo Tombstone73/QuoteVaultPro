@@ -25,7 +25,10 @@ function getSelectionKeyForRuntime(nodeRecord: Record<string, any>, nodeId: stri
   // Product Builder V2 stores selection keys on input.selectionKey; older
   // published trees may only have node.key. Node id is the explicit final
   // runtime fallback so legacy options still render and save deterministically.
-  return typeof nodeRecord.key === "string" && nodeRecord.key.trim() ? nodeRecord.key : nodeId;
+  if (typeof nodeRecord.key === "string" && nodeRecord.key.trim()) {
+    return nodeRecord.key;
+  }
+  return nodeId;
 }
 
 function parseMaybeJson(value: unknown): unknown {
@@ -142,9 +145,11 @@ export function buildPbv2DefaultSelections(tree: OptionTreeV2 | null | undefined
   if (!normalized || !hasRenderablePbv2Tree(normalized)) return null;
 
   const resolved = resolveRuntimeVisibility(normalized, { schemaVersion: 2, selected: {} });
+  const effectiveSelections = resolved.effectiveSelections;
+  if (!effectiveSelections || typeof effectiveSelections !== "object") return { schemaVersion: 2, selected: {} };
   const nextSelected: LineItemOptionSelectionsV2["selected"] = {};
 
-  for (const [key, value] of Object.entries(resolved.effectiveSelections ?? {})) {
+  for (const [key, value] of Object.entries(effectiveSelections)) {
     if (isEmptySelectionValue(value)) continue;
     nextSelected[key] = { value };
   }

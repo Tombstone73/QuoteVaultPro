@@ -60,7 +60,7 @@ describe("PBV2 order-entry runtime", () => {
   test("PBV2 options remain renderable with blank or zero base rate", () => {
     const tree = {
       ...makeTree(),
-      meta: { pricingV2: { base: { perSqftCents: undefined } } },
+      meta: { pricingV2: { base: {} } },
       baseRate: 0,
       base_price: "",
       basePricing: null,
