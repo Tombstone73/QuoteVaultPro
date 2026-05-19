@@ -274,6 +274,7 @@ export const users = pgTable("users", {
   passwordHash: text("password_hash"), // DEPRECATED: Use auth_identities.password_hash instead. Will be removed in v1.1.
   isAdmin: boolean("is_admin").default(false).notNull(),
   isPlatformAdmin: boolean("is_platform_admin").default(false).notNull(),
+  isPlatformDeveloper: boolean("is_platform_developer").default(false).notNull(),
   role: varchar("role", { length: 50 }).default("employee").notNull(), // owner, admin, manager, employee
   mustSetPassword: boolean("must_set_password").default(false).notNull(), // True if invited with temp password, must set new password on first login
   lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
