@@ -8,7 +8,6 @@ import type { Product } from "@shared/schema";
 import type { QuoteLineItemDraft } from "../types";
 import { LineItemArtworkBadge } from "@/components/LineItemAttachmentsPanel";
 import { useMemo, useState } from "react";
-import { RenderPathBanner } from "@/components/debug/RenderPathBanner";
 
 type LineItemsTableProps = {
     lineItems: QuoteLineItemDraft[];
@@ -78,7 +77,6 @@ export function LineItemsTable({
     return (
         <>
             <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
-                <RenderPathBanner name="QuoteEditor LineItemsTable" className="m-4 mb-0" />
                 <CardHeader className="pb-2 px-5 pt-4">
                     <div className="flex items-center justify-between">
                         <CardTitle className="text-sm font-medium">Line Items</CardTitle>
