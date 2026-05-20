@@ -98,6 +98,7 @@ describe("product option pricing matrix resolution", () => {
           id: "3mm",
           when: { thickness: "3mm" },
           variables: { base_price: 500 },
+          tierBasis: "computed_sheet_usage",
           qtyTiers: [{ id: "row_tier_10", label: "10+", minQty: 10, perSqftCents: 450 }],
         },
       ],
@@ -113,5 +114,6 @@ describe("product option pricing matrix resolution", () => {
     expect(result.matchedRow?.qtyTiers).toEqual([
       expect.objectContaining({ id: "row_tier_10", minQty: 10, perSqftCents: 450 }),
     ]);
+    expect(result.matchedRow?.tierBasis).toBe("computed_sheet_usage");
   });
 });

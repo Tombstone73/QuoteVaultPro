@@ -7,10 +7,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { centsToCurrencyInput, currencyInputToCents } from '@/lib/pbv2/currency';
+import type { Pbv2TierBasis } from '@shared/optionTreeV2';
 
 interface BasePricingEditorProps {
   pricingV2: {
     unitSystem?: 'imperial' | 'metric';
+    tierBasis?: Pbv2TierBasis;
     base?: {
       perSqftCents?: number;
       perPieceCents?: number;
@@ -31,6 +33,7 @@ interface BasePricingEditorProps {
   } | null;
   onUpdateBase: (base: { perSqftCents?: number; perPieceCents?: number; minimumChargeCents?: number }) => void;
   onUpdateUnitSystem: (unitSystem: 'imperial' | 'metric') => void;
+  onUpdateTierBasis: (tierBasis: Pbv2TierBasis) => void;
   onAddTier: (kind: 'qty' | 'sqft') => void;
   onUpdateTier: (kind: 'qty' | 'sqft', index: number, tier: any) => void;
   onDeleteTier: (kind: 'qty' | 'sqft', index: number) => void;
@@ -40,11 +43,13 @@ export function BasePricingEditor({
   pricingV2,
   onUpdateBase,
   onUpdateUnitSystem,
+  onUpdateTierBasis,
   onAddTier,
   onUpdateTier,
   onDeleteTier,
 }: BasePricingEditorProps) {
   const unitSystem = pricingV2?.unitSystem || 'imperial';
+  const tierBasis = pricingV2?.tierBasis || 'line_item_quantity';
   const base = pricingV2?.base || {};
   const qtyTiers = pricingV2?.qtyTiers || [];
   const sqftTiers = pricingV2?.sqftTiers || [];
@@ -77,15 +82,40 @@ export function BasePricingEditor({
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h4 className="text-sm font-medium text-slate-300">Base Pricing Model</h4>
-          <Select value={unitSystem} onValueChange={(v) => onUpdateUnitSystem(v as 'imperial' | 'metric')}>
-            <SelectTrigger className="w-32 bg-[#0f172a] border-slate-600 text-slate-100 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="imperial">Imperial</SelectItem>
-              <SelectItem value="metric">Metric</SelectItem>
-            </SelectContent>
-          </Select>
+          <div className="flex items-center gap-2">
+            <div className="space-y-1">
+              <Label className="text-[11px] text-slate-500">Tier Basis</Label>
+              <Select value={tierBasis} onValueChange={(v) => onUpdateTierBasis(v as Pbv2TierBasis)}>
+                <SelectTrigger className="w-48 bg-[#0f172a] border-slate-600 text-slate-100 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="line_item_quantity">Line Item Quantity</SelectItem>
+                  <SelectItem value="computed_sheet_usage">Computed Sheet Usage</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[11px] text-slate-500">Units</Label>
+              <Select value={unitSystem} onValueChange={(v) => onUpdateUnitSystem(v as 'imperial' | 'metric')}>
+                <SelectTrigger className="w-32 bg-[#0f172a] border-slate-600 text-slate-100 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="imperial">Imperial</SelectItem>
+                  <SelectItem value="metric">Metric</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        </div>
+        <div className="text-xs text-slate-400">
+          Tier Basis controls which quantity is used to choose the price break.
+          {tierBasis === 'computed_sheet_usage' ? (
+            <span className="block mt-1">
+              Use this when discounts should be based on production sheet usage instead of customer piece quantity. When exact flat-goods nesting is available, this uses computed sheets needed; otherwise it uses sheet-equivalent usage from the sheet consumption calculation.
+            </span>
+          ) : null}
         </div>
         
         <div className="grid grid-cols-3 gap-3">
