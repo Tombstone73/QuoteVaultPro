@@ -92,6 +92,14 @@ type PricingPreviewResponse = {
       matrixStaticBaseRate?: number | null;
       matrixStaticBaseRateUsedAsFallback?: boolean;
       productTierFallbackUsed?: boolean;
+      tierBasis?: "line_item_quantity" | "computed_sheet_usage";
+      tierBasisValue?: number;
+      tierBasisResolvedFrom?: "matrix_row" | "product" | "default";
+      lineItemQuantity?: number;
+      computedSheetUsage?: number | null;
+      computedSheetUsageAvailable?: boolean;
+      computedSheetUsageMode?: "exact_flat_goods" | "sheet_equivalent" | "unavailable";
+      fallbackToLineItemQuantity?: boolean;
       finalBaseRateUsed: number;
       warnings: Array<{ code: string; message: string; severity?: string; detail?: Record<string, unknown> }>;
       capturedAt?: string;
@@ -474,6 +482,17 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
       : tierResolution?.source === "legacy_price_breaks"
         ? "Legacy priceBreaks"
         : "None";
+  const tierBasisDisplay = tierResolution?.tierBasis === "computed_sheet_usage" ? "Computed Sheet Usage" : "Line Item Quantity";
+  const tierBasisResolvedFromDisplay = tierResolution?.tierBasisResolvedFrom === "matrix_row"
+    ? "Matrix row"
+    : tierResolution?.tierBasisResolvedFrom === "product"
+      ? "Product"
+      : "Default";
+  const computedSheetUsageModeDisplay = tierResolution?.computedSheetUsageMode === "exact_flat_goods"
+    ? "Exact flat-goods nesting"
+    : tierResolution?.computedSheetUsageMode === "sheet_equivalent"
+      ? "Sheet-equivalent"
+      : "Unavailable";
   const showTierResolutionDebug = Boolean(
     tierResolution &&
       (tierResolution.enabled ||
@@ -481,6 +500,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
         tierResolution.matrixBasePriceOverride ||
         tierResolution.matrixStaticBaseRateUsedAsFallback ||
         tierResolution.productTierFallbackUsed ||
+        tierResolution.fallbackToLineItemQuantity ||
         tierResolution.source !== "none"),
   );
   const weightFinding = findings.find((finding) => finding.code === "PBV2_W_WEIGHT_MISSING" || finding.code === "PBV2_E_WEIGHT_NEGATIVE") ?? null;
@@ -962,6 +982,22 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                           <div className="grid grid-cols-2 gap-x-4 gap-y-1">
                             <div className="text-slate-400">Tier source</div>
                             <div className="font-mono">{tierSourceDisplay}</div>
+                            <div className="text-slate-400">Tier basis</div>
+                            <div className="font-mono">{tierBasisDisplay}</div>
+                            <div className="text-slate-400">Basis value</div>
+                            <div className="font-mono">{displayDebugValue(tierResolution?.tierBasisValue)}</div>
+                            <div className="text-slate-400">Basis resolved from</div>
+                            <div className="font-mono">{tierBasisResolvedFromDisplay}</div>
+                            <div className="text-slate-400">Line item quantity</div>
+                            <div className="font-mono">{displayDebugValue(tierResolution?.lineItemQuantity ?? tierResolution?.quantity)}</div>
+                            <div className="text-slate-400">Computed sheet usage</div>
+                            <div className="font-mono">{tierResolution?.computedSheetUsageAvailable ? displayDebugValue(tierResolution?.computedSheetUsage) : "Unavailable"}</div>
+                            <div className="text-slate-400">Sheet usage mode</div>
+                            <div className="font-mono">{computedSheetUsageModeDisplay}</div>
+                            <div className="text-slate-400">Fallback to line item quantity</div>
+                            <div className={tierResolution?.fallbackToLineItemQuantity ? "font-mono text-amber-200" : "font-mono"}>
+                              {tierResolution?.fallbackToLineItemQuantity ? "Yes" : "No"}
+                            </div>
                             <div className="text-slate-400">Matrix row</div>
                             <div className="font-mono">{tierResolution?.matrixRowId ?? "None"}</div>
                             <div className="text-slate-400">Original base rate</div>

@@ -19,6 +19,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { Card } from "@/components/ui/card";
 import { getDefaultFormula, getProfile, type FlatGoodsConfig } from "@shared/pricingProfiles";
+import type { Pbv2TierBasis } from "@shared/optionTreeV2";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -849,6 +850,7 @@ const ProductEditorPage = () => {
               pricingV2={treeMeta.pricingV2}
               onUpdatePricingV2Base={(base) => pbv2TreeProviderRef.current?.updateTreeMeta({ pricingV2: { ...(treeMeta.pricingV2 || {}), base } })}
               onUpdatePricingV2UnitSystem={(unitSystem) => pbv2TreeProviderRef.current?.updateTreeMeta({ pricingV2: { ...(treeMeta.pricingV2 || {}), unitSystem } })}
+              onUpdatePricingV2TierBasis={(tierBasis: Pbv2TierBasis) => pbv2TreeProviderRef.current?.updateTreeMeta({ pricingV2: { ...(treeMeta.pricingV2 || {}), tierBasis } })}
               pricingEngine={pricingEngine}
               onPricingEngineChange={(engine: "formulaLibrary" | "pricingProfile" | "pricingFormula") => {
                 setPricingEngine(engine);

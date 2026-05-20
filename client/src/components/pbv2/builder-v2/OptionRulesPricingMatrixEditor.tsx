@@ -11,7 +11,7 @@ import {
   isProductOptionPricingMatrixCurrencyVariable,
   type ProductOptionPricingMatrix,
 } from "@shared/productOptionPricingMatrix";
-import type { PricingV2Tier } from "@shared/optionTreeV2";
+import type { Pbv2TierBasis, PricingV2Tier } from "@shared/optionTreeV2";
 
 type OptionKey = {
   selectionKey: string;
@@ -26,6 +26,7 @@ type MatrixVariable = {
 };
 
 type MatrixRowQtyTier = PricingV2Tier;
+type MatrixRowTierBasis = Pbv2TierBasis | "product_default";
 
 const CONDITION_OPERATORS = ["equals", "not_equals", "in", "not_in", "exists", "not_exists"] as const;
 const CONDITION_GROUPS = ["all", "any"] as const;
@@ -192,6 +193,11 @@ function getRowQtyTiers(row: any): MatrixRowQtyTier[] {
   return Array.isArray(row?.qtyTiers) ? row.qtyTiers : [];
 }
 
+function getRowTierBasis(row: any): MatrixRowTierBasis {
+  if (row?.tierBasis === "line_item_quantity" || row?.tierBasis === "computed_sheet_usage") return row.tierBasis;
+  return "product_default";
+}
+
 function makeRowQtyTier(): MatrixRowQtyTier {
   return {
     id: `row_tier_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
@@ -211,6 +217,14 @@ function currencyInputToOptionalCents(value: string): number | undefined {
 
 function centsToTierInput(value: unknown): string {
   return typeof value === "number" && Number.isFinite(value) ? centsToCurrencyInput(value) : "";
+}
+
+function minQtyInputToOptionalInteger(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) return undefined;
+  return Math.max(1, Math.round(parsed));
 }
 
 type MatrixVariableInputProps = {
@@ -250,13 +264,105 @@ function MatrixVariableInput({ variableValue, onCommit }: MatrixVariableInputPro
   );
 }
 
+function RowQuantityTierInputRow({
+  tier,
+  index,
+  onUpdate,
+  onDelete,
+}: {
+  tier: MatrixRowQtyTier;
+  index: number;
+  onUpdate: (tier: MatrixRowQtyTier) => void;
+  onDelete: () => void;
+}) {
+  const [minQty, setMinQty] = React.useState(() => tier.minQty !== undefined && tier.minQty !== null ? String(tier.minQty) : "");
+  const [perSqft, setPerSqft] = React.useState(() => centsToTierInput(tier.perSqftCents));
+  const [perPiece, setPerPiece] = React.useState(() => centsToTierInput(tier.perPieceCents));
+  const [minCharge, setMinCharge] = React.useState(() => centsToTierInput(tier.minimumChargeCents));
+
+  React.useEffect(() => {
+    setMinQty(tier.minQty !== undefined && tier.minQty !== null ? String(tier.minQty) : "");
+    setPerSqft(centsToTierInput(tier.perSqftCents));
+    setPerPiece(centsToTierInput(tier.perPieceCents));
+    setMinCharge(centsToTierInput(tier.minimumChargeCents));
+  }, [tier.minQty, tier.perSqftCents, tier.perPieceCents, tier.minimumChargeCents]);
+
+  const commit = () => {
+    onUpdate({
+      ...tier,
+      minQty: minQtyInputToOptionalInteger(minQty),
+      perSqftCents: currencyInputToOptionalCents(perSqft),
+      perPieceCents: currencyInputToOptionalCents(perPiece),
+      minimumChargeCents: currencyInputToOptionalCents(minCharge),
+    });
+  };
+
+  return (
+    <div className="grid grid-cols-[90px_1fr_1fr_1fr_32px] gap-2 items-center">
+      <Input
+        type="text"
+        inputMode="numeric"
+        value={minQty}
+        onChange={(event) => setMinQty(event.target.value)}
+        onBlur={commit}
+        placeholder="1"
+        aria-label={`Min quantity for row tier ${index + 1}`}
+        className="bg-[#1e293b] border-slate-600 text-slate-100"
+      />
+      <Input
+        type="text"
+        inputMode="decimal"
+        value={perSqft}
+        onChange={(event) => setPerSqft(event.target.value)}
+        onBlur={commit}
+        placeholder="0.00"
+        aria-label={`Per square foot rate for row tier ${index + 1}`}
+        className="bg-[#1e293b] border-slate-600 text-slate-100"
+      />
+      <Input
+        type="text"
+        inputMode="decimal"
+        value={perPiece}
+        onChange={(event) => setPerPiece(event.target.value)}
+        onBlur={commit}
+        placeholder="0.00"
+        aria-label={`Per piece rate for row tier ${index + 1}`}
+        className="bg-[#1e293b] border-slate-600 text-slate-100"
+      />
+      <Input
+        type="text"
+        inputMode="decimal"
+        value={minCharge}
+        onChange={(event) => setMinCharge(event.target.value)}
+        onBlur={commit}
+        placeholder="0.00"
+        aria-label={`Minimum charge for row tier ${index + 1}`}
+        className="bg-[#1e293b] border-slate-600 text-slate-100"
+      />
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        onClick={onDelete}
+        className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
+      >
+        <Trash2 className="h-4 w-4" />
+      </Button>
+    </div>
+  );
+}
+
 function RowQuantityTiersEditor({
   tiers,
+  tierBasis,
   hasStaticBasePrice,
+  onTierBasisChange,
   onChange,
 }: {
   tiers: MatrixRowQtyTier[];
+  tierBasis: MatrixRowTierBasis;
   hasStaticBasePrice: boolean;
+  onTierBasisChange: (tierBasis: MatrixRowTierBasis) => void;
   onChange: (tiers: MatrixRowQtyTier[]) => void;
 }) {
   const updateTier = (index: number, patch: Partial<MatrixRowQtyTier>) => {
@@ -269,6 +375,30 @@ function RowQuantityTiersEditor({
         Quantity Tiers{tiers.length > 0 ? ` (${tiers.length})` : ""}
       </summary>
       <div className="space-y-3 border-t border-slate-700 px-3 py-3">
+        <div className="grid gap-2 sm:grid-cols-[220px_1fr] sm:items-start">
+          <div className="space-y-1">
+            <Label className="text-[11px] text-slate-500">Tier Basis</Label>
+            <Select value={tierBasis} onValueChange={(value) => onTierBasisChange(value as MatrixRowTierBasis)}>
+              <SelectTrigger className="bg-[#1e293b] border-slate-600 text-slate-100 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="product_default">Use Product Default</SelectItem>
+                <SelectItem value="line_item_quantity">Line Item Quantity</SelectItem>
+                <SelectItem value="computed_sheet_usage">Computed Sheet Usage</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="text-xs text-slate-400">
+            Tier Basis controls which quantity is used to choose the price break.
+            {tierBasis === "computed_sheet_usage" ? (
+              <span className="mt-1 block">
+                Use this when discounts should be based on production sheet usage instead of customer piece quantity. When exact flat-goods nesting is available, this uses computed sheets needed; otherwise it uses sheet-equivalent usage from the sheet consumption calculation.
+              </span>
+            ) : null}
+          </div>
+        </div>
+
         <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-100">
           Row-level quantity tiers override product-level PBV2 quantity tiers for this row.
         </div>
@@ -288,54 +418,13 @@ function RowQuantityTiersEditor({
               <div />
             </div>
             {tiers.map((tier, index) => (
-              <div key={tier.id ?? index} className="grid grid-cols-[90px_1fr_1fr_1fr_32px] gap-2 items-center">
-                <Input
-                  type="number"
-                  min={1}
-                  step={1}
-                  value={tier.minQty ?? ""}
-                  onChange={(event) => {
-                    const parsed = Number(event.target.value);
-                    updateTier(index, {
-                      minQty: Number.isFinite(parsed) ? Math.max(1, Math.round(parsed)) : undefined,
-                    });
-                  }}
-                  className="bg-[#1e293b] border-slate-600 text-slate-100"
-                />
-                <Input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  value={centsToTierInput(tier.perSqftCents)}
-                  onChange={(event) => updateTier(index, { perSqftCents: currencyInputToOptionalCents(event.target.value) })}
-                  className="bg-[#1e293b] border-slate-600 text-slate-100"
-                />
-                <Input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  value={centsToTierInput(tier.perPieceCents)}
-                  onChange={(event) => updateTier(index, { perPieceCents: currencyInputToOptionalCents(event.target.value) })}
-                  className="bg-[#1e293b] border-slate-600 text-slate-100"
-                />
-                <Input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  value={centsToTierInput(tier.minimumChargeCents)}
-                  onChange={(event) => updateTier(index, { minimumChargeCents: currencyInputToOptionalCents(event.target.value) })}
-                  className="bg-[#1e293b] border-slate-600 text-slate-100"
-                />
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => onChange(tiers.filter((_, tierIndex) => tierIndex !== index))}
-                  className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
+              <RowQuantityTierInputRow
+                key={tier.id ?? index}
+                tier={tier}
+                index={index}
+                onUpdate={(updated) => updateTier(index, updated)}
+                onDelete={() => onChange(tiers.filter((_, tierIndex) => tierIndex !== index))}
+              />
             ))}
           </div>
         ) : (
@@ -747,6 +836,7 @@ export function OptionRulesPricingMatrixEditor({
                     const match = asRecord(row.when) ?? asRecord(row.match) ?? asRecord(row.combination) ?? {};
                     const variables = normalizeMatrixVariables(row.variables ?? row.values);
                     const qtyTiers = getRowQtyTiers(row);
+                    const rowTierBasis = getRowTierBasis(row);
                     const hasRowQtyTiers = qtyTiers.length > 0;
                     const hasStaticBasePrice = rowHasStaticBasePrice(variables);
                     return (
@@ -772,6 +862,8 @@ export function OptionRulesPricingMatrixEditor({
                                       ...row,
                                       when: { ...match, [dimension]: value },
                                       variables: variablesToRecord(variables),
+                                      qtyTiers: qtyTiers.length > 0 ? qtyTiers : undefined,
+                                      tierBasis: rowTierBasis === "product_default" ? undefined : rowTierBasis,
                                     };
                                     updateMatrix({ ...pricingMatrix, rows });
                                   }}
@@ -800,7 +892,13 @@ export function OptionRulesPricingMatrixEditor({
                                   const nextVariables = [...variables];
                                   nextVariables[variableIndex] = { ...variable, key: event.target.value };
                                   const rows = [...pricingMatrix.rows];
-                                  rows[rowIndex] = { ...row, when: match, variables: variablesToRecord(nextVariables) };
+                                  rows[rowIndex] = {
+                                    ...row,
+                                    when: match,
+                                    variables: variablesToRecord(nextVariables),
+                                    qtyTiers: qtyTiers.length > 0 ? qtyTiers : undefined,
+                                    tierBasis: rowTierBasis === "product_default" ? undefined : rowTierBasis,
+                                  };
                                   updateMatrix({ ...pricingMatrix, rows });
                                 }}
                                 className="bg-[#1e293b] border-slate-600 text-slate-100"
@@ -811,7 +909,13 @@ export function OptionRulesPricingMatrixEditor({
                                   const nextVariables = [...variables];
                                   nextVariables[variableIndex] = { ...variable, value: raw };
                                   const rows = [...pricingMatrix.rows];
-                                  rows[rowIndex] = { ...row, when: match, variables: variablesToRecord(nextVariables) };
+                                  rows[rowIndex] = {
+                                    ...row,
+                                    when: match,
+                                    variables: variablesToRecord(nextVariables),
+                                    qtyTiers: qtyTiers.length > 0 ? qtyTiers : undefined,
+                                    tierBasis: rowTierBasis === "product_default" ? undefined : rowTierBasis,
+                                  };
                                   updateMatrix({ ...pricingMatrix, rows });
                                 }}
                               />
@@ -822,7 +926,13 @@ export function OptionRulesPricingMatrixEditor({
                                 onClick={() => {
                                   const nextVariables = variables.filter((_, index) => index !== variableIndex);
                                   const rows = [...pricingMatrix.rows];
-                                  rows[rowIndex] = { ...row, when: match, variables: variablesToRecord(nextVariables) };
+                                  rows[rowIndex] = {
+                                    ...row,
+                                    when: match,
+                                    variables: variablesToRecord(nextVariables),
+                                    qtyTiers: qtyTiers.length > 0 ? qtyTiers : undefined,
+                                    tierBasis: rowTierBasis === "product_default" ? undefined : rowTierBasis,
+                                  };
                                   updateMatrix({ ...pricingMatrix, rows });
                                 }}
                                 className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
@@ -838,7 +948,13 @@ export function OptionRulesPricingMatrixEditor({
                             onClick={() => {
                               const nextVariables = [...variables, { key: "", value: "" }];
                               const rows = [...pricingMatrix.rows];
-                              rows[rowIndex] = { ...row, when: match, variables: variablesToRecord(nextVariables) };
+                              rows[rowIndex] = {
+                                ...row,
+                                when: match,
+                                variables: variablesToRecord(nextVariables),
+                                qtyTiers: qtyTiers.length > 0 ? qtyTiers : undefined,
+                                tierBasis: rowTierBasis === "product_default" ? undefined : rowTierBasis,
+                              };
                               updateMatrix({ ...pricingMatrix, rows });
                             }}
                             className="gap-1.5 text-xs"
@@ -849,7 +965,19 @@ export function OptionRulesPricingMatrixEditor({
                         </div>
                         <RowQuantityTiersEditor
                           tiers={qtyTiers}
+                          tierBasis={rowTierBasis}
                           hasStaticBasePrice={hasStaticBasePrice}
+                          onTierBasisChange={(nextTierBasis) => {
+                            const rows = [...pricingMatrix.rows];
+                            rows[rowIndex] = {
+                              ...row,
+                              when: match,
+                              variables: variablesToRecord(variables),
+                              qtyTiers: qtyTiers.length > 0 ? qtyTiers : undefined,
+                              tierBasis: nextTierBasis === "product_default" ? undefined : nextTierBasis,
+                            };
+                            updateMatrix({ ...pricingMatrix, rows });
+                          }}
                           onChange={(nextQtyTiers) => {
                             const rows = [...pricingMatrix.rows];
                             rows[rowIndex] = {
@@ -857,6 +985,7 @@ export function OptionRulesPricingMatrixEditor({
                               when: match,
                               variables: variablesToRecord(variables),
                               qtyTiers: nextQtyTiers.length > 0 ? nextQtyTiers : undefined,
+                              tierBasis: rowTierBasis === "product_default" ? undefined : rowTierBasis,
                             };
                             updateMatrix({ ...pricingMatrix, rows });
                           }}
