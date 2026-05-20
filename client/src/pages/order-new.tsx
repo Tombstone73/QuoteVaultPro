@@ -1,5 +1,4 @@
 import { QuoteEditorPage } from "@/features/quotes/editor/QuoteEditorPage";
-import { RenderPathBanner } from "@/components/debug/RenderPathBanner";
 
 /**
  * Modern "New Order" flow.
@@ -8,10 +7,5 @@ import { RenderPathBanner } from "@/components/debug/RenderPathBanner";
  * via Quote → Convert-to-Order on the primary action.
  */
 export default function OrderNewRoute() {
-  return (
-    <>
-      <RenderPathBanner name="OrderNewRoute" />
-      <QuoteEditorPage mode="edit" createTarget="order" />
-    </>
-  );
+  return <QuoteEditorPage mode="edit" createTarget="order" />;
 }

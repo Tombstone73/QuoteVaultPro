@@ -673,7 +673,6 @@ export function LineItemsSection({
   useDebouncedEffect(
     () => {
       if (!expandedItem || !expandedProduct) {
-        addRuntimeDebugEvent("pricing recalculation skipped", { reason: "missing expanded item or product" });
         return;
       }
       if (dimsRequired && (!Number.isFinite(widthNum) || widthNum <= 0 || !Number.isFinite(heightNum) || heightNum <= 0)) {
@@ -1066,38 +1065,11 @@ export function LineItemsSection({
                           key={p.id}
                           value={`${p.name} ${(p as any).sku || ''} ${(p as any).category || ''}`}
                           onSelect={async () => {
-                            addRuntimeDebugEvent("initial draft creation requested", {
-                              productId: p.id,
-                              productName: p.name,
-                              activeElementBefore: describeDebugElement(document.activeElement),
-                            });
                             const created = await onCreateDraftLineItem(p.id);
-                            addRuntimeDebugEvent("initial draft creation returned", {
-                              productId: p.id,
-                              productName: p.name,
-                              created,
-                              activeElementAfterCreate: describeDebugElement(document.activeElement),
-                            });
                             const k = created ? getItemKey(created) : null;
                             setSearchQuery("");
                             setSearchOpen(false);
                             if (k) onExpandedKeyChange(k);
-                            window.setTimeout(() => {
-                              addRuntimeDebugEvent("post add product focus snapshot", {
-                                productId: p.id,
-                                lineItemKey: k,
-                                activeElement: describeDebugElement(document.activeElement),
-                                scrollY: window.scrollY,
-                              });
-                            }, 0);
-                            window.setTimeout(() => {
-                              addRuntimeDebugEvent("post add product delayed focus snapshot", {
-                                productId: p.id,
-                                lineItemKey: k,
-                                activeElement: describeDebugElement(document.activeElement),
-                                scrollY: window.scrollY,
-                              });
-                            }, 250);
                           }}
                         >
                           <div className="min-w-0 flex-1">
