@@ -294,6 +294,14 @@ export function normalizeTreeJson(treeJson: any): any {
     };
   }
 
+  // Force status to DRAFT: the builder always operates on a draft. When the
+  // initialization effect loads from an ACTIVE tree (no draft exists after
+  // auto_on_save), the treeJson content carries status:'ACTIVE'. If that leaks
+  // into the saved payload, validateTreeForPublish fails with
+  // PBV2_E_TREE_STATUS_INVALID and blocks both auto-activation and manual
+  // publish — silently leaving the old active tree in place.
+  normalizedTree = { ...normalizedTree, status: 'DRAFT' };
+
   // Rule C: Recompute rootNodeIds using runtime-only logic
   return ensureRootNodeIds(normalizedTree);
 }

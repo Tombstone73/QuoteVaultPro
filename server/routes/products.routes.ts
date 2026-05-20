@@ -837,14 +837,21 @@ export function registerProductRoutes(
         action: existingDraft ? 'UPDATE' : 'INSERT'
       });
 
+      // Belt-and-suspenders: a draft row must always carry status:'DRAFT' in its
+      // treeJson content. If the client sends status:'ACTIVE' (e.g. loaded from an
+      // active tree before the client-side normalizeTreeJson fix was deployed),
+      // validateTreeForPublish would fail with PBV2_E_TREE_STATUS_INVALID and
+      // silently leave the old active tree in place.
+      const sanitizedTreeJson = { ...(treeJson as any), status: 'DRAFT' };
+
       let draft;
       try {
-        const schemaVersion = (treeJson as any).schemaVersion ?? 2;
+        const schemaVersion = sanitizedTreeJson.schemaVersion ?? 2;
         if (existingDraft) {
           [draft] = await db
             .update(pbv2TreeVersions)
             .set({
-              treeJson: treeJson,
+              treeJson: sanitizedTreeJson,
               schemaVersion: schemaVersion,
               updatedByUserId: userId ?? null,
               updatedAt: new Date(),
@@ -860,7 +867,7 @@ export function registerProductRoutes(
               productId,
               status: "DRAFT",
               schemaVersion: schemaVersion,
-              treeJson: treeJson,
+              treeJson: sanitizedTreeJson,
               createdByUserId: userId ?? null,
               updatedByUserId: userId ?? null,
             })
