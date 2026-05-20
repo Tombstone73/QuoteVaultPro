@@ -98,7 +98,7 @@ export type ResolvedPricingV2BaseRates = {
   runtimeSelectionContext: OptionRuntimeSelectionContext;
 };
 
-export type Pbv2TierSource = "pbv2_pricing_v2" | "legacy_price_breaks" | "none";
+export type Pbv2TierSource = "matrix_row" | "pbv2_product" | "pbv2_pricing_v2" | "legacy_price_breaks" | "none";
 
 export type Pbv2TierResolutionWarning = {
   code:
@@ -106,6 +106,8 @@ export type Pbv2TierResolutionWarning = {
     | "PBV2_TIER_NO_MATCH"
     | "PBV2_TIER_INVALID_RATE"
     | "PBV2_TIER_MATRIX_BASE_PRICE_OVERRIDE"
+    | "PBV2_TIER_MATRIX_ROW_NO_MATCH"
+    | "PBV2_TIER_MATRIX_STATIC_BASE_FALLBACK"
     | "PBV2_TIER_FORMULA_REFERENCE_WITHOUT_TIER_SYSTEM"
     | "PBV2_TIER_LEGACY_PRICE_BREAKS_NOT_APPLIED";
   message: string;
@@ -123,6 +125,10 @@ export type Pbv2TierResolution = {
   tierBaseRate: number | null;
   effectiveBaseRateBeforeMatrix: number;
   matrixBasePriceOverride: boolean;
+  matrixRowId?: string | null;
+  matrixStaticBaseRate?: number | null;
+  matrixStaticBaseRateUsedAsFallback?: boolean;
+  productTierFallbackUsed?: boolean;
   finalBaseRateUsed: number;
   warnings: Pbv2TierResolutionWarning[];
 };
@@ -1234,7 +1240,7 @@ function resolveTieredPricingV2BaseRates(
   }
 
   const tierSource: Pbv2TierSource = nativeTierSystemEnabled
-    ? "pbv2_pricing_v2"
+    ? "pbv2_product"
     : legacyPriceBreaksEnabled
       ? "legacy_price_breaks"
       : "none";

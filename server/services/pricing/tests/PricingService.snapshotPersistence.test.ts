@@ -259,7 +259,7 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
     expect(snapshot?.tierResolution).toEqual(expect.objectContaining({
       quantity: 5,
       enabled: true,
-      source: "pbv2_pricing_v2",
+      source: "pbv2_product",
       matchedTierId: "tier_5",
       matchedTierLabel: "Five plus",
       originalBaseRate: 1,
@@ -271,6 +271,57 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
     expect(snapshot?.formulaScopeUsed?.base_price).toBe(0.8);
     expect(snapshot?.formulaScopeUsed?.tier_base_price).toBe(0.8);
     expect(typeof snapshot?.tierResolution?.capturedAt).toBe("string");
+  });
+
+  test("captures matrix row quantity tier metadata in the persisted PBV2 snapshot", async () => {
+    const tree = makeAcmTree(575, { perSqftCents: 100 }) as any;
+    tree.pricingMatrix.rows[1] = {
+      ...tree.pricingMatrix.rows[1],
+      qtyTiers: [
+        { id: "row_tier_5", label: "Row five plus", minQty: 5, perSqftCents: 450 },
+      ],
+    };
+    tree.meta.pricingV2.qtyTiers = [
+      { id: "product_tier_5", label: "Product five plus", minQty: 5, perSqftCents: 80 },
+    ];
+
+    await db.execute(sql`
+      update pbv2_tree_versions
+      set tree_json = ${JSON.stringify(tree)}::jsonb
+      where id = ${treeVersionId}
+    `);
+
+    const result = await priceLineItem({
+      organizationId,
+      productId,
+      quantity: 5,
+      widthIn: 24,
+      heightIn: 36,
+      pbv2ExplicitSelections: {
+        thickness: { value: "choice_3mm" },
+        sides: { value: "choice_double" },
+      },
+    });
+
+    const snapshot = result.pbv2SnapshotJson.pbv2PricingSnapshot;
+    expect(result.lineTotalCents).toBe(13500);
+    expect(snapshot?.tierResolution).toEqual(expect.objectContaining({
+      quantity: 5,
+      enabled: true,
+      source: "matrix_row",
+      matrixRowId: "3mm_double",
+      matchedTierId: "row_tier_5",
+      matchedTierLabel: "Row five plus",
+      tierBaseRate: 4.5,
+      matrixStaticBaseRate: 5.75,
+      matrixStaticBaseRateUsedAsFallback: false,
+      productTierFallbackUsed: false,
+      finalBaseRateUsed: 4.5,
+    }));
+    expect(snapshot?.basePriceSource).toBe("pricing_matrix.row_qty_tier");
+    expect(snapshot?.resolvedMatrixVariables).toEqual({ base_price: 5.75 });
+    expect(snapshot?.formulaScopeUsed?.base_price).toBe(4.5);
+    expect(snapshot?.formulaScopeUsed?.tier_base_price).toBe(4.5);
   });
 
   test("captures matrix override and native-versus-legacy tier warning in snapshot metadata", async () => {

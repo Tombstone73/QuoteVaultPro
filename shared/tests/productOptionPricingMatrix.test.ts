@@ -89,4 +89,29 @@ describe("product option pricing matrix resolution", () => {
 
     expect(extractProductOptionPricingMatrix(tree)).toEqual(acmMatrix);
   });
+
+  test("preserves row-level quantity tiers on the matched matrix row", () => {
+    const matrix: ProductOptionPricingMatrix = {
+      dimensions: ["thickness"],
+      rows: [
+        {
+          id: "3mm",
+          when: { thickness: "3mm" },
+          variables: { base_price: 500 },
+          qtyTiers: [{ id: "row_tier_10", label: "10+", minQty: 10, perSqftCents: 450 }],
+        },
+      ],
+    };
+
+    const result = resolveProductOptionPricingMatrix({
+      pricingMatrix: matrix,
+      selections: { thickness: { value: "3mm" } },
+    });
+
+    expect(result.errors).toHaveLength(0);
+    expect(result.variables.base_price).toBe(5);
+    expect(result.matchedRow?.qtyTiers).toEqual([
+      expect.objectContaining({ id: "row_tier_10", minQty: 10, perSqftCents: 450 }),
+    ]);
+  });
 });
