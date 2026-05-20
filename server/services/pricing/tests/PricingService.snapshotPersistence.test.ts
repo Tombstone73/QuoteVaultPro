@@ -96,6 +96,11 @@ beforeEach(async () => {
     set tree_json = ${JSON.stringify(makeAcmTree())}::jsonb
     where id = ${treeVersionId}
   `);
+  await db.execute(sql`
+    update products
+    set price_breaks = '{"enabled":false,"type":"quantity","tiers":[]}'::jsonb
+    where id = ${productId}
+  `);
 });
 
 describe("PricingService PBV2 pricing snapshot persistence payload", () => {
@@ -226,5 +231,90 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
 
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.resolvedMatrixVariables).toEqual({ base_price: 5.75 });
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.resolvedMatrixRowId).toBe("3mm_double");
+  });
+
+  test("captures quantity tier metadata in the persisted PBV2 snapshot", async () => {
+    const tree = makeAcmTree(575, { perSqftCents: 100 }) as any;
+    delete tree.pricingMatrix;
+    tree.meta.pricingV2.qtyTiers = [
+      { id: "tier_5", label: "Five plus", minQty: 5, perSqftCents: 80 },
+    ];
+
+    await db.execute(sql`
+      update pbv2_tree_versions
+      set tree_json = ${JSON.stringify(tree)}::jsonb
+      where id = ${treeVersionId}
+    `);
+
+    const result = await priceLineItem({
+      organizationId,
+      productId,
+      quantity: 5,
+      widthIn: 24,
+      heightIn: 36,
+      pbv2ExplicitSelections: {},
+    });
+
+    const snapshot = result.pbv2SnapshotJson.pbv2PricingSnapshot;
+    expect(snapshot?.tierResolution).toEqual(expect.objectContaining({
+      quantity: 5,
+      enabled: true,
+      source: "pbv2_pricing_v2",
+      matchedTierId: "tier_5",
+      matchedTierLabel: "Five plus",
+      originalBaseRate: 1,
+      tierBaseRate: 0.8,
+      effectiveBaseRateBeforeMatrix: 0.8,
+      matrixBasePriceOverride: false,
+      finalBaseRateUsed: 0.8,
+    }));
+    expect(snapshot?.formulaScopeUsed?.base_price).toBe(0.8);
+    expect(snapshot?.formulaScopeUsed?.tier_base_price).toBe(0.8);
+    expect(typeof snapshot?.tierResolution?.capturedAt).toBe("string");
+  });
+
+  test("captures matrix override and native-versus-legacy tier warning in snapshot metadata", async () => {
+    const tree = makeAcmTree(575, { perSqftCents: 100 }) as any;
+    tree.meta.pricingV2.qtyTiers = [
+      { id: "tier_5", label: "Five plus", minQty: 5, perSqftCents: 80 },
+    ];
+
+    await db.execute(sql`
+      update pbv2_tree_versions
+      set tree_json = ${JSON.stringify(tree)}::jsonb
+      where id = ${treeVersionId}
+    `);
+    await db.execute(sql`
+      update products
+      set price_breaks = '{"enabled":true,"type":"quantity","tiers":[{"minValue":1,"discountType":"percentage","discountValue":10}]}'::jsonb
+      where id = ${productId}
+    `);
+
+    const result = await priceLineItem({
+      organizationId,
+      productId,
+      quantity: 5,
+      widthIn: 24,
+      heightIn: 36,
+      pbv2ExplicitSelections: {
+        thickness: { value: "choice_3mm" },
+        sides: { value: "choice_double" },
+      },
+    });
+
+    const tierResolution = result.pbv2SnapshotJson.pbv2PricingSnapshot?.tierResolution;
+    expect(tierResolution).toEqual(expect.objectContaining({
+      matchedTierId: "tier_5",
+      tierBaseRate: 0.8,
+      effectiveBaseRateBeforeMatrix: 0.8,
+      matrixBasePriceOverride: true,
+      finalBaseRateUsed: 5.75,
+    }));
+    expect(tierResolution?.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "PBV2_TIER_LEGACY_AND_NATIVE_PRESENT" }),
+        expect.objectContaining({ code: "PBV2_TIER_MATRIX_BASE_PRICE_OVERRIDE" }),
+      ])
+    );
   });
 });
