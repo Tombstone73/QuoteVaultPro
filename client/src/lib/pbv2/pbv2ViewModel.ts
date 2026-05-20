@@ -220,7 +220,7 @@ export function normalizeTreeJson(treeJson: any): any {
   });
 
   // Normalize nodes: ensure OPTION nodes have required fields
-  const normalizedNodes = nodes.map((node: any) => {
+  let normalizedNodes = nodes.map((node: any) => {
     if (!node || !node.id) return node;
 
     const type = (node.type || '').toUpperCase();
@@ -236,6 +236,34 @@ export function normalizeTreeJson(treeJson: any): any {
 
     return node;
   });
+
+  // Auto-repair GROUP displayOrder: groups lacking displayOrder get sequential values appended
+  // after the max existing value. Without this, sortPbv2NodeIdsByBuilderOrder falls back to
+  // a JSONB-iteration-order-dependent value that is non-deterministic after DB round-trips.
+  {
+    const groupsWithOrder = normalizedNodes.filter(
+      (n: any) => n && (n.type || '').toUpperCase() === 'GROUP' && typeof n.displayOrder === 'number'
+    );
+    const groupsWithoutOrder = normalizedNodes.filter(
+      (n: any) => n && (n.type || '').toUpperCase() === 'GROUP' && typeof n.displayOrder !== 'number'
+    );
+    if (groupsWithoutOrder.length > 0) {
+      const maxExisting = groupsWithOrder.reduce(
+        (max: number, n: any) => Math.max(max, n.displayOrder as number),
+        -1
+      );
+      let next = maxExisting + 1;
+      const orderUpdates = new Map<string, number>(
+        groupsWithoutOrder.map((n: any) => [n.id, next++])
+      );
+      normalizedNodes = normalizedNodes.map((n: any) => {
+        if (!n?.id || (n.type || '').toUpperCase() !== 'GROUP') return n;
+        const newOrder = orderUpdates.get(n.id);
+        if (newOrder === undefined) return n;
+        return { ...n, displayOrder: newOrder, ui: { ...(n.ui || {}), sortOrder: newOrder } };
+      });
+    }
+  }
 
   // Reconstruct tree with normalized data
   let normalizedTree: any;
@@ -548,6 +576,13 @@ export function createAddGroupPatch(treeJson: unknown): { patch: any; newGroupId
   const newGroupId = makeId('group_', existingIds);
   const selectionKey = `group_${Date.now()}`;
 
+  const groupNodes = nodes.filter(n => (n.type || '').toUpperCase() === 'GROUP');
+  const maxDisplayOrder = groupNodes.reduce((max, n) => {
+    const d = typeof (n as any).displayOrder === 'number' ? (n as any).displayOrder : -1;
+    return Math.max(max, d);
+  }, -1);
+  const newDisplayOrder = maxDisplayOrder + 1;
+
   const newNode: PBV2Node = {
     id: newGroupId,
     kind: 'group',
@@ -560,7 +595,9 @@ export function createAddGroupPatch(treeJson: unknown): { patch: any; newGroupId
       type: 'select',
       required: false,
     },
-  };
+    displayOrder: newDisplayOrder,
+    ui: { sortOrder: newDisplayOrder },
+  } as any;
 
   // Do NOT add GROUP to rootNodeIds - groups are structural only
   // normalizeTreeJson will compute runtime roots correctly
