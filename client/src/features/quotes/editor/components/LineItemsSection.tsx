@@ -409,6 +409,10 @@ export function LineItemsSection({
   const [editingPriceItemKey, setEditingPriceItemKey] = useState<string | null>(null);
   const [priceEditTextByKey, setPriceEditTextByKey] = useState<Record<string, string>>({});
   
+  // Tracks the itemKey of a product just added so we can scroll to it once it's expanded.
+  // Set before onExpandedKeyChange so the effect fires on the correct render.
+  const pendingScrollToItemKeyRef = useRef<string | null>(null);
+
   // Track saved state snapshot for dirty detection
   const savedSnapshotRef = useRef<
     Record<
@@ -423,6 +427,52 @@ export function LineItemsSection({
       }
     >
   >({});
+
+  // After a product is added: clear Radix focus-return scroll and land at the top of the
+  // new card with the Width input focused.  Radix Popover restores focus to its trigger
+  // (the "Add Product" button at the bottom of the page) via a RAF when it closes.
+  // We fire a second double-RAF — guaranteed to run after Radix's — to undo that scroll,
+  // scrollIntoView the new card, and focus Width with preventScroll.
+  useEffect(() => {
+    const pendingKey = pendingScrollToItemKeyRef.current;
+    if (!pendingKey || expandedKey !== pendingKey) return;
+
+    pendingScrollToItemKeyRef.current = null;
+    let cancelled = false;
+
+    const raf1 = requestAnimationFrame(() => {
+      if (cancelled) return;
+      requestAnimationFrame(() => {
+        if (cancelled) return;
+
+        // Blur whatever Radix focused (the "Add Product" trigger or similar)
+        const active = document.activeElement as HTMLElement | null;
+        if (active && active !== document.body) {
+          active.blur();
+        }
+
+        // The expanded panel id = "line-item-${itemKey}-details"; its parentElement
+        // is the card's px-3 pb-3 wrapper, so scroll the grandparent (the card root).
+        const contentEl = document.getElementById(`line-item-${pendingKey}-details`);
+        const cardRoot = contentEl?.parentElement ?? contentEl;
+        cardRoot?.scrollIntoView({ block: "start", behavior: "instant" as ScrollBehavior });
+
+        // Focus the first enabled non-readonly input (Width) without letting it scroll.
+        const widthInput = contentEl?.querySelector<HTMLInputElement>(
+          "input:not([disabled]):not([readonly])"
+        );
+        widthInput?.focus({ preventScroll: true });
+
+        // Re-anchor after focus in case the browser nudged the viewport.
+        cardRoot?.scrollIntoView({ block: "start", behavior: "instant" as ScrollBehavior });
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf1);
+    };
+  }, [expandedKey]);
 
   useEffect(() => {
     if (!expandedItem) return;
@@ -1087,7 +1137,10 @@ export function LineItemsSection({
                             const k = created ? getItemKey(created) : null;
                             setSearchQuery("");
                             setSearchOpen(false);
-                            if (k) onExpandedKeyChange(k);
+                            if (k) {
+                              pendingScrollToItemKeyRef.current = k;
+                              onExpandedKeyChange(k);
+                            }
                           }}
                         >
                           <div className="min-w-0 flex-1">
