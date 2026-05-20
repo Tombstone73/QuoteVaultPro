@@ -123,10 +123,13 @@ export function OrderLineItemDialog({
   const isPbv2 = isPbv2Product(selectedProduct);
   const pbv2TreeDirect = getPbv2Tree(selectedProduct);
 
-  // Fallback: if activated via PBV2 but optionTreeJson wasn't synced yet, fetch live tree
-  const needsLivePbv2Fetch = isPbv2 && !pbv2TreeDirect;
+  // Always fetch live active tree for any published PBV2 product so that newly
+  // added option groups appear immediately after publish without a hard refresh.
+  // (Previously only fetched when optionTreeJson was missing — too conservative.)
+  const pbv2ActiveTreeVersionId = (selectedProduct as any)?.pbv2ActiveTreeVersionId ?? null;
+  const needsLivePbv2Fetch = isPbv2 && (!!pbv2ActiveTreeVersionId || !pbv2TreeDirect);
   const { data: livePbv2Tree } = useQuery({
-    queryKey: ["/api/products", selectedProduct?.id, "pbv2/tree"],
+    queryKey: ["/api/products", selectedProduct?.id, "pbv2/tree", pbv2ActiveTreeVersionId],
     enabled: needsLivePbv2Fetch && !!selectedProduct?.id,
     queryFn: async () => {
       const res = await fetch(`/api/products/${selectedProduct!.id}/pbv2/tree`, { credentials: "include" });
@@ -134,10 +137,12 @@ export function OrderLineItemDialog({
       const json = await res.json();
       return (json?.data?.active?.treeJson ?? null) as import("@shared/optionTreeV2").OptionTreeV2 | null;
     },
-    staleTime: 5 * 60_000,
+    staleTime: 0,
   });
 
-  const pbv2Tree = pbv2TreeDirect ?? livePbv2Tree ?? null;
+  // Prefer live-fetched tree over cached product.optionTreeJson so stale cache
+  // never masks a newly published option group.
+  const pbv2Tree = livePbv2Tree ?? pbv2TreeDirect ?? null;
   const pbv2ConfigMissing = isPbv2 && !pbv2Tree;
 
   // Debug logging for PBV2 detection

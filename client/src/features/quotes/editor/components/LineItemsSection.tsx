@@ -351,15 +351,33 @@ export function LineItemsSection({
     [products, expandedItem]
   );
 
-  // Prefer pbv2SnapshotJson.treeJson from line item (server-calculated)
-  // Fallback to product definition optionTreeJson
+  // Live PBV2 tree fetch: always reads the current active tree from the server so
+  // that a newly published option group appears immediately without requiring a hard
+  // refresh or waiting for the products-list cache to revalidate.
+  const expandedProductActiveTreeVersionId = (expandedProduct as any)?.pbv2ActiveTreeVersionId ?? null;
+  const { data: livePbv2TreeData } = useQuery<OptionTreeV2 | null>({
+    queryKey: ["/api/products", expandedProduct?.id, "pbv2/tree", expandedProductActiveTreeVersionId],
+    enabled: !!expandedProductActiveTreeVersionId && !!expandedProduct?.id,
+    queryFn: async () => {
+      const res = await fetch(`/api/products/${expandedProduct!.id}/pbv2/tree`, { credentials: "include" });
+      if (!res.ok) return null;
+      const json = await res.json();
+      return (json?.data?.active?.treeJson ?? null) as OptionTreeV2 | null;
+    },
+    staleTime: 0,
+  });
+
+  // Priority: snapshot tree (from priced line item) → live active tree → cached product.optionTreeJson
   const expandedOptionTreeJson = useMemo(() => {
     const snapshot = (expandedItem as any)?.pbv2SnapshotJson;
     if (snapshot?.treeJson) {
       return snapshot.treeJson as OptionTreeV2 | null;
     }
+    if (livePbv2TreeData) {
+      return livePbv2TreeData;
+    }
     return (((expandedProduct as any)?.optionTreeJson ?? null) as OptionTreeV2 | null) ?? null;
-  }, [expandedProduct, expandedItem]);
+  }, [expandedProduct, expandedItem, livePbv2TreeData]);
 
   const isExpandedTreeV2 = useMemo(() => {
     return Boolean(expandedOptionTreeJson && (expandedOptionTreeJson as any)?.schemaVersion === 2);
