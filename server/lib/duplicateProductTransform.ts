@@ -1,4 +1,5 @@
 import type { Product, InsertProduct } from "@shared/schema";
+import { sanitizeLegacyPriceBreaksForPbv2 } from "@shared/pbv2/legacyPriceBreaks";
 
 function cloneJson<T>(value: T): T {
   const sc = (globalThis as any).structuredClone as ((v: any) => any) | undefined;
@@ -24,7 +25,7 @@ function withCopySuffix(name: string): string {
 }
 
 export function buildDuplicatedProductInsert(original: Product): Omit<InsertProduct, "organizationId"> {
-  return {
+  return sanitizeLegacyPriceBreaksForPbv2({
     name: withCopySuffix(original.name),
     description: original.description,
 
@@ -67,7 +68,7 @@ export function buildDuplicatedProductInsert(original: Product): Omit<InsertProd
 
     // Duplicates are created as a draft (not active) by default.
     isActive: false,
-  };
+  });
 }
 
 export function deepCloneForTest<T>(value: T): T {
