@@ -460,6 +460,16 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   const previewMeta = (treeForPreview as any)?.meta && typeof (treeForPreview as any).meta === "object" ? (treeForPreview as any).meta : {};
   const previewShippingConfig = previewMeta?.shippingConfig && typeof previewMeta.shippingConfig === "object" ? previewMeta.shippingConfig : null;
   const weightDebug = result?.debug?.weight ?? formulaDebug?.weight ?? null;
+  const tierResolution = result?.debug?.tierResolution ?? formulaDebug?.tierResolution ?? null;
+  const tierWarnings = Array.isArray(tierResolution?.warnings) ? tierResolution.warnings : [];
+  const matchedTierDisplay = tierResolution?.matchedTierLabel || tierResolution?.matchedTierId || null;
+  const showTierResolutionDebug = Boolean(
+    tierResolution &&
+      (tierResolution.enabled ||
+        tierWarnings.length > 0 ||
+        tierResolution.matrixBasePriceOverride ||
+        tierResolution.source !== "none"),
+  );
   const weightFinding = findings.find((finding) => finding.code === "PBV2_W_WEIGHT_MISSING" || finding.code === "PBV2_E_WEIGHT_NEGATIVE") ?? null;
   const shouldShowWeightDebug = Boolean(weightDebug || previewShippingConfig || previewMeta?.baseWeightOz != null || weightFinding);
   const selectedWeightFields = Array.isArray(weightDebug?.selectedWeightFields) ? weightDebug.selectedWeightFields : [];
@@ -483,6 +493,11 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
     if (typeof value === "string") return value.trim().length > 0 ? value : "—";
     if (typeof value === "number") return Number.isFinite(value) ? String(value) : "—";
     return String(value);
+  };
+
+  const displayDebugCurrency = (value: unknown) => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return "-";
+    return currencyFormatter.format(value);
   };
 
   const displayWeightOz = (value: unknown) => {
@@ -919,6 +934,56 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       ) : null}
                     </AccordionContent>
                   </AccordionItem>
+                  {showTierResolutionDebug ? (
+                    <AccordionItem value="tier-resolution" className="border-b-0">
+                      <AccordionTrigger className="py-1 text-xs text-slate-300 hover:no-underline">
+                        Quantity Tier Debug
+                        {tierWarnings.length > 0 || tierResolution?.matrixBasePriceOverride ? (
+                          <Badge variant="outline" className="ml-2 border-amber-500/40 text-[10px] text-amber-300">
+                            Warning
+                          </Badge>
+                        ) : null}
+                      </AccordionTrigger>
+                      <AccordionContent className="space-y-2 text-xs text-slate-300">
+                        <div className="rounded border border-slate-700/70 bg-slate-900/40 p-2">
+                          <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                            <div className="text-slate-400">Original base rate</div>
+                            <div className="font-mono">{displayDebugCurrency(tierResolution?.originalBaseRate)}</div>
+                            <div className="text-slate-400">Quantity</div>
+                            <div className="font-mono">{displayDebugValue(tierResolution?.quantity)}</div>
+                            <div className="text-slate-400">Matched tier</div>
+                            <div className="font-mono">{matchedTierDisplay ?? (tierResolution?.enabled ? "No matched tier" : "No quantity tier applied")}</div>
+                            <div className="text-slate-400">Tier-adjusted base rate</div>
+                            <div className="font-mono">{displayDebugCurrency(tierResolution?.tierBaseRate ?? tierResolution?.effectiveBaseRateBeforeMatrix)}</div>
+                            <div className="text-slate-400">Matrix base_price override</div>
+                            <div className={tierResolution?.matrixBasePriceOverride ? "font-mono text-amber-200" : "font-mono"}>
+                              {tierResolution?.matrixBasePriceOverride ? "Yes" : "No"}
+                            </div>
+                            <div className="text-slate-400">Final base rate used</div>
+                            <div className="font-mono">{displayDebugCurrency(tierResolution?.finalBaseRateUsed)}</div>
+                          </div>
+                        </div>
+
+                        {tierResolution?.matrixBasePriceOverride ? (
+                          <div className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-amber-200">
+                            Matrix base_price explicitly overrode the tier-resolved base rate.
+                          </div>
+                        ) : null}
+
+                        {tierWarnings.length > 0 ? (
+                          <div className="space-y-1 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-amber-200">
+                            {tierWarnings.map((warning, idx) => (
+                              <div key={`tier-warning-${warning.code}-${idx}`}>
+                                <span className="font-mono">{warning.code}</span>
+                                {warning.severity ? <span className="font-mono"> [{warning.severity}]</span> : null}
+                                {warning.message ? <span>: {warning.message}</span> : null}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                      </AccordionContent>
+                    </AccordionItem>
+                  ) : null}
                 </Accordion>
               ) : null}
 
