@@ -37,7 +37,13 @@ import {
   FORMULA_VARIABLE_PROTECTED_KEYS,
   MATRIX_VARIABLE_PROTECTED_KEYS,
 } from '../../../shared/pbv2/formulaScope';
-import { pbv2ToRuntimeSelectionContext, resolvePricingV2BaseRates } from '../../../shared/pbv2/pricingAdapter';
+import {
+  pbv2ToRuntimeSelectionContext,
+  resolvePricingV2BaseRates,
+  type LegacyPriceBreaksConfig,
+  type Pbv2TierResolution,
+  type Pbv2TierResolutionWarning,
+} from '../../../shared/pbv2/pricingAdapter';
 import { sheetConsumptionSqft } from '../../../shared/pbv2/formulaHelpers';
 import {
   collectPbv2WeightMaterialIds,
@@ -112,6 +118,7 @@ export type PBV2RuntimePricingSnapshot = {
   effectiveSelections: Record<string, any>;
   resolvedMatrixRowId?: string;
   resolvedMatrixVariables: Record<string, number>;
+  tierResolution?: PBV2TierResolutionSnapshot;
   selectedOptionValues?: Record<string, any>;
   basePriceSource?: string;
   rateUsedSource?: string;
@@ -120,6 +127,21 @@ export type PBV2RuntimePricingSnapshot = {
   calculatedPrice: number;
   capturedAt: string;
   resolvedWeightDebug?: PBV2ResolvedWeightSnapshotDebug;
+};
+
+export type PBV2TierResolutionSnapshot = {
+  quantity: number;
+  enabled: boolean;
+  source: "pbv2_pricing_v2" | "legacy_price_breaks" | "none";
+  matchedTierId: string | null;
+  matchedTierLabel: string | null;
+  originalBaseRate: number;
+  tierBaseRate: number | null;
+  effectiveBaseRateBeforeMatrix: number;
+  matrixBasePriceOverride: boolean;
+  finalBaseRateUsed: number;
+  warnings: Pbv2TierResolutionWarning[];
+  capturedAt: string;
 };
 
 export type PBV2ResolvedWeightSnapshotDebug = {
@@ -202,6 +224,7 @@ export type PricingPreviewEvaluationResult = {
       unitPrice: number;
       totalPrice: number;
     };
+    tierResolution?: PBV2TierResolutionSnapshot;
     runtimeSelectionContext?: OptionRuntimeSelectionContext;
     weight?: {
       baseWeightInput?: number | string | null;
@@ -464,6 +487,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     pricingMatrixVariables: pricingMatrixResolution.variables,
     pricingProfileKey: product.pricingProfileKey,
     pricingProfileConfig: product.pricingProfileConfig,
+    legacyPriceBreaks: product.priceBreaks as LegacyPriceBreaksConfig | null,
     productLegacy: {
       sheetWidth: product.sheetWidth,
       sheetHeight: product.sheetHeight,
@@ -704,6 +728,7 @@ export function evaluatePricingPreviewFromTree(input: {
     if (error?.code === 'PBV2_FORMULA_ERROR' && error?.debug) {
       error.debug = {
         ...error.debug,
+        tierResolution: buildTierResolutionSnapshot(baseDetails.tierResolution, new Date().toISOString()),
         weight: weightDebug,
       };
     }
@@ -797,6 +822,7 @@ export function evaluatePricingPreviewFromTree(input: {
         unitPrice: quantity > 0 ? totalCents / 100 / quantity : 0,
         totalPrice: totalCents / 100,
       },
+      tierResolution: buildTierResolutionSnapshot(formulaBasePrice.tierResolution, new Date().toISOString()),
       runtimeSelectionContext,
       weight: weightDebug,
     } : undefined,
@@ -1206,6 +1232,7 @@ function calculateBasePrice(
     pricingMatrixVariables?: Record<string, number>;
     pricingProfileKey?: string | null;
     pricingProfileConfig?: unknown;
+    legacyPriceBreaks?: LegacyPriceBreaksConfig | null;
     productLegacy?: {
       sheetWidth?: string | null;
       sheetHeight?: string | null;
@@ -1227,6 +1254,7 @@ function calculateBasePriceDetails(
     pricingMatrixVariables?: Record<string, number>;
     pricingProfileKey?: string | null;
     pricingProfileConfig?: unknown;
+    legacyPriceBreaks?: LegacyPriceBreaksConfig | null;
     productLegacy?: {
       sheetWidth?: string | null;
       sheetHeight?: string | null;
@@ -1254,6 +1282,7 @@ function calculateBasePriceDetails(
   minimumApplied: boolean;
   basePriceSource: string;
   rateUsedSource: string;
+  tierResolution: Pbv2TierResolution;
   nestingDetails?: unknown;
 } {
   const meta = tree?.meta;
@@ -1311,16 +1340,44 @@ function calculateBasePriceDetails(
     },
     {
       runtimeSelectionContext: pricingContext?.runtimeSelectionContext,
+      legacyPriceBreaks: pricingContext?.legacyPriceBreaks,
     }
   );
   perSqftCents = resolvedBaseRates.perSqftCents;
   perPieceCents = resolvedBaseRates.perPieceCents;
   minimumChargeCents = resolvedBaseRates.minimumChargeCents;
+  let tierResolution: Pbv2TierResolution = {
+    ...resolvedBaseRates.tierResolution,
+    warnings: [...resolvedBaseRates.tierResolution.warnings],
+  };
 
   let basePriceSource = hasMatrixBasePrice ? "pricing_matrix.base_price" : "pricingV2.base";
   let rateUsedSource = hasMatrixBasePrice ? "pricing_matrix.base_price" : "pricingV2.base";
   if (hasMatrixBasePrice) {
     perSqftCents = Math.round(matrixBasePrice * 100);
+    tierResolution = {
+      ...tierResolution,
+      matrixBasePriceOverride: true,
+      finalBaseRateUsed: matrixBasePrice,
+      warnings: [
+        ...tierResolution.warnings,
+        {
+          code: "PBV2_TIER_MATRIX_BASE_PRICE_OVERRIDE",
+          severity: "warning",
+          message: "Pricing matrix base_price explicitly overrode the tier-resolved base rate.",
+          detail: {
+            effectiveBaseRateBeforeMatrix: tierResolution.effectiveBaseRateBeforeMatrix,
+            matrixBasePrice: matrixBasePrice,
+          },
+        },
+      ],
+    };
+  } else {
+    tierResolution = {
+      ...tierResolution,
+      matrixBasePriceOverride: false,
+      finalBaseRateUsed: perSqftCents / 100,
+    };
   }
 
   if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0) {
@@ -1393,6 +1450,7 @@ function calculateBasePriceDetails(
       minimumApplied: false,
       basePriceSource,
       rateUsedSource,
+      tierResolution,
       nestingDetails: {
         ...flatGoodsResult.nestingDetails,
         sheetCount: flatGoodsResult.sheetCount,
@@ -1424,6 +1482,7 @@ function calculateBasePriceDetails(
     minimumApplied,
     basePriceSource,
     rateUsedSource,
+    tierResolution,
   };
 }
 
@@ -1437,7 +1496,30 @@ type FormulaAwareBasePriceResult = {
   formulaApplied: boolean;
   minimumApplied: boolean;
   preMinimumCents: number;
+  tierResolution: Pbv2TierResolution;
 };
+
+function formulaReferencesTierVariables(formula: string): boolean {
+  return /\b(?:original_base_price|tier_base_price|tier_rate|effective_base_price)\b/.test(formula);
+}
+
+function withFormulaTierReferenceWarning(tierResolution: Pbv2TierResolution, formula: string): Pbv2TierResolution {
+  if (!formula || tierResolution.tierSystemEnabled || !formulaReferencesTierVariables(formula)) {
+    return { ...tierResolution, warnings: [...tierResolution.warnings] };
+  }
+
+  return {
+    ...tierResolution,
+    warnings: [
+      ...tierResolution.warnings,
+      {
+        code: "PBV2_TIER_FORMULA_REFERENCE_WITHOUT_TIER_SYSTEM",
+        severity: "warning",
+        message: "Formula references tier variables, but no PBV2 quantity tier system is configured; base-rate fallback values were used.",
+      },
+    ],
+  };
+}
 
 /**
  * Shared PBV2 runtime pricing boundary for Product Builder preview and order entry.
@@ -1471,6 +1553,7 @@ function calculateFormulaAwareBasePrice(input: {
   const formulaCandidate = overrideFormula || formulaFromTree || formulaFromProduct || formulaFromProfile;
   const usedFallbackFormula = profileUsesFormula && !formulaCandidate;
   const formulaToUse = profileUsesFormula ? (formulaCandidate || PBV2_PREVIEW_FALLBACK_FORMULA) : "";
+  const tierResolution = withFormulaTierReferenceWarning(baseDetails.tierResolution, formulaToUse);
   const formulaVariables = input.formulaVariables
     ?? (input.product ? resolveSnapshotFormulaVariables(input.treeJson, input.product) : undefined);
 
@@ -1484,6 +1567,9 @@ function calculateFormulaAwareBasePrice(input: {
     finishedHeightIn: baseDetails.finishedHeightIn,
     quantity: input.quantity,
     baseRatePerSqft: baseDetails.perSqftCents / 100,
+    originalBaseRate: tierResolution.originalBaseRate,
+    tierBaseRate: tierResolution.tierBaseRate,
+    effectiveBaseRate: tierResolution.effectiveBaseRateBeforeMatrix,
     sqftPerItem: baseDetails.sqftPerItem,
     totalSqft: baseDetails.totalSqft,
     linearFeet: baseDetails.linearFeet,
@@ -1501,6 +1587,7 @@ function calculateFormulaAwareBasePrice(input: {
       formulaApplied: false,
       minimumApplied: baseDetails.minimumApplied,
       preMinimumCents: baseDetails.preMinimumCents,
+      tierResolution,
     };
   }
 
@@ -1514,6 +1601,9 @@ function calculateFormulaAwareBasePrice(input: {
     finishedHeightIn: baseDetails.finishedHeightIn,
     quantity: input.quantity,
     baseRatePerSqft: baseDetails.perSqftCents / 100,
+    originalBaseRate: tierResolution.originalBaseRate,
+    tierBaseRate: tierResolution.tierBaseRate,
+    effectiveBaseRate: tierResolution.effectiveBaseRateBeforeMatrix,
     sqftPerItem: baseDetails.sqftPerItem,
     totalSqft: baseDetails.totalSqft,
     linearFeet: baseDetails.linearFeet,
@@ -1545,6 +1635,7 @@ function calculateFormulaAwareBasePrice(input: {
     formulaApplied: true,
     minimumApplied,
     preMinimumCents,
+    tierResolution,
   };
 }
 
@@ -1629,6 +1720,27 @@ export function buildResolvedWeightSnapshotDebug(
   });
 }
 
+function buildTierResolutionSnapshot(
+  tierResolution: Pbv2TierResolution | undefined,
+  capturedAt: string,
+): PBV2TierResolutionSnapshot | undefined {
+  if (!tierResolution) return undefined;
+  return cloneJsonValue({
+    quantity: tierResolution.quantity,
+    enabled: tierResolution.tierSystemEnabled,
+    source: tierResolution.tierSource,
+    matchedTierId: tierResolution.matchedTierId,
+    matchedTierLabel: tierResolution.matchedTierLabel,
+    originalBaseRate: tierResolution.originalBaseRate,
+    tierBaseRate: tierResolution.tierBaseRate,
+    effectiveBaseRateBeforeMatrix: tierResolution.effectiveBaseRateBeforeMatrix,
+    matrixBasePriceOverride: tierResolution.matrixBasePriceOverride,
+    finalBaseRateUsed: tierResolution.finalBaseRateUsed,
+    warnings: tierResolution.warnings,
+    capturedAt,
+  });
+}
+
 function buildRuntimePricingSnapshot(input: {
   treeJson: any;
   product: any;
@@ -1659,6 +1771,7 @@ function buildRuntimePricingSnapshot(input: {
   const pricingProfileKey = String(input.baseDetails?.pricingProfileKey ?? input.product?.pricingProfileKey ?? "default");
   const formulaSnapshot = resolveSnapshotFormula(input.treeJson, input.product, pricingProfileKey);
   const formulaVariables = resolveSnapshotFormulaVariables(input.treeJson, input.product);
+  const tierResolution = input.formulaBasePrice?.tierResolution ?? input.baseDetails?.tierResolution;
   const formulaDebug = input.formulaBasePrice?.formulaDebug ?? buildBaseFormulaDebugContext({
     formulaRaw: formulaSnapshot.formula,
     orderedWidthIn,
@@ -1669,6 +1782,9 @@ function buildRuntimePricingSnapshot(input: {
     finishedHeightIn,
     quantity: input.quantity,
     baseRatePerSqft: input.baseDetails ? input.baseDetails.perSqftCents / 100 : 0,
+    originalBaseRate: tierResolution?.originalBaseRate,
+    tierBaseRate: tierResolution?.tierBaseRate,
+    effectiveBaseRate: tierResolution?.effectiveBaseRateBeforeMatrix,
     sqftPerItem,
     totalSqft,
     linearFeet,
@@ -1688,6 +1804,9 @@ function buildRuntimePricingSnapshot(input: {
       ? { resolvedMatrixRowId: input.pricingMatrixResolution.matchedRow.id }
       : {}),
     resolvedMatrixVariables: input.pricingMatrixResolution.variables,
+    ...(tierResolution
+      ? { tierResolution: buildTierResolutionSnapshot(tierResolution, input.capturedAt) }
+      : {}),
     basePriceSource: hasMatrixBasePrice ? "pricing_matrix.base_price" : (input.baseDetails?.basePriceSource ?? "pricingV2.base"),
     rateUsedSource: hasMatrixBasePrice ? "pricing_matrix.base_price" : (input.baseDetails?.rateUsedSource ?? "pricingV2.base"),
     minimumApplied: input.formulaBasePrice?.minimumApplied ?? input.baseDetails?.minimumApplied ?? false,
@@ -1724,6 +1843,9 @@ function evaluatePreviewFormulaToCents(input: {
   finishedHeightIn: number;
   quantity: number;
   baseRatePerSqft: number;
+  originalBaseRate?: number;
+  tierBaseRate?: number | null;
+  effectiveBaseRate?: number;
   sqftPerItem: number;
   totalSqft: number;
   linearFeet: number;
@@ -1905,6 +2027,9 @@ function buildBaseFormulaDebugContext(input: {
   finishedHeightIn: number;
   quantity: number;
   baseRatePerSqft: number;
+  originalBaseRate?: number;
+  tierBaseRate?: number | null;
+  effectiveBaseRate?: number;
   sqftPerItem: number;
   totalSqft: number;
   linearFeet: number;
@@ -1922,6 +2047,9 @@ function buildBaseFormulaDebugContext(input: {
     finishedHeightIn: input.finishedHeightIn,
     quantity: input.quantity,
     baseRatePerSqft: input.baseRatePerSqft,
+    originalBaseRate: input.originalBaseRate,
+    tierBaseRate: input.tierBaseRate,
+    effectiveBaseRate: input.effectiveBaseRate,
     sqftPerItem: input.sqftPerItem,
     totalSqft: input.totalSqft,
     linearFeet: input.linearFeet,

@@ -78,6 +78,20 @@ type PricingPreviewResponse = {
       finished_height?: number;
     };
     pricing?: { basePrice: number; optionsPrice: number; unitPrice: number; totalPrice: number };
+    tierResolution?: {
+      quantity: number;
+      enabled: boolean;
+      source: "pbv2_pricing_v2" | "legacy_price_breaks" | "none";
+      matchedTierId: string | null;
+      matchedTierLabel: string | null;
+      originalBaseRate: number;
+      tierBaseRate: number | null;
+      effectiveBaseRateBeforeMatrix: number;
+      matrixBasePriceOverride: boolean;
+      finalBaseRateUsed: number;
+      warnings: Array<{ code: string; message: string; severity?: string; detail?: Record<string, unknown> }>;
+      capturedAt?: string;
+    };
     runtimeSelectionContext?: {
       selectedChoices?: Record<string, string>;
       resolvedChoices?: Record<string, unknown>;

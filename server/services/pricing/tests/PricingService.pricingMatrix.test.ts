@@ -5,6 +5,7 @@ import {
   type Pbv2OptionRuleValidationError,
   type Pbv2PricingMatrixError,
 } from "../PricingService";
+import { resolvePricingV2BaseRates } from "../../../../shared/pbv2/pricingAdapter";
 
 const acmFormula =
   "sheet_consumption_sqft(w, h, q, sheet_width, sheet_length, usable_drop_min, billable_length_increment, minimum_billable_sqft) * base_price";
@@ -110,15 +111,21 @@ function makeRuleMatrixTree() {
   };
 }
 
-function runPreview(treeJson: any, selections: Record<string, any>, formula = acmFormula) {
+function runPreview(
+  treeJson: any,
+  selections: Record<string, any>,
+  formula = acmFormula,
+  quantity = 1,
+  formulaVariablesOverride: Record<string, number> = formulaVariables,
+) {
   return evaluatePricingPreviewFromTree({
     treeJson,
     widthIn: 24,
     heightIn: 36,
-    quantity: 1,
+    quantity,
     pbv2ExplicitSelections: selections,
     pricingFormulaOverride: formula,
-    formulaVariables,
+    formulaVariables: formulaVariablesOverride,
     debug: true,
   });
 }
@@ -231,6 +238,155 @@ describe("PricingService pricing matrix variable resolution", () => {
     );
 
     expect(result.totalPrice).toBeCloseTo(6, 2);
+    expect(result.debug?.tierResolution).toEqual(expect.objectContaining({
+      enabled: false,
+      source: "none",
+      originalBaseRate: 1,
+      effectiveBaseRateBeforeMatrix: 1,
+      finalBaseRateUsed: 1,
+    }));
+  });
+
+  test("PBV2 qty tier applies tier rate before formula when no matrix overrides base_price", () => {
+    const tree = makeAcmTree(null);
+    delete (tree as any).pricingMatrix;
+    (tree as any).meta.pricingV2.qtyTiers = [
+      { id: "tier_5", label: "5+", minQty: 5, perSqftCents: 80 },
+    ];
+
+    const result = runPreview(tree, {}, "sqft * base_price * q", 5);
+
+    expect(result.totalPrice).toBeCloseTo(24, 2);
+    expect(result.debug?.variables).toEqual(expect.objectContaining({
+      base_price: 0.8,
+      original_base_price: 1,
+      tier_base_price: 0.8,
+      tier_rate: 0.8,
+      effective_base_price: 0.8,
+    }));
+    expect(result.debug?.tierResolution).toEqual(expect.objectContaining({
+      enabled: true,
+      source: "pbv2_pricing_v2",
+      matchedTierId: "tier_5",
+      matchedTierLabel: "5+",
+      originalBaseRate: 1,
+      tierBaseRate: 0.8,
+      effectiveBaseRateBeforeMatrix: 0.8,
+      matrixBasePriceOverride: false,
+      finalBaseRateUsed: 0.8,
+    }));
+  });
+
+  test("matrix base_price override wins after tier resolution and emits metadata", () => {
+    const tree = makeAcmTree({
+      dimensions: ["thickness"],
+      rows: [
+        { id: "matrix_override", when: { thickness: "3mm" }, variables: { base_price: 500 } },
+      ],
+    });
+    (tree as any).meta.pricingV2.qtyTiers = [
+      { id: "tier_5", label: "5+", minQty: 5, perSqftCents: 80 },
+    ];
+
+    const result = runPreview(tree, { thickness: { value: "3mm" } }, "sqft * base_price * q", 5);
+
+    expect(result.totalPrice).toBeCloseTo(150, 2);
+    expect(result.debug?.variables.base_price).toBe(5);
+    expect(result.debug?.tierResolution).toEqual(expect.objectContaining({
+      matchedTierId: "tier_5",
+      tierBaseRate: 0.8,
+      effectiveBaseRateBeforeMatrix: 0.8,
+      matrixBasePriceOverride: true,
+      finalBaseRateUsed: 5,
+    }));
+    expect(result.debug?.tierResolution?.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "PBV2_TIER_MATRIX_BASE_PRICE_OVERRIDE" }),
+      ])
+    );
+  });
+
+  test("formula tier variables fall back safely and warn when no tier system exists", () => {
+    const tree = makeAcmTree(null);
+    delete (tree as any).pricingMatrix;
+
+    const result = runPreview(tree, {}, "sqft * tier_base_price * q", 1);
+
+    expect(result.totalPrice).toBeCloseTo(6, 2);
+    expect(result.debug?.variables.tier_base_price).toBe(1);
+    expect(result.debug?.tierResolution?.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "PBV2_TIER_FORMULA_REFERENCE_WITHOUT_TIER_SYSTEM" }),
+      ])
+    );
+  });
+
+  test("formula variables cannot shadow protected tier variables", () => {
+    const tree = makeAcmTree(null);
+    delete (tree as any).pricingMatrix;
+    (tree as any).meta.pricingV2.qtyTiers = [
+      { minQty: 1, perSqftCents: 80 },
+    ];
+
+    const result = runPreview(
+      tree,
+      {},
+      "tier_base_price + original_base_price + effective_base_price",
+      1,
+      { tier_base_price: 999, original_base_price: 999, effective_base_price: 999 }
+    );
+
+    expect(result.totalPrice).toBeCloseTo(2.6, 2);
+    expect(result.debug?.variables.tier_base_price).toBe(0.8);
+    expect(result.debug?.variables.original_base_price).toBe(1);
+    expect(result.debug?.variables.effective_base_price).toBe(0.8);
+  });
+
+  test("no tier match falls back to base rate with structured warning", () => {
+    const tree = makeAcmTree(null);
+    delete (tree as any).pricingMatrix;
+    (tree as any).meta.pricingV2.qtyTiers = [
+      { id: "tier_10", minQty: 10, perSqftCents: 80 },
+    ];
+
+    const result = runPreview(tree, {}, "sqft * base_price * q", 1);
+
+    expect(result.totalPrice).toBeCloseTo(6, 2);
+    expect(result.debug?.tierResolution).toEqual(expect.objectContaining({
+      enabled: true,
+      matchedTierId: null,
+      tierBaseRate: null,
+      effectiveBaseRateBeforeMatrix: 1,
+      finalBaseRateUsed: 1,
+    }));
+    expect(result.debug?.tierResolution?.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "PBV2_TIER_NO_MATCH" }),
+      ])
+    );
+  });
+
+  test("invalid tier rate falls back safely with structured warning", () => {
+    const tree = makeAcmTree(null) as any;
+    delete tree.pricingMatrix;
+    tree.meta.pricingV2.qtyTiers = [
+      { id: "bad_tier", minQty: 1, perSqftCents: "bad" },
+    ];
+
+    const result = resolvePricingV2BaseRates(tree, {}, { widthIn: 24, heightIn: 36, quantity: 1, sqft: 6 });
+
+    expect(result.perSqftCents).toBe(100);
+    expect(result.tierResolution).toEqual(expect.objectContaining({
+      matchedTierId: "bad_tier",
+      originalBaseRate: 1,
+      effectiveBaseRateBeforeMatrix: 1,
+      finalBaseRateUsed: 1,
+    }));
+    expect(result.tierResolution.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "PBV2_TIER_INVALID_RATE" }),
+      ])
+    );
   });
 
   test("matrix matching uses stable choice values when labels change", () => {
@@ -257,7 +413,7 @@ describe("PricingService pricing matrix variable resolution", () => {
           rows: [
             {
               when: { thickness: "3mm" },
-              variables: { base_price: 5, q: 999, sqft: 999, total_sqft: 999 },
+              variables: { base_price: 5, q: 999, sqft: 999, total_sqft: 999, tier_base_price: 999 },
             },
           ],
         }),

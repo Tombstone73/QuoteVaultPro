@@ -93,8 +93,44 @@ export type ResolvedPricingV2BaseRates = {
   perSqftCents: number;
   perPieceCents: number;
   minimumChargeCents: number;
+  tierResolution: Pbv2TierResolution;
   appliedPricingOverrides: AppliedChoicePricingOverride[];
   runtimeSelectionContext: OptionRuntimeSelectionContext;
+};
+
+export type Pbv2TierSource = "pbv2_pricing_v2" | "legacy_price_breaks" | "none";
+
+export type Pbv2TierResolutionWarning = {
+  code:
+    | "PBV2_TIER_LEGACY_AND_NATIVE_PRESENT"
+    | "PBV2_TIER_NO_MATCH"
+    | "PBV2_TIER_INVALID_RATE"
+    | "PBV2_TIER_MATRIX_BASE_PRICE_OVERRIDE"
+    | "PBV2_TIER_FORMULA_REFERENCE_WITHOUT_TIER_SYSTEM"
+    | "PBV2_TIER_LEGACY_PRICE_BREAKS_NOT_APPLIED";
+  message: string;
+  severity: "warning" | "error";
+  detail?: Record<string, unknown>;
+};
+
+export type Pbv2TierResolution = {
+  quantity: number;
+  tierSystemEnabled: boolean;
+  tierSource: Pbv2TierSource;
+  matchedTierId: string | null;
+  matchedTierLabel: string | null;
+  originalBaseRate: number;
+  tierBaseRate: number | null;
+  effectiveBaseRateBeforeMatrix: number;
+  matrixBasePriceOverride: boolean;
+  finalBaseRateUsed: number;
+  warnings: Pbv2TierResolutionWarning[];
+};
+
+export type LegacyPriceBreaksConfig = {
+  enabled?: boolean;
+  type?: string;
+  tiers?: unknown[];
 };
 
 type AnyRecord = Record<string, unknown>;
@@ -1021,42 +1057,108 @@ function toAppliedChoicePricingOverride(
   };
 }
 
+function isFiniteNonNegativeNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function dollarsFromCents(cents: number): number {
+  return cents / 100;
+}
+
+function isLegacyPriceBreaksEnabled(value: unknown): boolean {
+  const config = asRecord(value);
+  if (!config) return false;
+  if ((config as any).enabled !== true) return false;
+  const tiers = Array.isArray((config as any).tiers) ? (config as any).tiers : [];
+  return tiers.length > 0;
+}
+
+function cloneTierResolutionWithRates(
+  tierResolution: Pbv2TierResolution,
+  rates: Pick<ResolvedPricingV2BaseRates, "perSqftCents" | "perPieceCents" | "minimumChargeCents">
+): Pbv2TierResolution {
+  return {
+    ...tierResolution,
+    finalBaseRateUsed: dollarsFromCents(rates.perSqftCents),
+  };
+}
+
 function resolveTieredPricingV2BaseRates(
   tree: AnyRecord,
   quantity: number,
-  sqft: number
-): Pick<ResolvedPricingV2BaseRates, "perSqftCents" | "perPieceCents" | "minimumChargeCents"> {
+  sqft: number,
+  legacyPriceBreaks?: LegacyPriceBreaksConfig | null
+): Pick<ResolvedPricingV2BaseRates, "perSqftCents" | "perPieceCents" | "minimumChargeCents" | "tierResolution"> {
+  const legacyPriceBreaksEnabled = isLegacyPriceBreaksEnabled(legacyPriceBreaks);
+  const warnings: Pbv2TierResolutionWarning[] = [];
+  const emptyRates = {
+    perSqftCents: 0,
+    perPieceCents: 0,
+    minimumChargeCents: 0,
+  };
+  const emptyTierResolution: Pbv2TierResolution = {
+    quantity,
+    tierSystemEnabled: legacyPriceBreaksEnabled,
+    tierSource: legacyPriceBreaksEnabled ? "legacy_price_breaks" : "none",
+    matchedTierId: null,
+    matchedTierLabel: null,
+    originalBaseRate: 0,
+    tierBaseRate: null,
+    effectiveBaseRateBeforeMatrix: 0,
+    matrixBasePriceOverride: false,
+    finalBaseRateUsed: 0,
+    warnings,
+  };
+
+  if (legacyPriceBreaksEnabled) {
+    warnings.push({
+      code: "PBV2_TIER_LEGACY_PRICE_BREAKS_NOT_APPLIED",
+      severity: "warning",
+      message: "Legacy product priceBreaks are configured but are not applied by the PBV2 pricingV2 tier resolver.",
+    });
+  }
+
   const meta = asRecord(tree.meta);
   if (!meta) {
     return {
-      perSqftCents: 0,
-      perPieceCents: 0,
-      minimumChargeCents: 0,
+      ...emptyRates,
+      tierResolution: emptyTierResolution,
     };
   }
 
   const pricingV2 = asRecord((meta as any).pricingV2);
   if (!pricingV2) {
     return {
-      perSqftCents: 0,
-      perPieceCents: 0,
-      minimumChargeCents: 0,
+      ...emptyRates,
+      tierResolution: emptyTierResolution,
     };
   }
 
   const base = asRecord((pricingV2 as any).base) ?? {};
   const qtyTiers = Array.isArray((pricingV2 as any).qtyTiers) ? (pricingV2 as any).qtyTiers : [];
   const sqftTiers = Array.isArray((pricingV2 as any).sqftTiers) ? (pricingV2 as any).sqftTiers : [];
+  const qtyTierSystemEnabled = qtyTiers.length > 0;
+  const nativeTierSystemEnabled = qtyTierSystemEnabled || sqftTiers.length > 0;
 
-  let perSqftCents = typeof base.perSqftCents === "number" ? base.perSqftCents : 0;
-  let perPieceCents = typeof base.perPieceCents === "number" ? base.perPieceCents : 0;
-  let minimumChargeCents = typeof base.minimumChargeCents === "number" ? base.minimumChargeCents : 0;
+  let perSqftCents = isFiniteNonNegativeNumber(base.perSqftCents) ? base.perSqftCents : 0;
+  let perPieceCents = isFiniteNonNegativeNumber(base.perPieceCents) ? base.perPieceCents : 0;
+  let minimumChargeCents = isFiniteNonNegativeNumber(base.minimumChargeCents) ? base.minimumChargeCents : 0;
+  const originalPerSqftCents = perSqftCents;
+
+  if (nativeTierSystemEnabled && legacyPriceBreaksEnabled) {
+    warnings.push({
+      code: "PBV2_TIER_LEGACY_AND_NATIVE_PRESENT",
+      severity: "warning",
+      message: "PBV2 pricingV2 quantity tiers and legacy product priceBreaks are both configured; PBV2 pricingV2 tiers are used.",
+    });
+  }
 
   let bestQtyTier: AnyRecord | null = null;
+  let matchedQtyTierPerSqftValid = false;
   for (const tier of qtyTiers) {
     const t = asRecord(tier);
     if (!t) continue;
-    const minQty = typeof t.minQty === "number" ? t.minQty : 0;
+    const minQty = typeof t.minQty === "number" && Number.isFinite(t.minQty) ? t.minQty : 0;
     if (minQty <= quantity) {
       if (!bestQtyTier || minQty > ((bestQtyTier as any).minQty ?? 0)) {
         bestQtyTier = t;
@@ -1065,9 +1167,52 @@ function resolveTieredPricingV2BaseRates(
   }
 
   if (bestQtyTier) {
-    if (typeof (bestQtyTier as any).perSqftCents === "number") perSqftCents = Number((bestQtyTier as any).perSqftCents);
-    if (typeof (bestQtyTier as any).perPieceCents === "number") perPieceCents = Number((bestQtyTier as any).perPieceCents);
-    if (typeof (bestQtyTier as any).minimumChargeCents === "number") minimumChargeCents = Number((bestQtyTier as any).minimumChargeCents);
+    if (Object.prototype.hasOwnProperty.call(bestQtyTier, "perSqftCents")) {
+      if (isFiniteNonNegativeNumber((bestQtyTier as any).perSqftCents)) {
+        perSqftCents = Number((bestQtyTier as any).perSqftCents);
+        matchedQtyTierPerSqftValid = true;
+      } else {
+        warnings.push({
+          code: "PBV2_TIER_INVALID_RATE",
+          severity: "warning",
+          message: "Matched PBV2 quantity tier has an invalid perSqftCents value; base rate was left unchanged.",
+          detail: { field: "perSqftCents", value: (bestQtyTier as any).perSqftCents },
+        });
+      }
+    } else {
+      matchedQtyTierPerSqftValid = true;
+    }
+    if (Object.prototype.hasOwnProperty.call(bestQtyTier, "perPieceCents")) {
+      if (isFiniteNonNegativeNumber((bestQtyTier as any).perPieceCents)) {
+        perPieceCents = Number((bestQtyTier as any).perPieceCents);
+      } else {
+        warnings.push({
+          code: "PBV2_TIER_INVALID_RATE",
+          severity: "warning",
+          message: "Matched PBV2 quantity tier has an invalid perPieceCents value; base rate was left unchanged.",
+          detail: { field: "perPieceCents", value: (bestQtyTier as any).perPieceCents },
+        });
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(bestQtyTier, "minimumChargeCents")) {
+      if (isFiniteNonNegativeNumber((bestQtyTier as any).minimumChargeCents)) {
+        minimumChargeCents = Number((bestQtyTier as any).minimumChargeCents);
+      } else {
+        warnings.push({
+          code: "PBV2_TIER_INVALID_RATE",
+          severity: "warning",
+          message: "Matched PBV2 quantity tier has an invalid minimumChargeCents value; minimum charge was left unchanged.",
+          detail: { field: "minimumChargeCents", value: (bestQtyTier as any).minimumChargeCents },
+        });
+      }
+    }
+  } else if (qtyTierSystemEnabled) {
+    warnings.push({
+      code: "PBV2_TIER_NO_MATCH",
+      severity: "warning",
+      message: "PBV2 quantity tiers are configured, but no tier matched the requested quantity; base rate was used.",
+      detail: { quantity },
+    });
   }
 
   let bestSqftTier: AnyRecord | null = null;
@@ -1083,15 +1228,42 @@ function resolveTieredPricingV2BaseRates(
   }
 
   if (bestSqftTier) {
-    if (typeof (bestSqftTier as any).perSqftCents === "number") perSqftCents = Number((bestSqftTier as any).perSqftCents);
-    if (typeof (bestSqftTier as any).perPieceCents === "number") perPieceCents = Number((bestSqftTier as any).perPieceCents);
-    if (typeof (bestSqftTier as any).minimumChargeCents === "number") minimumChargeCents = Number((bestSqftTier as any).minimumChargeCents);
+    if (isFiniteNonNegativeNumber((bestSqftTier as any).perSqftCents)) perSqftCents = Number((bestSqftTier as any).perSqftCents);
+    if (isFiniteNonNegativeNumber((bestSqftTier as any).perPieceCents)) perPieceCents = Number((bestSqftTier as any).perPieceCents);
+    if (isFiniteNonNegativeNumber((bestSqftTier as any).minimumChargeCents)) minimumChargeCents = Number((bestSqftTier as any).minimumChargeCents);
   }
+
+  const tierSource: Pbv2TierSource = nativeTierSystemEnabled
+    ? "pbv2_pricing_v2"
+    : legacyPriceBreaksEnabled
+      ? "legacy_price_breaks"
+      : "none";
+  const tierBaseRate = bestQtyTier && matchedQtyTierPerSqftValid ? dollarsFromCents(perSqftCents) : null;
+  const effectiveBaseRateBeforeMatrix = dollarsFromCents(perSqftCents);
 
   return {
     perSqftCents,
     perPieceCents,
     minimumChargeCents,
+    tierResolution: {
+      quantity,
+      tierSystemEnabled: nativeTierSystemEnabled || legacyPriceBreaksEnabled,
+      tierSource,
+      matchedTierId: bestQtyTier && typeof (bestQtyTier as any).id === "string" ? String((bestQtyTier as any).id) : null,
+      matchedTierLabel: bestQtyTier
+        ? typeof (bestQtyTier as any).label === "string"
+          ? String((bestQtyTier as any).label)
+          : typeof (bestQtyTier as any).name === "string"
+            ? String((bestQtyTier as any).name)
+            : null
+        : null,
+      originalBaseRate: dollarsFromCents(originalPerSqftCents),
+      tierBaseRate,
+      effectiveBaseRateBeforeMatrix,
+      matrixBasePriceOverride: false,
+      finalBaseRateUsed: effectiveBaseRateBeforeMatrix,
+      warnings,
+    },
   };
 }
 
@@ -1258,7 +1430,11 @@ export function resolvePricingV2BaseRates(
   treeJson: unknown,
   selections: Pbv2Selections | Record<string, unknown> | undefined,
   env: Pbv2Env | undefined,
-  opts?: { pricebook?: Record<string, number>; runtimeSelectionContext?: OptionRuntimeSelectionContext }
+  opts?: {
+    pricebook?: Record<string, number>;
+    runtimeSelectionContext?: OptionRuntimeSelectionContext;
+    legacyPriceBreaks?: LegacyPriceBreaksConfig | null;
+  }
 ): ResolvedPricingV2BaseRates {
   const tree = asRecord(treeJson);
   if (!tree) throw new Error("Invalid PBV2 treeJson");
@@ -1273,7 +1449,7 @@ export function resolvePricingV2BaseRates(
     opts?.runtimeSelectionContext ??
     pbv2ToRuntimeSelectionContext(tree, selections, { ...(env ?? {}), quantity, sqft, widthIn, heightIn }, { pricebook: opts?.pricebook });
 
-  const baseRates = resolveTieredPricingV2BaseRates(tree, quantity, sqft);
+  const baseRates = resolveTieredPricingV2BaseRates(tree, quantity, sqft, opts?.legacyPriceBreaks);
   const appliedPricingOverrides = Array.isArray(runtimeSelectionContext.appliedPricingOverrides)
     ? sortAppliedPricingOverrides(runtimeSelectionContext.appliedPricingOverrides)
     : [];
@@ -1281,6 +1457,7 @@ export function resolvePricingV2BaseRates(
 
   return {
     ...resolvedRates,
+    tierResolution: cloneTierResolutionWithRates(baseRates.tierResolution, resolvedRates),
     appliedPricingOverrides,
     runtimeSelectionContext,
   };

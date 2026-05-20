@@ -19,6 +19,10 @@ export const FORMULA_VARIABLE_PROTECTED_KEYS = new Set([
   "quantity",
   "q",
   "base_price",
+  "original_base_price",
+  "tier_base_price",
+  "tier_rate",
+  "effective_base_price",
   "basePricePerSqft",
   "pricePerSqft",
   "unitPrice",
@@ -75,6 +79,9 @@ export function buildFormulaScope(input: {
   finishedHeightIn: number;
   quantity: number;
   baseRatePerSqft: number;
+  originalBaseRate?: number;
+  tierBaseRate?: number | null;
+  effectiveBaseRate?: number;
   sqftPerItem: number;
   totalSqft: number;
   linearFeet: number;
@@ -96,6 +103,10 @@ export function buildFormulaScope(input: {
     quantity: input.quantity,
     q: input.quantity,
     base_price: input.baseRatePerSqft,
+    original_base_price: input.originalBaseRate ?? input.baseRatePerSqft,
+    tier_base_price: input.tierBaseRate ?? input.effectiveBaseRate ?? input.baseRatePerSqft,
+    tier_rate: input.tierBaseRate ?? input.effectiveBaseRate ?? input.baseRatePerSqft,
+    effective_base_price: input.effectiveBaseRate ?? input.baseRatePerSqft,
     basePricePerSqft: input.baseRatePerSqft,
     pricePerSqft: input.baseRatePerSqft,
     unitPrice: input.baseRatePerSqft,
