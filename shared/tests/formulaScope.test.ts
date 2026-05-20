@@ -142,6 +142,42 @@ describe("buildFormulaEvaluationScope — base_price alias sync", () => {
     expect(evalScope.base_price).toBe(8.75);
     expect(evalScope.custom_var).toBe(42);
   });
+
+  test("matrix variables cannot shadow protected tier variables", () => {
+    const scope = buildFormulaScope({
+      formula: "tier_base_price + original_base_price + effective_base_price",
+      orderedWidthIn: 24,
+      orderedHeightIn: 36,
+      trimAllowanceX: 0,
+      trimAllowanceY: 0,
+      finishedWidthIn: 24,
+      finishedHeightIn: 36,
+      quantity: 1,
+      baseRatePerSqft: 4.5,
+      originalBaseRate: 1,
+      tierBaseRate: 4.5,
+      effectiveBaseRate: 4.5,
+      sqftPerItem: 6,
+      totalSqft: 6,
+      linearFeet: 0,
+    });
+    const evalScope = buildFormulaEvaluationScope({
+      scope,
+      pricingMatrixVariables: {
+        base_price: 4.5,
+        tier_base_price: 999,
+        tier_rate: 999,
+        original_base_price: 999,
+        effective_base_price: 999,
+      },
+    });
+
+    expect(evalScope.base_price).toBe(4.5);
+    expect(evalScope.tier_base_price).toBe(4.5);
+    expect(evalScope.tier_rate).toBe(4.5);
+    expect(evalScope.original_base_price).toBe(1);
+    expect(evalScope.effective_base_price).toBe(4.5);
+  });
 });
 
 // ---------------------------------------------------------------------------

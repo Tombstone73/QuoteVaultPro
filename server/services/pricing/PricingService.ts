@@ -15,6 +15,7 @@ import type {
   OptionTreeV2, 
   LineItemOptionSelectionsV2,
   OptionRuntimeSelectionContext,
+  PricingV2Tier,
 } from '../../../shared/optionTreeV2';
 import { normalizeSelectionMap, resolveRuntimeVisibility } from '../../../shared/optionTreeV2Runtime';
 import {
@@ -28,6 +29,7 @@ import {
   extractProductOptionPricingMatrix,
   resolveProductOptionPricingMatrix,
   type ProductOptionPricingMatrixErrorDetail,
+  type ProductOptionPricingMatrixRow,
   type ProductOptionPricingMatrixResolution,
 } from '../../../shared/productOptionPricingMatrix';
 import { PBV2_PRICING_VARIABLES, type PricingVariableDefinition } from '../../../shared/pbv2/pricingVariableRegistry';
@@ -132,13 +134,17 @@ export type PBV2RuntimePricingSnapshot = {
 export type PBV2TierResolutionSnapshot = {
   quantity: number;
   enabled: boolean;
-  source: "pbv2_pricing_v2" | "legacy_price_breaks" | "none";
+  source: "matrix_row" | "pbv2_product" | "pbv2_pricing_v2" | "legacy_price_breaks" | "none";
   matchedTierId: string | null;
   matchedTierLabel: string | null;
   originalBaseRate: number;
   tierBaseRate: number | null;
   effectiveBaseRateBeforeMatrix: number;
   matrixBasePriceOverride: boolean;
+  matrixRowId?: string | null;
+  matrixStaticBaseRate?: number | null;
+  matrixStaticBaseRateUsedAsFallback?: boolean;
+  productTierFallbackUsed?: boolean;
   finalBaseRateUsed: number;
   warnings: Pbv2TierResolutionWarning[];
   capturedAt: string;
@@ -485,6 +491,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     explicitSelections: ruleValidatedSelections.selected,
     runtimeSelectionContext,
     pricingMatrixVariables: pricingMatrixResolution.variables,
+    pricingMatrixResolution,
     pricingProfileKey: product.pricingProfileKey,
     pricingProfileConfig: product.pricingProfileConfig,
     legacyPriceBreaks: product.priceBreaks as LegacyPriceBreaksConfig | null,
@@ -496,12 +503,16 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
       nestingVolumePricing: product.nestingVolumePricing,
     },
   });
+  const pricingMatrixVariablesForFormula = getPricingMatrixVariablesForFormula(
+    pricingMatrixResolution.variables,
+    baseDetails.tierResolution,
+  );
   const formulaBasePrice = calculateFormulaAwareBasePrice({
     treeJson: treeVersion.treeJson,
     product,
     baseDetails,
     quantity,
-    pricingMatrixVariables: pricingMatrixResolution.variables,
+    pricingMatrixVariables: pricingMatrixVariablesForFormula,
   });
   const basePriceCents = formulaBasePrice.basePriceCents;
   const pricingMethod = String(baseDetails.pricingProfileKey || "default");
@@ -697,6 +708,7 @@ export function evaluatePricingPreviewFromTree(input: {
     explicitSelections: ruleValidatedSelections.selected,
     runtimeSelectionContext,
     pricingMatrixVariables: pricingMatrixResolution.variables,
+    pricingMatrixResolution,
     pricingProfileKey: input.pricingProfileKey,
     pricingProfileConfig: input.pricingProfileConfig,
   });
@@ -716,13 +728,17 @@ export function evaluatePricingPreviewFromTree(input: {
   });
   let formulaBasePrice: FormulaAwareBasePriceResult;
   try {
+    const pricingMatrixVariablesForFormula = getPricingMatrixVariablesForFormula(
+      pricingMatrixResolution.variables,
+      baseDetails.tierResolution,
+    );
     formulaBasePrice = calculateFormulaAwareBasePrice({
       treeJson: input.treeJson,
       baseDetails,
       quantity,
       pricingFormulaOverride: input.pricingFormulaOverride,
       formulaVariables: input.formulaVariables,
-      pricingMatrixVariables: pricingMatrixResolution.variables,
+      pricingMatrixVariables: pricingMatrixVariablesForFormula,
     });
   } catch (error: any) {
     if (error?.code === 'PBV2_FORMULA_ERROR' && error?.debug) {
@@ -1230,6 +1246,7 @@ function calculateBasePrice(
     explicitSelections?: Record<string, any>;
     runtimeSelectionContext?: OptionRuntimeSelectionContext;
     pricingMatrixVariables?: Record<string, number>;
+    pricingMatrixResolution?: ProductOptionPricingMatrixResolution;
     pricingProfileKey?: string | null;
     pricingProfileConfig?: unknown;
     legacyPriceBreaks?: LegacyPriceBreaksConfig | null;
@@ -1245,6 +1262,49 @@ function calculateBasePrice(
   return calculateBasePriceDetails(tree, context, pricingContext).totalCents;
 }
 
+function isValidRateCents(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function dollarsFromCents(value: number): number {
+  return value / 100;
+}
+
+function getMatrixRowQtyTiers(row?: ProductOptionPricingMatrixRow): PricingV2Tier[] {
+  return Array.isArray(row?.qtyTiers) ? row.qtyTiers : [];
+}
+
+function getBestQtyTier(tiers: PricingV2Tier[], quantity: number): PricingV2Tier | null {
+  const validTiers = tiers
+    .filter((tier) => typeof tier?.minQty === "number" && Number.isFinite(tier.minQty) && tier.minQty > 0)
+    .sort((a, b) => Number(b.minQty) - Number(a.minQty));
+  return validTiers.find((tier) => quantity >= Number(tier.minQty)) ?? null;
+}
+
+function getTierIdentity(tier: PricingV2Tier | null): { id: string | null; label: string | null } {
+  if (!tier) return { id: null, label: null };
+  return {
+    id: typeof tier.id === "string" && tier.id.trim() ? tier.id.trim() : null,
+    label: typeof tier.label === "string" && tier.label.trim() ? tier.label.trim() : null,
+  };
+}
+
+function getPricingMatrixVariablesForFormula(
+  variables: Record<string, number>,
+  tierResolution: Pbv2TierResolution,
+): Record<string, number> {
+  if (
+    tierResolution.tierSource !== "matrix_row" ||
+    tierResolution.matrixStaticBaseRateUsedAsFallback ||
+    typeof variables.base_price !== "number"
+  ) {
+    return variables;
+  }
+
+  const { base_price: _staticBasePrice, ...rest } = variables;
+  return rest;
+}
+
 function calculateBasePriceDetails(
   tree: any,
   context: { widthIn: number; heightIn: number; quantity: number },
@@ -1252,6 +1312,7 @@ function calculateBasePriceDetails(
     explicitSelections?: Record<string, any>;
     runtimeSelectionContext?: OptionRuntimeSelectionContext;
     pricingMatrixVariables?: Record<string, number>;
+    pricingMatrixResolution?: ProductOptionPricingMatrixResolution;
     pricingProfileKey?: string | null;
     pricingProfileConfig?: unknown;
     legacyPriceBreaks?: LegacyPriceBreaksConfig | null;
@@ -1299,10 +1360,20 @@ function calculateBasePriceDetails(
     );
   }
 
-  const matrixBasePrice = pricingContext?.pricingMatrixVariables?.base_price;
+  const pricingMatrixVariables =
+    pricingContext?.pricingMatrixResolution?.variables
+    ?? pricingContext?.pricingMatrixVariables
+    ?? {};
+  const matchedMatrixRow = pricingContext?.pricingMatrixResolution?.matchedRow;
+  const matrixRowId = typeof matchedMatrixRow?.id === "string" && matchedMatrixRow.id.trim()
+    ? matchedMatrixRow.id.trim()
+    : null;
+  const matrixRowQtyTiers = getMatrixRowQtyTiers(matchedMatrixRow);
+  const hasMatrixRowQtyTiers = matrixRowQtyTiers.length > 0;
+  const matrixBasePrice = pricingMatrixVariables.base_price;
   const hasMatrixBasePrice = typeof matrixBasePrice === "number" && Number.isFinite(matrixBasePrice) && matrixBasePrice >= 0;
   const base = pricingV2.base && typeof pricingV2.base === 'object' ? pricingV2.base : {};
-  if (Object.keys(base).length === 0 && !hasMatrixBasePrice) {
+  if (Object.keys(base).length === 0 && !hasMatrixBasePrice && !hasMatrixRowQtyTiers) {
     throw new Error(
       'PBV2 tree base pricing (meta.pricingV2.base) not configured. Set at least one of: $/sqft, $/piece, or minimum charge.'
     );
@@ -1329,55 +1400,186 @@ function calculateBasePriceDetails(
   const finishedHeightIn = orderedHeightIn + trimAllowanceY;
   const sqftPerItem = finishedWidthIn > 0 && finishedHeightIn > 0 ? (finishedWidthIn * finishedHeightIn) / 144 : 0;
 
-  const resolvedBaseRates = resolvePricingV2BaseRates(
-    tree,
-    pricingContext?.explicitSelections,
-    {
-      widthIn: orderedWidthIn,
-      heightIn: orderedHeightIn,
-      quantity,
-      sqft: sqftPerItem,
-    },
-    {
-      runtimeSelectionContext: pricingContext?.runtimeSelectionContext,
-      legacyPriceBreaks: pricingContext?.legacyPriceBreaks,
-    }
-  );
-  perSqftCents = resolvedBaseRates.perSqftCents;
-  perPieceCents = resolvedBaseRates.perPieceCents;
-  minimumChargeCents = resolvedBaseRates.minimumChargeCents;
-  let tierResolution: Pbv2TierResolution = {
-    ...resolvedBaseRates.tierResolution,
-    warnings: [...resolvedBaseRates.tierResolution.warnings],
-  };
-
   let basePriceSource = hasMatrixBasePrice ? "pricing_matrix.base_price" : "pricingV2.base";
   let rateUsedSource = hasMatrixBasePrice ? "pricing_matrix.base_price" : "pricingV2.base";
-  if (hasMatrixBasePrice) {
-    perSqftCents = Math.round(matrixBasePrice * 100);
-    tierResolution = {
-      ...tierResolution,
-      matrixBasePriceOverride: true,
-      finalBaseRateUsed: matrixBasePrice,
-      warnings: [
-        ...tierResolution.warnings,
-        {
-          code: "PBV2_TIER_MATRIX_BASE_PRICE_OVERRIDE",
+  let tierResolution: Pbv2TierResolution;
+
+  if (hasMatrixRowQtyTiers) {
+    const matchedRowTier = getBestQtyTier(matrixRowQtyTiers, quantity);
+    const matchedTierIdentity = getTierIdentity(matchedRowTier);
+    const rowTierWarnings: Pbv2TierResolutionWarning[] = [];
+    const matrixStaticBaseRate = hasMatrixBasePrice ? matrixBasePrice : null;
+
+    if (matchedRowTier) {
+      let appliedRateField = false;
+      const rowTier = matchedRowTier as Record<string, unknown>;
+
+      if ("perSqftCents" in rowTier) {
+        if (isValidRateCents(rowTier.perSqftCents)) {
+          perSqftCents = rowTier.perSqftCents;
+          appliedRateField = true;
+        } else if (rowTier.perSqftCents !== undefined && rowTier.perSqftCents !== null) {
+          rowTierWarnings.push({
+            code: "PBV2_TIER_INVALID_RATE",
+            severity: "warning",
+            message: "Matched matrix row quantity tier has an invalid $/sq ft rate; base pricing fallback was used for $/sq ft.",
+            detail: { matrixRowId, tierId: matchedTierIdentity.id, field: "perSqftCents" },
+          });
+        }
+      }
+
+      if ("perPieceCents" in rowTier) {
+        if (isValidRateCents(rowTier.perPieceCents)) {
+          perPieceCents = rowTier.perPieceCents;
+          appliedRateField = true;
+        } else if (rowTier.perPieceCents !== undefined && rowTier.perPieceCents !== null) {
+          rowTierWarnings.push({
+            code: "PBV2_TIER_INVALID_RATE",
+            severity: "warning",
+            message: "Matched matrix row quantity tier has an invalid $/piece rate; base pricing fallback was used for $/piece.",
+            detail: { matrixRowId, tierId: matchedTierIdentity.id, field: "perPieceCents" },
+          });
+        }
+      }
+
+      if ("minimumChargeCents" in rowTier) {
+        if (isValidRateCents(rowTier.minimumChargeCents)) {
+          minimumChargeCents = rowTier.minimumChargeCents;
+          appliedRateField = true;
+        } else if (rowTier.minimumChargeCents !== undefined && rowTier.minimumChargeCents !== null) {
+          rowTierWarnings.push({
+            code: "PBV2_TIER_INVALID_RATE",
+            severity: "warning",
+            message: "Matched matrix row quantity tier has an invalid minimum charge; base pricing fallback was used for minimum charge.",
+            detail: { matrixRowId, tierId: matchedTierIdentity.id, field: "minimumChargeCents" },
+          });
+        }
+      }
+
+      if (!appliedRateField) {
+        rowTierWarnings.push({
+          code: "PBV2_TIER_INVALID_RATE",
           severity: "warning",
-          message: "Pricing matrix base_price explicitly overrode the tier-resolved base rate.",
-          detail: {
-            effectiveBaseRateBeforeMatrix: tierResolution.effectiveBaseRateBeforeMatrix,
-            matrixBasePrice: matrixBasePrice,
-          },
-        },
-      ],
-    };
+          message: "Matched matrix row quantity tier does not define a valid rate; base pricing fallback was used.",
+          detail: { matrixRowId, tierId: matchedTierIdentity.id },
+        });
+      }
+
+      basePriceSource = "pricing_matrix.row_qty_tier";
+      rateUsedSource = "pricing_matrix.row_qty_tier";
+      tierResolution = {
+        quantity,
+        tierSystemEnabled: true,
+        tierSource: "matrix_row",
+        matrixRowId,
+        matchedTierId: matchedTierIdentity.id,
+        matchedTierLabel: matchedTierIdentity.label,
+        originalBaseRate: dollarsFromCents(typeof base.perSqftCents === "number" ? base.perSqftCents : 0),
+        tierBaseRate: dollarsFromCents(perSqftCents),
+        effectiveBaseRateBeforeMatrix: dollarsFromCents(perSqftCents),
+        matrixBasePriceOverride: false,
+        matrixStaticBaseRate,
+        matrixStaticBaseRateUsedAsFallback: false,
+        productTierFallbackUsed: false,
+        finalBaseRateUsed: dollarsFromCents(perSqftCents),
+        warnings: rowTierWarnings,
+      };
+    } else {
+      const warnings: Pbv2TierResolutionWarning[] = [{
+        code: "PBV2_TIER_MATRIX_ROW_NO_MATCH",
+        severity: "warning",
+        message: "Matched pricing matrix row has quantity tiers, but no row-level tier matched the selected quantity.",
+        detail: { matrixRowId, quantity },
+      }];
+
+      if (hasMatrixBasePrice) {
+        perSqftCents = Math.round(matrixBasePrice * 100);
+        basePriceSource = "pricing_matrix.base_price_fallback";
+        rateUsedSource = "pricing_matrix.base_price_fallback";
+        warnings.push({
+          code: "PBV2_TIER_MATRIX_STATIC_BASE_FALLBACK",
+          severity: "warning",
+          message: "Static matrix base_price was used because no row-level quantity tier matched.",
+          detail: { matrixRowId, matrixBasePrice },
+        });
+      }
+
+      tierResolution = {
+        quantity,
+        tierSystemEnabled: true,
+        tierSource: "matrix_row",
+        matrixRowId,
+        matchedTierId: null,
+        matchedTierLabel: null,
+        originalBaseRate: dollarsFromCents(typeof base.perSqftCents === "number" ? base.perSqftCents : 0),
+        tierBaseRate: null,
+        effectiveBaseRateBeforeMatrix: dollarsFromCents(perSqftCents),
+        matrixBasePriceOverride: hasMatrixBasePrice,
+        matrixStaticBaseRate,
+        matrixStaticBaseRateUsedAsFallback: hasMatrixBasePrice,
+        productTierFallbackUsed: false,
+        finalBaseRateUsed: dollarsFromCents(perSqftCents),
+        warnings,
+      };
+    }
   } else {
+    const resolvedBaseRates = resolvePricingV2BaseRates(
+      tree,
+      pricingContext?.explicitSelections,
+      {
+        widthIn: orderedWidthIn,
+        heightIn: orderedHeightIn,
+        quantity,
+        sqft: sqftPerItem,
+      },
+      {
+        runtimeSelectionContext: pricingContext?.runtimeSelectionContext,
+        legacyPriceBreaks: pricingContext?.legacyPriceBreaks,
+      }
+    );
+    perSqftCents = resolvedBaseRates.perSqftCents;
+    perPieceCents = resolvedBaseRates.perPieceCents;
+    minimumChargeCents = resolvedBaseRates.minimumChargeCents;
     tierResolution = {
-      ...tierResolution,
-      matrixBasePriceOverride: false,
-      finalBaseRateUsed: perSqftCents / 100,
+      ...resolvedBaseRates.tierResolution,
+      matrixRowId,
+      matrixStaticBaseRate: hasMatrixBasePrice ? matrixBasePrice : null,
+      matrixStaticBaseRateUsedAsFallback: false,
+      productTierFallbackUsed: Boolean(matchedMatrixRow)
+        && (
+          resolvedBaseRates.tierResolution.tierSource === "pbv2_product"
+          || resolvedBaseRates.tierResolution.tierSource === "pbv2_pricing_v2"
+        ),
+      warnings: [...resolvedBaseRates.tierResolution.warnings],
     };
+
+    if (hasMatrixBasePrice) {
+      perSqftCents = Math.round(matrixBasePrice * 100);
+      tierResolution = {
+        ...tierResolution,
+        matrixBasePriceOverride: true,
+        finalBaseRateUsed: matrixBasePrice,
+        warnings: [
+          ...tierResolution.warnings,
+          {
+            code: "PBV2_TIER_MATRIX_BASE_PRICE_OVERRIDE",
+            severity: "warning",
+            message: "Pricing matrix base_price explicitly overrode the tier-resolved base rate.",
+            detail: {
+              effectiveBaseRateBeforeMatrix: tierResolution.effectiveBaseRateBeforeMatrix,
+              matrixBasePrice: matrixBasePrice,
+              matrixRowId,
+            },
+          },
+        ],
+      };
+    } else {
+      tierResolution = {
+        ...tierResolution,
+        matrixBasePriceOverride: false,
+        finalBaseRateUsed: perSqftCents / 100,
+      };
+    }
   }
 
   if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0) {
@@ -1735,6 +1937,10 @@ function buildTierResolutionSnapshot(
     tierBaseRate: tierResolution.tierBaseRate,
     effectiveBaseRateBeforeMatrix: tierResolution.effectiveBaseRateBeforeMatrix,
     matrixBasePriceOverride: tierResolution.matrixBasePriceOverride,
+    matrixRowId: tierResolution.matrixRowId,
+    matrixStaticBaseRate: tierResolution.matrixStaticBaseRate,
+    matrixStaticBaseRateUsedAsFallback: tierResolution.matrixStaticBaseRateUsedAsFallback,
+    productTierFallbackUsed: tierResolution.productTierFallbackUsed,
     finalBaseRateUsed: tierResolution.finalBaseRateUsed,
     warnings: tierResolution.warnings,
     capturedAt,
@@ -1807,8 +2013,8 @@ function buildRuntimePricingSnapshot(input: {
     ...(tierResolution
       ? { tierResolution: buildTierResolutionSnapshot(tierResolution, input.capturedAt) }
       : {}),
-    basePriceSource: hasMatrixBasePrice ? "pricing_matrix.base_price" : (input.baseDetails?.basePriceSource ?? "pricingV2.base"),
-    rateUsedSource: hasMatrixBasePrice ? "pricing_matrix.base_price" : (input.baseDetails?.rateUsedSource ?? "pricingV2.base"),
+    basePriceSource: input.baseDetails?.basePriceSource ?? (hasMatrixBasePrice ? "pricing_matrix.base_price" : "pricingV2.base"),
+    rateUsedSource: input.baseDetails?.rateUsedSource ?? (hasMatrixBasePrice ? "pricing_matrix.base_price" : "pricingV2.base"),
     minimumApplied: input.formulaBasePrice?.minimumApplied ?? input.baseDetails?.minimumApplied ?? false,
     formulaScopeUsed: formulaDebug.variables,
     calculatedPrice: input.calculatedPriceCents / 100,

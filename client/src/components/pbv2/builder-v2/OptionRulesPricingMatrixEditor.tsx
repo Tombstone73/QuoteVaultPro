@@ -11,6 +11,7 @@ import {
   isProductOptionPricingMatrixCurrencyVariable,
   type ProductOptionPricingMatrix,
 } from "@shared/productOptionPricingMatrix";
+import type { PricingV2Tier } from "@shared/optionTreeV2";
 
 type OptionKey = {
   selectionKey: string;
@@ -23,6 +24,8 @@ type MatrixVariable = {
   key: string;
   value: string;
 };
+
+type MatrixRowQtyTier = PricingV2Tier;
 
 const CONDITION_OPERATORS = ["equals", "not_equals", "in", "not_in", "exists", "not_exists"] as const;
 const CONDITION_GROUPS = ["all", "any"] as const;
@@ -185,6 +188,31 @@ function variablesToRecord(variables: MatrixVariable[]) {
   return out;
 }
 
+function getRowQtyTiers(row: any): MatrixRowQtyTier[] {
+  return Array.isArray(row?.qtyTiers) ? row.qtyTiers : [];
+}
+
+function makeRowQtyTier(): MatrixRowQtyTier {
+  return {
+    id: `row_tier_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+    minQty: 1,
+  };
+}
+
+function rowHasStaticBasePrice(variables: MatrixVariable[]): boolean {
+  return variables.some((variable) => variable.key.trim() === MATRIX_VARIABLE_KEY_DEFAULT && variable.value.trim() !== "");
+}
+
+function currencyInputToOptionalCents(value: string): number | undefined {
+  if (value.trim() === "") return undefined;
+  const cents = currencyInputToCents(value);
+  return typeof cents === "number" && Number.isFinite(cents) ? cents : undefined;
+}
+
+function centsToTierInput(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) ? centsToCurrencyInput(value) : "";
+}
+
 type MatrixVariableInputProps = {
   variableValue: string;
   onCommit: (raw: string) => void;
@@ -219,6 +247,113 @@ function MatrixVariableInput({ variableValue, onCommit }: MatrixVariableInputPro
       }}
       className="bg-[#1e293b] border-slate-600 text-slate-100"
     />
+  );
+}
+
+function RowQuantityTiersEditor({
+  tiers,
+  hasStaticBasePrice,
+  onChange,
+}: {
+  tiers: MatrixRowQtyTier[];
+  hasStaticBasePrice: boolean;
+  onChange: (tiers: MatrixRowQtyTier[]) => void;
+}) {
+  const updateTier = (index: number, patch: Partial<MatrixRowQtyTier>) => {
+    onChange(tiers.map((tier, tierIndex) => (tierIndex === index ? { ...tier, ...patch } : tier)));
+  };
+
+  return (
+    <details className="rounded-md border border-slate-700 bg-[#111827]">
+      <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-slate-200">
+        Quantity Tiers{tiers.length > 0 ? ` (${tiers.length})` : ""}
+      </summary>
+      <div className="space-y-3 border-t border-slate-700 px-3 py-3">
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-100">
+          Row-level quantity tiers override product-level PBV2 quantity tiers for this row.
+        </div>
+        {hasStaticBasePrice && tiers.length > 0 ? (
+          <div className="text-xs text-slate-400">
+            Static base_price is used only when no row-level tier matches.
+          </div>
+        ) : null}
+
+        {tiers.length > 0 ? (
+          <div className="space-y-2">
+            <div className="grid grid-cols-[90px_1fr_1fr_1fr_32px] gap-2 text-[11px] uppercase tracking-wide text-slate-500">
+              <div>Min Qty</div>
+              <div>$/sq ft</div>
+              <div>$/piece</div>
+              <div>Min $</div>
+              <div />
+            </div>
+            {tiers.map((tier, index) => (
+              <div key={tier.id ?? index} className="grid grid-cols-[90px_1fr_1fr_1fr_32px] gap-2 items-center">
+                <Input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={tier.minQty ?? ""}
+                  onChange={(event) => {
+                    const parsed = Number(event.target.value);
+                    updateTier(index, {
+                      minQty: Number.isFinite(parsed) ? Math.max(1, Math.round(parsed)) : undefined,
+                    });
+                  }}
+                  className="bg-[#1e293b] border-slate-600 text-slate-100"
+                />
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={centsToTierInput(tier.perSqftCents)}
+                  onChange={(event) => updateTier(index, { perSqftCents: currencyInputToOptionalCents(event.target.value) })}
+                  className="bg-[#1e293b] border-slate-600 text-slate-100"
+                />
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={centsToTierInput(tier.perPieceCents)}
+                  onChange={(event) => updateTier(index, { perPieceCents: currencyInputToOptionalCents(event.target.value) })}
+                  className="bg-[#1e293b] border-slate-600 text-slate-100"
+                />
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={centsToTierInput(tier.minimumChargeCents)}
+                  onChange={(event) => updateTier(index, { minimumChargeCents: currencyInputToOptionalCents(event.target.value) })}
+                  className="bg-[#1e293b] border-slate-600 text-slate-100"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => onChange(tiers.filter((_, tierIndex) => tierIndex !== index))}
+                  className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-xs text-slate-500">No row-level quantity tiers.</div>
+        )}
+
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={() => onChange([...tiers, makeRowQtyTier()])}
+          className="gap-1.5 text-xs"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add Tier
+        </Button>
+      </div>
+    </details>
   );
 }
 
@@ -611,8 +746,18 @@ export function OptionRulesPricingMatrixEditor({
                   {pricingMatrix.rows.map((row: any, rowIndex) => {
                     const match = asRecord(row.when) ?? asRecord(row.match) ?? asRecord(row.combination) ?? {};
                     const variables = normalizeMatrixVariables(row.variables ?? row.values);
+                    const qtyTiers = getRowQtyTiers(row);
+                    const hasRowQtyTiers = qtyTiers.length > 0;
+                    const hasStaticBasePrice = rowHasStaticBasePrice(variables);
                     return (
                       <div key={rowIndex} className="rounded-md border border-slate-700 bg-[#0f172a] p-3 space-y-3">
+                        {hasRowQtyTiers ? (
+                          <div className="flex items-center justify-end">
+                            <span className="rounded border border-cyan-400/30 bg-cyan-400/10 px-2 py-0.5 text-[11px] font-medium text-cyan-200">
+                              Row Qty Tiers ({qtyTiers.length})
+                            </span>
+                          </div>
+                        ) : null}
                         <div className="flex items-start gap-2">
                           <div className="flex-1 grid gap-2" style={{ gridTemplateColumns: `repeat(${Math.max(pricingMatrix.dimensions.length, 1)}, minmax(0, 1fr))` }}>
                             {pricingMatrix.dimensions.map((dimension) => (
@@ -702,6 +847,20 @@ export function OptionRulesPricingMatrixEditor({
                             Add Variable
                           </Button>
                         </div>
+                        <RowQuantityTiersEditor
+                          tiers={qtyTiers}
+                          hasStaticBasePrice={hasStaticBasePrice}
+                          onChange={(nextQtyTiers) => {
+                            const rows = [...pricingMatrix.rows];
+                            rows[rowIndex] = {
+                              ...row,
+                              when: match,
+                              variables: variablesToRecord(variables),
+                              qtyTiers: nextQtyTiers.length > 0 ? nextQtyTiers : undefined,
+                            };
+                            updateMatrix({ ...pricingMatrix, rows });
+                          }}
+                        />
                       </div>
                     );
                   })}
