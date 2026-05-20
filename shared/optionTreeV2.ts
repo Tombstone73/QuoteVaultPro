@@ -136,8 +136,11 @@ export type PricingV2Base = {
   minimumChargeCents?: number;
 };
 
+export type Pbv2TierBasis = "line_item_quantity" | "computed_sheet_usage";
+
 export type PricingV2 = {
   unitSystem?: "imperial" | "metric";
+  tierBasis?: Pbv2TierBasis;
   base?: PricingV2Base;
   qtyTiers?: PricingV2Tier[];
   sqftTiers?: PricingV2Tier[];
@@ -343,8 +346,11 @@ export const pricingV2BaseSchema: z.ZodType<PricingV2Base> = z.object({
   minimumChargeCents: z.number().int().min(0).optional(),
 });
 
+export const pbv2TierBasisSchema: z.ZodType<Pbv2TierBasis> = z.enum(["line_item_quantity", "computed_sheet_usage"]);
+
 export const pricingV2Schema: z.ZodType<PricingV2> = z.object({
   unitSystem: z.enum(["imperial", "metric"]).optional(),
+  tierBasis: pbv2TierBasisSchema.optional(),
   base: pricingV2BaseSchema.optional(),
   qtyTiers: z.array(pricingV2TierSchema).optional(),
   sqftTiers: z.array(pricingV2TierSchema).optional(),

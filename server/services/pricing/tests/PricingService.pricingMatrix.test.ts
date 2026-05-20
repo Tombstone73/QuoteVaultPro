@@ -117,11 +117,13 @@ function runPreview(
   formula = acmFormula,
   quantity = 1,
   formulaVariablesOverride: Record<string, number> = formulaVariables,
+  widthIn = 24,
+  heightIn = 36,
 ) {
   return evaluatePricingPreviewFromTree({
     treeJson,
-    widthIn: 24,
-    heightIn: 36,
+    widthIn,
+    heightIn,
     quantity,
     pbv2ExplicitSelections: selections,
     pricingFormulaOverride: formula,
@@ -243,6 +245,9 @@ describe("PricingService pricing matrix variable resolution", () => {
       source: "none",
       originalBaseRate: 1,
       effectiveBaseRateBeforeMatrix: 1,
+      tierBasis: "line_item_quantity",
+      tierBasisValue: 1,
+      tierBasisResolvedFrom: "default",
       finalBaseRateUsed: 1,
     }));
   });
@@ -273,6 +278,9 @@ describe("PricingService pricing matrix variable resolution", () => {
       tierBaseRate: 0.8,
       effectiveBaseRateBeforeMatrix: 0.8,
       matrixBasePriceOverride: false,
+      tierBasis: "line_item_quantity",
+      tierBasisValue: 5,
+      tierBasisResolvedFrom: "default",
       finalBaseRateUsed: 0.8,
     }));
   });
@@ -337,8 +345,132 @@ describe("PricingService pricing matrix variable resolution", () => {
       matrixStaticBaseRate: 5,
       matrixStaticBaseRateUsedAsFallback: false,
       productTierFallbackUsed: false,
+      tierBasis: "line_item_quantity",
+      tierBasisValue: 10,
+      tierBasisResolvedFrom: "default",
       finalBaseRateUsed: 4.5,
     }));
+  });
+
+  test("product-level computed sheet usage basis is used for PBV2 quantity tiers", () => {
+    const tree = makeAcmTree(null);
+    delete (tree as any).pricingMatrix;
+    (tree as any).meta.pricingV2.tierBasis = "computed_sheet_usage";
+    (tree as any).meta.pricingV2.qtyTiers = [
+      { id: "sheet_usage_2", minQty: 2, perSqftCents: 80 },
+    ];
+
+    const result = runPreview(
+      tree,
+      {},
+      "sqft * base_price * q",
+      21,
+      formulaVariables
+    );
+
+    expect(result.totalPrice).toBeCloseTo(100.8, 2);
+    expect(result.debug?.variables.base_price).toBe(0.8);
+    expect(result.debug?.tierResolution).toEqual(expect.objectContaining({
+      source: "pbv2_product",
+      matchedTierId: "sheet_usage_2",
+      tierBasis: "computed_sheet_usage",
+      tierBasisResolvedFrom: "product",
+      lineItemQuantity: 21,
+      computedSheetUsageAvailable: true,
+      computedSheetUsageMode: "sheet_equivalent",
+      fallbackToLineItemQuantity: false,
+    }));
+    expect(result.debug?.tierResolution?.tierBasisValue).toBeGreaterThanOrEqual(1);
+    expect(result.debug?.tierResolution?.tierBasisValue).toBeLessThan(21);
+  });
+
+  test("matrix-row computed sheet usage basis overrides product tier basis", () => {
+    const tree = makeAcmTree({
+      dimensions: ["thickness"],
+      rows: [
+        {
+          id: "3mm",
+          when: { thickness: "3mm" },
+          variables: { base_price: 500 },
+          tierBasis: "computed_sheet_usage",
+          qtyTiers: [{ id: "row_tier_10", minQty: 10, perSqftCents: 450 }],
+        },
+      ],
+    });
+    (tree as any).meta.pricingV2.tierBasis = "line_item_quantity";
+
+    const result = runPreview(
+      tree,
+      { thickness: { value: "3mm" } },
+      "sqft * base_price * q",
+      21,
+      formulaVariables
+    );
+
+    expect(result.totalPrice).toBeCloseTo(630, 2);
+    expect(result.debug?.variables.base_price).toBe(5);
+    expect(result.debug?.tierResolution).toEqual(expect.objectContaining({
+      source: "matrix_row",
+      matrixRowId: "3mm",
+      matchedTierId: null,
+      matrixStaticBaseRate: 5,
+      matrixStaticBaseRateUsedAsFallback: true,
+      tierBasis: "computed_sheet_usage",
+      tierBasisResolvedFrom: "matrix_row",
+      lineItemQuantity: 21,
+      computedSheetUsageAvailable: true,
+      computedSheetUsageMode: "sheet_equivalent",
+      fallbackToLineItemQuantity: false,
+      finalBaseRateUsed: 5,
+    }));
+    expect(result.debug?.tierResolution?.tierBasisValue).toBeGreaterThanOrEqual(2);
+    expect(result.debug?.tierResolution?.tierBasisValue).toBeLessThan(10);
+    expect(result.debug?.tierResolution?.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "PBV2_TIER_MATRIX_ROW_BASIS_OVERRIDES_PRODUCT" }),
+        expect.objectContaining({ code: "PBV2_TIER_MATRIX_ROW_NO_MATCH" }),
+        expect.objectContaining({ code: "PBV2_TIER_MATRIX_STATIC_BASE_FALLBACK" }),
+      ])
+    );
+  });
+
+  test("computed sheet usage unavailable falls back to line item quantity with warnings", () => {
+    const tree = makeAcmTree(null);
+    delete (tree as any).pricingMatrix;
+    delete (tree as any).meta.formulaVariables;
+    (tree as any).meta.pricingV2.tierBasis = "computed_sheet_usage";
+    (tree as any).meta.pricingV2.qtyTiers = [
+      { id: "line_fallback_5", minQty: 5, perSqftCents: 80 },
+    ];
+
+    const result = runPreview(
+      tree,
+      {},
+      "sqft * base_price * q",
+      5,
+      {},
+    );
+
+    expect(result.totalPrice).toBeCloseTo(24, 2);
+    expect(result.debug?.tierResolution).toEqual(expect.objectContaining({
+      source: "pbv2_product",
+      matchedTierId: "line_fallback_5",
+      tierBasis: "computed_sheet_usage",
+      tierBasisValue: 5,
+      tierBasisResolvedFrom: "product",
+      lineItemQuantity: 5,
+      computedSheetUsage: null,
+      computedSheetUsageAvailable: false,
+      computedSheetUsageMode: "unavailable",
+      fallbackToLineItemQuantity: true,
+      finalBaseRateUsed: 0.8,
+    }));
+    expect(result.debug?.tierResolution?.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "PBV2_TIER_COMPUTED_SHEET_USAGE_UNAVAILABLE" }),
+        expect.objectContaining({ code: "PBV2_TIER_FALLBACK_LINE_ITEM_QUANTITY" }),
+      ])
+    );
   });
 
   test("different matrix rows can resolve different row-level qty tier rates", () => {

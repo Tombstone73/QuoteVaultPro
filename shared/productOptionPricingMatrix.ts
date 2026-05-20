@@ -1,4 +1,4 @@
-import type { LineItemOptionSelectionsV2, PricingV2Tier } from "./optionTreeV2";
+import type { LineItemOptionSelectionsV2, Pbv2TierBasis, PricingV2Tier } from "./optionTreeV2";
 import { normalizeSelectionMap } from "./optionTreeV2Runtime";
 
 export type ProductOptionPricingMatrixRow = {
@@ -9,6 +9,7 @@ export type ProductOptionPricingMatrixRow = {
   variables?: Record<string, unknown>;
   values?: Record<string, unknown>;
   qtyTiers?: PricingV2Tier[];
+  tierBasis?: Pbv2TierBasis | "product_default";
 };
 
 export type ProductOptionPricingMatrix = {

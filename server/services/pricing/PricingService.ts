@@ -15,6 +15,7 @@ import type {
   OptionTreeV2, 
   LineItemOptionSelectionsV2,
   OptionRuntimeSelectionContext,
+  Pbv2TierBasis,
   PricingV2Tier,
 } from '../../../shared/optionTreeV2';
 import { normalizeSelectionMap, resolveRuntimeVisibility } from '../../../shared/optionTreeV2Runtime';
@@ -145,6 +146,14 @@ export type PBV2TierResolutionSnapshot = {
   matrixStaticBaseRate?: number | null;
   matrixStaticBaseRateUsedAsFallback?: boolean;
   productTierFallbackUsed?: boolean;
+  tierBasis?: Pbv2TierBasis;
+  tierBasisValue?: number;
+  tierBasisResolvedFrom?: "matrix_row" | "product" | "default";
+  lineItemQuantity?: number;
+  computedSheetUsage?: number | null;
+  computedSheetUsageAvailable?: boolean;
+  computedSheetUsageMode?: "exact_flat_goods" | "sheet_equivalent" | "unavailable";
+  fallbackToLineItemQuantity?: boolean;
   finalBaseRateUsed: number;
   warnings: Pbv2TierResolutionWarning[];
   capturedAt: string;
@@ -711,6 +720,7 @@ export function evaluatePricingPreviewFromTree(input: {
     pricingMatrixResolution,
     pricingProfileKey: input.pricingProfileKey,
     pricingProfileConfig: input.pricingProfileConfig,
+    formulaVariables: input.formulaVariables,
   });
   const pricingMethod = String(baseDetails.pricingProfileKey || "default");
   const weightDebug = buildPricingPreviewWeightDebug({
@@ -1249,6 +1259,7 @@ function calculateBasePrice(
     pricingMatrixResolution?: ProductOptionPricingMatrixResolution;
     pricingProfileKey?: string | null;
     pricingProfileConfig?: unknown;
+    formulaVariables?: Record<string, number>;
     legacyPriceBreaks?: LegacyPriceBreaksConfig | null;
     productLegacy?: {
       sheetWidth?: string | null;
@@ -1305,6 +1316,304 @@ function getPricingMatrixVariablesForFormula(
   return rest;
 }
 
+type TierBasisResolvedFrom = "matrix_row" | "product" | "default";
+type ComputedSheetUsageMode = "exact_flat_goods" | "sheet_equivalent" | "unavailable";
+
+type TierBasisState = {
+  tierBasis: Pbv2TierBasis;
+  tierBasisValue: number;
+  tierBasisResolvedFrom: TierBasisResolvedFrom;
+  lineItemQuantity: number;
+  computedSheetUsage: number | null;
+  computedSheetUsageAvailable: boolean;
+  computedSheetUsageMode: ComputedSheetUsageMode;
+  fallbackToLineItemQuantity: boolean;
+  warnings: Pbv2TierResolutionWarning[];
+};
+
+function isPbv2TierBasis(value: unknown): value is Pbv2TierBasis {
+  return value === "line_item_quantity" || value === "computed_sheet_usage";
+}
+
+function getFiniteNumberFromRecord(record: Record<string, unknown>, key: string): number | null {
+  const value = Number(record[key]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function getFormulaVariableRecord(
+  meta: Record<string, unknown>,
+  activeProfileConfig: FlatGoodsConfig | null,
+  pricingMatrixVariables: Record<string, number>,
+  explicitFormulaVariables?: Record<string, number>,
+): Record<string, number> {
+  const sources = [
+    (meta as any).formulaVariables,
+    (meta as any).pricingFormulaVariables,
+    (activeProfileConfig as any)?.formulaVariables,
+    explicitFormulaVariables,
+  ];
+  const out: Record<string, number> = {};
+  for (const source of sources) {
+    if (!source || typeof source !== "object" || Array.isArray(source)) continue;
+    for (const [key, rawValue] of Object.entries(source as Record<string, unknown>)) {
+      const value = Number(rawValue);
+      if (key && Number.isFinite(value)) out[key] = value;
+    }
+  }
+  for (const [key, value] of Object.entries(pricingMatrixVariables)) {
+    if (Number.isFinite(value)) out[key] = value;
+  }
+  return out;
+}
+
+function resolveComputedSheetUsage(input: {
+  meta: Record<string, unknown>;
+  activePricingProfileKey: string;
+  activeProfileConfig: FlatGoodsConfig | null;
+  productLegacy: {
+    sheetWidth?: string | null;
+    sheetHeight?: string | null;
+    materialType?: "sheet" | "roll" | null;
+    minPricePerItem?: string | null;
+    nestingVolumePricing?: any;
+  };
+  pricingMatrixVariables: Record<string, number>;
+  formulaVariables?: Record<string, number>;
+  orderedWidthIn: number;
+  orderedHeightIn: number;
+  finishedWidthIn: number;
+  finishedHeightIn: number;
+  quantity: number;
+}): {
+  value: number | null;
+  available: boolean;
+  mode: ComputedSheetUsageMode;
+  warnings: Pbv2TierResolutionWarning[];
+} {
+  const warnings: Pbv2TierResolutionWarning[] = [];
+
+  if (input.activePricingProfileKey === "flat_goods" && input.productLegacy.materialType !== "roll") {
+    try {
+      const flatGoodsInput = buildFlatGoodsInput(
+        input.activeProfileConfig,
+        input.productLegacy,
+        { basePricePerSqft: "1" },
+        input.finishedWidthIn,
+        input.finishedHeightIn,
+        input.quantity,
+        null,
+      );
+
+      const flatGoodsResult = flatGoodsCalculator(
+        flatGoodsInput,
+        (sheetWidth, sheetHeight, sheetCost, minPricePerItem, volumePricing, allowRotation) =>
+          new NestingCalculator(
+            sheetWidth,
+            sheetHeight,
+            sheetCost,
+            minPricePerItem,
+            volumePricing,
+            null,
+            allowRotation ?? true,
+          ),
+      );
+
+      if (flatGoodsResult.error) {
+        warnings.push({
+          code: "PBV2_TIER_COMPUTED_SHEET_USAGE_FAILED",
+          severity: "warning",
+          message: "Computed sheet usage could not use flat-goods nesting.",
+          detail: { error: flatGoodsResult.error },
+        });
+      } else if (Number.isFinite(flatGoodsResult.sheetCount) && flatGoodsResult.sheetCount > 0) {
+        return {
+          value: flatGoodsResult.sheetCount,
+          available: true,
+          mode: "exact_flat_goods",
+          warnings,
+        };
+      } else {
+        warnings.push({
+          code: "PBV2_TIER_COMPUTED_SHEET_USAGE_INVALID",
+          severity: "warning",
+          message: "Computed flat-goods sheet usage was zero or invalid.",
+          detail: { sheetCount: flatGoodsResult.sheetCount },
+        });
+      }
+    } catch (error: any) {
+      warnings.push({
+        code: "PBV2_TIER_COMPUTED_SHEET_USAGE_FAILED",
+        severity: "warning",
+        message: "Computed sheet usage calculation failed while running flat-goods nesting.",
+        detail: { error: error?.message ?? String(error) },
+      });
+    }
+  }
+
+  const formulaVariables = getFormulaVariableRecord(
+    input.meta,
+    input.activeProfileConfig,
+    input.pricingMatrixVariables,
+    input.formulaVariables,
+  );
+  const sheetWidth = getFiniteNumberFromRecord(formulaVariables, "sheet_width");
+  const sheetLength = getFiniteNumberFromRecord(formulaVariables, "sheet_length");
+  const usableDropMin = getFiniteNumberFromRecord(formulaVariables, "usable_drop_min");
+  const billableLengthIncrement = getFiniteNumberFromRecord(formulaVariables, "billable_length_increment");
+  const minimumBillableSqft = getFiniteNumberFromRecord(formulaVariables, "minimum_billable_sqft");
+
+  if (
+    sheetWidth === null ||
+    sheetLength === null ||
+    usableDropMin === null ||
+    billableLengthIncrement === null ||
+    minimumBillableSqft === null
+  ) {
+    warnings.push({
+      code: "PBV2_TIER_COMPUTED_SHEET_USAGE_UNAVAILABLE",
+      severity: "warning",
+      message: "Computed sheet usage was selected, but required sheet consumption variables are not available.",
+      detail: {
+        requiredVariables: [
+          "sheet_width",
+          "sheet_length",
+          "usable_drop_min",
+          "billable_length_increment",
+          "minimum_billable_sqft",
+        ],
+      },
+    });
+    return { value: null, available: false, mode: "unavailable", warnings };
+  }
+
+  try {
+    const consumedSqft = sheetConsumptionSqft(
+      input.orderedWidthIn,
+      input.orderedHeightIn,
+      input.quantity,
+      sheetWidth,
+      sheetLength,
+      usableDropMin,
+      billableLengthIncrement,
+      minimumBillableSqft,
+    );
+    const sheetAreaSqft = (sheetWidth * sheetLength) / 144;
+    const sheetUsage = sheetAreaSqft > 0 ? consumedSqft / sheetAreaSqft : NaN;
+
+    if (!Number.isFinite(sheetUsage) || sheetUsage <= 0) {
+      warnings.push({
+        code: "PBV2_TIER_COMPUTED_SHEET_USAGE_INVALID",
+        severity: "warning",
+        message: "Computed sheet-equivalent usage was zero or invalid.",
+        detail: { consumedSqft, sheetAreaSqft },
+      });
+      return { value: null, available: false, mode: "unavailable", warnings };
+    }
+
+    return {
+      value: sheetUsage,
+      available: true,
+      mode: "sheet_equivalent",
+      warnings,
+    };
+  } catch (error: any) {
+    warnings.push({
+      code: "PBV2_TIER_COMPUTED_SHEET_USAGE_FAILED",
+      severity: "warning",
+      message: "Computed sheet usage calculation failed while running sheet consumption.",
+      detail: { error: error?.message ?? String(error) },
+    });
+    return { value: null, available: false, mode: "unavailable", warnings };
+  }
+}
+
+function resolveTierBasisState(input: {
+  pricingV2: Record<string, unknown>;
+  matchedMatrixRow?: ProductOptionPricingMatrixRow;
+  meta: Record<string, unknown>;
+  activePricingProfileKey: string;
+  activeProfileConfig: FlatGoodsConfig | null;
+  productLegacy: {
+    sheetWidth?: string | null;
+    sheetHeight?: string | null;
+    materialType?: "sheet" | "roll" | null;
+    minPricePerItem?: string | null;
+    nestingVolumePricing?: any;
+  };
+  pricingMatrixVariables: Record<string, number>;
+  formulaVariables?: Record<string, number>;
+  orderedWidthIn: number;
+  orderedHeightIn: number;
+  finishedWidthIn: number;
+  finishedHeightIn: number;
+  quantity: number;
+}): TierBasisState {
+  const warnings: Pbv2TierResolutionWarning[] = [];
+  const rowBasisRaw = input.matchedMatrixRow?.tierBasis;
+  const productBasisRaw = input.pricingV2.tierBasis;
+  const productBasis = isPbv2TierBasis(productBasisRaw) ? productBasisRaw : null;
+  const rowBasis = isPbv2TierBasis(rowBasisRaw) ? rowBasisRaw : null;
+  const tierBasis = rowBasis ?? productBasis ?? "line_item_quantity";
+  const tierBasisResolvedFrom: TierBasisResolvedFrom = rowBasis ? "matrix_row" : productBasis ? "product" : "default";
+
+  if (rowBasis && productBasis && rowBasis !== productBasis) {
+    warnings.push({
+      code: "PBV2_TIER_MATRIX_ROW_BASIS_OVERRIDES_PRODUCT",
+      severity: "warning",
+      message: "Matrix row tier basis overrides the product-level tier basis for this row.",
+      detail: { rowBasis, productBasis, matrixRowId: input.matchedMatrixRow?.id ?? null },
+    });
+  }
+
+  if (tierBasis === "line_item_quantity") {
+    return {
+      tierBasis,
+      tierBasisValue: input.quantity,
+      tierBasisResolvedFrom,
+      lineItemQuantity: input.quantity,
+      computedSheetUsage: null,
+      computedSheetUsageAvailable: false,
+      computedSheetUsageMode: "unavailable",
+      fallbackToLineItemQuantity: false,
+      warnings,
+    };
+  }
+
+  const computed = resolveComputedSheetUsage(input);
+  warnings.push(...computed.warnings);
+  if (computed.available && computed.value !== null && Number.isFinite(computed.value) && computed.value > 0) {
+    return {
+      tierBasis,
+      tierBasisValue: computed.value,
+      tierBasisResolvedFrom,
+      lineItemQuantity: input.quantity,
+      computedSheetUsage: computed.value,
+      computedSheetUsageAvailable: true,
+      computedSheetUsageMode: computed.mode,
+      fallbackToLineItemQuantity: false,
+      warnings,
+    };
+  }
+
+  warnings.push({
+    code: "PBV2_TIER_FALLBACK_LINE_ITEM_QUANTITY",
+    severity: "warning",
+    message: "Falling back to line item quantity because computed sheet usage is unavailable.",
+    detail: { lineItemQuantity: input.quantity },
+  });
+  return {
+    tierBasis,
+    tierBasisValue: input.quantity,
+    tierBasisResolvedFrom,
+    lineItemQuantity: input.quantity,
+    computedSheetUsage: computed.value,
+    computedSheetUsageAvailable: false,
+    computedSheetUsageMode: "unavailable",
+    fallbackToLineItemQuantity: true,
+    warnings,
+  };
+}
+
 function calculateBasePriceDetails(
   tree: any,
   context: { widthIn: number; heightIn: number; quantity: number },
@@ -1315,6 +1624,7 @@ function calculateBasePriceDetails(
     pricingMatrixResolution?: ProductOptionPricingMatrixResolution;
     pricingProfileKey?: string | null;
     pricingProfileConfig?: unknown;
+    formulaVariables?: Record<string, number>;
     legacyPriceBreaks?: LegacyPriceBreaksConfig | null;
     productLegacy?: {
       sheetWidth?: string | null;
@@ -1399,13 +1709,29 @@ function calculateBasePriceDetails(
   const finishedWidthIn = orderedWidthIn + trimAllowanceX;
   const finishedHeightIn = orderedHeightIn + trimAllowanceY;
   const sqftPerItem = finishedWidthIn > 0 && finishedHeightIn > 0 ? (finishedWidthIn * finishedHeightIn) / 144 : 0;
+  const productLegacy = pricingContext?.productLegacy ?? {};
+  const tierBasisState = resolveTierBasisState({
+    pricingV2: pricingV2 as Record<string, unknown>,
+    matchedMatrixRow,
+    meta: meta as Record<string, unknown>,
+    activePricingProfileKey,
+    activeProfileConfig,
+    productLegacy,
+    pricingMatrixVariables,
+    formulaVariables: pricingContext?.formulaVariables,
+    orderedWidthIn,
+    orderedHeightIn,
+    finishedWidthIn,
+    finishedHeightIn,
+    quantity,
+  });
 
   let basePriceSource = hasMatrixBasePrice ? "pricing_matrix.base_price" : "pricingV2.base";
   let rateUsedSource = hasMatrixBasePrice ? "pricing_matrix.base_price" : "pricingV2.base";
   let tierResolution: Pbv2TierResolution;
 
   if (hasMatrixRowQtyTiers) {
-    const matchedRowTier = getBestQtyTier(matrixRowQtyTiers, quantity);
+    const matchedRowTier = getBestQtyTier(matrixRowQtyTiers, tierBasisState.tierBasisValue);
     const matchedTierIdentity = getTierIdentity(matchedRowTier);
     const rowTierWarnings: Pbv2TierResolutionWarning[] = [];
     const matrixStaticBaseRate = hasMatrixBasePrice ? matrixBasePrice : null;
@@ -1481,15 +1807,23 @@ function calculateBasePriceDetails(
         matrixStaticBaseRate,
         matrixStaticBaseRateUsedAsFallback: false,
         productTierFallbackUsed: false,
+        tierBasis: tierBasisState.tierBasis,
+        tierBasisValue: tierBasisState.tierBasisValue,
+        tierBasisResolvedFrom: tierBasisState.tierBasisResolvedFrom,
+        lineItemQuantity: tierBasisState.lineItemQuantity,
+        computedSheetUsage: tierBasisState.computedSheetUsage,
+        computedSheetUsageAvailable: tierBasisState.computedSheetUsageAvailable,
+        computedSheetUsageMode: tierBasisState.computedSheetUsageMode,
+        fallbackToLineItemQuantity: tierBasisState.fallbackToLineItemQuantity,
         finalBaseRateUsed: dollarsFromCents(perSqftCents),
-        warnings: rowTierWarnings,
+        warnings: [...tierBasisState.warnings, ...rowTierWarnings],
       };
     } else {
       const warnings: Pbv2TierResolutionWarning[] = [{
         code: "PBV2_TIER_MATRIX_ROW_NO_MATCH",
         severity: "warning",
-        message: "Matched pricing matrix row has quantity tiers, but no row-level tier matched the selected quantity.",
-        detail: { matrixRowId, quantity },
+        message: "Matched pricing matrix row has quantity tiers, but no row-level tier matched the selected tier basis value.",
+        detail: { matrixRowId, quantity: tierBasisState.tierBasisValue, lineItemQuantity: quantity },
       }];
 
       if (hasMatrixBasePrice) {
@@ -1518,8 +1852,16 @@ function calculateBasePriceDetails(
         matrixStaticBaseRate,
         matrixStaticBaseRateUsedAsFallback: hasMatrixBasePrice,
         productTierFallbackUsed: false,
+        tierBasis: tierBasisState.tierBasis,
+        tierBasisValue: tierBasisState.tierBasisValue,
+        tierBasisResolvedFrom: tierBasisState.tierBasisResolvedFrom,
+        lineItemQuantity: tierBasisState.lineItemQuantity,
+        computedSheetUsage: tierBasisState.computedSheetUsage,
+        computedSheetUsageAvailable: tierBasisState.computedSheetUsageAvailable,
+        computedSheetUsageMode: tierBasisState.computedSheetUsageMode,
+        fallbackToLineItemQuantity: tierBasisState.fallbackToLineItemQuantity,
         finalBaseRateUsed: dollarsFromCents(perSqftCents),
-        warnings,
+        warnings: [...tierBasisState.warnings, ...warnings],
       };
     }
   } else {
@@ -1535,6 +1877,7 @@ function calculateBasePriceDetails(
       {
         runtimeSelectionContext: pricingContext?.runtimeSelectionContext,
         legacyPriceBreaks: pricingContext?.legacyPriceBreaks,
+        tierQuantity: tierBasisState.tierBasisValue,
       }
     );
     perSqftCents = resolvedBaseRates.perSqftCents;
@@ -1550,7 +1893,15 @@ function calculateBasePriceDetails(
           resolvedBaseRates.tierResolution.tierSource === "pbv2_product"
           || resolvedBaseRates.tierResolution.tierSource === "pbv2_pricing_v2"
         ),
-      warnings: [...resolvedBaseRates.tierResolution.warnings],
+      tierBasis: tierBasisState.tierBasis,
+      tierBasisValue: tierBasisState.tierBasisValue,
+      tierBasisResolvedFrom: tierBasisState.tierBasisResolvedFrom,
+      lineItemQuantity: tierBasisState.lineItemQuantity,
+      computedSheetUsage: tierBasisState.computedSheetUsage,
+      computedSheetUsageAvailable: tierBasisState.computedSheetUsageAvailable,
+      computedSheetUsageMode: tierBasisState.computedSheetUsageMode,
+      fallbackToLineItemQuantity: tierBasisState.fallbackToLineItemQuantity,
+      warnings: [...tierBasisState.warnings, ...resolvedBaseRates.tierResolution.warnings],
     };
 
     if (hasMatrixBasePrice) {
@@ -1596,7 +1947,6 @@ function calculateBasePriceDetails(
   const linearFeet = orderedWidthIn > 0 ? orderedWidthIn / 12 : 0;
 
   if (activePricingProfileKey === 'flat_goods') {
-    const productLegacy = pricingContext?.productLegacy ?? {};
     const flatGoodsInput = buildFlatGoodsInput(
       activeProfileConfig,
       {
@@ -1941,6 +2291,14 @@ function buildTierResolutionSnapshot(
     matrixStaticBaseRate: tierResolution.matrixStaticBaseRate,
     matrixStaticBaseRateUsedAsFallback: tierResolution.matrixStaticBaseRateUsedAsFallback,
     productTierFallbackUsed: tierResolution.productTierFallbackUsed,
+    tierBasis: tierResolution.tierBasis,
+    tierBasisValue: tierResolution.tierBasisValue,
+    tierBasisResolvedFrom: tierResolution.tierBasisResolvedFrom,
+    lineItemQuantity: tierResolution.lineItemQuantity,
+    computedSheetUsage: tierResolution.computedSheetUsage,
+    computedSheetUsageAvailable: tierResolution.computedSheetUsageAvailable,
+    computedSheetUsageMode: tierResolution.computedSheetUsageMode,
+    fallbackToLineItemQuantity: tierResolution.fallbackToLineItemQuantity,
     finalBaseRateUsed: tierResolution.finalBaseRateUsed,
     warnings: tierResolution.warnings,
     capturedAt,

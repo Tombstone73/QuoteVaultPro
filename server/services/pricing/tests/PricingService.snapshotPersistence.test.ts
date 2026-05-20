@@ -266,6 +266,13 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
       tierBaseRate: 0.8,
       effectiveBaseRateBeforeMatrix: 0.8,
       matrixBasePriceOverride: false,
+      tierBasis: "line_item_quantity",
+      tierBasisValue: 5,
+      tierBasisResolvedFrom: "default",
+      lineItemQuantity: 5,
+      computedSheetUsageAvailable: false,
+      computedSheetUsageMode: "unavailable",
+      fallbackToLineItemQuantity: false,
       finalBaseRateUsed: 0.8,
     }));
     expect(snapshot?.formulaScopeUsed?.base_price).toBe(0.8);
@@ -316,12 +323,64 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
       matrixStaticBaseRate: 5.75,
       matrixStaticBaseRateUsedAsFallback: false,
       productTierFallbackUsed: false,
+      tierBasis: "line_item_quantity",
+      tierBasisValue: 5,
+      tierBasisResolvedFrom: "default",
+      lineItemQuantity: 5,
+      computedSheetUsageAvailable: false,
+      computedSheetUsageMode: "unavailable",
+      fallbackToLineItemQuantity: false,
       finalBaseRateUsed: 4.5,
     }));
     expect(snapshot?.basePriceSource).toBe("pricing_matrix.row_qty_tier");
     expect(snapshot?.resolvedMatrixVariables).toEqual({ base_price: 5.75 });
     expect(snapshot?.formulaScopeUsed?.base_price).toBe(4.5);
     expect(snapshot?.formulaScopeUsed?.tier_base_price).toBe(4.5);
+  });
+
+  test("captures computed sheet usage tier basis metadata in the persisted PBV2 snapshot", async () => {
+    const tree = makeAcmTree(575, { perSqftCents: 100 }) as any;
+    delete tree.pricingMatrix;
+    tree.meta.pricingV2.tierBasis = "computed_sheet_usage";
+    tree.meta.pricingV2.qtyTiers = [
+      { id: "sheet_usage_2", label: "Two sheets plus", minQty: 2, perSqftCents: 80 },
+    ];
+
+    await db.execute(sql`
+      update pbv2_tree_versions
+      set tree_json = ${JSON.stringify(tree)}::jsonb
+      where id = ${treeVersionId}
+    `);
+
+    const result = await priceLineItem({
+      organizationId,
+      productId,
+      quantity: 21,
+      widthIn: 24,
+      heightIn: 36,
+      pbv2ExplicitSelections: {},
+    });
+
+    const snapshot = result.pbv2SnapshotJson.pbv2PricingSnapshot;
+    expect(snapshot?.tierResolution).toEqual(expect.objectContaining({
+      quantity: 21,
+      enabled: true,
+      source: "pbv2_product",
+      matchedTierId: "sheet_usage_2",
+      matchedTierLabel: "Two sheets plus",
+      tierBaseRate: 0.8,
+      tierBasis: "computed_sheet_usage",
+      tierBasisResolvedFrom: "product",
+      lineItemQuantity: 21,
+      computedSheetUsageAvailable: true,
+      computedSheetUsageMode: "sheet_equivalent",
+      fallbackToLineItemQuantity: false,
+      finalBaseRateUsed: 0.8,
+    }));
+    expect(snapshot?.tierResolution?.tierBasisValue).toBeGreaterThanOrEqual(2);
+    expect(snapshot?.tierResolution?.tierBasisValue).toBeLessThan(21);
+    expect(snapshot?.formulaScopeUsed?.base_price).toBe(0.8);
+    expect(snapshot?.formulaScopeUsed?.tier_base_price).toBe(0.8);
   });
 
   test("captures matrix override and native-versus-legacy tier warning in snapshot metadata", async () => {

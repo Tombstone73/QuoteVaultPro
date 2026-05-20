@@ -15,6 +15,7 @@ import type {
   ChoicePricingOverrideUnit,
   OptionRuntimeSelectionWarning,
   OptionRuntimeSelectionContext,
+  Pbv2TierBasis,
 } from "../optionTreeV2";
 
 // Re-export weight calculation from OptionTreeV2 evaluator for consistent import path
@@ -108,6 +109,11 @@ export type Pbv2TierResolutionWarning = {
     | "PBV2_TIER_MATRIX_BASE_PRICE_OVERRIDE"
     | "PBV2_TIER_MATRIX_ROW_NO_MATCH"
     | "PBV2_TIER_MATRIX_STATIC_BASE_FALLBACK"
+    | "PBV2_TIER_COMPUTED_SHEET_USAGE_UNAVAILABLE"
+    | "PBV2_TIER_COMPUTED_SHEET_USAGE_FAILED"
+    | "PBV2_TIER_COMPUTED_SHEET_USAGE_INVALID"
+    | "PBV2_TIER_FALLBACK_LINE_ITEM_QUANTITY"
+    | "PBV2_TIER_MATRIX_ROW_BASIS_OVERRIDES_PRODUCT"
     | "PBV2_TIER_FORMULA_REFERENCE_WITHOUT_TIER_SYSTEM"
     | "PBV2_TIER_LEGACY_PRICE_BREAKS_NOT_APPLIED";
   message: string;
@@ -129,6 +135,14 @@ export type Pbv2TierResolution = {
   matrixStaticBaseRate?: number | null;
   matrixStaticBaseRateUsedAsFallback?: boolean;
   productTierFallbackUsed?: boolean;
+  tierBasis?: Pbv2TierBasis;
+  tierBasisValue?: number;
+  tierBasisResolvedFrom?: "matrix_row" | "product" | "default";
+  lineItemQuantity?: number;
+  computedSheetUsage?: number | null;
+  computedSheetUsageAvailable?: boolean;
+  computedSheetUsageMode?: "exact_flat_goods" | "sheet_equivalent" | "unavailable";
+  fallbackToLineItemQuantity?: boolean;
   finalBaseRateUsed: number;
   warnings: Pbv2TierResolutionWarning[];
 };
@@ -1093,9 +1107,11 @@ function resolveTieredPricingV2BaseRates(
   tree: AnyRecord,
   quantity: number,
   sqft: number,
-  legacyPriceBreaks?: LegacyPriceBreaksConfig | null
+  legacyPriceBreaks?: LegacyPriceBreaksConfig | null,
+  tierQuantity?: number,
 ): Pick<ResolvedPricingV2BaseRates, "perSqftCents" | "perPieceCents" | "minimumChargeCents" | "tierResolution"> {
   const legacyPriceBreaksEnabled = isLegacyPriceBreaksEnabled(legacyPriceBreaks);
+  const tierMatchQuantity = Number.isFinite(Number(tierQuantity)) ? Number(tierQuantity) : quantity;
   const warnings: Pbv2TierResolutionWarning[] = [];
   const emptyRates = {
     perSqftCents: 0,
@@ -1112,6 +1128,14 @@ function resolveTieredPricingV2BaseRates(
     tierBaseRate: null,
     effectiveBaseRateBeforeMatrix: 0,
     matrixBasePriceOverride: false,
+    tierBasis: "line_item_quantity",
+    tierBasisValue: tierMatchQuantity,
+    tierBasisResolvedFrom: "default",
+    lineItemQuantity: quantity,
+    computedSheetUsage: null,
+    computedSheetUsageAvailable: false,
+    computedSheetUsageMode: "unavailable",
+    fallbackToLineItemQuantity: false,
     finalBaseRateUsed: 0,
     warnings,
   };
@@ -1165,7 +1189,7 @@ function resolveTieredPricingV2BaseRates(
     const t = asRecord(tier);
     if (!t) continue;
     const minQty = typeof t.minQty === "number" && Number.isFinite(t.minQty) ? t.minQty : 0;
-    if (minQty <= quantity) {
+    if (minQty <= tierMatchQuantity) {
       if (!bestQtyTier || minQty > ((bestQtyTier as any).minQty ?? 0)) {
         bestQtyTier = t;
       }
@@ -1216,8 +1240,8 @@ function resolveTieredPricingV2BaseRates(
     warnings.push({
       code: "PBV2_TIER_NO_MATCH",
       severity: "warning",
-      message: "PBV2 quantity tiers are configured, but no tier matched the requested quantity; base rate was used.",
-      detail: { quantity },
+      message: "PBV2 quantity tiers are configured, but no tier matched the selected tier basis value; base rate was used.",
+      detail: { quantity: tierMatchQuantity, lineItemQuantity: quantity },
     });
   }
 
@@ -1267,6 +1291,14 @@ function resolveTieredPricingV2BaseRates(
       tierBaseRate,
       effectiveBaseRateBeforeMatrix,
       matrixBasePriceOverride: false,
+      tierBasis: "line_item_quantity",
+      tierBasisValue: tierMatchQuantity,
+      tierBasisResolvedFrom: "default",
+      lineItemQuantity: quantity,
+      computedSheetUsage: null,
+      computedSheetUsageAvailable: false,
+      computedSheetUsageMode: "unavailable",
+      fallbackToLineItemQuantity: false,
       finalBaseRateUsed: effectiveBaseRateBeforeMatrix,
       warnings,
     },
@@ -1440,6 +1472,7 @@ export function resolvePricingV2BaseRates(
     pricebook?: Record<string, number>;
     runtimeSelectionContext?: OptionRuntimeSelectionContext;
     legacyPriceBreaks?: LegacyPriceBreaksConfig | null;
+    tierQuantity?: number;
   }
 ): ResolvedPricingV2BaseRates {
   const tree = asRecord(treeJson);
@@ -1455,7 +1488,7 @@ export function resolvePricingV2BaseRates(
     opts?.runtimeSelectionContext ??
     pbv2ToRuntimeSelectionContext(tree, selections, { ...(env ?? {}), quantity, sqft, widthIn, heightIn }, { pricebook: opts?.pricebook });
 
-  const baseRates = resolveTieredPricingV2BaseRates(tree, quantity, sqft, opts?.legacyPriceBreaks);
+  const baseRates = resolveTieredPricingV2BaseRates(tree, quantity, sqft, opts?.legacyPriceBreaks, opts?.tierQuantity);
   const appliedPricingOverrides = Array.isArray(runtimeSelectionContext.appliedPricingOverrides)
     ? sortAppliedPricingOverrides(runtimeSelectionContext.appliedPricingOverrides)
     : [];

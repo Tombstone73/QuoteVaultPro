@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { PRICING_PROFILES, type FlatGoodsConfig, getProfile, getDefaultFormula } from "@shared/pricingProfiles";
-import type { ShippingPolicy, WeightUnit, WeightBasis, ShippingConfig } from "@shared/optionTreeV2";
+import type { Pbv2TierBasis, ShippingPolicy, WeightUnit, WeightBasis, ShippingConfig } from "@shared/optionTreeV2";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog";
 import { useToast } from "@/hooks/use-toast";
@@ -48,6 +48,7 @@ export const ProductForm = ({
   pricingV2,
   onUpdatePricingV2Base,
   onUpdatePricingV2UnitSystem,
+  onUpdatePricingV2TierBasis,
   onAddPricingV2Tier,
   onUpdatePricingV2Tier,
   onDeletePricingV2Tier,
@@ -68,6 +69,7 @@ export const ProductForm = ({
   pricingV2?: any;
   onUpdatePricingV2Base?: (base: { perSqftCents?: number; perPieceCents?: number; minimumChargeCents?: number }) => void;
   onUpdatePricingV2UnitSystem?: (unitSystem: 'imperial' | 'metric') => void;
+  onUpdatePricingV2TierBasis?: (tierBasis: Pbv2TierBasis) => void;
   onAddPricingV2Tier?: (kind: 'qty' | 'sqft') => void;
   onUpdatePricingV2Tier?: (kind: 'qty' | 'sqft', index: number, tier: any) => void;
   onDeletePricingV2Tier?: (kind: 'qty' | 'sqft', index: number) => void;
@@ -396,6 +398,7 @@ export const ProductForm = ({
               pricingV2={pricingV2 || null}
               onUpdateBase={onUpdatePricingV2Base!}
               onUpdateUnitSystem={onUpdatePricingV2UnitSystem!}
+              onUpdateTierBasis={onUpdatePricingV2TierBasis!}
               onAddTier={onAddPricingV2Tier!}
               onUpdateTier={onUpdatePricingV2Tier!}
               onDeleteTier={onDeletePricingV2Tier!}
