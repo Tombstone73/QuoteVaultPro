@@ -121,6 +121,8 @@ export type OptionRuntimeSelectionContext = {
 };
 
 export type PricingV2Tier = {
+  id?: string;
+  label?: string;
   minQty?: number;
   minSqft?: number;
   perSqftCents?: number;
@@ -326,6 +328,8 @@ export const choicePricingOverrideSchema: z.ZodType<ChoicePricingOverride> = z.o
 });
 
 export const pricingV2TierSchema: z.ZodType<PricingV2Tier> = z.object({
+  id: z.string().optional(),
+  label: z.string().optional(),
   minQty: z.number().int().min(1).optional(),
   minSqft: z.number().positive().optional(),
   perSqftCents: z.number().int().min(0).optional(),

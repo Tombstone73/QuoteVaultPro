@@ -1103,6 +1103,10 @@ function getMatrixRowVariables(row: Record<string, unknown>): { key: "variables"
   return null;
 }
 
+function hasMatrixRowQtyTiers(row: Record<string, unknown>): boolean {
+  return Array.isArray((row as any).qtyTiers) && (row as any).qtyTiers.length > 0;
+}
+
 function validatePricingMatrices(
   tree: Record<string, unknown>,
   findings: Finding[],
@@ -1251,14 +1255,16 @@ function validatePricingMatrices(
       const variablesEntry = getMatrixRowVariables(row);
       const variables = variablesEntry ? asRecord(variablesEntry.value) : null;
       if (!variables) {
-        findings.push(
-          errorFinding({
-            code: "PBV2_E_PRICING_MATRIX_VARIABLE_INVALID",
-            message: `Pricing matrix ${rowLabel} requires numeric variables`,
-            path: `${rowPath}.variables`,
-            context: { rowId: (row as any).id ?? null },
-          })
-        );
+        if (!hasMatrixRowQtyTiers(row)) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_PRICING_MATRIX_VARIABLE_INVALID",
+              message: `Pricing matrix ${rowLabel} requires numeric variables`,
+              path: `${rowPath}.variables`,
+              context: { rowId: (row as any).id ?? null },
+            })
+          );
+        }
         return;
       }
 

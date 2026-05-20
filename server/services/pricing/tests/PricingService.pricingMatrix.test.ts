@@ -266,7 +266,7 @@ describe("PricingService pricing matrix variable resolution", () => {
     }));
     expect(result.debug?.tierResolution).toEqual(expect.objectContaining({
       enabled: true,
-      source: "pbv2_pricing_v2",
+      source: "pbv2_product",
       matchedTierId: "tier_5",
       matchedTierLabel: "5+",
       originalBaseRate: 1,
@@ -304,6 +304,161 @@ describe("PricingService pricing matrix variable resolution", () => {
         expect.objectContaining({ code: "PBV2_TIER_MATRIX_BASE_PRICE_OVERRIDE" }),
       ])
     );
+  });
+
+  test("row-level qty tier applies for the matched matrix row", () => {
+    const tree = makeAcmTree({
+      dimensions: ["thickness", "sides"],
+      rows: [
+        {
+          id: "3mm_single",
+          when: { thickness: "3mm", sides: "choice_single" },
+          variables: { base_price: 500 },
+          qtyTiers: [{ id: "row_tier_10", label: "10+", minQty: 10, perSqftCents: 450 }],
+        },
+      ],
+    });
+
+    const result = runPreview(
+      tree,
+      { thickness: { value: "3mm" }, sides: { value: "choice_single" } },
+      "sqft * base_price * q",
+      10
+    );
+
+    expect(result.totalPrice).toBeCloseTo(270, 2);
+    expect(result.debug?.variables.base_price).toBe(4.5);
+    expect(result.debug?.tierResolution).toEqual(expect.objectContaining({
+      enabled: true,
+      source: "matrix_row",
+      matrixRowId: "3mm_single",
+      matchedTierId: "row_tier_10",
+      matchedTierLabel: "10+",
+      matrixStaticBaseRate: 5,
+      matrixStaticBaseRateUsedAsFallback: false,
+      productTierFallbackUsed: false,
+      finalBaseRateUsed: 4.5,
+    }));
+  });
+
+  test("different matrix rows can resolve different row-level qty tier rates", () => {
+    const tree = makeAcmTree({
+      dimensions: ["thickness", "sides"],
+      rows: [
+        {
+          id: "3mm_single",
+          when: { thickness: "3mm", sides: "choice_single" },
+          qtyTiers: [{ id: "single_25", minQty: 25, perSqftCents: 400 }],
+        },
+        {
+          id: "6mm_double",
+          when: { thickness: "6mm", sides: "choice_double" },
+          qtyTiers: [{ id: "double_25", minQty: 25, perSqftCents: 675 }],
+        },
+      ],
+    });
+
+    const single = runPreview(
+      tree,
+      { thickness: { value: "3mm" }, sides: { value: "choice_single" } },
+      "sqft * base_price * q",
+      25
+    );
+    const double = runPreview(
+      tree,
+      { thickness: { value: "6mm" }, sides: { value: "choice_double" } },
+      "sqft * base_price * q",
+      25
+    );
+
+    expect(single.totalPrice).toBeCloseTo(600, 2);
+    expect(single.debug?.variables.base_price).toBe(4);
+    expect(single.debug?.tierResolution?.matrixRowId).toBe("3mm_single");
+    expect(double.totalPrice).toBeCloseTo(1012.5, 2);
+    expect(double.debug?.variables.base_price).toBe(6.75);
+    expect(double.debug?.tierResolution?.matrixRowId).toBe("6mm_double");
+  });
+
+  test("row without qty tiers falls back to product-level PBV2 tiers", () => {
+    const tree = makeAcmTree({
+      dimensions: ["thickness"],
+      rows: [
+        { id: "3mm", when: { thickness: "3mm" }, variables: { setup_fee: 200 } },
+      ],
+    });
+    (tree as any).meta.pricingV2.qtyTiers = [
+      { id: "product_tier_5", minQty: 5, perSqftCents: 80 },
+    ];
+
+    const result = runPreview(tree, { thickness: { value: "3mm" } }, "sqft * base_price * q", 5);
+
+    expect(result.totalPrice).toBeCloseTo(24, 2);
+    expect(result.debug?.variables.base_price).toBe(0.8);
+    expect(result.debug?.tierResolution).toEqual(expect.objectContaining({
+      source: "pbv2_product",
+      matchedTierId: "product_tier_5",
+      productTierFallbackUsed: true,
+      finalBaseRateUsed: 0.8,
+    }));
+  });
+
+  test("row qty tiers with no match use static base_price fallback and warn", () => {
+    const tree = makeAcmTree({
+      dimensions: ["thickness"],
+      rows: [
+        {
+          id: "3mm",
+          when: { thickness: "3mm" },
+          variables: { base_price: 500 },
+          qtyTiers: [{ id: "row_tier_10", minQty: 10, perSqftCents: 450 }],
+        },
+      ],
+    });
+
+    const result = runPreview(tree, { thickness: { value: "3mm" } }, "sqft * base_price * q", 1);
+
+    expect(result.totalPrice).toBeCloseTo(30, 2);
+    expect(result.debug?.variables.base_price).toBe(5);
+    expect(result.debug?.tierResolution).toEqual(expect.objectContaining({
+      source: "matrix_row",
+      matrixRowId: "3mm",
+      matchedTierId: null,
+      matrixStaticBaseRate: 5,
+      matrixStaticBaseRateUsedAsFallback: true,
+      finalBaseRateUsed: 5,
+    }));
+    expect(result.debug?.tierResolution?.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "PBV2_TIER_MATRIX_ROW_NO_MATCH" }),
+        expect.objectContaining({ code: "PBV2_TIER_MATRIX_STATIC_BASE_FALLBACK" }),
+      ])
+    );
+  });
+
+  test("row tier match wins over static matrix base_price", () => {
+    const tree = makeAcmTree({
+      dimensions: ["thickness"],
+      rows: [
+        {
+          id: "3mm",
+          when: { thickness: "3mm" },
+          variables: { base_price: 500 },
+          qtyTiers: [{ id: "row_tier_10", minQty: 10, perSqftCents: 450 }],
+        },
+      ],
+    });
+
+    const result = runPreview(tree, { thickness: { value: "3mm" } }, "sqft * base_price * q", 10);
+
+    expect(result.totalPrice).toBeCloseTo(270, 2);
+    expect(result.debug?.variables.base_price).toBe(4.5);
+    expect(result.debug?.tierResolution).toEqual(expect.objectContaining({
+      matchedTierId: "row_tier_10",
+      matrixStaticBaseRate: 5,
+      matrixStaticBaseRateUsedAsFallback: false,
+      matrixBasePriceOverride: false,
+      finalBaseRateUsed: 4.5,
+    }));
   });
 
   test("formula tier variables fall back safely and warn when no tier system exists", () => {

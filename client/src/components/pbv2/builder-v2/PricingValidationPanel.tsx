@@ -81,13 +81,17 @@ type PricingPreviewResponse = {
     tierResolution?: {
       quantity: number;
       enabled: boolean;
-      source: "pbv2_pricing_v2" | "legacy_price_breaks" | "none";
+      source: "matrix_row" | "pbv2_product" | "pbv2_pricing_v2" | "legacy_price_breaks" | "none";
       matchedTierId: string | null;
       matchedTierLabel: string | null;
       originalBaseRate: number;
       tierBaseRate: number | null;
       effectiveBaseRateBeforeMatrix: number;
       matrixBasePriceOverride: boolean;
+      matrixRowId?: string | null;
+      matrixStaticBaseRate?: number | null;
+      matrixStaticBaseRateUsedAsFallback?: boolean;
+      productTierFallbackUsed?: boolean;
       finalBaseRateUsed: number;
       warnings: Array<{ code: string; message: string; severity?: string; detail?: Record<string, unknown> }>;
       capturedAt?: string;
@@ -463,11 +467,20 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   const tierResolution = result?.debug?.tierResolution ?? formulaDebug?.tierResolution ?? null;
   const tierWarnings = Array.isArray(tierResolution?.warnings) ? tierResolution.warnings : [];
   const matchedTierDisplay = tierResolution?.matchedTierLabel || tierResolution?.matchedTierId || null;
+  const tierSourceDisplay = tierResolution?.source === "matrix_row"
+    ? "Matrix row"
+    : tierResolution?.source === "pbv2_product" || tierResolution?.source === "pbv2_pricing_v2"
+      ? "PBV2 product"
+      : tierResolution?.source === "legacy_price_breaks"
+        ? "Legacy priceBreaks"
+        : "None";
   const showTierResolutionDebug = Boolean(
     tierResolution &&
       (tierResolution.enabled ||
         tierWarnings.length > 0 ||
         tierResolution.matrixBasePriceOverride ||
+        tierResolution.matrixStaticBaseRateUsedAsFallback ||
+        tierResolution.productTierFallbackUsed ||
         tierResolution.source !== "none"),
   );
   const weightFinding = findings.find((finding) => finding.code === "PBV2_W_WEIGHT_MISSING" || finding.code === "PBV2_E_WEIGHT_NEGATIVE") ?? null;
@@ -938,7 +951,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     <AccordionItem value="tier-resolution" className="border-b-0">
                       <AccordionTrigger className="py-1 text-xs text-slate-300 hover:no-underline">
                         Quantity Tier Debug
-                        {tierWarnings.length > 0 || tierResolution?.matrixBasePriceOverride ? (
+                        {tierWarnings.length > 0 || tierResolution?.matrixBasePriceOverride || tierResolution?.matrixStaticBaseRateUsedAsFallback ? (
                           <Badge variant="outline" className="ml-2 border-amber-500/40 text-[10px] text-amber-300">
                             Warning
                           </Badge>
@@ -947,6 +960,10 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       <AccordionContent className="space-y-2 text-xs text-slate-300">
                         <div className="rounded border border-slate-700/70 bg-slate-900/40 p-2">
                           <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                            <div className="text-slate-400">Tier source</div>
+                            <div className="font-mono">{tierSourceDisplay}</div>
+                            <div className="text-slate-400">Matrix row</div>
+                            <div className="font-mono">{tierResolution?.matrixRowId ?? "None"}</div>
                             <div className="text-slate-400">Original base rate</div>
                             <div className="font-mono">{displayDebugCurrency(tierResolution?.originalBaseRate)}</div>
                             <div className="text-slate-400">Quantity</div>
@@ -959,6 +976,14 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                             <div className={tierResolution?.matrixBasePriceOverride ? "font-mono text-amber-200" : "font-mono"}>
                               {tierResolution?.matrixBasePriceOverride ? "Yes" : "No"}
                             </div>
+                            <div className="text-slate-400">Static base_price fallback</div>
+                            <div className={tierResolution?.matrixStaticBaseRateUsedAsFallback ? "font-mono text-amber-200" : "font-mono"}>
+                              {tierResolution?.matrixStaticBaseRateUsedAsFallback
+                                ? `Yes (${displayDebugCurrency(tierResolution?.matrixStaticBaseRate)})`
+                                : "No"}
+                            </div>
+                            <div className="text-slate-400">Product tier fallback</div>
+                            <div className="font-mono">{tierResolution?.productTierFallbackUsed ? "Yes" : "No"}</div>
                             <div className="text-slate-400">Final base rate used</div>
                             <div className="font-mono">{displayDebugCurrency(tierResolution?.finalBaseRateUsed)}</div>
                           </div>
