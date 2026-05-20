@@ -44,6 +44,7 @@ import { productDesignConfigRepository } from "../storage/productDesignConfig.re
 import { pbv2ToRuntimeSelectionContext } from "@shared/pbv2/pricingAdapter";
 import { collectPbv2WeightMaterialIds } from "../services/pbv2WeightResolver";
 import { collectPbv2MaterialValidationIds, validatePbv2MaterialReferences } from "../services/pbv2MaterialValidation";
+import { sanitizeLegacyPriceBreaksForPbv2 } from "@shared/pbv2/legacyPriceBreaks";
 
 // ---------------------------------------------------------------------------
 // Local JSON typing helpers (do NOT touch shared/schema.ts)
@@ -1912,7 +1913,8 @@ export function registerProductRoutes(
 
       console.log("[POST /api/products] Parsed & cleaned data:", JSON.stringify(productData, null, 2));
 
-      const product = await storage.createProduct(organizationId, productData as InsertProduct);
+      const sanitizedProductData = sanitizeLegacyPriceBreaksForPbv2(productData);
+      const product = await storage.createProduct(organizationId, sanitizedProductData as InsertProduct);
       res.json(product);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -1938,6 +1940,10 @@ export function registerProductRoutes(
       const productId = String(req.params.id);
 
       const parsedData = updateProductSchema.parse(req.body);
+      const existingProduct = await storage.getProductById(organizationId, productId);
+      if (!existingProduct) {
+        return res.status(404).json({ success: false, message: "Product not found" });
+      }
 
       const productData: any = {};
       Object.entries(parsedData).forEach(([k, v]) => {
@@ -2009,7 +2015,8 @@ export function registerProductRoutes(
         }
       }
 
-      const product = await storage.updateProduct(organizationId, productId, productData as UpdateProduct);
+      const sanitizedProductData = sanitizeLegacyPriceBreaksForPbv2(productData, existingProduct);
+      const product = await storage.updateProduct(organizationId, productId, sanitizedProductData as UpdateProduct);
       if (!product) {
         return res.status(404).json({ success: false, message: "Product not found" });
       }

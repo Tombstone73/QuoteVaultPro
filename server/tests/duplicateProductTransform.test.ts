@@ -26,6 +26,7 @@ describe("buildDuplicatedProductInsert", () => {
       artworkPolicy: "not_required" as any,
       pricingProfileKey: "default",
       pricingProfileConfig: { pbv2Override: { enabled: true, treeVersionId: "tv_1" }, nested: { a: 1 } } as any,
+      pricingEngine: "pricingProfile" as any,
       pricingFormulaId: null,
       useNestingCalculator: true,
       sheetWidth: "48.00" as any,
@@ -34,6 +35,7 @@ describe("buildDuplicatedProductInsert", () => {
       minPricePerItem: "1.25" as any,
       nestingVolumePricing: { enabled: true, tiers: [{ minSheets: 1, pricePerSheet: 9.99 }] },
       requiresProductionJob: true,
+      requiresProofApproval: false,
       isTaxable: true,
       isActive: true,
       createdAt: new Date() as any,
@@ -80,6 +82,7 @@ describe("buildDuplicatedProductInsert", () => {
       artworkPolicy: "not_required" as any,
       pricingProfileKey: "default",
       pricingProfileConfig: null,
+      pricingEngine: "pricingProfile" as any,
       pricingFormulaId: null,
       useNestingCalculator: false,
       sheetWidth: null,
@@ -88,6 +91,7 @@ describe("buildDuplicatedProductInsert", () => {
       minPricePerItem: null,
       nestingVolumePricing: { enabled: false, tiers: [] },
       requiresProductionJob: true,
+      requiresProofApproval: false,
       isTaxable: true,
       isActive: true,
       createdAt: new Date() as any,
@@ -97,5 +101,49 @@ describe("buildDuplicatedProductInsert", () => {
     const dup = buildDuplicatedProductInsert(original);
     expect(dup.name).toBe("Widget (Copy)");
     expect(dup.isActive).toBe(false);
+  });
+
+  test("clears legacy priceBreaks when duplicating PBV2 products", () => {
+    const original = {
+      id: "pbv2_1",
+      organizationId: "org_1",
+      name: "PBV2 Banner",
+      description: "Desc",
+      productTypeId: null,
+      pricingFormula: null,
+      variantLabel: "Variant",
+      category: null,
+      storeUrl: null,
+      showStoreLink: true,
+      thumbnailUrls: [],
+      priceBreaks: { enabled: true, type: "quantity", tiers: [{ minValue: 1, discountType: "percentage", discountValue: 10 }] },
+      pricingMode: "area",
+      isService: false,
+      primaryMaterialId: null,
+      optionsJson: null,
+      optionTreeJson: { schemaVersion: 2, nodes: {}, rootNodeIds: [] },
+      pbv2ActiveTreeVersionId: null,
+      artworkPolicy: "not_required" as any,
+      pricingProfileKey: "default",
+      pricingProfileConfig: null,
+      pricingEngine: "pricingProfile" as any,
+      pricingFormulaId: null,
+      useNestingCalculator: false,
+      sheetWidth: null,
+      sheetHeight: null,
+      materialType: "sheet" as any,
+      minPricePerItem: null,
+      nestingVolumePricing: { enabled: false, tiers: [] },
+      requiresProductionJob: true,
+      requiresProofApproval: false,
+      isTaxable: true,
+      isActive: true,
+      createdAt: new Date() as any,
+      updatedAt: new Date() as any,
+    } satisfies Product;
+
+    const dup = buildDuplicatedProductInsert(original);
+
+    expect(dup.priceBreaks).toEqual({ enabled: false, type: "quantity", tiers: [] });
   });
 });

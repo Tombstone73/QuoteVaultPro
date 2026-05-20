@@ -13,6 +13,7 @@
 
 import type { ProductExportV2, ProductExportV2Item } from "@shared/importExportSchemas";
 import type { db as DbType } from "../db";
+import { isPbv2ProductPayloadLike } from "@shared/pbv2/legacyPriceBreaks";
 
 type Product = any; // From Drizzle select
 type Pbv2TreeVersion = any;
@@ -44,6 +45,7 @@ export async function exportProducts(
   
   for (const product of products) {
     const pbv2Data = pbv2Trees.get(product.id);
+    const isPbv2Product = isPbv2ProductPayloadLike({ ...product, pbv2: pbv2Data });
     
     // Resolve product type reference
     const productTypeName = product.productTypeId 
@@ -82,8 +84,8 @@ export async function exportProducts(
       minPricePerItem: product.minPricePerItem ? Number(product.minPricePerItem) : undefined,
       nestingVolumePricing: product.nestingVolumePricing || undefined,
       
-      // Price breaks
-      priceBreaks: product.priceBreaks || undefined,
+      // Legacy price breaks are non-PBV2 only; PBV2 tiers live in meta.pricingV2.
+      priceBreaks: isPbv2Product ? undefined : product.priceBreaks || undefined,
       
       // Flags
       isService: product.isService || false,

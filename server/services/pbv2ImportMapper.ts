@@ -20,6 +20,7 @@ import type {
 } from "@shared/importExportSchemas";
 import type { db as DbType } from "../db";
 import { products, pbv2TreeVersions, productTypes, materials } from "@shared/schema";
+import { sanitizeLegacyPriceBreaksForPbv2 } from "@shared/pbv2/legacyPriceBreaks";
 import { eq, and } from "drizzle-orm";
 import { randomUUID } from "crypto";
 
@@ -32,7 +33,7 @@ export interface ImportMapperContext {
   mode: ImportMode;
 }
 
-interface ResolvedReferences {
+export interface ResolvedReferences {
   productTypeId?: string;
   primaryMaterialId?: string;
 }
@@ -46,6 +47,47 @@ interface DryRunItem {
   warnings: Array<{ code: string; message: string; field?: string }>;
   errors: Array<{ code: string; message: string; field?: string }>;
   resolved: ResolvedReferences;
+}
+
+export function buildPbv2ImportProductValues(
+  item: ProductExportV2Item,
+  resolved: ResolvedReferences,
+  extraValues: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const productValues = sanitizeLegacyPriceBreaksForPbv2({
+    ...extraValues,
+    name: item.name,
+    description: item.description,
+    category: item.category,
+    productTypeId: resolved.productTypeId,
+    pricingMode: item.pricingMode,
+    pricingFormula: item.pricingFormula,
+    pricingEngine: item.pricingEngine,
+    pricingProfileKey: item.pricingProfileKey,
+    pricingProfileConfig: item.pricingProfileConfig,
+    primaryMaterialId: resolved.primaryMaterialId,
+    useNestingCalculator: item.useNestingCalculator,
+    sheetWidth: item.sheetWidth?.toString(),
+    sheetHeight: item.sheetHeight?.toString(),
+    materialType: item.materialType,
+    minPricePerItem: item.minPricePerItem?.toString(),
+    nestingVolumePricing: item.nestingVolumePricing,
+    priceBreaks: item.priceBreaks,
+    isService: item.isService,
+    requiresProductionJob: item.requiresProductionJob,
+    isTaxable: item.isTaxable,
+    isActive: item.isActive,
+    artworkPolicy: item.artworkPolicy,
+    variantLabel: item.variantLabel,
+    storeUrl: item.storeUrl,
+    showStoreLink: item.showStoreLink,
+    thumbnailUrls: item.thumbnailUrls,
+    optionsJson: item.optionsJson,
+    optionTreeJson: item.optionTreeJson,
+    pbv2: item.pbv2,
+  });
+  const { pbv2: _pbv2, ...dbValues } = productValues;
+  return dbValues;
 }
 
 /**
@@ -342,40 +384,13 @@ async function createProductWithPbv2(
   resolved: ResolvedReferences
 ): Promise<string> {
   const productId = randomUUID();
-  
-  // Insert product
-  await ctx.db.insert(products).values({
+  const insertValues = buildPbv2ImportProductValues(item, resolved, {
     id: productId,
     organizationId: ctx.organizationId,
-    name: item.name,
-    description: item.description,
-    category: item.category,
-    productTypeId: resolved.productTypeId,
-    pricingMode: item.pricingMode,
-    pricingFormula: item.pricingFormula,
-    pricingEngine: item.pricingEngine,
-    pricingProfileKey: item.pricingProfileKey,
-    pricingProfileConfig: item.pricingProfileConfig,
-    primaryMaterialId: resolved.primaryMaterialId,
-    useNestingCalculator: item.useNestingCalculator,
-    sheetWidth: item.sheetWidth?.toString(),
-    sheetHeight: item.sheetHeight?.toString(),
-    materialType: item.materialType,
-    minPricePerItem: item.minPricePerItem?.toString(),
-    nestingVolumePricing: item.nestingVolumePricing,
-    priceBreaks: item.priceBreaks,
-    isService: item.isService,
-    requiresProductionJob: item.requiresProductionJob,
-    isTaxable: item.isTaxable,
-    isActive: item.isActive,
-    artworkPolicy: item.artworkPolicy,
-    variantLabel: item.variantLabel,
-    storeUrl: item.storeUrl,
-    showStoreLink: item.showStoreLink,
-    thumbnailUrls: item.thumbnailUrls,
-    optionsJson: item.optionsJson,
-    optionTreeJson: item.optionTreeJson,
   });
+  
+  // Insert product
+  await ctx.db.insert(products).values(insertValues as any);
   
   // Create PBV2 trees if present
   if (item.pbv2) {
@@ -434,41 +449,14 @@ async function updateProductWithPbv2(
   item: ProductExportV2Item,
   resolved: ResolvedReferences
 ): Promise<string> {
+  const updateValues = buildPbv2ImportProductValues(item, resolved, {
+    updatedAt: new Date(),
+  });
   
   // Update product record
   await ctx.db
     .update(products)
-    .set({
-      name: item.name,
-      description: item.description,
-      category: item.category,
-      productTypeId: resolved.productTypeId,
-      pricingMode: item.pricingMode,
-      pricingFormula: item.pricingFormula,
-      pricingEngine: item.pricingEngine,
-      pricingProfileKey: item.pricingProfileKey,
-      pricingProfileConfig: item.pricingProfileConfig,
-      primaryMaterialId: resolved.primaryMaterialId,
-      useNestingCalculator: item.useNestingCalculator,
-      sheetWidth: item.sheetWidth?.toString(),
-      sheetHeight: item.sheetHeight?.toString(),
-      materialType: item.materialType,
-      minPricePerItem: item.minPricePerItem?.toString(),
-      nestingVolumePricing: item.nestingVolumePricing,
-      priceBreaks: item.priceBreaks,
-      isService: item.isService,
-      requiresProductionJob: item.requiresProductionJob,
-      isTaxable: item.isTaxable,
-      isActive: item.isActive,
-      artworkPolicy: item.artworkPolicy,
-      variantLabel: item.variantLabel,
-      storeUrl: item.storeUrl,
-      showStoreLink: item.showStoreLink,
-      thumbnailUrls: item.thumbnailUrls,
-      optionsJson: item.optionsJson,
-      optionTreeJson: item.optionTreeJson,
-      updatedAt: new Date(),
-    })
+    .set(updateValues as any)
     .where(eq(products.id, productId));
   
   // Replace PBV2 trees (delete old, insert new)
