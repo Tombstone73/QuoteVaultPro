@@ -43,6 +43,7 @@ import { getThumbSrc } from "@/lib/getThumbSrc";
 import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 import { deriveLineItemPricingDisplay } from "@/components/orders/lineItemPricingDisplay";
+import { buildQuoteCalculatePayload } from "@/components/orders/quoteCalculatePayload";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
@@ -1073,6 +1074,15 @@ export function OrderLineItemsSection({
   const [isCalculating, setIsCalculating] = useState(false);
   const [calcError, setCalcError] = useState<string | null>(null);
   const [computedTotal, setComputedTotal] = useState<number | null>(null);
+  // Admin-only live-preview diagnostics (last calculate request/response).
+  const [previewDiag, setPreviewDiag] = useState<{
+    seq: number;
+    payloadQuantity: number;
+    payloadSelections: Record<string, unknown>;
+    responseTotal: number | null;
+    status: "pending" | "ok" | "error";
+    at: string;
+  } | null>(null);
   // Quantity that `computedTotal` was computed for. Used to derive per-each
   // consistently so a stale total is never divided by a freshly-changed qty.
   const [computedTotalQty, setComputedTotalQty] = useState<number | null>(null);
@@ -1414,6 +1424,9 @@ export function OrderLineItemsSection({
   const heightNum = dimsRequired ? Number.parseFloat(heightText) || 0 : 1;
   const qtyNum = Number.isFinite(qty) && qty > 0 ? qty : 1;
   const lastCalcKeyRef = useRef<string>("");
+  // Monotonic id per preview request — guards against an earlier, slower
+  // response overwriting a newer one.
+  const calcSeqRef = useRef(0);
 
   const v1SelectionsKey = useMemo(() => stableStringify(optionSelections || {}), [optionSelections]);
   const v2SelectionsKey = useMemo(() => stableStringify(optionSelectionsV2?.selected || {}), [optionSelectionsV2]);
@@ -1500,7 +1513,15 @@ export function OrderLineItemsSection({
     return () => onDirtyStateChange?.(false);
   }, [onDirtyStateChange]);
 
-  // Debounced price calculation for expanded item
+  // Debounced live-preview price calculation for the expanded line item.
+  //
+  // The debounce is keyed ONLY on primitives — the `calcKey` string plus a few
+  // ids/flags — never on object references. `ProductOptionsPanelV2` re-emits a
+  // content-identical `optionSelectionsV2` object (new reference) on re-render;
+  // if that reference were a dependency here, every render would clear and
+  // reset the 400ms timer and the calculation would never fire. `calcKey` is a
+  // stableStringify-based string, so equal pricing inputs produce an equal key
+  // and a reference-only churn leaves the debounce timer untouched.
   useDebouncedEffect(
     () => {
       if (!expandedItem || !expandedProduct) return;
@@ -1517,36 +1538,55 @@ export function OrderLineItemsSection({
       }
       lastCalcKeyRef.current = calcKey;
 
+      // Sequence id: a slower earlier response must not overwrite a newer one.
+      calcSeqRef.current += 1;
+      const seq = calcSeqRef.current;
+
+      // Payload is always built from current DRAFT state (qty/dims/options).
+      const payload = buildQuoteCalculatePayload({
+        productId: expandedItem.productId,
+        variantId: expandedItem.productVariantId,
+        widthNum,
+        heightNum,
+        qtyNum,
+        isPbv2Mode,
+        optionSelectionsV2Selected: optionSelectionsV2.selected || {},
+        optionSelectionsV1: optionSelections,
+        customerId,
+      });
+
       setIsCalculating(true);
       setCalcError(null);
+      setPreviewDiag({
+        seq,
+        payloadQuantity: qtyNum,
+        payloadSelections:
+          (payload.optionSelectionsJson as Record<string, unknown>) ??
+          (payload.selectedOptions as Record<string, unknown>) ??
+          {},
+        responseTotal: null,
+        status: "pending",
+        at: new Date().toISOString(),
+      });
 
-      // PBV2 request: backend expects optionSelectionsJson as Record<string, any>
-      // ProductOptionsPanelV2 manages LineItemOptionSelectionsV2 { schemaVersion: 2, selected: {...} }
-      // Extract .selected dict for API
-      const pbv2Payload = isPbv2Mode
-        ? { optionSelectionsJson: optionSelectionsV2.selected || {} } 
-        : {};
-      const v1Payload = !isPbv2Mode ? { selectedOptions: optionSelections } : {};
-
-      apiRequest("POST", "/api/quotes/calculate", {
-        productId: expandedItem.productId,
-        variantId: expandedItem.productVariantId || undefined,
-        width: widthNum,
-        height: heightNum,
-        quantity: qtyNum,
-        ...pbv2Payload,
-        ...v1Payload,
-        customerId,
-        debugSource: "OrderLineItemsSection.debounced",
-      })
+      apiRequest("POST", "/api/quotes/calculate", payload)
         .then((r) => r.json())
         .then((data) => {
+          // Ignore a response that a newer request has already superseded.
+          if (seq !== calcSeqRef.current) return;
           // Backend returns 'linePrice' in dollars (legacy compatibility)
           const price = Number(data?.linePrice);
-          if (!Number.isFinite(price)) return;
+          if (!Number.isFinite(price)) {
+            setCalcError("Calculation failed");
+            setPreviewDiag((prev) => (prev && prev.seq === seq ? { ...prev, status: "error" } : prev));
+            return;
+          }
           setComputedTotal(price);
           // Record the qty this total was priced for so per-each stays consistent.
           setComputedTotalQty(qtyNum);
+          setPreviewDiag((prev) =>
+            prev && prev.seq === seq ? { ...prev, responseTotal: price, status: "ok" } : prev,
+          );
 
           // Store PBV2 snapshot from response (contains treeJson, visibleNodeIds, selections)
           if (data?.pbv2SnapshotJson) {
@@ -1554,6 +1594,7 @@ export function OrderLineItemsSection({
           }
         })
         .catch((err: any) => {
+          if (seq !== calcSeqRef.current) return;
           // Error message format from apiRequest: "<status>: <responseBody>"
           // Always extract a friendly message; never leak raw JSON to the UI.
           const raw: string = (err?.message as string) || "";
@@ -1577,23 +1618,22 @@ export function OrderLineItemsSection({
             errorMessage = raw;
           }
           setCalcError(errorMessage);
+          setPreviewDiag((prev) => (prev && prev.seq === seq ? { ...prev, status: "error" } : prev));
         })
-        .finally(() => setIsCalculating(false));
+        .finally(() => {
+          if (seq === calcSeqRef.current) setIsCalculating(false);
+        });
     },
     [
-      expandedItem?.productId,
-      expandedItem?.productVariantId,
-      widthText,
-      heightText,
-      qtyNum,
-      optionSelections,
-      optionSelectionsV2, // PBV2: reprice when selections change
-      isPbv2Mode, // Detect PBV2 mode from active product tree, not pricing result
-      expandedProductPbv2Tree,
-      optionsV2Valid,
-      expandedItem?.id,
-      customerId,
+      // Primitives only — see comment above. `calcKey` already encodes
+      // productId, tree version, width, height, qty, option selections and
+      // any override, so a reference change with identical content is a no-op.
       calcKey,
+      expandedItem?.id,
+      expandedItem?.productVariantId,
+      isPbv2Mode,
+      optionsV2Valid,
+      customerId,
     ],
     400
   );
@@ -2427,6 +2467,20 @@ export function OrderLineItemsSection({
                                                 </div>
                                               </div>
                                             )}
+
+                                            <div className="mt-2 rounded-md border border-sky-500/40 bg-sky-500/5 p-3 text-[11px]">
+                                              <div className="font-medium text-sky-700 dark:text-sky-300">Live preview calc diagnostics</div>
+                                              <div className="mt-2 grid gap-1 font-mono text-muted-foreground">
+                                                <div>request seq: {String(previewDiag?.seq ?? "(none)")}</div>
+                                                <div>status: {String(previewDiag?.status ?? "(idle)")}</div>
+                                                <div>payload quantity: {String(previewDiag?.payloadQuantity ?? "(none)")}</div>
+                                                <div>payload option selections: {JSON.stringify(previewDiag?.payloadSelections ?? {})}</div>
+                                                <div>last response total: {previewDiag?.responseTotal != null ? `$${previewDiag.responseTotal.toFixed(2)}` : "(none)"}</div>
+                                                <div>requested at: {String(previewDiag?.at ?? "(none)")}</div>
+                                                <div>computedTotal: {computedTotal != null ? `$${Number(computedTotal).toFixed(2)}` : "(none)"}</div>
+                                                <div>computedTotalQty: {String(computedTotalQty ?? "(none)")}</div>
+                                              </div>
+                                            </div>
                                           </>
                                         )}
                                       </div>
