@@ -579,6 +579,7 @@ export default function OrderDetail() {
   // Single canonical dirty value: staged order-level edits OR an unsaved line item.
   const hasStagedOrderChanges = hasAnyStagedChanges(pendingOrderPatch);
   const isDirty = hasStagedOrderChanges || hasDirtyLineItem;
+  const isDebugNavGuardEnabled = import.meta.env.DEV && isAdminOrOwner && searchParams.get("debugNavGuard") === "1";
   const isDirtyRef = useRef(isDirty);
   // Mirror the canonical value into the ref on every render (no effect-commit
   // lag). The navigation guard reads this ref at event time only — never during
@@ -604,16 +605,47 @@ export default function OrderDetail() {
   }, []);
 
   useEffect(() => {
+    if (isDebugNavGuardEnabled) {
+      console.log("[ORDER_NAV_GUARD] dirty-state", {
+        isDirty,
+        isDirtyRef: isDirtyRef.current,
+        hasDirtyLineItem,
+        hasStagedOrderChanges,
+      });
+    }
+  }, [hasDirtyLineItem, hasStagedOrderChanges, isDebugNavGuardEnabled, isDirty]);
+
+  useEffect(() => {
+    if (!isDirty) {
+      if (isDebugNavGuardEnabled) {
+        console.log("[ORDER_NAV_GUARD] unregistering guard (clean)");
+      }
+      return;
+    }
+
     const unregister = registerGuard(
-      () => {
+      (targetPath) => {
+        if (isDebugNavGuardEnabled) {
+          console.log("[ORDER_NAV_GUARD] guard-check", {
+            targetPath,
+            isDirty: isDirtyRef.current,
+            hasDirtyLineItem,
+            hasStagedOrderChanges,
+          });
+        }
         if (!isDirtyRef.current) return false;
         return "You have unsaved changes. Leave without saving?";
       },
       () => isDirtyRef.current
     );
 
-    return () => unregister();
-  }, [registerGuard]);
+    return () => {
+      if (isDebugNavGuardEnabled) {
+        console.log("[ORDER_NAV_GUARD] unregistering guard");
+      }
+      unregister();
+    };
+  }, [hasDirtyLineItem, hasStagedOrderChanges, isDebugNavGuardEnabled, isDirty, registerGuard]);
 
   const listNoteQuery = useQuery<{ listLabel: string | null }>(
     {
