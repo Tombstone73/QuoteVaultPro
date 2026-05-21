@@ -32,6 +32,9 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
   const location = useLocation();
   const navigationType = useNavigationType();
   const lastStableLocationRef = useRef<string>(location.pathname + location.search);
+  // BrowserRouter tracks a numeric history index in window.history.state.idx;
+  // keep the stable index alongside the stable path so cancelled POPs can be
+  // reversed without leaving the browser history pointer on the wrong entry.
   const lastStableHistoryIndexRef = useRef<number | null>(readHistoryIndex());
   const pendingBlockedLocationRef = useRef<string | null>(null);
   const isRevertingRef = useRef<boolean>(false);
