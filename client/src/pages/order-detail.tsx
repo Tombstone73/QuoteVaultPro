@@ -212,6 +212,8 @@ export default function OrderDetail() {
   const [poNumberDraft, setPoNumberDraft] = useState("");
   const [isSavingOrder, setIsSavingOrder] = useState(false);
   const [pendingOrderPatch, setPendingOrderPatch] = useState<Record<string, any>>({});
+  // True when the line items section has an expanded line item with unsaved edits.
+  const [hasDirtyLineItem, setHasDirtyLineItem] = useState(false);
 
   // Order flags (stored in order_list_notes.listLabel as comma-separated values)
   const [flags, setFlags] = useState<string[]>([]);
@@ -571,7 +573,9 @@ export default function OrderDetail() {
     ?? preferences?.orders?.requireLineItemsDoneToComplete
     ?? true); // Default strict
   const canEditOrder = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
-  const isDirty = hasAnyStagedChanges(pendingOrderPatch);
+  // Order is dirty if it has staged order-level edits OR an unsaved line item.
+  const hasStagedOrderChanges = hasAnyStagedChanges(pendingOrderPatch);
+  const isDirty = hasStagedOrderChanges || hasDirtyLineItem;
   const isDirtyRef = useRef(isDirty);
 
   useEffect(() => {
@@ -1091,6 +1095,16 @@ export default function OrderDetail() {
 
   const handleSaveOrder = async () => {
     if (!orderId || !order) return;
+    // Block order save while a line item has unsaved edits — otherwise the
+    // line item draft would be silently dropped and order totals would desync.
+    if (hasDirtyLineItem) {
+      toast({
+        title: "Unsaved line item",
+        description: "Save or discard changes on the open line item before saving the order.",
+        variant: "destructive",
+      });
+      return;
+    }
     try {
       const persistedOrder = orderRaw as OrderDetailOrder | undefined;
       const nextPatch: Record<string, any> = { ...pendingOrderPatch };
@@ -1188,29 +1202,57 @@ export default function OrderDetail() {
     await saveShipTo(payload);
   };
 
+  /**
+   * Reconcile order aggregate totals after a line item is saved/added/deleted.
+   *
+   * The line item itself is already persisted by its own save. This derives the
+   * order subtotal/total and persists them DIRECTLY (silent PATCH) rather than
+   * staging them into `pendingOrderPatch`. Staging derived totals into the order
+   * draft made the order perpetually "dirty" after every line item save and
+   * forced a confusing second Save Order step. Keeping `pendingOrderPatch`
+   * reserved for genuine order-level edits lets the navigation guard and Save
+   * Order button reflect real dirty state.
+   */
   const recalculateOrderTotals = async () => {
-    if (!order) return;
-    
-    // Fetch fresh order data
-    const response = await fetch(`/api/orders/${orderId}`, { credentials: "include" });
-    if (!response.ok) return;
-    const freshOrder = await response.json();
-    
-    // Calculate new totals from line items
-    const subtotal = freshOrder.lineItems.reduce((sum: number, item: any) => {
-      return sum + parseFloat(item.totalPrice);
-    }, 0);
-    
-    const discount = parseFloat(freshOrder.discount) || 0;
-    const tax = parseFloat(freshOrder.tax) || 0;
-    const shipping = (Number(freshOrder.shippingCents) || 0) / 100;
-    const total = subtotal - discount + tax + shipping;
-    
-    // Update order totals
-    await applyOrderPatch({
-      subtotal: subtotal.toFixed(2),
-      total: total.toFixed(2),
-    });
+    if (!orderId) return;
+    try {
+      const response = await fetch(`/api/orders/${orderId}`, { credentials: "include" });
+      if (response.ok) {
+        const freshOrder = await response.json();
+        const lineItems = Array.isArray(freshOrder?.lineItems) ? freshOrder.lineItems : [];
+        const subtotal = lineItems.reduce(
+          (sum: number, item: any) => sum + (parseFloat(item?.totalPrice) || 0),
+          0,
+        );
+        const discount = parseFloat(freshOrder?.discount) || 0;
+        const tax = parseFloat(freshOrder?.tax) || 0;
+        const shipping = (Number(freshOrder?.shippingCents) || 0) / 100;
+        const total = subtotal - discount + tax + shipping;
+
+        const persistedSubtotal = parseFloat(freshOrder?.subtotal);
+        const persistedTotal = parseFloat(freshOrder?.total);
+        const alreadyCurrent =
+          Number.isFinite(persistedSubtotal) &&
+          Number.isFinite(persistedTotal) &&
+          Math.abs(persistedSubtotal - subtotal) < 0.005 &&
+          Math.abs(persistedTotal - total) < 0.005;
+
+        if (!alreadyCurrent) {
+          await fetch(`/api/orders/${orderId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ subtotal: subtotal.toFixed(2), total: total.toFixed(2) }),
+            credentials: "include",
+          });
+        }
+      }
+    } catch (error) {
+      console.error("[recalculateOrderTotals] Failed to reconcile order totals:", error);
+    } finally {
+      // Always refresh from authoritative server state.
+      await queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
+      await queryClient.refetchQueries({ queryKey: ["orders", "detail", orderId], type: "active" });
+    }
   };
 
   const handleLineItemStatusChange = async (lineItemId: string, newStatus: string) => {
@@ -2250,6 +2292,7 @@ export default function OrderDetail() {
                 productionFocusLineItemIds={productionFocus.highlightedIds}
                 productionPriorityLineItemIds={productionFocus.prioritizedIds}
                 onAfterLineItemsChange={recalculateOrderTotals}
+                onDirtyStateChange={setHasDirtyLineItem}
               />
 
               {/* Totals */}
