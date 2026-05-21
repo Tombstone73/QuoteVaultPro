@@ -25,7 +25,7 @@ describe("order detail navigation guard regression", () => {
     expect(source).toContain("onDirtyChange?: (isDirty: boolean) => void;");
     expect(source).toContain("saveDirtyItemRef?: MutableRefObject<(() => Promise<void>) | null>;");
     expect(source).toContain("onDirtyChange?.(isDirty);");
-    expect(source).toContain("saveDirtyItemRef.current = isDirty ? handleSaveItem : null;");
+    expect(source).toContain("saveDirtyItemRef.current = isDirty ? saveDirtyItemFromRef : null;");
     expect(source).toContain("savedSnapshotRef.current[itemId] = {");
   });
 });

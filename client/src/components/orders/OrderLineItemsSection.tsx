@@ -1665,15 +1665,19 @@ export function OrderLineItemsSection({
     }
   };
 
+  const handleSaveItemRef = useRef(handleSaveItem);
+  handleSaveItemRef.current = handleSaveItem;
+  const saveDirtyItemFromRef = useCallback(() => handleSaveItemRef.current(), []);
+
   useEffect(() => {
     if (!saveDirtyItemRef) return;
-    saveDirtyItemRef.current = isDirty ? handleSaveItem : null;
+    saveDirtyItemRef.current = isDirty ? saveDirtyItemFromRef : null;
     return () => {
-      if (saveDirtyItemRef.current === handleSaveItem) {
+      if (saveDirtyItemRef.current === saveDirtyItemFromRef) {
         saveDirtyItemRef.current = null;
       }
     };
-  }, [saveDirtyItemRef, isDirty, handleSaveItem]);
+  }, [saveDirtyItemRef, isDirty, saveDirtyItemFromRef]);
 
   const refreshPricingAfterOverrideChange = async ({
     item,

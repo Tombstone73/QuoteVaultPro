@@ -579,10 +579,6 @@ export default function OrderDetail() {
   isDirtyRef.current = isDirty;
 
   useEffect(() => {
-    isDirtyRef.current = isDirty;
-  }, [isDirty]);
-
-  useEffect(() => {
     setHasDirtyLineItem(false);
   }, [orderId]);
 
