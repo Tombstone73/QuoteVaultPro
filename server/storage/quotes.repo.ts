@@ -25,6 +25,7 @@ import {
 import { and, eq, isNull, like, gte, lte, desc, asc, sql, inArray } from "drizzle-orm";
 import { DB_TO_WORKFLOW, getEffectiveWorkflowState, type QuoteWorkflowState as WorkflowState } from "@shared/quoteWorkflow";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
+import { sanitizeJsonForPostgres } from "../lib/quoteCreateLineItemNormalizer";
 import { materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
 import { productDesignConfigRepository } from "./productDesignConfig.repo";
 
@@ -638,12 +639,13 @@ export class QuotesRepository {
             variantId: item.variantId,
             variantName: item.variantName,
             productType: (item as any).productType || 'wide_roll',
-        status: (item as any).status || 'active',
+            status: (item as any).status || 'active',
             width: item.width.toString(),
             height: item.height.toString(),
             quantity: item.quantity,
-            specsJson: (item as any).specsJson || null,
-            selectedOptions: item.selectedOptions as Array<{
+            specsJson: sanitizeJsonForPostgres((item as any).specsJson || null).value as any,
+            optionSelectionsJson: sanitizeJsonForPostgres((item as any).optionSelectionsJson ?? null).value as any,
+            selectedOptions: sanitizeJsonForPostgres(item.selectedOptions || []).value as Array<{
                 optionId: string;
                 optionName: string;
                 value: string | number | boolean;
@@ -651,17 +653,18 @@ export class QuotesRepository {
                 calculatedCost: number;
             }>,
             linePrice: item.linePrice.toString(),
-            priceBreakdown: {
+            priceBreakdown: sanitizeJsonForPostgres({
                 ...item.priceBreakdown,
                 variantInfo: item.priceBreakdown.variantInfo as string | undefined,
-            },
+            }).value as any,
+            materialUsages: sanitizeJsonForPostgres((item as any).materialUsages ?? []).value as any,
             displayOrder: item.displayOrder || index,
             // Tax fields
             taxAmount: (item as any).taxAmount != null ? (item as any).taxAmount.toString() : null,
             isTaxableSnapshot: (item as any).isTaxableSnapshot ?? null,
             // PBV2 server-authoritative fields (migration 0036, pbv2TreeVersionId nullable as of 0041)
             pbv2TreeVersionId: (item as any).pbv2TreeVersionId || null,
-            pbv2SnapshotJson: (item as any).pbv2SnapshotJson || {},
+            pbv2SnapshotJson: sanitizeJsonForPostgres((item as any).pbv2SnapshotJson || {}).value as any,
             pricedAt: (item as any).pricedAt || new Date(),
             // Canonical routing intent (migration 0015)
             requiresDesign: materializeLineItemDesignSnapshot({
