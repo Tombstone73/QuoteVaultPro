@@ -212,6 +212,8 @@ export default function OrderDetail() {
   const [poNumberDraft, setPoNumberDraft] = useState("");
   const [isSavingOrder, setIsSavingOrder] = useState(false);
   const [pendingOrderPatch, setPendingOrderPatch] = useState<Record<string, any>>({});
+  const [hasDirtyLineItem, setHasDirtyLineItem] = useState(false);
+  const saveDirtyLineItemRef = useRef<(() => Promise<void>) | null>(null);
 
   // Order flags (stored in order_list_notes.listLabel as comma-separated values)
   const [flags, setFlags] = useState<string[]>([]);
@@ -571,12 +573,18 @@ export default function OrderDetail() {
     ?? preferences?.orders?.requireLineItemsDoneToComplete
     ?? true); // Default strict
   const canEditOrder = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
-  const isDirty = hasAnyStagedChanges(pendingOrderPatch);
+  const hasStagedOrderChanges = hasAnyStagedChanges(pendingOrderPatch);
+  const isDirty = hasStagedOrderChanges || hasDirtyLineItem;
   const isDirtyRef = useRef(isDirty);
+  isDirtyRef.current = isDirty;
 
   useEffect(() => {
     isDirtyRef.current = isDirty;
   }, [isDirty]);
+
+  useEffect(() => {
+    setHasDirtyLineItem(false);
+  }, [orderId]);
 
   const applyOrderPatch = async (patch: Record<string, any>) => {
     if (!canEditOrder) return;
@@ -1104,18 +1112,26 @@ export default function OrderDetail() {
         nextPatch.poNumber = normalizedPoNumber;
       }
 
-      if (Object.keys(nextPatch).length === 0) {
+      const hasOrderPatch = Object.keys(nextPatch).length > 0;
+      if (!hasOrderPatch && !hasDirtyLineItem) {
         return;
       }
 
       setIsSavingOrder(true);
-      await updateOrder.mutateAsync({
-        ...nextPatch,
-      });
-      setPendingOrderPatch({});
-      await queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
-      await queryClient.refetchQueries({ queryKey: ["orders", "detail", orderId], type: "active" });
-      toast({ title: "Order saved" });
+      if (hasDirtyLineItem && saveDirtyLineItemRef.current) {
+        await saveDirtyLineItemRef.current();
+        setHasDirtyLineItem(false);
+      }
+
+      if (hasOrderPatch) {
+        await updateOrder.mutateAsync({
+          ...nextPatch,
+        });
+        setPendingOrderPatch({});
+        await queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
+        await queryClient.refetchQueries({ queryKey: ["orders", "detail", orderId], type: "active" });
+        toast({ title: "Order saved" });
+      }
     } catch (error: any) {
       toast({
         title: "Error",
@@ -1546,7 +1562,7 @@ export default function OrderDetail() {
                   variant="outline"
                   size="sm"
                   onClick={() => void handleCancelOrderEdits()}
-                  disabled={!isDirty || updateOrder.isPending || isSavingOrder}
+                  disabled={!hasStagedOrderChanges || updateOrder.isPending || isSavingOrder}
                   className="rounded-titan-md"
                 >
                   Discard changes
@@ -2249,6 +2265,8 @@ export default function OrderDetail() {
                 lineItems={order.lineItems as any}
                 productionFocusLineItemIds={productionFocus.highlightedIds}
                 productionPriorityLineItemIds={productionFocus.prioritizedIds}
+                onDirtyChange={setHasDirtyLineItem}
+                saveDirtyItemRef={saveDirtyLineItemRef}
                 onAfterLineItemsChange={recalculateOrderTotals}
               />
 

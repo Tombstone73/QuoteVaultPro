@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
@@ -532,6 +532,8 @@ export function OrderLineItemsSection({
   lineItems,
   productionFocusLineItemIds = [],
   productionPriorityLineItemIds = [],
+  onDirtyChange,
+  saveDirtyItemRef,
   onAfterLineItemsChange,
 }: {
   orderId: string;
@@ -540,6 +542,8 @@ export function OrderLineItemsSection({
   lineItems: OrderLineItem[];
   productionFocusLineItemIds?: string[];
   productionPriorityLineItemIds?: string[];
+  onDirtyChange?: (isDirty: boolean) => void;
+  saveDirtyItemRef?: MutableRefObject<(() => Promise<void>) | null>;
   onAfterLineItemsChange?: () => Promise<void>;
 }) {
   const { toast } = useToast();
@@ -1471,6 +1475,10 @@ export function OrderLineItemsSection({
     designBriefDraft,
   ]);
 
+  useEffect(() => {
+    onDirtyChange?.(isDirty);
+  }, [isDirty, onDirtyChange]);
+
   // Debounced price calculation for expanded item
   useDebouncedEffect(
     () => {
@@ -1656,6 +1664,16 @@ export function OrderLineItemsSection({
       setSavingItemId(null);
     }
   };
+
+  useEffect(() => {
+    if (!saveDirtyItemRef) return;
+    saveDirtyItemRef.current = isDirty ? handleSaveItem : null;
+    return () => {
+      if (saveDirtyItemRef.current === handleSaveItem) {
+        saveDirtyItemRef.current = null;
+      }
+    };
+  }, [saveDirtyItemRef, isDirty, handleSaveItem]);
 
   const refreshPricingAfterOverrideChange = async ({
     item,
