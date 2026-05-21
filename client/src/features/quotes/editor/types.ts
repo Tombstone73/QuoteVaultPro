@@ -16,6 +16,11 @@ export type QuoteLineItemDraft = {
   specsJson: Record<string, any>;
   /** Option Tree v2 canonical selections (schemaVersion=2). */
   optionSelectionsJson?: any;
+  /** PBV2 server-authoritative pricing snapshot fields. */
+  pbv2TreeVersionId?: string | null;
+  pbv2SnapshotJson?: any;
+  pricedAt?: string | Date | null;
+  materialUsages?: any[];
   selectedOptions: any[];
   linePrice: number;
   /**

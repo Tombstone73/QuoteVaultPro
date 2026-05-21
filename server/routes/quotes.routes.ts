@@ -67,6 +67,10 @@ import {
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 import { ensureCustomerForUser } from "../db/syncUsersToCustomers";
+import {
+  normalizeQuoteCreateLineItem,
+  QuoteCreateLineItemValidationError,
+} from "../lib/quoteCreateLineItemNormalizer";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -555,45 +559,24 @@ export function registerQuoteRoutes(
         shipTo
       );
 
-      // Validate each line item and merge tax data
+      // Validate each line item, merge tax data, and preserve PBV2 pricing snapshots.
+      const quoteCreateJsonChanges: Array<{ lineItemIndex: number; changes: unknown[] }> = [];
       const validatedLineItems = rawLineItems.map((item: any, index: number) => {
-        if (!item.productId || !item.productName || item.width == null || item.height == null || item.quantity == null || item.linePrice == null) {
-          throw new Error("Missing required fields in line item");
+        const taxData = totalsResult.lineItemsWithTax[index] ?? { taxAmount: 0, isTaxableSnapshot: true };
+        const normalized = normalizeQuoteCreateLineItem(item, index, taxData);
+        if (normalized.jsonChanges.length > 0) {
+          quoteCreateJsonChanges.push({ lineItemIndex: index, changes: normalized.jsonChanges });
         }
-
-        const taxData = totalsResult.lineItemsWithTax[index];
-
-        return {
-          productId: item.productId,
-          productName: item.productName,
-          variantId: item.variantId || null,
-          variantName: item.variantName || null,
-          productType: item.productType || 'wide_roll',
-          width: parseFloat(item.width),
-          height: parseFloat(item.height),
-          quantity: parseInt(item.quantity),
-          specsJson: item.specsJson || null,
-          selectedOptions: item.selectedOptions || [],
-          linePrice: parseFloat(item.linePrice),
-          priceBreakdown: item.priceBreakdown || {
-            basePrice: parseFloat(item.linePrice),
-            optionsPrice: 0,
-            total: parseFloat(item.linePrice),
-            formula: "",
-          },
-          materialUsages: item.priceBreakdown?.materialUsages || [],
-          displayOrder: item.displayOrder || 0,
-          // Line item enhancements (migration 0039, 0040)
-          description: item.description || null,
-          productionNotes: item.productionNotes || null,
-          // Canonical routing intent (migration 0015)
-          requiresDesign: item.requiresDesign === true,
-          requiresPrepress: typeof item.requiresPrepress === 'boolean' ? item.requiresPrepress : null,
-          // Tax fields (convert to string for storage)
-          taxAmount: taxData.taxAmount.toString(),
-          isTaxableSnapshot: taxData.isTaxableSnapshot,
-        };
+        return normalized.lineItem;
       });
+
+      if (quoteCreateJsonChanges.length > 0) {
+        console.warn("[QUOTE CREATE] sanitized JSON values before persistence", {
+          organizationId,
+          userId,
+          changes: quoteCreateJsonChanges,
+        });
+      }
 
       // Generate customer/shipping snapshot if customerId is provided
       let snapshotData: Record<string, any> = {};
@@ -683,12 +666,49 @@ export function registerQuoteRoutes(
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
       }
+      if (error instanceof QuoteCreateLineItemValidationError) {
+        console.warn("[QUOTE CREATE] invalid line item payload", {
+          message: error.message,
+          code: error.code,
+          lineItemIndex: error.lineItemIndex,
+          field: error.field,
+          lineItemCount: Array.isArray(req.body?.lineItems) ? req.body.lineItems.length : 0,
+        });
+        return res.status(error.status).json({
+          message: error.message,
+          code: error.code,
+          lineItemIndex: error.lineItemIndex,
+          field: error.field,
+        });
+      }
+      const err = error as any;
       console.error("[QUOTE CREATE] failed to create quote", {
-        error,
+        error: {
+          name: err?.name,
+          message: err?.message,
+          code: err?.code,
+          detail: err?.detail,
+          constraint: err?.constraint,
+          stack: err?.stack,
+        },
         body: {
           status: req.body?.status,
           hasLineItems: Array.isArray(req.body?.lineItems),
           hasCustomerId: !!req.body?.customerId,
+          lineItemCount: Array.isArray(req.body?.lineItems) ? req.body.lineItems.length : 0,
+          lineItems: Array.isArray(req.body?.lineItems)
+            ? req.body.lineItems.map((item: any, index: number) => ({
+                index,
+                productId: item?.productId,
+                hasProductName: !!item?.productName,
+                width: item?.width,
+                height: item?.height,
+                quantity: item?.quantity,
+                linePrice: item?.linePrice,
+                hasPbv2SnapshotJson: !!item?.pbv2SnapshotJson,
+                pbv2TreeVersionId: item?.pbv2TreeVersionId,
+              }))
+            : [],
         },
       });
       res.status(500).json({ message: "Failed to create quote" });
