@@ -12,6 +12,7 @@ import {
   type ProductOptionPricingMatrix,
 } from "@shared/productOptionPricingMatrix";
 import type { Pbv2TierBasis, PricingV2Tier } from "@shared/optionTreeV2";
+import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
 
 type OptionKey = {
   selectionKey: string;
@@ -508,14 +509,17 @@ export function OptionRulesPricingMatrixEditor({
   treeJson,
   onUpdateRules,
   onUpdatePricingMatrix,
+  onRepairPricingMatrix,
 }: {
   treeJson: any;
   onUpdateRules: (rules: ProductOptionRule[]) => void;
   onUpdatePricingMatrix: (pricingMatrix: ProductOptionPricingMatrix) => void;
+  onRepairPricingMatrix: () => void;
 }) {
   const optionKeys = React.useMemo(() => getOptionKeys(treeJson), [treeJson]);
   const rules = React.useMemo(() => getRules(treeJson), [treeJson]);
   const pricingMatrix = React.useMemo(() => getPricingMatrix(treeJson), [treeJson]);
+  const matrixSanitizer = React.useMemo(() => sanitizePbv2PricingMatrix(treeJson), [treeJson]);
   const matrixWarnings = React.useMemo(() => getMatrixWarnings(pricingMatrix, optionKeys), [pricingMatrix, optionKeys]);
 
   const optionByKey = React.useMemo(() => {
@@ -758,6 +762,24 @@ export function OptionRulesPricingMatrixEditor({
             Generate Rows
           </Button>
         </div>
+
+        {matrixSanitizer.changed ? (
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-100 space-y-2">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              Invalid matrix references from deleted options are present.
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={onRepairPricingMatrix}
+              className="gap-1.5 text-xs border-amber-400/40 text-amber-100 hover:bg-amber-500/20"
+            >
+              Clean Invalid Matrix References
+            </Button>
+          </div>
+        ) : null}
 
         {optionKeys.length === 0 ? (
           <div className="rounded-md border border-slate-700 bg-[#0f172a] p-3 text-sm text-slate-400">

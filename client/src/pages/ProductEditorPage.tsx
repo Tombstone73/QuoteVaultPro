@@ -38,6 +38,7 @@ import { optionsHaveInvalidChoices } from "@/lib/optionChoiceValidation";
 import PBV2ProductBuilderSectionV2 from "@/components/PBV2ProductBuilderSectionV2";
 import { ensureRootNodeIds, normalizeTreeJson } from "@/lib/pbv2/pbv2ViewModel";
 import { PricingValidationPanel } from "@/components/pbv2/builder-v2/PricingValidationPanel";
+import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
 
 interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
   optionsJson: ProductOptionItem[] | null;
@@ -437,8 +438,8 @@ const ProductEditorPage = () => {
           return;
         }
         
-        // Tree is already normalized by getCurrentTree
-        const normalizedTree = freshTreeJson;
+        // Tree is already normalized by getCurrentTree; sanitize matrix refs as a final save guard.
+        const normalizedTree = sanitizePbv2PricingMatrix(freshTreeJson).tree;
         const nodes = (normalizedTree as any)?.nodes || {};
         const edges = (normalizedTree as any)?.edges || [];
         const nodeCount = Object.keys(nodes).length;

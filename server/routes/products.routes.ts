@@ -45,6 +45,7 @@ import { pbv2ToRuntimeSelectionContext } from "@shared/pbv2/pricingAdapter";
 import { collectPbv2WeightMaterialIds } from "../services/pbv2WeightResolver";
 import { collectPbv2MaterialValidationIds, validatePbv2MaterialReferences } from "../services/pbv2MaterialValidation";
 import { sanitizeLegacyPriceBreaksForPbv2 } from "@shared/pbv2/legacyPriceBreaks";
+import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
 
 // ---------------------------------------------------------------------------
 // Local JSON typing helpers (do NOT touch shared/schema.ts)
@@ -842,7 +843,25 @@ export function registerProductRoutes(
       // active tree before the client-side normalizeTreeJson fix was deployed),
       // validateTreeForPublish would fail with PBV2_E_TREE_STATUS_INVALID and
       // silently leave the old active tree in place.
-      const sanitizedTreeJson = { ...(treeJson as any), status: 'DRAFT' };
+      const matrixSanitizer = sanitizePbv2PricingMatrix({ ...(treeJson as any), status: 'DRAFT' });
+      const sanitizedTreeJson = matrixSanitizer.tree;
+      if (matrixSanitizer.changed) {
+        console.warn('[PBV2_MATRIX_SANITIZER] draft save removed stale matrix references', {
+          productId,
+          orgId: organizationId,
+          changes: matrixSanitizer.changes.map((change) => ({ code: change.code, path: change.path })),
+        });
+      }
+      const postSanitizeMatrixErrors = validateTreeForPublish(sanitizedTreeJson as any, DEFAULT_VALIDATE_OPTS)
+        .errors
+        .filter((finding: any) => typeof finding?.code === "string" && finding.code.startsWith("PBV2_E_PRICING_MATRIX"));
+      if (postSanitizeMatrixErrors.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: "PBV2 pricing matrix still has invalid references after cleanup",
+          findings: postSanitizeMatrixErrors,
+        });
+      }
 
       let draft;
       try {
@@ -1138,7 +1157,25 @@ export function registerProductRoutes(
       }
 
       // GUARDRAIL 1: Validate schemaVersion = 2
-      const treeJson = (draft as any).treeJson as any;
+      const matrixSanitizer = sanitizePbv2PricingMatrix((draft as any).treeJson as any);
+      if (matrixSanitizer.changed) {
+        await db
+          .update(pbv2TreeVersions)
+          .set({
+            treeJson: matrixSanitizer.tree as any,
+            updatedAt: new Date(),
+            updatedByUserId: userId ?? null,
+          } as any)
+          .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, id)));
+        (draft as any).treeJson = matrixSanitizer.tree;
+        console.warn('[PBV2_MATRIX_SANITIZER] publish repaired stale matrix references', {
+          productId: draft.productId,
+          treeVersionId: id,
+          changes: matrixSanitizer.changes.map((change) => ({ code: change.code, path: change.path })),
+        });
+      }
+
+      const treeJson = matrixSanitizer.tree as any;
       const schemaVersion = treeJson?.schemaVersion ?? 1;
       if (schemaVersion !== 2) {
         console.warn(`[PBV2_ACTIVATION_BLOCKED] orgId=${organizationId} productId=${draft.productId} treeVersionId=${id} reason=schema_version_unsupported schemaVersion=${schemaVersion}`);
