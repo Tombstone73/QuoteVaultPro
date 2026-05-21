@@ -37,6 +37,11 @@ type ReleaseCheck =
   | { type: "row_exists"; table: string; where: string; label: string };
 
 const RELEASE_CHECKS: ReleaseCheck[] = [
+  // migration 0057 — quote line routing/design repair (guards production schema drift)
+  { type: "column_exists", table: "quote_line_items", column: "requires_design", label: "quote_line_items.requires_design" },
+  { type: "column_exists", table: "quote_line_items", column: "requires_prepress", label: "quote_line_items.requires_prepress" },
+  { type: "column_exists", table: "quote_line_items", column: "requires_design_snapshot", label: "quote_line_items.requires_design_snapshot" },
+  { type: "column_exists", table: "quote_line_items", column: "production_notes", label: "quote_line_items.production_notes" },
   // migration 0032 — proof approval snapshot
   { type: "column_exists", table: "quote_line_items", column: "requires_proof_approval", label: "quote_line_items.requires_proof_approval" },
   // migration 0033 — DDL canary (proves DDL + DML execution reached this DB)
