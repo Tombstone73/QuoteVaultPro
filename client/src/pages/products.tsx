@@ -231,6 +231,26 @@ export default function ProductsPage() {
     },
   });
 
+  const duplicateProductMutation = useMutation({
+    mutationFn: async (product: Product) => {
+      const response = await apiRequest("POST", `/api/products/${product.id}/duplicate`);
+      return (await response.json()) as Product;
+    },
+    onSuccess: () => {
+      toast({
+        title: "Product Duplicated",
+        description: "The product and its PBV2 configuration were duplicated successfully.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      setIsAddDialogOpen(false);
+      setDuplicateSource(null);
+      addProductForm.reset();
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
   const updateProductMutation = useMutation({
     mutationFn: async ({ id, data }: { id: string; data: UpdateProduct }) => {
       // Clean up empty optionsJson
@@ -277,38 +297,9 @@ export default function ProductsPage() {
     navigate(`/products/${product.id}/edit`);
   };
 
-  // Handle duplicating a product - opens Add dialog pre-filled with source product data
+  // Handle duplicating a product through the server-authoritative clone path.
   const handleDuplicateProduct = (product: Product) => {
-    setDuplicateSource(product);
-    // Pre-fill the add form with the source product's data (excluding id, organizationId, timestamps)
-    addProductForm.reset({
-      name: `${product.name} (Copy)`,
-      description: product.description || "",
-      category: product.category || "",
-      pricingFormula: product.pricingFormula || "sqft * p * q",
-      pricingMode: product.pricingMode || "area",
-      pricingProfileKey: product.pricingProfileKey || "default",
-      pricingProfileConfig: product.pricingProfileConfig as FlatGoodsConfig | null,
-      pricingFormulaId: product.pricingFormulaId || null,
-      isService: product.isService || false,
-      primaryMaterialId: product.primaryMaterialId || null,
-      optionsJson: product.optionsJson ? JSON.parse(JSON.stringify(product.optionsJson)) : [],
-      storeUrl: product.storeUrl || "",
-      showStoreLink: product.showStoreLink ?? true,
-      thumbnailUrls: product.thumbnailUrls || [],
-      priceBreaks: product.priceBreaks || { enabled: false, type: "quantity", tiers: [] },
-      useNestingCalculator: product.useNestingCalculator || false,
-      sheetWidth: product.sheetWidth ? parseFloat(product.sheetWidth) : null,
-      sheetHeight: product.sheetHeight ? parseFloat(product.sheetHeight) : null,
-      materialType: product.materialType || "sheet",
-      minPricePerItem: product.minPricePerItem ? parseFloat(product.minPricePerItem) : null,
-      nestingVolumePricing: product.nestingVolumePricing || { enabled: false, tiers: [] },
-      isActive: true, // New duplicates should be active by default
-      productTypeId: product.productTypeId || undefined,
-      requiresProductionJob: product.requiresProductionJob ?? true,
-      isTaxable: product.isTaxable ?? true,
-    });
-    setIsAddDialogOpen(true);
+    duplicateProductMutation.mutate(product);
   };
 
   return (
@@ -403,7 +394,13 @@ export default function ProductsPage() {
                         <Button variant="ghost" size="sm" onClick={() => handleEditProduct(product)}>
                           <Edit className="h-4 w-4" />
                         </Button>
-                        <Button variant="ghost" size="sm" onClick={() => handleDuplicateProduct(product)} title="Duplicate product">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDuplicateProduct(product)}
+                          disabled={duplicateProductMutation.isPending}
+                          title="Duplicate product"
+                        >
                           <Copy className="h-4 w-4" />
                         </Button>
                         <AlertDialog>
