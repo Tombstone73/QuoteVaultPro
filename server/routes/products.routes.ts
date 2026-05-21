@@ -2279,10 +2279,15 @@ export function registerProductRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const clonedProduct = await storage.cloneProduct(organizationId, req.params.id);
+      const userId = getUserId(req.user);
+      const clonedProduct = await storage.duplicateProduct(organizationId, req.params.id, userId ?? null);
       res.json(clonedProduct);
     } catch (error) {
       console.error("Error cloning product:", error);
+      const message = error instanceof Error ? error.message : "Failed to clone product";
+      if (message.startsWith("Cannot duplicate product") || message.includes("PBV2 active tree version not found")) {
+        return res.status(409).json({ message });
+      }
       res.status(500).json({ message: "Failed to clone product" });
     }
   });
@@ -2297,6 +2302,10 @@ export function registerProductRoutes(
       return res.json(duplicated);
     } catch (error) {
       console.error("Error duplicating product:", error);
+      const message = error instanceof Error ? error.message : "Failed to duplicate product";
+      if (message.startsWith("Cannot duplicate product") || message.includes("PBV2 active tree version not found")) {
+        return res.status(409).json({ message });
+      }
       return res.status(500).json({ message: "Failed to duplicate product" });
     }
   });

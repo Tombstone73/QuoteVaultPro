@@ -458,12 +458,16 @@ export class SharedRepository {
                 .limit(1);
 
             if (originalDraft) {
+                const draftTreeJson = {
+                    ...cloneJson(originalDraft.treeJson as any),
+                    status: 'DRAFT',
+                };
                 await tx.insert(pbv2TreeVersions).values({
                     organizationId,
                     productId: newProduct.id,
                     status: 'DRAFT',
                     schemaVersion: originalDraft.schemaVersion,
-                    treeJson: cloneJson(originalDraft.treeJson as any),
+                    treeJson: draftTreeJson,
                     publishedAt: null,
                     createdByUserId: userId,
                     updatedByUserId: userId,
@@ -477,64 +481,60 @@ export class SharedRepository {
                     .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, originalProduct.pbv2ActiveTreeVersionId)))
                     .limit(1);
 
-                if (originalActive) {
-                    // Clone active tree as DRAFT (never directly create ACTIVE)
-                    const [newDraftFromActive] = await tx
-                        .insert(pbv2TreeVersions)
-                        .values({
-                            organizationId,
-                            productId: newProduct.id,
-                            status: 'DRAFT',
-                            schemaVersion: originalActive.schemaVersion,
-                            treeJson: cloneJson(originalActive.treeJson as any),
-                            publishedAt: null,
-                            createdByUserId: userId,
-                            updatedByUserId: userId,
-                        } as any)
-                        .returning();
-
-                    // Only activate if schemaVersion === 2 (guards prevent v1 activation)
-                    if (originalActive.schemaVersion === 2) {
-                        // Validate tree before activation
-                        const { validateTreeHasBasePrice } = await import("../../shared/pbv2/validator/validateBasePrice");
-                        const { validateTreeForPublish, DEFAULT_VALIDATE_OPTS } = await import("../../shared/pbv2/validator");
-                        
-                        const treeJson = cloneJson(originalActive.treeJson as any);
-                        const basePriceValidation = validateTreeHasBasePrice(treeJson);
-                        const publishValidation = validateTreeForPublish(treeJson, DEFAULT_VALIDATE_OPTS);
-
-                        if (basePriceValidation.errors.length === 0 && publishValidation.errors.length === 0) {
-                            // Activation logic: promote DRAFT to ACTIVE
-                            const publishedAt = new Date();
-                            const nextTreeJson = {
-                                ...treeJson,
-                                schemaVersion: 2,
-                                status: "ACTIVE",
-                            };
-
-                            await tx
-                                .update(pbv2TreeVersions)
-                                .set({
-                                    status: 'ACTIVE' as any,
-                                    publishedAt,
-                                    updatedAt: publishedAt,
-                                    updatedByUserId: userId,
-                                    treeJson: nextTreeJson as any,
-                                } as any)
-                                .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, newDraftFromActive.id)));
-
-                            await tx
-                                .update(products)
-                                .set({
-                                    pbv2ActiveTreeVersionId: newDraftFromActive.id,
-                                    updatedAt: publishedAt,
-                                } as any)
-                                .where(and(eq(products.id, newProduct.id), eq(products.organizationId, organizationId)));
-                        }
-                        // If validation fails, tree stays as DRAFT
-                    }
-                    // If schemaVersion !== 2, tree stays as DRAFT (no activation)
+                if (!originalActive) {
+                    throw new Error('Product PBV2 active tree version not found');
                 }
+
+                if (originalActive.schemaVersion !== 2) {
+                    throw new Error('Cannot duplicate product: active PBV2 tree must use schema version 2');
+                }
+
+                const { validateTreeHasBasePrice } = await import("../../shared/pbv2/validator/validateBasePrice");
+                const { validateTreeForPublish, DEFAULT_VALIDATE_OPTS } = await import("../../shared/pbv2/validator");
+
+                const draftCandidateTree = {
+                    ...cloneJson(originalActive.treeJson as any),
+                    schemaVersion: 2,
+                    status: "DRAFT",
+                };
+                const basePriceValidation = validateTreeHasBasePrice(draftCandidateTree);
+                const publishValidation = validateTreeForPublish(draftCandidateTree, DEFAULT_VALIDATE_OPTS);
+
+                if (basePriceValidation.errors.length > 0 || publishValidation.errors.length > 0) {
+                    const errorCodes = [
+                        ...basePriceValidation.errors.map((finding: any) => finding.code || finding.message),
+                        ...publishValidation.errors.map((finding: any) => finding.code || finding.message),
+                    ];
+                    throw new Error(`Cannot duplicate product: active PBV2 tree failed publish validation (${errorCodes.join(", ")})`);
+                }
+
+                const publishedAt = new Date();
+                const activeTreeJson = {
+                    ...draftCandidateTree,
+                    status: "ACTIVE",
+                };
+                const [newActive] = await tx
+                    .insert(pbv2TreeVersions)
+                    .values({
+                        organizationId,
+                        productId: newProduct.id,
+                        status: 'ACTIVE',
+                        schemaVersion: originalActive.schemaVersion,
+                        treeJson: activeTreeJson,
+                        publishedAt,
+                        createdByUserId: userId,
+                        updatedByUserId: userId,
+                    } as any)
+                    .returning();
+
+                await tx
+                    .update(products)
+                    .set({
+                        pbv2ActiveTreeVersionId: newActive.id,
+                        optionTreeJson: activeTreeJson,
+                        updatedAt: publishedAt,
+                    } as any)
+                    .where(and(eq(products.id, newProduct.id), eq(products.organizationId, organizationId)));
             }
 
             // Clone PBV2 override tree version (ARCHIVED) if configured

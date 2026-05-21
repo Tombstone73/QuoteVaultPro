@@ -37,6 +37,7 @@ export function buildDuplicatedProductInsert(original: Product): Omit<InsertProd
 
     pricingProfileKey: original.pricingProfileKey ?? "default",
     pricingProfileConfig: original.pricingProfileConfig ? cloneJson(original.pricingProfileConfig) : null,
+    pricingEngine: (original as any).pricingEngine ?? "pricingProfile",
 
     pricingFormulaId: original.pricingFormulaId ?? null,
 
@@ -64,6 +65,7 @@ export function buildDuplicatedProductInsert(original: Product): Omit<InsertProd
     variantLabel: original.variantLabel ?? "Variant",
 
     requiresProductionJob: original.requiresProductionJob ?? true,
+    requiresProofApproval: (original as any).requiresProofApproval ?? false,
     isTaxable: original.isTaxable ?? true,
 
     // Duplicates are created as a draft (not active) by default.

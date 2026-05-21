@@ -26,7 +26,7 @@ describe("buildDuplicatedProductInsert", () => {
       artworkPolicy: "not_required" as any,
       pricingProfileKey: "default",
       pricingProfileConfig: { pbv2Override: { enabled: true, treeVersionId: "tv_1" }, nested: { a: 1 } } as any,
-      pricingEngine: "pricingProfile" as any,
+      pricingEngine: "formulaLibrary" as any,
       pricingFormulaId: null,
       useNestingCalculator: true,
       sheetWidth: "48.00" as any,
@@ -35,7 +35,7 @@ describe("buildDuplicatedProductInsert", () => {
       minPricePerItem: "1.25" as any,
       nestingVolumePricing: { enabled: true, tiers: [{ minSheets: 1, pricePerSheet: 9.99 }] },
       requiresProductionJob: true,
-      requiresProofApproval: false,
+      requiresProofApproval: true,
       isTaxable: true,
       isActive: true,
       createdAt: new Date() as any,
@@ -57,6 +57,8 @@ describe("buildDuplicatedProductInsert", () => {
     expect((original.priceBreaks as any).tiers[0].discountValue).toBe(10);
     expect((original.pricingProfileConfig as any).nested.a).toBe(1);
     expect(original.thumbnailUrls).toEqual(["a.png"]);
+    expect((dup as any).pricingEngine).toBe("formulaLibrary");
+    expect((dup as any).requiresProofApproval).toBe(true);
   });
 
   test("sets name suffix and isActive=false", () => {
