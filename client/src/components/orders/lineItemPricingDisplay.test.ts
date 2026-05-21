@@ -18,6 +18,7 @@ describe("deriveLineItemPricingDisplay", () => {
     const result = deriveLineItemPricingDisplay({
       ...baseInput,
       isActiveItem: false,
+      isDirty: true,
       computedTotal: 999,
       computedTotalQty: 5,
     });
@@ -42,6 +43,40 @@ describe("deriveLineItemPricingDisplay", () => {
     const result = deriveLineItemPricingDisplay({ ...baseInput, computedTotal: null });
     expect(result.displayTotal).toBe(100);
     expect(result.displayPerEach).toBe(100);
+    expect(result.isPreviewPrice).toBe(false);
+  });
+
+  it("displays the live preview total for a dirty line item before it is saved", () => {
+    const result = deriveLineItemPricingDisplay({
+      ...baseInput,
+      isDirty: true,
+      computedTotal: 175,
+      computedTotalQty: 1,
+    });
+    expect(result.displayTotal).toBe(175);
+    expect(result.isPreviewPrice).toBe(true);
+  });
+
+  it("marks the price as an unsaved preview even when it equals the persisted price", () => {
+    // The label reflects UNSAVED state, not a numeric difference. A dirty edit
+    // that happens to leave the price unchanged is still an unsaved preview.
+    const result = deriveLineItemPricingDisplay({
+      ...baseInput,
+      isDirty: true,
+      computedTotal: 100,
+      computedTotalQty: 1,
+    });
+    expect(result.displayTotal).toBe(100);
+    expect(result.isPreviewPrice).toBe(true);
+  });
+
+  it("does not mark a preview when the line item has no unsaved edits", () => {
+    const result = deriveLineItemPricingDisplay({
+      ...baseInput,
+      isDirty: false,
+      computedTotal: 175,
+      computedTotalQty: 1,
+    });
     expect(result.isPreviewPrice).toBe(false);
   });
 
@@ -71,26 +106,6 @@ describe("deriveLineItemPricingDisplay", () => {
     expect(result.isPreviewPrice).toBe(true);
   });
 
-  it("marks the price as an unsaved preview when it differs from persisted", () => {
-    const result = deriveLineItemPricingDisplay({
-      ...baseInput,
-      isDirty: true,
-      computedTotal: 175,
-      computedTotalQty: 1,
-    });
-    expect(result.isPreviewPrice).toBe(true);
-  });
-
-  it("does not mark a preview when the price is unchanged from persisted", () => {
-    const result = deriveLineItemPricingDisplay({
-      ...baseInput,
-      isDirty: true,
-      computedTotal: 100,
-      computedTotalQty: 1,
-    });
-    expect(result.isPreviewPrice).toBe(false);
-  });
-
   it("does not mark a preview while a calculation is in flight", () => {
     const result = deriveLineItemPricingDisplay({
       ...baseInput,
@@ -102,14 +117,16 @@ describe("deriveLineItemPricingDisplay", () => {
     expect(result.isPreviewPrice).toBe(false);
   });
 
-  it("does not mark a preview when the calculation failed", () => {
+  it("shows the persisted price (not a stale preview) when the calculation failed", () => {
     const result = deriveLineItemPricingDisplay({
       ...baseInput,
       isDirty: true,
       hasCalcError: true,
-      computedTotal: 175,
+      computedTotal: 175, // stale — must not be shown
       computedTotalQty: 1,
     });
+    expect(result.displayTotal).toBe(100);
+    expect(result.displayPerEach).toBe(100);
     expect(result.isPreviewPrice).toBe(false);
   });
 
