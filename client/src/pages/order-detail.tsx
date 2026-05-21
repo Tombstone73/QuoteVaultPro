@@ -579,6 +579,7 @@ export default function OrderDetail() {
   // Single canonical dirty value: staged order-level edits OR an unsaved line item.
   const hasStagedOrderChanges = hasAnyStagedChanges(pendingOrderPatch);
   const isDirty = hasStagedOrderChanges || hasDirtyLineItem;
+  const debugNavGuard = import.meta.env.DEV && isAdminOrOwner && searchParams.get("debugNavGuard") === "1";
   const isDirtyRef = useRef(isDirty);
   // Mirror the canonical value into the ref on every render (no effect-commit
   // lag). The navigation guard reads this ref at event time only — never during
@@ -604,16 +605,47 @@ export default function OrderDetail() {
   }, []);
 
   useEffect(() => {
+    if (debugNavGuard) {
+      console.log("[ORDER_NAV_GUARD] dirty-state", {
+        isDirty,
+        isDirtyRef: isDirtyRef.current,
+        hasDirtyLineItem,
+        hasStagedOrderChanges,
+      });
+    }
+  }, [debugNavGuard, hasDirtyLineItem, hasStagedOrderChanges, isDirty]);
+
+  useEffect(() => {
+    if (!isDirty) {
+      if (debugNavGuard) {
+        console.log("[ORDER_NAV_GUARD] unregistering guard (clean)");
+      }
+      return;
+    }
+
     const unregister = registerGuard(
-      () => {
+      (targetPath) => {
+        if (debugNavGuard) {
+          console.log("[ORDER_NAV_GUARD] guard-check", {
+            targetPath,
+            isDirty: isDirtyRef.current,
+            hasDirtyLineItem,
+            hasStagedOrderChanges,
+          });
+        }
         if (!isDirtyRef.current) return false;
         return "You have unsaved changes. Leave without saving?";
       },
       () => isDirtyRef.current
     );
 
-    return () => unregister();
-  }, [registerGuard]);
+    return () => {
+      if (debugNavGuard) {
+        console.log("[ORDER_NAV_GUARD] unregistering guard");
+      }
+      unregister();
+    };
+  }, [debugNavGuard, hasDirtyLineItem, hasStagedOrderChanges, isDirty, registerGuard]);
 
   const listNoteQuery = useQuery<{ listLabel: string | null }>(
     {
