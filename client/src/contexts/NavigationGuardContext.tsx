@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation, useNavigationType, type NavigateOptions } from 'react-router-dom';
+import { getBlockedPopReversalDelta, readHistoryIndex } from './navigationGuardHistory';
 
 /**
  * NavigationGuardContext
@@ -31,6 +32,8 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
   const location = useLocation();
   const navigationType = useNavigationType();
   const lastStableLocationRef = useRef<string>(location.pathname + location.search);
+  const lastStableHistoryIndexRef = useRef<number | null>(readHistoryIndex());
+  const pendingBlockedLocationRef = useRef<string | null>(null);
   const isRevertingRef = useRef<boolean>(false);
 
   const registerGuard = useCallback((guard: NavigationGuardFn, shouldBlock: () => boolean) => {
@@ -39,6 +42,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
     return () => {
       guardRef.current = null;
       shouldBlockRef.current = null;
+      pendingBlockedLocationRef.current = null;
     };
   }, []);
 
@@ -130,6 +134,8 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
     // NavLink clicks are PUSH navigation and should NEVER be intercepted here
     if (navigationType !== 'POP') {
       lastStableLocationRef.current = currentPath;
+      lastStableHistoryIndexRef.current = readHistoryIndex();
+      pendingBlockedLocationRef.current = null;
       if (import.meta.env.DEV) {
         console.log('[GUARD] Allowing PUSH/REPLACE navigation, type:', navigationType, 'to:', currentPath);
       }
@@ -144,6 +150,8 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
     if (isRevertingRef.current) {
       isRevertingRef.current = false;
       lastStableLocationRef.current = currentPath;
+      lastStableHistoryIndexRef.current = readHistoryIndex();
+      pendingBlockedLocationRef.current = null;
       if (import.meta.env.DEV) {
         console.log('[GUARD] Skipping guard logic (currently reverting)');
       }
@@ -157,6 +165,8 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
     // If no shouldBlock function OR it returns false, allow POP navigation immediately
     if (!shouldBlock || !shouldBlock()) {
       lastStableLocationRef.current = currentPath;
+      lastStableHistoryIndexRef.current = readHistoryIndex();
+      pendingBlockedLocationRef.current = null;
       if (import.meta.env.DEV) {
         console.log('[GUARD] Allowing POP (not dirty or no shouldBlock)');
       }
@@ -167,6 +177,8 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
     if (!guard) {
       // No guard function but shouldBlock is true - allow navigation anyway
       lastStableLocationRef.current = currentPath;
+      lastStableHistoryIndexRef.current = readHistoryIndex();
+      pendingBlockedLocationRef.current = null;
       if (import.meta.env.DEV) {
         console.log('[GUARD] Allowing POP (no guard function)');
       }
@@ -185,6 +197,8 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
           console.log('[GUARD] allow action=POP (not dirty) from:', lastStablePath, 'to:', currentPath);
         }
         lastStableLocationRef.current = currentPath;
+        lastStableHistoryIndexRef.current = readHistoryIndex();
+        pendingBlockedLocationRef.current = null;
         return;
       }
 
@@ -198,15 +212,30 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
           console.log('[GUARD] allow (user confirmed) action=POP from:', lastStablePath, 'to:', currentPath);
         }
         lastStableLocationRef.current = currentPath;
+        lastStableHistoryIndexRef.current = readHistoryIndex();
+        pendingBlockedLocationRef.current = null;
       } else {
-        // User cancelled, revert URL to match UI
+        // User cancelled. Reverse the POP so the browser history index returns
+        // to the last stable entry instead of rewriting the attempted location.
         if (import.meta.env.DEV) {
           console.log('[GUARD] deny (user cancelled) action=POP, reverting to:', lastStablePath);
         }
+        pendingBlockedLocationRef.current = currentPath;
         isRevertingRef.current = true;
-        navigate(lastStablePath, { replace: true });
+        const currentHistoryIndex = readHistoryIndex();
+        const lastStableHistoryIndex = lastStableHistoryIndexRef.current;
+        const reversalDelta = getBlockedPopReversalDelta({
+          currentHistoryIndex,
+          lastStableHistoryIndex,
+        });
+        if (reversalDelta !== null) {
+          navigate(reversalDelta);
+        } else {
+          navigate(lastStablePath, { replace: true });
+        }
       }
     } else {
+      pendingBlockedLocationRef.current = null;
       if (import.meta.env.DEV) {
         console.log('[GUARD] POP navigation but path unchanged, ignoring');
       }
