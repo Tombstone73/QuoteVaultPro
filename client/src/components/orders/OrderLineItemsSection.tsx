@@ -1076,6 +1076,11 @@ export function OrderLineItemsSection({
   // Quantity that `computedTotal` was computed for. Used to derive per-each
   // consistently so a stale total is never divided by a freshly-changed qty.
   const [computedTotalQty, setComputedTotalQty] = useState<number | null>(null);
+  // Bumped whenever `savedSnapshotRef` is rewritten. `savedSnapshotRef` is a ref,
+  // so mutating it does not re-run the `isDirty` memo on its own — this counter
+  // (a memo dep) forces a deterministic recompute after a save so the dirty
+  // flag and navigation guard clear without waiting on an incidental refetch.
+  const [savedSnapshotVersion, setSavedSnapshotVersion] = useState(0);
 
   // Dev-only PBV2 diagnostics: surfaces tree shape, node counts, and visibility resolution.
   const pbv2Diagnostics = useMemo(() => {
@@ -1481,6 +1486,8 @@ export function OrderLineItemsSection({
     requiresDesignInput,
     requiresPrepressInput,
     designBriefDraft,
+    // Forces recompute against the freshly-written savedSnapshotRef after a save.
+    savedSnapshotVersion,
   ]);
 
   // Surface unsaved line item state to the parent order editor so it can guard
@@ -1676,6 +1683,12 @@ export function OrderLineItemsSection({
         totalPrice: resolvedTotal,
       };
       designBriefSnapshotRef.current[itemId] = designBriefDraft;
+      // Force `isDirty` to recompute against the snapshot just written, so the
+      // line item dirty flag (and the order navigation guard) clear immediately
+      // — independent of when the post-save order refetch happens to land.
+      setSavedSnapshotVersion((v) => v + 1);
+      // A successful save supersedes any prior preview calculation error.
+      setCalcError(null);
 
       setTimeout(() => setSavedItemId(null), 2000);
       setTimeout(() => setDesignBriefSavedAt(null), 2000);

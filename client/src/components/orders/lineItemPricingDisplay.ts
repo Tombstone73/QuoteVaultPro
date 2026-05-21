@@ -31,12 +31,9 @@ export type LineItemPricingDisplay = {
   displayTotal: number;
   /** Per-each to display ($), always consistent with displayTotal. */
   displayPerEach: number;
-  /** True when displayed price is an unsaved preview that differs from persisted. */
+  /** True when the displayed price is an unsaved preview (any dirty edit). */
   isPreviewPrice: boolean;
 };
-
-/** Tolerance ($) below which a preview total is considered unchanged. */
-const PRICE_EPSILON = 0.005;
 
 export function deriveLineItemPricingDisplay(
   input: LineItemPricingDisplayInput,
@@ -59,7 +56,10 @@ export function deriveLineItemPricingDisplay(
       ? computedTotal
       : null;
 
-  if (previewTotal === null) {
+  // No preview available, or the preview calculation failed: fall back to the
+  // persisted (saved) price. On calc error we deliberately show the saved value
+  // rather than a stale preview — the failure is surfaced separately as a warning.
+  if (previewTotal === null || hasCalcError) {
     return {
       displayTotal: persistedTotal,
       displayPerEach: persistedPerEach,
@@ -75,11 +75,16 @@ export function deriveLineItemPricingDisplay(
       ? previewTotal / computedTotalQty
       : persistedPerEach;
 
-  const previewPriceChanged = Math.abs(previewTotal - persistedTotal) > PRICE_EPSILON;
+  // The preview label reflects UNSAVED state, not whether the number changed.
+  // Any dirty line item showing a current (non-erroring) preview is showing an
+  // unsaved value — even if that value happens to equal the persisted price.
+  // While a recalculation is in flight we suppress the label (the caller shows
+  // "Calculating…") so the row never looks saved mid-calculation.
+  const isPreviewPrice = isDirty && !isCalculating;
 
   return {
     displayTotal: previewTotal,
     displayPerEach,
-    isPreviewPrice: isDirty && previewPriceChanged && !isCalculating && !hasCalcError,
+    isPreviewPrice,
   };
 }
