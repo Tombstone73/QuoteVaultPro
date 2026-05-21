@@ -4,6 +4,9 @@ export function readHistoryIndex(): number | null {
   return typeof idx === "number" ? idx : null;
 }
 
+// Reverse a cancelled browser POP back to the last stable history entry when
+// BrowserRouter has enough history metadata to tell whether the user went back
+// or forward.
 export function getBlockedPopReversalDelta(input: {
   currentHistoryIndex: number | null;
   lastStableHistoryIndex: number | null;

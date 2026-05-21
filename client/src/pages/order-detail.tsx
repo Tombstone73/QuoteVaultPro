@@ -579,7 +579,7 @@ export default function OrderDetail() {
   // Single canonical dirty value: staged order-level edits OR an unsaved line item.
   const hasStagedOrderChanges = hasAnyStagedChanges(pendingOrderPatch);
   const isDirty = hasStagedOrderChanges || hasDirtyLineItem;
-  const debugNavGuard = import.meta.env.DEV && isAdminOrOwner && searchParams.get("debugNavGuard") === "1";
+  const isDebugNavGuardEnabled = import.meta.env.DEV && isAdminOrOwner && searchParams.get("debugNavGuard") === "1";
   const isDirtyRef = useRef(isDirty);
   // Mirror the canonical value into the ref on every render (no effect-commit
   // lag). The navigation guard reads this ref at event time only — never during
@@ -605,7 +605,7 @@ export default function OrderDetail() {
   }, []);
 
   useEffect(() => {
-    if (debugNavGuard) {
+    if (isDebugNavGuardEnabled) {
       console.log("[ORDER_NAV_GUARD] dirty-state", {
         isDirty,
         isDirtyRef: isDirtyRef.current,
@@ -613,11 +613,11 @@ export default function OrderDetail() {
         hasStagedOrderChanges,
       });
     }
-  }, [debugNavGuard, hasDirtyLineItem, hasStagedOrderChanges, isDirty]);
+  }, [hasDirtyLineItem, hasStagedOrderChanges, isDebugNavGuardEnabled, isDirty]);
 
   useEffect(() => {
     if (!isDirty) {
-      if (debugNavGuard) {
+      if (isDebugNavGuardEnabled) {
         console.log("[ORDER_NAV_GUARD] unregistering guard (clean)");
       }
       return;
@@ -625,7 +625,7 @@ export default function OrderDetail() {
 
     const unregister = registerGuard(
       (targetPath) => {
-        if (debugNavGuard) {
+        if (isDebugNavGuardEnabled) {
           console.log("[ORDER_NAV_GUARD] guard-check", {
             targetPath,
             isDirty: isDirtyRef.current,
@@ -640,12 +640,12 @@ export default function OrderDetail() {
     );
 
     return () => {
-      if (debugNavGuard) {
+      if (isDebugNavGuardEnabled) {
         console.log("[ORDER_NAV_GUARD] unregistering guard");
       }
       unregister();
     };
-  }, [debugNavGuard, hasDirtyLineItem, hasStagedOrderChanges, isDirty, registerGuard]);
+  }, [hasDirtyLineItem, hasStagedOrderChanges, isDebugNavGuardEnabled, isDirty, registerGuard]);
 
   const listNoteQuery = useQuery<{ listLabel: string | null }>(
     {
