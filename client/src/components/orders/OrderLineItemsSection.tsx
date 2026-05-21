@@ -44,6 +44,7 @@ import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel"
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/useAuth";
 import { useCreateOrderLineItem, useDeleteOrderLineItem, useTransitionLineItemWorkflow, useUpdateOrderLineItem } from "@/hooks/useOrders";
 import { useOrderFiles } from "@/hooks/useOrderFiles";
 import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
@@ -544,6 +545,9 @@ export function OrderLineItemsSection({
 }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { isAdmin, isPlatformAdmin, isPlatformDeveloper } = useAuth();
+  const canSeeDebug = isAdmin || isPlatformAdmin || isPlatformDeveloper;
+  const [showLineItemDebug, setShowLineItemDebug] = useState(false);
 
   const [pbv2CurrentSignatureByLineItemId, setPbv2CurrentSignatureByLineItemId] = useState<Record<string, string>>({});
   const [pbv2SnapshotSignatureByLineItemId, setPbv2SnapshotSignatureByLineItemId] = useState<Record<string, string>>({});
@@ -2322,36 +2326,51 @@ export function OrderLineItemsSection({
                                 }
                                 optionsSlot={
                                   <>
-                                    {isExpanded && (
-                                      <div className="mb-3 rounded-md border border-fuchsia-500/40 bg-fuchsia-500/5 p-3 text-[11px]">
-                                        <div className="font-medium text-fuchsia-700 dark:text-fuchsia-300">Initial line item draft debug</div>
-                                        <div className="mt-2 grid gap-1 font-mono text-muted-foreground">
-                                          <div>initialDraft.requiresDesign: {String(initialDraftSnapshot?.requiresDesign ?? initialDraftDebug?.requiresDesign ?? "(missing)")}</div>
-                                          <div>initialDraft.requiresPrepress: {String(initialDraftSnapshot?.requiresPrepress ?? initialDraftDebug?.requiresPrepress ?? "(missing)")}</div>
-                                          <div>initialDraft.requiresProofApproval: {String(initialDraftSnapshot?.requiresProofApproval ?? initialDraftDebug?.requiresProofApproval ?? "(missing)")}</div>
-                                          <div>initialDraft.optionSelectionsJson: {JSON.stringify(initialDraftSnapshot?.optionSelectionsJson ?? initialDraftDebug?.optionSelectionsJson ?? null)}</div>
-                                          <div>rendered option labels in order: {(initialDraftSnapshot?.renderedOptionLabels ?? initialDraftDebug?.sortedOptionLabels ?? []).join(", ") || "(none)"}</div>
-                                          <div>product routing defaults used: {JSON.stringify(initialDraftSnapshot?.productRoutingDefaultsUsed ?? initialDraftDebug?.productRoutingDefaultsUsed ?? null)}</div>
-                                          <div>rendered.requiresDesign: {String(renderedRequiresDesign)}</div>
-                                          <div>rendered.requiresPrepress: {String(renderedRequiresPrepress)}</div>
-                                          <div>rendered.requiresProofApproval: {String(renderedRequiresProofApproval)}</div>
-                                          <div>userEditedOptions: {String(lineItemUserEditedOptions)}</div>
-                                        </div>
-                                      </div>
-                                    )}
+                                    {isExpanded && canSeeDebug && (
+                                      <div className="mb-3">
+                                        <button
+                                          type="button"
+                                          onClick={() => setShowLineItemDebug((v) => !v)}
+                                          className="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+                                        >
+                                          <ChevronDown className={cn("h-3 w-3 transition-transform", showLineItemDebug && "rotate-180")} />
+                                          {showLineItemDebug ? "Hide Debug" : "Show Debug"}
+                                        </button>
 
-                                    {isExpanded && pricingDebugSnapshot && (
-                                      <div className="mb-3 rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 text-[11px]">
-                                        <div className="font-medium text-emerald-700 dark:text-emerald-300">PBV2 pricing runtime debug</div>
-                                        <div className="mt-2 grid gap-1 font-mono text-muted-foreground">
-                                          <div>selected option values: {JSON.stringify(pricingDebugSnapshot.selectedOptionValues ?? pricingDebugSnapshot.effectiveSelections ?? null)}</div>
-                                          <div>matched matrix row id: {String(pricingDebugSnapshot.resolvedMatrixRowId ?? "(none)")}</div>
-                                          <div>resolved matrix variables: {JSON.stringify(pricingDebugSnapshot.resolvedMatrixVariables ?? {})}</div>
-                                          <div>base_price source: {String(pricingDebugSnapshot.basePriceSource ?? "(unknown)")}</div>
-                                          <div>rate used source: {String(pricingDebugSnapshot.rateUsedSource ?? "(unknown)")}</div>
-                                          <div>minimum applied: {String(pricingDebugSnapshot.minimumApplied ?? false)}</div>
-                                          <div>formula scope used: {JSON.stringify(pricingDebugSnapshot.formulaScopeUsed ?? pricingDebugSnapshot.formulaVariables ?? null)}</div>
-                                        </div>
+                                        {showLineItemDebug && (
+                                          <>
+                                            <div className="mt-2 rounded-md border border-fuchsia-500/40 bg-fuchsia-500/5 p-3 text-[11px]">
+                                              <div className="font-medium text-fuchsia-700 dark:text-fuchsia-300">Initial line item draft debug</div>
+                                              <div className="mt-2 grid gap-1 font-mono text-muted-foreground">
+                                                <div>initialDraft.requiresDesign: {String(initialDraftSnapshot?.requiresDesign ?? initialDraftDebug?.requiresDesign ?? "(missing)")}</div>
+                                                <div>initialDraft.requiresPrepress: {String(initialDraftSnapshot?.requiresPrepress ?? initialDraftDebug?.requiresPrepress ?? "(missing)")}</div>
+                                                <div>initialDraft.requiresProofApproval: {String(initialDraftSnapshot?.requiresProofApproval ?? initialDraftDebug?.requiresProofApproval ?? "(missing)")}</div>
+                                                <div>initialDraft.optionSelectionsJson: {JSON.stringify(initialDraftSnapshot?.optionSelectionsJson ?? initialDraftDebug?.optionSelectionsJson ?? null)}</div>
+                                                <div>rendered option labels in order: {(initialDraftSnapshot?.renderedOptionLabels ?? initialDraftDebug?.sortedOptionLabels ?? []).join(", ") || "(none)"}</div>
+                                                <div>product routing defaults used: {JSON.stringify(initialDraftSnapshot?.productRoutingDefaultsUsed ?? initialDraftDebug?.productRoutingDefaultsUsed ?? null)}</div>
+                                                <div>rendered.requiresDesign: {String(renderedRequiresDesign)}</div>
+                                                <div>rendered.requiresPrepress: {String(renderedRequiresPrepress)}</div>
+                                                <div>rendered.requiresProofApproval: {String(renderedRequiresProofApproval)}</div>
+                                                <div>userEditedOptions: {String(lineItemUserEditedOptions)}</div>
+                                              </div>
+                                            </div>
+
+                                            {pricingDebugSnapshot && (
+                                              <div className="mt-2 rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 text-[11px]">
+                                                <div className="font-medium text-emerald-700 dark:text-emerald-300">PBV2 pricing runtime debug</div>
+                                                <div className="mt-2 grid gap-1 font-mono text-muted-foreground">
+                                                  <div>selected option values: {JSON.stringify(pricingDebugSnapshot.selectedOptionValues ?? pricingDebugSnapshot.effectiveSelections ?? null)}</div>
+                                                  <div>matched matrix row id: {String(pricingDebugSnapshot.resolvedMatrixRowId ?? "(none)")}</div>
+                                                  <div>resolved matrix variables: {JSON.stringify(pricingDebugSnapshot.resolvedMatrixVariables ?? {})}</div>
+                                                  <div>base_price source: {String(pricingDebugSnapshot.basePriceSource ?? "(unknown)")}</div>
+                                                  <div>rate used source: {String(pricingDebugSnapshot.rateUsedSource ?? "(unknown)")}</div>
+                                                  <div>minimum applied: {String(pricingDebugSnapshot.minimumApplied ?? false)}</div>
+                                                  <div>formula scope used: {JSON.stringify(pricingDebugSnapshot.formulaScopeUsed ?? pricingDebugSnapshot.formulaVariables ?? null)}</div>
+                                                </div>
+                                              </div>
+                                            )}
+                                          </>
+                                        )}
                                       </div>
                                     )}
 
