@@ -18,6 +18,7 @@ import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/vali
 import { stringifyPbv2TreeJson } from "@shared/pbv2/starterTree";
 import { buildSymbolTable } from "@shared/pbv2/symbolTable";
 import { pbv2ToPricingAddons, pbv2ToWeightTotal } from "@shared/pbv2/pricingAdapter";
+import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
 import type { Finding } from "@shared/pbv2/findings";
 import type { ValidationResult } from "@shared/pbv2/validator/types";
 import type { ProductOptionRule } from "@shared/productOptionRules";
@@ -81,7 +82,7 @@ function applyTreeUpdate(
   setIsLocalDirty: (val: boolean) => void
 ) {
   // Always normalize before setting state
-  const normalizedTree = normalizeTreeJson(nextTree);
+  const normalizedTree = sanitizePbv2PricingMatrix(normalizeTreeJson(nextTree)).tree;
   
   // DEV: Critical diagnostic logging including edge conditions
   if (import.meta.env.DEV) {
@@ -326,7 +327,7 @@ export default function PBV2ProductBuilderSectionV2({
   // CRITICAL: Reads from ref, not state, to avoid stale closure
   const getCurrentPBV2Tree = () => {
     if (!localTreeJsonRef.current) return null;
-    return normalizeTreeJson(localTreeJsonRef.current);
+    return sanitizePbv2PricingMatrix(normalizeTreeJson(localTreeJsonRef.current)).tree;
   };
 
   // Update tree meta from external callers (e.g. ProductForm shipping config, product images)
@@ -520,7 +521,9 @@ export default function PBV2ProductBuilderSectionV2({
     }
 
     // Hydrate from source tree (draft or active)
-    const normalizedTree = normalizeTreeJson(sourceTree.treeJson);
+    const normalizedSourceTree = normalizeTreeJson(sourceTree.treeJson);
+    const matrixSanitizer = sanitizePbv2PricingMatrix(normalizedSourceTree);
+    const normalizedTree = matrixSanitizer.tree;
     const treeSource = draft ? 'DRAFT' : 'ACTIVE';
     if (import.meta.env.DEV) {
       const nc = Object.keys((normalizedTree as any)?.nodes || {}).length;
@@ -539,7 +542,13 @@ export default function PBV2ProductBuilderSectionV2({
     }
     
     setLocalTreeJson(normalizedTree);
-    // CRITICAL: Clear dirty flag after hydration - user hasn't made changes yet
+    if (matrixSanitizer.changed) {
+      toast({
+        title: "Removed invalid matrix references",
+        description: "Deleted options were cleaned from the pricing matrix. Save to persist the repair.",
+      });
+    }
+    // CRITICAL: Clear dirty flag after hydration unless we repaired stale matrix state
       console.log('[PBV2_STATE_RESET] setLocalTreeJson called (hydration from server)', {
         source: treeSource,
         productId,
@@ -547,12 +556,13 @@ export default function PBV2ProductBuilderSectionV2({
         activeId: active?.id,
         stack: new Error().stack?.split('\n').slice(0, 6).join('\n')
       });
-    setHasLocalChanges(false);
+    setHasLocalChanges(matrixSanitizer.changed);
+    setIsLocalDirty(matrixSanitizer.changed);
     
     if (import.meta.env.DEV) {
       console.log('[PBV2_HYDRATE] Dirty flag cleared after tree load from', treeSource);
     }
-  }, [productId, draft?.id, draft?.treeJson, active?.id, active?.treeJson, isLocalDirty]);
+  }, [productId, draft?.id, draft?.treeJson, active?.id, active?.treeJson, isLocalDirty, toast]);
 
   // Build editor model from local tree
   const editorModel = useMemo(() => {
@@ -982,8 +992,28 @@ export default function PBV2ProductBuilderSectionV2({
   const handleUpdatePricingMatrix = (pricingMatrix: ProductOptionPricingMatrix) => {
     if (!localTreeJson) return;
     const tree = JSON.parse(JSON.stringify(localTreeJson));
-    tree.pricingMatrix = pricingMatrix;
+    if (pricingMatrix.dimensions.length === 0 || pricingMatrix.rows.length === 0) {
+      delete tree.pricingMatrix;
+      if (tree.meta && typeof tree.meta === "object") delete tree.meta.pricingMatrix;
+    } else {
+      tree.pricingMatrix = pricingMatrix;
+      if (tree.meta && typeof tree.meta === "object") delete tree.meta.pricingMatrix;
+    }
     applyTreeUpdate(tree, 'handleUpdatePricingMatrix', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
+  };
+
+  const handleRepairPricingMatrix = () => {
+    if (!localTreeJson) return;
+    const result = sanitizePbv2PricingMatrix(localTreeJson);
+    if (!result.changed) {
+      toast({ title: "Pricing matrix is already clean" });
+      return;
+    }
+    applyTreeUpdate(result.tree, 'handleRepairPricingMatrix', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
+    toast({
+      title: "Invalid matrix references cleaned",
+      description: `${result.changes.length} stale reference(s) removed.`,
+    });
   };
 
   const handleSave = async () => {
@@ -1012,7 +1042,15 @@ export default function PBV2ProductBuilderSectionV2({
     const treeSnapshot = localTreeJson;
 
     // Normalize + ensure rootNodeIds before PUT (client has authority over this field)
-    const normalizedTree = normalizeTreeJson(treeSnapshot);
+    const matrixSanitizer = sanitizePbv2PricingMatrix(normalizeTreeJson(treeSnapshot));
+    const normalizedTree = matrixSanitizer.tree;
+    if (matrixSanitizer.changed) {
+      setLocalTreeJson(normalizedTree);
+      toast({
+        title: "Removed invalid matrix references",
+        description: "Deleted options were cleaned from the pricing matrix before save.",
+      });
+    }
     const nodes = (normalizedTree as any)?.nodes || {};
     const edges = Array.isArray((normalizedTree as any)?.edges) ? (normalizedTree as any).edges : [];
     const nodeCount = Object.keys(nodes).length;
@@ -1207,8 +1245,18 @@ export default function PBV2ProductBuilderSectionV2({
       return;
     }
 
+    const matrixSanitizer = sanitizePbv2PricingMatrix(normalizeTreeJson(localTreeJson));
+    if (matrixSanitizer.changed) {
+      applyTreeUpdate(matrixSanitizer.tree, 'handlePublishMatrixRepair', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
+      toast({
+        title: "Matrix references cleaned",
+        description: "Save the repaired draft before publishing.",
+      });
+      return;
+    }
+
     // Run STRICT publish validation (not edit validation)
-    const publishValidation = validateTreeForPublish(localTreeJson as any, DEFAULT_VALIDATE_OPTS);
+    const publishValidation = validateTreeForPublish(matrixSanitizer.tree as any, DEFAULT_VALIDATE_OPTS);
 
     // Check for errors
     if (publishValidation.errors.length > 0) {
@@ -1369,6 +1417,7 @@ export default function PBV2ProductBuilderSectionV2({
         onDeletePricingV2Tier={handleDeletePricingV2Tier}
         onUpdateOptionRules={handleUpdateOptionRules}
         onUpdatePricingMatrix={handleUpdatePricingMatrix}
+        onRepairPricingMatrix={handleRepairPricingMatrix}
         onUpdateProduct={handleUpdateProduct}
         onSave={handleSave}
         onPublish={handlePublish}

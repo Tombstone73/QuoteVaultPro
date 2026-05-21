@@ -44,6 +44,7 @@ export interface PBV2ProductBuilderLayoutProps {
   onDeletePricingV2Tier: (kind: 'qty' | 'sqft', index: number) => void;
   onUpdateOptionRules: (rules: ProductOptionRule[]) => void;
   onUpdatePricingMatrix: (pricingMatrix: ProductOptionPricingMatrix) => void;
+  onRepairPricingMatrix: () => void;
   onSave: () => void;
   onPublish: () => void;
   onExportJson: () => void;
@@ -89,6 +90,7 @@ export function PBV2ProductBuilderLayout({
   onDeletePricingV2Tier,
   onUpdateOptionRules,
   onUpdatePricingMatrix,
+  onRepairPricingMatrix,
   onUpdateProduct,
   onSave,
   onPublish,
@@ -155,6 +157,7 @@ export function PBV2ProductBuilderLayout({
               treeJson={treeJson}
               onUpdateRules={onUpdateOptionRules}
               onUpdatePricingMatrix={onUpdatePricingMatrix}
+              onRepairPricingMatrix={onRepairPricingMatrix}
             />
           </PBV2EditorErrorBoundary>
         </div>
