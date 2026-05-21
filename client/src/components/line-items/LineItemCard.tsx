@@ -118,6 +118,7 @@ export type LineItemCardProps = {
   isDirty?: boolean;
   isSaving?: boolean;
   isSaved?: boolean;
+  isPreviewPrice?: boolean;
   onSave?: () => void;
   onDuplicate?: () => void;
   onRemove?: () => void;
@@ -190,6 +191,7 @@ export function LineItemCard({
   isDirty = false,
   isSaving = false,
   isSaved = false,
+  isPreviewPrice = false,
   onSave,
   onDuplicate,
   onRemove,
@@ -640,7 +642,10 @@ export function LineItemCard({
                         : calcError}
                     </div>
                   )}
-                  {!isCalculating && !calcError && <div className="text-[11px] text-transparent">—</div>}
+                  {!isCalculating && !calcError && isPreviewPrice && (
+                    <div className="text-[11px] text-amber-600 dark:text-amber-500 font-medium">Preview price · unsaved</div>
+                  )}
+                  {!isCalculating && !calcError && !isPreviewPrice && <div className="text-[11px] text-transparent">—</div>}
                 </div>
               </div>
             </div>

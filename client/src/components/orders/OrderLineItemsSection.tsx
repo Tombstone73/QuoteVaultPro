@@ -1927,6 +1927,20 @@ export function OrderLineItemsSection({
                       ? ((item as any).overridePriceCents as number)
                       : null;
                   const isOverride = currentOverrideCents !== null;
+
+                  // Live preview price for the currently-expanded item (not yet saved)
+                  const isActiveItem = isExpanded && expandedItem?.id === item.id;
+                  const previewTotal =
+                    isActiveItem && !isOverride && Number.isFinite(computedTotal)
+                      ? (computedTotal as number)
+                      : null;
+                  // Show the preview label only when the price has actually changed from persisted
+                  const previewPriceChanged =
+                    previewTotal !== null && Math.abs(previewTotal - total) > 0.005;
+                  const isPreviewPrice =
+                    isActiveItem && isDirty && previewPriceChanged && !isCalculating && !calcError;
+                  const displayTotal = previewTotal !== null ? previewTotal : total;
+                  const displayPerEa = previewTotal !== null && qtyNum > 0 ? previewTotal / qtyNum : perEa;
                   const displayPrice = isOverride ? currentOverrideCents / 100 : total;
                   const priceEditText = priceEditTextById[String(item.id)] ?? displayPrice.toFixed(2);
                   const isEditingPrice = editingPriceItemId === String(item.id);
@@ -2112,8 +2126,8 @@ export function OrderLineItemsSection({
                                 title={productName}
                                 sizeLabel={`${item.width || "0"}" × ${item.height || "0"}"`}
                                 qtyLabel={`Qty ${item.quantity || 0}`}
-                                unitPriceLabel={`${formatMoney(perEa)}/ea`}
-                                totalLabel={formatMoney(total)}
+                                unitPriceLabel={`${formatMoney(displayPerEa)}/ea`}
+                                totalLabel={formatMoney(displayTotal)}
                                 badges={{
                                   isNew: statusValue === "new",
                                   override: isOverride,
@@ -2311,6 +2325,7 @@ export function OrderLineItemsSection({
                                 }
                                 isCalculating={isCalculating}
                                 calcError={calcError}
+                                isPreviewPrice={isPreviewPrice}
                                 description={isExpanded && expandedItem && expandedItem.id === item.id ? notes : persistedDescription}
                                 productionNotes={notesDraftById[String(item.id)] ?? persistedProductionNotes}
                                 onDescriptionChange={
