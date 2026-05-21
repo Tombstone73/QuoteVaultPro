@@ -42,6 +42,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
+import { deriveLineItemPricingDisplay } from "@/components/orders/lineItemPricingDisplay";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
@@ -534,6 +535,7 @@ export function OrderLineItemsSection({
   productionFocusLineItemIds = [],
   productionPriorityLineItemIds = [],
   onAfterLineItemsChange,
+  onDirtyStateChange,
 }: {
   orderId: string;
   customerId?: string | null;
@@ -542,6 +544,8 @@ export function OrderLineItemsSection({
   productionFocusLineItemIds?: string[];
   productionPriorityLineItemIds?: string[];
   onAfterLineItemsChange?: () => Promise<void>;
+  /** Reports whether the expanded line item has unsaved edits. */
+  onDirtyStateChange?: (hasUnsavedLineItem: boolean) => void;
 }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -1069,6 +1073,9 @@ export function OrderLineItemsSection({
   const [isCalculating, setIsCalculating] = useState(false);
   const [calcError, setCalcError] = useState<string | null>(null);
   const [computedTotal, setComputedTotal] = useState<number | null>(null);
+  // Quantity that `computedTotal` was computed for. Used to derive per-each
+  // consistently so a stale total is never divided by a freshly-changed qty.
+  const [computedTotalQty, setComputedTotalQty] = useState<number | null>(null);
 
   // Dev-only PBV2 diagnostics: surfaces tree shape, node counts, and visibility resolution.
   const pbv2Diagnostics = useMemo(() => {
@@ -1312,6 +1319,7 @@ export function OrderLineItemsSection({
 
     const currentTotal = Number.parseFloat(expandedItem.totalPrice || "0") || 0;
     setComputedTotal(Number.isFinite(currentTotal) ? currentTotal : 0);
+    setComputedTotalQty(expandedItem.quantity || 1);
     const currentOverrideCents = (expandedItem as any)?.overridePriceCents;
     const priceForEditor =
       typeof currentOverrideCents === "number" && Number.isFinite(currentOverrideCents)
@@ -1475,6 +1483,16 @@ export function OrderLineItemsSection({
     designBriefDraft,
   ]);
 
+  // Surface unsaved line item state to the parent order editor so it can guard
+  // navigation and block Save Order until the open line item is saved.
+  useEffect(() => {
+    onDirtyStateChange?.(isDirty);
+  }, [isDirty, onDirtyStateChange]);
+
+  useEffect(() => {
+    return () => onDirtyStateChange?.(false);
+  }, [onDirtyStateChange]);
+
   // Debounced price calculation for expanded item
   useDebouncedEffect(
     () => {
@@ -1520,6 +1538,8 @@ export function OrderLineItemsSection({
           const price = Number(data?.linePrice);
           if (!Number.isFinite(price)) return;
           setComputedTotal(price);
+          // Record the qty this total was priced for so per-each stays consistent.
+          setComputedTotalQty(qtyNum);
 
           // Store PBV2 snapshot from response (contains treeJson, visibleNodeIds, selections)
           if (data?.pbv2SnapshotJson) {
@@ -1607,7 +1627,7 @@ export function OrderLineItemsSection({
           }
         : {};
 
-      await updateLineItem.mutateAsync({
+      const savedLineItem = await updateLineItem.mutateAsync({
         id: itemId,
         data: {
           width: dimsRequired ? widthNum : null,
@@ -1623,6 +1643,13 @@ export function OrderLineItemsSection({
           ...(v2Patch as any),
         },
       });
+
+      // Server reprices authoritatively — adopt its result as the new baseline
+      // so the displayed preview matches the persisted price after save.
+      const authoritativeTotal = Number((savedLineItem as any)?.totalPrice);
+      const resolvedTotal = Number.isFinite(authoritativeTotal) ? authoritativeTotal : totalPrice;
+      setComputedTotal(resolvedTotal);
+      setComputedTotalQty(qtyNum);
 
       const shouldPersistDesignBrief = Boolean(designBriefQuery.data?.id)
         || Boolean(designBriefQuery.data?.effectiveRequiresDesign)
@@ -1646,7 +1673,7 @@ export function OrderLineItemsSection({
         requiresPrepress: requiresPrepressInput,
         optionSelections,
         optionSelectionsV2: optionSelectionsV2.selected ?? {},
-        totalPrice,
+        totalPrice: resolvedTotal,
       };
       designBriefSnapshotRef.current[itemId] = designBriefDraft;
 
@@ -1928,19 +1955,22 @@ export function OrderLineItemsSection({
                       : null;
                   const isOverride = currentOverrideCents !== null;
 
-                  // Live preview price for the currently-expanded item (not yet saved)
+                  // Live preview price for the currently-expanded item (not yet saved).
+                  // Per-each is derived from the qty the preview total was priced for,
+                  // never the live draft qty, so total and per-each stay consistent.
                   const isActiveItem = isExpanded && expandedItem?.id === item.id;
-                  const previewTotal =
-                    isActiveItem && !isOverride && Number.isFinite(computedTotal)
-                      ? (computedTotal as number)
-                      : null;
-                  // Show the preview label only when the price has actually changed from persisted
-                  const previewPriceChanged =
-                    previewTotal !== null && Math.abs(previewTotal - total) > 0.005;
-                  const isPreviewPrice =
-                    isActiveItem && isDirty && previewPriceChanged && !isCalculating && !calcError;
-                  const displayTotal = previewTotal !== null ? previewTotal : total;
-                  const displayPerEa = previewTotal !== null && qtyNum > 0 ? previewTotal / qtyNum : perEa;
+                  const { displayTotal, displayPerEach: displayPerEa, isPreviewPrice } =
+                    deriveLineItemPricingDisplay({
+                      isActiveItem,
+                      isOverride,
+                      persistedTotal: total,
+                      persistedPerEach: perEa,
+                      computedTotal: isActiveItem ? computedTotal : null,
+                      computedTotalQty: isActiveItem ? computedTotalQty : null,
+                      isDirty,
+                      isCalculating,
+                      hasCalcError: Boolean(calcError),
+                    });
                   const displayPrice = isOverride ? currentOverrideCents / 100 : total;
                   const priceEditText = priceEditTextById[String(item.id)] ?? displayPrice.toFixed(2);
                   const isEditingPrice = editingPriceItemId === String(item.id);
