@@ -68,6 +68,7 @@ import type { OrderState } from "@/hooks/useOrderState";
 import { isTerminalState as checkIfTerminalState } from "@/hooks/useOrderState";
 import { OrderLineItemsSection, type OrderLineItemsSectionHandle } from "@/components/orders/OrderLineItemsSection";
 import { orchestrateOrderSave } from "@/pages/orderSaveOrchestration";
+import { createOrderNavigationGuard } from "@/pages/orderNavigationGuard";
 import { ManualReservationsCard } from "@/components/orders/ManualReservationsCard";
 import BackNavControls from "@/components/BackNavControls";
 import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
@@ -576,76 +577,63 @@ export default function OrderDetail() {
     ?? preferences?.orders?.requireLineItemsDoneToComplete
     ?? true); // Default strict
   const canEditOrder = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
-  // Single canonical dirty value: staged order-level edits OR an unsaved line item.
+  // Single canonical dirty value: staged order-level edits OR an unsaved line
+  // item. This same value drives the Save Order button AND the navigation
+  // guard — there is intentionally no ref mirror, so the two cannot disagree.
   const hasStagedOrderChanges = hasAnyStagedChanges(pendingOrderPatch);
   const isDirty = hasStagedOrderChanges || hasDirtyLineItem;
-  const isDebugNavGuardEnabled = import.meta.env.DEV && isAdminOrOwner && searchParams.get("debugNavGuard") === "1";
-  const isDirtyRef = useRef(isDirty);
-  // Mirror the canonical value into the ref on every render (no effect-commit
-  // lag). The navigation guard reads this ref at event time only — never during
-  // render — so a render-phase write here is safe and keeps the guard in lockstep
-  // with what the UI shows. An effect-based sync could leave the guard blocking
-  // after the visible save state was already clean.
-  isDirtyRef.current = isDirty;
 
   const applyOrderPatch = async (patch: Record<string, any>) => {
     if (!canEditOrder) return;
     setPendingOrderPatch((prev) => ({ ...prev, ...patch }));
   };
 
+  // beforeunload (tab close / refresh): attached only while dirty, re-bound on
+  // every isDirty change so it reflects the committed value without a ref.
   useEffect(() => {
+    if (!isDirty) return;
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!isDirtyRef.current) return;
       event.preventDefault();
       event.returnValue = "";
     };
-
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, []);
+  }, [isDirty]);
 
+  // DEV diagnostics — surfaces the canonical dirty state and the inputs that
+  // feed it whenever any of them change, so a stuck guard is traceable.
   useEffect(() => {
-    if (isDebugNavGuardEnabled) {
-      console.log("[ORDER_NAV_GUARD] dirty-state", {
-        isDirty,
-        isDirtyRef: isDirtyRef.current,
-        hasDirtyLineItem,
-        hasStagedOrderChanges,
-      });
-    }
-  }, [hasDirtyLineItem, hasStagedOrderChanges, isDebugNavGuardEnabled, isDirty]);
+    if (!import.meta.env.DEV) return;
+    console.warn("[ORDER_NAV_GUARD] dirty-state", {
+      isDirty,
+      hasDirtyLineItem,
+      hasStagedOrderChanges,
+      isSavingOrder,
+      updateOrderPending: updateOrder.isPending,
+      pendingOrderPatchKeys: Object.keys(pendingOrderPatch),
+      at: new Date().toISOString(),
+    });
+  }, [isDirty, hasDirtyLineItem, hasStagedOrderChanges, isSavingOrder, updateOrder.isPending, pendingOrderPatch]);
 
+  // In-app navigation guard. Re-registered whenever the committed `isDirty`
+  // value changes; the registered callbacks come straight from that value via
+  // createOrderNavigationGuard — no ref, no render-phase mutation, nothing that
+  // can go stale. When isDirty commits false the guard is re-registered with
+  // shouldBlock() === false, so navigation is allowed immediately; on unmount
+  // the cleanup unregisters it entirely.
   useEffect(() => {
-    if (!isDirty) {
-      if (isDebugNavGuardEnabled) {
-        console.log("[ORDER_NAV_GUARD] unregistering guard (clean)");
-      }
-      return;
+    const { guard, shouldBlock } = createOrderNavigationGuard(isDirty);
+    const unregister = registerGuard(guard, shouldBlock);
+    if (import.meta.env.DEV) {
+      console.warn("[ORDER_NAV_GUARD] guard registered", { isDirty });
     }
-
-    const unregister = registerGuard(
-      (targetPath) => {
-        if (isDebugNavGuardEnabled) {
-          console.log("[ORDER_NAV_GUARD] guard-check", {
-            targetPath,
-            isDirty: isDirtyRef.current,
-            hasDirtyLineItem,
-            hasStagedOrderChanges,
-          });
-        }
-        if (!isDirtyRef.current) return false;
-        return "You have unsaved changes. Leave without saving?";
-      },
-      () => isDirtyRef.current
-    );
-
     return () => {
-      if (isDebugNavGuardEnabled) {
-        console.log("[ORDER_NAV_GUARD] unregistering guard");
-      }
       unregister();
+      if (import.meta.env.DEV) {
+        console.warn("[ORDER_NAV_GUARD] guard unregistered", { wasDirty: isDirty });
+      }
     };
-  }, [hasDirtyLineItem, hasStagedOrderChanges, isDebugNavGuardEnabled, isDirty, registerGuard]);
+  }, [registerGuard, isDirty]);
 
   const listNoteQuery = useQuery<{ listLabel: string | null }>(
     {
