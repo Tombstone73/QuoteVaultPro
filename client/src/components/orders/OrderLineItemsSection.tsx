@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
@@ -528,16 +528,16 @@ function hasAnyDesignBriefText(draft: LineItemDesignBriefDraft): boolean {
   return Object.values(draft).some((value) => value.trim().length > 0);
 }
 
-export function OrderLineItemsSection({
-  orderId,
-  customerId,
-  readOnly,
-  lineItems,
-  productionFocusLineItemIds = [],
-  productionPriorityLineItemIds = [],
-  onAfterLineItemsChange,
-  onDirtyStateChange,
-}: {
+/** Imperative API the parent order editor uses to orchestrate a Save Order. */
+export type OrderLineItemsSectionHandle = {
+  /**
+   * Persists the currently-expanded line item when it has unsaved edits.
+   * No-op (resolves `{ saved: true }`) when nothing is dirty.
+   */
+  saveDirtyLineItem: () => Promise<{ saved: boolean; error?: string }>;
+};
+
+type OrderLineItemsSectionProps = {
   orderId: string;
   customerId?: string | null;
   readOnly: boolean;
@@ -547,7 +547,19 @@ export function OrderLineItemsSection({
   onAfterLineItemsChange?: () => Promise<void>;
   /** Reports whether the expanded line item has unsaved edits. */
   onDirtyStateChange?: (hasUnsavedLineItem: boolean) => void;
-}) {
+};
+
+export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, OrderLineItemsSectionProps>(
+  function OrderLineItemsSection({
+  orderId,
+  customerId,
+  readOnly,
+  lineItems,
+  productionFocusLineItemIds = [],
+  productionPriorityLineItemIds = [],
+  onAfterLineItemsChange,
+  onDirtyStateChange,
+}, ref) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { isAdmin, isPlatformAdmin, isPlatformDeveloper } = useAuth();
@@ -1638,13 +1650,20 @@ export function OrderLineItemsSection({
     400
   );
 
-  const handleSaveItem = async () => {
-    if (!expandedItem) return;
+  // Persists the currently-expanded line item. Returns a result instead of
+  // throwing so the parent's Save Order orchestration can decide what to do.
+  // `silent` suppresses the per-mutation toast (the orchestrator shows one).
+  const saveExpandedLineItem = async (
+    opts?: { silent?: boolean },
+  ): Promise<{ saved: boolean; error?: string }> => {
+    if (!expandedItem) return { saved: true };
     if (isPbv2Mode && !optionsV2Valid) {
-      setCalcError("Complete required product options before saving.");
-      return;
+      const message = "Complete required product options before saving.";
+      setCalcError(message);
+      return { saved: false, error: message };
     }
     const itemId = expandedItem.id;
+    const lineItemMutation = opts?.silent ? updateLineItemSilent : updateLineItem;
 
     setSavingItemId(itemId);
     setSavedItemId(null);
@@ -1674,7 +1693,7 @@ export function OrderLineItemsSection({
           }
         : {};
 
-      const savedLineItem = await updateLineItem.mutateAsync({
+      const savedLineItem = await lineItemMutation.mutateAsync({
         id: itemId,
         data: {
           width: dimsRequired ? widthNum : null,
@@ -1736,10 +1755,29 @@ export function OrderLineItemsSection({
       if (onAfterLineItemsChange) {
         await onAfterLineItemsChange();
       }
+      return { saved: true };
+    } catch (error: any) {
+      // The mutation's onError already toasts (unless silent). Surface the
+      // message to the caller so Save Order can stop and keep dirty state.
+      return { saved: false, error: error?.message || "Failed to save line item." };
     } finally {
       setSavingItemId(null);
     }
   };
+
+  // Button handler — fire-and-forget targeted save of the open line item.
+  const handleSaveItem = () => {
+    void saveExpandedLineItem();
+  };
+
+  // Imperative API for the parent's Save Order orchestration. Recreated each
+  // render so it always closes over the latest draft state / dirty flag.
+  useImperativeHandle(ref, () => ({
+    saveDirtyLineItem: async () => {
+      if (!isDirty || !expandedItem) return { saved: true };
+      return saveExpandedLineItem({ silent: true });
+    },
+  }));
 
   const refreshPricingAfterOverrideChange = async ({
     item,
@@ -3098,4 +3136,4 @@ export function OrderLineItemsSection({
       </Dialog>
     </Card>
   );
-}
+});

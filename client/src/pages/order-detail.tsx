@@ -66,7 +66,8 @@ import {
 } from "@/components/StateTransitionButtons";
 import type { OrderState } from "@/hooks/useOrderState";
 import { isTerminalState as checkIfTerminalState } from "@/hooks/useOrderState";
-import { OrderLineItemsSection } from "@/components/orders/OrderLineItemsSection";
+import { OrderLineItemsSection, type OrderLineItemsSectionHandle } from "@/components/orders/OrderLineItemsSection";
+import { orchestrateOrderSave } from "@/pages/orderSaveOrchestration";
 import { ManualReservationsCard } from "@/components/orders/ManualReservationsCard";
 import BackNavControls from "@/components/BackNavControls";
 import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
@@ -263,6 +264,8 @@ export default function OrderDetail() {
 
   const [showCustomerAddress, setShowCustomerAddress] = useState(true);
   const lineItemsSectionRef = useRef<HTMLDivElement | null>(null);
+  // Imperative API for orchestrating an open-line-item save from Save Order.
+  const orderLineItemsApiRef = useRef<OrderLineItemsSectionHandle | null>(null);
 
   const focusProduction = searchParams.get("focusProduction") === "1";
   const focusProductionStatus = searchParams.get("productionStatus");
@@ -573,14 +576,16 @@ export default function OrderDetail() {
     ?? preferences?.orders?.requireLineItemsDoneToComplete
     ?? true); // Default strict
   const canEditOrder = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
-  // Order is dirty if it has staged order-level edits OR an unsaved line item.
+  // Single canonical dirty value: staged order-level edits OR an unsaved line item.
   const hasStagedOrderChanges = hasAnyStagedChanges(pendingOrderPatch);
   const isDirty = hasStagedOrderChanges || hasDirtyLineItem;
   const isDirtyRef = useRef(isDirty);
-
-  useEffect(() => {
-    isDirtyRef.current = isDirty;
-  }, [isDirty]);
+  // Mirror the canonical value into the ref on every render (no effect-commit
+  // lag). The navigation guard reads this ref at event time only — never during
+  // render — so a render-phase write here is safe and keeps the guard in lockstep
+  // with what the UI shows. An effect-based sync could leave the guard blocking
+  // after the visible save state was already clean.
+  isDirtyRef.current = isDirty;
 
   const applyOrderPatch = async (patch: Record<string, any>) => {
     if (!canEditOrder) return;
@@ -1093,49 +1098,65 @@ export default function OrderDetail() {
     await applyOrderPatch({ poNumber: normalizeNullableString(poNumberDraft) });
   };
 
+  // Save Order = "save all dirty work on this page". Sequencing (line item
+  // first, then order-level fields, abort on line item failure) is delegated to
+  // the pure `orchestrateOrderSave` helper; the step closures below perform the
+  // actual mutations.
   const handleSaveOrder = async () => {
     if (!orderId || !order) return;
-    // Block order save while a line item has unsaved edits — otherwise the
-    // line item draft would be silently dropped and order totals would desync.
-    if (hasDirtyLineItem) {
-      toast({
-        title: "Unsaved line item",
-        description: "Save or discard changes on the open line item before saving the order.",
-        variant: "destructive",
-      });
-      return;
-    }
+    setIsSavingOrder(true);
     try {
       const persistedOrder = orderRaw as OrderDetailOrder | undefined;
       const nextPatch: Record<string, any> = { ...pendingOrderPatch };
       const normalizedLabel = normalizeNullableString(jobLabelDraft);
       const normalizedPoNumber = normalizeNullableString(poNumberDraft);
-
       if ((persistedOrder?.label ?? null) !== normalizedLabel) {
         nextPatch.label = normalizedLabel;
       }
       if ((persistedOrder?.poNumber ?? null) !== normalizedPoNumber) {
         nextPatch.poNumber = normalizedPoNumber;
       }
+      const hasOrderLevelChanges = Object.keys(nextPatch).length > 0;
 
-      if (Object.keys(nextPatch).length === 0) {
+      const result = await orchestrateOrderSave({
+        hasDirtyLineItem,
+        saveDirtyLineItem: async () => {
+          const api = orderLineItemsApiRef.current;
+          if (!api) {
+            return { ok: false, error: "Save or discard changes on the open line item first." };
+          }
+          const r = await api.saveDirtyLineItem();
+          return { ok: r.saved, error: r.error };
+        },
+        hasOrderLevelChanges,
+        saveOrderLevelChanges: async () => {
+          try {
+            await updateOrder.mutateAsync({ ...nextPatch });
+            setPendingOrderPatch({});
+            await queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
+            await queryClient.refetchQueries({ queryKey: ["orders", "detail", orderId], type: "active" });
+            return { ok: true };
+          } catch (error: any) {
+            return { ok: false, error: error?.message || "Failed to save order" };
+          }
+        },
+      });
+
+      if (!result.ok) {
+        // Failure at either step leaves that layer's dirty state intact.
+        toast({
+          title: result.failedStep === "lineItem" ? "Line item not saved" : "Order not saved",
+          description: result.error || "Could not save changes.",
+          variant: "destructive",
+        });
         return;
       }
 
-      setIsSavingOrder(true);
-      await updateOrder.mutateAsync({
-        ...nextPatch,
-      });
-      setPendingOrderPatch({});
-      await queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
-      await queryClient.refetchQueries({ queryKey: ["orders", "detail", orderId], type: "active" });
-      toast({ title: "Order saved" });
-    } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error?.message || "Failed to save order",
-        variant: "destructive",
-      });
+      // updateOrder's onSuccess already toasts when order-level fields were
+      // saved; only surface a toast for the line-item-only path.
+      if (!hasOrderLevelChanges) {
+        toast({ title: "Order saved" });
+      }
     } finally {
       setIsSavingOrder(false);
     }
@@ -1581,6 +1602,7 @@ export default function OrderDetail() {
                   onClick={() => void handleSaveOrder()}
                   disabled={!isDirty || updateOrder.isPending || isSavingOrder}
                   className="rounded-titan-md"
+                  title={hasDirtyLineItem ? "Saves open line item changes too" : undefined}
                 >
                   {updateOrder.isPending || isSavingOrder ? "Saving..." : "Save Order"}
                 </Button>
@@ -2285,6 +2307,7 @@ export default function OrderDetail() {
               </div>
 
               <OrderLineItemsSection
+                ref={orderLineItemsApiRef}
                 orderId={orderId!}
                 customerId={order.customerId}
                 readOnly={!(isAdminOrOwner && canEditLineItems)}
