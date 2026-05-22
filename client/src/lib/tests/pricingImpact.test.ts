@@ -3,6 +3,7 @@ import {
   parseMoneyInputDraft,
   normalizePricingImpactForMode,
   normalizeLegacyPricingImpact,
+  normalizeFormulaInputDraft,
   normalizeTreePricingImpacts,
   getPricingImpactWarnings,
   hasPricingImpactWarnings,
@@ -185,6 +186,19 @@ describe("normalizeLegacyPricingImpact", () => {
       centsPerUnit: 0,
       unit: "perPiece",
     });
+  });
+});
+
+describe("normalizeFormulaInputDraft", () => {
+  test("strips the stale no-op zero when typing a formula identifier", () => {
+    expect(normalizeFormulaInputDraft("0", "0custom_grommet_quantity * 0.25 * q")).toBe(
+      "custom_grommet_quantity * 0.25 * q",
+    );
+  });
+
+  test("keeps numeric formulas that intentionally start with zero", () => {
+    expect(normalizeFormulaInputDraft("0", "0.25 * q")).toBe("0.25 * q");
+    expect(normalizeFormulaInputDraft("0", "01 * q")).toBe("01 * q");
   });
 });
 
