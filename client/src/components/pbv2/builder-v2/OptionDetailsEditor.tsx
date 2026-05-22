@@ -106,30 +106,40 @@ function FormulaInput({
   placeholder?: string;
 }) {
   const displayFormula = formula.trim() === '0' ? '' : formula;
-  const [draft, setDraft] = React.useState<string>(() => displayFormula);
+  const inputRef = React.useRef<HTMLInputElement | null>(null);
   const [focused, setFocused] = React.useState(false);
 
   React.useEffect(() => {
-    if (!focused) setDraft(displayFormula);
+    if (!focused && inputRef.current && inputRef.current.value !== displayFormula) {
+      inputRef.current.value = displayFormula;
+    }
   }, [displayFormula, focused]);
 
   return (
     <Input
+      ref={inputRef}
       type="text"
-      value={draft}
+      defaultValue={displayFormula}
       onFocus={() => {
         setFocused(true);
-        if (draft.trim() === '0') setDraft('');
+        if (inputRef.current?.value.trim() === '0') {
+          inputRef.current.value = '';
+        }
       }}
       onChange={(e) => {
-        const nextFormula = normalizeFormulaInputDraft(formula, e.target.value);
-        setDraft(nextFormula);
+        const nextFormula = normalizeFormulaInputDraft(formula, e.currentTarget.value);
+        if (nextFormula !== e.currentTarget.value) {
+          e.currentTarget.value = nextFormula;
+        }
         onCommit(nextFormula);
       }}
       onBlur={() => {
         setFocused(false);
-        const settled = draft.trim() ? draft : '0';
-        setDraft(settled.trim() === '0' ? '' : settled);
+        const currentValue = inputRef.current?.value ?? '';
+        const settled = currentValue.trim() ? currentValue : '0';
+        if (inputRef.current) {
+          inputRef.current.value = settled.trim() === '0' ? '' : settled;
+        }
         onCommit(settled);
       }}
       placeholder={placeholder}
