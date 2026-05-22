@@ -5,6 +5,9 @@ import {
   buildUnexpectedPreviewError,
   categorizePreviewDetails,
   findMissingRequiredSelections,
+  parsePreviewPath,
+  enrichPreviewDetail,
+  buildPreviewErrorSummary,
   PBV2_PREVIEW_CLIENT_VALIDATION,
 } from "../pbv2/pricing/previewError";
 
@@ -123,5 +126,143 @@ describe("categorizePreviewDetails", () => {
     expect(sections.invalidNumericInputs).toHaveLength(1);
     expect(sections.missingVariables).toHaveLength(1);
     expect(sections.other).toHaveLength(1);
+  });
+});
+
+describe("parsePreviewPath", () => {
+  test("parses a node-level pricingImpact path", () => {
+    const parsed = parsePreviewPath("nodes.opt_abc.pricingImpact.0.mode");
+    expect(parsed.nodeId).toBe("opt_abc");
+    expect(parsed.choiceIndex).toBeUndefined();
+    expect(parsed.pricingImpactIndex).toBe(0);
+    expect(parsed.pricingField).toBe("mode");
+    expect(parsed.isPricingImpactPath).toBe(true);
+  });
+
+  test("parses a choice-level pricingImpact path", () => {
+    const parsed = parsePreviewPath("nodes.opt_abc.choices.2.pricingImpact.0.unit");
+    expect(parsed.nodeId).toBe("opt_abc");
+    expect(parsed.choiceIndex).toBe(2);
+    expect(parsed.pricingField).toBe("unit");
+    expect(parsed.isPricingImpactPath).toBe(true);
+  });
+
+  test("non-node paths are not pricing-impact paths", () => {
+    expect(parsePreviewPath("width").isPricingImpactPath).toBe(false);
+    expect(parsePreviewPath("").isPricingImpactPath).toBe(false);
+  });
+});
+
+describe("enrichPreviewDetail", () => {
+  const tree = {
+    nodes: {
+      opt_grommets: {
+        id: "opt_grommets",
+        label: "Grommets",
+        choices: [
+          { value: "tl", label: "Top Left" },
+          { value: "tr", label: "Top Right" },
+        ],
+      },
+    },
+  };
+
+  test("node id resolves to the option label", () => {
+    const enriched = enrichPreviewDetail(
+      { path: "nodes.opt_grommets.pricingImpact.0.mode", message: "Invalid", received: "spread" },
+      tree,
+    );
+    expect(enriched.displayLocation).toBe("Grommets");
+  });
+
+  test("choice index resolves to the choice label", () => {
+    const enriched = enrichPreviewDetail(
+      { path: "nodes.opt_grommets.choices.0.pricingImpact.0.unit", message: "Required" },
+      tree,
+    );
+    expect(enriched.displayLocation).toBe("Grommets > Choice: Top Left");
+  });
+
+  test("missing node falls back to 'Unknown option' safely", () => {
+    const enriched = enrichPreviewDetail(
+      { path: "nodes.opt_missing.pricingImpact.0.cents", message: "Required" },
+      tree,
+    );
+    expect(enriched.displayLocation).toBe("Unknown option");
+    // Raw technical path must still be available for developers.
+    expect(enriched.technicalPath).toBe("nodes.opt_missing.pricingImpact.0.cents");
+  });
+
+  test("missing choice falls back to '{Option} > Unknown choice' safely", () => {
+    const enriched = enrichPreviewDetail(
+      { path: "nodes.opt_grommets.choices.9.pricingImpact.0.unit", message: "Required" },
+      tree,
+    );
+    expect(enriched.displayLocation).toBe("Grommets > Unknown choice");
+    expect(enriched.technicalPath).toBe("nodes.opt_grommets.choices.9.pricingImpact.0.unit");
+  });
+
+  test("raw technical path, expected and received are preserved", () => {
+    const enriched = enrichPreviewDetail(
+      {
+        path: "nodes.opt_grommets.choices.1.pricingImpact.0.unit",
+        message: "Required",
+        expected: "sqft | piece",
+        received: "undefined",
+      },
+      tree,
+    );
+    expect(enriched.technicalPath).toBe("nodes.opt_grommets.choices.1.pricingImpact.0.unit");
+    expect(enriched.expected).toBe("sqft | piece");
+    expect(enriched.received).toBe("undefined");
+  });
+
+  test("pricingImpact mode becomes 'Invalid pricing adjustment type'", () => {
+    const enriched = enrichPreviewDetail(
+      { path: "nodes.opt_grommets.pricingImpact.0.mode", message: "Invalid" },
+      tree,
+    );
+    expect(enriched.category).toBe("Invalid pricing adjustment type");
+  });
+
+  test("missing centsPerSqft becomes 'Missing pricing amount'", () => {
+    const enriched = enrichPreviewDetail(
+      { path: "nodes.opt_grommets.choices.0.pricingImpact.0.centsPerSqft", message: "Required" },
+      tree,
+    );
+    expect(enriched.category).toBe("Missing pricing amount");
+  });
+
+  test("missing unit becomes 'Missing pricing unit'", () => {
+    const enriched = enrichPreviewDetail(
+      { path: "nodes.opt_grommets.choices.0.pricingImpact.0.unit", message: "Required" },
+      tree,
+    );
+    expect(enriched.category).toBe("Missing pricing unit");
+    expect(enriched.suggestedFix).toContain("Top Left");
+    expect(enriched.suggestedFix).toContain("pricing unit");
+  });
+
+  test("non-pricing paths still enrich without crashing", () => {
+    const enriched = enrichPreviewDetail({ path: "width", message: "Width must be positive." }, tree);
+    expect(enriched.displayLocation).toBe("Preview input: Width");
+    expect(enriched.friendlyMessage).toBe("Width must be positive.");
+  });
+});
+
+describe("buildPreviewErrorSummary", () => {
+  test("summarizes pricing setup problems in plain English", () => {
+    const tree = { nodes: { opt_a: { label: "Custom" } } };
+    const enriched = [
+      enrichPreviewDetail({ path: "nodes.opt_a.pricingImpact.0.unit", message: "x" }, tree),
+      enrichPreviewDetail({ path: "nodes.opt_a.pricingImpact.1.mode", message: "y" }, tree),
+    ];
+    const summary = buildPreviewErrorSummary(enriched);
+    expect(summary).toContain("Pricing preview found 2 setup problems.");
+    expect(summary).toContain("incomplete pricing settings");
+  });
+
+  test("returns an empty string when there are no issues", () => {
+    expect(buildPreviewErrorSummary([])).toBe("");
   });
 });

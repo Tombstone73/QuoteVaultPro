@@ -225,3 +225,263 @@ export function findMissingRequiredSelections(
   }
   return details;
 }
+
+// ---------------------------------------------------------------------------
+// Human-readable enrichment of validation paths.
+//
+// Backend validation reports technically-correct but unreadable paths such as
+// `nodes.opt_bccf2b2b-….choices.2.pricingImpact.0.unit`. The helpers below
+// resolve node IDs / choice indexes against the PBV2 tree already loaded in the
+// builder so the panel can show option + choice labels. This is read-only:
+// it never mutates or repairs draft data.
+// ---------------------------------------------------------------------------
+
+export interface ParsedPreviewPath {
+  /** Node ID from `nodes.{nodeId}.…`, if the path is node-scoped. */
+  nodeId?: string;
+  /** Choice index from `…choices.{index}.…`, if present. */
+  choiceIndex?: number;
+  /** Index from `…pricingImpact.{index}.…`, if present. */
+  pricingImpactIndex?: number;
+  /** Trailing pricing field: `mode` | `cents` | `centsPerSqft` | `unit`. */
+  pricingField?: string;
+  /** True only when the path resolves to a node/choice pricingImpact field. */
+  isPricingImpactPath: boolean;
+}
+
+/**
+ * Parse a validation path. Recognizes:
+ *   nodes.{nodeId}.pricingImpact.{index}.{mode|cents|centsPerSqft}
+ *   nodes.{nodeId}.choices.{choiceIndex}.pricingImpact.{index}.{unit|cents|centsPerSqft|mode}
+ * Anything else returns `{ isPricingImpactPath: false }` (and `nodeId` if known).
+ */
+export function parsePreviewPath(path: string): ParsedPreviewPath {
+  const result: ParsedPreviewPath = { isPricingImpactPath: false };
+  if (typeof path !== "string" || path.length === 0) return result;
+
+  const segments = path.split(".");
+  if (segments[0] !== "nodes" || segments.length < 2) return result;
+  result.nodeId = segments[1];
+
+  let i = 2;
+  if (segments[i] === "choices") {
+    const choiceIdx = Number(segments[i + 1]);
+    if (!Number.isInteger(choiceIdx)) return result;
+    result.choiceIndex = choiceIdx;
+    i += 2;
+  }
+
+  if (segments[i] === "pricingImpact") {
+    const impactIdx = Number(segments[i + 1]);
+    if (Number.isInteger(impactIdx)) {
+      result.pricingImpactIndex = impactIdx;
+      result.pricingField = segments[i + 2];
+      result.isPricingImpactPath = true;
+    }
+  }
+
+  return result;
+}
+
+/** Pick the first non-empty string/number value from `source` for the given keys. */
+function pickLabel(source: any, keys: string[]): string | null {
+  if (!source || typeof source !== "object") return null;
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return null;
+}
+
+/** Locate a node by ID in `treeJson.nodes`, supporting array or record form. */
+export function findTreeNode(treeJson: unknown, nodeId: string): any | null {
+  if (!treeJson || typeof treeJson !== "object" || !nodeId) return null;
+  const nodesRaw = (treeJson as any).nodes;
+  if (!nodesRaw) return null;
+  if (Array.isArray(nodesRaw)) {
+    return (
+      nodesRaw.find(
+        (node: any) =>
+          node && (node.id === nodeId || node.nodeId === nodeId || node.key === nodeId),
+      ) ?? null
+    );
+  }
+  if (typeof nodesRaw === "object") {
+    return (nodesRaw as Record<string, any>)[nodeId] ?? null;
+  }
+  return null;
+}
+
+/** Best human label for a node: label → name → title → key → nodeId fallback. */
+export function getNodeLabel(treeJson: unknown, nodeId: string): string {
+  const node = findTreeNode(treeJson, nodeId);
+  return pickLabel(node, ["label", "name", "title", "key"]) ?? nodeId;
+}
+
+/**
+ * Best human label for a choice: label → name → title → value → id, with a
+ * `Choice #{index + 1}` fallback. Returns null when the choice is absent.
+ */
+export function getChoiceLabel(node: any, choiceIndex: number): string | null {
+  const choices = node && Array.isArray(node.choices) ? node.choices : [];
+  if (choiceIndex < 0 || choiceIndex >= choices.length) return null;
+  const choice = choices[choiceIndex];
+  return pickLabel(choice, ["label", "name", "title", "value", "id"]) ?? `Choice #${choiceIndex + 1}`;
+}
+
+export interface EnrichedPreviewDetail {
+  /** User-facing location, e.g. "Grommets > Choice: Top Left" or "Unknown option". */
+  displayLocation: string;
+  /** Plain-English explanation of what is wrong. */
+  friendlyMessage: string;
+  /** Plain-English instruction for fixing it (omitted when no useful fix exists). */
+  suggestedFix?: string;
+  /** Short category label/badge text. */
+  category: string;
+  /** Raw technical path, always preserved for developer debugging. */
+  technicalPath: string;
+  expected?: string;
+  received?: string | null;
+}
+
+interface PricingFieldInfo {
+  category: string;
+  friendly: string;
+  fixAction: string;
+}
+
+/** Map a trailing pricing field to user-facing category / message / fix verb. */
+function describePricingField(field: string | undefined, scope: "node" | "choice"): PricingFieldInfo {
+  switch (field) {
+    case "unit":
+      return {
+        category: "Missing pricing unit",
+        friendly:
+          scope === "choice"
+            ? "This choice is missing its pricing unit."
+            : "This pricing rule is missing its pricing unit.",
+        fixAction: "choose the pricing unit",
+      };
+    case "mode":
+      return {
+        category: "Invalid pricing adjustment type",
+        friendly: "This pricing rule uses an invalid adjustment type.",
+        fixAction: "select a valid pricing adjustment type",
+      };
+    case "cents":
+    case "centsPerSqft":
+      return {
+        category: "Missing pricing amount",
+        friendly: "This pricing rule is missing its pricing amount.",
+        fixAction: "enter the pricing amount",
+      };
+    default:
+      return {
+        category: "Pricing setup issue",
+        friendly: "This pricing rule has an invalid setting.",
+        fixAction: "review the pricing settings",
+      };
+  }
+}
+
+/** Lightly humanize a non-pricing path (width / selections / treeJson / …). */
+function humanizeGenericPath(path: string): string {
+  const lower = path.toLowerCase();
+  if (lower === "width" || lower === "height" || lower === "quantity") {
+    return `Preview input: ${path.charAt(0).toUpperCase()}${path.slice(1)}`;
+  }
+  if (lower.startsWith("selections") || lower.startsWith("optionselections")) {
+    return "Option selections";
+  }
+  if (lower === "treejson" || lower.startsWith("treejson")) {
+    return "Draft tree";
+  }
+  return path;
+}
+
+/**
+ * Enrich a single validation detail into a user-facing object, resolving node
+ * IDs and choice indexes against `treeJson`. Always returns a value — falls
+ * back safely to "Unknown option" / "{Option} > Unknown choice" when lookups
+ * fail — and always preserves the raw `technicalPath`.
+ */
+export function enrichPreviewDetail(
+  detail: PreviewErrorDetail,
+  treeJson: unknown,
+): EnrichedPreviewDetail {
+  const technicalPath = detail.path ?? "";
+  const enriched: EnrichedPreviewDetail = {
+    displayLocation: "Pricing preview",
+    friendlyMessage: detail.message,
+    category: "Validation issue",
+    technicalPath,
+    expected: detail.expected,
+    received: detail.received,
+  };
+
+  const parsed = technicalPath ? parsePreviewPath(technicalPath) : null;
+  if (!parsed || !parsed.isPricingImpactPath || !parsed.nodeId) {
+    if (technicalPath) enriched.displayLocation = humanizeGenericPath(technicalPath);
+    return enriched;
+  }
+
+  const node = findTreeNode(treeJson, parsed.nodeId);
+  const nodeLabel = node ? getNodeLabel(treeJson, parsed.nodeId) : null;
+  const scope: "node" | "choice" = parsed.choiceIndex !== undefined ? "choice" : "node";
+  const info = describePricingField(parsed.pricingField, scope);
+
+  enriched.category = info.category;
+  enriched.friendlyMessage = info.friendly;
+
+  if (parsed.choiceIndex !== undefined) {
+    if (!node) {
+      enriched.displayLocation = "Unknown option";
+      enriched.suggestedFix = "Open the related option and review its choice pricing settings.";
+    } else {
+      const choiceLabel = getChoiceLabel(node, parsed.choiceIndex);
+      if (choiceLabel === null) {
+        enriched.displayLocation = `${nodeLabel} > Unknown choice`;
+        enriched.suggestedFix = `Open ${nodeLabel} and review the affected choice's pricing settings.`;
+      } else {
+        enriched.displayLocation = `${nodeLabel} > Choice: ${choiceLabel}`;
+        enriched.suggestedFix = `Open ${nodeLabel}, edit the ${choiceLabel} choice, and ${info.fixAction}.`;
+      }
+    }
+  } else if (!node) {
+    enriched.displayLocation = "Unknown option";
+    enriched.suggestedFix = "Open the related option and review its pricing settings.";
+  } else {
+    enriched.displayLocation = String(nodeLabel);
+    enriched.suggestedFix = `Open ${nodeLabel} and ${info.fixAction}.`;
+  }
+
+  return enriched;
+}
+
+/** Enrich every detail in a list. */
+export function enrichPreviewDetails(
+  details: PreviewErrorDetail[],
+  treeJson: unknown,
+): EnrichedPreviewDetail[] {
+  return details.map((detail) => enrichPreviewDetail(detail, treeJson));
+}
+
+/**
+ * Build the plain-English summary shown above the issue list, e.g.
+ * "Pricing preview found 4 setup problems. These appear to be incomplete
+ * pricing settings on product options."
+ */
+export function buildPreviewErrorSummary(enriched: EnrichedPreviewDetail[]): string {
+  const count = enriched.length;
+  if (count === 0) return "";
+  const noun = count === 1 ? "setup problem" : "setup problems";
+  let summary = `Pricing preview found ${count} ${noun}.`;
+  const pricingCount = enriched.filter((entry) =>
+    entry.category.toLowerCase().includes("pricing"),
+  ).length;
+  if (pricingCount > 0 && pricingCount * 2 >= count) {
+    summary += " These appear to be incomplete pricing settings on product options.";
+  }
+  return summary;
+}
