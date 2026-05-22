@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { evaluate } from "mathjs";
 
 import {
   LineItemOptionSelectionsV2,
@@ -7,6 +8,8 @@ import {
   optionTreeV2Schema,
 } from "../../shared/optionTreeV2";
 import { resolveRuntimeVisibility, validateOptionTreeV2 } from "../../shared/optionTreeV2Runtime";
+import { buildFormulaEvaluationScope, buildFormulaScope } from "../../shared/pbv2/formulaScope";
+import { buildNumericSelectionFormulaVariables } from "../../shared/pbv2/numericSelectionFormulaVariables";
 
 type SelectedOptionsSnapshotEntry = {
   optionId: string;
@@ -112,6 +115,36 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
   const selected = Object.fromEntries(
     Object.entries(runtimeVisibility.effectiveSelections).map(([selectionKey, value]) => [selectionKey, { value }])
   ) as Record<string, { value?: any }>;
+  const formulaScope = buildFormulaEvaluationScope({
+    scope: buildFormulaScope({
+      formula: "",
+      orderedWidthIn: widthIn,
+      orderedHeightIn: heightIn,
+      trimAllowanceX: 0,
+      trimAllowanceY: 0,
+      finishedWidthIn: widthIn,
+      finishedHeightIn: heightIn,
+      quantity,
+      baseRatePerSqft: basePrice,
+      sqftPerItem,
+      totalSqft: sqftPerItem * quantity,
+      linearFeet: linearFootPerItem,
+    }),
+    formulaVariables: buildNumericSelectionFormulaVariables({
+      treeJson: tree,
+      selections: runtimeVisibility.effectiveSelections,
+    }),
+  });
+
+  const evaluateFormulaImpactDollars = (formula: unknown, sourceLabel: string): number => {
+    const formulaText = typeof formula === "string" ? formula.trim() : "";
+    if (!formulaText) return 0;
+    const result = Number(evaluate(formulaText, formulaScope as Record<string, any>));
+    if (!Number.isFinite(result)) {
+      throw new Error(`${sourceLabel} formula produced an invalid number`);
+    }
+    return result;
+  };
 
   // DEV: Log visible nodes for debugging
   if (process.env.NODE_ENV === "development") {
@@ -245,6 +278,9 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
           break;
         case "addPerSqft":
           nodeCost += ((impact.amountCents ?? 0) / 100) * sqftPerItem * quantity;
+          break;
+        case "addFormula":
+          nodeCost += evaluateFormulaImpactDollars(impact.formula, `Option v2 node '${nodeId}'`);
           break;
         default:
           // MVP: ignore unsupported impact modes.
@@ -384,6 +420,14 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
                   console.log(`[PBV2_CHOICE_PRICING]   - addPerUnit: ${centsPerUnit}¢/${unit} × ${unitAmount.toFixed(2)} = ${unitCents}¢ applied (running total: ${optionsCents}¢)`);
                 }
               }
+              break;
+            }
+
+            case "addFormula": {
+              const formulaDollars = evaluateFormulaImpactDollars(impact.formula, `Option v2 choice '${nodeId}:${selectedValue}'`);
+              const formulaCents = Math.round(formulaDollars * 100);
+              optionsCents += formulaCents;
+              choiceCentsApplied += formulaCents;
               break;
             }
             

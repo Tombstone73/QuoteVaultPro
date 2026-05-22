@@ -1605,7 +1605,7 @@ export function ensureTreeInvariants(treeJson: unknown): any {
 export function createUpdateNodePricingPatch(
   treeJson: unknown,
   nodeId: string,
-  pricingImpact: Array<{ mode: string; cents?: number; amountCents?: number; label?: string }>
+  pricingImpact: any[]
 ): { patch: any } {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
 
@@ -1640,7 +1640,7 @@ export function createUpdateNodePricingPatch(
 export function createAddPricingRulePatch(
   treeJson: unknown,
   nodeId: string,
-  rule: { mode: string; cents?: number; amountCents?: number; label?: string }
+  rule: any
 ): { patch: any } {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
 

@@ -920,7 +920,7 @@ export default function PBV2ProductBuilderSectionV2({
 
   const handleUpdateNodePricing = (
     optionId: string,
-    pricingImpact: Array<{ mode: string; cents?: number; amountCents?: number; label?: string }>
+    pricingImpact: any[]
   ) => {
     if (!localTreeJson) return;
     const { patch } = createUpdateNodePricingPatch(localTreeJson, optionId, pricingImpact);
