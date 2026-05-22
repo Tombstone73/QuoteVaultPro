@@ -1177,6 +1177,13 @@ export default function OrderDetail() {
       if (!hasOrderLevelChanges) {
         toast({ title: "Order saved" });
       }
+
+      // Commit-and-exit: clear all dirty state then navigate to Orders list.
+      // Direct navigate() is a PUSH navigation — the guard only intercepts POP
+      // and guardedNavigate calls, so this bypasses the guard immediately.
+      setHasDirtyLineItem(false);
+      setPendingOrderPatch({});
+      navigate("/orders");
     } finally {
       setIsSavingOrder(false);
     }
