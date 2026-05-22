@@ -340,11 +340,15 @@ export function OptionEditor({
                       onClick={() => toggleOption(option.id)}
                       className="flex items-center flex-1 gap-3 text-left"
                     >
-                      {isExpanded ? (
-                        <ChevronDown className="h-4 w-4 text-blue-400 flex-shrink-0 transition-transform" />
-                      ) : (
-                        <ChevronRight className="h-4 w-4 text-slate-400 flex-shrink-0 transition-transform" />
-                      )}
+                      {/* ~32x32 padded hit area around the chevron for easier expand/collapse.
+                          Negative margins keep layout identical; icon size is unchanged. */}
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center -my-2 -ml-2 -mr-2 rounded-md cursor-pointer transition-colors hover:bg-slate-700/50">
+                        {isExpanded ? (
+                          <ChevronDown className="h-4 w-4 text-blue-400 flex-shrink-0 transition-transform" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4 text-slate-400 flex-shrink-0 transition-transform" />
+                        )}
+                      </span>
 
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
