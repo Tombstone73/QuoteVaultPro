@@ -41,6 +41,7 @@ import {
   EyeOff,
   Maximize2,
   Info,
+  Ticket,
 } from "lucide-react";
 import { 
   useProductionJobs, 
@@ -2306,6 +2307,23 @@ function JobCard({
               Priority
             </Badge>
           </div>
+        </div>
+
+        {/* Quick actions — print a thermal job ticket for this card */}
+        <div className="flex" data-no-dnd="true">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1.5 text-xs"
+            onClick={(e) => {
+              e.stopPropagation();
+              window.open(ROUTES.production.jobTicket(job.id), "_blank");
+            }}
+            onPointerDownCapture={(e) => e.stopPropagation()}
+            onMouseDownCapture={(e) => e.stopPropagation()}
+          >
+            <Ticket className="w-3.5 h-3.5" /> Print Ticket
+          </Button>
         </div>
           </>
         )}

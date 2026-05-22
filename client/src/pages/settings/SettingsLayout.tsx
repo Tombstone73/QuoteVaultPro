@@ -31,7 +31,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { AlertTriangle, ChevronDown, CircleHelp, Loader2 } from "lucide-react";
+import { AlertTriangle, ChevronDown, CircleHelp, Loader2, Ticket } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   useProductionLineItemStatusRules,
@@ -860,6 +860,31 @@ export function ProductionSettings() {
               onCheckedChange={handlePrepressDefaultToggle}
               disabled={isOrgPreferencesLoading || isOrgPreferencesUpdating}
             />
+          </div>
+        </ProductionSettingsSection>
+
+        <ProductionSettingsSection
+          title="Ticket Printing"
+          summary="Print a sample ticket to verify this station's printer"
+          help="Tickets print through the normal browser/Windows print dialog. Use the test ticket to confirm the Epson TM-L90 (or other ticket printer) is selected and aligned."
+        >
+          <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+            <div className="flex-1 space-y-1">
+              <Label className="text-titan-sm font-medium text-titan-text-primary">
+                Test ticket
+              </Label>
+              <p className="text-titan-xs text-titan-text-muted">
+                Opens a sample ticket with mock data so you can confirm printer setup
+                without touching a real production job.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              className="gap-1.5"
+              onClick={() => window.open("/production/jobs/sample/ticket", "_blank")}
+            >
+              <Ticket className="h-4 w-4" /> Print Test Ticket
+            </Button>
           </div>
         </ProductionSettingsSection>
 
