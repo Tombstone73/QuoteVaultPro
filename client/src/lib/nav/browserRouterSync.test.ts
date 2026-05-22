@@ -1,3 +1,4 @@
+import { describe, expect, it } from "@jest/globals";
 import { notifyBrowserRouterOfCurrentUrl } from "./browserRouterSync";
 
 describe("notifyBrowserRouterOfCurrentUrl", () => {
