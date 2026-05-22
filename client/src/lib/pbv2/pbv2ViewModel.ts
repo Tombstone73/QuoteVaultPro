@@ -1614,7 +1614,9 @@ export function createUpdateNodePricingPatch(
 
     return {
       ...n,
-      pricingImpact: pricingImpact.map(rule => normalizeLegacyPricingImpact(rule, 'addFlat')),
+      pricingImpact: pricingImpact.map(rule => normalizeLegacyPricingImpact(rule, 'addFlat', {
+        settleBlankFormula: false,
+      })),
     };
   });
 
