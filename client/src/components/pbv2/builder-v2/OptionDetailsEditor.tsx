@@ -1104,7 +1104,9 @@ export function OptionDetailsEditor({
                             updatedRules[index] = normalizePricingImpactForMode(updatedRules[index], value);
                             onUpdateNodePricing(
                               option.id,
-                              updatedRules.map((r: any) => normalizeLegacyPricingImpact(r, 'addFlat'))
+                              updatedRules.map((r: any) => normalizeLegacyPricingImpact(r, 'addFlat', {
+                                settleBlankFormula: false,
+                              }))
                             );
                           }}
                         >

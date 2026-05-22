@@ -87,9 +87,9 @@ describe("normalizePricingImpactForMode", () => {
     expect(next.unit).toBe("perPiece");
   });
 
-  test("switching to Formula initializes a schema-valid formula and drops amount fields", () => {
+  test("switching to Formula initializes an editable blank formula and drops amount fields", () => {
     const next = normalizePricingImpactForMode({ mode: "addFlat", amountCents: 250 }, "addFormula");
-    expect(next).toEqual({ mode: "addFormula", formula: "0" });
+    expect(next).toEqual({ mode: "addFormula", formula: "" });
   });
 });
 
@@ -142,6 +142,13 @@ describe("normalizeLegacyPricingImpact", () => {
         { settleBlankFormula: false },
       ),
     ).toEqual({
+      mode: "addFormula",
+      formula: "",
+    });
+  });
+
+  test("switching a rule to Formula creates an editable blank formula draft", () => {
+    expect(normalizePricingImpactForMode({ mode: "addFlat", amountCents: 0 }, "addFormula")).toEqual({
       mode: "addFormula",
       formula: "",
     });

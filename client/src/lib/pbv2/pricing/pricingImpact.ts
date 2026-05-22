@@ -264,7 +264,7 @@ export function normalizePricingImpactForMode(impact: any, newMode: string): any
   } else if (mode === "addFlat" || mode === "addPerQty" || mode === "addPerSqft") {
     next.amountCents = prevAmountCents ?? 0;
   } else if (mode === "addFormula") {
-    next.formula = typeof source.formula === "string" && source.formula.trim() ? source.formula : "0";
+    next.formula = typeof source.formula === "string" && source.formula.trim() ? source.formula : "";
   } else {
     next.cents = prevAmountCents ?? 0;
   }
