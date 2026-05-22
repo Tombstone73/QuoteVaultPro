@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, useRef, useContext } from "react";
-import { useNavigate, useLocation, UNSAFE_NavigationContext } from "react-router-dom";
+import { useEffect, useMemo, useState, useRef } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
@@ -38,6 +38,7 @@ import { TimelinePanel } from "@/components/TimelinePanel";
 import { OrderFulfillmentPanel } from "@/components/orders/OrderFulfillmentPanel";
 import type { CustomerSelectRef } from "@/components/CustomerSelect";
 import { useQuoteWorkflowState } from "@/hooks/useQuoteWorkflowState";
+import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
 
 type QuoteEditorPageProps = {
     mode?: "view" | "edit";
@@ -48,6 +49,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     // ALL HOOKS MUST BE CALLED UNCONDITIONALLY AT THE TOP
     const navigate = useNavigate();
     const location = useLocation();
+    const { registerGuard } = useNavigationGuard();
     const { preferences } = useUserPreferences();
     const { user } = useAuth();
     const { preferences: orgPreferences } = useOrgPreferences();
@@ -332,14 +334,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     // Track if we've already attempted focus for current route to prevent re-runs
     const hasAttemptedFocusRef = useRef<string | null>(null);
 
-    // Ref to store pending transition retry callback for navigation blocking
-    const pendingTransitionRef = useRef<(() => void) | null>(null);
-    
     // Ref to prevent autosave when discard is in progress
     const discardInProgressRef = useRef<boolean>(false);
-
-    // Access navigation context for BrowserRouter-compatible blocking
-    const navigationContext = useContext(UNSAFE_NavigationContext);
 
     useEffect(() => {
         if (!editMode) setExpandedKey(null);
@@ -471,34 +467,15 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     }, [state.lineItems, state.quoteId, state.isInitialQuoteLoading]);
 
 
-    // Block in-app navigation when there are unsaved changes (BrowserRouter-compatible)
+    // Register with the app-level explicit navigation guard. Avoid React Router
+    // internals here: BrowserRouter cannot safely pre-block every history
+    // transition, and URL/render desync is worse than a missed prompt.
     useEffect(() => {
-        if (!navigationContext?.navigator) return;
-        if (!state.hasUnsavedChanges) return;
-
-        const { navigator } = navigationContext;
-        
-        // Type assertion for navigator.block() which exists but isn't in standard types
-        const navigatorWithBlock = navigator as any;
-        if (typeof navigatorWithBlock.block === 'function') {
-            const unblock = navigatorWithBlock.block((tx: any) => {
-                const nextPath = tx.location?.pathname || tx.location;
-                const currentPath = location.pathname;
-
-                // Only block if pathname changes
-                if (nextPath !== currentPath) {
-                    pendingTransitionRef.current = () => tx.retry();
-                    setShowUnsavedChangesDialog(true);
-                    // Don't call tx.retry() here - wait for user choice
-                } else {
-                    // Same path, allow navigation
-                    tx.retry();
-                }
-            });
-
-            return unblock;
-        }
-    }, [navigationContext, state.hasUnsavedChanges, location.pathname]);
+        return registerGuard(
+            () => (state.hasUnsavedChanges ? "You have unsaved changes. Leave without saving?" : false),
+            () => state.hasUnsavedChanges,
+        );
+    }, [registerGuard, state.hasUnsavedChanges]);
 
     // Warn user before leaving page if there are unsaved changes (browser navigation)
     useEffect(() => {
@@ -806,8 +783,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
     /**
      * Handle back navigation with unsaved changes check
-     * Note: Navigation blocking via navigator.block() will handle most cases,
-     * but we keep this for explicit Back button clicks
+     * Uses a local dialog for this page's explicit Back button. Global
+     * sidebar/topbar navigation is handled by NavigationGuardContext.
      */
     const handleBack = () => {
         if (state.hasUnsavedChanges) {
@@ -827,12 +804,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             await state.handlers.saveQuote();
             setShowUnsavedChangesDialog(false);
             
-            // Proceed with the pending transition if it exists
-            if (pendingTransitionRef.current) {
-                const retry = pendingTransitionRef.current;
-                pendingTransitionRef.current = null;
-                retry();
-            } else if (pendingNavigation) {
+            if (pendingNavigation) {
                 pendingNavigation();
                 setPendingNavigation(null);
             } else {
@@ -851,12 +823,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     const handleDiscardAndLeave = () => {
         setShowUnsavedChangesDialog(false);
         
-        // Proceed with the pending transition if it exists
-        if (pendingTransitionRef.current) {
-            const retry = pendingTransitionRef.current;
-            pendingTransitionRef.current = null;
-            retry();
-        } else if (pendingNavigation) {
+        if (pendingNavigation) {
             pendingNavigation();
             setPendingNavigation(null);
         } else {
@@ -869,8 +836,6 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
      */
     const handleCancelNavigation = () => {
         setShowUnsavedChangesDialog(false);
-        // Clear both pending transition and explicit navigation
-        pendingTransitionRef.current = null;
         setPendingNavigation(null);
     };
 

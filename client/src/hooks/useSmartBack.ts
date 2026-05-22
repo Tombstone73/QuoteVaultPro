@@ -1,10 +1,11 @@
 import { useCallback, useMemo } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation } from "react-router-dom";
+import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
 import { getDefaultSectionRoute, isSafeInternalRoute, toHref, type ReferrerRoute } from "@/lib/nav/smartBack";
 
 export function useSmartBack() {
-  const navigate = useNavigate();
   const location = useLocation();
+  const { guardedNavigate } = useNavigationGuard();
 
   const defaultSectionRoute = useMemo(() => getDefaultSectionRoute(location.pathname), [location.pathname]);
 
@@ -26,17 +27,17 @@ export function useSmartBack() {
 
   const onSmartBack = useCallback(() => {
     if (referrer) {
-      navigate(toHref(referrer));
+      guardedNavigate(toHref(referrer));
       return;
     }
 
     if (typeof window !== "undefined" && window.history.length > 1) {
-      navigate(-1);
+      guardedNavigate(-1);
       return;
     }
 
-    navigate(defaultSectionRoute);
-  }, [defaultSectionRoute, navigate, referrer]);
+    guardedNavigate(defaultSectionRoute);
+  }, [defaultSectionRoute, guardedNavigate, referrer]);
 
   return {
     backHref,
