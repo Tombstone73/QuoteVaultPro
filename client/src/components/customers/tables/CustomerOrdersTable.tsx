@@ -5,7 +5,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
-import { Eye, Download, Mail, Edit as EditIcon } from "lucide-react";
+import { Eye, Download, Mail, Edit as EditIcon, Ticket } from "lucide-react";
 
 const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: "orderNumber", label: "Order #", visible: true, order: 0 },
@@ -124,6 +124,14 @@ export function CustomerOrdersTable({ customerId }: { customerId: string }) {
                               <Eye className="h-4 w-4" />
                             </button>
                           </Link>
+                          <button title="Print Traveler" className="h-7 w-7 rounded-full border flex items-center justify-center"
+                            style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)', backgroundColor: 'transparent' }}
+                            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--bg-surface-soft'))}
+                            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                            onClick={() => window.open(`/orders/${o.id}/traveler`, "_blank")}
+                          >
+                            <Ticket className="h-4 w-4" />
+                          </button>
                           <button title="Download" className="h-7 w-7 rounded-full border flex items-center justify-center"
                             style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)', backgroundColor: 'transparent' }}
                             onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--bg-surface-soft'))}

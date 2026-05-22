@@ -119,6 +119,7 @@ export const ROUTES = {
     list: "/orders",
     new: "/orders/new",
     detail: (id: string) => `/orders/${id}`,
+    traveler: (id: string) => `/orders/${id}/traveler`,
     // TODO: /orders/:id/edit not implemented but may be needed
     // edit: (id: string) => `/orders/${id}/edit`,
   },

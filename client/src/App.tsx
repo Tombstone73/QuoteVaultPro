@@ -43,6 +43,7 @@ import PortalProofPage from "@/pages/portal/portal-proof";
 import ProductionBoard from "@/pages/production";
 import ProductionJobDetailPage from "@/pages/production-job-detail";
 import ProductionTicketPage from "@/pages/production-ticket";
+import OrderTravelerPage from "@/pages/order-traveler";
 import JobDetail from "@/pages/job-detail";
 import ProductTypesSettings from "@/pages/settings/product-types";
 import PricingFormulasSettings from "@/pages/settings/pricing-formulas";
@@ -279,9 +280,10 @@ function Router() {
         <Route path="/accept-invite" element={<AcceptInvitePage />} />
       </Route>
 
-      {/* Production ticket — standalone, no app shell, so the browser print
-          flow renders only the thermal ticket. Auth still required. */}
+      {/* Production ticket + order traveler — standalone, no app shell, so the
+          browser print flow renders only the thermal ticket. Auth required. */}
       <Route path="/production/jobs/:jobId/ticket" element={<ProductionTicketPage />} />
+      <Route path="/orders/:orderId/traveler" element={<OrderTravelerPage />} />
 
       {/* Proof review — standalone, no layout wrapper; token IS the auth.
           Rendered consistently whether or not the viewer is logged in. */}

@@ -43,6 +43,7 @@ import { OrderStatusBadge, OrderPriorityBadge, LineItemStatusBadge } from "@/com
 import { FulfillmentStatusBadge } from "@/components/FulfillmentStatusBadge";
 import { ShipmentForm } from "@/components/ShipmentForm";
 import { PackingSlipModal } from "@/components/PackingSlipModal";
+import { PrintTicketButton } from "@/components/production/PrintTicketButton";
 import { useShipments, useDeleteShipment, useUpdateShipment, useGeneratePackingSlip, useSendShipmentEmail, useUpdateFulfillmentStatus } from "@/hooks/useShipments";
 import type { Shipment } from "@shared/schema";
 import { format } from "date-fns";
@@ -2825,6 +2826,12 @@ export default function OrderDetail() {
                           <FileText className="h-4 w-4 mr-2" />
                           {generatePackingSlip.isPending ? "Generating..." : "Generate & View"}
                         </Button>
+                      </div>
+
+                      {/* Order Traveler — print-friendly whole-order summary */}
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium">Order Traveler</span>
+                        <PrintTicketButton orderId={order.id} />
                       </div>
 
                       {/* Manual Status Override (Manager+) */}

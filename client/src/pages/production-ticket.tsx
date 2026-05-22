@@ -15,38 +15,14 @@ import { useParams, useSearchParams } from "react-router-dom";
 import QRCode from "qrcode";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { logTicketPrint, useProductionJob, useReprintProductionJob } from "@/hooks/useProduction";
 import { buildTicketData, type TicketSourceData } from "@shared/productionTicket";
-import {
-  loadPrinterPrefs,
-  loadTicketTemplate,
-  savePrinterPrefs,
-  type TicketPrinterPrefs,
-} from "@/lib/ticketSettings";
-import { buildJobTicketQrUrl, ticketRowStyle } from "@/lib/ticketRender";
+import { loadTicketTemplate } from "@/lib/ticketSettings";
+import { buildJobTicketQrUrl, ticketRowStyle, TICKET_PRINT_STYLES } from "@/lib/ticketRender";
+import { useStationPrinter } from "@/hooks/useStationPrinter";
+import { PrinterPicker } from "@/components/production/PrinterPicker";
+import { CenteredMessage, TicketDivider } from "@/components/production/ticketPrintPrimitives";
 import { Printer, RotateCcw, ArrowLeft } from "lucide-react";
-
-/** Print-only stylesheet: isolates the ticket and sizes it for the TM-L90. */
-const PRINT_STYLES = `
-@media print {
-  body * { visibility: hidden !important; }
-  #ticket-print-area, #ticket-print-area * { visibility: visible !important; }
-  #ticket-print-area {
-    position: absolute; left: 0; top: 0;
-    width: 72mm; margin: 0; padding: 0;
-  }
-  .ticket-no-print { display: none !important; }
-  @page { size: 72mm auto; margin: 3mm; }
-}
-`;
 
 /**
  * Mock ticket data for the station "Test Ticket" — lets each station confirm
@@ -81,17 +57,8 @@ export default function ProductionTicketPage() {
   const reprint = useReprintProductionJob(jobId || "");
 
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
-  const [printerPrefs, setPrinterPrefs] = useState<TicketPrinterPrefs>(() => loadPrinterPrefs());
-  const [selectedPrinter, setSelectedPrinter] = useState<string>("");
-  const [newPrinter, setNewPrinter] = useState("");
+  const printer = useStationPrinter();
   const template = useMemo(() => loadTicketTemplate(), []);
-
-  // Default the "Print To" selector to the station's saved default printer.
-  useEffect(() => {
-    if (!selectedPrinter && printerPrefs.defaultPrinter) {
-      setSelectedPrinter(printerPrefs.defaultPrinter);
-    }
-  }, [printerPrefs.defaultPrinter, selectedPrinter]);
 
   // Build the link the QR code points back to (job in TitanOS).
   const jobUrl = useMemo(() => {
@@ -140,27 +107,6 @@ export default function ProductionTicketPage() {
     return buildTicketData(src, template);
   }, [data, template, isSample]);
 
-  function handleSavePrinter() {
-    const name = newPrinter.trim();
-    if (!name) return;
-    const printers = printerPrefs.printers.includes(name)
-      ? printerPrefs.printers
-      : [...printerPrefs.printers, name];
-    const next: TicketPrinterPrefs = { printers, defaultPrinter: name };
-    setPrinterPrefs(next);
-    savePrinterPrefs(next);
-    setSelectedPrinter(name);
-    setNewPrinter("");
-  }
-
-  function handleSelectPrinter(name: string) {
-    setSelectedPrinter(name);
-    // Selecting a printer also makes it this station's default.
-    const next: TicketPrinterPrefs = { ...printerPrefs, defaultPrinter: name };
-    setPrinterPrefs(next);
-    savePrinterPrefs(next);
-  }
-
   function handlePrint() {
     window.print();
     // Best-effort print-history logging (skipped for the sample ticket).
@@ -191,7 +137,7 @@ export default function ProductionTicketPage() {
 
   return (
     <div className="min-h-screen bg-muted/40 print:bg-white">
-      <style dangerouslySetInnerHTML={{ __html: PRINT_STYLES }} />
+      <style dangerouslySetInnerHTML={{ __html: TICKET_PRINT_STYLES }} />
 
       {/* TOOLBAR — never printed */}
       <div className="ticket-no-print sticky top-0 z-10 border-b bg-background">
@@ -212,34 +158,6 @@ export default function ProductionTicketPage() {
           )}
 
           <div className="ml-auto flex flex-wrap items-center gap-2">
-            {/* Print To selector — guides the operator to the right printer in
-                the browser print dialog (MVP does not print silently). */}
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs text-muted-foreground">Print To:</span>
-              <Select
-                value={selectedPrinter || undefined}
-                onValueChange={handleSelectPrinter}
-              >
-                <SelectTrigger className="h-8 w-[180px] text-xs">
-                  <SelectValue placeholder="Choose printer…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {printerPrefs.printers.length === 0 ? (
-                    <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                      No saved printers
-                    </div>
-                  ) : (
-                    printerPrefs.printers.map((p) => (
-                      <SelectItem key={p} value={p} className="text-xs">
-                        {p}
-                        {p === printerPrefs.defaultPrinter ? "  (default)" : ""}
-                      </SelectItem>
-                    ))
-                  )}
-                </SelectContent>
-              </Select>
-            </div>
-
             <Button onClick={handlePrint} size="sm" className="gap-1.5">
               <Printer className="h-4 w-4" /> Print Ticket
             </Button>
@@ -257,30 +175,10 @@ export default function ProductionTicketPage() {
           </div>
         </div>
 
-        {/* Add-printer row */}
-        <div className="mx-auto flex max-w-3xl items-center gap-2 px-4 pb-3">
-          <Input
-            value={newPrinter}
-            onChange={(e) => setNewPrinter(e.target.value)}
-            placeholder="Add a printer name (e.g. Epson TM-L90)…"
-            className="h-8 max-w-xs text-xs"
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleSavePrinter();
-            }}
-          />
-          <Button
-            onClick={handleSavePrinter}
-            size="sm"
-            variant="outline"
-            disabled={!newPrinter.trim()}
-          >
-            Save Printer
-          </Button>
-          {selectedPrinter && (
-            <span className="text-xs text-muted-foreground">
-              Select <strong>{selectedPrinter}</strong> in the print dialog.
-            </span>
-          )}
+        {/* Printer selection — guides the operator to the right printer in the
+            browser print dialog (MVP does not print silently). */}
+        <div className="mx-auto max-w-3xl px-4 pb-3">
+          <PrinterPicker printer={printer} />
         </div>
       </div>
 
@@ -403,14 +301,3 @@ export default function ProductionTicketPage() {
   );
 }
 
-function TicketDivider() {
-  return <div style={{ borderTop: "1px dashed #000", margin: "1.5mm 0" }} />;
-}
-
-function CenteredMessage({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex min-h-screen items-center justify-center p-6 text-sm text-muted-foreground">
-      {children}
-    </div>
-  );
-}

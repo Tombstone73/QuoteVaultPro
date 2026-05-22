@@ -456,6 +456,23 @@ export async function logTicketPrint(jobId: string, reason: TicketPrintReason): 
   }
 }
 
+/**
+ * Best-effort print-history logging for an order traveler. Order travelers are
+ * not tied to a production job, so the server records this in the generic
+ * `audit_logs` table. Failures are swallowed — logging never blocks printing.
+ */
+export async function logTravelerPrint(orderId: string): Promise<void> {
+  if (!orderId) return;
+  try {
+    await fetch(`/api/orders/${orderId}/traveler-print`, {
+      method: "POST",
+      credentials: "include",
+    });
+  } catch {
+    // Non-fatal: traveler already printed; history logging is opportunistic.
+  }
+}
+
 export function useSetProductionMediaUsed(jobId: string) {
   const qc = useQueryClient();
   const { toast } = useToast();
