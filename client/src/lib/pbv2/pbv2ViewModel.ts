@@ -322,7 +322,7 @@ export type EditorOption = {
   id: string; // Node ID in PBV2 tree
   name: string;
   description: string;
-  type: 'radio' | 'checkbox' | 'dropdown' | 'numeric' | 'dimension' | 'text';
+  type: 'radio' | 'checkbox' | 'dropdown' | 'numeric' | 'dimension' | 'text' | 'textarea';
   sortOrder: number;
   isDefault: boolean;
   isRequired: boolean;
@@ -510,6 +510,7 @@ export function pbv2TreeToEditorModel(treeJson: unknown): EditorModel {
     else if (inputType === 'select') optionType = 'dropdown';
     else if (inputType === 'dimension') optionType = 'dimension';
     else if (inputType === 'text') optionType = 'text';
+    else if (inputType === 'textarea') optionType = 'textarea';
 
     options[node.id] = {
       id: node.id,
@@ -885,6 +886,7 @@ export function createUpdateOptionPatch(
         'numeric': 'number',
         'dimension': 'dimension',
         'text': 'text',
+        'textarea': 'textarea',
       };
       updated.input = { ...updated.input, type: typeMap[updates.type] || 'select' };
     }
