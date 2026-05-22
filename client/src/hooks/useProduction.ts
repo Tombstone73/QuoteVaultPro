@@ -88,11 +88,15 @@ export type ProductionJobListItem = {
   assignedTo?: string | null;
   internalNotes?: string | null;
   productionNotes?: string | null;
+  poNumber?: string | null;
+  fulfillment?: string | null;
   order: {
     id: string;    customerId: string;    orderNumber: string;
     customerName: string;
     contactName?: string | null;
     internalNotes?: string | null;
+    poNumber?: string | null;
+    fulfillment?: string | null;
     dueDate: string | null;
     priority: string;
     fulfillmentStatus?: string | null;
@@ -437,19 +441,44 @@ export function useReprintProductionJob(jobId: string) {
 
 /**
  * Best-effort print-history logging for production tickets. Records a
- * `ticket_printed` production event. Failures are intentionally swallowed —
+ * `ticket_printed` production event with optional print-snapshot metadata
+ * (from the Print Options modal). Failures are intentionally swallowed —
  * logging must never block an operator from printing.
  */
-export type TicketPrintReason = "print" | "reprint" | "completion" | "test";
+export type TicketPrintReason =
+  | "print"
+  | "standard"
+  | "reprint"
+  | "completion"
+  | "partial"
+  | "test";
 
-export async function logTicketPrint(jobId: string, reason: TicketPrintReason): Promise<void> {
+export interface TicketPrintLogMeta {
+  reason: TicketPrintReason;
+  /** Printer destination label chosen in the Print Options modal. */
+  destination?: string | null;
+  /** Quantity string actually printed (e.g. "150 of 200"). */
+  quantityDisplay?: string | null;
+  /** Fulfillment override applied for this print. */
+  fulfillment?: string | null;
+  /** Station/route override applied for this print. */
+  route?: string | null;
+  /** Ad-hoc ticket note printed. */
+  note?: string | null;
+}
+
+export async function logTicketPrint(
+  jobId: string,
+  meta: TicketPrintReason | TicketPrintLogMeta,
+): Promise<void> {
   if (!jobId) return;
+  const body: TicketPrintLogMeta = typeof meta === "string" ? { reason: meta } : meta;
   try {
     await fetch(`/api/production/jobs/${jobId}/ticket-print`, {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reason }),
+      body: JSON.stringify(body),
     });
   } catch {
     // Non-fatal: ticket already printed; history logging is opportunistic.

@@ -54,6 +54,25 @@ function getUserId(user: any): string | undefined {
   return user?.claims?.sub ?? user?.id;
 }
 
+/**
+ * Map the order's stored shipping method onto a human ticket label.
+ * Returns null when no method is set (the ticket then shows blank/unknown).
+ */
+function mapFulfillmentLabel(shippingMethod: string | null | undefined): string | null {
+  switch (String(shippingMethod || "").trim().toLowerCase()) {
+    case "pickup":
+      return "Pickup";
+    case "deliver":
+    case "delivery":
+      return "Delivery";
+    case "ship":
+    case "shipping":
+      return "Shipping";
+    default:
+      return null;
+  }
+}
+
 export function registerProductionJobsRoutes(
   app: Express,
   middleware: {
@@ -912,6 +931,8 @@ export function registerProductionJobsRoutes(
           customerName: customers.companyName,
           contactId: orders.contactId,
           notesInternal: orders.notesInternal,
+          poNumber: orders.poNumber,
+          shippingMethod: orders.shippingMethod,
         })
         .from(orders)
         .leftJoin(customers, and(eq(orders.customerId, customers.id), eq(customers.organizationId, organizationId)))
@@ -1360,6 +1381,8 @@ export function registerProductionJobsRoutes(
           assignedTo,
           internalNotes: order.notesInternal ?? null,
           productionNotes: primaryLineItem?.productionNotes ?? null,
+          poNumber: order.poNumber ?? null,
+          fulfillment: mapFulfillmentLabel(order.shippingMethod),
           // Convenience top-level artwork (same list used in order.artwork)
           artwork,
           order: {
@@ -1367,6 +1390,8 @@ export function registerProductionJobsRoutes(
             orderNumber: order.orderNumber,
             customerName: String(order.customerName || "—"),
             contactName,
+            poNumber: order.poNumber ?? null,
+            fulfillment: mapFulfillmentLabel(order.shippingMethod),
             dueDate: order.dueDate,
             priority: order.priority,
             fulfillmentStatus: order.fulfillmentStatus,
@@ -2009,10 +2034,20 @@ export function registerProductionJobsRoutes(
       const userId = getUserId(req.user);
       const jobId = String(req.params.jobId || "");
 
-      const reasonSchema = z
-        .object({ reason: z.enum(["print", "reprint", "completion", "test"]).optional() })
+      // Snapshot metadata from the Print Options modal (all optional). The
+      // fast "Print Ticket" path sends only `reason`.
+      const metaSchema = z
+        .object({
+          reason: z.enum(["print", "standard", "reprint", "completion", "partial", "test"]).optional(),
+          destination: z.string().max(120).optional(),
+          quantityDisplay: z.string().max(60).optional(),
+          fulfillment: z.string().max(60).optional(),
+          route: z.string().max(60).optional(),
+          note: z.string().max(500).optional(),
+        })
         .safeParse(req.body ?? {});
-      const reason = reasonSchema.success ? reasonSchema.data.reason ?? "print" : "print";
+      const meta = metaSchema.success ? metaSchema.data : {};
+      const reason = meta.reason ?? "print";
 
       await db.transaction(async (tx) => {
         const jobRows = await tx
@@ -2027,7 +2062,15 @@ export function registerProductionJobsRoutes(
           productionJobId: jobId,
           type: "ticket_printed",
           actorUserId: userId ?? null,
-          payload: { reason, printedAt: new Date().toISOString() },
+          payload: {
+            reason,
+            destination: meta.destination ?? null,
+            quantityDisplay: meta.quantityDisplay ?? null,
+            fulfillment: meta.fulfillment ?? null,
+            route: meta.route ?? null,
+            note: meta.note ?? null,
+            printedAt: new Date().toISOString(),
+          },
         });
       });
 

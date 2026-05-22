@@ -27,6 +27,7 @@ import {
   ProductionOrderArtworkSummary,
 } from "@/hooks/useProduction";
 import { deriveLaminationDisplay, isRollJob, formatDimensions } from "@/lib/productionHelpers";
+import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { buildReferrer } from "@/lib/nav/smartBack";
 import {
@@ -215,7 +216,7 @@ export default function ProductionJobDetailPage() {
 
   const openTicket = (opts?: { completion?: boolean }) => {
     if (!jobId) return;
-    const url = ROUTES.production.jobTicket(jobId) + (opts?.completion ? "?completion=1" : "");
+    const url = ROUTES.production.jobTicket(jobId) + (opts?.completion ? "?reason=completion" : "");
     window.open(url, "_blank");
   };
 
@@ -443,13 +444,7 @@ export default function ProductionJobDetailPage() {
                     </Button>
                   )}
 
-                  <Button
-                    variant="secondary"
-                    onClick={() => openTicket()}
-                    className="gap-1.5"
-                  >
-                    <Ticket className="w-4 h-4" /> Print Ticket
-                  </Button>
+                  <PrintTicketActions jobId={data.id} jobQuantity={qty} />
 
                   <Button variant="secondary" onClick={() => reprint.mutate()} disabled={isBusy} className="gap-1.5">
                     <Printer className="w-4 h-4" /> Reprint

@@ -41,7 +41,6 @@ import {
   EyeOff,
   Maximize2,
   Info,
-  Ticket,
 } from "lucide-react";
 import { 
   useProductionJobs, 
@@ -55,6 +54,7 @@ import { cn } from "@/lib/utils";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { buildProofingLineItemPath, isProofApprovalRoutingBlocked } from "@/lib/proofingNavigation";
 import { ROUTES } from "@/config/routes";
+import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import type { ProofingQueueResponse } from "@shared/proofing";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { productionCardTheme, computeUrgency, statusColors } from "../theme/productionCardTheme";
@@ -2309,21 +2309,14 @@ function JobCard({
           </div>
         </div>
 
-        {/* Quick actions — print a thermal job ticket for this card */}
-        <div className="flex" data-no-dnd="true">
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-7 gap-1.5 text-xs"
-            onClick={(e) => {
-              e.stopPropagation();
-              window.open(ROUTES.production.jobTicket(job.id), "_blank");
-            }}
-            onPointerDownCapture={(e) => e.stopPropagation()}
-            onMouseDownCapture={(e) => e.stopPropagation()}
-          >
-            <Ticket className="w-3.5 h-3.5" /> Print Ticket
-          </Button>
+        {/* Quick actions — print a thermal job ticket (fast) or with options */}
+        <div
+          className="flex"
+          data-no-dnd="true"
+          onPointerDownCapture={(e) => e.stopPropagation()}
+          onMouseDownCapture={(e) => e.stopPropagation()}
+        >
+          <PrintTicketActions jobId={job.id} jobQuantity={job.qty} size="sm" variant="outline" />
         </div>
           </>
         )}
