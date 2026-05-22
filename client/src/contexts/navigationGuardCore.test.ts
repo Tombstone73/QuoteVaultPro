@@ -71,16 +71,26 @@ describe("navigation guard registry", () => {
   it("does not retain a pending target after a blocked attempt", () => {
     const registry = createNavigationGuardRegistry();
     let dirty = true;
-    registry.registerGuard(() => "Leave without saving?", () => dirty);
+    registry.registerGuard(() => "Leave without saving?", () => dirty, "order-detail");
 
     const blocked = registry.decideNavigation("/customers", jest.fn(() => false));
     expect(blocked.allowed).toBe(false);
+    expect(registry.getDiagnostics()).toMatchObject({
+      registeredGuardCount: 1,
+      activeGuardLabels: ["order-detail"],
+      guards: [{ label: "order-detail", shouldBlockResult: true }],
+    });
 
     dirty = false;
     const afterSave = registry.decideNavigation("/orders", jest.fn(() => false));
 
     expect(afterSave.allowed).toBe(true);
     expect(afterSave.targetPath).toBe("/orders");
+    expect(registry.getDiagnostics()).toMatchObject({
+      registeredGuardCount: 1,
+      activeGuardLabels: [],
+      guards: [{ label: "order-detail", shouldBlockResult: false }],
+    });
   });
 
   it("allows programmatic navigation after save clears the guard", () => {

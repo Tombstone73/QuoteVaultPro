@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -196,7 +196,7 @@ export default function OrderDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
-  const { registerGuard, guardedNavigate } = useNavigationGuard();
+  const { registerGuard, guardedNavigate, getGuardDiagnostics } = useNavigationGuard();
   const { onSmartBack } = useSmartBack();
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -578,10 +578,57 @@ export default function OrderDetail() {
     ?? true); // Default strict
   const canEditOrder = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
   // Single canonical dirty value: staged order-level edits OR an unsaved line
-  // item. This same value drives the Save Order button AND the navigation
-  // guard — there is intentionally no ref mirror, so the two cannot disagree.
+  // item. This same value drives the Save Order button.
   const hasStagedOrderChanges = hasAnyStagedChanges(pendingOrderPatch);
   const isDirty = hasStagedOrderChanges || hasDirtyLineItem;
+  // Synchronized guard mirror of the same canonical dirty value. Save Order
+  // releases this before navigating so a stale registered callback cannot keep
+  // blocking after the UI has already committed a successful save.
+  const orderDirtyRef = useRef(isDirty);
+  orderDirtyRef.current = isDirty;
+
+  const getOrderDirtyAuditSnapshot = useCallback(
+    (phase: string) => {
+      const guardDiagnostics = getGuardDiagnostics();
+      const lineItemDiagnostics = orderLineItemsApiRef.current?.getDirtyDiagnostics();
+
+      return {
+        phase,
+        saveOrderButtonDirty: isDirty,
+        canonicalGuardDirty: orderDirtyRef.current,
+        hasDirtyLineItem,
+        hasStagedOrderChanges,
+        pendingOrderPatchKeys: Object.keys(pendingOrderPatch),
+        registeredGuardCount: guardDiagnostics.registeredGuardCount,
+        eachGuardShouldBlockResult: guardDiagnostics.guards,
+        activeGuardLabels: guardDiagnostics.activeGuardLabels,
+        beforeUnloadActive: isDirty,
+        expandedLineItemDirty: lineItemDiagnostics?.expandedLineItemDirty ?? false,
+        productReplacementDirty: lineItemDiagnostics?.productReplacementDirty ?? false,
+        designBriefDirty: lineItemDiagnostics?.designBriefDirty ?? false,
+        lineItemDiagnostics: lineItemDiagnostics ?? null,
+        windowPath: window.location.pathname,
+        reactRouterPath: location.pathname,
+        at: new Date().toISOString(),
+      };
+    },
+    [
+      getGuardDiagnostics,
+      hasDirtyLineItem,
+      hasStagedOrderChanges,
+      isDirty,
+      location.pathname,
+      pendingOrderPatch,
+    ],
+  );
+
+  const logOrderDirtyAudit = useCallback(
+    (phase: string) => {
+      if (!import.meta.env.DEV) return;
+      console.warn("[ORDER_SAVE_DIRTY_AUDIT]", getOrderDirtyAuditSnapshot(phase));
+    },
+    [getOrderDirtyAuditSnapshot],
+  );
 
   const applyOrderPatch = async (patch: Record<string, any>) => {
     if (!canEditOrder) return;
@@ -615,25 +662,25 @@ export default function OrderDetail() {
     });
   }, [isDirty, hasDirtyLineItem, hasStagedOrderChanges, isSavingOrder, updateOrder.isPending, pendingOrderPatch]);
 
-  // In-app navigation guard. Re-registered whenever the committed `isDirty`
-  // value changes; the registered callbacks come straight from that value via
-  // createOrderNavigationGuard — no ref, no render-phase mutation, nothing that
-  // can go stale. When isDirty commits false the guard is re-registered with
-  // shouldBlock() === false, so navigation is allowed immediately; on unmount
-  // the cleanup unregisters it entirely.
+  // In-app navigation guard. It reads the synchronized canonical dirty ref so
+  // Save Order can release the guard immediately after persistence succeeds,
+  // before the next render/effect cleanup has a chance to run.
   useEffect(() => {
-    const { guard, shouldBlock } = createOrderNavigationGuard(isDirty);
-    const unregister = registerGuard(guard, shouldBlock);
+    const unregister = registerGuard(
+      (targetPath) => createOrderNavigationGuard(orderDirtyRef.current).guard(targetPath),
+      () => createOrderNavigationGuard(orderDirtyRef.current).shouldBlock(),
+      "order-detail",
+    );
     if (import.meta.env.DEV) {
-      console.warn("[ORDER_NAV_GUARD] guard registered", { isDirty });
+      console.warn("[ORDER_NAV_GUARD] guard registered", { isDirty: orderDirtyRef.current });
     }
     return () => {
       unregister();
       if (import.meta.env.DEV) {
-        console.warn("[ORDER_NAV_GUARD] guard unregistered", { wasDirty: isDirty });
+        console.warn("[ORDER_NAV_GUARD] guard unregistered", { wasDirty: orderDirtyRef.current });
       }
     };
-  }, [registerGuard, isDirty]);
+  }, [registerGuard]);
 
   const listNoteQuery = useQuery<{ listLabel: string | null }>(
     {
@@ -1126,6 +1173,7 @@ export default function OrderDetail() {
     if (!orderId || !order) return;
     setIsSavingOrder(true);
     try {
+      logOrderDirtyAudit("before-save");
       const persistedOrder = orderRaw as OrderDetailOrder | undefined;
       const nextPatch: Record<string, any> = { ...pendingOrderPatch };
       const normalizedLabel = normalizeNullableString(jobLabelDraft);
@@ -1146,6 +1194,7 @@ export default function OrderDetail() {
             return { ok: false, error: "Save or discard changes on the open line item first." };
           }
           const r = await api.saveDirtyLineItem();
+          logOrderDirtyAudit("after-line-item-save-step");
           return { ok: r.saved, error: r.error };
         },
         hasOrderLevelChanges,
@@ -1172,6 +1221,8 @@ export default function OrderDetail() {
         return;
       }
 
+      logOrderDirtyAudit("after-save-success-before-clear");
+
       // updateOrder's onSuccess already toasts when order-level fields were
       // saved; only surface a toast for the line-item-only path.
       if (!hasOrderLevelChanges) {
@@ -1181,8 +1232,10 @@ export default function OrderDetail() {
       // Commit-and-exit: clear all dirty state then navigate to Orders list.
       // Direct navigate() is intentionally allowed after a successful save; the
       // global guard only intercepts explicit guardedNavigate() calls.
+      orderDirtyRef.current = false;
       setHasDirtyLineItem(false);
       setPendingOrderPatch({});
+      logOrderDirtyAudit("after-clear-before-navigate");
       navigate("/orders");
     } finally {
       setIsSavingOrder(false);

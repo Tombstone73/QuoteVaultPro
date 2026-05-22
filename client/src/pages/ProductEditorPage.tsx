@@ -300,7 +300,8 @@ const ProductEditorPage = () => {
         }
         if (bypass) return false;
         return dirty;
-      }
+      },
+      "product-editor",
     );
     
     if (import.meta.env.DEV) {

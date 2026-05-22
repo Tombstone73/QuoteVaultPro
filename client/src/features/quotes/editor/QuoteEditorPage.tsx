@@ -474,6 +474,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         return registerGuard(
             () => (state.hasUnsavedChanges ? "You have unsaved changes. Leave without saving?" : false),
             () => state.hasUnsavedChanges,
+            "quote-editor",
         );
     }, [registerGuard, state.hasUnsavedChanges]);
 
