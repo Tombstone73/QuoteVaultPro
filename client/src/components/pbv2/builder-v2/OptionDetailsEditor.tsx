@@ -153,7 +153,7 @@ interface OptionDetailsEditorProps {
   onUpdateChoice: (optionId: string, choiceValue: string, updates: any) => void;
   onDeleteChoice: (optionId: string, choiceValue: string) => void;
   onReorderChoice: (optionId: string, fromIndex: number, toIndex: number) => void;
-  onUpdateNodePricing: (optionId: string, pricingImpact: Array<{ mode: string; cents?: number; amountCents?: number; label?: string }>) => void;
+  onUpdateNodePricing: (optionId: string, pricingImpact: any[]) => void;
   onAddPricingRule: (optionId: string, rule: { mode: string; cents?: number; amountCents?: number; label?: string }) => void;
   onDeletePricingRule: (optionId: string, ruleIndex: number) => void;
   editingChoiceValue: EditingChoiceValue | null;
@@ -1083,6 +1083,7 @@ export function OptionDetailsEditor({
               const normalizedRule = normalizeLegacyPricingImpact(rule, 'addFlat');
               const mode = normalizedRule.mode || 'addFlat';
               const cents = normalizedRule.amountCents ?? 0;
+              const formula = typeof normalizedRule.formula === 'string' ? normalizedRule.formula : '';
               const label = rule.label || '';
 
               return (
@@ -1101,11 +1102,7 @@ export function OptionDetailsEditor({
                             updatedRules[index] = normalizePricingImpactForMode(updatedRules[index], value);
                             onUpdateNodePricing(
                               option.id,
-                              updatedRules.map((r: any) => ({
-                                mode: r.mode || 'addFlat',
-                                amountCents: r.amountCents ?? 0,
-                                label: r.label,
-                              }))
+                              updatedRules.map((r: any) => normalizeLegacyPricingImpact(r, 'addFlat'))
                             );
                           }}
                         >
@@ -1116,6 +1113,7 @@ export function OptionDetailsEditor({
                             <SelectItem value="addFlat">Add Flat Amount</SelectItem>
                             <SelectItem value="addPerQty">Add Per Quantity</SelectItem>
                             <SelectItem value="addPerSqft">Add Per Square Foot</SelectItem>
+                            <SelectItem value="addFormula">Formula</SelectItem>
                           </SelectContent>
                         </Select>
                         <div className="text-xs text-slate-400 mt-1">
@@ -1125,6 +1123,28 @@ export function OptionDetailsEditor({
                         </div>
                       </div>
 
+                      {mode === 'addFormula' ? (
+                        <div>
+                          <Label className="text-xs text-slate-400 mb-1 block">Formula ($)</Label>
+                          <Input
+                            type="text"
+                            value={formula}
+                            onChange={(e) => {
+                              const updatedRules = [...(nodeData.pricingImpact || [])];
+                              updatedRules[index] = { ...normalizedRule, formula: e.target.value };
+                              onUpdateNodePricing(
+                                option.id,
+                                updatedRules.map((r: any) => normalizeLegacyPricingImpact(r, 'addFlat'))
+                              );
+                            }}
+                            placeholder="custom_grommet_qty * 0.25 * q"
+                            className="bg-[#0f172a] border-slate-600 text-slate-100 text-sm font-mono"
+                          />
+                          <div className="text-xs text-slate-400 mt-1">
+                            Numeric option selection keys are available as formula variables.
+                          </div>
+                        </div>
+                      ) : (
                       <div>
                         <Label className="text-xs text-slate-400 mb-1 block">Amount ($)</Label>
                         <Input
@@ -1139,11 +1159,7 @@ export function OptionDetailsEditor({
                             updatedRules[index] = { ...normalizedRule, amountCents: currencyInputToCents(value) ?? 0 };
                             onUpdateNodePricing(
                               option.id,
-                              updatedRules.map((r: any) => ({
-                                mode: r.mode || 'addFlat',
-                                amountCents: r.amountCents ?? 0,
-                                label: r.label,
-                              }))
+                              updatedRules.map((r: any) => normalizeLegacyPricingImpact(r, 'addFlat'))
                             );
                           }}
                           onBlur={(e) => {
@@ -1154,11 +1170,7 @@ export function OptionDetailsEditor({
                               updatedRules[index] = { ...normalizedRule, amountCents: 0 };
                               onUpdateNodePricing(
                                 option.id,
-                                updatedRules.map((r: any) => ({
-                                  mode: r.mode || 'addFlat',
-                                  amountCents: r.amountCents ?? 0,
-                                  label: r.label,
-                                }))
+                                updatedRules.map((r: any) => normalizeLegacyPricingImpact(r, 'addFlat'))
                               );
                             }
                           }}
@@ -1169,6 +1181,7 @@ export function OptionDetailsEditor({
                           {centsToCurrencyLabel(cents || 0)}
                         </div>
                       </div>
+                      )}
 
                       <div>
                         <Label className="text-xs text-slate-400 mb-1 block">Label (optional)</Label>
@@ -1180,11 +1193,7 @@ export function OptionDetailsEditor({
                             updatedRules[index] = { ...normalizedRule, label: e.target.value };
                             onUpdateNodePricing(
                               option.id,
-                              updatedRules.map((r: any) => ({
-                                mode: r.mode || 'addFlat',
-                                amountCents: r.amountCents ?? 0,
-                                label: r.label,
-                              }))
+                              updatedRules.map((r: any) => normalizeLegacyPricingImpact(r, 'addFlat'))
                             );
                           }}
                           placeholder="e.g., Setup fee"

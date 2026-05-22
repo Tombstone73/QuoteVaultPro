@@ -71,6 +71,8 @@ export function fromPricingEffect(effect?: PricingEffect | null): { uiUnitDefaul
         // Default fallback for perLinearFoot, perInch
         return { uiUnitDefault: "flat", amountCentsDisplay: effect.centsPerUnit };
       }
+    case "addFormula":
+      return { uiUnitDefault: "none", amountCentsDisplay: 0 };
     default: {
       const _exhaustive: never = effect;
       return { uiUnitDefault: "none", amountCentsDisplay: 0 };
@@ -122,6 +124,8 @@ export function decodePricingImpact(schemaImpact?: PricingImpact | null): UiPric
         // Default fallback for perLinearFoot, perInch
         return { mode: "addFlat", amountCents: schemaImpact.centsPerUnit, displayUnit: "each", taxable: true };
       }
+    case "addFormula":
+      return { mode: "addFormula", amountCents: 0, displayUnit: "each", taxable: true };
     default: {
       const _exhaustive: never = schemaImpact;
       return { mode: "none", amountCents: 0, displayUnit: "each", taxable: true };

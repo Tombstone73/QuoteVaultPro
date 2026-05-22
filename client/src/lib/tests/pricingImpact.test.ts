@@ -86,6 +86,11 @@ describe("normalizePricingImpactForMode", () => {
     expect(next.centsPerUnit).toBe(0);
     expect(next.unit).toBe("perPiece");
   });
+
+  test("switching to Formula initializes a schema-valid formula and drops amount fields", () => {
+    const next = normalizePricingImpactForMode({ mode: "addFlat", amountCents: 250 }, "addFormula");
+    expect(next).toEqual({ mode: "addFormula", formula: "0" });
+  });
 });
 
 describe("normalizeLegacyPricingImpact", () => {
@@ -115,6 +120,17 @@ describe("normalizeLegacyPricingImpact", () => {
       mode: "addPerUnit",
       centsPerUnit: 0,
       unit: "perPiece",
+    });
+  });
+
+  test("addFormula preserves non-empty formulas and initializes blank formulas", () => {
+    expect(normalizeLegacyPricingImpact({ mode: "addFormula", formula: "custom_qty * 0.25 * q" }, "addFlat")).toEqual({
+      mode: "addFormula",
+      formula: "custom_qty * 0.25 * q",
+    });
+    expect(normalizeLegacyPricingImpact({ mode: "addFormula", formula: "" }, "addFlat")).toEqual({
+      mode: "addFormula",
+      formula: "0",
     });
   });
 

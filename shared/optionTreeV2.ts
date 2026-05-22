@@ -39,7 +39,8 @@ export type PricingImpact =
   // New modes (v2.1: choice-level pricing)
   | { mode: "addCents"; cents: number; applyWhen?: ConditionExpr; label?: string }
   | { mode: "addPercent"; percent: number; basis?: "base" | "lineSubtotal" | "optionsSubtotal"; applyWhen?: ConditionExpr; label?: string }
-  | { mode: "addPerUnit"; centsPerUnit: number; unit: "perPiece" | "perQty" | "perSqft" | "perLinearFoot" | "perInch"; applyWhen?: ConditionExpr; label?: string };
+  | { mode: "addPerUnit"; centsPerUnit: number; unit: "perPiece" | "perQty" | "perSqft" | "perLinearFoot" | "perInch"; applyWhen?: ConditionExpr; label?: string }
+  | { mode: "addFormula"; formula: string; applyWhen?: ConditionExpr; label?: string };
 
 export type WeightImpact =
   | { mode: "addFlat"; oz: number; applyWhen?: ConditionExpr; label?: string }
@@ -180,6 +181,7 @@ export type OptionNodeV2 = {
     required?: boolean;
     defaultValue?: any;
     selectionKey?: string; // Key used for storing/retrieving selections (defaults to node.key or node.id)
+    valueType?: string;
     constraints?: {
       number?: { min?: number; max?: number; step?: number; integerOnly?: boolean };
       text?: { minLen?: number; maxLen?: number; pattern?: string };
@@ -286,6 +288,7 @@ export const pricingImpactSchema: z.ZodType<PricingImpact> = z.discriminatedUnio
   z.object({ mode: z.literal("addCents"), cents: z.number(), applyWhen: conditionExprSchema.optional(), label: z.string().optional() }),
   z.object({ mode: z.literal("addPercent"), percent: z.number(), basis: z.enum(["base", "lineSubtotal", "optionsSubtotal"]).optional(), applyWhen: conditionExprSchema.optional(), label: z.string().optional() }),
   z.object({ mode: z.literal("addPerUnit"), centsPerUnit: z.number(), unit: z.enum(["perPiece", "perQty", "perSqft", "perLinearFoot", "perInch"]), applyWhen: conditionExprSchema.optional(), label: z.string().optional() }),
+  z.object({ mode: z.literal("addFormula"), formula: z.string().min(1), applyWhen: conditionExprSchema.optional(), label: z.string().optional() }),
 ]);
 
 export const weightImpactSchema: z.ZodType<WeightImpact> = z.discriminatedUnion("mode", [
@@ -410,6 +413,8 @@ export const optionNodeV2Schema: z.ZodType<OptionNodeV2> = z.object({
       type: z.enum(["boolean", "select", "multiselect", "number", "text", "textarea", "file", "dimension"]),
       required: z.boolean().optional(),
       defaultValue: z.any().optional(),
+      selectionKey: z.string().optional(),
+      valueType: z.string().optional(),
       constraints: z
         .object({
           number: z

@@ -10,7 +10,7 @@ import { currencyInputToCents } from "../currency";
 
 /** Choice-level pricing impact modes supported by the option choice editor. */
 export type ChoiceImpactMode = "addCents" | "addPercent" | "addPerUnit";
-export type NodePricingImpactMode = "addFlat" | "addPerQty" | "addPerSqft";
+export type NodePricingImpactMode = "addFlat" | "addPerQty" | "addPerSqft" | "addFormula";
 export type PricingImpactMode =
   | ChoiceImpactMode
   | NodePricingImpactMode
@@ -136,6 +136,12 @@ export function normalizeLegacyPricingImpact(impact: any, fallbackMode = "addCen
         centsPerUnit: safeRoundedCents(source.centsPerUnit ?? amount),
         unit: safePerUnitUnit(source.unit),
       };
+    case "addFormula":
+      return {
+        ...common,
+        mode,
+        formula: typeof source.formula === "string" && source.formula.trim() ? source.formula : "0",
+      };
     case "addPercent":
       return {
         ...common,
@@ -231,6 +237,7 @@ export function normalizePricingImpactForMode(impact: any, newMode: string): any
   delete next.percent;
   delete next.basis;
   delete next.unit;
+  delete next.formula;
 
   if (mode === "addPerUnit") {
     next.centsPerUnit = prevAmountCents ?? 0;
@@ -241,6 +248,8 @@ export function normalizePricingImpactForMode(impact: any, newMode: string): any
       typeof source.basis === "string" && source.basis.trim() !== "" ? source.basis : "base";
   } else if (mode === "addFlat" || mode === "addPerQty" || mode === "addPerSqft") {
     next.amountCents = prevAmountCents ?? 0;
+  } else if (mode === "addFormula") {
+    next.formula = typeof source.formula === "string" && source.formula.trim() ? source.formula : "0";
   } else {
     next.cents = prevAmountCents ?? 0;
   }

@@ -34,7 +34,7 @@ export interface PBV2ProductBuilderLayoutProps {
   onUpdateChoice: (optionId: string, choiceValue: string, updates: any) => void;
   onDeleteChoice: (optionId: string, choiceValue: string) => void;
   onReorderChoice: (optionId: string, fromIndex: number, toIndex: number) => void;
-  onUpdateNodePricing: (optionId: string, pricingImpact: Array<{ mode: string; cents?: number; amountCents?: number; label?: string }>) => void;
+  onUpdateNodePricing: (optionId: string, pricingImpact: any[]) => void;
   onAddPricingRule: (optionId: string, rule: { mode: string; cents?: number; amountCents?: number; label?: string }) => void;
   onDeletePricingRule: (optionId: string, ruleIndex: number) => void;
   onUpdatePricingV2Base: (base: { perSqftCents?: number; perPieceCents?: number; minimumChargeCents?: number }) => void;

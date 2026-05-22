@@ -3,6 +3,31 @@ import { optionTreeV2Schema } from '../optionTreeV2';
 import { buildOptionTreeV2FromLegacyOptions } from '../optionTreeV2Initializer';
 
 describe('Option Tree v2 initializer', () => {
+  test('schema accepts formula pricing impacts and numeric selection keys', () => {
+    const parsed = optionTreeV2Schema.parse({
+      schemaVersion: 2,
+      rootNodeIds: ['custom_qty'],
+      nodes: {
+        custom_qty: {
+          id: 'custom_qty',
+          kind: 'question',
+          label: 'Custom Quantity',
+          input: {
+            type: 'number',
+            selectionKey: 'custom_qty',
+            valueType: 'number',
+          },
+          pricingImpact: [{ mode: 'addFormula', formula: 'custom_qty * 0.25 * q' }],
+        },
+      },
+    });
+
+    expect(parsed.nodes.custom_qty.pricingImpact?.[0]).toEqual({
+      mode: 'addFormula',
+      formula: 'custom_qty * 0.25 * q',
+    });
+  });
+
   test('maps legacy priceMode values to valid v2 pricingImpact modes', () => {
     const legacyOptionsJson = [
       {

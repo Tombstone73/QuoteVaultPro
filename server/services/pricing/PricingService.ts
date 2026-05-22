@@ -48,6 +48,7 @@ import {
   type Pbv2TierResolutionWarning,
 } from '../../../shared/pbv2/pricingAdapter';
 import { sheetConsumptionSqft } from '../../../shared/pbv2/formulaHelpers';
+import { buildNumericSelectionFormulaVariables } from '../../../shared/pbv2/numericSelectionFormulaVariables';
 import {
   collectPbv2WeightMaterialIds,
   resolvePbv2WeightSource,
@@ -462,6 +463,14 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     treeVersion.treeJson as any,
     ruleValidatedSelections.selected
   );
+  const selectionFormulaVariables = buildNumericSelectionFormulaVariables({
+    treeJson: treeVersion.treeJson,
+    selections: ruleValidatedSelections.selected,
+  });
+  const formulaVariablesForPricing = {
+    ...resolveSnapshotFormulaVariables(treeVersion.treeJson, product),
+    ...selectionFormulaVariables,
+  };
 
   const runtimeSelectionContext = pbv2ToRuntimeSelectionContext(
     treeVersion.treeJson as any,
@@ -521,6 +530,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     product,
     baseDetails,
     quantity,
+    formulaVariables: formulaVariablesForPricing,
     pricingMatrixVariables: pricingMatrixVariablesForFormula,
   });
   const basePriceCents = formulaBasePrice.basePriceCents;
@@ -698,6 +708,14 @@ export function evaluatePricingPreviewFromTree(input: {
     input.treeJson,
     ruleValidatedSelections.selected
   );
+  const selectionFormulaVariables = buildNumericSelectionFormulaVariables({
+    treeJson: input.treeJson,
+    selections: ruleValidatedSelections.selected,
+  });
+  const formulaVariablesForPricing = {
+    ...(input.formulaVariables ?? {}),
+    ...selectionFormulaVariables,
+  };
   const runtimeSelectionContext = pbv2ToRuntimeSelectionContext(
     input.treeJson as any,
     ruleValidatedSelections.selected,
@@ -720,7 +738,7 @@ export function evaluatePricingPreviewFromTree(input: {
     pricingMatrixResolution,
     pricingProfileKey: input.pricingProfileKey,
     pricingProfileConfig: input.pricingProfileConfig,
-    formulaVariables: input.formulaVariables,
+    formulaVariables: formulaVariablesForPricing,
   });
   const pricingMethod = String(baseDetails.pricingProfileKey || "default");
   const weightDebug = buildPricingPreviewWeightDebug({
@@ -747,7 +765,7 @@ export function evaluatePricingPreviewFromTree(input: {
       baseDetails,
       quantity,
       pricingFormulaOverride: input.pricingFormulaOverride,
-      formulaVariables: input.formulaVariables,
+      formulaVariables: formulaVariablesForPricing,
       pricingMatrixVariables: pricingMatrixVariablesForFormula,
     });
   } catch (error: any) {

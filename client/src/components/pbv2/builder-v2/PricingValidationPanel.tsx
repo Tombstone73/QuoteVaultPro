@@ -20,15 +20,17 @@ import { Badge } from "@/components/ui/badge";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Textarea } from "@/components/ui/textarea";
 import { compareCanonicalGeometryPricing, detectsManualGeometryRebuild } from "@/lib/pbv2/pricing/geometryWarning";
 import type { Finding } from "@shared/pbv2/findings";
 import { pbv2TreeToEditorModel, type EditorModel } from "@/lib/pbv2/pbv2ViewModel";
+import { resolveRuntimeVisibility } from "@shared/optionTreeV2Runtime";
 
 export type PricingPreviewState = {
   width: number;
   height: number;
   quantity: number;
-  selectedOptionValues: Record<string, string | string[] | boolean>;
+  selectedOptionValues: Record<string, string | string[] | boolean | number>;
   unit: "in";
 };
 
@@ -174,7 +176,7 @@ type PreviewGroup = {
   options: PreviewOption[];
 };
 
-const FREEFORM_INPUT_TYPES = new Set(["text", "number", "numeric"]);
+const FREEFORM_INPUT_TYPES = new Set(["text", "textarea", "number", "numeric", "dimension"]);
 
 interface PricingValidationPanelProps {
   treeJson: unknown | null;
@@ -198,7 +200,7 @@ function toNodesRecord(treeJson: any): Record<string, any> {
   }, {});
 }
 
-function buildPreviewGroups(treeJson: unknown | null): PreviewGroup[] {
+function buildPreviewGroups(treeJson: unknown | null, selectedOptionValues: Record<string, unknown> = {}): PreviewGroup[] {
   if (!treeJson || typeof treeJson !== "object") return [];
 
   let model: EditorModel | null = null;
@@ -210,11 +212,23 @@ function buildPreviewGroups(treeJson: unknown | null): PreviewGroup[] {
   if (!model) return [];
 
   const nodes = toNodesRecord(treeJson);
+  let visibleNodeIds: Set<string> | null = null;
+  let visibleGroupIds: Set<string> | null = null;
+  try {
+    const runtimeVisibility = resolveRuntimeVisibility(treeJson as any, selectedOptionValues);
+    visibleNodeIds = new Set(runtimeVisibility.visibleNodeIds);
+    visibleGroupIds = new Set(runtimeVisibility.visibleGroupIds);
+  } catch {
+    visibleNodeIds = null;
+    visibleGroupIds = null;
+  }
 
   return model.groups
+    .filter((group) => !visibleGroupIds || visibleGroupIds.has(group.id))
     .map((group) => {
       const options: PreviewOption[] = group.optionIds
         .map((optionId) => {
+          if (visibleNodeIds && !visibleNodeIds.has(optionId)) return null;
           const optionMeta = model?.options?.[optionId];
           const node = nodes?.[optionId] ?? null;
           const choicesRaw = Array.isArray(node?.choices) ? node.choices : [];
@@ -462,7 +476,10 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
     };
   }, [treeJson, pricingV2Override]);
 
-  const previewGroups = useMemo(() => buildPreviewGroups(treeForPreview), [treeForPreview]);
+  const previewGroups = useMemo(
+    () => buildPreviewGroups(treeForPreview, previewState.selectedOptionValues),
+    [treeForPreview, previewState.selectedOptionValues],
+  );
   const previewSelectionKeys = useMemo(
     () => new Set(previewGroups.flatMap((group) => group.options.map((option) => option.selectionKey))),
     [previewGroups],
@@ -478,7 +495,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   }, [previewGroups]);
 
   const selectionPayload = useMemo(() => {
-    const selected: Record<string, { value: string | string[] | boolean }> = {};
+    const selected: Record<string, { value: string | string[] | boolean | number }> = {};
     for (const [selectionKey, value] of Object.entries(previewState.selectedOptionValues)) {
       if (!previewSelectionKeys.has(selectionKey)) continue;
       if (Array.isArray(value) && value.length === 0) continue;
@@ -1375,27 +1392,37 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     // Freeform option types (text / numeric) carry no choices: render
                     // a matching input so their value is included in the payload.
                     if (isFreeform) {
-                      const isNumeric = option.inputType !== "text";
+                      const isTextarea = option.inputType === "textarea";
+                      const isNumeric = option.inputType !== "text" && option.inputType !== "textarea";
                       const freeformValue = typeof selectedValue === "string" ? selectedValue : "";
+                      const commitFreeformValue = (nextValue: string) => {
+                        setPreviewState((prev) => {
+                          const nextSelected = { ...prev.selectedOptionValues };
+                          if (nextValue.trim().length === 0) delete nextSelected[option.selectionKey];
+                          else nextSelected[option.selectionKey] = nextValue;
+                          return { ...prev, selectedOptionValues: nextSelected };
+                        });
+                      };
                       return (
                         <div key={option.optionId} className="space-y-1 min-w-0">
                           <div className="text-xs text-slate-400">{option.optionName}</div>
-                          <Input
-                            type={isNumeric ? "number" : "text"}
-                            step={isNumeric ? "any" : undefined}
-                            value={freeformValue}
-                            placeholder={isNumeric ? "Enter a value" : "Enter text"}
-                            onChange={(e) => {
-                              const nextValue = e.target.value;
-                              setPreviewState((prev) => {
-                                const nextSelected = { ...prev.selectedOptionValues };
-                                if (nextValue.trim().length === 0) delete nextSelected[option.selectionKey];
-                                else nextSelected[option.selectionKey] = nextValue;
-                                return { ...prev, selectedOptionValues: nextSelected };
-                              });
-                            }}
-                            className="h-8 bg-slate-950/60 border-slate-700/60 text-xs min-w-0"
-                          />
+                          {isTextarea ? (
+                            <Textarea
+                              value={freeformValue}
+                              placeholder="Enter notes"
+                              onChange={(e) => commitFreeformValue(e.target.value)}
+                              className="min-h-[60px] bg-slate-950/60 border-slate-700/60 text-xs min-w-0"
+                            />
+                          ) : (
+                            <Input
+                              type={isNumeric ? "number" : "text"}
+                              step={isNumeric ? "any" : undefined}
+                              value={freeformValue}
+                              placeholder={isNumeric ? "Enter a value" : "Enter text"}
+                              onChange={(e) => commitFreeformValue(e.target.value)}
+                              className="h-8 bg-slate-950/60 border-slate-700/60 text-xs min-w-0"
+                            />
+                          )}
                         </div>
                       );
                     }
