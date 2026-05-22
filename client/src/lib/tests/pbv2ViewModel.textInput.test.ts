@@ -66,4 +66,23 @@ describe("pbv2ViewModel — text input type", () => {
     const option = model.options["imprint"];
     expect(option.isRequired).toBe(true);
   });
+
+  test("pbv2TreeToEditorModel maps input.type 'textarea' to EditorOption.type 'textarea'", () => {
+    const tree = makeTextOptionTree();
+    (tree.nodes.imprint.input as any).type = "textarea";
+    const model = pbv2TreeToEditorModel(tree);
+    const option = model.options["imprint"];
+    expect(option.type).toBe("textarea");
+  });
+
+  test("createUpdateOptionPatch with type 'textarea' writes input.type 'textarea' to tree", () => {
+    const tree = makeTextOptionTree();
+    const { patch } = createUpdateOptionPatch(tree, "imprint", { type: "textarea" });
+    const updated = applyPatchToTree(tree, patch) as any;
+    const nodes = updated.nodes;
+    const inputNode = Array.isArray(nodes)
+      ? nodes.find((n: any) => n.id === "imprint")
+      : nodes["imprint"];
+    expect(inputNode.input.type).toBe("textarea");
+  });
 });

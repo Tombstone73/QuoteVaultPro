@@ -334,6 +334,7 @@ export function OptionDetailsEditor({
               <SelectItem value="numeric">Numeric Input</SelectItem>
               <SelectItem value="dimension">Dimension Input</SelectItem>
               <SelectItem value="text">Text Input</SelectItem>
+              <SelectItem value="textarea">Textarea / Note</SelectItem>
             </SelectContent>
           </Select>
         </div>
