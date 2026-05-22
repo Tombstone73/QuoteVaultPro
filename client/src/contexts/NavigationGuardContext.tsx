@@ -1,6 +1,9 @@
 import React, { createContext, useCallback, useContext, useMemo, useRef } from "react";
 import { useLocation, useNavigate, type NavigateOptions } from "react-router-dom";
-import { notifyBrowserRouterOfCurrentUrlSoon } from "@/lib/nav/browserRouterSync";
+import {
+  notifyBrowserRouterOfCurrentUrlSoon,
+  recoverBrowserRouterMismatchSoon,
+} from "@/lib/nav/browserRouterSync";
 import {
   createNavigationGuardRegistry,
   type NavigationGuardDiagnostics,
@@ -36,6 +39,8 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
   const registryRef = useRef(createNavigationGuardRegistry());
   const navigate = useNavigate();
   const location = useLocation();
+  const locationRef = useRef(location);
+  locationRef.current = location;
 
   const registerGuard = useCallback((guard: NavigationGuardFn, shouldBlock: () => boolean, label?: string) => {
     const unregister = registryRef.current.registerGuard(guard, shouldBlock, label);
@@ -118,6 +123,11 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
       } else {
         navigate(to, options);
         notifyBrowserRouterOfCurrentUrlSoon();
+        recoverBrowserRouterMismatchSoon({
+          targetPath: decision.targetPath,
+          getReactRouterPath: () =>
+            `${locationRef.current.pathname}${locationRef.current.search}${locationRef.current.hash}`,
+        });
       }
     },
     [location.pathname, navigate],
