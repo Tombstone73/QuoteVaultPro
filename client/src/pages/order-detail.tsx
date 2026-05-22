@@ -57,6 +57,7 @@ import { useCreateProductionJobFromOrder } from "@/hooks/useProduction";
 import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
 import { useSmartBack } from "@/hooks/useSmartBack";
 import { buildReferrer } from "@/lib/nav/smartBack";
+import { notifyBrowserRouterOfCurrentUrlSoon } from "@/lib/nav/browserRouterSync";
 // TitanOS State Architecture
 import { OrderStatusPillSelector } from "@/components/OrderStatusPillSelector";
 import { 
@@ -1237,6 +1238,7 @@ export default function OrderDetail() {
       setPendingOrderPatch({});
       logOrderDirtyAudit("after-clear-before-navigate");
       navigate("/orders");
+      notifyBrowserRouterOfCurrentUrlSoon();
     } finally {
       setIsSavingOrder(false);
     }

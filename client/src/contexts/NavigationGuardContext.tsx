@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useMemo, useRef } from "react";
 import { useLocation, useNavigate, type NavigateOptions } from "react-router-dom";
+import { notifyBrowserRouterOfCurrentUrlSoon } from "@/lib/nav/browserRouterSync";
 import {
   createNavigationGuardRegistry,
   type NavigationGuardDiagnostics,
@@ -116,6 +117,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
         navigate(to);
       } else {
         navigate(to, options);
+        notifyBrowserRouterOfCurrentUrlSoon();
       }
     },
     [location.pathname, navigate],
