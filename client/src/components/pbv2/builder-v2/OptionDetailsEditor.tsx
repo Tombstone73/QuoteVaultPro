@@ -12,11 +12,85 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command';
 import { cn } from '@/lib/utils';
 import { centsToCurrencyInput, centsToCurrencyLabel, currencyInputToCents } from '@/lib/pbv2/currency';
+import {
+  parseMoneyInputDraft,
+  normalizePricingImpactForMode,
+  getPricingImpactWarnings,
+} from '@/lib/pbv2/pricing/pricingImpact';
 import type { EditorOption } from '@/lib/pbv2/pbv2ViewModel';
 import { CreateMaterialDialog } from '@/features/materials/CreateMaterialDialog';
 import { useMaterial, useMaterialsSearch, type MaterialSearchItem } from '@/hooks/useMaterials';
 import { useAuth } from '@/hooks/useAuth';
 import { formatMaterialWeightStatus } from '@/lib/materialWeightDisplay';
+
+/**
+ * Money input backed by a local draft string so the user can type freely —
+ * including partial values like "1." and a fully-cleared field — without the
+ * controlled value snapping back.
+ *
+ * It commits cents only on a valid keystroke (blank/partial input is never
+ * coerced mid-edit, so the field never fights the user) and normalizes the
+ * display on blur. A field left blank settles to 0 on blur — the existing
+ * PBV2 convention for impact amounts (`Add Impact` creates `cents: 0`) — which
+ * also keeps the stored value schema-valid (`pricingImpact` requires a number).
+ *
+ * Uses type="text" + inputMode="decimal": native number spinners are
+ * unreliable when the value is draft-controlled.
+ */
+function MoneyInput({
+  cents,
+  onCommit,
+  className,
+  placeholder = '0.00',
+  ariaLabel,
+}: {
+  cents: number | null | undefined;
+  onCommit: (cents: number) => void;
+  className?: string;
+  placeholder?: string;
+  ariaLabel?: string;
+}) {
+  const [draft, setDraft] = React.useState<string>(() => centsToCurrencyInput(cents));
+  const [focused, setFocused] = React.useState(false);
+
+  // Sync from the tree only while not actively editing, so external changes
+  // (type switch, reorder) refresh the field without fighting the user.
+  React.useEffect(() => {
+    if (!focused) setDraft(centsToCurrencyInput(cents));
+  }, [cents, focused]);
+
+  return (
+    <Input
+      type="text"
+      inputMode="decimal"
+      aria-label={ariaLabel}
+      placeholder={placeholder}
+      value={draft}
+      onFocus={() => setFocused(true)}
+      onChange={(e) => {
+        const raw = e.target.value;
+        setDraft(raw);
+        const commit = parseMoneyInputDraft(raw);
+        // Only commit a fully-parsed value. Blank/partial input keeps typing
+        // without coercing to 0 mid-edit and never writes NaN to the tree.
+        if (commit.status === 'valid') onCommit(commit.cents);
+      }}
+      onBlur={() => {
+        setFocused(false);
+        const commit = parseMoneyInputDraft(draft);
+        if (commit.status === 'valid') {
+          setDraft(centsToCurrencyInput(commit.cents));
+          onCommit(commit.cents);
+        } else {
+          // Blank/unparseable settles to 0 — the existing PBV2 amount default.
+          setDraft(centsToCurrencyInput(0));
+          onCommit(0);
+        }
+      }}
+      className={className}
+    />
+  );
+}
 
 type QuantityBasis = 'area_sqft' | 'perimeter_ft' | 'linear_ft' | 'each' | 'fixed';
 type PricingOverrideMode = 'none' | 'set_base_rate' | 'add_base_rate' | 'multiply_base_rate';
@@ -586,10 +660,14 @@ export function OptionDetailsEditor({
                               <div className="space-y-2">
                                 {choice.pricingImpact.map((impact: any, impactIdx: number) => {
                                   const mode = impact.mode || 'addCents';
-                                  const cents = impact.cents ?? impact.centsPerUnit ?? 0;
+                                  // Read each mode's canonical cents field directly (no `??`
+                                  // fallback chain) so the display never shows a stale amount.
+                                  const flatCents = typeof impact.cents === 'number' ? impact.cents : null;
+                                  const perUnitCents = typeof impact.centsPerUnit === 'number' ? impact.centsPerUnit : null;
                                   const percent = impact.percent ?? 0;
                                   const basis = impact.basis || 'base';
                                   const unit = impact.unit || 'perPiece';
+                                  const impactWarnings = getPricingImpactWarnings(impact);
 
                                   return (
                                     <div key={impactIdx} className="bg-[#0f172a] border border-slate-600 rounded p-2 space-y-2">
@@ -600,8 +678,11 @@ export function OptionDetailsEditor({
                                             <Select
                                               value={mode}
                                               onValueChange={(newMode) => {
+                                                // Re-shape the impact for the new type: preserve a
+                                                // compatible amount and initialize required fields
+                                                // (e.g. centsPerUnit + unit) so nothing is left missing.
                                                 const updated = [...(choice.pricingImpact || [])];
-                                                updated[impactIdx] = { ...updated[impactIdx], mode: newMode };
+                                                updated[impactIdx] = normalizePricingImpactForMode(updated[impactIdx], newMode);
                                                 onUpdateChoice(option.id, choice.value, { pricingImpact: updated });
                                               }}
                                             >
@@ -619,12 +700,10 @@ export function OptionDetailsEditor({
                                           {mode === 'addCents' && (
                                             <div>
                                               <Label className="text-xs text-slate-500 mb-1 block">Amount in $ (negative = discount)</Label>
-                                              <Input
-                                                type="number"
-                                                step="0.01"
-                                                value={centsToCurrencyInput(cents)}
-                                                onChange={(e) => {
-                                                  const val = currencyInputToCents(e.target.value) ?? 0;
+                                              <MoneyInput
+                                                ariaLabel="Pricing impact amount in dollars"
+                                                cents={flatCents}
+                                                onCommit={(val) => {
                                                   const updated = [...(choice.pricingImpact || [])];
                                                   updated[impactIdx] = { ...updated[impactIdx], cents: val };
                                                   onUpdateChoice(option.id, choice.value, { pricingImpact: updated });
@@ -632,7 +711,7 @@ export function OptionDetailsEditor({
                                                 className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7"
                                               />
                                               <div className="text-xs text-slate-500 mt-0.5">
-                                                {centsToCurrencyLabel(cents)}
+                                                {centsToCurrencyLabel(flatCents ?? 0)}
                                               </div>
                                             </div>
                                           )}
@@ -684,12 +763,10 @@ export function OptionDetailsEditor({
                                             <>
                                               <div>
                                                 <Label className="text-xs text-slate-500 mb-1 block">Amount Per Unit ($)</Label>
-                                                <Input
-                                                  type="number"
-                                                  step="0.01"
-                                                  value={centsToCurrencyInput(cents)}
-                                                  onChange={(e) => {
-                                                    const val = currencyInputToCents(e.target.value) ?? 0;
+                                                <MoneyInput
+                                                  ariaLabel="Amount per unit in dollars"
+                                                  cents={perUnitCents}
+                                                  onCommit={(val) => {
                                                     const updated = [...(choice.pricingImpact || [])];
                                                     updated[impactIdx] = { ...updated[impactIdx], centsPerUnit: val };
                                                     onUpdateChoice(option.id, choice.value, { pricingImpact: updated });
@@ -737,6 +814,14 @@ export function OptionDetailsEditor({
                                           <Trash2 className="h-3 w-3" />
                                         </Button>
                                       </div>
+
+                                      {(impactWarnings.type || impactWarnings.amount || impactWarnings.unit) ? (
+                                        <div className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-300 space-y-0.5">
+                                          {impactWarnings.type ? <div>{impactWarnings.type}</div> : null}
+                                          {impactWarnings.amount ? <div>{impactWarnings.amount}</div> : null}
+                                          {impactWarnings.unit ? <div>{impactWarnings.unit}</div> : null}
+                                        </div>
+                                      ) : null}
                                     </div>
                                   );
                                 })}
