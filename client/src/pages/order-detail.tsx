@@ -57,7 +57,10 @@ import { useCreateProductionJobFromOrder } from "@/hooks/useProduction";
 import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
 import { useSmartBack } from "@/hooks/useSmartBack";
 import { buildReferrer } from "@/lib/nav/smartBack";
-import { notifyBrowserRouterOfCurrentUrlSoon } from "@/lib/nav/browserRouterSync";
+import {
+  notifyBrowserRouterOfCurrentUrlSoon,
+  recoverBrowserRouterMismatchSoon,
+} from "@/lib/nav/browserRouterSync";
 // TitanOS State Architecture
 import { OrderStatusPillSelector } from "@/components/OrderStatusPillSelector";
 import { 
@@ -630,6 +633,8 @@ export default function OrderDetail() {
     },
     [getOrderDirtyAuditSnapshot],
   );
+  const routeLocationRef = useRef(location);
+  routeLocationRef.current = location;
 
   const applyOrderPatch = async (patch: Record<string, any>) => {
     if (!canEditOrder) return;
@@ -1239,6 +1244,11 @@ export default function OrderDetail() {
       logOrderDirtyAudit("after-clear-before-navigate");
       navigate("/orders");
       notifyBrowserRouterOfCurrentUrlSoon();
+      recoverBrowserRouterMismatchSoon({
+        targetPath: "/orders",
+        getReactRouterPath: () =>
+          `${routeLocationRef.current.pathname}${routeLocationRef.current.search}${routeLocationRef.current.hash}`,
+      });
     } finally {
       setIsSavingOrder(false);
     }
