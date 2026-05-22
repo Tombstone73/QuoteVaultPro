@@ -16,6 +16,7 @@ import {
   parseMoneyInputDraft,
   normalizePricingImpactForMode,
   normalizeLegacyPricingImpact,
+  normalizeFormulaInputDraft,
   getPricingImpactWarnings,
 } from '@/lib/pbv2/pricing/pricingImpact';
 import type { EditorOption } from '@/lib/pbv2/pbv2ViewModel';
@@ -1133,9 +1134,21 @@ export function OptionDetailsEditor({
                           <Input
                             type="text"
                             value={formula}
-                            onChange={(e) => {
+                            onFocus={() => {
+                              if (formula.trim() !== '0') return;
                               const updatedRules = [...(nodeData.pricingImpact || [])];
-                              updatedRules[index] = { ...normalizedRule, formula: e.target.value };
+                              updatedRules[index] = { ...normalizedRule, formula: '' };
+                              onUpdateNodePricing(
+                                option.id,
+                                updatedRules.map((r: any) => normalizeLegacyPricingImpact(r, 'addFlat', {
+                                  settleBlankFormula: false,
+                                }))
+                              );
+                            }}
+                            onChange={(e) => {
+                              const nextFormula = normalizeFormulaInputDraft(formula, e.target.value);
+                              const updatedRules = [...(nodeData.pricingImpact || [])];
+                              updatedRules[index] = { ...normalizedRule, formula: nextFormula };
                               onUpdateNodePricing(
                                 option.id,
                                 updatedRules.map((r: any) => normalizeLegacyPricingImpact(r, 'addFlat', {

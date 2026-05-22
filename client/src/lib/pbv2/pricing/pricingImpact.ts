@@ -278,6 +278,15 @@ export function normalizePricingImpactForMode(impact: any, newMode: string): any
   return next;
 }
 
+export function normalizeFormulaInputDraft(previousFormula: unknown, nextDraft: string): string {
+  const previous = typeof previousFormula === "string" ? previousFormula.trim() : "";
+  if (previous !== "0") return nextDraft;
+  if (!nextDraft.startsWith("0") || nextDraft.length <= 1) return nextDraft;
+
+  const secondChar = nextDraft[1];
+  return /[0-9.]/.test(secondChar) ? nextDraft : nextDraft.slice(1);
+}
+
 export interface PricingImpactWarnings {
   /** Amount field is missing/invalid. */
   amount?: string;
