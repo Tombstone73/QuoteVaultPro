@@ -1,5 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircleIcon, AlertTriangle, CheckCircle, DollarSign } from "lucide-react";
+import { AlertCircleIcon, AlertTriangle, CheckCircle, ChevronDown, ChevronRight, DollarSign } from "lucide-react";
+import {
+  normalizePreviewError,
+  buildClientPreviewError,
+  buildUnexpectedPreviewError,
+  categorizePreviewDetails,
+  findMissingRequiredSelections,
+  PBV2_PREVIEW_CLIENT_VALIDATION,
+  type NormalizedPreviewError,
+  type PreviewErrorDetail,
+  type RequiredSelectionGroup,
+} from "@/lib/pbv2/pricing/previewError";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -157,8 +168,11 @@ type PreviewGroup = {
   groupId: string;
   groupName: string;
   isMultiSelect: boolean;
+  isRequired: boolean;
   options: PreviewOption[];
 };
+
+const FREEFORM_INPUT_TYPES = new Set(["text", "number", "numeric"]);
 
 interface PricingValidationPanelProps {
   treeJson: unknown | null;
@@ -209,7 +223,10 @@ function buildPreviewGroups(treeJson: unknown | null): PreviewGroup[] {
           const choices = mappedChoices.filter((choice: { value: string; label: string }) => choice.value.length > 0);
 
           const inputType = String(node?.input?.type ?? "select");
-          if (choices.length === 0) return null;
+          // Keep choice-driven options (select/dropdown/multiselect) AND recently
+          // added freeform option types (text/numeric) so every option type is
+          // represented correctly in the preview payload.
+          if (choices.length === 0 && !FREEFORM_INPUT_TYPES.has(inputType)) return null;
 
           return {
             optionId,
@@ -225,10 +242,146 @@ function buildPreviewGroups(treeJson: unknown | null): PreviewGroup[] {
         groupId: group.id,
         groupName: group.name,
         isMultiSelect: group.isMultiSelect,
+        isRequired: Boolean(group.isRequired),
         options,
       };
     })
     .filter((group) => group.options.length > 0);
+}
+
+function PreviewDebugList({ label, details }: { label: string; details: PreviewErrorDetail[] }) {
+  if (details.length === 0) return null;
+  return (
+    <div>
+      <span className="text-red-300/70">{label}:</span>
+      <ul className="ml-3 mt-0.5 list-disc space-y-0.5">
+        {details.map((detail, idx) => (
+          <li key={`${label}-${idx}`}>
+            {detail.path ? <span className="font-mono">{detail.path}</span> : null}
+            {detail.path ? " — " : null}
+            {detail.message}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * Expandable red error banner for the Pricing Preview Sandbox. Keeps the generic
+ * summary visible, and reveals structured validation detail + debug sections on
+ * demand so the user can see exactly what is missing or malformed.
+ */
+function PreviewErrorBanner({
+  error,
+  expanded,
+  onToggleExpanded,
+  missingRequiredDetails,
+  pricingConfigHint,
+}: {
+  error: NormalizedPreviewError;
+  expanded: boolean;
+  onToggleExpanded: () => void;
+  missingRequiredDetails: PreviewErrorDetail[];
+  pricingConfigHint: string | null;
+}) {
+  const debug = categorizePreviewDetails(error.details);
+  const hasStructuredDetails = error.details.length > 0;
+  const missingSelections = [...debug.missingSelections, ...missingRequiredDetails];
+  const payloadStatus =
+    error.errorCode === PBV2_PREVIEW_CLIENT_VALIDATION
+      ? "Blocked before submit (no API call made)"
+      : error.kind === "validation_error_with_details"
+        ? "Rejected with validation details"
+        : error.kind === "unexpected_error"
+          ? "Unexpected failure"
+          : "Rejected";
+  const hasDebugData =
+    missingSelections.length > 0 ||
+    debug.missingVariables.length > 0 ||
+    debug.invalidNumericInputs.length > 0;
+
+  return (
+    <div className="space-y-2 rounded border border-red-500/40 bg-red-500/10 p-2 text-sm text-red-200">
+      <div className="font-semibold">{error.message}</div>
+      {pricingConfigHint ? <div className="text-xs text-red-200/90">{pricingConfigHint}</div> : null}
+      <button
+        type="button"
+        onClick={onToggleExpanded}
+        aria-expanded={expanded}
+        className="flex items-center gap-1 text-xs font-medium text-red-100/90 hover:text-red-50"
+      >
+        {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+        {expanded ? "Hide details" : "Show details"}
+      </button>
+
+      {expanded ? (
+        <div className="space-y-2 rounded border border-red-500/30 bg-red-950/40 p-2 text-xs">
+          {error.errorCode ? (
+            <div>
+              <span className="text-red-300/70">Error code: </span>
+              <span className="font-mono">{error.errorCode}</span>
+            </div>
+          ) : null}
+          <div>
+            <span className="text-red-300/70">Summary: </span>
+            {error.message}
+          </div>
+
+          {hasStructuredDetails ? (
+            <div className="space-y-1">
+              <div className="text-red-300/70">Validation issues ({error.details.length})</div>
+              {error.details.map((detail, idx) => (
+                <div
+                  key={`preview-detail-${idx}`}
+                  className="space-y-0.5 rounded border border-red-500/30 bg-red-950/50 p-1.5"
+                >
+                  {detail.path ? (
+                    <div>
+                      <span className="text-red-300/70">Field: </span>
+                      <span className="font-mono">{detail.path}</span>
+                    </div>
+                  ) : null}
+                  <div>{detail.message}</div>
+                  {detail.expected ? (
+                    <div>
+                      <span className="text-red-300/70">Expected: </span>
+                      <span className="font-mono">{detail.expected}</span>
+                    </div>
+                  ) : null}
+                  {detail.received !== undefined ? (
+                    <div>
+                      <span className="text-red-300/70">Received: </span>
+                      <span className="font-mono">{detail.received === null ? "null" : detail.received}</span>
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-red-200/80">
+              {error.rawMessage} No field-level details were returned.
+            </div>
+          )}
+
+          <div className="space-y-1 border-t border-red-500/30 pt-1.5">
+            <div className="text-red-300/70">Debug</div>
+            <div>
+              <span className="text-red-300/70">Payload status: </span>
+              {payloadStatus}
+            </div>
+            {hasDebugData ? (
+              <>
+                <PreviewDebugList label="Missing required selections" details={missingSelections} />
+                <PreviewDebugList label="Missing formula variables" details={debug.missingVariables} />
+                <PreviewDebugList label="Invalid numeric inputs" details={debug.invalidNumericInputs} />
+              </>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, pricingProfileKey, pricingProfileConfig, pricingMode = "basic", productPrimaryMaterialId, findings }: PricingValidationPanelProps) {
@@ -254,6 +407,8 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [responseErrors, setResponseErrors] = useState<string[]>([]);
+  const [previewError, setPreviewError] = useState<NormalizedPreviewError | null>(null);
+  const [showErrorDetails, setShowErrorDetails] = useState(false);
   const requestIdRef = useRef(0);
 
   const errors = findings.filter((f) => f.severity === "ERROR");
@@ -331,6 +486,40 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   }, [previewState.width, previewState.height, previewState.quantity]);
 
   const hasInputErrors = Boolean(inputErrors.width || inputErrors.height || inputErrors.quantity);
+
+  // Client-side guard: if numeric inputs are invalid, surface the same expandable
+  // error UI without making a failed API call.
+  const numericInputError = useMemo<NormalizedPreviewError | null>(() => {
+    if (!hasInputErrors) return null;
+    const details: PreviewErrorDetail[] = [];
+    if (inputErrors.width) details.push({ path: "width", message: inputErrors.width, expected: "a number greater than 0" });
+    if (inputErrors.height) details.push({ path: "height", message: inputErrors.height, expected: "a number greater than 0" });
+    if (inputErrors.quantity) details.push({ path: "quantity", message: inputErrors.quantity, expected: "a whole number of 1 or more" });
+    return buildClientPreviewError("Fix preview inputs before pricing.", details);
+  }, [hasInputErrors, inputErrors.width, inputErrors.height, inputErrors.quantity]);
+
+  const requiredSelectionGroups = useMemo<RequiredSelectionGroup[]>(
+    () =>
+      previewGroups.map((group) => ({
+        groupId: group.groupId,
+        groupName: group.groupName,
+        isRequired: group.isRequired,
+        selectionKeys: group.options.map((option) => option.selectionKey),
+      })),
+    [previewGroups],
+  );
+
+  // Non-blocking diagnostics: required option groups with no sandbox selection.
+  // The backend applies tree defaults, so this never blocks the preview call —
+  // it only enriches the expandable error details when a failure occurs.
+  const missingRequiredDetails = useMemo(
+    () => findMissingRequiredSelections(requiredSelectionGroups, previewState.selectedOptionValues),
+    [requiredSelectionGroups, previewState.selectedOptionValues],
+  );
+
+  // Numeric guard takes precedence (no API call); otherwise show the API error.
+  const activePreviewError = numericInputError ?? previewError;
+
   const apiErrors = useMemo(() => {
     const resultErrors = Array.isArray(result?.errors) ? result.errors.filter((entry) => typeof entry === "string" && entry.trim().length > 0) : [];
     return [...responseErrors, ...resultErrors];
@@ -592,15 +781,19 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
       setResult(null);
       setFormulaDebug(null);
       setResponseErrors([]);
+      setPreviewError(null);
       setError("No PBV2 tree loaded.");
       return;
     }
 
     if (hasInputErrors) {
+      // Numeric inputs are guarded client-side: skip the API call entirely.
+      // The expandable error banner is derived from `numericInputError`.
       setLoading(false);
       setResult(null);
       setFormulaDebug(null);
       setResponseErrors([]);
+      setPreviewError(null);
       setError(null);
       return;
     }
@@ -612,6 +805,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
       setError(null);
       setFormulaDebug(null);
       setResponseErrors([]);
+      setPreviewError(null);
       try {
         const res = await fetch("/api/pbv2/pricing-preview", {
           method: "POST",
@@ -643,12 +837,14 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                 .filter((entry: string | null): entry is string => Boolean(entry))
             : [];
           setResponseErrors(structuredErrors);
+          setPreviewError(normalizePreviewError(json, res.status, "Pricing evaluation failed."));
           setError(typeof json?.message === "string" ? json.message : "Pricing evaluation failed.");
           return;
         }
 
         const data = (json?.data ?? null) as PricingPreviewResponse | null;
         setResponseErrors([]);
+        setPreviewError(null);
         setFormulaDebug(data?.debug ?? null);
         setResult(data);
       } catch (e: any) {
@@ -657,7 +853,9 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
         setResult(null);
         setFormulaDebug(null);
         setResponseErrors([]);
-        setError(typeof e?.message === "string" ? e.message : "Pricing evaluation failed.");
+        const unexpectedMessage = typeof e?.message === "string" ? e.message : "Pricing evaluation failed.";
+        setPreviewError(buildUnexpectedPreviewError(unexpectedMessage));
+        setError(unexpectedMessage);
       } finally {
         if (!controller.signal.aborted && requestId === requestIdRef.current) setLoading(false);
       }
@@ -729,22 +927,18 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
               <div className="text-xs text-slate-400 uppercase tracking-wide">Output</div>
               {loading ? (
                 <div className="text-sm text-slate-300">Calculating…</div>
-              ) : hasInputErrors ? (
-                <div className="text-sm text-red-300">Fix input errors to run preview.</div>
+              ) : activePreviewError ? (
+                <PreviewErrorBanner
+                  error={activePreviewError}
+                  expanded={showErrorDetails}
+                  onToggleExpanded={() => setShowErrorDetails((prev) => !prev)}
+                  missingRequiredDetails={missingRequiredDetails}
+                  pricingConfigHint={pricingConfigHint}
+                />
               ) : error ? (
                 <div className="space-y-1 rounded border border-red-500/40 bg-red-500/10 p-2 text-sm text-red-200">
                   <div className="font-semibold">{error}</div>
                   {pricingConfigHint ? <div>{pricingConfigHint}</div> : null}
-                  {hasFormulaDebugErrors ? (
-                    <div className="space-y-1 pt-1">
-                      {formulaDebugErrors.map((entry, idx) => (
-                        <div key={`formula-debug-${idx}`}>{entry.code}: {entry.message}</div>
-                      ))}
-                    </div>
-                  ) : null}
-                  {apiErrors.map((entry, idx) => (
-                    <div key={`api-${idx}`}>{entry}</div>
-                  ))}
                 </div>
               ) : hasApiErrors ? (
                 <div className="space-y-1 rounded border border-red-500/40 bg-red-500/10 p-2 text-sm text-red-200">
@@ -1128,14 +1322,50 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                 <div key={group.groupId} className="rounded-md border border-slate-700 bg-slate-800/30 p-3 space-y-2 min-w-0">
                   <div className="flex items-center justify-between gap-2 min-w-0">
                     <div className="text-sm font-medium text-slate-200 truncate">{group.groupName}</div>
-                    <Badge variant="outline" className="text-[10px] border-slate-600 text-slate-300">
-                      {group.isMultiSelect ? "Multi" : "Single"}
-                    </Badge>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      {group.isRequired ? (
+                        <Badge variant="outline" className="text-[10px] border-red-500/40 bg-red-500/10 text-red-300">
+                          Required
+                        </Badge>
+                      ) : null}
+                      <Badge variant="outline" className="text-[10px] border-slate-600 text-slate-300">
+                        {group.isMultiSelect ? "Multi" : "Single"}
+                      </Badge>
+                    </div>
                   </div>
 
                   {group.options.map((option) => {
                     const selectedValue = previewState.selectedOptionValues[option.selectionKey];
-                    const isMulti = option.inputType === "multiselect" || group.isMultiSelect;
+                    const isFreeform = FREEFORM_INPUT_TYPES.has(option.inputType);
+                    const isMulti = !isFreeform && (option.inputType === "multiselect" || group.isMultiSelect);
+
+                    // Freeform option types (text / numeric) carry no choices: render
+                    // a matching input so their value is included in the payload.
+                    if (isFreeform) {
+                      const isNumeric = option.inputType !== "text";
+                      const freeformValue = typeof selectedValue === "string" ? selectedValue : "";
+                      return (
+                        <div key={option.optionId} className="space-y-1 min-w-0">
+                          <div className="text-xs text-slate-400">{option.optionName}</div>
+                          <Input
+                            type={isNumeric ? "number" : "text"}
+                            step={isNumeric ? "any" : undefined}
+                            value={freeformValue}
+                            placeholder={isNumeric ? "Enter a value" : "Enter text"}
+                            onChange={(e) => {
+                              const nextValue = e.target.value;
+                              setPreviewState((prev) => {
+                                const nextSelected = { ...prev.selectedOptionValues };
+                                if (nextValue.trim().length === 0) delete nextSelected[option.selectionKey];
+                                else nextSelected[option.selectionKey] = nextValue;
+                                return { ...prev, selectedOptionValues: nextSelected };
+                              });
+                            }}
+                            className="h-8 bg-slate-950/60 border-slate-700/60 text-xs min-w-0"
+                          />
+                        </div>
+                      );
+                    }
 
                     if (isMulti) {
                       const selectedArray = Array.isArray(selectedValue) ? selectedValue : [];
