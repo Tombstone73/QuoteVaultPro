@@ -173,12 +173,19 @@ export function normalizeLegacyPricingImpact(
   }
 }
 
-export function normalizePricingImpactList(impacts: unknown, fallbackMode = "addCents"): any[] {
+export function normalizePricingImpactList(
+  impacts: unknown,
+  fallbackMode = "addCents",
+  options: NormalizePricingImpactOptions = {},
+): any[] {
   if (!Array.isArray(impacts)) return [];
-  return impacts.map((impact) => normalizeLegacyPricingImpact(impact, fallbackMode));
+  return impacts.map((impact) => normalizeLegacyPricingImpact(impact, fallbackMode, options));
 }
 
-export function normalizeTreePricingImpacts(treeJson: unknown): { tree: any; changed: boolean } {
+export function normalizeTreePricingImpacts(
+  treeJson: unknown,
+  options: NormalizePricingImpactOptions = {},
+): { tree: any; changed: boolean } {
   if (!treeJson || typeof treeJson !== "object") return { tree: treeJson, changed: false };
   const tree: any = treeJson;
   const rawNodes = tree.nodes;
@@ -195,7 +202,7 @@ export function normalizeTreePricingImpacts(treeJson: unknown): { tree: any; cha
     let nextNode = node;
 
     if (Array.isArray(node.pricingImpact)) {
-      const nextPricing = normalizePricingImpactList(node.pricingImpact, "addFlat");
+      const nextPricing = normalizePricingImpactList(node.pricingImpact, "addFlat", options);
       if (JSON.stringify(nextPricing) !== JSON.stringify(node.pricingImpact)) {
         nextNode = { ...nextNode, pricingImpact: nextPricing };
         changed = true;
@@ -206,7 +213,7 @@ export function normalizeTreePricingImpacts(treeJson: unknown): { tree: any; cha
       let choicesChanged = false;
       const nextChoices = node.choices.map((choice: any) => {
         if (!choice || typeof choice !== "object" || !Array.isArray(choice.pricingImpact)) return choice;
-        const nextPricing = normalizePricingImpactList(choice.pricingImpact, "addCents");
+        const nextPricing = normalizePricingImpactList(choice.pricingImpact, "addCents", options);
         if (JSON.stringify(nextPricing) === JSON.stringify(choice.pricingImpact)) return choice;
         choicesChanged = true;
         changed = true;
