@@ -47,6 +47,22 @@ function RequiredLabel({ children, required = false }: { children: React.ReactNo
   );
 }
 
+function hasKnownLookupValue(items: any, value: unknown): boolean {
+  return Array.isArray(items) && typeof value === "string" && items.some((item: any) => item.id === value);
+}
+
+function shouldShowUnknownLookupValue(items: any, value: unknown): value is string {
+  return Array.isArray(items) && typeof value === "string" && value.length > 0 && !hasKnownLookupValue(items, value);
+}
+
+function UnknownLookupWarning({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-700 dark:text-amber-200">
+      {children}
+    </div>
+  );
+}
+
 // Get profile badge for display
 function getProfileBadge(profileKey: string | null | undefined) {
   const profile = getProfile(profileKey);
@@ -93,6 +109,8 @@ export default function ProductsPage() {
   const { data: productTypes } = useProductTypes();
   const { data: materials } = useMaterials();
   const { data: pricingFormulas } = usePricingFormulas();
+  const productTypesLoaded = Array.isArray(productTypes);
+  const materialsLoaded = Array.isArray(materials);
 
   // Add product form
   const addProductForm = useForm<ProductFormData>({
@@ -516,18 +534,30 @@ export default function ProductsPage() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>Product Type</FormLabel>
-                        <Select onValueChange={field.onChange} value={field.value || ""}>
+                        <Select
+                          key={productTypesLoaded ? "add-product-type-loaded" : "add-product-type-loading"}
+                          onValueChange={field.onChange}
+                          value={field.value || ""}
+                        >
                           <FormControl>
                             <SelectTrigger>
                               <SelectValue placeholder="Select type" />
                             </SelectTrigger>
                           </FormControl>
                           <SelectContent>
+                            {shouldShowUnknownLookupValue(productTypes, field.value) ? (
+                              <SelectItem value={field.value}>Unknown value ({field.value})</SelectItem>
+                            ) : null}
                             {productTypes?.map((pt) => (
                               <SelectItem key={pt.id} value={pt.id}>{pt.name}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
+                        {shouldShowUnknownLookupValue(productTypes, field.value) ? (
+                          <UnknownLookupWarning>
+                            Product type "{field.value}" is not in the current product type list. Select a valid type before saving.
+                          </UnknownLookupWarning>
+                        ) : null}
                         <FormMessage />
                       </FormItem>
                     )}
@@ -801,6 +831,7 @@ export default function ProductsPage() {
                     <FormItem>
                       <FormLabel>Primary Material</FormLabel>
                       <Select
+                        key={materialsLoaded ? "add-primary-material-loaded" : "add-primary-material-loading"}
                         onValueChange={(val) => field.onChange(val === "__none__" ? null : val)}
                         value={field.value || "__none__"}
                       >
@@ -811,6 +842,9 @@ export default function ProductsPage() {
                         </FormControl>
                         <SelectContent>
                           <SelectItem value="__none__">None</SelectItem>
+                          {shouldShowUnknownLookupValue(materials, field.value) ? (
+                            <SelectItem value={field.value}>Unknown material ({field.value})</SelectItem>
+                          ) : null}
                           {materials?.map((mat) => (
                             <SelectItem key={mat.id} value={mat.id}>
                               {mat.name} {mat.sku ? `(${mat.sku})` : ""}
@@ -821,6 +855,11 @@ export default function ProductsPage() {
                       <FormDescription className="text-xs">
                         Primary material is used for cost calculations and inventory; optional for service/fee products.
                       </FormDescription>
+                      {shouldShowUnknownLookupValue(materials, field.value) ? (
+                        <UnknownLookupWarning>
+                          Primary material "{field.value}" is not in the current material list. Choose a valid material or clear it.
+                        </UnknownLookupWarning>
+                      ) : null}
                       <FormMessage />
                     </FormItem>
                   )}
@@ -1228,18 +1267,30 @@ export default function ProductsPage() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>Product Type</FormLabel>
-                        <Select onValueChange={field.onChange} value={field.value || ""}>
+                        <Select
+                          key={productTypesLoaded ? "edit-product-type-loaded" : "edit-product-type-loading"}
+                          onValueChange={field.onChange}
+                          value={field.value || ""}
+                        >
                           <FormControl>
                             <SelectTrigger>
                               <SelectValue placeholder="Select type" />
                             </SelectTrigger>
                           </FormControl>
                           <SelectContent>
+                            {shouldShowUnknownLookupValue(productTypes, field.value) ? (
+                              <SelectItem value={field.value}>Unknown value ({field.value})</SelectItem>
+                            ) : null}
                             {productTypes?.map((pt) => (
                               <SelectItem key={pt.id} value={pt.id}>{pt.name}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
+                        {shouldShowUnknownLookupValue(productTypes, field.value) ? (
+                          <UnknownLookupWarning>
+                            Product type "{field.value}" is not in the current product type list. Select a valid type before saving.
+                          </UnknownLookupWarning>
+                        ) : null}
                         <FormMessage />
                       </FormItem>
                     )}
@@ -1513,6 +1564,7 @@ export default function ProductsPage() {
                     <FormItem>
                       <FormLabel>Primary Material</FormLabel>
                       <Select
+                        key={materialsLoaded ? "edit-primary-material-loaded" : "edit-primary-material-loading"}
                         onValueChange={(val) => field.onChange(val === "__none__" ? null : val)}
                         value={field.value || "__none__"}
                       >
@@ -1523,6 +1575,9 @@ export default function ProductsPage() {
                         </FormControl>
                         <SelectContent>
                           <SelectItem value="__none__">None</SelectItem>
+                          {shouldShowUnknownLookupValue(materials, field.value) ? (
+                            <SelectItem value={field.value}>Unknown material ({field.value})</SelectItem>
+                          ) : null}
                           {materials?.map((mat) => (
                             <SelectItem key={mat.id} value={mat.id}>
                               {mat.name} {mat.sku ? `(${mat.sku})` : ""}
@@ -1533,6 +1588,11 @@ export default function ProductsPage() {
                       <FormDescription className="text-xs">
                         This material is used for cost, nesting, and inventory. Extra materials like laminate are configured as options.
                       </FormDescription>
+                      {shouldShowUnknownLookupValue(materials, field.value) ? (
+                        <UnknownLookupWarning>
+                          Primary material "{field.value}" is not in the current material list. Choose a valid material or clear it.
+                        </UnknownLookupWarning>
+                      ) : null}
                       <FormMessage />
                     </FormItem>
                   )}

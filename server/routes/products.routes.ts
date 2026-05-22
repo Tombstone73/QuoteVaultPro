@@ -51,6 +51,7 @@ import {
   buildPreviewErrorEnvelope,
   zodIssuesToPreviewDetails,
 } from "../services/pricing/pricingPreviewValidation";
+import { applyProductTypeIdUpdateGuard } from "../lib/productUpdateGuards";
 
 // ---------------------------------------------------------------------------
 // Local JSON typing helpers (do NOT touch shared/schema.ts)
@@ -1977,7 +1978,7 @@ export function registerProductRoutes(
         return res.status(404).json({ success: false, message: "Product not found" });
       }
 
-      const productData: any = {};
+      let productData: any = {};
       Object.entries(parsedData).forEach(([k, v]) => {
         // Convert empty strings to null for optional fields, but preserve strings for required fields like description
         if (k === "description" || k === "name") {
@@ -1986,6 +1987,39 @@ export function registerProductRoutes(
           productData[k] = v === "" ? null : v;
         }
       });
+
+      if (Object.prototype.hasOwnProperty.call(productData, "productTypeId")) {
+        const knownProductTypeRows = await db
+          .select({ id: productTypes.id })
+          .from(productTypes)
+          .where(eq(productTypes.organizationId, organizationId));
+
+        const productTypeGuard = applyProductTypeIdUpdateGuard({
+          productData,
+          existingProductTypeId: existingProduct.productTypeId,
+          knownProductTypeIds: knownProductTypeRows.map((row) => row.id),
+        });
+
+        if (!productTypeGuard.ok) {
+          return res.status(productTypeGuard.status).json({
+            success: false,
+            message: productTypeGuard.message,
+            code: productTypeGuard.code,
+            details: productTypeGuard.details,
+          });
+        }
+
+        productData = productTypeGuard.productData;
+        if (productTypeGuard.warning) {
+          console.warn("[PATCH /api/products/:id] Preserved productTypeId during blank update", {
+            productId,
+            organizationId,
+            code: productTypeGuard.warning.code,
+            attemptedValue: productTypeGuard.warning.attemptedValue,
+            preservedValue: productTypeGuard.warning.preservedValue,
+          });
+        }
+      }
 
       // Guard: do not attempt an update with no fields.
       if (Object.keys(productData).length === 0) {
