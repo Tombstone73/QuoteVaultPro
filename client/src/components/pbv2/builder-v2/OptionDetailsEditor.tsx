@@ -15,6 +15,7 @@ import { centsToCurrencyInput, centsToCurrencyLabel, currencyInputToCents } from
 import {
   parseMoneyInputDraft,
   normalizePricingImpactForMode,
+  normalizeLegacyPricingImpact,
   getPricingImpactWarnings,
 } from '@/lib/pbv2/pricing/pricingImpact';
 import type { EditorOption } from '@/lib/pbv2/pbv2ViewModel';
@@ -152,8 +153,8 @@ interface OptionDetailsEditorProps {
   onUpdateChoice: (optionId: string, choiceValue: string, updates: any) => void;
   onDeleteChoice: (optionId: string, choiceValue: string) => void;
   onReorderChoice: (optionId: string, fromIndex: number, toIndex: number) => void;
-  onUpdateNodePricing: (optionId: string, pricingImpact: Array<{ mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }>) => void;
-  onAddPricingRule: (optionId: string, rule: { mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }) => void;
+  onUpdateNodePricing: (optionId: string, pricingImpact: Array<{ mode: string; cents?: number; amountCents?: number; label?: string }>) => void;
+  onAddPricingRule: (optionId: string, rule: { mode: string; cents?: number; amountCents?: number; label?: string }) => void;
   onDeletePricingRule: (optionId: string, ruleIndex: number) => void;
   editingChoiceValue: EditingChoiceValue | null;
   setEditingChoiceValue: (val: EditingChoiceValue | null) => void;
@@ -658,7 +659,8 @@ export function OptionDetailsEditor({
                             
                             {Array.isArray(choice.pricingImpact) && choice.pricingImpact.length > 0 ? (
                               <div className="space-y-2">
-                                {choice.pricingImpact.map((impact: any, impactIdx: number) => {
+                                {choice.pricingImpact.map((rawImpact: any, impactIdx: number) => {
+                                  const impact = normalizeLegacyPricingImpact(rawImpact, 'addCents');
                                   const mode = impact.mode || 'addCents';
                                   // Read each mode's canonical cents field directly (no `??`
                                   // fallback chain) so the display never shows a stale amount.
@@ -666,7 +668,7 @@ export function OptionDetailsEditor({
                                   const perUnitCents = typeof impact.centsPerUnit === 'number' ? impact.centsPerUnit : null;
                                   const percent = impact.percent ?? 0;
                                   const basis = impact.basis || 'base';
-                                  const unit = impact.unit || 'perPiece';
+                                  const unit = impact.unit;
                                   const impactWarnings = getPricingImpactWarnings(impact);
 
                                   return (
@@ -705,7 +707,7 @@ export function OptionDetailsEditor({
                                                 cents={flatCents}
                                                 onCommit={(val) => {
                                                   const updated = [...(choice.pricingImpact || [])];
-                                                  updated[impactIdx] = { ...updated[impactIdx], cents: val };
+                                                  updated[impactIdx] = { ...impact, cents: val };
                                                   onUpdateChoice(option.id, choice.value, { pricingImpact: updated });
                                                 }}
                                                 className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7"
@@ -727,7 +729,7 @@ export function OptionDetailsEditor({
                                                   onChange={(e) => {
                                                     const val = parseFloat(e.target.value) || 0;
                                                     const updated = [...(choice.pricingImpact || [])];
-                                                    updated[impactIdx] = { ...updated[impactIdx], percent: val };
+                                                    updated[impactIdx] = { ...impact, percent: val };
                                                     onUpdateChoice(option.id, choice.value, { pricingImpact: updated });
                                                   }}
                                                   className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7"
@@ -742,7 +744,7 @@ export function OptionDetailsEditor({
                                                   value={basis}
                                                   onValueChange={(val) => {
                                                     const updated = [...(choice.pricingImpact || [])];
-                                                    updated[impactIdx] = { ...updated[impactIdx], basis: val };
+                                                    updated[impactIdx] = { ...impact, basis: val };
                                                     onUpdateChoice(option.id, choice.value, { pricingImpact: updated });
                                                   }}
                                                 >
@@ -768,7 +770,7 @@ export function OptionDetailsEditor({
                                                   cents={perUnitCents}
                                                   onCommit={(val) => {
                                                     const updated = [...(choice.pricingImpact || [])];
-                                                    updated[impactIdx] = { ...updated[impactIdx], centsPerUnit: val };
+                                                    updated[impactIdx] = { ...impact, centsPerUnit: val };
                                                     onUpdateChoice(option.id, choice.value, { pricingImpact: updated });
                                                   }}
                                                   className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7"
@@ -780,7 +782,7 @@ export function OptionDetailsEditor({
                                                   value={unit}
                                                   onValueChange={(val) => {
                                                     const updated = [...(choice.pricingImpact || [])];
-                                                    updated[impactIdx] = { ...updated[impactIdx], unit: val };
+                                                    updated[impactIdx] = { ...impact, unit: val };
                                                     onUpdateChoice(option.id, choice.value, { pricingImpact: updated });
                                                   }}
                                                 >
@@ -1064,7 +1066,7 @@ export function OptionDetailsEditor({
           <Button
             type="button"
             onClick={() => {
-              onAddPricingRule(option.id, { mode: 'addFlatCents', cents: 0, label: '' });
+              onAddPricingRule(option.id, { mode: 'addFlat', amountCents: 0, label: '' });
             }}
             size="sm"
             variant="outline"
@@ -1078,8 +1080,9 @@ export function OptionDetailsEditor({
         {nodeData?.pricingImpact && Array.isArray(nodeData.pricingImpact) && nodeData.pricingImpact.length > 0 && (
           <div className="space-y-2">
             {nodeData.pricingImpact.map((rule: any, index: number) => {
-              const mode = rule.mode || 'addFlatCents';
-              const cents = rule.amountCents ?? 0;
+              const normalizedRule = normalizeLegacyPricingImpact(rule, 'addFlat');
+              const mode = normalizedRule.mode || 'addFlat';
+              const cents = normalizedRule.amountCents ?? 0;
               const label = rule.label || '';
 
               return (
@@ -1095,12 +1098,12 @@ export function OptionDetailsEditor({
                           value={mode}
                           onValueChange={(value) => {
                             const updatedRules = [...(nodeData.pricingImpact || [])];
-                            updatedRules[index] = { ...updatedRules[index], mode: value };
+                            updatedRules[index] = normalizePricingImpactForMode(updatedRules[index], value);
                             onUpdateNodePricing(
                               option.id,
                               updatedRules.map((r: any) => ({
-                                mode: r.mode || 'addFlatCents',
-                                cents: r.amountCents ?? 0,
+                                mode: r.mode || 'addFlat',
+                                amountCents: r.amountCents ?? 0,
                                 label: r.label,
                               }))
                             );
@@ -1110,15 +1113,15 @@ export function OptionDetailsEditor({
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="addFlatCents">Add Flat Amount</SelectItem>
-                            <SelectItem value="addPerQtyCents">Add Per Quantity</SelectItem>
-                            <SelectItem value="addPerSqftCents">Add Per Square Foot</SelectItem>
+                            <SelectItem value="addFlat">Add Flat Amount</SelectItem>
+                            <SelectItem value="addPerQty">Add Per Quantity</SelectItem>
+                            <SelectItem value="addPerSqft">Add Per Square Foot</SelectItem>
                           </SelectContent>
                         </Select>
                         <div className="text-xs text-slate-400 mt-1">
-                          {mode === 'addFlatCents' && '• Adds a fixed amount once'}
-                          {mode === 'addPerQtyCents' && '• Multiplies by quantity'}
-                          {mode === 'addPerSqftCents' && '• Multiplies by square footage (width × height ÷ 144)'}
+                          {mode === 'addFlat' && '• Adds a fixed amount once'}
+                          {mode === 'addPerQty' && '• Multiplies by quantity'}
+                          {mode === 'addPerSqft' && '• Multiplies by square footage (width × height ÷ 144)'}
                         </div>
                       </div>
 
@@ -1133,12 +1136,12 @@ export function OptionDetailsEditor({
                             if (value === '') return; // Don't update while empty
                             
                             const updatedRules = [...(nodeData.pricingImpact || [])];
-                            updatedRules[index] = { ...updatedRules[index], amountCents: currencyInputToCents(value) ?? 0 };
+                            updatedRules[index] = { ...normalizedRule, amountCents: currencyInputToCents(value) ?? 0 };
                             onUpdateNodePricing(
                               option.id,
                               updatedRules.map((r: any) => ({
-                                mode: r.mode || 'addFlatCents',
-                                cents: r.amountCents ?? 0,
+                                mode: r.mode || 'addFlat',
+                                amountCents: r.amountCents ?? 0,
                                 label: r.label,
                               }))
                             );
@@ -1148,12 +1151,12 @@ export function OptionDetailsEditor({
                             if (value === '') {
                               // Clear to 0 on blur if empty
                               const updatedRules = [...(nodeData.pricingImpact || [])];
-                              updatedRules[index] = { ...updatedRules[index], amountCents: 0 };
+                              updatedRules[index] = { ...normalizedRule, amountCents: 0 };
                               onUpdateNodePricing(
                                 option.id,
                                 updatedRules.map((r: any) => ({
-                                  mode: r.mode || 'addFlatCents',
-                                  cents: r.amountCents ?? 0,
+                                  mode: r.mode || 'addFlat',
+                                  amountCents: r.amountCents ?? 0,
                                   label: r.label,
                                 }))
                               );
@@ -1174,12 +1177,12 @@ export function OptionDetailsEditor({
                           value={label}
                           onChange={(e) => {
                             const updatedRules = [...(nodeData.pricingImpact || [])];
-                            updatedRules[index] = { ...updatedRules[index], label: e.target.value };
+                            updatedRules[index] = { ...normalizedRule, label: e.target.value };
                             onUpdateNodePricing(
                               option.id,
                               updatedRules.map((r: any) => ({
-                                mode: r.mode || 'addFlatCents',
-                                cents: r.amountCents ?? 0,
+                                mode: r.mode || 'addFlat',
+                                amountCents: r.amountCents ?? 0,
                                 label: r.label,
                               }))
                             );

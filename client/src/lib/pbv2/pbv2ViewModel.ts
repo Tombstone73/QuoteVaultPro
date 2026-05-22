@@ -13,6 +13,7 @@
  */
 
 import type { ChoiceMaterialOverride, ChoicePricingOverride, OptionNodeV2, PricingImpact, VisibilityRule } from '@shared/optionTreeV2';
+import { normalizeLegacyPricingImpact } from './pricing/pricingImpact';
 
 /**
  * CANONICAL PBV2 GRAPH RULES (enforced by normalizeTreeJson):
@@ -1604,7 +1605,7 @@ export function ensureTreeInvariants(treeJson: unknown): any {
 export function createUpdateNodePricingPatch(
   treeJson: unknown,
   nodeId: string,
-  pricingImpact: Array<{ mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }>
+  pricingImpact: Array<{ mode: string; cents?: number; amountCents?: number; label?: string }>
 ): { patch: any } {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
 
@@ -1613,11 +1614,7 @@ export function createUpdateNodePricingPatch(
 
     return {
       ...n,
-      pricingImpact: pricingImpact.map(rule => ({
-        mode: rule.mode,
-        amountCents: rule.cents,
-        label: rule.label,
-      })),
+      pricingImpact: pricingImpact.map(rule => normalizeLegacyPricingImpact(rule, 'addFlat')),
     };
   });
 
@@ -1643,7 +1640,7 @@ export function createUpdateNodePricingPatch(
 export function createAddPricingRulePatch(
   treeJson: unknown,
   nodeId: string,
-  rule: { mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }
+  rule: { mode: string; cents?: number; amountCents?: number; label?: string }
 ): { patch: any } {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
 
@@ -1651,11 +1648,7 @@ export function createAddPricingRulePatch(
     if (n.id !== nodeId) return n;
 
     const existingRules = n.pricingImpact || [];
-    const newRule = {
-      mode: rule.mode,
-      amountCents: rule.cents,
-      label: rule.label,
-    };
+    const newRule = normalizeLegacyPricingImpact(rule, 'addFlat');
 
     return {
       ...n,

@@ -299,18 +299,34 @@ export function findTreeNode(treeJson: unknown, nodeId: string): any | null {
   if (!treeJson || typeof treeJson !== "object" || !nodeId) return null;
   const nodesRaw = (treeJson as any).nodes;
   if (!nodesRaw) return null;
-  if (Array.isArray(nodesRaw)) {
-    return (
-      nodesRaw.find(
-        (node: any) =>
-          node && (node.id === nodeId || node.nodeId === nodeId || node.key === nodeId),
-      ) ?? null
+  const aliases = buildNodeLookupAliases(nodeId);
+  const matchesNode = (node: any) =>
+    node &&
+    aliases.some(
+      (alias) =>
+        node.id === alias ||
+        node.nodeId === alias ||
+        node.key === alias ||
+        node.input?.selectionKey === alias,
     );
+  if (Array.isArray(nodesRaw)) {
+    return nodesRaw.find(matchesNode) ?? null;
   }
   if (typeof nodesRaw === "object") {
-    return (nodesRaw as Record<string, any>)[nodeId] ?? null;
+    const record = nodesRaw as Record<string, any>;
+    for (const alias of aliases) {
+      if (record[alias]) return record[alias];
+    }
+    return Object.values(record).find(matchesNode) ?? null;
   }
   return null;
+}
+
+function buildNodeLookupAliases(nodeId: string): string[] {
+  const aliases = new Set<string>([nodeId]);
+  if (nodeId.startsWith("opt_opt_")) aliases.add(nodeId.replace(/^opt_/, ""));
+  if (!nodeId.startsWith("opt_")) aliases.add(`opt_${nodeId}`);
+  return Array.from(aliases);
 }
 
 /** Best human label for a node: label → name → title → key → nodeId fallback. */
@@ -370,6 +386,8 @@ function describePricingField(field: string | undefined, scope: "node" | "choice
         fixAction: "select a valid pricing adjustment type",
       };
     case "cents":
+    case "amountCents":
+    case "centsPerUnit":
     case "centsPerSqft":
       return {
         category: "Missing pricing amount",
@@ -422,7 +440,16 @@ export function enrichPreviewDetail(
 
   const parsed = technicalPath ? parsePreviewPath(technicalPath) : null;
   if (!parsed || !parsed.isPricingImpactPath || !parsed.nodeId) {
-    if (technicalPath) enriched.displayLocation = humanizeGenericPath(technicalPath);
+    const selectionMatch = technicalPath.match(/^(?:selections|optionSelections)\.([^.\s]+)$/);
+    if (selectionMatch) {
+      const node = findTreeNode(treeJson, selectionMatch[1]);
+      const label = node ? getNodeLabel(treeJson, node.id ?? selectionMatch[1]) : null;
+      enriched.displayLocation = label ? `Option selection: ${label}` : "Option selection";
+      enriched.category = "Missing required selection";
+      enriched.suggestedFix = label ? `Choose a value for ${label}.` : "Choose the missing option value.";
+    } else if (technicalPath) {
+      enriched.displayLocation = humanizeGenericPath(technicalPath);
+    }
     return enriched;
   }
 
