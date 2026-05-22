@@ -2,6 +2,8 @@ import { describe, expect, test } from "@jest/globals";
 import {
   parseMoneyInputDraft,
   normalizePricingImpactForMode,
+  normalizeLegacyPricingImpact,
+  normalizeTreePricingImpacts,
   getPricingImpactWarnings,
   hasPricingImpactWarnings,
   canonicalAmountField,
@@ -86,6 +88,56 @@ describe("normalizePricingImpactForMode", () => {
   });
 });
 
+describe("normalizeLegacyPricingImpact", () => {
+  test("legacy addFlatCents converts to canonical addFlat", () => {
+    expect(normalizeLegacyPricingImpact({ mode: "addFlatCents", cents: 250 }, "addFlat")).toEqual({
+      mode: "addFlat",
+      amountCents: 250,
+    });
+  });
+
+  test("legacy addPerQtyCents converts to canonical addPerQty", () => {
+    expect(normalizeLegacyPricingImpact({ mode: "addPerQtyCents", amountCents: 75 }, "addFlat")).toEqual({
+      mode: "addPerQty",
+      amountCents: 75,
+    });
+  });
+
+  test("legacy addPerSqftCents converts to canonical addPerSqft", () => {
+    expect(normalizeLegacyPricingImpact({ mode: "addPerSqftCents", cents: 25 }, "addFlat")).toEqual({
+      mode: "addPerSqft",
+      amountCents: 25,
+    });
+  });
+
+  test("addPerUnit initializes missing amount and unit without NaN/undefined", () => {
+    expect(normalizeLegacyPricingImpact({ mode: "addPerUnit" }, "addCents")).toEqual({
+      mode: "addPerUnit",
+      centsPerUnit: 0,
+      unit: "perPiece",
+    });
+  });
+
+  test("tree normalization repairs node and choice pricing impacts", () => {
+    const { tree, changed } = normalizeTreePricingImpacts({
+      nodes: {
+        custom: { id: "custom", pricingImpact: [{ mode: "addFlatCents", cents: 100 }] },
+        grommets: {
+          id: "grommets",
+          choices: [{ value: "corners", pricingImpact: [{ mode: "addPerUnit" }] }],
+        },
+      },
+    });
+    expect(changed).toBe(true);
+    expect(tree.nodes.custom.pricingImpact[0]).toEqual({ mode: "addFlat", amountCents: 100 });
+    expect(tree.nodes.grommets.choices[0].pricingImpact[0]).toEqual({
+      mode: "addPerUnit",
+      centsPerUnit: 0,
+      unit: "perPiece",
+    });
+  });
+});
+
 describe("getPricingImpactWarnings", () => {
   test("a complete Add Amount impact has no warnings", () => {
     expect(getPricingImpactWarnings({ mode: "addCents", cents: 125 })).toEqual({});
@@ -126,6 +178,7 @@ describe("getPricingImpactWarnings", () => {
 describe("canonicalAmountField", () => {
   test("maps each mode to its stored cents field", () => {
     expect(canonicalAmountField("addCents")).toBe("cents");
+    expect(canonicalAmountField("addFlat")).toBe("amountCents");
     expect(canonicalAmountField("addPerUnit")).toBe("centsPerUnit");
     expect(canonicalAmountField("addPercent")).toBeNull();
   });

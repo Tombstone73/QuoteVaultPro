@@ -23,6 +23,7 @@ import type { Finding } from "@shared/pbv2/findings";
 import type { ValidationResult } from "@shared/pbv2/validator/types";
 import type { ProductOptionRule } from "@shared/productOptionRules";
 import type { ProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
+import { normalizeTreePricingImpacts } from "@/lib/pbv2/pricing/pricingImpact";
 
 /**
  * Edit-time validation - checks structure without publish-only rules.
@@ -82,7 +83,8 @@ function applyTreeUpdate(
   setIsLocalDirty: (val: boolean) => void
 ) {
   // Always normalize before setting state
-  const normalizedTree = sanitizePbv2PricingMatrix(normalizeTreeJson(nextTree)).tree;
+  const matrixSanitizedTree = sanitizePbv2PricingMatrix(normalizeTreeJson(nextTree)).tree;
+  const normalizedTree = normalizeTreePricingImpacts(matrixSanitizedTree).tree;
   
   // DEV: Critical diagnostic logging including edge conditions
   if (import.meta.env.DEV) {
@@ -327,7 +329,8 @@ export default function PBV2ProductBuilderSectionV2({
   // CRITICAL: Reads from ref, not state, to avoid stale closure
   const getCurrentPBV2Tree = () => {
     if (!localTreeJsonRef.current) return null;
-    return sanitizePbv2PricingMatrix(normalizeTreeJson(localTreeJsonRef.current)).tree;
+    const matrixSanitizedTree = sanitizePbv2PricingMatrix(normalizeTreeJson(localTreeJsonRef.current)).tree;
+    return normalizeTreePricingImpacts(matrixSanitizedTree).tree;
   };
 
   // Update tree meta from external callers (e.g. ProductForm shipping config, product images)
@@ -451,7 +454,7 @@ export default function PBV2ProductBuilderSectionV2({
         fulfillment: 'pickup-only',
       };
       
-      const normalizedSeed = normalizeTreeJson(seedTree);
+      const normalizedSeed = normalizeTreePricingImpacts(normalizeTreeJson(seedTree)).tree;
       if (import.meta.env.DEV) {
         const nc = Object.keys((normalizedSeed as any)?.nodes || {}).length;
         console.log('[PBV2_SEED] New product initialized:', { mode: 'new', nodeCount: nc });
@@ -498,7 +501,7 @@ export default function PBV2ProductBuilderSectionV2({
         fulfillment: 'pickup-only',
       };
       
-      const normalizedSeed = normalizeTreeJson(seedTree);
+      const normalizedSeed = normalizeTreePricingImpacts(normalizeTreeJson(seedTree)).tree;
       if (import.meta.env.DEV) {
         const nc = Object.keys((normalizedSeed as any)?.nodes || {}).length;
         console.log('[PBV2_SEED] Existing product initialized:', { mode: 'no-draft-no-active', productId, nodeCount: nc });
@@ -523,7 +526,8 @@ export default function PBV2ProductBuilderSectionV2({
     // Hydrate from source tree (draft or active)
     const normalizedSourceTree = normalizeTreeJson(sourceTree.treeJson);
     const matrixSanitizer = sanitizePbv2PricingMatrix(normalizedSourceTree);
-    const normalizedTree = matrixSanitizer.tree;
+    const pricingImpactNormalizer = normalizeTreePricingImpacts(matrixSanitizer.tree);
+    const normalizedTree = pricingImpactNormalizer.tree;
     const treeSource = draft ? 'DRAFT' : 'ACTIVE';
     if (import.meta.env.DEV) {
       const nc = Object.keys((normalizedTree as any)?.nodes || {}).length;
@@ -548,6 +552,12 @@ export default function PBV2ProductBuilderSectionV2({
         description: "Deleted options were cleaned from the pricing matrix. Save to persist the repair.",
       });
     }
+    if (pricingImpactNormalizer.changed) {
+      toast({
+        title: "Normalized pricing setup",
+        description: "Legacy or incomplete pricing impacts were cleaned in the draft. Save to persist the repair.",
+      });
+    }
     // CRITICAL: Clear dirty flag after hydration unless we repaired stale matrix state
       console.log('[PBV2_STATE_RESET] setLocalTreeJson called (hydration from server)', {
         source: treeSource,
@@ -556,8 +566,8 @@ export default function PBV2ProductBuilderSectionV2({
         activeId: active?.id,
         stack: new Error().stack?.split('\n').slice(0, 6).join('\n')
       });
-    setHasLocalChanges(matrixSanitizer.changed);
-    setIsLocalDirty(matrixSanitizer.changed);
+    setHasLocalChanges(matrixSanitizer.changed || pricingImpactNormalizer.changed);
+    setIsLocalDirty(matrixSanitizer.changed || pricingImpactNormalizer.changed);
     
     if (import.meta.env.DEV) {
       console.log('[PBV2_HYDRATE] Dirty flag cleared after tree load from', treeSource);
@@ -910,7 +920,7 @@ export default function PBV2ProductBuilderSectionV2({
 
   const handleUpdateNodePricing = (
     optionId: string,
-    pricingImpact: Array<{ mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }>
+    pricingImpact: Array<{ mode: string; cents?: number; amountCents?: number; label?: string }>
   ) => {
     if (!localTreeJson) return;
     const { patch } = createUpdateNodePricingPatch(localTreeJson, optionId, pricingImpact);
@@ -920,7 +930,7 @@ export default function PBV2ProductBuilderSectionV2({
 
   const handleAddPricingRule = (
     optionId: string,
-    rule: { mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }
+    rule: { mode: string; cents?: number; amountCents?: number; label?: string }
   ) => {
     if (!localTreeJson) return;
     const { patch } = createAddPricingRulePatch(localTreeJson, optionId, rule);
@@ -1043,12 +1053,21 @@ export default function PBV2ProductBuilderSectionV2({
 
     // Normalize + ensure rootNodeIds before PUT (client has authority over this field)
     const matrixSanitizer = sanitizePbv2PricingMatrix(normalizeTreeJson(treeSnapshot));
-    const normalizedTree = matrixSanitizer.tree;
-    if (matrixSanitizer.changed) {
+    const pricingImpactNormalizer = normalizeTreePricingImpacts(matrixSanitizer.tree);
+    const normalizedTree = pricingImpactNormalizer.tree;
+    if (matrixSanitizer.changed || pricingImpactNormalizer.changed) {
       setLocalTreeJson(normalizedTree);
+    }
+    if (matrixSanitizer.changed) {
       toast({
         title: "Removed invalid matrix references",
         description: "Deleted options were cleaned from the pricing matrix before save.",
+      });
+    }
+    if (pricingImpactNormalizer.changed) {
+      toast({
+        title: "Normalized pricing setup",
+        description: "Legacy or incomplete pricing impacts were cleaned before save.",
       });
     }
     const nodes = (normalizedTree as any)?.nodes || {};
@@ -1246,17 +1265,18 @@ export default function PBV2ProductBuilderSectionV2({
     }
 
     const matrixSanitizer = sanitizePbv2PricingMatrix(normalizeTreeJson(localTreeJson));
-    if (matrixSanitizer.changed) {
-      applyTreeUpdate(matrixSanitizer.tree, 'handlePublishMatrixRepair', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
+    const pricingImpactNormalizer = normalizeTreePricingImpacts(matrixSanitizer.tree);
+    if (matrixSanitizer.changed || pricingImpactNormalizer.changed) {
+      applyTreeUpdate(pricingImpactNormalizer.tree, 'handlePublishDraftRepair', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
       toast({
-        title: "Matrix references cleaned",
+        title: "Draft repaired",
         description: "Save the repaired draft before publishing.",
       });
       return;
     }
 
     // Run STRICT publish validation (not edit validation)
-    const publishValidation = validateTreeForPublish(matrixSanitizer.tree as any, DEFAULT_VALIDATE_OPTS);
+    const publishValidation = validateTreeForPublish(pricingImpactNormalizer.tree as any, DEFAULT_VALIDATE_OPTS);
 
     // Check for errors
     if (publishValidation.errors.length > 0) {

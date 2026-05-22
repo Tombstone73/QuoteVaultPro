@@ -248,6 +248,35 @@ describe("enrichPreviewDetail", () => {
     expect(enriched.displayLocation).toBe("Preview input: Width");
     expect(enriched.friendlyMessage).toBe("Width must be positive.");
   });
+
+  test("missing required selection path resolves to option label", () => {
+    const enriched = enrichPreviewDetail(
+      { path: "selections.opt_grommets", message: "Required option group has no selected value." },
+      tree,
+    );
+    expect(enriched.displayLocation).toBe("Option selection: Grommets");
+    expect(enriched.category).toBe("Missing required selection");
+    expect(enriched.suggestedFix).toBe("Choose a value for Grommets.");
+    expect(enriched.technicalPath).toBe("selections.opt_grommets");
+  });
+
+  test("double-prefixed selection IDs resolve defensively while preserving raw path", () => {
+    const enriched = enrichPreviewDetail(
+      { path: "selections.opt_opt_grommets", message: "Required option group has no selected value." },
+      tree,
+    );
+    expect(enriched.displayLocation).toBe("Option selection: Grommets");
+    expect(enriched.technicalPath).toBe("selections.opt_opt_grommets");
+  });
+
+  test("unknown selection IDs fall back safely while preserving raw path", () => {
+    const enriched = enrichPreviewDetail(
+      { path: "selections.opt_missing", message: "Required option group has no selected value." },
+      tree,
+    );
+    expect(enriched.displayLocation).toBe("Option selection");
+    expect(enriched.technicalPath).toBe("selections.opt_missing");
+  });
 });
 
 describe("buildPreviewErrorSummary", () => {
