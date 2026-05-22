@@ -1080,7 +1080,9 @@ export function OptionDetailsEditor({
         {nodeData?.pricingImpact && Array.isArray(nodeData.pricingImpact) && nodeData.pricingImpact.length > 0 && (
           <div className="space-y-2">
             {nodeData.pricingImpact.map((rule: any, index: number) => {
-              const normalizedRule = normalizeLegacyPricingImpact(rule, 'addFlat');
+              const normalizedRule = normalizeLegacyPricingImpact(rule, 'addFlat', {
+                settleBlankFormula: false,
+              });
               const mode = normalizedRule.mode || 'addFlat';
               const cents = normalizedRule.amountCents ?? 0;
               const formula = typeof normalizedRule.formula === 'string' ? normalizedRule.formula : '';
@@ -1132,6 +1134,17 @@ export function OptionDetailsEditor({
                             onChange={(e) => {
                               const updatedRules = [...(nodeData.pricingImpact || [])];
                               updatedRules[index] = { ...normalizedRule, formula: e.target.value };
+                              onUpdateNodePricing(
+                                option.id,
+                                updatedRules.map((r: any) => normalizeLegacyPricingImpact(r, 'addFlat', {
+                                  settleBlankFormula: false,
+                                }))
+                              );
+                            }}
+                            onBlur={(e) => {
+                              if (e.target.value.trim()) return;
+                              const updatedRules = [...(nodeData.pricingImpact || [])];
+                              updatedRules[index] = { ...normalizedRule, formula: '0' };
                               onUpdateNodePricing(
                                 option.id,
                                 updatedRules.map((r: any) => normalizeLegacyPricingImpact(r, 'addFlat'))

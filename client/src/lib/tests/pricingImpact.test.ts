@@ -134,6 +134,19 @@ describe("normalizeLegacyPricingImpact", () => {
     });
   });
 
+  test("addFormula can preserve a blank draft while the editor input is active", () => {
+    expect(
+      normalizeLegacyPricingImpact(
+        { mode: "addFormula", formula: "" },
+        "addFlat",
+        { settleBlankFormula: false },
+      ),
+    ).toEqual({
+      mode: "addFormula",
+      formula: "",
+    });
+  });
+
   test("tree normalization repairs node and choice pricing impacts", () => {
     const { tree, changed } = normalizeTreePricingImpacts({
       nodes: {

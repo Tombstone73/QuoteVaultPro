@@ -23,6 +23,15 @@ export type PerUnitPricingImpactUnit =
   | "perLinearFoot"
   | "perInch";
 
+export type NormalizePricingImpactOptions = {
+  /**
+   * Formula impacts are schema-valid only when formula is non-empty. During
+   * text editing, though, the draft must be allowed to become blank so the
+   * input does not keep injecting the fallback "0" while the user types.
+   */
+  settleBlankFormula?: boolean;
+};
+
 export const CHOICE_IMPACT_MODES: ChoiceImpactMode[] = ["addCents", "addPercent", "addPerUnit"];
 
 const PER_UNIT_UNITS = new Set<PerUnitPricingImpactUnit>([
@@ -113,10 +122,15 @@ function normalizeMode(mode: unknown): string {
  * finite numbers, and unknown modes are preserved so validation can still report
  * them clearly.
  */
-export function normalizeLegacyPricingImpact(impact: any, fallbackMode = "addCents"): any {
+export function normalizeLegacyPricingImpact(
+  impact: any,
+  fallbackMode = "addCents",
+  options: NormalizePricingImpactOptions = {},
+): any {
   const source = impact && typeof impact === "object" ? impact : {};
   const mode = normalizeMode(source.mode ?? fallbackMode);
   const amount = readAmountCents(source) ?? 0;
+  const settleBlankFormula = options.settleBlankFormula ?? true;
   const common = {
     ...(source.applyWhen !== undefined ? { applyWhen: source.applyWhen } : {}),
     ...(typeof source.label === "string" ? { label: source.label } : {}),
@@ -137,10 +151,11 @@ export function normalizeLegacyPricingImpact(impact: any, fallbackMode = "addCen
         unit: safePerUnitUnit(source.unit),
       };
     case "addFormula":
+      const formula = typeof source.formula === "string" ? source.formula : "";
       return {
         ...common,
         mode,
-        formula: typeof source.formula === "string" && source.formula.trim() ? source.formula : "0",
+        formula: formula.trim() ? formula : settleBlankFormula ? "0" : formula,
       };
     case "addPercent":
       return {
