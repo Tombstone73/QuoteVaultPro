@@ -13,8 +13,11 @@ const baseSource: TicketSourceData = {
   jobId: "job-abc-12345678",
   orderId: "order-xyz",
   orderNumber: "SO-1042",
+  poNumber: "PO-7788",
   customerName: "Acme Signs Inc.",
   contactName: "Jane Doe",
+  fulfillment: "Pickup",
+  stationRoute: "Flatbed",
   assignedTo: "Bob Operator",
   dueDate: "2026-05-22T00:00:00.000Z",
   priority: "normal",
@@ -46,13 +49,40 @@ describe("buildTicketData — data mapping", () => {
     const byKey = Object.fromEntries(ticket.rows.map((r) => [r.key, r]));
 
     expect(byKey.orderNumber.value).toBe("SO-1042");
+    expect(byKey.poNumber.value).toBe("PO-7788");
     expect(byKey.customerName.value).toBe("Acme Signs Inc.");
     expect(byKey.contactName.value).toBe("Jane Doe");
-    expect(byKey.assignedTo.value).toBe("Bob Operator");
+    expect(byKey.fulfillment.value).toBe("Pickup");
+    expect(byKey.stationRoute.value).toBe("Flatbed");
     expect(byKey.dueDate.value).toBe("May 22, 2026");
     expect(byKey.quantity.value).toBe("25");
     expect(byKey.material.value).toBe("4mm Coroplast");
     expect(byKey.productionNotes.value).toBe("Round corners, grommets top");
+  });
+
+  it("hides Assigned To by default even when populated", () => {
+    const ticket = buildTicketData(baseSource);
+    expect(ticket.rows.find((r) => r.key === "assignedTo")).toBeUndefined();
+  });
+
+  it("places PO # directly under Order #, both above Customer", () => {
+    const ticket = buildTicketData(baseSource);
+    const keys = ticket.rows.map((r) => r.key);
+    expect(keys.indexOf("orderNumber")).toBeLessThan(keys.indexOf("poNumber"));
+    expect(keys.indexOf("poNumber")).toBeLessThan(keys.indexOf("customerName"));
+  });
+
+  it("renders a print-only quantity display override without changing data", () => {
+    const ticket = buildTicketData({ ...baseSource, quantityDisplay: "150 of 200" });
+    const qty = ticket.rows.find((r) => r.key === "quantity");
+    expect(qty!.value).toBe("150 of 200");
+  });
+
+  it("shows a print-only ticket note when provided", () => {
+    const withNote = buildTicketData({ ...baseSource, ticketNote: "Partial batch" });
+    expect(withNote.rows.find((r) => r.key === "ticketNote")!.value).toBe("Partial batch");
+    const without = buildTicketData(baseSource);
+    expect(without.rows.find((r) => r.key === "ticketNote")).toBeUndefined();
   });
 
   it("omits the rush row when the job is not rush", () => {

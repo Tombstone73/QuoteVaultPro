@@ -22,8 +22,11 @@ export type TicketAlign = "left" | "center" | "right";
 export type TicketFieldKey =
   | "orderNumber"
   | "rush"
+  | "poNumber"
   | "customerName"
   | "contactName"
+  | "fulfillment"
+  | "stationRoute"
   | "assignedTo"
   | "dueDate"
   | "description"
@@ -32,6 +35,7 @@ export type TicketFieldKey =
   | "material"
   | "productionNotes"
   | "internalNotes"
+  | "ticketNote"
   | "jobId";
 
 /** Per-field formatting + visibility. A future editor writes this object. */
@@ -58,8 +62,11 @@ export interface TicketTemplate {
 export const TICKET_FIELD_ORDER: TicketFieldKey[] = [
   "rush",
   "orderNumber",
+  "poNumber",
   "customerName",
   "contactName",
+  "fulfillment",
+  "stationRoute",
   "assignedTo",
   "dueDate",
   "description",
@@ -68,6 +75,7 @@ export const TICKET_FIELD_ORDER: TicketFieldKey[] = [
   "material",
   "productionNotes",
   "internalNotes",
+  "ticketNote",
   "jobId",
 ];
 
@@ -75,8 +83,11 @@ export const TICKET_FIELD_ORDER: TicketFieldKey[] = [
 export const TICKET_FIELD_LABELS: Record<TicketFieldKey, string> = {
   orderNumber: "Order #",
   rush: "Rush",
+  poNumber: "PO #",
   customerName: "Customer",
   contactName: "Contact",
+  fulfillment: "Fulfillment",
+  stationRoute: "Station / Route",
   assignedTo: "Assigned To",
   dueDate: "Due",
   description: "Description",
@@ -85,6 +96,7 @@ export const TICKET_FIELD_LABELS: Record<TicketFieldKey, string> = {
   material: "Material",
   productionNotes: "Production Notes",
   internalNotes: "Internal Notes",
+  ticketNote: "Note",
   jobId: "Job ID",
 };
 
@@ -105,27 +117,34 @@ function fmt(
 
 /**
  * Default ticket template. Emphasis defaults per spec:
- *  - Order #: extra large, bold
+ *  - Order #: extra large, bold (kept at the very top, below Rush)
+ *  - PO #: directly under Order #
  *  - Customer: large, bold
+ *  - Fulfillment + Station/Route: near the top for shop routing
+ *  - Assigned To: hidden by default (Station/Route replaces it)
  *  - Due date: bold
  *  - Rush indicator: extra large, bold, centered (only renders when rush)
  */
 export const DEFAULT_TICKET_TEMPLATE: TicketTemplate = {
-  version: 1,
+  version: 2,
   fields: {
     rush: fmt({ order: 0, fontSize: "xlarge", fontWeight: "bold", align: "center", dividerAfter: true }),
     orderNumber: fmt({ order: 1, fontSize: "xlarge", fontWeight: "bold" }),
-    customerName: fmt({ order: 2, fontSize: "large", fontWeight: "bold" }),
-    contactName: fmt({ order: 3 }),
-    assignedTo: fmt({ order: 4, fontWeight: "bold" }),
-    dueDate: fmt({ order: 5, fontWeight: "bold", dividerAfter: true }),
-    description: fmt({ order: 6 }),
-    quantity: fmt({ order: 7, fontSize: "large", fontWeight: "bold" }),
-    size: fmt({ order: 8 }),
-    material: fmt({ order: 9 }),
-    productionNotes: fmt({ order: 10, dividerBefore: true }),
-    internalNotes: fmt({ order: 11 }),
-    jobId: fmt({ order: 12, fontSize: "small", align: "center", dividerBefore: true }),
+    poNumber: fmt({ order: 2, fontWeight: "bold" }),
+    customerName: fmt({ order: 3, fontSize: "large", fontWeight: "bold" }),
+    contactName: fmt({ order: 4 }),
+    fulfillment: fmt({ order: 5, fontWeight: "bold" }),
+    stationRoute: fmt({ order: 6, fontWeight: "bold" }),
+    assignedTo: fmt({ order: 7, show: false }),
+    dueDate: fmt({ order: 8, fontWeight: "bold", dividerAfter: true }),
+    description: fmt({ order: 9 }),
+    quantity: fmt({ order: 10, fontSize: "large", fontWeight: "bold" }),
+    size: fmt({ order: 11 }),
+    material: fmt({ order: 12 }),
+    productionNotes: fmt({ order: 13, dividerBefore: true }),
+    internalNotes: fmt({ order: 14 }),
+    ticketNote: fmt({ order: 15, fontWeight: "bold", dividerBefore: true }),
+    jobId: fmt({ order: 16, fontSize: "small", align: "center", dividerBefore: true }),
   },
 };
 
@@ -134,17 +153,30 @@ export interface TicketSourceData {
   jobId: string;
   orderId: string;
   orderNumber: string;
+  poNumber?: string | null;
   customerName: string;
   contactName?: string | null;
+  /** Fulfillment method — e.g. "Pickup", "Delivery", "Shipping". */
+  fulfillment?: string | null;
+  /** Production station / route — e.g. "Prepress", "Flatbed", "Roll". */
+  stationRoute?: string | null;
   assignedTo?: string | null;
   dueDate?: string | null; // ISO string
   priority?: string | null;
   description: string;
   quantity: number;
+  /**
+   * Print-only override for the displayed quantity (e.g. "150 of 200").
+   * When set, it replaces the numeric quantity on the ticket without mutating
+   * the underlying job/line-item data.
+   */
+  quantityDisplay?: string | null;
   size?: string | null;
   material?: string | null;
   productionNotes?: string | null;
   internalNotes?: string | null;
+  /** Print-only ad-hoc note entered in the Print Options modal. */
+  ticketNote?: string | null;
   reprintCount?: number;
   stationKey?: string | null;
 }
@@ -168,10 +200,14 @@ export interface TicketData {
 
 /** Optional fields are dropped from the ticket when they have no value. */
 const OPTIONAL_FIELDS: ReadonlySet<TicketFieldKey> = new Set<TicketFieldKey>([
+  "poNumber",
   "contactName",
+  "fulfillment",
+  "stationRoute",
   "assignedTo",
   "productionNotes",
   "internalNotes",
+  "ticketNote",
 ]);
 
 const EM_DASH = "—";
@@ -202,18 +238,27 @@ function rawValueFor(key: TicketFieldKey, src: TicketSourceData, isRush: boolean
       return String(src.orderNumber || "").trim();
     case "rush":
       return isRush ? "RUSH" : "";
+    case "poNumber":
+      return String(src.poNumber || "").trim();
     case "customerName":
       return String(src.customerName || "").trim();
     case "contactName":
       return String(src.contactName || "").trim();
+    case "fulfillment":
+      return String(src.fulfillment || "").trim();
+    case "stationRoute":
+      return String(src.stationRoute || "").trim();
     case "assignedTo":
       return String(src.assignedTo || "").trim();
     case "dueDate":
       return formatTicketDate(src.dueDate);
     case "description":
       return String(src.description || "").trim();
-    case "quantity":
+    case "quantity": {
+      const override = String(src.quantityDisplay || "").trim();
+      if (override) return override;
       return Number.isFinite(src.quantity) ? String(src.quantity) : "";
+    }
     case "size":
       return String(src.size || "").trim();
     case "material":
@@ -222,6 +267,8 @@ function rawValueFor(key: TicketFieldKey, src: TicketSourceData, isRush: boolean
       return String(src.productionNotes || "").trim();
     case "internalNotes":
       return String(src.internalNotes || "").trim();
+    case "ticketNote":
+      return String(src.ticketNote || "").trim();
     case "jobId":
       return String(src.jobId || "").trim();
     default:

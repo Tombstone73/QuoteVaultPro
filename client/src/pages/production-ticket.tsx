@@ -8,6 +8,9 @@
  * The ticket layout is driven by a `TicketTemplate` (see shared/productionTicket)
  * so field visibility, order, labels and emphasis can later be controlled by a
  * visual template editor without changing this renderer.
+ *
+ * Print-snapshot overrides (from the Print Options modal) arrive as URL query
+ * params and are applied for rendering only — they never mutate job/order data.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -15,14 +18,30 @@ import { useParams, useSearchParams } from "react-router-dom";
 import QRCode from "qrcode";
 
 import { Button } from "@/components/ui/button";
-import { logTicketPrint, useProductionJob, useReprintProductionJob } from "@/hooks/useProduction";
+import {
+  logTicketPrint,
+  useProductionJob,
+  useReprintProductionJob,
+  type TicketPrintReason,
+} from "@/hooks/useProduction";
 import { buildTicketData, type TicketSourceData } from "@shared/productionTicket";
 import { loadTicketTemplate } from "@/lib/ticketSettings";
 import { buildJobTicketQrUrl, ticketRowStyle, TICKET_PRINT_STYLES } from "@/lib/ticketRender";
+import {
+  parseTicketOverrides,
+  resolveQuantityDisplay,
+  ticketReasonBanner,
+} from "@/lib/ticketPrintOverrides";
 import { useStationPrinter } from "@/hooks/useStationPrinter";
 import { PrinterPicker } from "@/components/production/PrinterPicker";
 import { CenteredMessage, TicketDivider } from "@/components/production/ticketPrintPrimitives";
 import { Printer, RotateCcw, ArrowLeft } from "lucide-react";
+
+/** Capitalize a station key for the Station / Route field (e.g. "flatbed" → "Flatbed"). */
+function titleCase(value: string | null | undefined): string {
+  const s = String(value || "").trim();
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : "";
+}
 
 /**
  * Mock ticket data for the station "Test Ticket" — lets each station confirm
@@ -32,9 +51,11 @@ const SAMPLE_TICKET_SOURCE: TicketSourceData = {
   jobId: "sample",
   orderId: "sample",
   orderNumber: "SO-0000",
+  poNumber: "PO-DEMO",
   customerName: "Sample Customer Co.",
   contactName: "Pat Sample",
-  assignedTo: "Test Station",
+  fulfillment: "Pickup",
+  stationRoute: "Flatbed",
   dueDate: new Date().toISOString(),
   priority: "rush",
   description: "TEST TICKET — printer setup check",
@@ -51,7 +72,9 @@ export default function ProductionTicketPage() {
   const { jobId } = useParams<{ jobId: string }>();
   const [searchParams] = useSearchParams();
   const isSample = jobId === "sample";
-  const isCompletion = searchParams.get("completion") === "1";
+
+  const overrides = useMemo(() => parseTicketOverrides(searchParams), [searchParams]);
+  const reasonBanner = ticketReasonBanner(overrides.reason);
 
   const { data, isLoading, error } = useProductionJob(isSample ? undefined : jobId);
   const reprint = useReprintProductionJob(jobId || "");
@@ -82,36 +105,73 @@ export default function ProductionTicketPage() {
     };
   }, [jobUrl]);
 
-  // Map the production job detail into the ticket source shape.
+  // Map the production job detail into the ticket source shape, applying any
+  // print-snapshot overrides (render-only — backend data is untouched).
   const ticket = useMemo(() => {
-    if (isSample) return buildTicketData(SAMPLE_TICKET_SOURCE, template);
-    if (!data) return null;
+    const base = isSample
+      ? SAMPLE_TICKET_SOURCE
+      : data
+        ? ({
+            jobId: data.id,
+            orderId: data.order.id,
+            orderNumber: data.order.orderNumber,
+            poNumber: data.poNumber ?? data.order.poNumber ?? null,
+            customerName: data.order.customerName,
+            contactName: data.contactName ?? data.order.contactName ?? null,
+            fulfillment: data.fulfillment ?? data.order.fulfillment ?? null,
+            stationRoute: titleCase(data.stationKey) || null,
+            assignedTo: data.assignedTo ?? null,
+            dueDate: data.order.dueDate ?? null,
+            priority: data.order.priority ?? null,
+            description: data.jobDescription || "",
+            quantity: data.qty ?? 0,
+            size: data.size ?? null,
+            material: data.media ?? null,
+            productionNotes:
+              data.productionNotes ?? data.order.lineItems?.primary?.productionNotes ?? null,
+            internalNotes: data.internalNotes ?? data.order.internalNotes ?? null,
+            reprintCount: data.reprintCount ?? 0,
+            stationKey: data.stationKey ?? null,
+          } satisfies TicketSourceData)
+        : null;
+    if (!base) return null;
+
     const src: TicketSourceData = {
-      jobId: data.id,
-      orderId: data.order.id,
-      orderNumber: data.order.orderNumber,
-      customerName: data.order.customerName,
-      contactName: data.contactName ?? data.order.contactName ?? null,
-      assignedTo: data.assignedTo ?? null,
-      dueDate: data.order.dueDate ?? null,
-      priority: data.order.priority ?? null,
-      description: data.jobDescription || "",
-      quantity: data.qty ?? 0,
-      size: data.size ?? null,
-      material: data.media ?? null,
-      productionNotes: data.productionNotes ?? data.order.lineItems?.primary?.productionNotes ?? null,
-      internalNotes: data.internalNotes ?? data.order.internalNotes ?? null,
-      reprintCount: data.reprintCount ?? 0,
-      stationKey: data.stationKey ?? null,
+      ...base,
+      // Print-snapshot overrides from the Print Options modal.
+      fulfillment: overrides.fulfillment || base.fulfillment,
+      stationRoute: overrides.stationRoute || base.stationRoute,
+      ticketNote: overrides.note || null,
+      quantityDisplay:
+        overrides.quantityMode === "partial"
+          ? resolveQuantityDisplay(overrides, base.quantity)
+          : null,
     };
     return buildTicketData(src, template);
-  }, [data, template, isSample]);
+  }, [data, template, isSample, overrides]);
+
+  /** Snapshot metadata for the print-history log. */
+  function buildLogMeta(reason: TicketPrintReason) {
+    return {
+      reason,
+      destination: overrides.destination ?? null,
+      quantityDisplay:
+        overrides.quantityMode === "partial" && data
+          ? resolveQuantityDisplay(overrides, data.qty ?? 0)
+          : null,
+      fulfillment: overrides.fulfillment ?? null,
+      route: overrides.stationRoute ?? null,
+      note: overrides.note ?? null,
+    };
+  }
 
   function handlePrint() {
     window.print();
     // Best-effort print-history logging (skipped for the sample ticket).
     if (!isSample && jobId) {
-      void logTicketPrint(jobId, isCompletion ? "completion" : "print");
+      const reason: TicketPrintReason =
+        overrides.reason === "standard" ? "standard" : overrides.reason;
+      void logTicketPrint(jobId, buildLogMeta(reason));
     }
   }
 
@@ -120,7 +180,7 @@ export default function ProductionTicketPage() {
     reprint.mutate(undefined, {
       // Give the toast/query a tick to settle, then open the print dialog.
       onSuccess: () => {
-        if (jobId) void logTicketPrint(jobId, "reprint");
+        if (jobId) void logTicketPrint(jobId, buildLogMeta("reprint"));
         window.setTimeout(() => window.print(), 150);
       },
     });
@@ -156,6 +216,11 @@ export default function ProductionTicketPage() {
               Test Ticket — printer setup check
             </span>
           )}
+          {!isSample && overrides.reason !== "standard" && (
+            <span className="rounded bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700 capitalize">
+              {overrides.reason} ticket
+            </span>
+          )}
 
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <Button onClick={handlePrint} size="sm" className="gap-1.5">
@@ -179,6 +244,11 @@ export default function ProductionTicketPage() {
             browser print dialog (MVP does not print silently). */}
         <div className="mx-auto max-w-3xl px-4 pb-3">
           <PrinterPicker printer={printer} />
+          {overrides.destination && (
+            <div className="mt-1 text-xs text-muted-foreground">
+              Print Options destination: <strong>{overrides.destination}</strong>
+            </div>
+          )}
         </div>
       </div>
 
@@ -189,7 +259,7 @@ export default function ProductionTicketPage() {
           className="mx-auto bg-white text-black"
           style={{ width: "72mm", padding: "4mm", fontFamily: "Arial, Helvetica, sans-serif" }}
         >
-          {isCompletion && (
+          {reasonBanner && (
             <div
               style={{
                 border: "2px solid #000",
@@ -200,7 +270,7 @@ export default function ProductionTicketPage() {
                 marginBottom: "1.5mm",
               }}
             >
-              ✓ COMPLETED
+              {reasonBanner}
             </div>
           )}
           {ticket.rows.map((row) => (
@@ -300,4 +370,3 @@ export default function ProductionTicketPage() {
     </div>
   );
 }
-
