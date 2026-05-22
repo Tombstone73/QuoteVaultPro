@@ -10,6 +10,24 @@ import type { CSSProperties } from "react";
 import type { TicketFieldFormat } from "@shared/productionTicket";
 
 /**
+ * Print-only stylesheet shared by the ticket and traveler print pages. Isolates
+ * the print area (`#ticket-print-area`) and sizes the page for a ~72mm thermal
+ * ticket printer (Epson TM-L90).
+ */
+export const TICKET_PRINT_STYLES = `
+@media print {
+  body * { visibility: hidden !important; }
+  #ticket-print-area, #ticket-print-area * { visibility: visible !important; }
+  #ticket-print-area {
+    position: absolute; left: 0; top: 0;
+    width: 72mm; margin: 0; padding: 0;
+  }
+  .ticket-no-print { display: none !important; }
+  @page { size: 72mm auto; margin: 3mm; }
+}
+`;
+
+/**
  * Font size in px per template size token. Tuned for thermal readability on an
  * Epson TM-L90 at ~72mm ticket width.
  */

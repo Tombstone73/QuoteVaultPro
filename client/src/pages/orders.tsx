@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useRef, Fragment } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import { PrintTicketButton } from "@/components/production/PrintTicketButton";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -941,6 +942,7 @@ export default function Orders() {
             >
               <Eye className="w-4 h-4" />
             </Button>
+            <PrintTicketButton orderId={row.id} iconOnly variant="ghost" />
             {isAdminOrOwner && (
               <Button
                 size="sm"

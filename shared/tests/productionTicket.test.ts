@@ -1,8 +1,10 @@
 import {
   buildTicketData,
+  buildOrderTravelerData,
   formatTicketDate,
   DEFAULT_TICKET_TEMPLATE,
   TICKET_FIELD_ORDER,
+  type OrderTravelerSource,
   type TicketSourceData,
   type TicketTemplate,
 } from "../productionTicket";
@@ -145,5 +147,70 @@ describe("buildTicketData — template formatting", () => {
     expect(Object.keys(DEFAULT_TICKET_TEMPLATE.fields).sort()).toEqual(
       [...TICKET_FIELD_ORDER].sort(),
     );
+  });
+});
+
+const baseTraveler: OrderTravelerSource = {
+  orderId: "order-xyz",
+  orderNumber: "SO-1042",
+  customerName: "Acme Signs Inc.",
+  contactName: "Jane Doe",
+  dueDate: "2026-05-22T00:00:00.000Z",
+  priority: "normal",
+  internalNotes: "Pickup, not shipping",
+  lineItems: [
+    { description: "Yard sign", quantity: 25, size: "24 × 18", material: "Coroplast", productionNotes: "Grommets" },
+    { description: "Banner", quantity: 2, size: "96 × 36", material: "13oz Vinyl", productionNotes: null },
+  ],
+};
+
+describe("buildOrderTravelerData", () => {
+  it("builds a formatted order-level header", () => {
+    const traveler = buildOrderTravelerData(baseTraveler);
+    const byKey = Object.fromEntries(traveler.headerRows.map((r) => [r.key, r]));
+    expect(byKey.orderNumber.value).toBe("SO-1042");
+    expect(byKey.orderNumber.format.fontSize).toBe("xlarge");
+    expect(byKey.customerName.value).toBe("Acme Signs Inc.");
+    expect(byKey.dueDate.value).toBe("May 22, 2026");
+  });
+
+  it("does not render line-item-only fields in the header", () => {
+    const traveler = buildOrderTravelerData(baseTraveler);
+    const keys = traveler.headerRows.map((r) => r.key);
+    expect(keys).not.toContain("quantity");
+    expect(keys).not.toContain("material");
+    expect(keys).not.toContain("description");
+  });
+
+  it("lists every line item with resolved values", () => {
+    const traveler = buildOrderTravelerData(baseTraveler);
+    expect(traveler.lineItemCount).toBe(2);
+    expect(traveler.totalQuantity).toBe(27);
+    expect(traveler.lineItems[0]).toMatchObject({
+      index: 1,
+      description: "Yard sign",
+      quantity: "25",
+      material: "Coroplast",
+    });
+    expect(traveler.lineItems[1].index).toBe(2);
+    expect(traveler.lineItems[1].productionNotes).toBe("");
+  });
+
+  it("falls back to em-dash for missing line-item values", () => {
+    const traveler = buildOrderTravelerData({
+      ...baseTraveler,
+      lineItems: [{ description: "", quantity: NaN, size: null, material: null, productionNotes: null }],
+    });
+    expect(traveler.lineItems[0].description).toBe("—");
+    expect(traveler.lineItems[0].quantity).toBe("—");
+    expect(traveler.lineItems[0].size).toBe("—");
+    expect(traveler.lineItems[0].material).toBe("—");
+  });
+
+  it("surfaces the rush header row only when the order is rush", () => {
+    expect(buildOrderTravelerData(baseTraveler).headerRows.find((r) => r.key === "rush")).toBeUndefined();
+    const rush = buildOrderTravelerData({ ...baseTraveler, priority: "rush" });
+    expect(rush.isRush).toBe(true);
+    expect(rush.headerRows.find((r) => r.key === "rush")).toBeDefined();
   });
 });

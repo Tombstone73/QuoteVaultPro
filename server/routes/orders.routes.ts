@@ -1236,6 +1236,142 @@ export async function registerOrderRoutes(
         }
     });
 
+    // Order Traveler — assembles a clean, print-ready whole-order summary
+    // (header + all line items) for the shared ticket-printing framework.
+    // Read-only; backend stays the source of truth for material names etc.
+    app.get("/api/orders/:orderId/traveler", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const orderId = String(req.params.orderId || "");
+            if (!orderId.trim()) return res.status(400).json({ message: "orderId required" });
+
+            const orderRows = await db
+                .select({
+                    id: orders.id,
+                    orderNumber: orders.orderNumber,
+                    dueDate: orders.dueDate,
+                    priority: orders.priority,
+                    notesInternal: orders.notesInternal,
+                    contactId: orders.contactId,
+                    customerName: customers.companyName,
+                })
+                .from(orders)
+                .leftJoin(customers, and(eq(orders.customerId, customers.id), eq(customers.organizationId, organizationId)))
+                .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
+                .limit(1);
+
+            const order = orderRows[0];
+            if (!order) return res.status(404).json({ message: "Order not found" });
+
+            let contactName: string | null = null;
+            if (order.contactId) {
+                const contactRows = await db
+                    .select({ firstName: customerContacts.firstName, lastName: customerContacts.lastName })
+                    .from(customerContacts)
+                    .where(eq(customerContacts.id, order.contactId))
+                    .limit(1);
+                const c = contactRows[0];
+                if (c) contactName = `${c.firstName ?? ""} ${c.lastName ?? ""}`.trim() || null;
+            }
+
+            const lineItemRows = await db
+                .select({
+                    id: orderLineItems.id,
+                    description: orderLineItems.description,
+                    quantity: orderLineItems.quantity,
+                    width: orderLineItems.width,
+                    height: orderLineItems.height,
+                    materialId: orderLineItems.materialId,
+                    productionNotes: orderLineItems.productionNotes,
+                    sortOrder: orderLineItems.sortOrder,
+                    createdAt: orderLineItems.createdAt,
+                })
+                .from(orderLineItems)
+                .where(eq(orderLineItems.orderId, orderId))
+                .orderBy(orderLineItems.sortOrder, orderLineItems.createdAt);
+
+            const materialIds = Array.from(
+                new Set(lineItemRows.map((li) => li.materialId).filter((v): v is string => typeof v === "string" && !!v.trim())),
+            );
+            const materialNameById = new Map<string, string>();
+            if (materialIds.length > 0) {
+                const materialRows = await db
+                    .select({ id: materials.id, name: materials.name })
+                    .from(materials)
+                    .where(and(eq(materials.organizationId, organizationId), inArray(materials.id, materialIds)));
+                for (const m of materialRows) materialNameById.set(m.id, m.name);
+            }
+
+            const travelerLineItems = lineItemRows.map((li) => {
+                const size = li.width && li.height ? `${li.width} × ${li.height}` : null;
+                return {
+                    description: li.description ?? "",
+                    quantity: Number(li.quantity) || 0,
+                    size,
+                    material: li.materialId ? materialNameById.get(li.materialId) ?? null : null,
+                    productionNotes: li.productionNotes ?? null,
+                };
+            });
+
+            return res.json({
+                success: true,
+                data: {
+                    orderId: order.id,
+                    orderNumber: order.orderNumber,
+                    customerName: String(order.customerName || "—"),
+                    contactName,
+                    dueDate: order.dueDate ?? null,
+                    priority: order.priority ?? null,
+                    internalNotes: order.notesInternal ?? null,
+                    lineItems: travelerLineItems,
+                },
+            });
+        } catch (error) {
+            console.error("Error building order traveler:", error);
+            return res.status(500).json({ message: "Failed to build order traveler" });
+        }
+    });
+
+    // Print-history logging for an order traveler. Order travelers are not tied
+    // to a production job, so we use the existing generic `audit_logs` table
+    // (no migration needed) rather than `production_events`.
+    app.post("/api/orders/:orderId/traveler-print", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const orderId = String(req.params.orderId || "");
+            if (!orderId.trim()) return res.status(400).json({ message: "orderId required" });
+
+            const orderRows = await db
+                .select({ id: orders.id, orderNumber: orders.orderNumber })
+                .from(orders)
+                .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
+                .limit(1);
+            const order = orderRows[0];
+            if (!order) return res.status(404).json({ message: "Order not found" });
+
+            const userId = getUserId(req.user);
+            const userName = [req.user?.firstName, req.user?.lastName].filter(Boolean).join(" ") || req.user?.email || null;
+
+            await db.insert(auditLogs).values({
+                organizationId,
+                userId: userId ?? null,
+                userName,
+                actionType: "PRINT",
+                entityType: "order",
+                entityId: orderId,
+                entityName: order.orderNumber,
+                description: `Printed order traveler for ${order.orderNumber}`,
+            });
+
+            return res.json({ success: true, data: { success: true } });
+        } catch (error) {
+            console.error("Error logging order traveler print:", error);
+            return res.status(500).json({ message: "Failed to log order traveler print" });
+        }
+    });
+
     app.get("/api/orders/:id/design-billing-visibility", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
