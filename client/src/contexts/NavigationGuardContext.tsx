@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useMemo, useRef } from "
 import { useLocation, useNavigate, type NavigateOptions } from "react-router-dom";
 import {
   createNavigationGuardRegistry,
+  type NavigationGuardDiagnostics,
   type NavigationGuardFn,
   type NavigationGuardTarget,
 } from "./navigationGuardCore";
@@ -22,9 +23,10 @@ import {
  */
 
 interface NavigationGuardContextValue {
-  registerGuard: (guard: NavigationGuardFn, shouldBlock: () => boolean) => () => void;
+  registerGuard: (guard: NavigationGuardFn, shouldBlock: () => boolean, label?: string) => () => void;
   guardedNavigate: (to: NavigationGuardTarget, options?: NavigateOptions) => void;
   isGuardActive: () => boolean;
+  getGuardDiagnostics: () => NavigationGuardDiagnostics;
 }
 
 const NavigationGuardContext = createContext<NavigationGuardContextValue | null>(null);
@@ -34,14 +36,15 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
   const navigate = useNavigate();
   const location = useLocation();
 
-  const registerGuard = useCallback((guard: NavigationGuardFn, shouldBlock: () => boolean) => {
-    const unregister = registryRef.current.registerGuard(guard, shouldBlock);
+  const registerGuard = useCallback((guard: NavigationGuardFn, shouldBlock: () => boolean, label?: string) => {
+    const unregister = registryRef.current.registerGuard(guard, shouldBlock, label);
     const entries = registryRef.current.getEntries();
     const guardId = entries[entries.length - 1]?.id;
 
     if (import.meta.env.DEV) {
       console.log("[NavigationGuard] registered", {
         guardId,
+        label: label ?? "anonymous",
         guardCount: entries.length,
         windowPath: window.location.pathname,
       });
@@ -54,6 +57,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
       if (import.meta.env.DEV) {
         console.log("[NavigationGuard] unregistered", {
           guardId,
+          label: label ?? "anonymous",
           guardCount: remainingEntries.length,
           windowPath: window.location.pathname,
         });
@@ -65,18 +69,25 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
     return registryRef.current.isGuardActive();
   }, []);
 
+  const getGuardDiagnostics = useCallback(() => {
+    return registryRef.current.getDiagnostics();
+  }, []);
+
   const guardedNavigate = useCallback(
     (to: NavigationGuardTarget, options?: NavigateOptions) => {
       const origin = typeof window === "undefined" ? undefined : window.location.origin;
       const decision = registryRef.current.decideNavigation(to, (message) => window.confirm(message), origin);
 
       if (import.meta.env.DEV) {
+        const diagnostics = registryRef.current.getDiagnostics();
         console.log("[NavigationGuard] guardedNavigate", {
           targetPath: decision.targetPath,
           reactRouterPath: location.pathname,
           windowPath: window.location.pathname,
-          guardCount: registryRef.current.getEntries().length,
+          guardCount: diagnostics.registeredGuardCount,
           activeGuardIds: decision.activeGuardIds,
+          activeGuardLabels: diagnostics.activeGuardLabels,
+          guards: diagnostics.guards,
           allowed: decision.allowed,
         });
       }
@@ -115,8 +126,9 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
       registerGuard,
       guardedNavigate,
       isGuardActive,
+      getGuardDiagnostics,
     }),
-    [registerGuard, guardedNavigate, isGuardActive],
+    [registerGuard, guardedNavigate, isGuardActive, getGuardDiagnostics],
   );
 
   return (

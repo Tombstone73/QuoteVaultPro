@@ -536,12 +536,29 @@ function hasAnyDesignBriefText(draft: LineItemDesignBriefDraft): boolean {
 }
 
 /** Imperative API the parent order editor uses to orchestrate a Save Order. */
+export type OrderLineItemDirtyDiagnostics = {
+  expandedLineItemDirty: boolean;
+  productReplacementDirty: boolean;
+  designBriefDirty: boolean;
+  expandedLineItemId: string | null;
+  draftProductId: string | null;
+  savedProductId: string | null;
+  draftProductVariantId: string | null;
+  savedProductVariantId: string | null;
+  draftPbv2TreeVersionId: string | null;
+  savedPbv2TreeVersionId: string | null;
+  computedTotal: number | null;
+  savedTotal: number | null;
+};
+
 export type OrderLineItemsSectionHandle = {
   /**
    * Persists the currently-expanded line item when it has unsaved edits.
    * No-op (resolves `{ saved: true }`) when nothing is dirty.
    */
   saveDirtyLineItem: () => Promise<{ saved: boolean; error?: string }>;
+  /** Returns the current expanded-line dirty reporters for save/nav diagnostics. */
+  getDirtyDiagnostics: () => OrderLineItemDirtyDiagnostics;
 };
 
 type OrderLineItemsSectionProps = {
@@ -1618,6 +1635,58 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     return () => onDirtyStateChange?.(false);
   }, [onDirtyStateChange]);
 
+  const lineItemDirtyDiagnostics = useMemo<OrderLineItemDirtyDiagnostics>(() => {
+    if (!expandedItem) {
+      return {
+        expandedLineItemDirty: false,
+        productReplacementDirty: false,
+        designBriefDirty: false,
+        expandedLineItemId: null,
+        draftProductId: null,
+        savedProductId: null,
+        draftProductVariantId: null,
+        savedProductVariantId: null,
+        draftPbv2TreeVersionId: null,
+        savedPbv2TreeVersionId: null,
+        computedTotal: null,
+        savedTotal: null,
+      };
+    }
+
+    const saved = savedSnapshotRef.current[expandedItem.id];
+    const savedBrief = designBriefSnapshotRef.current[expandedItem.id] ?? EMPTY_DESIGN_BRIEF_DRAFT;
+    const productReplacementDirty = Boolean(
+      saved &&
+        (currentDraftProductId !== saved.productId ||
+          normalizeVariantId(currentDraftProductVariantId) !== normalizeVariantId(saved.productVariantId)),
+    );
+    const designBriefDirty = JSON.stringify(designBriefDraft) !== JSON.stringify(savedBrief);
+
+    return {
+      expandedLineItemDirty: isDirty,
+      productReplacementDirty,
+      designBriefDirty,
+      expandedLineItemId: expandedItem.id,
+      draftProductId: currentDraftProductId,
+      savedProductId: saved?.productId ?? null,
+      draftProductVariantId: normalizeVariantId(currentDraftProductVariantId),
+      savedProductVariantId: normalizeVariantId(saved?.productVariantId),
+      draftPbv2TreeVersionId: pbv2TreeVersionId || null,
+      savedPbv2TreeVersionId: saved?.pbv2TreeVersionId || null,
+      computedTotal: Number.isFinite(Number(computedTotal)) ? Number(computedTotal) : null,
+      savedTotal: Number.isFinite(Number(saved?.totalPrice)) ? Number(saved?.totalPrice) : null,
+    };
+  }, [
+    expandedItem,
+    currentDraftProductId,
+    currentDraftProductVariantId,
+    pbv2TreeVersionId,
+    designBriefDraft,
+    computedTotal,
+    isDirty,
+    savedSnapshotVersion,
+  ]);
+
   // Debounced live-preview price calculation for the expanded line item.
   //
   // The debounce is keyed ONLY on primitives — the `calcKey` string plus a few
@@ -1870,9 +1939,23 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       // line item dirty flag (and the order navigation guard) clear immediately
       // — independent of when the post-save order refetch happens to land.
       setSavedSnapshotVersion((v) => v + 1);
+      onDirtyStateChange?.(false);
       // A successful save supersedes any prior preview calculation error.
       setCalcError(null);
       setPreviewDiag(null);
+
+      if (import.meta.env.DEV) {
+        console.warn("[ORDER_LINE_ITEM_SAVE_ADOPT] saved line item baseline", {
+          lineItemId: itemId,
+          draftProductId: currentDraftProductId,
+          savedProductId: savedSnapshotRef.current[itemId]?.productId,
+          draftProductVariantId: normalizeVariantId(currentDraftProductVariantId),
+          savedProductVariantId: savedSnapshotRef.current[itemId]?.productVariantId,
+          draftPbv2TreeVersionId: pbv2TreeVersionId,
+          savedPbv2TreeVersionId: savedSnapshotRef.current[itemId]?.pbv2TreeVersionId,
+          computedTotal: resolvedTotal,
+        });
+      }
 
       setTimeout(() => setSavedItemId(null), 2000);
       setTimeout(() => setDesignBriefSavedAt(null), 2000);
@@ -1903,6 +1986,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       if (!isDirty || !expandedItem) return { saved: true };
       return saveExpandedLineItem({ silent: true });
     },
+    getDirtyDiagnostics: () => lineItemDirtyDiagnostics,
   }));
 
   const refreshPricingAfterOverrideChange = async ({

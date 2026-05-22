@@ -3,8 +3,21 @@ export type NavigationGuardFn = (targetPath: string) => string | boolean;
 
 export type NavigationGuardEntry = {
   id: number;
+  label: string;
   guard: NavigationGuardFn;
   shouldBlock: () => boolean;
+};
+
+export type NavigationGuardEntryDiagnostic = {
+  id: number;
+  label: string;
+  shouldBlockResult: boolean;
+};
+
+export type NavigationGuardDiagnostics = {
+  registeredGuardCount: number;
+  guards: NavigationGuardEntryDiagnostic[];
+  activeGuardLabels: string[];
 };
 
 export type NavigationGuardDecision =
@@ -49,9 +62,10 @@ export function createNavigationGuardRegistry() {
   let entries: NavigationGuardEntry[] = [];
   let nextId = 1;
 
-  function registerGuard(guard: NavigationGuardFn, shouldBlock: () => boolean): () => void {
+  function registerGuard(guard: NavigationGuardFn, shouldBlock: () => boolean, label = "anonymous"): () => void {
     const entry: NavigationGuardEntry = {
       id: nextId,
+      label,
       guard,
       shouldBlock,
     };
@@ -83,6 +97,34 @@ export function createNavigationGuardRegistry() {
 
   function isGuardActive(): boolean {
     return getBlockingEntries().length > 0;
+  }
+
+  function getDiagnostics(): NavigationGuardDiagnostics {
+    const guards = entries.map((entry) => {
+      let shouldBlockResult = false;
+      try {
+        shouldBlockResult = entry.shouldBlock();
+      } catch (error) {
+        console.error("[NavigationGuard] shouldBlock threw during diagnostics; treating guard as active", {
+          guardId: entry.id,
+          label: entry.label,
+          error,
+        });
+        shouldBlockResult = true;
+      }
+
+      return {
+        id: entry.id,
+        label: entry.label,
+        shouldBlockResult,
+      };
+    });
+
+    return {
+      registeredGuardCount: entries.length,
+      guards,
+      activeGuardLabels: guards.filter((guard) => guard.shouldBlockResult).map((guard) => guard.label),
+    };
   }
 
   function decideNavigation(
@@ -136,6 +178,7 @@ export function createNavigationGuardRegistry() {
   return {
     registerGuard,
     getEntries,
+    getDiagnostics,
     isGuardActive,
     decideNavigation,
   };
