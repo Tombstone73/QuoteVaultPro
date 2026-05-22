@@ -663,15 +663,20 @@ export function useUpdateOrderLineItem(
 
   return useMutation({
     mutationFn: async ({ id, data }: { id: string; data: any }) => {
+      const coerceOptionalNumber = (value: unknown) => {
+        if (value === null) return null;
+        if (value === undefined || value === "") return undefined;
+        return Number(value);
+      };
       // Ensure numeric values are sent as numbers, not strings
       const payload = {
         ...data,
-        unitPrice: data.unitPrice ? Number(data.unitPrice) : undefined,
-        totalPrice: data.totalPrice ? Number(data.totalPrice) : undefined,
-        quantity: data.quantity ? Number(data.quantity) : undefined,
-        width: data.width ? Number(data.width) : undefined,
-        height: data.height ? Number(data.height) : undefined,
-        sqft: data.sqft ? Number(data.sqft) : undefined,
+        unitPrice: coerceOptionalNumber(data.unitPrice),
+        totalPrice: coerceOptionalNumber(data.totalPrice),
+        quantity: coerceOptionalNumber(data.quantity),
+        width: coerceOptionalNumber(data.width),
+        height: coerceOptionalNumber(data.height),
+        sqft: coerceOptionalNumber(data.sqft),
       };
 
       console.log("useUpdateOrderLineItem - Input data:", data);
