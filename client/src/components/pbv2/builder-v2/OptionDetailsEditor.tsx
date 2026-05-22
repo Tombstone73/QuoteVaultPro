@@ -94,6 +94,50 @@ function MoneyInput({
   );
 }
 
+function FormulaInput({
+  formula,
+  onCommit,
+  className,
+  placeholder = 'custom_grommet_qty * 0.25 * q',
+}: {
+  formula: string;
+  onCommit: (formula: string) => void;
+  className?: string;
+  placeholder?: string;
+}) {
+  const displayFormula = formula.trim() === '0' ? '' : formula;
+  const [draft, setDraft] = React.useState<string>(() => displayFormula);
+  const [focused, setFocused] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!focused) setDraft(displayFormula);
+  }, [displayFormula, focused]);
+
+  return (
+    <Input
+      type="text"
+      value={draft}
+      onFocus={() => {
+        setFocused(true);
+        if (draft.trim() === '0') setDraft('');
+      }}
+      onChange={(e) => {
+        const nextFormula = normalizeFormulaInputDraft(formula, e.target.value);
+        setDraft(nextFormula);
+        onCommit(nextFormula);
+      }}
+      onBlur={() => {
+        setFocused(false);
+        const settled = draft.trim() ? draft : '0';
+        setDraft(settled.trim() === '0' ? '' : settled);
+        onCommit(settled);
+      }}
+      placeholder={placeholder}
+      className={className}
+    />
+  );
+}
+
 type QuantityBasis = 'area_sqft' | 'perimeter_ft' | 'linear_ft' | 'each' | 'fixed';
 type PricingOverrideMode = 'none' | 'set_base_rate' | 'add_base_rate' | 'multiply_base_rate';
 type PricingOverrideUnit = 'perSqft' | 'perPiece' | 'minimumCharge';
@@ -1131,22 +1175,9 @@ export function OptionDetailsEditor({
                       {mode === 'addFormula' ? (
                         <div>
                           <Label className="text-xs text-slate-400 mb-1 block">Formula ($)</Label>
-                          <Input
-                            type="text"
-                            value={formula}
-                            onFocus={() => {
-                              if (formula.trim() !== '0') return;
-                              const updatedRules = [...(nodeData.pricingImpact || [])];
-                              updatedRules[index] = { ...normalizedRule, formula: '' };
-                              onUpdateNodePricing(
-                                option.id,
-                                updatedRules.map((r: any) => normalizeLegacyPricingImpact(r, 'addFlat', {
-                                  settleBlankFormula: false,
-                                }))
-                              );
-                            }}
-                            onChange={(e) => {
-                              const nextFormula = normalizeFormulaInputDraft(formula, e.target.value);
+                          <FormulaInput
+                            formula={formula}
+                            onCommit={(nextFormula) => {
                               const updatedRules = [...(nodeData.pricingImpact || [])];
                               updatedRules[index] = { ...normalizedRule, formula: nextFormula };
                               onUpdateNodePricing(
@@ -1154,15 +1185,6 @@ export function OptionDetailsEditor({
                                 updatedRules.map((r: any) => normalizeLegacyPricingImpact(r, 'addFlat', {
                                   settleBlankFormula: false,
                                 }))
-                              );
-                            }}
-                            onBlur={(e) => {
-                              if (e.target.value.trim()) return;
-                              const updatedRules = [...(nodeData.pricingImpact || [])];
-                              updatedRules[index] = { ...normalizedRule, formula: '0' };
-                              onUpdateNodePricing(
-                                option.id,
-                                updatedRules.map((r: any) => normalizeLegacyPricingImpact(r, 'addFlat'))
                               );
                             }}
                             placeholder="custom_grommet_qty * 0.25 * q"
