@@ -1,255 +1,123 @@
-import React, { createContext, useContext, useCallback, useRef, useEffect, useMemo } from 'react';
-import { useNavigate, useLocation, useNavigationType, type NavigateOptions } from 'react-router-dom';
-import { getBlockedPopReversalDelta, readHistoryIndex } from './navigationGuardHistory';
+import React, { createContext, useCallback, useContext, useMemo, useRef } from "react";
+import { useLocation, useNavigate, type NavigateOptions } from "react-router-dom";
+import {
+  createNavigationGuardRegistry,
+  type NavigationGuardFn,
+  type NavigationGuardTarget,
+} from "./navigationGuardCore";
 
 /**
  * NavigationGuardContext
- * 
- * Enterprise-safe navigation guard system for BrowserRouter apps.
- * Provides guard state and functions for conditional navigation interception.
- * 
- * Critical: Only intercepts when guard is active (dirty=true).
- * 
- * TODO: When migrating to Data Router (RouterProvider + createBrowserRouter),
- * replace this with official useBlocker hook and errorElement boundaries.
- * See: https://reactrouter.com/en/main/hooks/use-blocker
+ *
+ * BrowserRouter-safe navigation guard for explicit in-app navigations.
+ *
+ * Important: BrowserRouter cannot synchronously block browser back/forward
+ * before the URL changes. The previous POP-reversal approach could leave the
+ * address bar and React Router render tree out of sync. This provider therefore
+ * only guards navigation that calls `guardedNavigate`; refresh/close protection
+ * stays with page-level `beforeunload` handlers.
+ *
+ * TODO: If the app migrates to Data Router (RouterProvider + createBrowserRouter),
+ * replace this explicit guard with React Router's official blocker APIs.
  */
-
-type NavigationGuardFn = (targetPath: string) => string | boolean;
 
 interface NavigationGuardContextValue {
   registerGuard: (guard: NavigationGuardFn, shouldBlock: () => boolean) => () => void;
-  guardedNavigate: (to: string, options?: NavigateOptions) => void;
-  isGuardActive: () => boolean; // Check if guard would block
+  guardedNavigate: (to: NavigationGuardTarget, options?: NavigateOptions) => void;
+  isGuardActive: () => boolean;
 }
 
 const NavigationGuardContext = createContext<NavigationGuardContextValue | null>(null);
 
 export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const guardRef = useRef<NavigationGuardFn | null>(null);
-  const shouldBlockRef = useRef<(() => boolean) | null>(null);
+  const registryRef = useRef(createNavigationGuardRegistry());
   const navigate = useNavigate();
   const location = useLocation();
-  const navigationType = useNavigationType();
-  const lastStableLocationRef = useRef<string>(location.pathname + location.search);
-  // BrowserRouter tracks a numeric history index in window.history.state.idx;
-  // keep the stable index alongside the stable path so cancelled POPs can be
-  // reversed without leaving the browser history pointer on the wrong entry.
-  const lastStableHistoryIndexRef = useRef<number | null>(readHistoryIndex());
-  const pendingBlockedLocationRef = useRef<string | null>(null);
-  const isRevertingRef = useRef<boolean>(false);
 
   const registerGuard = useCallback((guard: NavigationGuardFn, shouldBlock: () => boolean) => {
-    guardRef.current = guard;
-    shouldBlockRef.current = shouldBlock;
+    const unregister = registryRef.current.registerGuard(guard, shouldBlock);
+    const entries = registryRef.current.getEntries();
+    const guardId = entries[entries.length - 1]?.id;
+
+    if (import.meta.env.DEV) {
+      console.log("[NavigationGuard] registered", {
+        guardId,
+        guardCount: entries.length,
+        windowPath: window.location.pathname,
+      });
+    }
+
     return () => {
-      guardRef.current = null;
-      shouldBlockRef.current = null;
-      pendingBlockedLocationRef.current = null;
+      unregister();
+      const remainingEntries = registryRef.current.getEntries();
+
+      if (import.meta.env.DEV) {
+        console.log("[NavigationGuard] unregistered", {
+          guardId,
+          guardCount: remainingEntries.length,
+          windowPath: window.location.pathname,
+        });
+      }
     };
   }, []);
 
-  // Check if guard would currently block navigation
   const isGuardActive = useCallback(() => {
-    const shouldBlock = shouldBlockRef.current;
-    if (!shouldBlock) return false;
-    return shouldBlock();
+    return registryRef.current.isGuardActive();
   }, []);
 
-  // Guarded navigate for PUSH navigation (sidebar clicks, programmatic nav)
-  const guardedNavigate = useCallback((to: string, options?: NavigateOptions) => {
-    if (import.meta.env.DEV) {
-      console.log('[guardedNavigate] Called', {
-        to,
-        stack: new Error().stack?.split('\n').slice(0, 6).join('\n')
-      });
-    }
-    
-    const shouldBlock = shouldBlockRef.current;
-    const guard = guardRef.current;
-    
-    // CRITICAL: Check shouldBlock() FIRST before calling guard
-    // If no shouldBlock function OR it returns false, navigate immediately
-    if (!shouldBlock || !shouldBlock()) {
-      if (import.meta.env.DEV) {
-        console.log('[guardedNavigate] shouldBlock returned false, navigating immediately');
-      }
-      navigate(to, options);
-      return;
-    }
-    
-    if (import.meta.env.DEV) {
-      console.log('[guardedNavigate] shouldBlock returned true, checking guard');
-    }
-    
-    // shouldBlock returned true - dirty state, check guard
-    if (!guard) {
-      // No guard function but shouldBlock is true - allow navigation anyway
-      if (import.meta.env.DEV) {
-        console.log('[guardedNavigate] No guard function, navigating anyway');
-      }
-      navigate(to, options);
-      return;
-    }
+  const guardedNavigate = useCallback(
+    (to: NavigationGuardTarget, options?: NavigateOptions) => {
+      const origin = typeof window === "undefined" ? undefined : window.location.origin;
+      const decision = registryRef.current.decideNavigation(to, (message) => window.confirm(message), origin);
 
-    const result = guard(to);
-    
-    if (import.meta.env.DEV) {
-      console.log('[guardedNavigate] Guard returned:', { result, type: typeof result });
-    }
-    
-    // Guard returned false/null/undefined, allow navigation
-    if (!result) {
       if (import.meta.env.DEV) {
-        console.log('[guardedNavigate] Guard allowed navigation (falsy result)');
+        console.log("[NavigationGuard] guardedNavigate", {
+          targetPath: decision.targetPath,
+          reactRouterPath: location.pathname,
+          windowPath: window.location.pathname,
+          guardCount: registryRef.current.getEntries().length,
+          activeGuardIds: decision.activeGuardIds,
+          allowed: decision.allowed,
+        });
       }
-      navigate(to, options);
-      return;
-    }
 
-    // Guard returned true, block silently
-    if (result === true) {
-      if (import.meta.env.DEV) {
-        console.log('[guardedNavigate] Guard blocked silently (result === true)');
-      }
-      return;
-    }
-
-    // Guard returned string message, show confirm
-    if (import.meta.env.DEV) {
-      console.log('[guardedNavigate] Showing window.confirm with message:', result);
-    }
-    const confirmed = window.confirm(result);
-    if (import.meta.env.DEV) {
-      console.log('[guardedNavigate] User response:', { confirmed });
-    }
-    if (confirmed) {
-      navigate(to, options);
-    }
-  }, [navigate]);
-
-  // Handle browser back/forward (POP navigation)
-  // Only intercepts when guard is active (dirty=true)
-  useEffect(() => {
-    const currentPath = location.pathname + location.search;
-    
-    // CRITICAL: Only run guard logic for POP navigation (browser back/forward)
-    // NavLink clicks are PUSH navigation and should NEVER be intercepted here
-    if (navigationType !== 'POP') {
-      lastStableLocationRef.current = currentPath;
-      lastStableHistoryIndexRef.current = readHistoryIndex();
-      pendingBlockedLocationRef.current = null;
-      if (import.meta.env.DEV) {
-        console.log('[GUARD] Allowing PUSH/REPLACE navigation, type:', navigationType, 'to:', currentPath);
-      }
-      return;
-    }
-    
-    if (import.meta.env.DEV) {
-      console.log('[GUARD] POP navigation detected from:', lastStableLocationRef.current, 'to:', currentPath);
-    }
-    
-    // Skip guard logic if we're currently reverting a POP to avoid recursion
-    if (isRevertingRef.current) {
-      isRevertingRef.current = false;
-      lastStableLocationRef.current = currentPath;
-      lastStableHistoryIndexRef.current = readHistoryIndex();
-      pendingBlockedLocationRef.current = null;
-      if (import.meta.env.DEV) {
-        console.log('[GUARD] Skipping guard logic (currently reverting)');
-      }
-      return;
-    }
-
-    const shouldBlock = shouldBlockRef.current;
-    const guard = guardRef.current;
-    
-    // CRITICAL: Check shouldBlock() FIRST before running guard logic
-    // If no shouldBlock function OR it returns false, allow POP navigation immediately
-    if (!shouldBlock || !shouldBlock()) {
-      lastStableLocationRef.current = currentPath;
-      lastStableHistoryIndexRef.current = readHistoryIndex();
-      pendingBlockedLocationRef.current = null;
-      if (import.meta.env.DEV) {
-        console.log('[GUARD] Allowing POP (not dirty or no shouldBlock)');
-      }
-      return;
-    }
-    
-    // shouldBlock returned true - dirty state, check guard
-    if (!guard) {
-      // No guard function but shouldBlock is true - allow navigation anyway
-      lastStableLocationRef.current = currentPath;
-      lastStableHistoryIndexRef.current = readHistoryIndex();
-      pendingBlockedLocationRef.current = null;
-      if (import.meta.env.DEV) {
-        console.log('[GUARD] Allowing POP (no guard function)');
-      }
-      return;
-    }
-
-    const lastStablePath = lastStableLocationRef.current;
-    
-    // If location changed via POP, check guard
-    if (currentPath !== lastStablePath) {
-      const result = guard(currentPath);
-      
-      // Guard allows navigation (false/null/undefined) - NOT DIRTY
-      if (!result) {
+      if (!decision.allowed) {
         if (import.meta.env.DEV) {
-          console.log('[GUARD] allow action=POP (not dirty) from:', lastStablePath, 'to:', currentPath);
+          console.log("[NavigationGuard] navigation denied before URL change", {
+            guardId: decision.blockedGuardId,
+            targetPath: decision.targetPath,
+            windowPath: window.location.pathname,
+            reactRouterPath: location.pathname,
+          });
         }
-        lastStableLocationRef.current = currentPath;
-        lastStableHistoryIndexRef.current = readHistoryIndex();
-        pendingBlockedLocationRef.current = null;
         return;
       }
 
-      // Guard wants to block (dirty=true) - show confirm
-      const message = result === true ? 'You have unsaved changes. Are you sure you want to leave?' : result;
-      const confirmed = window.confirm(message);
-
-      if (confirmed) {
-        // User confirmed, allow the POP navigation
-        if (import.meta.env.DEV) {
-          console.log('[GUARD] allow (user confirmed) action=POP from:', lastStablePath, 'to:', currentPath);
-        }
-        lastStableLocationRef.current = currentPath;
-        lastStableHistoryIndexRef.current = readHistoryIndex();
-        pendingBlockedLocationRef.current = null;
-      } else {
-        // User cancelled. Reverse the POP so the browser history index returns
-        // to the last stable entry instead of rewriting the attempted location.
-        if (import.meta.env.DEV) {
-          console.log('[GUARD] deny (user cancelled) action=POP, reverting to:', lastStablePath);
-        }
-        pendingBlockedLocationRef.current = currentPath;
-        isRevertingRef.current = true;
-        const currentHistoryIndex = readHistoryIndex();
-        const lastStableHistoryIndex = lastStableHistoryIndexRef.current;
-        const reversalDelta = getBlockedPopReversalDelta({
-          currentHistoryIndex,
-          lastStableHistoryIndex,
-        });
-        if (reversalDelta !== null) {
-          navigate(reversalDelta);
-        } else {
-          navigate(lastStablePath, { replace: true });
-        }
-      }
-    } else {
-      pendingBlockedLocationRef.current = null;
       if (import.meta.env.DEV) {
-        console.log('[GUARD] POP navigation but path unchanged, ignoring');
+        console.log("[NavigationGuard] navigation allowed", {
+          targetPath: decision.targetPath,
+          windowPath: window.location.pathname,
+          reactRouterPath: location.pathname,
+        });
       }
-    }
-  }, [location, navigate, navigationType]);
 
-  const contextValue = useMemo(() => ({
-    registerGuard,
-    guardedNavigate,
-    isGuardActive,
-  }), [registerGuard, guardedNavigate, isGuardActive]);
+      if (typeof to === "number") {
+        navigate(to);
+      } else {
+        navigate(to, options);
+      }
+    },
+    [location.pathname, navigate],
+  );
+
+  const contextValue = useMemo(
+    () => ({
+      registerGuard,
+      guardedNavigate,
+      isGuardActive,
+    }),
+    [registerGuard, guardedNavigate, isGuardActive],
+  );
 
   return (
     <NavigationGuardContext.Provider value={contextValue}>
@@ -261,7 +129,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
 export const useNavigationGuard = () => {
   const context = useContext(NavigationGuardContext);
   if (!context) {
-    throw new Error('useNavigationGuard must be used within NavigationGuardProvider');
+    throw new Error("useNavigationGuard must be used within NavigationGuardProvider");
   }
   return context;
 };

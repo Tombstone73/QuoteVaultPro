@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useState, useEffect } from "react";
-import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
 import {
   Home,
@@ -398,7 +398,7 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
   const { user } = useAuth();
   const { preferences } = useOrgPreferences();
   const location = useLocation();
-  const navigate = useNavigate();
+  const { guardedNavigate } = useNavigationGuard();
   const role = user?.role ?? null;
   const filteredSections = filterNavByRole(NAV_CONFIG, role, preferences, user?.isPlatformAdmin ?? false);
 
@@ -538,7 +538,7 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
       {/* New Order Button */}
       <div className={cn("px-3 py-2", isCollapsed && "px-2")}>
         <Button
-          onClick={() => navigate(ROUTES.orders.new)}
+          onClick={() => guardedNavigate(ROUTES.orders.new)}
           className={cn(
             "w-full bg-titan-accent hover:bg-titan-accent/90 text-white font-medium shadow-titan-sm",
             "flex items-center justify-center gap-2",

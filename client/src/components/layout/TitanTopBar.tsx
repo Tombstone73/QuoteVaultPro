@@ -1,5 +1,6 @@
 import * as React from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation } from "react-router-dom";
+import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
 import { Search, Bell, Menu, User, ChevronRight, LogOut, Settings, X, Bug } from "lucide-react";
 import { BugReportModal } from "@/components/bug-report/BugReportModal";
 import { cn } from "@/lib/utils";
@@ -108,7 +109,7 @@ interface TitanTopBarProps {
 
 export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBarProps) {
   const location = useLocation();
-  const navigate = useNavigate();
+  const { guardedNavigate } = useNavigationGuard();
   const { user } = useAuth();
   const logout = useLogout();
   const [searchQuery, setSearchQuery] = React.useState("");
@@ -191,7 +192,7 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
   const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter" && firstResult) {
       e.preventDefault();
-      navigate(firstResult.url);
+      guardedNavigate(firstResult.url);
       setShowSearchResults(false);
       setSearchQuery("");
       searchInputRef.current?.blur();
@@ -246,7 +247,7 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
                 )}
                 onClick={() => {
                   if (index < breadcrumbs.length - 1) {
-                    navigate(crumb.path);
+                    guardedNavigate(crumb.path);
                   }
                 }}
               >
@@ -382,7 +383,7 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
               )}
             </div>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => navigate(ROUTES.settings.root)}>
+            <DropdownMenuItem onClick={() => guardedNavigate(ROUTES.settings.root)}>
               <Settings className="mr-2 h-4 w-4" />
               Settings
             </DropdownMenuItem>
