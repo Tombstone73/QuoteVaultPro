@@ -46,6 +46,11 @@ import { collectPbv2WeightMaterialIds } from "../services/pbv2WeightResolver";
 import { collectPbv2MaterialValidationIds, validatePbv2MaterialReferences } from "../services/pbv2MaterialValidation";
 import { sanitizeLegacyPriceBreaksForPbv2 } from "@shared/pbv2/legacyPriceBreaks";
 import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
+import {
+  validatePricingPreviewRequest,
+  buildPreviewErrorEnvelope,
+  zodIssuesToPreviewDetails,
+} from "../services/pricing/pricingPreviewValidation";
 
 // ---------------------------------------------------------------------------
 // Local JSON typing helpers (do NOT touch shared/schema.ts)
@@ -1620,11 +1625,6 @@ export function registerProductRoutes(
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
 
       const {
-        treeJson,
-        width,
-        height,
-        quantity,
-        optionSelectionsJson,
         pricingFormulaOverride,
         pricingProfileKey,
         pricingProfileConfig,
@@ -1633,30 +1633,13 @@ export function registerProductRoutes(
         debug,
       } = req.body ?? {};
 
-      if (!treeJson || typeof treeJson !== "object") {
-        return res.status(400).json({ message: "treeJson is required" });
+      // Validate + normalize the (TEMP, editor-only) preview payload. On rejection
+      // we return a structured envelope so the sandbox can show actionable detail.
+      const validation = validatePricingPreviewRequest(req.body ?? {});
+      if (!validation.ok) {
+        return res.status(validation.status).json(validation.envelope);
       }
-
-      const widthNum = Number(width);
-      const heightNum = Number(height);
-      const quantityNum = Number(quantity);
-
-      if (!Number.isFinite(widthNum) || widthNum <= 0) {
-        return res.status(400).json({ message: "width must be a positive number" });
-      }
-      if (!Number.isFinite(heightNum) || heightNum <= 0) {
-        return res.status(400).json({ message: "height must be a positive number" });
-      }
-      if (!Number.isFinite(quantityNum) || quantityNum <= 0) {
-        return res.status(400).json({ message: "quantity must be a positive number" });
-      }
-
-      let pbv2ExplicitSelections: Record<string, any> = {};
-      if (optionSelectionsJson != null) {
-        pbv2ExplicitSelections = typeof optionSelectionsJson === "string"
-          ? JSON.parse(optionSelectionsJson)
-          : optionSelectionsJson;
-      }
+      const { treeJson, widthNum, heightNum, quantityNum, pbv2ExplicitSelections } = validation.normalized;
 
       const { evaluatePricingPreviewFromTree } = await import("../services/pricing/PricingService");
       const normalizedPrimaryMaterialId = typeof productPrimaryMaterialId === "string" && productPrimaryMaterialId.trim()
@@ -1705,7 +1688,12 @@ export function registerProductRoutes(
       });
     } catch (error: any) {
       if (error?.name === "ZodError") {
-        return res.status(400).json({ message: "Invalid preview payload" });
+        return res.status(400).json(
+          buildPreviewErrorEnvelope(
+            "Invalid preview payload",
+            zodIssuesToPreviewDetails((error as any)?.issues),
+          ),
+        );
       }
       if (error?.code === "PBV2_FORMULA_ERROR" && Array.isArray(error?.details)) {
         return res.json({
