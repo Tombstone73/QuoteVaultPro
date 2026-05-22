@@ -1201,7 +1201,7 @@ export function OptionDetailsEditor({
                             className="bg-[#0f172a] border-slate-600 text-slate-100 text-sm font-mono"
                           />
                           <div className="text-xs text-slate-400 mt-1">
-                            Numeric option selection keys are available as formula variables.
+                            Numeric option selection keys and labels are available as formula variables.
                           </div>
                         </div>
                       ) : (

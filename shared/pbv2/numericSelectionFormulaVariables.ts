@@ -64,6 +64,24 @@ function toFormulaIdentifier(value: string): string | null {
   return /^[A-Za-z_$]/.test(collapsed) ? collapsed : `_${collapsed}`;
 }
 
+function getLabelAliases(node: AnyRecord): string[] {
+  const candidates = [
+    node.label,
+    node.name,
+    node.input?.label,
+    node.input?.name,
+  ];
+
+  return Array.from(
+    new Set(
+      candidates
+        .filter(isNonEmptyString)
+        .map((value) => toFormulaIdentifier(value.toLowerCase()))
+        .filter((value): value is string => Boolean(value))
+    )
+  );
+}
+
 export function buildNumericSelectionFormulaVariables(input: {
   treeJson: unknown;
   selections?: Record<string, unknown>;
@@ -109,6 +127,12 @@ export function buildNumericSelectionFormulaVariables(input: {
     const alias = toFormulaIdentifier(selectionKey);
     if (alias && !Object.prototype.hasOwnProperty.call(out, alias)) {
       out[alias] = numeric;
+    }
+
+    for (const labelAlias of getLabelAliases(node)) {
+      if (!Object.prototype.hasOwnProperty.call(out, labelAlias)) {
+        out[labelAlias] = numeric;
+      }
     }
   }
 
