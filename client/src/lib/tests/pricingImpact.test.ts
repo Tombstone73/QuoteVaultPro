@@ -154,6 +154,20 @@ describe("normalizeLegacyPricingImpact", () => {
     });
   });
 
+  test("tree normalization can preserve blank formula drafts in the editor", () => {
+    const { tree, changed } = normalizeTreePricingImpacts(
+      {
+        nodes: {
+          custom: { id: "custom", pricingImpact: [{ mode: "addFormula", formula: "" }] },
+        },
+      },
+      { settleBlankFormula: false },
+    );
+
+    expect(changed).toBe(false);
+    expect(tree.nodes.custom.pricingImpact).toEqual([{ mode: "addFormula", formula: "" }]);
+  });
+
   test("tree normalization repairs node and choice pricing impacts", () => {
     const { tree, changed } = normalizeTreePricingImpacts({
       nodes: {

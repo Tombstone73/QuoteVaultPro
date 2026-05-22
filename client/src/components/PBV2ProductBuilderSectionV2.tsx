@@ -84,7 +84,9 @@ function applyTreeUpdate(
 ) {
   // Always normalize before setting state
   const matrixSanitizedTree = sanitizePbv2PricingMatrix(normalizeTreeJson(nextTree)).tree;
-  const normalizedTree = normalizeTreePricingImpacts(matrixSanitizedTree).tree;
+  const normalizedTree = normalizeTreePricingImpacts(matrixSanitizedTree, {
+    settleBlankFormula: false,
+  }).tree;
   
   // DEV: Critical diagnostic logging including edge conditions
   if (import.meta.env.DEV) {
