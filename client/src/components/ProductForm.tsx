@@ -35,6 +35,22 @@ function RequiredLabel({ children, required = false }: { children: React.ReactNo
   );
 }
 
+function hasKnownLookupValue(items: any, value: unknown): boolean {
+  return Array.isArray(items) && typeof value === "string" && items.some((item: any) => item.id === value);
+}
+
+function shouldShowUnknownLookupValue(items: any, value: unknown): value is string {
+  return Array.isArray(items) && typeof value === "string" && value.length > 0 && !hasKnownLookupValue(items, value);
+}
+
+function UnknownLookupWarning({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200">
+      {children}
+    </div>
+  );
+}
+
 export const ProductForm = ({
   form,
   materials,
@@ -125,6 +141,8 @@ export const ProductForm = ({
   const selectedPrimaryMaterial = Array.isArray(materials)
     ? materials.find((mat: any) => mat.id === selectedPrimaryMaterialId)
     : null;
+  const productTypesLoaded = Array.isArray(productTypes);
+  const materialsLoaded = Array.isArray(materials);
   const legacyTrimAllowance = Number(treeMeta?.geometry?.trimAllowance ?? 0);
   const normalizedLegacyTrimAllowance = Number.isFinite(legacyTrimAllowance) && legacyTrimAllowance >= 0 ? legacyTrimAllowance : 0;
   const trimAllowanceX = Number(treeMeta?.geometry?.trimAllowanceX);
@@ -195,18 +213,30 @@ export const ProductForm = ({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel className="text-xs text-slate-400">Product Type</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value || ""}>
+                    <Select
+                      key={productTypesLoaded ? "product-type-loaded" : "product-type-loading"}
+                      onValueChange={field.onChange}
+                      value={field.value || ""}
+                    >
                       <FormControl>
                         <SelectTrigger>
                           <SelectValue placeholder="Select type" />
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
+                        {shouldShowUnknownLookupValue(productTypes, field.value) ? (
+                          <SelectItem value={field.value}>Unknown value ({field.value})</SelectItem>
+                        ) : null}
                         {productTypes?.map((pt: any) => (
                           <SelectItem key={pt.id} value={pt.id}>{pt.name}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
+                    {shouldShowUnknownLookupValue(productTypes, field.value) ? (
+                      <UnknownLookupWarning>
+                        Product type "{field.value}" is not in the current product type list. Select a valid type before saving.
+                      </UnknownLookupWarning>
+                    ) : null}
                     <FormMessage />
                   </FormItem>
                 )}
@@ -268,6 +298,7 @@ export const ProductForm = ({
                   />
                 </div>
                 <Select
+                  key={materialsLoaded ? "primary-material-loaded" : "primary-material-loading"}
                   onValueChange={(val) => field.onChange(val === "__none__" ? null : val)}
                   value={field.value || "__none__"}
                 >
@@ -278,6 +309,9 @@ export const ProductForm = ({
                   </FormControl>
                   <SelectContent>
                     <SelectItem value="__none__">None</SelectItem>
+                    {shouldShowUnknownLookupValue(materials, field.value) ? (
+                      <SelectItem value={field.value}>Unknown material ({field.value})</SelectItem>
+                    ) : null}
                     {materials?.map((mat: any) => (
                       <SelectItem key={mat.id} value={mat.id}>
                         {mat.name} {mat.sku ? `(${mat.sku})` : ""}
@@ -292,6 +326,11 @@ export const ProductForm = ({
                   <div className={`text-[11px] ${formatMaterialWeightStatus(selectedPrimaryMaterial) === "Weight not configured" ? "text-amber-300" : "text-emerald-300"}`}>
                     {formatMaterialWeightStatus(selectedPrimaryMaterial)}
                   </div>
+                ) : null}
+                {shouldShowUnknownLookupValue(materials, field.value) ? (
+                  <UnknownLookupWarning>
+                    Primary material "{field.value}" is not in the current material list. Choose a valid material or clear it.
+                  </UnknownLookupWarning>
                 ) : null}
                 <FormMessage />
               </FormItem>

@@ -13,7 +13,7 @@ import SplitWorkspace from "@/components/SplitWorkspace";
 import { Form, FormControl, FormField, FormItem } from "@/components/ui/form";
 import { ProductForm } from "@/components/ProductForm";
 import ProductSimulator from "@/components/ProductSimulator";
-import { useProductTypes } from '../hooks/useProductTypes';
+import { useProductTypes, type ProductType } from '../hooks/useProductTypes';
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
@@ -45,6 +45,57 @@ interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
   pricingProfileKey: string;
   pricingProfileConfig: FlatGoodsConfig | null;
   pricingFormulaId: string | null;
+}
+
+const PRODUCT_TYPE_LEGACY_ALIASES: Record<string, string> = {
+  board: "pt_sheet",
+  boards: "pt_sheet",
+  foam_board: "pt_sheet",
+  foamboard: "pt_sheet",
+  sheet: "pt_sheet",
+  sheets: "pt_sheet",
+  roll: "pt_roll",
+  rolls: "pt_roll",
+  wide_roll: "pt_roll",
+  digital: "pt_digital",
+  digital_print: "pt_digital",
+  finishing: "pt_finishing",
+  finish: "pt_finishing",
+  offset: "pt_offset",
+  offset_print: "pt_offset",
+  signage: "pt_signage",
+  signs: "pt_signage",
+  wide_format: "pt_wide_format",
+};
+
+function normalizeProductTypeLookupKey(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
+function mapProductTypeIdForInitialHydration(
+  rawProductTypeId: string | null | undefined,
+  productTypes: ProductType[] | undefined,
+): string | undefined {
+  if (!rawProductTypeId) return undefined;
+
+  const rawValue = String(rawProductTypeId).trim();
+  if (!rawValue) return undefined;
+  if (!Array.isArray(productTypes) || productTypes.length === 0) return rawValue;
+  if (productTypes.some((type) => type.id === rawValue)) return rawValue;
+
+  const normalizedRaw = normalizeProductTypeLookupKey(rawValue);
+  const caseInsensitiveIdMatch = productTypes.find((type) => normalizeProductTypeLookupKey(type.id) === normalizedRaw);
+  if (caseInsensitiveIdMatch) return caseInsensitiveIdMatch.id;
+
+  const nameMatch = productTypes.find((type) => normalizeProductTypeLookupKey(type.name) === normalizedRaw);
+  if (nameMatch) return nameMatch.id;
+
+  const aliasTargetId = PRODUCT_TYPE_LEGACY_ALIASES[normalizedRaw];
+  if (aliasTargetId && productTypes.some((type) => type.id === aliasTargetId)) {
+    return aliasTargetId;
+  }
+
+  return rawValue;
 }
 
 const ProductEditorPage = () => {
@@ -128,9 +179,34 @@ const ProductEditorPage = () => {
     },
   });
 
+  const { data: materials } = useMaterials();
+  const { data: pricingFormulas } = usePricingFormulas();
+  const { data: productTypes, isError: productTypesError } = useProductTypes();
+  const draft = useProductBuilderDraft({ form, materials, pricingFormulas });
+  const initializedProductFormRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    initializedProductFormRef.current = null;
+  }, [productId]);
+
   // Load product data when editing
   useEffect(() => {
-    if (product && !isNewProduct) {
+    const productTypeLookupReady = Array.isArray(productTypes) || productTypesError;
+    if (product && !isNewProduct && productTypeLookupReady) {
+      const initializationKey = product.id;
+      if (initializedProductFormRef.current === initializationKey) {
+        return;
+      }
+
+      if (form.formState.isDirty) {
+        if (import.meta.env.DEV) {
+          console.warn("[ProductEditorPage] Skipping product hydration because the form is already dirty", {
+            productId: product.id,
+          });
+        }
+        return;
+      }
+
       // DEV-ONLY: Log what we received from API
       if (import.meta.env.DEV && (product as any).optionTreeJson) {
         const loadedTree = (product as any).optionTreeJson;
@@ -163,13 +239,14 @@ const ProductEditorPage = () => {
         storeUrl: product.storeUrl || "",
         showStoreLink: product.showStoreLink ?? true,
         isActive: product.isActive ?? true,
-        productTypeId: product.productTypeId || undefined,
+        productTypeId: mapProductTypeIdForInitialHydration(product.productTypeId, productTypes),
         requiresProductionJob: product.requiresProductionJob ?? true,
         requiresProofApproval: product.requiresProofApproval ?? false,
         isTaxable: product.isTaxable ?? true,
       };
       lastLoadedRef.current = nextValues;
       form.reset(nextValues);
+      initializedProductFormRef.current = initializationKey;
       
       // Hydrate pricing engine selection from product
       const loadedEngine = (product as any).pricingEngine || "pricingProfile";
@@ -196,7 +273,7 @@ const ProductEditorPage = () => {
         }, 0);
       }
     }
-  }, [product, isNewProduct, form]);
+  }, [product, isNewProduct, form, productTypes, productTypesError]);
 
   useEffect(() => {
     // For new products, keep a discard baseline so "Discard" works.
@@ -318,11 +395,6 @@ const ProductEditorPage = () => {
       unregister();
     };
   }, [registerGuard]); // Remove hasUnsavedChanges from deps since we use ref
-
-  const { data: materials } = useMaterials();
-  const { data: pricingFormulas } = usePricingFormulas();
-  const { data: productTypes } = useProductTypes();
-  const draft = useProductBuilderDraft({ form, materials, pricingFormulas });
 
   const saveMutation = useMutation({
     mutationFn: async (data: InsertProduct | UpdateProduct) => {
