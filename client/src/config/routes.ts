@@ -174,6 +174,7 @@ export const ROUTES = {
     flatbed: "/production/flatbed",
     roll: "/production/roll",
     jobDetail: (jobId: string) => `/production/jobs/${jobId}`,
+    jobTicket: (jobId: string) => `/production/jobs/${jobId}/ticket`,
   },
   
   jobs: {

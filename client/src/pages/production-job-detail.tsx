@@ -36,6 +36,7 @@ import {
   RotateCcw,
   ArrowLeft,
   Printer,
+  Ticket,
   FileText,
   ExternalLink,
   ChevronDown,
@@ -424,6 +425,14 @@ export default function ProductionJobDetailPage() {
                       <CheckCircle2 className="w-4 h-4" /> Complete
                     </Button>
                   )}
+
+                  <Button
+                    variant="secondary"
+                    onClick={() => window.open(ROUTES.production.jobTicket(data.id), "_blank")}
+                    className="gap-1.5"
+                  >
+                    <Ticket className="w-4 h-4" /> Print Ticket
+                  </Button>
 
                   <Button variant="secondary" onClick={() => reprint.mutate()} disabled={isBusy} className="gap-1.5">
                     <Printer className="w-4 h-4" /> Reprint

@@ -7,6 +7,7 @@ import {
   assets,
   assetLinks,
   auditLogs,
+  customerContacts,
   customers,
   materials,
   orderAttachments,
@@ -15,6 +16,7 @@ import {
   productionEvents,
   productionJobs,
   reprintRequests,
+  users,
 } from "@shared/schema";
 
 import { db } from "../db";
@@ -908,6 +910,8 @@ export function registerProductionJobsRoutes(
           fulfillmentStatus: orders.fulfillmentStatus,
           routingTarget: orders.routingTarget,
           customerName: customers.companyName,
+          contactId: orders.contactId,
+          notesInternal: orders.notesInternal,
         })
         .from(orders)
         .leftJoin(customers, and(eq(orders.customerId, customers.id), eq(customers.organizationId, organizationId)))
@@ -917,17 +921,61 @@ export function registerProductionJobsRoutes(
       const order = orderRows[0];
       if (!order) return res.status(404).json({ error: "Order not found for production job" });
 
+      // Contact name (for production ticket). Fail-soft: never block job detail.
+      let contactName: string | null = null;
+      if (order.contactId) {
+        try {
+          const contactRows = await db
+            .select({ firstName: customerContacts.firstName, lastName: customerContacts.lastName })
+            .from(customerContacts)
+            .where(eq(customerContacts.id, order.contactId))
+            .limit(1);
+          const c = contactRows[0];
+          if (c) {
+            const name = `${c.firstName ?? ""} ${c.lastName ?? ""}`.trim();
+            contactName = name || null;
+          }
+        } catch {
+          contactName = null;
+        }
+      }
+
       const events = await db
         .select({
           id: productionEvents.id,
           type: productionEvents.type,
           payload: productionEvents.payload,
+          actorUserId: productionEvents.actorUserId,
           createdAt: productionEvents.createdAt,
         })
         .from(productionEvents)
         .where(and(eq(productionEvents.organizationId, organizationId), eq(productionEvents.productionJobId, jobId)))
         .orderBy(desc(productionEvents.createdAt))
         .limit(250);
+
+      // "Who's job it is" — production jobs have no explicit assignee, so we
+      // derive it from the most recent operator action on the job (timer
+      // start/stop, note, reprint). Best-effort; null when no actor is known.
+      let assignedTo: string | null = null;
+      const latestActorId = events.find(
+        (e) => typeof e.actorUserId === "string" && e.actorUserId,
+      )?.actorUserId;
+      if (latestActorId) {
+        try {
+          const userRows = await db
+            .select({ firstName: users.firstName, lastName: users.lastName, email: users.email })
+            .from(users)
+            .where(eq(users.id, latestActorId))
+            .limit(1);
+          const u = userRows[0];
+          if (u) {
+            const name = `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim();
+            assignedTo = name || u.email || null;
+          }
+        } catch {
+          assignedTo = null;
+        }
+      }
 
       const latestRoutingEvent = events.find((event) => event.type === "routing_override" || event.type === "intake") ?? null;
       const latestRoutingPayload = (latestRoutingEvent?.payload as any) ?? {};
@@ -967,6 +1015,7 @@ export function registerProductionJobsRoutes(
           status: orderLineItems.status,
           sortOrder: orderLineItems.sortOrder,
           selectedOptions: orderLineItems.selectedOptions,
+          productionNotes: orderLineItems.productionNotes,
           createdAt: orderLineItems.createdAt,
         })
         .from(orderLineItems)
@@ -999,6 +1048,7 @@ export function registerProductionJobsRoutes(
         status: li.status,
         sortOrder: Number(li.sortOrder) || 0,
         selectedOptions: li.selectedOptions ?? [],
+        productionNotes: li.productionNotes ?? null,
         createdAt: li.createdAt,
       }));
 
@@ -1305,16 +1355,23 @@ export function registerProductionJobsRoutes(
           customerName: String(order.customerName || "—"),
           dueDate: order.dueDate ?? null,
           priority: order.priority ?? null,
+          // Production ticket fields
+          contactName,
+          assignedTo,
+          internalNotes: order.notesInternal ?? null,
+          productionNotes: primaryLineItem?.productionNotes ?? null,
           // Convenience top-level artwork (same list used in order.artwork)
           artwork,
           order: {
             id: orderId,
             orderNumber: order.orderNumber,
             customerName: String(order.customerName || "—"),
+            contactName,
             dueDate: order.dueDate,
             priority: order.priority,
             fulfillmentStatus: order.fulfillmentStatus,
             routingTarget: order.routingTarget,
+            internalNotes: order.notesInternal ?? null,
             lineItems: {
               count: lineItems.length,
               totalQuantity: lineItems.reduce((sum, li) => sum + (Number(li.quantity) || 0), 0),

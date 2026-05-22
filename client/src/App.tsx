@@ -42,6 +42,7 @@ import { PortalLayout } from "@/components/portal/PortalLayout";
 import PortalProofPage from "@/pages/portal/portal-proof";
 import ProductionBoard from "@/pages/production";
 import ProductionJobDetailPage from "@/pages/production-job-detail";
+import ProductionTicketPage from "@/pages/production-ticket";
 import JobDetail from "@/pages/job-detail";
 import ProductTypesSettings from "@/pages/settings/product-types";
 import PricingFormulasSettings from "@/pages/settings/pricing-formulas";
@@ -277,6 +278,10 @@ function Router() {
         {/* Public invite acceptance (accessible while authenticated too) */}
         <Route path="/accept-invite" element={<AcceptInvitePage />} />
       </Route>
+
+      {/* Production ticket — standalone, no app shell, so the browser print
+          flow renders only the thermal ticket. Auth still required. */}
+      <Route path="/production/jobs/:jobId/ticket" element={<ProductionTicketPage />} />
 
       {/* Proof review — standalone, no layout wrapper; token IS the auth.
           Rendered consistently whether or not the viewer is logged in. */}

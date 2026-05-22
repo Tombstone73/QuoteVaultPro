@@ -26,6 +26,7 @@ export type ProductionOrderLineItemSummary = {
   materialName: string | null;
   productType: string;
   status: string;
+  productionNotes?: string | null; // Line-item production/finish notes
   optionSelectionsJson?: any; // PBV2 options (lamination, etc.)
   selectedOptions?: Array<{ // Legacy options format
     optionId: string;
@@ -82,9 +83,16 @@ export type ProductionJobListItem = {
   // Artwork at job level (for Production Overview)
   artwork?: ProductionOrderArtworkSummary[];
   notes?: Array<{ id: string; text: string; createdAt: string; edited?: boolean }>;
+  // Production ticket fields (top-level, populated by job detail endpoint)
+  contactName?: string | null;
+  assignedTo?: string | null;
+  internalNotes?: string | null;
+  productionNotes?: string | null;
   order: {
     id: string;    customerId: string;    orderNumber: string;
     customerName: string;
+    contactName?: string | null;
+    internalNotes?: string | null;
     dueDate: string | null;
     priority: string;
     fulfillmentStatus?: string | null;
@@ -113,6 +121,7 @@ export type ProductionEvent = {
     | "intake"
     | "routing_override";
   payload: any;
+  actorUserId?: string | null;
   createdAt: string;
 };
 
