@@ -119,7 +119,8 @@ export type ProductionEvent = {
     | "reprint_incremented"
     | "media_used_set"
     | "intake"
-    | "routing_override";
+    | "routing_override"
+    | "ticket_printed";
   payload: any;
   actorUserId?: string | null;
   createdAt: string;
@@ -432,6 +433,27 @@ export function useReprintProductionJob(jobId: string) {
       toast({ title: "Reprint failed", description: e.message, variant: "destructive" });
     },
   });
+}
+
+/**
+ * Best-effort print-history logging for production tickets. Records a
+ * `ticket_printed` production event. Failures are intentionally swallowed —
+ * logging must never block an operator from printing.
+ */
+export type TicketPrintReason = "print" | "reprint" | "completion" | "test";
+
+export async function logTicketPrint(jobId: string, reason: TicketPrintReason): Promise<void> {
+  if (!jobId) return;
+  try {
+    await fetch(`/api/production/jobs/${jobId}/ticket-print`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason }),
+    });
+  } catch {
+    // Non-fatal: ticket already printed; history logging is opportunistic.
+  }
 }
 
 export function useSetProductionMediaUsed(jobId: string) {

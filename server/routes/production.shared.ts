@@ -26,6 +26,7 @@ export const productionEventTypeSchema = z.enum([
   "note",
   "reprint_incremented",
   "media_used_set",
+  "ticket_printed",
 ]);
 
 const productionLineItemStatusRuleSchema = z

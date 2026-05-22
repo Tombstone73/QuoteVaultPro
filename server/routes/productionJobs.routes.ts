@@ -1995,6 +1995,50 @@ export function registerProductionJobsRoutes(
     }
   });
 
+  // 7b) POST /api/production/jobs/:jobId/ticket-print
+  // Basic print-history logging for production tickets. Records a
+  // `ticket_printed` production event so the timeline shows who printed a
+  // ticket and why (initial print vs. reprint vs. completion ticket).
+  // Best-effort: this should never block the operator from printing, so the
+  // client treats failures as non-fatal.
+  app.post("/api/production/jobs/:jobId/ticket-print", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      const jobId = String(req.params.jobId || "");
+
+      const reasonSchema = z
+        .object({ reason: z.enum(["print", "reprint", "completion", "test"]).optional() })
+        .safeParse(req.body ?? {});
+      const reason = reasonSchema.success ? reasonSchema.data.reason ?? "print" : "print";
+
+      await db.transaction(async (tx) => {
+        const jobRows = await tx
+          .select({ id: productionJobs.id })
+          .from(productionJobs)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+          .limit(1);
+        if (!jobRows[0]) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+        await appendEvent({
+          tx,
+          organizationId,
+          productionJobId: jobId,
+          type: "ticket_printed",
+          actorUserId: userId ?? null,
+          payload: { reason, printedAt: new Date().toISOString() },
+        });
+      });
+
+      res.json({ success: true, data: { success: true } });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("Error logging ticket print:", error);
+      res.status(status).json({ error: error?.message || "Failed to log ticket print" });
+    }
+  });
+
   // PROMPT E: POST /api/production/line-item/:lineItemId/reprint
   // Creates a detailed reprint request record from the production board.
   app.post("/api/production/line-item/:lineItemId/reprint", isAuthenticated, tenantContext, async (req: any, res) => {

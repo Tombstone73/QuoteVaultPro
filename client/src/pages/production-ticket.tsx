@@ -10,8 +10,8 @@
  * visual template editor without changing this renderer.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { useParams, useSearchParams } from "react-router-dom";
 import QRCode from "qrcode";
 
 import { Button } from "@/components/ui/button";
@@ -23,7 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useProductionJob, useReprintProductionJob } from "@/hooks/useProduction";
+import { logTicketPrint, useProductionJob, useReprintProductionJob } from "@/hooks/useProduction";
 import { buildTicketData, type TicketSourceData } from "@shared/productionTicket";
 import {
   loadPrinterPrefs,
@@ -48,9 +48,36 @@ const PRINT_STYLES = `
 }
 `;
 
+/**
+ * Mock ticket data for the station "Test Ticket" — lets each station confirm
+ * its printer setup without touching a real production job.
+ */
+const SAMPLE_TICKET_SOURCE: TicketSourceData = {
+  jobId: "sample",
+  orderId: "sample",
+  orderNumber: "SO-0000",
+  customerName: "Sample Customer Co.",
+  contactName: "Pat Sample",
+  assignedTo: "Test Station",
+  dueDate: new Date().toISOString(),
+  priority: "rush",
+  description: "TEST TICKET — printer setup check",
+  quantity: 1,
+  size: "24 × 18",
+  material: "4mm Coroplast",
+  productionNotes: "This is a sample ticket. No production action required.",
+  internalNotes: "Use this to verify the Epson TM-L90 alignment and darkness.",
+  reprintCount: 0,
+  stationKey: "test",
+};
+
 export default function ProductionTicketPage() {
   const { jobId } = useParams<{ jobId: string }>();
-  const { data, isLoading, error } = useProductionJob(jobId);
+  const [searchParams] = useSearchParams();
+  const isSample = jobId === "sample";
+  const isCompletion = searchParams.get("completion") === "1";
+
+  const { data, isLoading, error } = useProductionJob(isSample ? undefined : jobId);
   const reprint = useReprintProductionJob(jobId || "");
 
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
@@ -58,7 +85,6 @@ export default function ProductionTicketPage() {
   const [selectedPrinter, setSelectedPrinter] = useState<string>("");
   const [newPrinter, setNewPrinter] = useState("");
   const template = useMemo(() => loadTicketTemplate(), []);
-  const lastReprintCount = useRef<number | null>(null);
 
   // Default the "Print To" selector to the station's saved default printer.
   useEffect(() => {
@@ -91,6 +117,7 @@ export default function ProductionTicketPage() {
 
   // Map the production job detail into the ticket source shape.
   const ticket = useMemo(() => {
+    if (isSample) return buildTicketData(SAMPLE_TICKET_SOURCE, template);
     if (!data) return null;
     const src: TicketSourceData = {
       jobId: data.id,
@@ -111,7 +138,7 @@ export default function ProductionTicketPage() {
       stationKey: data.stationKey ?? null,
     };
     return buildTicketData(src, template);
-  }, [data, template]);
+  }, [data, template, isSample]);
 
   function handleSavePrinter() {
     const name = newPrinter.trim();
@@ -136,25 +163,31 @@ export default function ProductionTicketPage() {
 
   function handlePrint() {
     window.print();
+    // Best-effort print-history logging (skipped for the sample ticket).
+    if (!isSample && jobId) {
+      void logTicketPrint(jobId, isCompletion ? "completion" : "print");
+    }
   }
 
   function handleReprint() {
     if (reprint.isPending) return;
-    lastReprintCount.current = ticket?.reprintCount ?? null;
     reprint.mutate(undefined, {
       // Give the toast/query a tick to settle, then open the print dialog.
-      onSuccess: () => window.setTimeout(() => window.print(), 150),
+      onSuccess: () => {
+        if (jobId) void logTicketPrint(jobId, "reprint");
+        window.setTimeout(() => window.print(), 150);
+      },
     });
   }
 
-  if (isLoading) {
+  if (!isSample && isLoading) {
     return <CenteredMessage>Loading ticket…</CenteredMessage>;
   }
-  if (error || !data || !ticket) {
+  if (!ticket || (!isSample && (error || !data))) {
     return <CenteredMessage>Failed to load production job ticket.</CenteredMessage>;
   }
 
-  const artwork = (data.artwork || [])[0] ?? null;
+  const artwork = (data?.artwork || [])[0] ?? null;
 
   return (
     <div className="min-h-screen bg-muted/40 print:bg-white">
@@ -171,6 +204,12 @@ export default function ProductionTicketPage() {
           >
             <ArrowLeft className="h-4 w-4" /> Back
           </Button>
+
+          {isSample && (
+            <span className="rounded bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-800">
+              Test Ticket — printer setup check
+            </span>
+          )}
 
           <div className="ml-auto flex flex-wrap items-center gap-2">
             {/* Print To selector — guides the operator to the right printer in
@@ -204,15 +243,17 @@ export default function ProductionTicketPage() {
             <Button onClick={handlePrint} size="sm" className="gap-1.5">
               <Printer className="h-4 w-4" /> Print Ticket
             </Button>
-            <Button
-              onClick={handleReprint}
-              size="sm"
-              variant="secondary"
-              disabled={reprint.isPending}
-              className="gap-1.5"
-            >
-              <RotateCcw className="h-4 w-4" /> Reprint
-            </Button>
+            {!isSample && (
+              <Button
+                onClick={handleReprint}
+                size="sm"
+                variant="secondary"
+                disabled={reprint.isPending}
+                className="gap-1.5"
+              >
+                <RotateCcw className="h-4 w-4" /> Reprint
+              </Button>
+            )}
           </div>
         </div>
 
@@ -250,6 +291,20 @@ export default function ProductionTicketPage() {
           className="mx-auto bg-white text-black"
           style={{ width: "72mm", padding: "4mm", fontFamily: "Arial, Helvetica, sans-serif" }}
         >
+          {isCompletion && (
+            <div
+              style={{
+                border: "2px solid #000",
+                textAlign: "center",
+                fontWeight: 700,
+                fontSize: "14px",
+                padding: "1.5mm",
+                marginBottom: "1.5mm",
+              }}
+            >
+              ✓ COMPLETED
+            </div>
+          )}
           {ticket.rows.map((row) => (
             <div key={row.key}>
               {row.format.dividerBefore && <TicketDivider />}

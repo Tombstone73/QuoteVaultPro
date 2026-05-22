@@ -61,6 +61,8 @@ function formatEventLabel(type: string) {
       return "Timer stopped";
     case "reprint_incremented":
       return "Reprint recorded";
+    case "ticket_printed":
+      return "Ticket printed";
     case "media_used_set":
       return "Media used set";
     case "note":
@@ -208,6 +210,14 @@ export default function ProductionJobDetailPage() {
   const [noteText, setNoteText] = useState("");
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [previewArtwork, setPreviewArtwork] = useState<ProductionOrderArtworkSummary | null>(null);
+  // After completing a job, offer to print a completion ticket (optional).
+  const [completionPromptOpen, setCompletionPromptOpen] = useState(false);
+
+  const openTicket = (opts?: { completion?: boolean }) => {
+    if (!jobId) return;
+    const url = ROUTES.production.jobTicket(jobId) + (opts?.completion ? "?completion=1" : "");
+    window.open(url, "_blank");
+  };
 
   useEffect(() => {
     if (!data) return;
@@ -409,7 +419,12 @@ export default function ProductionJobDetailPage() {
                   ) : data.status === "queued" ? (
                     <Button
                       variant="default"
-                      onClick={() => complete.mutate({ skipProduction: true })}
+                      onClick={() =>
+                        complete.mutate(
+                          { skipProduction: true },
+                          { onSuccess: () => setCompletionPromptOpen(true) },
+                        )
+                      }
                       disabled={isBusy}
                       className="gap-1.5"
                     >
@@ -418,7 +433,9 @@ export default function ProductionJobDetailPage() {
                   ) : (
                     <Button
                       variant="default"
-                      onClick={() => complete.mutate({})}
+                      onClick={() =>
+                        complete.mutate({}, { onSuccess: () => setCompletionPromptOpen(true) })
+                      }
                       disabled={isBusy}
                       className="gap-1.5"
                     >
@@ -428,7 +445,7 @@ export default function ProductionJobDetailPage() {
 
                   <Button
                     variant="secondary"
-                    onClick={() => window.open(ROUTES.production.jobTicket(data.id), "_blank")}
+                    onClick={() => openTicket()}
                     className="gap-1.5"
                   >
                     <Ticket className="w-4 h-4" /> Print Ticket
@@ -489,6 +506,11 @@ export default function ProductionJobDetailPage() {
                                 {String(e.payload?.text || "")}
                                 {e.payload?.qty != null ? ` • ${e.payload.qty}` : ""}
                                 {e.payload?.unit ? ` ${e.payload.unit}` : ""}
+                              </div>
+                            )}
+                            {e.type === "ticket_printed" && e.payload?.reason && (
+                              <div className="text-xs text-muted-foreground mt-1 capitalize">
+                                {String(e.payload.reason)} ticket
                               </div>
                             )}
                           </div>
@@ -765,6 +787,32 @@ export default function ProductionJobDetailPage() {
           </div>
         </div>
       </ContentLayout>
+
+      {/* COMPLETION TICKET PROMPT — offered after a job is marked complete */}
+      <Dialog open={completionPromptOpen} onOpenChange={setCompletionPromptOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Print completion ticket?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            This job is marked complete. Print a completion ticket for handoff or records?
+          </p>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="ghost" onClick={() => setCompletionPromptOpen(false)}>
+              Not now
+            </Button>
+            <Button
+              className="gap-1.5"
+              onClick={() => {
+                setCompletionPromptOpen(false);
+                openTicket({ completion: true });
+              }}
+            >
+              <Ticket className="w-4 h-4" /> Print Completion Ticket
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* ARTWORK PREVIEW MODAL */}
       <Dialog open={!!previewArtwork} onOpenChange={() => setPreviewArtwork(null)}>
