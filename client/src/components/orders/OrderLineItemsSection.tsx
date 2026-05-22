@@ -66,6 +66,13 @@ import {
   buildInitialOrderLineItemDraftFromProduct,
   type InitialOrderLineItemDraftDebug,
 } from "@shared/orderLineItemInitialization";
+import {
+  buildProductReplacementDraft,
+  buildSavedSnapshotAfterLineItemSave,
+  hasOrderLineItemDraftChanges,
+  normalizeVariantId,
+  type OrderLineItemSavedSnapshot,
+} from "@/components/orders/orderLineItemEditState";
 
 type SortableChildRenderProps = {
   dragAttributes: Record<string, any> | undefined;
@@ -919,13 +926,20 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     () => lineItems.find((li) => li.id === expandedId) ?? null,
     [lineItems, expandedId]
   );
+  const [draftProductId, setDraftProductId] = useState("");
+  const [draftProductVariantId, setDraftProductVariantId] = useState<string | null>(null);
+  const currentDraftProductId = draftProductId || expandedItem?.productId || "";
+  const currentDraftProductVariantId = normalizeVariantId(draftProductVariantId ?? expandedItem?.productVariantId ?? null);
 
   const expandedProduct = useMemo(() => {
     if (!expandedItem) return null;
-    return products.find((p) => p.id === expandedItem.productId) ?? null;
-  }, [expandedItem, products]);
+    const effectiveProductId = draftProductId || expandedItem.productId;
+    return products.find((p) => p.id === effectiveProductId) ?? null;
+  }, [draftProductId, expandedItem, products]);
   const expandedProductPbv2Runtime = expandedProduct as ProductWithPbv2Runtime | null;
   const expandedItemPbv2Runtime = expandedItem as OrderLineItemWithPbv2Runtime | null;
+  const draftMatchesPersistedProduct = Boolean(expandedItem && currentDraftProductId === expandedItem.productId);
+  const effectiveLineItemPbv2Runtime = draftMatchesPersistedProduct ? expandedItemPbv2Runtime : null;
 
   const expandedProductPbv2TreeDirect = getPbv2Tree(expandedProduct);
   const expandedProductActiveTreeVersionId = expandedProductPbv2Runtime?.pbv2ActiveTreeVersionId ?? null;
@@ -1199,18 +1213,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const savedSnapshotRef = useRef<
     Record<
       string,
-      {
-        width: number;
-        height: number;
-        quantity: number;
-        notes: string;
-        productionNotes: string;
-        requiresDesign: boolean;
-        requiresPrepress: boolean;
-        optionSelections: Record<string, OptionSelection>;
-        optionSelectionsV2: LineItemOptionSelectionsV2["selected"];
-        totalPrice: number;
-      }
+      OrderLineItemSavedSnapshot
     >
   >({});
 
@@ -1238,7 +1241,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
   useEffect(() => {
     setLineItemInternalNoteDraft("");
-  }, [expandedItem?.id]);
+  }, [expandedItem?.id, expandedItem?.productId, expandedItem?.productVariantId]);
 
   // Inline add product search
   const [searchOpen, setSearchOpen] = useState(false);
@@ -1291,6 +1294,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     if (!expandedItem) return;
     const itemId = expandedItem.id;
 
+    setDraftProductId(String(expandedItem.productId || ""));
+    setDraftProductVariantId(normalizeVariantId(expandedItem.productVariantId));
     setWidthText(String(expandedItem.width || 1));
     setHeightText(String(expandedItem.height || 1));
     setQty(expandedItem.quantity || 1);
@@ -1356,6 +1361,14 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     setEditingPriceItemId(null);
 
     savedSnapshotRef.current[itemId] = {
+      productId: String(expandedItem.productId || ""),
+      productVariantId: normalizeVariantId(expandedItem.productVariantId),
+      pbv2TreeVersionId: String(
+        (expandedItem as any).pbv2TreeVersionId ??
+          (expandedItem as any).pbv2ActiveTreeVersionId ??
+          getPbv2SnapshotFromLineItem(expandedItem)?.treeVersionId ??
+          ""
+      ),
       width: Number.parseFloat(expandedItem.width || "1") || 1,
       height: Number.parseFloat(expandedItem.height || "1") || 1,
       quantity: expandedItem.quantity || 1,
@@ -1376,10 +1389,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     const lineItemId = expandedItem?.id;
     const hydrationKey = buildPbv2DefaultsHydrationKey({
       lineItemId,
-      productId: expandedItem?.productId ?? expandedProduct?.id ?? null,
+      productId: currentDraftProductId || expandedProduct?.id || null,
       activeTreeVersionId: getOrderLineItemPbv2TreeVersionId({
         product: expandedProductPbv2Runtime,
-        lineItem: expandedItemPbv2Runtime,
+        lineItem: effectiveLineItemPbv2Runtime,
       }),
     });
     if (!lineItemId) return;
@@ -1421,9 +1434,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     }
   }, [
     expandedItem?.id,
-    expandedItem?.productId,
-    expandedItemPbv2Runtime?.pbv2ActiveTreeVersionId,
-    expandedItemPbv2Runtime?.pbv2TreeVersionId,
+    currentDraftProductId,
+    effectiveLineItemPbv2Runtime?.pbv2ActiveTreeVersionId,
+    effectiveLineItemPbv2Runtime?.pbv2TreeVersionId,
     expandedProductPbv2Runtime?.pbv2ActiveTreeVersionId,
     expandedProduct?.id,
     effectivePbv2Tree,
@@ -1440,12 +1453,56 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   // response overwriting a newer one.
   const calcSeqRef = useRef(0);
 
+  const handleProductReplacement = useCallback((nextProductId: string) => {
+    if (!expandedItem) return;
+    if (!nextProductId || nextProductId === currentDraftProductId) return;
+
+    const nextProduct = products.find((product) => product.id === nextProductId);
+    if (!nextProduct) return;
+
+    const activeTree = normalizePbv2Tree(getPbv2Tree(nextProduct));
+    const replacementDraft = buildProductReplacementDraft({
+      product: nextProduct as any,
+      activeTree,
+      orderId,
+      currentQuantity: qtyNum,
+    });
+
+    setDraftProductId(replacementDraft.productId);
+    setDraftProductVariantId(replacementDraft.productVariantId);
+    setWidthText(replacementDraft.width);
+    setHeightText(replacementDraft.height);
+    setQty(replacementDraft.quantity);
+    if (typeof replacementDraft.requiresDesign === "boolean") {
+      setRequiresDesignInput(replacementDraft.requiresDesign);
+    }
+    if (typeof replacementDraft.requiresPrepress === "boolean") {
+      setRequiresPrepressInput(replacementDraft.requiresPrepress);
+    }
+    setOptionSelections(replacementDraft.optionSelections);
+    setOptionSelectionsV2(replacementDraft.optionSelectionsV2);
+    setPbv2SnapshotJson(replacementDraft.pbv2SnapshotJson);
+    setComputedTotal(replacementDraft.computedTotal);
+    setComputedTotalQty(replacementDraft.computedTotalQty);
+    setCalcError(null);
+    setPreviewDiag(null);
+    lastCalcKeyRef.current = "";
+    calcSeqRef.current += 1;
+    setInitialDraftDebugByLineItemId((prev) => ({ ...prev, [expandedItem.id]: replacementDraft.debug }));
+    setUserEditedOptionsByLineItemId((prev) => ({ ...prev, [expandedItem.id]: false }));
+    pbv2DefaultsHydratedRef.current.forEach((key) => {
+      if (key.startsWith(`${expandedItem.id}|`)) {
+        pbv2DefaultsHydratedRef.current.delete(key);
+      }
+    });
+  }, [currentDraftProductId, expandedItem, orderId, products, qtyNum]);
+
   const v1SelectionsKey = useMemo(() => stableStringify(optionSelections || {}), [optionSelections]);
   const v2SelectionsKey = useMemo(() => stableStringify(optionSelectionsV2?.selected || {}), [optionSelectionsV2]);
   const pbv2TreeVersionId = String(
     getOrderLineItemPbv2TreeVersionId({
       product: expandedProductPbv2Runtime,
-      lineItem: expandedItemPbv2Runtime,
+      lineItem: effectiveLineItemPbv2Runtime,
     })
   );
   const overridePriceCents = Number(
@@ -1455,7 +1512,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const calcKey = useMemo(
     () =>
       [
-        expandedItem?.productId || "",
+        currentDraftProductId,
         pbv2TreeVersionId,
         String(widthNum),
         String(heightNum),
@@ -1463,7 +1520,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
         isPbv2Mode ? v2SelectionsKey : v1SelectionsKey,
         String(overridePriceCents),
       ].join("|"),
-    [expandedItem?.productId, pbv2TreeVersionId, widthNum, heightNum, qtyNum, isPbv2Mode, v2SelectionsKey, v1SelectionsKey, overridePriceCents]
+    [currentDraftProductId, pbv2TreeVersionId, widthNum, heightNum, qtyNum, isPbv2Mode, v2SelectionsKey, v1SelectionsKey, overridePriceCents]
   );
 
   useEffect(() => {
@@ -1487,19 +1544,54 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     const currentBrief = JSON.stringify(designBriefDraft);
     const persistedBrief = JSON.stringify(savedBrief);
 
-    return (
-      Math.abs(widthNum - saved.width) > 0.01 ||
-      Math.abs(heightNum - saved.height) > 0.01 ||
-      qtyNum !== saved.quantity ||
-      currentNotes !== savedNotes ||
-      currentProductionNotes !== savedProductionNotes ||
-      requiresDesignInput !== saved.requiresDesign ||
-      requiresPrepressInput !== saved.requiresPrepress ||
-      (isPbv2Mode ? currentOptionsV2 !== savedOptionsV2 : currentOptions !== savedOptions) ||
-      currentBrief !== persistedBrief
-    );
+    const dirty = hasOrderLineItemDraftChanges(saved, {
+      productId: currentDraftProductId,
+      productVariantId: currentDraftProductVariantId,
+      pbv2TreeVersionId,
+      width: widthNum,
+      height: heightNum,
+      quantity: qtyNum,
+      notes: currentNotes,
+      productionNotes: currentProductionNotes,
+      requiresDesign: requiresDesignInput,
+      requiresPrepress: requiresPrepressInput,
+      optionSelections,
+      optionSelectionsV2: optionSelectionsV2?.selected || {},
+      isPbv2Mode,
+      designBriefDraftJson: currentBrief,
+      savedDesignBriefJson: persistedBrief,
+    });
+
+    if (import.meta.env.DEV && dirty) {
+      console.warn("[ORDER_LINE_ITEM_DIRTY] expanded draft differs from saved snapshot", {
+        lineItemId: expandedItem.id,
+        draftProductId: currentDraftProductId,
+        savedProductId: saved.productId,
+        draftProductVariantId: currentDraftProductVariantId,
+        savedProductVariantId: saved.productVariantId,
+        draftPbv2TreeVersionId: pbv2TreeVersionId,
+        savedPbv2TreeVersionId: saved.pbv2TreeVersionId,
+        widthNum,
+        savedWidth: saved.width,
+        heightNum,
+        savedHeight: saved.height,
+        qtyNum,
+        savedQuantity: saved.quantity,
+        currentOptions,
+        savedOptions,
+        currentOptionsV2,
+        savedOptionsV2,
+        currentTotal: computedTotal,
+        savedTotal: saved.totalPrice,
+      });
+    }
+
+    return dirty;
   }, [
     expandedItem,
+    currentDraftProductId,
+    currentDraftProductVariantId,
+    pbv2TreeVersionId,
     widthNum,
     heightNum,
     qtyNum,
@@ -1511,6 +1603,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     requiresDesignInput,
     requiresPrepressInput,
     designBriefDraft,
+    computedTotal,
     // Forces recompute against the freshly-written savedSnapshotRef after a save.
     savedSnapshotVersion,
   ]);
@@ -1556,8 +1649,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
       // Payload is always built from current DRAFT state (qty/dims/options).
       const payload = buildQuoteCalculatePayload({
-        productId: expandedItem.productId,
-        variantId: expandedItem.productVariantId,
+        productId: currentDraftProductId,
+        variantId: currentDraftProductVariantId,
         widthNum,
         heightNum,
         qtyNum,
@@ -1642,7 +1735,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       // any override, so a reference change with identical content is a no-op.
       calcKey,
       expandedItem?.id,
-      expandedItem?.productVariantId,
+      currentDraftProductId,
+      currentDraftProductVariantId,
       isPbv2Mode,
       optionsV2Valid,
       customerId,
@@ -1672,16 +1766,33 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       const totalPrice = Number.isFinite(computedTotal) ? (computedTotal as number) : Number.parseFloat(expandedItem.totalPrice || "0") || 0;
       const unitPrice = qtyNum > 0 ? totalPrice / qtyNum : 0;
       const productionNotesDraft = notesDraftById[itemId] ?? "";
+      const productChanged =
+        currentDraftProductId !== String(expandedItem.productId || "") ||
+        normalizeVariantId(currentDraftProductVariantId) !== normalizeVariantId(expandedItem.productVariantId);
 
       const selectedOptionsArray = buildSelectedOptionsArray(expandedProductOptions, optionSelections, widthNum, heightNum, qtyNum);
+      const replacementInitialDraft = productChanged ? initialDraftDebugByLineItemId[itemId] : null;
       const nextSpecsJson = {
-        ...(expandedItem.specsJson || {}),
+        ...(productChanged ? {} : (expandedItem.specsJson || {})),
         notes: notes || "",
         lineItemNotes: {
-          ...(((expandedItem.specsJson as any)?.lineItemNotes as any) || {}),
+          ...(productChanged ? {} : (((expandedItem.specsJson as any)?.lineItemNotes as any) || {})),
           descLong: productionNotesDraft,
         },
         selectedOptions: selectedOptionsArray,
+        ...(replacementInitialDraft
+          ? {
+              initialDraft: {
+                requiresDesign: replacementInitialDraft.requiresDesign,
+                requiresPrepress: replacementInitialDraft.requiresPrepress,
+                requiresProofApproval: replacementInitialDraft.requiresProofApproval,
+                requiresProductionJob: replacementInitialDraft.requiresProductionJob,
+                productRoutingDefaultsUsed: replacementInitialDraft.productRoutingDefaultsUsed,
+                optionSelectionsJson: replacementInitialDraft.optionSelectionsJson,
+                renderedOptionLabels: replacementInitialDraft.sortedOptionLabels,
+              },
+            }
+          : {}),
       };
 
       const isPbv2 = Boolean(effectivePbv2Tree || pbv2SnapshotJson?.treeJson);
@@ -1691,11 +1802,17 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
             // Store PBV2 snapshot from /calculate for future reference
             pbv2SnapshotJson: pbv2SnapshotJson || undefined,
           }
-        : {};
+        : {
+            optionSelectionsJson: null,
+            pbv2SnapshotJson: null,
+            pbv2TreeVersionId: null,
+          };
 
       const savedLineItem = await lineItemMutation.mutateAsync({
         id: itemId,
         data: {
+          productId: currentDraftProductId,
+          productVariantId: currentDraftProductVariantId,
           width: dimsRequired ? widthNum : null,
           height: dimsRequired ? heightNum : null,
           quantity: qtyNum,
@@ -1729,7 +1846,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
       setSavedItemId(itemId);
 
-      savedSnapshotRef.current[itemId] = {
+      const nextSavedSnapshot: OrderLineItemSavedSnapshot = {
+        productId: currentDraftProductId,
+        productVariantId: currentDraftProductVariantId,
+        pbv2TreeVersionId,
         width: widthNum,
         height: heightNum,
         quantity: qtyNum,
@@ -1741,6 +1861,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
         optionSelectionsV2: optionSelectionsV2.selected ?? {},
         totalPrice: resolvedTotal,
       };
+      savedSnapshotRef.current[itemId] = buildSavedSnapshotAfterLineItemSave({
+        savedLineItem,
+        fallback: nextSavedSnapshot,
+      });
       designBriefSnapshotRef.current[itemId] = designBriefDraft;
       // Force `isDirty` to recompute against the snapshot just written, so the
       // line item dirty flag (and the order navigation guard) clear immediately
@@ -1748,6 +1872,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       setSavedSnapshotVersion((v) => v + 1);
       // A successful save supersedes any prior preview calculation error.
       setCalcError(null);
+      setPreviewDiag(null);
 
       setTimeout(() => setSavedItemId(null), 2000);
       setTimeout(() => setDesignBriefSavedAt(null), 2000);
@@ -1755,6 +1880,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       if (onAfterLineItemsChange) {
         await onAfterLineItemsChange();
       }
+      await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId, "line-item-previews"] });
       return { saved: true };
     } catch (error: any) {
       // The mutation's onError already toasts (unless silent). Surface the
@@ -2015,7 +2141,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const isExpanded = itemKey === expandedId;
                   const contentId = `line-item-${itemKey}-details`;
 
-                  const productName = (item as any).product?.name || item.description || "Item";
+                  const productName =
+                    isExpanded && expandedItem?.id === item.id && expandedProduct
+                      ? expandedProduct.name
+                      : (item as any).product?.name || item.description || "Item";
 
                   const itemSpecsJson: any =
                     item.specsJson && typeof item.specsJson === "object" ? (item.specsJson as any) : {};
@@ -2462,6 +2591,30 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 }
                                 optionsSlot={
                                   <>
+                                    {!readOnly && isExpanded && expandedItem && expandedItem.id === item.id && (
+                                      <div className="mb-3 rounded-md border border-border/40 bg-background/70 p-3">
+                                        <div className="mb-1.5 flex items-center justify-between gap-2">
+                                          <div>
+                                            <div className="text-sm font-medium">Product</div>
+                                            <div className="text-xs text-muted-foreground">
+                                              Changing product resets product-specific options and reprices this line item.
+                                            </div>
+                                          </div>
+                                        </div>
+                                        <select
+                                          value={currentDraftProductId}
+                                          onChange={(event) => handleProductReplacement(event.target.value)}
+                                          className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                                        >
+                                          {products.map((product) => (
+                                            <option key={product.id} value={product.id}>
+                                              {product.name}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      </div>
+                                    )}
+
                                     {isExpanded && canSeeDebug && (
                                       <div className="mb-3">
                                         <button
