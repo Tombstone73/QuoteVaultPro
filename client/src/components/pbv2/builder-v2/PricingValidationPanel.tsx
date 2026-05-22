@@ -6,6 +6,8 @@ import {
   buildUnexpectedPreviewError,
   categorizePreviewDetails,
   findMissingRequiredSelections,
+  enrichPreviewDetails,
+  buildPreviewErrorSummary,
   PBV2_PREVIEW_CLIENT_VALIDATION,
   type NormalizedPreviewError,
   type PreviewErrorDetail,
@@ -269,8 +271,10 @@ function PreviewDebugList({ label, details }: { label: string; details: PreviewE
 
 /**
  * Expandable red error banner for the Pricing Preview Sandbox. Keeps the generic
- * summary visible, and reveals structured validation detail + debug sections on
- * demand so the user can see exactly what is missing or malformed.
+ * summary visible, and reveals enriched, human-readable validation issues (with
+ * raw technical paths tucked under per-issue "Technical details") plus debug
+ * sections on demand — so the user sees which option/choice is broken without
+ * reading node IDs.
  */
 function PreviewErrorBanner({
   error,
@@ -278,16 +282,27 @@ function PreviewErrorBanner({
   onToggleExpanded,
   missingRequiredDetails,
   pricingConfigHint,
+  treeJson,
 }: {
   error: NormalizedPreviewError;
   expanded: boolean;
   onToggleExpanded: () => void;
   missingRequiredDetails: PreviewErrorDetail[];
   pricingConfigHint: string | null;
+  treeJson: unknown;
 }) {
   const debug = categorizePreviewDetails(error.details);
   const hasStructuredDetails = error.details.length > 0;
   const missingSelections = [...debug.missingSelections, ...missingRequiredDetails];
+  // Resolve raw node IDs / choice indexes to readable option + choice labels.
+  const enrichedDetails = useMemo(
+    () => enrichPreviewDetails(error.details, treeJson),
+    [error.details, treeJson],
+  );
+  const issuesSummary = useMemo(
+    () => buildPreviewErrorSummary(enrichedDetails),
+    [enrichedDetails],
+  );
   const payloadStatus =
     error.errorCode === PBV2_PREVIEW_CLIENT_VALIDATION
       ? "Blocked before submit (no API call made)"
@@ -304,6 +319,7 @@ function PreviewErrorBanner({
   return (
     <div className="space-y-2 rounded border border-red-500/40 bg-red-500/10 p-2 text-sm text-red-200">
       <div className="font-semibold">{error.message}</div>
+      {issuesSummary ? <div className="text-xs text-red-200/90">{issuesSummary}</div> : null}
       {pricingConfigHint ? <div className="text-xs text-red-200/90">{pricingConfigHint}</div> : null}
       <button
         type="button"
@@ -323,38 +339,54 @@ function PreviewErrorBanner({
               <span className="font-mono">{error.errorCode}</span>
             </div>
           ) : null}
-          <div>
-            <span className="text-red-300/70">Summary: </span>
-            {error.message}
-          </div>
 
           {hasStructuredDetails ? (
-            <div className="space-y-1">
-              <div className="text-red-300/70">Validation issues ({error.details.length})</div>
-              {error.details.map((detail, idx) => (
+            <div className="space-y-1.5">
+              <div className="text-red-300/70">Validation issues ({enrichedDetails.length})</div>
+              {enrichedDetails.map((detail, idx) => (
                 <div
                   key={`preview-detail-${idx}`}
-                  className="space-y-0.5 rounded border border-red-500/30 bg-red-950/50 p-1.5"
+                  className="space-y-1 rounded border border-red-500/30 bg-red-950/50 p-2"
                 >
-                  {detail.path ? (
-                    <div>
-                      <span className="text-red-300/70">Field: </span>
-                      <span className="font-mono">{detail.path}</span>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="font-semibold text-red-100">{detail.displayLocation}</div>
+                    <Badge
+                      variant="outline"
+                      className="flex-shrink-0 border-red-500/40 bg-red-500/10 text-[10px] text-red-200"
+                    >
+                      {detail.category}
+                    </Badge>
+                  </div>
+                  <div className="text-red-100/90">{detail.friendlyMessage}</div>
+                  {detail.suggestedFix ? (
+                    <div className="text-red-200/80">
+                      <span className="text-red-300/70">Fix: </span>
+                      {detail.suggestedFix}
                     </div>
                   ) : null}
-                  <div>{detail.message}</div>
-                  {detail.expected ? (
-                    <div>
-                      <span className="text-red-300/70">Expected: </span>
-                      <span className="font-mono">{detail.expected}</span>
+                  <details className="text-[11px] text-red-300/70">
+                    <summary className="cursor-pointer select-none">Technical details</summary>
+                    <div className="mt-1 space-y-0.5">
+                      <div>
+                        <span className="text-red-300/60">Path: </span>
+                        <span className="font-mono break-all">{detail.technicalPath || "(none)"}</span>
+                      </div>
+                      {detail.expected ? (
+                        <div>
+                          <span className="text-red-300/60">Expected: </span>
+                          <span className="font-mono">{detail.expected}</span>
+                        </div>
+                      ) : null}
+                      {detail.received !== undefined ? (
+                        <div>
+                          <span className="text-red-300/60">Received: </span>
+                          <span className="font-mono">
+                            {detail.received === null ? "null" : detail.received}
+                          </span>
+                        </div>
+                      ) : null}
                     </div>
-                  ) : null}
-                  {detail.received !== undefined ? (
-                    <div>
-                      <span className="text-red-300/70">Received: </span>
-                      <span className="font-mono">{detail.received === null ? "null" : detail.received}</span>
-                    </div>
-                  ) : null}
+                  </details>
                 </div>
               ))}
             </div>
@@ -934,6 +966,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                   onToggleExpanded={() => setShowErrorDetails((prev) => !prev)}
                   missingRequiredDetails={missingRequiredDetails}
                   pricingConfigHint={pricingConfigHint}
+                  treeJson={treeForPreview}
                 />
               ) : error ? (
                 <div className="space-y-1 rounded border border-red-500/40 bg-red-500/10 p-2 text-sm text-red-200">
