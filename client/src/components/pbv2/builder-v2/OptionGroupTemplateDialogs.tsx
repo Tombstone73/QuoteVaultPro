@@ -167,6 +167,7 @@ export function TemplateLibraryDialog({
                         <div className="mt-1 text-xs text-slate-400">{template.category}{template.difficultyLevel ? ` - ${template.difficultyLevel}` : ""}</div>
                       </div>
                       <Button
+                        type="button"
                         size="sm"
                         className="bg-blue-600 hover:bg-blue-700"
                         disabled={importingId !== null}
@@ -310,8 +311,8 @@ export function SaveOptionGroupTemplateDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={handleSave} disabled={saving || !name.trim() || !category.trim()} className="bg-emerald-600 hover:bg-emerald-700">
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button type="button" onClick={handleSave} disabled={saving || !name.trim() || !category.trim()} className="bg-emerald-600 hover:bg-emerald-700">
             {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Save template
           </Button>
