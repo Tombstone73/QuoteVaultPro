@@ -30,6 +30,7 @@ import { Separator } from "@/components/ui/separator";
 import { PRICING_PROFILES, type PricingProfileKey, type FlatGoodsConfig, getProfile, getDefaultFormula } from "@shared/pricingProfiles";
 import React from "react";
 import { optionsHaveInvalidChoices } from "@/lib/optionChoiceValidation";
+import { MediaLibraryTab } from "@/components/admin-settings";
 
 
 // Required field indicator component
@@ -517,6 +518,8 @@ export default function ProductsPage() {
           </Table>
         )}
       </TitanCard>
+
+      <MediaLibraryTab />
 
       {/* Add Product Dialog */}
       <Dialog open={isAddDialogOpen} onOpenChange={(open) => {
