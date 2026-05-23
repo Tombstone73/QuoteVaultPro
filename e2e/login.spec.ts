@@ -77,8 +77,11 @@ test("login page: renders, accepts credentials, loads app shell", async ({
 
   // Must not be back on login — confirms session was established.
   await expect(page).not.toHaveURL(/\/login/);
+  await expect(page).toHaveURL(/\/dashboard(?:[?#].*)?$/);
+  await expect(page.getByText("Printers Hero", { exact: true })).toBeVisible({ timeout: 10_000 });
 
   await page.goto("/dashboard", { waitUntil: "networkidle" });
+  await expect(page).toHaveURL(/\/dashboard(?:[?#].*)?$/);
 
   // Something from the authenticated shell must be visible.
   // The app renders a sidebar nav; fall back to checking the page title if the

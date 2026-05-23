@@ -145,7 +145,7 @@ function Router() {
   return (
     <Routes>
       {/* Redirect login to dashboard if already authenticated */}
-      <Route path="/login" element={<Navigate to="/" replace />} />
+      <Route path="/login" element={<Navigate to="/dashboard" replace />} />
 
       {/* All authenticated routes share the AppLayout */}
       <Route element={<AppLayout />}>
@@ -155,8 +155,8 @@ function Router() {
         {/* Admin dashboard */}
         <Route path="/system/admin" element={<AdminDashboard />} />
 
-        {/* Legacy dashboard route compatibility */}
-        <Route path="/dashboard" element={<Navigate to="/system/admin" replace />} />
+        {/* Dashboard route compatibility */}
+        <Route path="/dashboard" element={<TitanDashboard />} />
 
         {/* Legacy customer portal stubs — kept temporarily, will be removed once
             portal pages are migrated to the /portal/* PortalLayout tree below */}
