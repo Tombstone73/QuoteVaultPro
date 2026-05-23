@@ -248,6 +248,7 @@ export function OptionGroupsSidebar({
           </Badge>
         </div>
         <Button
+          type="button"
           onClick={onAddGroup}
           className="w-full gap-2 bg-blue-600 hover:bg-blue-700 text-white shadow-sm"
           size="sm"
@@ -256,6 +257,7 @@ export function OptionGroupsSidebar({
           Add Group
         </Button>
         <Button
+          type="button"
           onClick={onImportTemplate}
           variant="outline"
           className="w-full gap-2 border-slate-600 bg-slate-900/60 text-slate-100 hover:bg-slate-800"
