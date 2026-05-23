@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ArrowRight, Factory, FileText, Receipt, ShieldCheck, Truck } from "lucide-react";
 import { PrintersHeroSplashVideo } from "@/components/branding/PrintersHeroSplashVideo";
-import { HERO_LOGO_SRC, SHIELD_LOGO_SRC } from "@/lib/branding";
+import { SHIELD_LOGO_SRC } from "@/lib/branding";
 
 export default function Landing() {
   return (
@@ -29,8 +29,11 @@ export default function Landing() {
           />
           <div className="absolute inset-0 bg-black/45" />
           <div className="relative z-10 mx-auto flex min-h-[92vh] max-w-7xl flex-col justify-center px-4 pb-16 pt-28 sm:px-6 lg:px-8">
-            <img src={HERO_LOGO_SRC} alt="Printers Hero" className="mb-8 h-20 w-fit" />
             <div className="max-w-3xl">
+              <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-medium text-white/90 backdrop-blur">
+                <img src={SHIELD_LOGO_SRC} alt="" className="h-4 w-4 invert" aria-hidden="true" />
+                Print industry software platform
+              </div>
               <h1
                 className="text-4xl font-bold leading-tight text-white sm:text-5xl lg:text-6xl"
                 data-testid="text-hero-title"
