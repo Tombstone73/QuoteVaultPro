@@ -1,10 +1,25 @@
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ArrowRight, Factory, FileText, Receipt, ShieldCheck, Truck } from "lucide-react";
+import { ArrowRight, Factory, FileText, Receipt, RotateCcw, ShieldCheck, Truck } from "lucide-react";
 import { PrintersHeroSplashVideo } from "@/components/branding/PrintersHeroSplashVideo";
-import { SHIELD_LOGO_SRC } from "@/lib/branding";
+import { SHIELD_LOGO_SRC, SPLASH_STATIC_SRC } from "@/lib/branding";
 
 export default function Landing() {
+  const splashVideoRef = useRef<HTMLVideoElement>(null);
+  const [videoEnded, setVideoEnded] = useState(false);
+
+  const replayIntro = () => {
+    const video = splashVideoRef.current;
+    if (!video) return;
+
+    setVideoEnded(false);
+    video.currentTime = 0;
+    void video.play().catch(() => {
+      setVideoEnded(true);
+    });
+  };
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       <header className="absolute inset-x-0 top-0 z-20">
@@ -23,9 +38,17 @@ export default function Landing() {
 
       <main>
         <section className="relative min-h-[92vh] overflow-hidden bg-slate-950">
+          <img
+            src={SPLASH_STATIC_SRC}
+            alt=""
+            aria-hidden="true"
+            className="absolute inset-0 h-full w-full object-cover object-center"
+          />
           <PrintersHeroSplashVideo
-            loop
-            className="absolute inset-0 h-full w-full object-cover"
+            ref={splashVideoRef}
+            fadeOut={videoEnded}
+            onEnded={() => setVideoEnded(true)}
+            className="absolute inset-0 h-full w-full object-cover object-center"
           />
           <div className="absolute inset-0 bg-black/45" />
           <div className="relative z-10 mx-auto flex min-h-[92vh] max-w-7xl flex-col justify-center px-4 pb-16 pt-28 sm:px-6 lg:px-8">
@@ -60,6 +83,16 @@ export default function Landing() {
               </div>
             </div>
           </div>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={replayIntro}
+            className="absolute bottom-5 right-5 z-20 border border-white/20 bg-white/10 text-white shadow-lg backdrop-blur transition hover:bg-white/20 sm:bottom-8 sm:right-8"
+          >
+            <RotateCcw className="mr-2 h-3.5 w-3.5" />
+            Replay Intro
+          </Button>
         </section>
 
         <section className="mx-auto grid max-w-7xl gap-4 px-4 py-12 sm:px-6 md:grid-cols-2 lg:grid-cols-4 lg:px-8">
