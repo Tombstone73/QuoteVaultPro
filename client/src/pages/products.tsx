@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Copy, Edit, Plus, Trash2, Search, Package, Info, Layers, Settings2, X, Calculator, Grid3X3, ChevronUp, ChevronDown, Zap, Scissors, Sparkles, Circle } from "lucide-react";
+import { Copy, Download, Edit, Plus, Trash2, Search, Package, Info, Layers, Settings2, X, Calculator, Grid3X3, ChevronUp, ChevronDown, Zap, Scissors, Sparkles, Circle, Upload } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -101,6 +101,7 @@ export default function ProductsPage() {
   // Refs for scrolling to first error
   const addFormRef = useRef<HTMLFormElement>(null);
   const editFormRef = useRef<HTMLFormElement>(null);
+  const csvImportInputRef = useRef<HTMLInputElement>(null);
 
   const { data: products, isLoading } = useQuery<Product[]>({
     queryKey: ["/api/products"],
@@ -320,6 +321,50 @@ export default function ProductsPage() {
     duplicateProductMutation.mutate(product);
   };
 
+  const downloadProductsFile = async (url: string, fallbackName: string) => {
+    const response = await fetch(url, { credentials: "include" });
+    if (!response.ok) throw new Error(`Failed to download ${fallbackName}`);
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = fallbackName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+  };
+
+  const handleDownloadTemplate = async () => {
+    try {
+      await downloadProductsFile("/api/products/csv-template", "products-template.csv");
+    } catch (error: any) {
+      toast({ title: "Template download failed", description: error?.message || "Unable to download template", variant: "destructive" });
+    }
+  };
+
+  const handleExportProducts = async () => {
+    try {
+      await downloadProductsFile("/api/products/export", "products.csv");
+    } catch (error: any) {
+      toast({ title: "Product export failed", description: error?.message || "Unable to export products", variant: "destructive" });
+    }
+  };
+
+  const handleImportProducts = async (file: File | null) => {
+    if (!file) return;
+    try {
+      const csvData = await file.text();
+      await apiRequest("POST", "/api/products/import", { csvData });
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      toast({ title: "Products imported", description: "The product catalog was updated from the CSV file." });
+    } catch (error: any) {
+      toast({ title: "Product import failed", description: error?.message || "Unable to import products", variant: "destructive" });
+    } finally {
+      if (csvImportInputRef.current) csvImportInputRef.current.value = "";
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -333,10 +378,31 @@ export default function ProductsPage() {
             Manage products and pricing used for quotes and orders
           </p>
         </div>
-        <Button onClick={() => navigate("/products/new")}>
-          <Plus className="h-4 w-4 mr-2" />
-          Add Product
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            ref={csvImportInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            className="hidden"
+            onChange={(event) => handleImportProducts(event.target.files?.[0] ?? null)}
+          />
+          <Button variant="outline" onClick={handleDownloadTemplate}>
+            <Download className="h-4 w-4 mr-2" />
+            Template
+          </Button>
+          <Button variant="outline" onClick={() => csvImportInputRef.current?.click()}>
+            <Upload className="h-4 w-4 mr-2" />
+            Import CSV
+          </Button>
+          <Button variant="outline" onClick={handleExportProducts}>
+            <Download className="h-4 w-4 mr-2" />
+            Export CSV
+          </Button>
+          <Button onClick={() => navigate("/products/new")}>
+            <Plus className="h-4 w-4 mr-2" />
+            Add Product
+          </Button>
+        </div>
       </div>
 
       {/* Search */}

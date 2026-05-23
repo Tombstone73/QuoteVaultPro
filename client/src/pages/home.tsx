@@ -14,7 +14,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Calculator, FileText, Settings, User, Eye, Shield, Package, UserCircle, ShoppingCart, Factory, ClipboardList, AlertCircle } from "lucide-react";
 import CalculatorComponent from "@/components/calculator";
 import AdminDashboard from "@/components/admin-dashboard";
-import AdminSettings from "@/components/admin-settings";
 import CustomersPage from "@/pages/customers";
 import OrdersPage from "@/pages/orders";
 import AuditLogs from "@/pages/audit-logs";
@@ -109,6 +108,8 @@ export default function Home() {
       navigate("/portal/my-orders");
     } else if (value === "production") {
       navigate("/production");
+    } else if (value === "settings") {
+      navigate("/settings");
     } else {
       setActiveTab(value);
     }
@@ -323,12 +324,6 @@ export default function Home() {
                 <TabsContent value="admin" className="mt-0" data-testid="content-admin">
                   <DataCard className="bg-titan-bg-card border-titan-border-subtle">
                     <AdminDashboard />
-                  </DataCard>
-                </TabsContent>
-
-                <TabsContent value="settings" className="mt-0" data-testid="content-settings">
-                  <DataCard className="bg-titan-bg-card border-titan-border-subtle">
-                    <AdminSettings />
                   </DataCard>
                 </TabsContent>
               </>

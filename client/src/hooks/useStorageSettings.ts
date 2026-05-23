@@ -148,18 +148,19 @@ export function useStorageSettings() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [draftValidation, setDraftValidation] = useState<StorageValidationSummary | null>(null);
+  const storageSettingsKey = "/api/settings/storage";
 
   const query = useQuery<OrganizationStorageSettingsView>({
-    queryKey: ["/api/admin/storage-settings"],
+    queryKey: [storageSettingsKey],
     queryFn: async () => {
-      const response = await apiRequest("GET", "/api/admin/storage-settings");
+      const response = await apiRequest("GET", storageSettingsKey);
       return unwrapEnvelope<OrganizationStorageSettingsView>(response);
     },
   });
 
   const validateMutation = useMutation({
     mutationFn: async (payload: StorageSettingsValidateRequest) => {
-      const response = await apiRequest("POST", "/api/admin/storage-settings/validate", payload);
+      const response = await apiRequest("POST", `${storageSettingsKey}/validate`, payload);
       return unwrapEnvelope<StorageValidationSummary>(response);
     },
     onSuccess: (validation) => {
@@ -181,12 +182,12 @@ export function useStorageSettings() {
 
   const saveMutation = useMutation({
     mutationFn: async (payload: StorageSettingsSaveRequest) => {
-      const response = await apiRequest("PUT", "/api/admin/storage-settings", payload);
+      const response = await apiRequest("PUT", storageSettingsKey, payload);
       return unwrapEnvelope<OrganizationStorageSettingsView>(response);
     },
     onSuccess: async (settings, payload) => {
       setDraftValidation(payload.kind === "orchestration" ? settings.orchestration.validation : null);
-      await queryClient.invalidateQueries({ queryKey: ["/api/admin/storage-settings"] });
+      await queryClient.invalidateQueries({ queryKey: [storageSettingsKey] });
       toast({
         title: payload.kind === "orchestration" ? "Orchestration settings saved" : "Provider draft saved",
         description: payload.kind === "orchestration"
@@ -205,12 +206,12 @@ export function useStorageSettings() {
 
   const activateMutation = useMutation({
     mutationFn: async (payload: StorageProviderActivationInput) => {
-      const response = await apiRequest("POST", "/api/admin/storage-settings/activate", payload);
+      const response = await apiRequest("POST", `${storageSettingsKey}/activate`, payload);
       return unwrapEnvelope<OrganizationStorageSettingsView>(response);
     },
     onSuccess: async () => {
       setDraftValidation(null);
-      await queryClient.invalidateQueries({ queryKey: ["/api/admin/storage-settings"] });
+      await queryClient.invalidateQueries({ queryKey: [storageSettingsKey] });
       toast({
         title: "Provider activated",
         description: "The selected provider is now the active runtime storage target.",

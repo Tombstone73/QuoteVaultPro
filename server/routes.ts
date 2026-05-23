@@ -290,7 +290,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   await registerOrderRoutes(app, { isAuthenticated, tenantContext, isAdmin, isAdminOrOwner });
 
   // MVP Invoicing + Payments routes extracted to ./routes/mvpInvoicing.routes.ts (do NOT re-add here)
-  await registerMvpInvoicingRoutes(app, { isAuthenticated, tenantContext });
+  await registerMvpInvoicingRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
 
   // Bug report routes extracted to ./routes/bugReports.ts (do NOT re-add here)
   registerBugReportRoutes(app, { isAuthenticated, tenantContext });
@@ -419,7 +419,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerCatalogSettingsRoutes(app, { isAuthenticated, tenantContext, isAdmin, requireOrgOwnerAdmin });
 
   // Admin Storage Settings routes extracted to ./routes/adminStorage.routes.ts (do NOT re-add here)
-  registerAdminStorageRoutes(app, { isAuthenticated, tenantContext, isAdmin });
+  registerAdminStorageRoutes(app, { isAuthenticated, tenantContext, isAdmin, requireOrgOwnerAdmin });
 
   // Pricing Formulas, Pricing Rules, Formula Templates routes extracted to ./routes/pricing.routes.ts (do NOT re-add here)
   registerPricingRoutes(app, { isAuthenticated, tenantContext, isAdmin });

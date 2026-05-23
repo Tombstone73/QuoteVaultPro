@@ -41,6 +41,8 @@ import {
   type ProductionLineItemStatusRule,
 } from "@/hooks/useProductionSettings";
 import { StationStepEditor } from "@/components/production/StationStepEditor";
+import { JobStatusSettings } from "@/components/job-status-settings";
+import { InvoiceRemindersTab } from "@/components/admin-settings";
 import {
   useOrderWorkflow,
   usePublishOrderWorkflow,
@@ -889,6 +891,14 @@ export function ProductionSettings() {
         </ProductionSettingsSection>
 
         <ProductionSettingsSection
+          title="Job Workflow Statuses"
+          summary="Production job status labels used by active job records"
+          help="This is the canonical editor for job_statuses and jobs.statusKey. It replaces the legacy Admin Settings workflow tab."
+        >
+          <JobStatusSettings />
+        </ProductionSettingsSection>
+
+        <ProductionSettingsSection
           title="Workflow Editor"
           summary={workflowEditorSummary}
           help="Defines how jobs move through each production station after a production job is created."
@@ -1372,9 +1382,7 @@ export function NotificationsSettings() {
         <div className="h-px bg-titan-border-subtle" />
         
         <div className="space-y-4">
-          <p className="text-titan-sm text-titan-text-muted">
-            Notification settings UI will be implemented here
-          </p>
+          <InvoiceRemindersTab />
         </div>
       </div>
     </TitanCard>
