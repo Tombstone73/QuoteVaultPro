@@ -8,7 +8,7 @@
  * ================================
  * 
  * ROOT & DASHBOARD:
- * - / → redirect to /dashboard
+ * - / → public landing page
  * - /dashboard → Home
  * 
  * PORTAL (Customer-Facing):
@@ -93,7 +93,7 @@
 export const ROUTES = {
   // Root & Dashboard
   root: "/",
-  titanDashboard: "/",
+  titanDashboard: "/dashboard",
   dashboard: "/dashboard",
 
   // Portal (customer-facing)

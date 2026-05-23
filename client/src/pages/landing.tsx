@@ -1,85 +1,122 @@
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Calculator, FileText, Settings, TrendingUp } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ArrowRight, Factory, FileText, Receipt, ShieldCheck, Truck } from "lucide-react";
+import { PrintersHeroSplashVideo } from "@/components/branding/PrintersHeroSplashVideo";
+import { HERO_LOGO_SRC, SHIELD_LOGO_SRC } from "@/lib/branding";
 
 export default function Landing() {
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
+    <div className="min-h-screen bg-background text-foreground">
+      <header className="absolute inset-x-0 top-0 z-20">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-5 sm:px-6 lg:px-8">
           <div className="flex items-center gap-2">
-            <Calculator className="w-6 h-6 text-primary" data-testid="logo-calculator" />
-            <h1 className="text-xl font-semibold" data-testid="text-app-title">Pricing Calculator</h1>
+            <img src={SHIELD_LOGO_SRC} alt="" className="h-8 w-8" aria-hidden="true" />
+            <span className="text-sm font-semibold text-white drop-shadow-sm sm:text-base">
+              Printers Hero
+            </span>
           </div>
-          <Button asChild data-testid="button-login">
-            <a href="/api/login">Sign In</a>
+          <Button asChild variant="secondary" data-testid="button-login">
+            <a href="/login">Sign In</a>
           </Button>
         </div>
       </header>
 
-      <main className="container mx-auto px-4 py-16">
-        <div className="max-w-4xl mx-auto text-center mb-16">
-          <h2 className="text-4xl font-bold mb-4" data-testid="text-hero-title">
-            Professional Pricing Calculator
-          </h2>
-          <p className="text-lg text-muted-foreground mb-8" data-testid="text-hero-description">
-            Generate accurate quotes for business cards, postcards, flyers, and more. 
-            Save your quote history and manage pricing with ease.
-          </p>
-          <Button size="lg" asChild data-testid="button-get-started">
-            <a href="/api/login">Get Started</a>
-          </Button>
-        </div>
+      <main>
+        <section className="relative min-h-[92vh] overflow-hidden bg-slate-950">
+          <PrintersHeroSplashVideo
+            loop
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+          <div className="absolute inset-0 bg-black/45" />
+          <div className="relative z-10 mx-auto flex min-h-[92vh] max-w-7xl flex-col justify-center px-4 pb-16 pt-28 sm:px-6 lg:px-8">
+            <img src={HERO_LOGO_SRC} alt="Printers Hero" className="mb-8 h-20 w-fit" />
+            <div className="max-w-3xl">
+              <h1
+                className="text-4xl font-bold leading-tight text-white sm:text-5xl lg:text-6xl"
+                data-testid="text-hero-title"
+              >
+                Print shop workflow from quote to invoice.
+              </h1>
+              <p
+                className="mt-5 max-w-2xl text-base leading-7 text-white/85 sm:text-lg"
+                data-testid="text-hero-description"
+              >
+                Printers Hero brings quoting, production, fulfillment, and billing into one
+                connected operating system for modern print teams.
+              </p>
+              <div className="mt-8 flex flex-wrap gap-3">
+                <Button size="lg" asChild data-testid="button-get-started">
+                  <a href="/login">
+                    Sign In
+                    <ArrowRight className="ml-2 h-4 w-4" />
+                  </a>
+                </Button>
+                <Button size="lg" variant="secondary" asChild>
+                  <a href="/support">Talk to Support</a>
+                </Button>
+              </div>
+            </div>
+          </div>
+        </section>
 
-        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6 max-w-6xl mx-auto">
-          <Card data-testid="card-feature-calculator">
+        <section className="mx-auto grid max-w-7xl gap-4 px-4 py-12 sm:px-6 md:grid-cols-2 lg:grid-cols-4 lg:px-8">
+          <Card data-testid="card-feature-quotes">
             <CardHeader>
-              <Calculator className="w-10 h-10 mb-2 text-primary" />
-              <CardTitle>Smart Calculator</CardTitle>
+              <FileText className="mb-2 h-8 w-8 text-primary" />
+              <CardTitle>Quoting</CardTitle>
             </CardHeader>
             <CardContent>
-              <CardDescription>
-                Select products, enter dimensions and quantities to get instant, accurate pricing
-              </CardDescription>
+              Build reusable product logic and turn clean quotes into real orders.
             </CardContent>
           </Card>
 
-          <Card data-testid="card-feature-history">
+          <Card data-testid="card-feature-production">
             <CardHeader>
-              <FileText className="w-10 h-10 mb-2 text-primary" />
-              <CardTitle>Quote History</CardTitle>
+              <Factory className="mb-2 h-8 w-8 text-primary" />
+              <CardTitle>Production</CardTitle>
             </CardHeader>
             <CardContent>
-              <CardDescription>
-                Save and search all your quotes with advanced filtering by customer, date, and product
-              </CardDescription>
+              Keep design, proofing, prepress, and production states in sync.
             </CardContent>
           </Card>
 
-          <Card data-testid="card-feature-admin">
+          <Card data-testid="card-feature-fulfillment">
             <CardHeader>
-              <Settings className="w-10 h-10 mb-2 text-primary" />
-              <CardTitle>Admin Dashboard</CardTitle>
+              <Truck className="mb-2 h-8 w-8 text-primary" />
+              <CardTitle>Fulfillment</CardTitle>
             </CardHeader>
             <CardContent>
-              <CardDescription>
-                Manage products, pricing formulas, and view system-wide analytics and reports
-              </CardDescription>
+              Preserve pickup, delivery, and shipping details from order intake onward.
             </CardContent>
           </Card>
 
-          <Card data-testid="card-feature-analytics">
+          <Card data-testid="card-feature-billing">
             <CardHeader>
-              <TrendingUp className="w-10 h-10 mb-2 text-primary" />
-              <CardTitle>Analytics</CardTitle>
+              <Receipt className="mb-2 h-8 w-8 text-primary" />
+              <CardTitle>Billing</CardTitle>
             </CardHeader>
             <CardContent>
-              <CardDescription>
-                Track popular products, active users, and export data for production planning
-              </CardDescription>
+              Move completed production into billing readiness without duplicate entry.
             </CardContent>
           </Card>
-        </div>
+        </section>
+
+        <section className="border-t bg-muted/30">
+          <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-10 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
+            <div className="flex items-center gap-3">
+              <ShieldCheck className="h-8 w-8 text-primary" />
+              <div>
+                <h2 className="text-xl font-semibold">Built for print workflow discipline.</h2>
+                <p className="text-sm text-muted-foreground">
+                  State transitions, snapshots, and production data stay connected.
+                </p>
+              </div>
+            </div>
+            <Button asChild>
+              <a href="/login">Go to Login</a>
+            </Button>
+          </div>
+        </section>
       </main>
     </div>
   );
