@@ -59,6 +59,24 @@ function isGroupNode(node: any): boolean {
   return nodeType(node) === "GROUP";
 }
 
+function isReusableDependencyNode(node: any): boolean {
+  const type = nodeType(node);
+  return type === "COMPUTE" || type === "COMPUTED" || type === "PRICE" || type === "OUTPUT";
+}
+
+function isInputLikeNode(node: any): boolean {
+  const type = nodeType(node);
+  return type === "INPUT" || type === "OPTION" || String(node?.kind ?? "").toUpperCase() === "QUESTION";
+}
+
+function inferValueType(inputType: unknown, choices: unknown): string {
+  const normalized = typeof inputType === "string" ? inputType.toLowerCase() : "";
+  if (normalized === "boolean" || normalized === "checkbox") return "BOOLEAN";
+  if (normalized === "number" || normalized === "numeric" || normalized === "dimension") return "NUMBER";
+  if (normalized === "select" || normalized === "multiselect" || Array.isArray(choices)) return "ENUM";
+  return "TEXT";
+}
+
 function getSelectionKey(node: any): string | null {
   const key = node?.input?.selectionKey ?? node?.selectionKey;
   return typeof key === "string" && key.trim() ? key : null;
@@ -255,6 +273,13 @@ export function extractOptionGroupTemplateTree(treeJson: unknown, groupId: strin
   }
 
   const included = new Set<string>([groupId]);
+  const externalEdgeRefs = new Set<string>();
+  for (const edge of sourceEdges) {
+    if (edge?.fromNodeId === groupId && edge?.toNodeId && sourceNodes[edge.toNodeId]) {
+      included.add(edge.toNodeId);
+    }
+  }
+
   let changed = true;
   while (changed) {
     changed = false;
@@ -262,13 +287,27 @@ export function extractOptionGroupTemplateTree(treeJson: unknown, groupId: strin
       const fromIncluded = included.has(edge?.fromNodeId);
       const toIncluded = included.has(edge?.toNodeId);
       if (fromIncluded && edge?.toNodeId && sourceNodes[edge.toNodeId] && !included.has(edge.toNodeId)) {
-        included.add(edge.toNodeId);
-        changed = true;
+        const target = sourceNodes[edge.toNodeId];
+        if (isReusableDependencyNode(target)) {
+          included.add(edge.toNodeId);
+          changed = true;
+        } else if ((edge?.status ?? "ENABLED").toUpperCase() === "ENABLED") {
+          externalEdgeRefs.add(`${edge.id ?? "(unknown)"}:${edge.toNodeId}`);
+        }
+      }
+      if (toIncluded && edge?.fromNodeId && sourceNodes[edge.fromNodeId] && !included.has(edge.fromNodeId)) {
+        const source = sourceNodes[edge.fromNodeId];
+        if (isReusableDependencyNode(source)) {
+          included.add(edge.fromNodeId);
+          changed = true;
+        } else if ((edge?.status ?? "ENABLED").toUpperCase() === "ENABLED") {
+          externalEdgeRefs.add(`${edge.id ?? "(unknown)"}:${edge.fromNodeId}`);
+        }
       }
       if (fromIncluded || toIncluded) {
         const refs = collectNodeOutputRefs(edge);
         refs.forEach((ref) => {
-          if (sourceNodes[ref] && !included.has(ref)) {
+          if (sourceNodes[ref] && !included.has(ref) && isReusableDependencyNode(sourceNodes[ref])) {
             included.add(ref);
             changed = true;
           }
@@ -277,7 +316,7 @@ export function extractOptionGroupTemplateTree(treeJson: unknown, groupId: strin
     }
     for (const nodeId of Array.from(included)) {
       for (const ref of Array.from(collectNodeOutputRefs(sourceNodes[nodeId]))) {
-        if (sourceNodes[ref] && !included.has(ref)) {
+        if (sourceNodes[ref] && !included.has(ref) && isReusableDependencyNode(sourceNodes[ref])) {
           included.add(ref);
           changed = true;
         }
@@ -294,6 +333,10 @@ export function extractOptionGroupTemplateTree(treeJson: unknown, groupId: strin
     .map((edge) => deepClone(edge));
 
   const nodeIds = new Set(Object.keys(nodes));
+  for (const ref of Array.from(externalEdgeRefs)) {
+    const [edgeId, nodeId] = ref.split(":");
+    pushError(errors, "EXTERNAL_EDGE_REFERENCE", `Runtime edge ${edgeId} crosses outside the selected group subtree.`, "edges", nodeId);
+  }
   for (const edge of sourceEdges) {
     const touchesIncluded = included.has(edge?.fromNodeId) || included.has(edge?.toNodeId);
     const fullyIncluded = included.has(edge?.fromNodeId) && included.has(edge?.toNodeId);
@@ -477,7 +520,27 @@ export function cloneTemplateIntoTree(
     const rewritten = rewriteDeep(node, maps) as any;
     const newId = nodeIdMap.get(oldId)!;
     rewritten.id = newId;
-    if (rewritten.input?.selectionKey && selectionKeyMap.has(node.input?.selectionKey)) {
+    const oldSelectionKey = getSelectionKey(node);
+    const newSelectionKey = oldSelectionKey ? selectionKeyMap.get(oldSelectionKey) : undefined;
+    if (isInputLikeNode(node)) {
+      const sourceChoices = Array.isArray((node as any).choices)
+        ? (node as any).choices
+        : Array.isArray((node as any).input?.choices)
+          ? (node as any).input.choices
+          : undefined;
+      rewritten.type = "INPUT";
+      rewritten.key = newSelectionKey ?? rewritten.key ?? newId;
+      rewritten.input = {
+        ...(isRecord(rewritten.input) ? rewritten.input : {}),
+        ...(newSelectionKey ? { selectionKey: newSelectionKey } : {}),
+      };
+      if (!rewritten.input.valueType) {
+        rewritten.input.valueType = inferValueType(rewritten.input.type, sourceChoices);
+      }
+      if (sourceChoices && !Array.isArray(rewritten.choices)) {
+        rewritten.choices = deepClone(sourceChoices);
+      }
+    } else if (rewritten.input?.selectionKey && selectionKeyMap.has(node.input?.selectionKey)) {
       rewritten.input = { ...rewritten.input, selectionKey: selectionKeyMap.get(node.input.selectionKey) };
     }
     if (selectionKeyMap.has(node?.key)) rewritten.key = selectionKeyMap.get(node.key);

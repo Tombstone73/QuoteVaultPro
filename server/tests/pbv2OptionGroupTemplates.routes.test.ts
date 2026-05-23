@@ -77,6 +77,24 @@ const systemTemplate = {
   slug: "system-template",
 };
 
+const validTemplateTree = {
+  schemaVersion: 2,
+  templateKind: "pbv2_option_group_template",
+  rootGroupId: "group_lamination",
+  rootNodeIds: ["group_lamination"],
+  nodes: {
+    group_lamination: { id: "group_lamination", type: "GROUP", label: "Lamination" },
+    opt_lamination: {
+      id: "opt_lamination",
+      type: "OPTION",
+      label: "Lamination",
+      input: { selectionKey: "lamination", type: "select", choices: [{ value: "none", label: "None" }] },
+    },
+  },
+  edges: [{ id: "edge_lamination", fromNodeId: "group_lamination", toNodeId: "opt_lamination", status: "DISABLED", condition: { op: "EXISTS", value: { op: "literal", value: true } } }],
+  rules: [],
+};
+
 describe("PBV2 option group template routes", () => {
   beforeAll(async () => {
     const mod = await import("../routes/pbv2OptionGroupTemplates.routes");
@@ -161,5 +179,37 @@ describe("PBV2 option group template routes", () => {
     expect(res.status).toBe(201);
     expect(res.body.success).toBe(true);
     expect(dbMock.insert).toHaveBeenCalledTimes(1);
+  });
+
+  test("clone returns a draft preview and does not persist product changes", async () => {
+    dbMock.select.mockReturnValue(chainSelectRows([{ ...orgTemplate, templateTree: validTemplateTree }]) as never);
+
+    const res = await request(buildApp())
+      .post("/api/pbv2/option-group-templates/tpl_org/clone")
+      .send({
+        currentTreeJson: { schemaVersion: 2, status: "DRAFT", nodes: {}, edges: [], rootNodeIds: [] },
+        importInstanceId: "route_case",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.importedGroupId).toBe("tpl_route_case_group_lamination");
+    expect(res.body.data.treeJson.nodes.tpl_route_case_opt_lamination.type).toBe("INPUT");
+    expect(dbMock.insert).not.toHaveBeenCalled();
+    expect(dbMock.update).not.toHaveBeenCalled();
+  });
+
+  test("failed clone returns validation errors without persisting", async () => {
+    dbMock.select.mockReturnValue(chainSelectRows([{ ...orgTemplate, templateTree: { nodes: {}, edges: [] } }]) as never);
+
+    const res = await request(buildApp())
+      .post("/api/pbv2/option-group-templates/tpl_org/clone")
+      .send({ currentTreeJson: { schemaVersion: 2, status: "DRAFT", nodes: {}, edges: [] } });
+
+    expect(res.status).toBe(422);
+    expect(res.body.success).toBe(false);
+    expect(Array.isArray(res.body.errors)).toBe(true);
+    expect(dbMock.insert).not.toHaveBeenCalled();
+    expect(dbMock.update).not.toHaveBeenCalled();
   });
 });
