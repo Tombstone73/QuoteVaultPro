@@ -189,6 +189,8 @@ VALUES
   '{"schemaVersion":2,"templateKind":"pbv2_option_group_template","rootGroupId":"group_white_ink","rootNodeIds":["group_white_ink"],"nodes":{"group_white_ink":{"id":"group_white_ink","type":"GROUP","kind":"group","label":"White Ink","name":"White Ink","description":"White ink coverage setup.","displayOrder":0,"ui":{"sortOrder":0},"status":"ENABLED"},"opt_white_ink":{"id":"opt_white_ink","type":"OPTION","kind":"question","label":"White Ink","name":"White Ink","description":"Select white ink coverage.","displayOrder":0,"input":{"selectionKey":"white_ink","type":"select","required":false,"defaultValue":"none","choices":[{"value":"none","label":"No White"},{"value":"spot_white","label":"Spot White"},{"value":"flood_white","label":"Flood White"}]},"status":"ENABLED"}},"edges":[{"id":"edge_white_ink","fromNodeId":"group_white_ink","toNodeId":"opt_white_ink","status":"DISABLED","condition":{"op":"EXISTS","value":{"op":"literal","value":true}}}],"rules":[]}'::jsonb
 )
 ON CONFLICT ("id") DO UPDATE SET
+  "organization_id" = NULL,
+  "is_system_template" = true,
   "state" = EXCLUDED."state",
   "category" = EXCLUDED."category",
   "name" = EXCLUDED."name",
@@ -205,4 +207,5 @@ ON CONFLICT ("id") DO UPDATE SET
   "intent_metadata" = EXCLUDED."intent_metadata",
   "preview_config" = EXCLUDED."preview_config",
   "template_tree" = EXCLUDED."template_tree",
+  "archived_at" = NULL,
   "updated_at" = now();

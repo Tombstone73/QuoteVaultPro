@@ -4,6 +4,8 @@ import {
   extractOptionGroupTemplateTree,
   validateOptionGroupTemplateTree,
 } from "../optionGroupTemplates";
+import { validateTreeForPublish } from "../validator/validatePublish";
+import { DEFAULT_VALIDATE_OPTS } from "../validator/types";
 
 const tree = {
   schemaVersion: 2,
@@ -122,6 +124,20 @@ describe("PBV2 option group templates", () => {
     expect(result.errors.map((error) => error.code)).toContain("EXTERNAL_MATRIX_REFERENCE");
   });
 
+  test("rejects extraction when a runtime edge crosses to an external option", () => {
+    const result = extractOptionGroupTemplateTree({
+      ...tree,
+      edges: [
+        ...tree.edges,
+        { id: "edge_external_option", fromNodeId: "opt_lamination", toNodeId: "outside_option", status: "ENABLED", condition: { op: "EXISTS", value: { op: "literal", value: true } } },
+      ],
+    }, "group_finish");
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors.map((error) => error.code)).toContain("EXTERNAL_EDGE_REFERENCE");
+  });
+
   test("clones into a minimal tree with regenerated ids and selection keys", () => {
     const extracted = extractOptionGroupTemplateTree(tree, "group_finish");
     expect(extracted.ok).toBe(true);
@@ -162,6 +178,9 @@ describe("PBV2 option group templates", () => {
     expect(matrix.rows[0].when).toEqual({ lamination__case_b: "matte", contour_cutting__case_b: "yes" });
 
     const option = cloned.tree.nodes.tpl_case_b_opt_lamination;
+    expect(option.type).toBe("INPUT");
+    expect(option.key).toBe("lamination__case_b");
+    expect(option.input.valueType).toBe("ENUM");
     expect(option.pricingImpact[0].nodeOutputRef.nodeId).toBe("tpl_case_b_calc_finish");
     expect(cloned.tree.edges.some((edge: any) => edge.fromNodeId === "tpl_case_b_opt_lamination" && edge.toNodeId === "tpl_case_b_calc_finish")).toBe(true);
   });
@@ -184,6 +203,66 @@ describe("PBV2 option group templates", () => {
     expect(nodeIds).toContain("tpl_dup_group_finish");
     expect(nodeIds).toContain("tpl_dup_group_finish_2");
     expect(Object.values(second.selectionKeyMap)).toContain("lamination__dup_2");
+  });
+
+  test("stores incompatible imported matrix fragments under inert meta without publish errors", () => {
+    const matrixOnlyTree = {
+      ...tree,
+      nodes: {
+        ...tree.nodes,
+        opt_lamination: {
+          ...tree.nodes.opt_lamination,
+          pricingImpact: [],
+        },
+      },
+      edges: tree.edges.filter((edge) => edge.id !== "edge_lam_calc"),
+    };
+    delete (matrixOnlyTree.nodes as any).calc_finish;
+
+    const extracted = extractOptionGroupTemplateTree(matrixOnlyTree, "group_finish");
+    expect(extracted.ok).toBe(true);
+    if (!extracted.ok) return;
+
+    const currentTree = {
+      schemaVersion: 2,
+      status: "DRAFT",
+      rootNodeIds: ["thickness", "sides"],
+      nodes: {
+        thickness: {
+          id: "thickness",
+          type: "INPUT",
+          status: "ENABLED",
+          key: "thickness",
+          input: { selectionKey: "thickness", valueType: "ENUM" },
+          choices: [{ value: "3mm", label: "3mm" }],
+        },
+        sides: {
+          id: "sides",
+          type: "INPUT",
+          status: "ENABLED",
+          key: "sides",
+          input: { selectionKey: "sides", valueType: "ENUM" },
+          choices: [{ value: "single", label: "Single" }],
+        },
+      },
+      edges: [],
+      meta: {
+        baseWeightOz: 1,
+        pricingV2: { base: { perSqftCents: 100 } },
+      },
+      pricingMatrix: {
+        dimensions: ["thickness", "sides"],
+        rows: [{ id: "base_row", match: { thickness: "3mm", sides: "single" }, variables: { base_price: 100 } }],
+      },
+    };
+
+    const cloned = cloneTemplateIntoTree(currentTree, extracted.templateTree, { importInstanceId: "fragment" });
+    expect(cloned.ok).toBe(true);
+    if (!cloned.ok) return;
+
+    expect(cloned.tree.pricingMatrix.dimensions).toEqual(["thickness", "sides"]);
+    expect(cloned.tree.meta.templatePricingMatrixFragments).toHaveLength(1);
+    expect(validateTreeForPublish(cloned.tree, DEFAULT_VALIDATE_OPTS).errors).toEqual([]);
   });
 
   test("deterministic clone output is stable for a supplied importInstanceId", () => {
