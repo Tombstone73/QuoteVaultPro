@@ -85,6 +85,7 @@ import PrivacyPage from "@/pages/privacy";
 import TermsPage from "@/pages/terms";
 import SupportPage from "@/pages/support";
 import Landing from "@/pages/landing";
+import ByosPage from "@/pages/byos";
 
 function Router() {
   const { user, isAuthenticated, isLoading, mustChangePassword } = useAuth();
@@ -103,6 +104,7 @@ function Router() {
     return (
       <Routes>
         <Route path="/" element={<Landing />} />
+        <Route path="/byos" element={<ByosPage />} />
         <Route path="/login" element={<Login />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
@@ -123,6 +125,7 @@ function Router() {
     return (
       <Routes>
         <Route path="/force-password-change" element={<ForcePasswordChange />} />
+        <Route path="/byos" element={<ByosPage />} />
         <Route path="/privacy" element={<PrivacyPage />} />
         <Route path="/terms" element={<TermsPage />} />
         <Route path="/support" element={<SupportPage />} />
@@ -136,6 +139,7 @@ function Router() {
     return (
       <Routes>
         <Route path="/set-password" element={<SetPasswordPage />} />
+        <Route path="/byos" element={<ByosPage />} />
         <Route path="/privacy" element={<PrivacyPage />} />
         <Route path="/terms" element={<TermsPage />} />
         <Route path="/support" element={<SupportPage />} />
@@ -148,6 +152,7 @@ function Router() {
     <Routes>
       {/* Public marketing landing page. Authenticated users keep /dashboard as the app home. */}
       <Route path="/" element={<Landing />} />
+      <Route path="/byos" element={<ByosPage />} />
 
       {/* Redirect login to dashboard if already authenticated */}
       <Route path="/login" element={<Navigate to="/dashboard" replace />} />
