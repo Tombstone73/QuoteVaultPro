@@ -23,7 +23,7 @@ import { MarketingDashboardMockup } from "@/components/marketing/MarketingDashbo
 import { MarketingFooter } from "@/components/marketing/MarketingFooter";
 import { MarketingHeader, marketingRequestAccessHref } from "@/components/marketing/MarketingHeader";
 import { MarketingMeta } from "@/components/marketing/MarketingMeta";
-import { SHIELD_LOGO_SRC, SPLASH_STATIC_SRC } from "@/lib/branding";
+import { HERO_LOGO_SRC, SHIELD_LOGO_SRC, SPLASH_STATIC_SRC } from "@/lib/branding";
 import { cn } from "@/lib/utils";
 
 const CONTENT_REVEAL_DELAY_MS = 450;
@@ -205,18 +205,6 @@ export default function Landing() {
             <div className="absolute inset-0 bg-[radial-gradient(circle_at_35%_38%,rgba(0,169,224,0.17),transparent_34%),radial-gradient(circle_at_70%_34%,rgba(255,45,149,0.12),transparent_29%)]" />
           </div>
 
-          <div className="pointer-events-none absolute inset-x-0 top-24 z-10 flex justify-center px-4 sm:top-28">
-            <div
-              className={cn(
-                "flex items-center gap-3 rounded-full border border-white/10 bg-black/18 px-4 py-2 text-white/80 shadow-2xl backdrop-blur-md transition-all duration-700 ease-out",
-                contentVisible ? "opacity-0 -translate-y-2" : "opacity-100 translate-y-0",
-              )}
-            >
-              <img src={SHIELD_LOGO_SRC} alt="" className="h-7 w-7" aria-hidden="true" />
-              <span className="text-sm font-semibold tracking-tight">Printers Hero</span>
-            </div>
-          </div>
-
           <div className="relative z-10 mx-auto flex min-h-[calc(100vh-4rem)] max-w-7xl flex-col justify-end px-4 pb-14 pt-24 sm:px-6 sm:pb-16 lg:px-8">
             <div
               className={cn(
@@ -224,6 +212,11 @@ export default function Landing() {
                 contentVisible ? "translate-y-0 opacity-100" : "translate-y-5 opacity-0",
               )}
             >
+              <img
+                src={HERO_LOGO_SRC}
+                alt="Printers Hero"
+                className="mx-auto mb-7 w-[min(200px,70vw)] sm:w-[240px] lg:w-[260px]"
+              />
               <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-4 py-1.5 text-sm text-slate-200 backdrop-blur">
                 <span className="h-2 w-2 rounded-full bg-[#00a9e0]" />
                 Built for print production
