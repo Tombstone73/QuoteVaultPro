@@ -84,6 +84,7 @@ import InboundOrdersPage from "@/pages/inbound-orders";
 import PrivacyPage from "@/pages/privacy";
 import TermsPage from "@/pages/terms";
 import SupportPage from "@/pages/support";
+import Landing from "@/pages/landing";
 
 function Router() {
   const { user, isAuthenticated, isLoading, mustChangePassword } = useAuth();
@@ -101,6 +102,7 @@ function Router() {
   if (!isAuthenticated) {
     return (
       <Routes>
+        <Route path="/" element={<Landing />} />
         <Route path="/login" element={<Login />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
@@ -144,14 +146,14 @@ function Router() {
 
   return (
     <Routes>
+      {/* Public marketing landing page. Authenticated users keep /dashboard as the app home. */}
+      <Route path="/" element={<Landing />} />
+
       {/* Redirect login to dashboard if already authenticated */}
       <Route path="/login" element={<Navigate to="/dashboard" replace />} />
 
       {/* All authenticated routes share the AppLayout */}
       <Route element={<AppLayout />}>
-        {/* Titan landing dashboard */}
-        <Route path="/" element={<TitanDashboard />} />
-
         {/* Admin dashboard */}
         <Route path="/system/admin" element={<AdminDashboard />} />
 

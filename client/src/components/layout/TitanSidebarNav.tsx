@@ -70,7 +70,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     section: "SALES",
     sectionKey: "sales",
     items: [
-      { id: "dashboard", name: "Dashboard", icon: Home, path: ROUTES.root },
+      { id: "dashboard", name: "Dashboard", icon: Home, path: ROUTES.dashboard },
       { id: "customers", name: "Customers", icon: Users, path: ROUTES.customers.list },
       { id: "contacts", name: "Contacts", icon: Contact2, path: ROUTES.contacts.list },
       { id: "quotes", name: "Quotes", icon: FileText, path: ROUTES.quotes.list },
