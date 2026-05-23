@@ -116,7 +116,7 @@ function SelectChoicesInput({ value, onChange }: { value: string; onChange: (val
   );
 }
 
-function MediaLibraryTab() {
+export function MediaLibraryTab() {
   const { toast } = useToast();
 
   const { data: mediaAssets, isLoading } = useQuery<MediaAsset[]>({
@@ -225,9 +225,9 @@ function MediaLibraryTab() {
     <div className="space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle>Upload Media</CardTitle>
+          <CardTitle>Store Item Image Cache</CardTitle>
           <CardDescription>
-            Upload images to automatically add them to your media library. You can then reuse them across multiple products.
+            Upload store item images so product thumbnails are available before customers browse the store.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -242,9 +242,9 @@ function MediaLibraryTab() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Media Library</CardTitle>
+          <CardTitle>Cached Store Images</CardTitle>
           <CardDescription>
-            {mediaAssets?.length || 0} images in library
+            {mediaAssets?.length || 0} images cached for product thumbnails
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -310,7 +310,7 @@ function MediaLibraryTab() {
             </div>
           ) : (
             <div className="text-center py-12 text-muted-foreground">
-              No media assets yet. Upload your first image to get started.
+              No cached store images yet. Upload your first product image to get started.
             </div>
           )}
         </CardContent>
