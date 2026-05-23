@@ -1,7 +1,8 @@
 import { Routes, Route, Navigate, useParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { SettingsLayout, CompanySettings, PreferencesSettings, UsersSettings, AccountingSettings, ProductionSettings, InventorySettings, NotificationsSettings, AppearanceSettings } from "@/pages/settings/SettingsLayout";
+import { SettingsLayout, CompanySettings, PreferencesSettings, AccountingSettings, ProductionSettings, InventorySettings, NotificationsSettings, AppearanceSettings } from "@/pages/settings/SettingsLayout";
 import EmailSettings from "@/pages/settings/email";
+import UsersSettings from "@/pages/settings/users";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -22,8 +23,6 @@ import InternalQuotes from "@/pages/internal-quotes";
 import ApprovalsPage from "@/pages/ApprovalsPage";
 import StaffProofingPage from "@/pages/StaffProofingPage";
 import Admin from "@/pages/admin";
-import AdminUsers from "@/pages/admin-users";
-import UserManagement from "@/pages/user-management";
 import Customers from "@/pages/customers";
 import CustomerDetail from "@/pages/customer-detail-enhanced";
 import Orders from "@/pages/orders";
@@ -181,16 +180,18 @@ function Router() {
         <Route path="/production/proofing" element={<StaffProofingPage />} />
 
         {/* Admin routes */}
-        <Route path="/admin/users" element={<AdminUsers />} />
-        <Route path="/admin/products" element={<ProductsPage />} />
-        <Route path="/admin/product-types" element={<ProductTypesSettings />} />
+        <Route path="/admin/users" element={<Navigate to="/settings/users" replace />} />
+        <Route path="/admin/products" element={<Navigate to="/settings/products" replace />} />
+        <Route path="/admin/product-types" element={<Navigate to="/settings/product-types" replace />} />
         <Route path="/admin/bug-reports" element={<BugReportsPage />} />
         <Route path="/admin/products/import-export" element={<ProductImportExport />} />
         <Route path="/admin/pricing-audit" element={<PricingAuditPage />} />
         <Route path="/admin/materials/import-export" element={<MaterialsImportExport />} />
         <Route path="/admin/developer/qb-invoice-inspector" element={<QBInvoiceInspectorPage />} />
         <Route path="/admin/developer/qb-customer-inspector" element={<QBCustomerInspectorPage />} />
-        <Route path="/users" element={<UserManagement />} />
+        <Route path="/users" element={<Navigate to="/settings/users" replace />} />
+        <Route path="/admin/settings" element={<Navigate to="/settings" replace />} />
+        <Route path="/system/admin/settings" element={<Navigate to="/settings" replace />} />
         <Route path="/admin" element={<Admin />} />
         
         {/* Prepress (standalone PDF preflight tool) */}

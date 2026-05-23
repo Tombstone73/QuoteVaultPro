@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   usePricingFormulas,
   useCreatePricingFormula,
@@ -44,6 +45,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FormulaLanguageHelp } from "@/components/pbv2/FormulaLanguageHelp";
 import { formulaHelperScope, extractFormulaVariables } from "@shared/pbv2/formulaHelpers";
 import { buildDuplicateFormulaInput } from "@shared/pbv2/formulaUtils";
+import { apiRequest } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 
 // Variable library for pricing formulas
 type VariableLibraryItem = {
@@ -118,6 +121,209 @@ const emptyFormData: PricingFormulaInput = {
   config: null,
   isActive: true,
 };
+
+type GlobalVariable = {
+  id: string;
+  name: string;
+  value: string;
+  description?: string | null;
+  category?: string | null;
+};
+
+const DOCUMENT_NUMBER_VARIABLES = new Set(["next_quote_number", "next_order_number", "next_invoice_number"]);
+
+function GlobalPricingVariablesSettings() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [isOpen, setIsOpen] = useState(false);
+  const [editing, setEditing] = useState<GlobalVariable | null>(null);
+  const [draft, setDraft] = useState({ name: "", value: "", description: "", category: "" });
+
+  const { data: variables = [], isLoading } = useQuery<GlobalVariable[]>({
+    queryKey: ["/api/global-variables"],
+    queryFn: async () => {
+      const res = await fetch("/api/global-variables", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load pricing variables");
+      return res.json();
+    },
+  });
+
+  const pricingVariables = variables.filter((variable) => !DOCUMENT_NUMBER_VARIABLES.has(variable.name));
+
+  const resetDraft = () => {
+    setEditing(null);
+    setDraft({ name: "", value: "", description: "", category: "" });
+  };
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const payload = {
+        name: draft.name.trim(),
+        value: draft.value.trim(),
+        description: draft.description.trim() || null,
+        category: draft.category.trim() || null,
+      };
+      if (editing) {
+        return apiRequest("PATCH", `/api/global-variables/${editing.id}`, payload);
+      }
+      return apiRequest("POST", "/api/global-variables", payload);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/global-variables"] });
+      toast({ title: "Pricing variable saved" });
+      setIsOpen(false);
+      resetDraft();
+    },
+    onError: (error: Error) => {
+      toast({ title: "Unable to save variable", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => apiRequest("DELETE", `/api/global-variables/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/global-variables"] });
+      toast({ title: "Pricing variable removed" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Unable to remove variable", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const openCreate = () => {
+    resetDraft();
+    setIsOpen(true);
+  };
+
+  const openEdit = (variable: GlobalVariable) => {
+    setEditing(variable);
+    setDraft({
+      name: variable.name,
+      value: variable.value,
+      description: variable.description ?? "",
+      category: variable.category ?? "",
+    });
+    setIsOpen(true);
+  };
+
+  return (
+    <TitanCard className="p-0 overflow-hidden">
+      <div className="flex items-center justify-between p-4 border-b">
+        <div>
+          <h2 className="text-lg font-semibold">Pricing Variables</h2>
+          <p className="text-sm text-muted-foreground">
+            Canonical editor for formula variables. Document numbering stays in System Setup.
+          </p>
+        </div>
+        <Button onClick={openCreate}>
+          <Plus className="mr-2 h-4 w-4" />
+          Add Variable
+        </Button>
+      </div>
+      {isLoading ? (
+        <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" /> Loading variables
+        </div>
+      ) : pricingVariables.length === 0 ? (
+        <div className="p-4 text-sm text-muted-foreground">No pricing variables configured.</div>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead>Value</TableHead>
+              <TableHead>Category</TableHead>
+              <TableHead>Description</TableHead>
+              <TableHead className="w-28">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {pricingVariables.map((variable) => (
+              <TableRow key={variable.id}>
+                <TableCell className="font-mono text-xs">{variable.name}</TableCell>
+                <TableCell>{variable.value}</TableCell>
+                <TableCell>{variable.category || "-"}</TableCell>
+                <TableCell className="text-muted-foreground">{variable.description || "-"}</TableCell>
+                <TableCell>
+                  <div className="flex gap-1">
+                    <Button variant="ghost" size="sm" onClick={() => openEdit(variable)}>
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        if (confirm(`Delete pricing variable ${variable.name}?`)) deleteMutation.mutate(variable.id);
+                      }}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+
+      <Dialog open={isOpen} onOpenChange={(open) => { setIsOpen(open); if (!open) resetDraft(); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{editing ? "Edit Pricing Variable" : "Add Pricing Variable"}</DialogTitle>
+            <DialogDescription>
+              Variables here are available to pricing formulas. Number sequencing variables are managed in System Setup.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="variable-name">Name</Label>
+              <Input
+                id="variable-name"
+                value={draft.name}
+                onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
+                placeholder="MACHINE_RATE"
+                disabled={!!editing}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="variable-value">Value</Label>
+              <Input
+                id="variable-value"
+                value={draft.value}
+                onChange={(event) => setDraft((current) => ({ ...current, value: event.target.value }))}
+                placeholder="75"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="variable-category">Category</Label>
+              <Input
+                id="variable-category"
+                value={draft.category}
+                onChange={(event) => setDraft((current) => ({ ...current, category: event.target.value }))}
+                placeholder="machine"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="variable-description">Description</Label>
+              <Textarea
+                id="variable-description"
+                value={draft.description}
+                onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))}
+                placeholder="Default hourly rate for machine time"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsOpen(false)}>Cancel</Button>
+            <Button disabled={!draft.name.trim() || !draft.value.trim() || saveMutation.isPending} onClick={() => saveMutation.mutate()}>
+              {saveMutation.isPending ? "Saving..." : "Save Variable"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </TitanCard>
+  );
+}
 
 export default function PricingFormulasSettings() {
   const { data: formulas, isLoading } = usePricingFormulas();
@@ -438,6 +644,8 @@ export default function PricingFormulasSettings() {
           </div>
         )}
       </TitanCard>
+
+      <GlobalPricingVariablesSettings />
 
       {/* Edit Dialog */}
       <Dialog open={!!editingFormula} onOpenChange={(open) => !open && setEditingFormula(null)}>

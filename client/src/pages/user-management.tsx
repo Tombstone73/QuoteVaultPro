@@ -43,7 +43,11 @@ type OrgUser = {
   updatedAt: string;
 };
 
-export default function UserManagement() {
+type UserManagementProps = {
+  embedded?: boolean;
+};
+
+export default function UserManagement({ embedded = false }: UserManagementProps) {
   const { user: currentUser } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -226,7 +230,7 @@ export default function UserManagement() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className={embedded ? "flex items-center justify-center py-10" : "min-h-screen bg-background flex items-center justify-center"}>
         <div className="flex items-center gap-2">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
           <span>Loading users...</span>
@@ -236,7 +240,8 @@ export default function UserManagement() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className={embedded ? "space-y-6" : "min-h-screen bg-background"}>
+      {!embedded && (
       <header className="border-b sticky top-0 bg-background z-50">
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center gap-4">
@@ -308,8 +313,9 @@ export default function UserManagement() {
           </div>
         </div>
       </header>
+      )}
 
-      <main className="container mx-auto px-4 py-6">
+      <main className={embedded ? "space-y-6" : "container mx-auto px-4 py-6"}>
         <Card>
           <CardHeader>
             <CardTitle>Organization Members</CardTitle>

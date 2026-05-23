@@ -4,6 +4,10 @@
  * Admin Storage Settings routes extracted from server/routes.ts.
  *
  * Routes:
+ *   GET  /api/settings/storage
+ *   POST /api/settings/storage/validate
+ *   PUT  /api/settings/storage
+ *   POST /api/settings/storage/activate
  *   GET  /api/admin/storage-settings
  *   POST /api/admin/storage-settings/validate
  *   PUT  /api/admin/storage-settings
@@ -24,11 +28,12 @@ export function registerAdminStorageRoutes(
     isAuthenticated: any;
     tenantContext: any;
     isAdmin: any;
+    requireOrgOwnerAdmin: any;
   },
 ): void {
-  const { isAuthenticated, tenantContext, isAdmin } = middleware;
+  const { isAuthenticated, tenantContext, isAdmin, requireOrgOwnerAdmin } = middleware;
 
-  app.get('/api/admin/storage-settings', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+  const getSettings = async (req: any, res: any) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) {
@@ -41,9 +46,9 @@ export function registerAdminStorageRoutes(
       console.error('[StorageSettings:GET] Error:', error);
       return res.status(500).json({ success: false, error: error?.message || 'Failed to fetch storage settings' });
     }
-  });
+  };
 
-  app.post('/api/admin/storage-settings/validate', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+  const validateSettings = async (req: any, res: any) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) {
@@ -59,9 +64,9 @@ export function registerAdminStorageRoutes(
       }
       return res.status(500).json({ success: false, error: error?.message || 'Failed to validate storage settings' });
     }
-  });
+  };
 
-  app.put('/api/admin/storage-settings', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+  const saveSettings = async (req: any, res: any) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) {
@@ -77,9 +82,9 @@ export function registerAdminStorageRoutes(
       }
       return res.status(500).json({ success: false, error: error?.message || 'Failed to save storage settings' });
     }
-  });
+  };
 
-  app.post('/api/admin/storage-settings/activate', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+  const activateProvider = async (req: any, res: any) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) {
@@ -100,5 +105,15 @@ export function registerAdminStorageRoutes(
       }
       return res.status(500).json({ success: false, error: error?.message || 'Failed to activate storage provider' });
     }
-  });
+  };
+
+  app.get('/api/settings/storage', isAuthenticated, tenantContext, requireOrgOwnerAdmin, getSettings);
+  app.post('/api/settings/storage/validate', isAuthenticated, tenantContext, requireOrgOwnerAdmin, validateSettings);
+  app.put('/api/settings/storage', isAuthenticated, tenantContext, requireOrgOwnerAdmin, saveSettings);
+  app.post('/api/settings/storage/activate', isAuthenticated, tenantContext, requireOrgOwnerAdmin, activateProvider);
+
+  app.get('/api/admin/storage-settings', isAuthenticated, tenantContext, isAdmin, getSettings);
+  app.post('/api/admin/storage-settings/validate', isAuthenticated, tenantContext, isAdmin, validateSettings);
+  app.put('/api/admin/storage-settings', isAuthenticated, tenantContext, isAdmin, saveSettings);
+  app.post('/api/admin/storage-settings/activate', isAuthenticated, tenantContext, isAdmin, activateProvider);
 }

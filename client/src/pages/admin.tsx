@@ -1,10 +1,8 @@
 import { useAuth } from "@/hooks/useAuth";
 import { Redirect, Link } from "wouter";
 import AdminDashboard from "@/components/admin-dashboard";
-import AdminSettings from "@/components/admin-settings";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { Users } from "lucide-react";
+import { Settings, Users } from "lucide-react";
 
 export default function Admin() {
   const { user, isLoading } = useAuth();
@@ -26,32 +24,27 @@ export default function Admin() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold">Admin Panel</h1>
-          <p className="text-muted-foreground">Manage quotes, products, and settings</p>
+          <p className="text-muted-foreground">Manage operational admin reporting</p>
         </div>
-        {user.role === "owner" && (
-          <Link href="/admin/users">
+        <div className="flex items-center gap-2">
+          {user.role === "owner" && (
+            <Link href="/settings/users">
+              <Button variant="outline">
+                <Users className="w-4 h-4 mr-2" />
+                Manage Users
+              </Button>
+            </Link>
+          )}
+          <Link href="/settings">
             <Button variant="outline">
-              <Users className="w-4 h-4 mr-2" />
-              Manage Users
+              <Settings className="w-4 h-4 mr-2" />
+              Settings
             </Button>
           </Link>
-        )}
+        </div>
       </div>
 
-      <Tabs defaultValue="dashboard" className="space-y-6">
-        <TabsList data-testid="tabs-admin">
-          <TabsTrigger value="dashboard" data-testid="tab-dashboard">Dashboard</TabsTrigger>
-          <TabsTrigger value="settings" data-testid="tab-settings">Settings</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="dashboard" data-testid="content-dashboard">
-          <AdminDashboard />
-        </TabsContent>
-
-        <TabsContent value="settings" data-testid="content-settings">
-          <AdminSettings />
-        </TabsContent>
-      </Tabs>
+      <AdminDashboard />
     </div>
   );
 }

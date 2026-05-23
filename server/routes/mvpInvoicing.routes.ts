@@ -137,9 +137,10 @@ export async function registerMvpInvoicingRoutes(
     isAuthenticated: any;
     tenantContext: any;
     isAdmin?: any;
+    requireOrgOwnerAdmin?: any;
   }
 ) {
-  const { isAuthenticated, tenantContext, isAdmin } = deps;
+  const { isAuthenticated, tenantContext, isAdmin, requireOrgOwnerAdmin } = deps;
 
   // ------------------------------------------------------------
   // Stripe: Create PaymentIntent for invoice (full payment only)
@@ -2358,9 +2359,12 @@ export async function registerMvpInvoicingRoutes(
   // ---------------------------------------------------------------------------
   // Invoice reminder settings
   // ---------------------------------------------------------------------------
+  const reminderSettingsMiddlewares = requireOrgOwnerAdmin
+    ? [isAuthenticated, tenantContext, requireOrgOwnerAdmin]
+    : [isAuthenticated, tenantContext];
 
   // GET /api/invoices/reminder-settings
-  app.get("/api/invoices/reminder-settings", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.get("/api/invoices/reminder-settings", ...reminderSettingsMiddlewares, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
@@ -2374,7 +2378,7 @@ export async function registerMvpInvoicingRoutes(
   });
 
   // PUT /api/invoices/reminder-settings
-  app.put("/api/invoices/reminder-settings", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.put("/api/invoices/reminder-settings", ...reminderSettingsMiddlewares, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
@@ -2394,7 +2398,7 @@ export async function registerMvpInvoicingRoutes(
 
   // GET /api/invoices/reminder-preview
   // Read-only. Shows eligibility per open invoice. No emails sent. No mutations.
-  app.get("/api/invoices/reminder-preview", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.get("/api/invoices/reminder-preview", ...reminderSettingsMiddlewares, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });

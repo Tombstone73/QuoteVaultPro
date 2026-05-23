@@ -33,7 +33,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ChevronRight, Copy, RotateCcw, Save } from "lucide-react";
+import { ChevronRight, Copy, Plus, RotateCcw, Save, Trash2 } from "lucide-react";
 import { optionsHaveInvalidChoices } from "@/lib/optionChoiceValidation";
 import PBV2ProductBuilderSectionV2 from "@/components/PBV2ProductBuilderSectionV2";
 import { ensureRootNodeIds, normalizeTreeJson } from "@/lib/pbv2/pbv2ViewModel";
@@ -45,6 +45,199 @@ interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
   pricingProfileKey: string;
   pricingProfileConfig: FlatGoodsConfig | null;
   pricingFormulaId: string | null;
+}
+
+type LegacyProductVariant = {
+  id: string;
+  name: string;
+  basePricePerSqft: string | number;
+  isDefault?: boolean;
+  isActive?: boolean;
+};
+
+type LegacyProductOption = {
+  id: string;
+  name: string;
+  type: "toggle" | "number" | "select";
+  setupCost?: string | number | null;
+  isActive?: boolean;
+};
+
+function LegacyProductCompatibilityPanel({ productId }: { productId: string | null }) {
+  const { toast } = useToast();
+  const [variantName, setVariantName] = useState("");
+  const [variantRate, setVariantRate] = useState("");
+  const [optionName, setOptionName] = useState("");
+  const [optionType, setOptionType] = useState<"toggle" | "number" | "select">("toggle");
+
+  const { data: variants = [] } = useQuery<LegacyProductVariant[]>({
+    queryKey: ["/api/products", productId, "variants"],
+    enabled: Boolean(productId),
+  });
+  const { data: options = [] } = useQuery<LegacyProductOption[]>({
+    queryKey: ["/api/products", productId, "options"],
+    enabled: Boolean(productId),
+  });
+
+  const createVariant = useMutation({
+    mutationFn: async () => {
+      if (!productId) throw new Error("Save the product before adding variants.");
+      return apiRequest("POST", `/api/products/${productId}/variants`, {
+        name: variantName.trim(),
+        basePricePerSqft: Number(variantRate),
+        displayOrder: variants.length + 1,
+        isDefault: variants.length === 0,
+        isActive: true,
+        volumePricing: { enabled: false, tiers: [] },
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/products", productId, "variants"] });
+      setVariantName("");
+      setVariantRate("");
+      toast({ title: "Variant added" });
+    },
+    onError: (error: Error) => toast({ title: "Unable to add variant", description: error.message, variant: "destructive" }),
+  });
+
+  const deleteVariant = useMutation({
+    mutationFn: async (id: string) => {
+      if (!productId) throw new Error("Missing product id.");
+      return apiRequest("DELETE", `/api/products/${productId}/variants/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/products", productId, "variants"] });
+      toast({ title: "Variant removed" });
+    },
+    onError: (error: Error) => toast({ title: "Unable to remove variant", description: error.message, variant: "destructive" }),
+  });
+
+  const createOption = useMutation({
+    mutationFn: async () => {
+      if (!productId) throw new Error("Save the product before adding options.");
+      return apiRequest("POST", `/api/products/${productId}/options`, {
+        name: optionName.trim(),
+        type: optionType,
+        setupCost: 0,
+        displayOrder: options.length + 1,
+        isDefaultEnabled: false,
+        isActive: true,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/products", productId, "options"] });
+      setOptionName("");
+      setOptionType("toggle");
+      toast({ title: "Option added" });
+    },
+    onError: (error: Error) => toast({ title: "Unable to add option", description: error.message, variant: "destructive" }),
+  });
+
+  const deleteOption = useMutation({
+    mutationFn: async (id: string) => {
+      if (!productId) throw new Error("Missing product id.");
+      return apiRequest("DELETE", `/api/products/${productId}/options/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/products", productId, "options"] });
+      toast({ title: "Option removed" });
+    },
+    onError: (error: Error) => toast({ title: "Unable to remove option", description: error.message, variant: "destructive" }),
+  });
+
+  if (!productId) {
+    return (
+      <Card className="p-4">
+        <h2 className="text-sm font-semibold">Legacy Calculator Compatibility</h2>
+        <p className="mt-1 text-sm text-muted-foreground">Save the product before managing legacy variants or options.</p>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="p-4 space-y-5">
+      <div>
+        <h2 className="text-sm font-semibold">Legacy Calculator Compatibility</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Canonical editor for product_variants and product_options while quote/order flows still read them.
+        </p>
+      </div>
+
+      <div className="space-y-3">
+        <div className="flex items-end gap-2">
+          <div className="flex-1">
+            <label className="text-xs font-medium text-muted-foreground">Variant name</label>
+            <Input value={variantName} onChange={(event) => setVariantName(event.target.value)} placeholder="Retail" />
+          </div>
+          <div className="w-32">
+            <label className="text-xs font-medium text-muted-foreground">$/sqft</label>
+            <Input value={variantRate} onChange={(event) => setVariantRate(event.target.value)} placeholder="8.50" inputMode="decimal" />
+          </div>
+          <Button
+            type="button"
+            onClick={() => createVariant.mutate()}
+            disabled={!variantName.trim() || !Number.isFinite(Number(variantRate)) || Number(variantRate) <= 0 || createVariant.isPending}
+          >
+            <Plus className="h-4 w-4 mr-2" /> Add Variant
+          </Button>
+        </div>
+        <div className="space-y-2">
+          {variants.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No legacy variants configured.</p>
+          ) : variants.map((variant) => (
+            <div key={variant.id} className="flex items-center justify-between rounded-md border px-3 py-2">
+              <div>
+                <div className="text-sm font-medium">{variant.name}</div>
+                <div className="text-xs text-muted-foreground">{variant.basePricePerSqft}/sqft {variant.isDefault ? "default" : ""}</div>
+              </div>
+              <Button type="button" variant="ghost" size="icon" onClick={() => deleteVariant.mutate(variant.id)}>
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <div className="flex items-end gap-2">
+          <div className="flex-1">
+            <label className="text-xs font-medium text-muted-foreground">Option name</label>
+            <Input value={optionName} onChange={(event) => setOptionName(event.target.value)} placeholder="Grommets" />
+          </div>
+          <div className="w-40">
+            <label className="text-xs font-medium text-muted-foreground">Type</label>
+            <select
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              value={optionType}
+              onChange={(event) => setOptionType(event.target.value as any)}
+            >
+              <option value="toggle">Toggle</option>
+              <option value="number">Number</option>
+              <option value="select">Select</option>
+            </select>
+          </div>
+          <Button type="button" onClick={() => createOption.mutate()} disabled={!optionName.trim() || createOption.isPending}>
+            <Plus className="h-4 w-4 mr-2" /> Add Option
+          </Button>
+        </div>
+        <div className="space-y-2">
+          {options.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No legacy options configured.</p>
+          ) : options.map((option) => (
+            <div key={option.id} className="flex items-center justify-between rounded-md border px-3 py-2">
+              <div>
+                <div className="text-sm font-medium">{option.name}</div>
+                <div className="text-xs text-muted-foreground">{option.type} option</div>
+              </div>
+              <Button type="button" variant="ghost" size="icon" onClick={() => deleteOption.mutate(option.id)}>
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Card>
+  );
 }
 
 const PRODUCT_TYPE_LEGACY_ALIASES: Record<string, string> = {
@@ -970,6 +1163,8 @@ const ProductEditorPage = () => {
                 });
               }}
             />
+
+            <LegacyProductCompatibilityPanel productId={productId || createdProductIdRef.current || null} />
 
             {/* Options Builder section with 2-column layout (pricing panel moved to page level) */}
             <PBV2ProductBuilderSectionV2
