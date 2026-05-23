@@ -11,7 +11,7 @@ import { eq, desc, and, isNull, isNotNull, asc, inArray, notInArray, or, sql } f
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
 import { ensureCustomerForUser } from "./db/syncUsersToCustomers";
-import { tenantContext, getRequestOrganizationId } from "./tenantContext";
+import { tenantContext, portalContext, getRequestOrganizationId } from "./tenantContext";
 import { registerQuoteRoutes } from "./routes/quotes.routes";
 import { registerProductRoutes } from "./routes/products.routes";
 import { registerAttachmentRoutes } from "./routes/attachments.routes";
@@ -230,6 +230,7 @@ import { registerMaterialsImportExportRoutes } from './routes/materialsImportExp
 import { registerInboundOrderRoutes } from './routes/inboundOrders.routes';
 import { registerOperationalSummaryRoutes } from './routes/operationalSummary.routes';
 import { registerPbv2OptionGroupTemplateRoutes } from './routes/pbv2OptionGroupTemplates.routes';
+import { registerPortalRoutes } from './routes/portal.routes';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -282,6 +283,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Me routes (authenticated, not org-scoped — org list + active-org selection)
   registerMeRoutes(app);
+
+  // Customer portal safety boundary routes (portal-scoped DTOs only).
+  registerPortalRoutes(app, { isAuthenticated, portalContext });
 
   // Attachment routes extracted to ./routes/attachments.routes.ts (do NOT re-add here)
   await registerAttachmentRoutes(app, { isAuthenticated, tenantContext, isAdmin });
