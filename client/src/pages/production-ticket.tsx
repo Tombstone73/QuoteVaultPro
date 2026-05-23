@@ -354,7 +354,7 @@ export default function ProductionTicketPage() {
               <div style={{ fontSize: "9px", color: "#666" }}>QR unavailable</div>
             )}
             <div style={{ fontSize: "8px", color: "#444", marginTop: "1mm" }}>
-              Scan to open job in TitanOS
+              Scan to open job in Printers Hero
             </div>
             {ticket.reprintCount > 0 && (
               <div style={{ fontSize: "8px", color: "#444", marginTop: "1mm" }}>

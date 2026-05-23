@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { Link } from "react-router-dom";
-import { Printer } from "lucide-react";
+import { SHIELD_LOGO_SRC } from "@/lib/branding";
 
 interface PublicPageLayoutProps {
   title: string;
@@ -31,9 +31,9 @@ export function PublicFooter() {
 
 export function PublicPageLayout({ title, description, children }: PublicPageLayoutProps) {
   useEffect(() => {
-    document.title = `${title} — PrintersHero`;
+    document.title = `${title} - Printers Hero`;
     return () => {
-      document.title = "TitanOS";
+      document.title = "Printers Hero";
     };
   }, [title]);
 
@@ -45,8 +45,8 @@ export function PublicPageLayout({ title, description, children }: PublicPageLay
             to="/login"
             className="flex items-center gap-2 text-foreground hover:text-primary transition-colors"
           >
-            <Printer className="h-4 w-4 text-primary" />
-            <span className="font-semibold text-sm">PrintersHero</span>
+            <img src={SHIELD_LOGO_SRC} alt="" className="h-5 w-5" aria-hidden="true" />
+            <span className="font-semibold text-sm">Printers Hero</span>
           </Link>
           <nav className="flex items-center gap-4 text-sm">
             <Link to="/support" className="text-muted-foreground hover:text-foreground transition-colors">

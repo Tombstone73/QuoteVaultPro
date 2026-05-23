@@ -8,7 +8,7 @@ const INTEGRATIONS = [
   {
     name: "QuickBooks Online",
     description:
-      "Sync invoices, customers, and payment records with your QuickBooks company file. Push invoices directly from TitanOS without re-entering data.",
+      "Sync invoices, customers, and payment records with your QuickBooks company file. Push invoices directly from Printers Hero without re-entering data.",
   },
   {
     name: "Google Workspace",
@@ -23,7 +23,7 @@ const INTEGRATIONS = [
   {
     name: "Customer Portal",
     description:
-      "Customers can review proofs, approve quotes, and track orders through a dedicated portal. No TitanOS account required — access is token-based.",
+      "Customers can review proofs, approve quotes, and track orders through a dedicated portal. No Printers Hero account required - access is token-based.",
   },
 ];
 
@@ -62,7 +62,7 @@ const COMMON_TOPICS = [
     title: "Proof approvals",
     body: (
       <>
-        Customers receive a proof review link via email. They do not need a TitanOS account to
+        Customers receive a proof review link via email. They do not need a Printers Hero account to
         review or approve proofs. The link is valid until the proof is actioned or the job is
         closed.
       </>
@@ -84,7 +84,7 @@ export default function SupportPage() {
   return (
     <PublicPageLayout
       title="Support"
-      description="We're here to help you get the most out of PrintersHero and TitanOS."
+      description="We're here to help you get the most out of Printers Hero."
     >
       {/* Contact cards */}
       <div className="grid sm:grid-cols-2 gap-4 mb-10">
@@ -128,17 +128,16 @@ export default function SupportPage() {
       {/* About */}
       <section className="mb-8">
         <h2 className="text-base font-semibold mb-3 pb-2 border-b text-foreground">
-          About PrintersHero / TitanOS
+          About Printers Hero
         </h2>
         <div className="space-y-3 text-sm text-muted-foreground leading-relaxed">
           <p>
-            <strong className="text-foreground">PrintersHero</strong>, powered by{" "}
-            <strong className="text-foreground">TitanOS</strong>, is a production management and
+            <strong className="text-foreground">Printers Hero</strong> is a production management and
             quoting platform built for print shops. It handles the full workflow from customer quote
             to production job, shipping, and invoicing — all in one place.
           </p>
           <p>
-            TitanOS is designed to replace fragmented spreadsheets and disconnected tools with a
+            Printers Hero is designed to replace fragmented spreadsheets and disconnected tools with a
             single system your team can use across quoting, prepress, production, fulfillment, and
             accounting.
           </p>

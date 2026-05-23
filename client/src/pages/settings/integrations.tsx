@@ -829,7 +829,7 @@ export default function SettingsIntegrations() {
 
       <div className="mb-6">
         <h1 className="text-3xl font-bold">Integrations</h1>
-        <p className="text-muted-foreground">Connect external services to QuoteVaultPro</p>
+        <p className="text-muted-foreground">Connect external services to Printers Hero</p>
       </div>
 
       {/* QuickBooks Integration */}
@@ -1334,7 +1334,7 @@ export default function SettingsIntegrations() {
                                               <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 font-mono text-[11px]">{JSON.stringify(row.inspection.mappingDiagnostics, null, 2)}</pre>
                                             </div>
                                             <div className="rounded-md border bg-background p-2 md:col-span-2">
-                                              <div className="mb-1 font-medium">Mapped TitanOS Invoice Draft</div>
+                                              <div className="mb-1 font-medium">Mapped Printers Hero Invoice Draft</div>
                                               <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 font-mono text-[11px]">{JSON.stringify(row.inspection.mappedDraft, null, 2)}</pre>
                                             </div>
                                             <div className="rounded-md border bg-background p-2 md:col-span-2">
@@ -1525,7 +1525,7 @@ export default function SettingsIntegrations() {
                 <ul className="text-sm space-y-1 text-muted-foreground">
                   <li>• Take card payments for invoices</li>
                   <li>• Each organization connects their own Stripe account</li>
-                  <li>• No tenant secret keys stored in QuoteVaultPro</li>
+                  <li>• No tenant secret keys stored in Printers Hero</li>
                 </ul>
               </div>
             )}

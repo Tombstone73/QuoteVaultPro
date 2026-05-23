@@ -201,7 +201,7 @@ export default function OrderTravelerPage() {
               <div style={{ fontSize: "9px", color: "#666" }}>QR unavailable</div>
             )}
             <div style={{ fontSize: "8px", color: "#444", marginTop: "1mm" }}>
-              Scan to open order in TitanOS
+              Scan to open order in Printers Hero
             </div>
             <div style={{ fontSize: "7px", color: "#888", marginTop: "1mm" }}>
               Printed {new Date().toLocaleString()}

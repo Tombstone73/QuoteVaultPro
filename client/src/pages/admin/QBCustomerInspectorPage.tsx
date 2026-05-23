@@ -201,12 +201,12 @@ function CustomerResults({ data: inspection, raw }: { data: QBCustomerInspection
       )}
 
       {/* Mapped fields */}
-      <SectionCard title={`Mapped TitanOS Fields (${inspection.mapped.length})`}>
+      <SectionCard title={`Mapped Printers Hero Fields (${inspection.mapped.length})`}>
         <div className="overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="text-[10px]">TitanOS Field</TableHead>
+                <TableHead className="text-[10px]">Printers Hero Field</TableHead>
                 <TableHead className="text-[10px]">Value</TableHead>
                 <TableHead className="text-[10px]">QB Source</TableHead>
               </TableRow>
@@ -287,7 +287,7 @@ function CustomerResults({ data: inspection, raw }: { data: QBCustomerInspection
       {/* Mapped JSON */}
       <Card className="border-titan-border bg-titan-bg-card-elevated">
         <CardHeader className="py-3 px-4">
-          <CardTitle className="text-titan-sm text-titan-text-primary">Inspection Payload (TitanOS mapping)</CardTitle>
+          <CardTitle className="text-titan-sm text-titan-text-primary">Inspection Payload (Printers Hero mapping)</CardTitle>
         </CardHeader>
         <CardContent className="px-4 pb-4">
           <JsonBlock value={inspection} label="Inspection JSON" />
@@ -391,7 +391,7 @@ export default function QBCustomerInspectorPage() {
             </Badge>
           </div>
           <p className="text-titan-sm text-titan-text-secondary">
-            Fetch and inspect a single QuickBooks customer payload — mapped TitanOS fields, unmapped QB fields,
+            Fetch and inspect a single QuickBooks customer payload - mapped Printers Hero fields, unmapped QB fields,
             and contact creation analysis. Read-only — no data is imported or modified.
           </p>
         </div>

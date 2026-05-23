@@ -4,11 +4,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import { Calculator, Loader2, Eye, EyeOff } from "lucide-react";
+import { Loader2, Eye, EyeOff } from "lucide-react";
 import { getApiUrl } from "@/lib/apiConfig";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
 import { apiFetch } from "@/lib/queryClient";
+import { HERO_LOGO_SRC, SHIELD_LOGO_SRC } from "@/lib/branding";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -88,13 +89,15 @@ export default function Login() {
     <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
       <div className="w-full max-w-md space-y-8">
         <div className="flex flex-col items-center gap-2">
-          <Calculator className="w-12 h-12 text-primary" />
-          <h1 className="text-3xl font-bold">QuoteVaultPro</h1>
+          <img src={HERO_LOGO_SRC} alt="Printers Hero" className="h-16 w-auto" />
           <p className="text-muted-foreground">Sign in to your account</p>
         </div>
 
         <Card>
           <CardHeader>
+            <div className="mb-2 flex justify-center">
+              <img src={SHIELD_LOGO_SRC} alt="" className="h-8 w-8" aria-hidden="true" />
+            </div>
             <CardTitle>Sign In</CardTitle>
             <CardDescription>Enter your credentials to access the system</CardDescription>
           </CardHeader>

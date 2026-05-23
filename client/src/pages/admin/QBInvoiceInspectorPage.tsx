@@ -357,7 +357,7 @@ function InvoiceResults({ data: invoice, raw }: { data: QBInvoiceDetail; raw: un
       <Card className="border-titan-border bg-titan-bg-card-elevated">
         <CardHeader className="py-3 px-4">
           <div className="flex items-center justify-between">
-            <CardTitle className="text-titan-sm text-titan-text-primary">Transformed Payload (TitanOS mapping)</CardTitle>
+            <CardTitle className="text-titan-sm text-titan-text-primary">Transformed Payload (Printers Hero mapping)</CardTitle>
           </div>
         </CardHeader>
         <CardContent className="px-4 pb-4">

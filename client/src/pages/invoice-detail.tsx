@@ -268,7 +268,7 @@ export default function InvoiceDetailPage() {
   const canDeleteDraftInvoice = invoice?.status === 'draft' && payments.length === 0 && !isImportedFromQuickBooks;
   const accountingModeLabel = isImportedFromQuickBooks
     ? (isHistoricalImport ? 'Historical' : 'Active A/R')
-    : 'TitanOS';
+    : 'Printers Hero';
 
   const invoicePdfViewUrl = invoiceId ? `/api/invoices/${encodeURIComponent(invoiceId)}/pdf` : '';
   const invoicePdfDownloadUrl = invoiceId ? `/api/invoices/${encodeURIComponent(invoiceId)}/pdf?download=1` : '';
@@ -1438,7 +1438,7 @@ export default function InvoiceDetailPage() {
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <div className="rounded-md border bg-card/50 p-3">
                   <div className="text-xs font-medium text-muted-foreground">Source</div>
-                  <div className="mt-1 text-sm font-semibold">{isImportedFromQuickBooks ? 'QuickBooks' : 'TitanOS'}</div>
+                  <div className="mt-1 text-sm font-semibold">{isImportedFromQuickBooks ? 'QuickBooks' : 'Printers Hero'}</div>
                 </div>
                 <div className="rounded-md border bg-card/50 p-3">
                   <div className="text-xs font-medium text-muted-foreground">Lifecycle</div>
@@ -1616,7 +1616,7 @@ export default function InvoiceDetailPage() {
                       {lineItems.length === 0 ? (
                         <TableRow>
                           <TableCell colSpan={4} className="py-8 text-center text-sm text-muted-foreground">
-                            {isImportedFromQuickBooks ? 'No TitanOS production line items for this imported invoice.' : 'No line items recorded.'}
+                            {isImportedFromQuickBooks ? 'No Printers Hero production line items for this imported invoice.' : 'No line items recorded.'}
                           </TableCell>
                         </TableRow>
                       ) : lineItems.map((item) => (
@@ -1978,7 +1978,7 @@ export default function InvoiceDetailPage() {
                           <AlertDescription>
                             <div className="space-y-2">
                               <div>
-                                TitanOS reduces A/R immediately for local payments on imported QuickBooks invoices. Those payments still need to sync to QuickBooks and later reconcile against the refreshed QuickBooks balance snapshot.
+                                Printers Hero reduces A/R immediately for local payments on imported QuickBooks invoices. Those payments still need to sync to QuickBooks and later reconcile against the refreshed QuickBooks balance snapshot.
                               </div>
                               {hasImportedQbPaymentSummary ? (
                                 <div className="flex flex-wrap gap-2 text-xs">
