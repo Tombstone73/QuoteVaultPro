@@ -28,7 +28,7 @@ import { getApiBaseUrlForDebug, getApiEnvironmentLabel } from "@/lib/apiConfig";
 // ============================================================
 
 const ROUTE_TITLES: Record<string, string> = {
-  "/": "Titan Dashboard",
+  "/": "Dashboard",
   "/dashboard": "Dashboard",
   "/system/admin": "Admin Dashboard",
   "/customers": "Customers",
@@ -75,7 +75,7 @@ function getPageTitle(pathname: string): string {
     }
   }
 
-  return "TitanOS";
+  return "Printers Hero";
 }
 
 function getBreadcrumbs(pathname: string): Array<{ label: string; path: string }> {

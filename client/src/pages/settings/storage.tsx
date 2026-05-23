@@ -804,7 +804,7 @@ export default function StorageSettingsPage() {
 
           <ValidationCard
             title="Orchestration validation"
-            description="Preview how TitanOS would route small and large files with the current orchestration settings."
+            description="Preview how Printers Hero would route small and large files with the current orchestration settings."
             validation={orchestrationValidation}
           />
         </div>

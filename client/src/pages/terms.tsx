@@ -17,8 +17,8 @@ export default function TermsPage() {
   return (
     <PublicPageLayout title="Terms of Service" description={`Last updated: ${LAST_UPDATED}`}>
       <p className="text-sm text-muted-foreground mb-8 leading-relaxed">
-        These Terms of Service ("Terms") govern your use of PrintersHero and TitanOS (collectively,
-        the "Platform"), operated by {COMPANY_NAME} ("we," "us," or "our"). By accessing or
+        These Terms of Service ("Terms") govern your use of Printers Hero (the "Platform"),
+        operated by {COMPANY_NAME} ("we," "us," or "our"). By accessing or
         using the Platform, you agree to these Terms. If you do not agree, do not use the Platform.
       </p>
 
@@ -34,7 +34,7 @@ export default function TermsPage() {
       <Section title="2. Use of the Platform">
         <p>
           Subject to these Terms, we grant your organization a limited, non-exclusive,
-          non-transferable license to access and use TitanOS for your internal business operations
+          non-transferable license to access and use Printers Hero for your internal business operations
           related to print production, quoting, order management, and related workflows.
         </p>
         <p>You may not:</p>
@@ -79,24 +79,24 @@ export default function TermsPage() {
           The Platform integrates with QuickBooks and may sync invoice, payment, and customer data.{" "}
           <strong className="text-foreground">
             The accuracy of all financial data, accounting records, and business data entered into or
-            synced through TitanOS is your responsibility.
+            synced through Printers Hero is your responsibility.
           </strong>
         </p>
         <p>
           We are not accountants, financial advisors, or auditors. The Platform is a workflow and
-          production management tool. Any figures, totals, or synced records displayed in TitanOS
+          production management tool. Any figures, totals, or synced records displayed in Printers Hero
           should be verified against your authoritative accounting records before use in financial
           reporting, tax filings, or other compliance purposes.
         </p>
         <p>
           We are not liable for errors arising from incorrect data entry, misconfigured pricing
-          formulas, or discrepancies between TitanOS and your QuickBooks account.
+          formulas, or discrepancies between Printers Hero and your QuickBooks account.
         </p>
       </Section>
 
       <Section title="5. Service Availability">
         <p>
-          We aim to keep TitanOS available and reliable, but we do not guarantee uninterrupted
+          We aim to keep Printers Hero available and reliable, but we do not guarantee uninterrupted
           access. The Platform may be temporarily unavailable due to:
         </p>
         <ul className="list-disc pl-5 space-y-1.5">

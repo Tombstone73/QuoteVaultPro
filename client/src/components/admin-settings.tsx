@@ -507,7 +507,7 @@ function GmailConnectionCard() {
                 Gmail Connection
               </CardTitle>
               <CardDescription className="mt-1">
-                Connect the Gmail account TitanOS should use for quotes, proofs, invoices, and customer notifications.
+                Connect the Gmail account Printers Hero should use for quotes, proofs, invoices, and customer notifications.
               </CardDescription>
             </div>
             {connection && <StatusBadge status={connection.status} />}

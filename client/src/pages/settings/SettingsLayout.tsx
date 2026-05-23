@@ -220,7 +220,7 @@ export function SettingsLayout() {
       <div className="min-h-screen bg-titan-bg-app p-6">
         <PageHeader
           title="Settings"
-          subtitle="Configure TitanOS, your account, and integrations"
+          subtitle="Configure Printers Hero, your account, and integrations"
         />
         
         <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-6 mt-6">

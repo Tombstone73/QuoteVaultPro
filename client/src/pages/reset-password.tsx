@@ -5,8 +5,9 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
-import { Calculator, Loader2, AlertCircle, Eye, EyeOff } from "lucide-react";
+import { Loader2, AlertCircle, Eye, EyeOff } from "lucide-react";
 import { getApiUrl } from "@/lib/apiConfig";
+import { HERO_LOGO_SRC } from "@/lib/branding";
 
 export default function ResetPassword() {
   const [searchParams] = useSearchParams();
@@ -98,8 +99,7 @@ export default function ResetPassword() {
       <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
         <div className="w-full max-w-md space-y-8">
           <div className="flex flex-col items-center gap-2">
-            <Calculator className="w-12 h-12 text-primary" />
-            <h1 className="text-3xl font-bold">QuoteVaultPro</h1>
+            <img src={HERO_LOGO_SRC} alt="Printers Hero" className="h-16 w-auto" />
           </div>
 
           <Card>
@@ -138,8 +138,7 @@ export default function ResetPassword() {
     <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
       <div className="w-full max-w-md space-y-8">
         <div className="flex flex-col items-center gap-2">
-          <Calculator className="w-12 h-12 text-primary" />
-          <h1 className="text-3xl font-bold">QuoteVaultPro</h1>
+          <img src={HERO_LOGO_SRC} alt="Printers Hero" className="h-16 w-auto" />
           <p className="text-muted-foreground">Create a new password</p>
         </div>
 

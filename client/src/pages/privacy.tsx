@@ -17,8 +17,8 @@ export default function PrivacyPage() {
   return (
     <PublicPageLayout title="Privacy Policy" description={`Last updated: ${LAST_UPDATED}`}>
       <p className="text-sm text-muted-foreground mb-8 leading-relaxed">
-        PrintersHero, a {COMPANY_NAME} platform, provides a print shop management and quoting
-        platform ("TitanOS") for printing businesses and their teams. This Privacy Policy describes how
+        Printers Hero, a {COMPANY_NAME} platform, provides a print shop management and quoting
+        platform for printing businesses and their teams. This Privacy Policy describes how
         we collect, use, and protect information when you use our platform.
       </p>
 
@@ -52,7 +52,7 @@ export default function PrivacyPage() {
 
       <Section title="2. OAuth Integrations">
         <p>
-          PrintersHero supports OAuth-based integrations with third-party platforms. When you authorize
+          Printers Hero supports OAuth-based integrations with third-party platforms. When you authorize
           a connection, we receive and store the access and refresh tokens needed to operate that
           integration on behalf of your organization.
         </p>
@@ -65,7 +65,7 @@ export default function PrivacyPage() {
             records.
           </li>
           <li>
-            Data pulled from QuickBooks is stored within your organization's workspace in TitanOS for
+            Data pulled from QuickBooks is stored within your organization's workspace in Printers Hero for
             reference and reporting.
           </li>
           <li>
@@ -90,14 +90,14 @@ export default function PrivacyPage() {
         </ul>
         <p className="mt-3">
           You can revoke any integration at any time from{" "}
-          <strong className="text-foreground">Settings → Integrations</strong> within TitanOS.
+          <strong className="text-foreground">Settings → Integrations</strong> within Printers Hero.
           Revoking an integration removes the stored tokens from our system immediately.
         </p>
       </Section>
 
       <Section title="3. How We Use Your Data">
         <ul className="list-disc pl-5 space-y-1.5">
-          <li>To operate and deliver the TitanOS platform and its features.</li>
+          <li>To operate and deliver the Printers Hero platform and its features.</li>
           <li>
             To process quotes, orders, production jobs, and invoices on your behalf.
           </li>
@@ -148,7 +148,7 @@ export default function PrivacyPage() {
 
       <Section title="5. Multi-Tenant Organization Separation">
         <p>
-          TitanOS is a multi-tenant platform. Each organization's data is logically isolated — users
+          Printers Hero is a multi-tenant platform. Each organization's data is logically isolated - users
           can only access data belonging to their own organization. Users with multi-organization
           access (platform administrators) are subject to additional access controls.
         </p>
@@ -160,7 +160,7 @@ export default function PrivacyPage() {
 
       <Section title="6. Cookies and Sessions">
         <p>
-          We use session cookies to maintain your authenticated state while you use TitanOS. These
+          We use session cookies to maintain your authenticated state while you use Printers Hero. These
           cookies are necessary for the platform to function and are not used for advertising or
           cross-site tracking.
         </p>
@@ -224,7 +224,7 @@ export default function PrivacyPage() {
         <p>To revoke a third-party integration:</p>
         <ul className="list-disc pl-5 space-y-1.5">
           <li>
-            Within TitanOS: go to{" "}
+            Within Printers Hero: go to{" "}
             <strong className="text-foreground">Settings → Integrations</strong> and disconnect the
             service.
           </li>
@@ -235,11 +235,11 @@ export default function PrivacyPage() {
           <li>
             Within Google: visit{" "}
             <strong className="text-foreground">myaccount.google.com/permissions</strong> and revoke
-            PrintersHero's access.
+            Printers Hero's access.
           </li>
         </ul>
         <p>
-          Revoking an integration from TitanOS removes the stored token immediately. It does not
+          Revoking an integration from Printers Hero removes the stored token immediately. It does not
           delete historical data that was synced before revocation.
         </p>
       </Section>

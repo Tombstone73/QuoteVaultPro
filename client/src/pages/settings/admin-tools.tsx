@@ -418,7 +418,7 @@ export default function AdminTools() {
                     <CardTitle className="text-titan-sm">QB Customer Inspector</CardTitle>
                   </div>
                   <CardDescription className="text-titan-xs">
-                    Fetch and inspect a single QuickBooks customer payload — mapped TitanOS fields, unmapped QB fields, and contact creation analysis.
+                    Fetch and inspect a single QuickBooks customer payload - mapped Printers Hero fields, unmapped QB fields, and contact creation analysis.
                   </CardDescription>
                 </CardHeader>
                 <CardContent>

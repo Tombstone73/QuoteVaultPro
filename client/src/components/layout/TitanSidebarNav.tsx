@@ -38,6 +38,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ROUTES } from "@/config/routes";
 import { buildReferrer } from "@/lib/nav/smartBack";
+import { SHIELD_LOGO_SRC } from "@/lib/branding";
 
 // ============================================================
 // NAV CONFIG - AUTHORITATIVE TITANOS NAVIGATION
@@ -507,10 +508,10 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
           aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
         >
           <div className={cn(
-            "h-8 w-8 shrink-0 rounded-titan-lg bg-titan-accent flex items-center justify-center transition-transform",
+            "h-8 w-8 shrink-0 rounded-titan-lg flex items-center justify-center transition-transform",
             isCollapsed && "group-hover:scale-110"
           )}>
-            <span className="text-sm font-bold text-white">T</span>
+            <img src={SHIELD_LOGO_SRC} alt="" className="h-8 w-8" aria-hidden="true" />
           </div>
           {!isCollapsed && (
             <span className="text-base font-semibold text-titan-text-primary">Printers Hero</span>
