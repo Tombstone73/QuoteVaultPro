@@ -42,6 +42,7 @@ import {
   resolveActiveProductionOwners,
 } from "../services/productionOwnership";
 import { routeLineItemToProduction } from "../services/productionRoutingService";
+import { assertParentOrderInProductionForJob } from "../services/orderProductionGate";
 
 /**
  * Canonical station key for the Fulfillment station.
@@ -1608,6 +1609,11 @@ export function registerProductionJobsRoutes(
         const job = jobRows[0];
         if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
         if (job.status === "done") throw Object.assign(new Error("Job is done; reopen first"), { statusCode: 400 });
+        await assertParentOrderInProductionForJob(tx, {
+          organizationId,
+          job,
+          action: "start production job",
+        });
 
         const timerState = await getTimerStateForJob(organizationId, jobId, tx);
         if (timerState.isRunning) {
@@ -1743,6 +1749,11 @@ export function registerProductionJobsRoutes(
         const job = jobRows[0];
         if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
         if (job.status === "done") return job;
+        await assertParentOrderInProductionForJob(tx, {
+          organizationId,
+          job,
+          action: "complete production job",
+        });
 
         // queued -> done requires explicit skipProduction
         if (job.status === "queued" && !skipProduction) {
@@ -2379,6 +2390,12 @@ export function registerProductionJobsRoutes(
           }
           return job;
         }
+
+        await assertParentOrderInProductionForJob(tx, {
+          organizationId,
+          job,
+          action: "update production job status",
+        });
 
         // If setting to done, stop timer if running
         if (newStatus === "done") {

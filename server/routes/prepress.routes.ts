@@ -52,6 +52,7 @@ import {
 } from "../services/productionOwnership";
 import { routeLineItemToProduction } from "../services/productionRoutingService";
 import { resolvePostPrepressProductionRoute } from "../services/productionRoutingResolver";
+import { assertParentOrderInProduction } from "../services/orderProductionGate";
 import { computePlannedMaterialsForLineItem } from "../services/prepressPlannedMaterials";
 import {
   appendMaterialOverrideToSpecsJson,
@@ -1928,6 +1929,13 @@ export function registerPrepressQueueRoutes(
         const lineItem = lineItems[0].lineItem;
         const order = lineItems[0].order;
 
+        await assertParentOrderInProduction(tx, {
+          organizationId: orgId,
+          orderId: order.id,
+          lineItemId,
+          action: "start prepress",
+        });
+
         startFailureStage = "resolve_active_owner";
         const activeOwner = await findActiveJobForLineItem(tx, {
           organizationId: orgId,
@@ -2235,6 +2243,13 @@ export function registerPrepressQueueRoutes(
         const session = sessions[0];
         sessionLineItemId = session.lineItemId;
 
+        await assertParentOrderInProduction(tx, {
+          organizationId: orgId,
+          orderId: session.orderId,
+          lineItemId: session.lineItemId,
+          action: "complete prepress",
+        });
+
         completeFailureStage = "resolve_active_owner";
         const activeOwner = await findActiveJobForLineItem(tx, {
           organizationId: orgId,
@@ -2398,6 +2413,12 @@ export function registerPrepressQueueRoutes(
       }
 
       const item = lineItem;
+      await assertParentOrderInProduction(db, {
+        organizationId,
+        orderId: item.orderId,
+        lineItemId,
+        action: "send prepress to production",
+      });
 
       // 2. Canonical prepress gate: active owner must currently be prepress.
       const activeJob = await findActiveJobForLineItem(db, {

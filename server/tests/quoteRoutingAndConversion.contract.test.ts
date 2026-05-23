@@ -8,6 +8,7 @@ import {
   orders,
   productDesignConfigs,
   products,
+  quotes,
   quoteLineItems,
   type LineItemWorkflowState,
 } from "@shared/schema";
@@ -17,6 +18,7 @@ import { OrdersRepository } from "../storage/orders.repo";
 import { getLineItemDesignBriefDetail, upsertLineItemDesignBrief } from "../services/lineItemDesignBriefService";
 import { transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
 import { findAllActiveJobsForLineItem } from "../services/productionOwnership";
+import { assertParentOrderInProductionForJob } from "../services/orderProductionGate";
 
 const quotesRepo = new QuotesRepository(db);
 const ordersRepo = new OrdersRepository(db);
@@ -428,6 +430,102 @@ describe("quote routing persistence and conversion contract", () => {
 
     expect(await getActiveJobs(String(itemA!.id))).toHaveLength(0);
 
+  });
+
+  test("quote to order conversion carries permanent billing and pickup snapshots", async () => {
+    const quote = await quotesRepo.createQuote(organizationId, {
+      ...buildPrepressOnlyQuoteInput(`Pickup snapshot ${suffix}`),
+      shippingMethod: "pickup",
+      shippingMode: "single_shipment",
+      billToName: "Workflow Billing Contact",
+      billToCompany: "Workflow Contract Customer",
+      billToAddress1: "123 Snapshot Way",
+      billToCity: "Raleigh",
+      billToState: "NC",
+      billToPostalCode: "27601",
+      billToCountry: "US",
+      billToEmail: "billing-snapshot@example.test",
+      shipToName: "Workflow Pickup Contact",
+      shipToCompany: "Workflow Contract Customer",
+      shipToAddress1: "123 Snapshot Way",
+      shipToCity: "Raleigh",
+      shipToState: "NC",
+      shipToPostalCode: "27601",
+      shipToCountry: "US",
+    } as any);
+
+    const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId);
+
+    expect(createdOrder.quoteId).toBe(quote.id);
+    expect(createdOrder.sourceQuoteNumber).toBe(quote.quoteNumber);
+    expect(createdOrder.billToName).toBe("Workflow Billing Contact");
+    expect(createdOrder.billToCompany).toBe("Workflow Contract Customer");
+    expect(createdOrder.billToAddress1).toBe("123 Snapshot Way");
+    expect(createdOrder.billToEmail).toBe("billing-snapshot@example.test");
+    expect(createdOrder.shippingMethod).toBe("pickup");
+    expect(createdOrder.shippingMode).toBe("single_shipment");
+    expect(createdOrder.shipToName).toBe("Workflow Pickup Contact");
+  });
+
+  test("quote conversion blocks before order creation when billing snapshot cannot be resolved", async () => {
+    const quote = await quotesRepo.createQuote(organizationId, {
+      ...buildPrepressOnlyQuoteInput(`Missing billing ${suffix}`),
+      customerId: null,
+      customerName: null,
+      billToName: null,
+      billToCompany: null,
+      shippingMethod: "pickup",
+      shippingMode: "single_shipment",
+    } as any);
+
+    await expect(ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId)).rejects.toMatchObject({
+      statusCode: 400,
+      code: "QUOTE_CONVERSION_MISSING_ORDER_SNAPSHOT",
+    });
+
+    const [quoteAfter] = await db
+      .select({ convertedToOrderId: quotes.convertedToOrderId })
+      .from(quotes)
+      .where(eq(quotes.id, quote.id))
+      .limit(1);
+    const orderRows = await db.select({ id: orders.id }).from(orders).where(eq(orders.quoteId, quote.id));
+
+    expect(quoteAfter?.convertedToOrderId).toBeNull();
+    expect(orderRows).toHaveLength(0);
+  });
+
+  test("production ownership cannot advance while parent order is not in production", async () => {
+    const quote = await createPrepressOnlyQuote(`Gate parent order ${suffix}`);
+    const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId);
+    const activeJobs = await getActiveJobs(String(createdOrder.lineItems[0]!.id));
+    expect(activeJobs).toHaveLength(1);
+
+    await expect(
+      assertParentOrderInProductionForJob(db, {
+        organizationId,
+        job: activeJobs[0],
+        action: "start production job",
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      code: "PARENT_ORDER_NOT_IN_PRODUCTION",
+    });
+
+    await db
+      .update(orders)
+      .set({ status: "in_production" as any })
+      .where(and(eq(orders.id, createdOrder.id), eq(orders.organizationId, organizationId)));
+
+    await expect(
+      assertParentOrderInProductionForJob(db, {
+        organizationId,
+        job: activeJobs[0],
+        action: "start production job",
+      }),
+    ).resolves.toMatchObject({
+      id: createdOrder.id,
+      status: "in_production",
+    });
   });
 
   test("fail-closed downstream resolution leaves workflow state and ownership untouched", async () => {

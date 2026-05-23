@@ -68,6 +68,184 @@ type OrderWithProofSummary = Order & {
     proofLineItemId?: string | null;
 };
 
+type OrderSnapshotFields = Pick<
+    typeof orders.$inferInsert,
+    | "billToName"
+    | "billToCompany"
+    | "billToAddress1"
+    | "billToAddress2"
+    | "billToCity"
+    | "billToState"
+    | "billToPostalCode"
+    | "billToCountry"
+    | "billToPhone"
+    | "billToEmail"
+    | "shippingMethod"
+    | "shippingMode"
+    | "shipToName"
+    | "shipToCompany"
+    | "shipToAddress1"
+    | "shipToAddress2"
+    | "shipToCity"
+    | "shipToState"
+    | "shipToPostalCode"
+    | "shipToCountry"
+    | "shipToPhone"
+    | "shipToEmail"
+    | "carrier"
+    | "carrierAccountNumber"
+    | "shippingInstructions"
+>;
+
+function cleanText(value: unknown): string | null {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeShippingMethod(value: unknown): "pickup" | "ship" | "deliver" | null {
+    const normalized = cleanText(value)?.toLowerCase();
+    if (!normalized) return null;
+    if (normalized === "pickup") return "pickup";
+    if (normalized === "deliver" || normalized === "delivery") return "deliver";
+    if (normalized === "ship" || normalized === "shipping") return "ship";
+    return null;
+}
+
+function normalizeShippingMode(value: unknown): "single_shipment" | "multi_shipment" {
+    const normalized = cleanText(value)?.toLowerCase();
+    return normalized === "multi_shipment" ? "multi_shipment" : "single_shipment";
+}
+
+function contactName(contact: typeof customerContacts.$inferSelect | null | undefined): string | null {
+    if (!contact) return null;
+    return cleanText(`${contact.firstName || ""} ${contact.lastName || ""}`) ?? cleanText((contact as any).name);
+}
+
+function buildOrderSnapshotFromQuote(args: {
+    quote: typeof quotes.$inferSelect;
+    customer?: typeof customers.$inferSelect | null;
+    contact?: typeof customerContacts.$inferSelect | null;
+}): OrderSnapshotFields {
+    const { quote, customer, contact } = args;
+    const billToName =
+        cleanText(quote.billToName) ??
+        contactName(contact) ??
+        cleanText(quote.customerName) ??
+        cleanText(customer?.companyName);
+    const billToCompany =
+        cleanText(quote.billToCompany) ??
+        cleanText(customer?.companyName) ??
+        cleanText(quote.customerName);
+    const shippingMethod = normalizeShippingMethod(quote.shippingMethod) ?? "ship";
+    const shippingMode = normalizeShippingMode(quote.shippingMode);
+
+    const billToAddress1 = cleanText(quote.billToAddress1) ?? cleanText(customer?.billingStreet1) ?? cleanText(customer?.billingAddress);
+    const billToAddress2 = cleanText(quote.billToAddress2) ?? cleanText(customer?.billingStreet2);
+    const billToCity = cleanText(quote.billToCity) ?? cleanText(customer?.billingCity);
+    const billToState = cleanText(quote.billToState) ?? cleanText(customer?.billingState);
+    const billToPostalCode = cleanText(quote.billToPostalCode) ?? cleanText(customer?.billingPostalCode);
+    const billToCountry = cleanText(quote.billToCountry) ?? cleanText(customer?.billingCountry) ?? "US";
+    const billToPhone = cleanText(quote.billToPhone) ?? cleanText(customer?.phone);
+    const billToEmail = cleanText(quote.billToEmail) ?? cleanText(contact?.email) ?? cleanText(customer?.email);
+
+    const pickupUsesBilling = shippingMethod === "pickup";
+    const shipToName = cleanText(quote.shipToName) ?? (pickupUsesBilling ? billToName : null) ?? billToName;
+    const shipToCompany = cleanText(quote.shipToCompany) ?? (pickupUsesBilling ? billToCompany : null) ?? billToCompany;
+    const shipToAddress1 =
+        cleanText(quote.shipToAddress1) ??
+        (pickupUsesBilling ? billToAddress1 : null) ??
+        cleanText(customer?.shippingStreet1) ??
+        cleanText(customer?.shippingAddress) ??
+        billToAddress1;
+    const shipToAddress2 =
+        cleanText(quote.shipToAddress2) ??
+        (pickupUsesBilling ? billToAddress2 : null) ??
+        cleanText(customer?.shippingStreet2) ??
+        billToAddress2;
+    const shipToCity =
+        cleanText(quote.shipToCity) ??
+        (pickupUsesBilling ? billToCity : null) ??
+        cleanText(customer?.shippingCity) ??
+        billToCity;
+    const shipToState =
+        cleanText(quote.shipToState) ??
+        (pickupUsesBilling ? billToState : null) ??
+        cleanText(customer?.shippingState) ??
+        billToState;
+    const shipToPostalCode =
+        cleanText(quote.shipToPostalCode) ??
+        (pickupUsesBilling ? billToPostalCode : null) ??
+        cleanText(customer?.shippingPostalCode) ??
+        billToPostalCode;
+    const shipToCountry =
+        cleanText(quote.shipToCountry) ??
+        (pickupUsesBilling ? billToCountry : null) ??
+        cleanText(customer?.shippingCountry) ??
+        billToCountry;
+
+    return {
+        billToName,
+        billToCompany,
+        billToAddress1,
+        billToAddress2,
+        billToCity,
+        billToState,
+        billToPostalCode,
+        billToCountry,
+        billToPhone,
+        billToEmail,
+        shippingMethod,
+        shippingMode,
+        shipToName,
+        shipToCompany,
+        shipToAddress1,
+        shipToAddress2,
+        shipToCity,
+        shipToState,
+        shipToPostalCode,
+        shipToCountry,
+        shipToPhone: cleanText(quote.shipToPhone) ?? billToPhone,
+        shipToEmail: cleanText(quote.shipToEmail) ?? billToEmail,
+        carrier: cleanText(quote.carrier),
+        carrierAccountNumber: cleanText(quote.carrierAccountNumber),
+        shippingInstructions: cleanText(quote.shippingInstructions),
+    };
+}
+
+function validateOrderSnapshotForConversion(snapshot: OrderSnapshotFields) {
+    const errors: Array<{ code: string; message: string; field: string }> = [];
+    if (!snapshot.billToName && !snapshot.billToCompany) {
+        errors.push({
+            code: "MISSING_BILLING_IDENTITY",
+            field: "billToName",
+            message: "Billing name or company is required before converting a quote to an order.",
+        });
+    }
+    if (!snapshot.shippingMethod) {
+        errors.push({
+            code: "MISSING_FULFILLMENT_METHOD",
+            field: "shippingMethod",
+            message: "Fulfillment method is required before converting a quote to an order.",
+        });
+    }
+    if (snapshot.shippingMethod !== "pickup" && !snapshot.shipToName && !snapshot.shipToCompany) {
+        errors.push({
+            code: "MISSING_SHIPPING_IDENTITY",
+            field: "shipToName",
+            message: "Shipping/delivery name or company is required for non-pickup orders.",
+        });
+    }
+
+    if (errors.length > 0) {
+        throw Object.assign(new Error("Quote cannot be converted until required order snapshot fields are complete."), {
+            statusCode: 400,
+            code: "QUOTE_CONVERSION_MISSING_ORDER_SNAPSHOT",
+            errors,
+        });
+    }
+}
+
 const ORDER_ATTACHMENT_SAFE_SELECT = {
     id: orderAttachments.id,
     fileRecordId: orderAttachments.fileRecordId,
@@ -915,6 +1093,33 @@ export class OrdersRepository {
         taxRate?: number;
         taxAmount?: number;
         taxableSubtotal?: number;
+        billToName?: string | null;
+        billToCompany?: string | null;
+        billToAddress1?: string | null;
+        billToAddress2?: string | null;
+        billToCity?: string | null;
+        billToState?: string | null;
+        billToPostalCode?: string | null;
+        billToCountry?: string | null;
+        billToPhone?: string | null;
+        billToEmail?: string | null;
+        shippingMethod?: string | null;
+        shippingMode?: string | null;
+        shipToName?: string | null;
+        shipToCompany?: string | null;
+        shipToAddress1?: string | null;
+        shipToAddress2?: string | null;
+        shipToCity?: string | null;
+        shipToState?: string | null;
+        shipToPostalCode?: string | null;
+        shipToCountry?: string | null;
+        shipToPhone?: string | null;
+        shipToEmail?: string | null;
+        carrier?: string | null;
+        carrierAccountNumber?: string | null;
+        shippingInstructions?: string | null;
+        trackingNumber?: string | null;
+        shippingCents?: number | null;
     }): Promise<OrderWithRelations> {
         if (!data.customerId) throw new Error('customerId required');
         if (!data.lineItems || data.lineItems.length === 0) throw new Error('At least one line item required');
@@ -954,6 +1159,33 @@ export class OrdersRepository {
                 discount: discount.toString(),
                 notesInternal: data.notesInternal || null,
                 createdByUserId: data.createdByUserId,
+                billToName: data.billToName ?? null,
+                billToCompany: data.billToCompany ?? null,
+                billToAddress1: data.billToAddress1 ?? null,
+                billToAddress2: data.billToAddress2 ?? null,
+                billToCity: data.billToCity ?? null,
+                billToState: data.billToState ?? null,
+                billToPostalCode: data.billToPostalCode ?? null,
+                billToCountry: data.billToCountry ?? null,
+                billToPhone: data.billToPhone ?? null,
+                billToEmail: data.billToEmail ?? null,
+                shippingMethod: data.shippingMethod ?? null,
+                shippingMode: data.shippingMode ?? null,
+                shipToName: data.shipToName ?? null,
+                shipToCompany: data.shipToCompany ?? null,
+                shipToAddress1: data.shipToAddress1 ?? null,
+                shipToAddress2: data.shipToAddress2 ?? null,
+                shipToCity: data.shipToCity ?? null,
+                shipToState: data.shipToState ?? null,
+                shipToPostalCode: data.shipToPostalCode ?? null,
+                shipToCountry: data.shipToCountry ?? null,
+                shipToPhone: data.shipToPhone ?? null,
+                shipToEmail: data.shipToEmail ?? null,
+                carrier: data.carrier ?? null,
+                carrierAccountNumber: data.carrierAccountNumber ?? null,
+                shippingInstructions: data.shippingInstructions ?? null,
+                trackingNumber: data.trackingNumber ?? null,
+                shippingCents: data.shippingCents ?? 0,
             };
             const [order] = await tx.insert(orders).values(orderInsert).returning();
 
@@ -1263,6 +1495,23 @@ export class OrdersRepository {
         const quoteLines = await this.dbInstance.select().from(quoteLineItems).where(eq(quoteLineItems.quoteId, quoteId));
         if (quoteLines.length === 0) throw new Error('Quote has no line items');
 
+        const [customer] = quote.customerId
+            ? await this.dbInstance
+                .select()
+                .from(customers)
+                .where(and(eq(customers.id, quote.customerId), eq(customers.organizationId, organizationId)))
+                .limit(1)
+            : [];
+        const [contact] = quote.contactId
+            ? await this.dbInstance
+                .select()
+                .from(customerContacts)
+                .where(eq(customerContacts.id, quote.contactId))
+                .limit(1)
+            : [];
+        const orderSnapshot = buildOrderSnapshotFromQuote({ quote, customer: customer ?? null, contact: contact ?? null });
+        validateOrderSnapshotForConversion(orderSnapshot);
+
         // Fetch org settings for prepress default (migration 0051)
         const [org] = await this.dbInstance
             .select({ prepressDefaultEnabled: organizations.prepressDefaultEnabled })
@@ -1383,6 +1632,7 @@ export class OrdersRepository {
             taxRate: quote.taxRate ? parseFloat(quote.taxRate.toString()) : undefined,
             taxAmount: quote.taxAmount ? parseFloat(quote.taxAmount) : undefined,
             taxableSubtotal: quote.taxableSubtotal ? parseFloat(quote.taxableSubtotal) : undefined,
+            ...orderSnapshot,
         };
 
         console.log('[CONVERT QUOTE TO ORDER] Creating order:', {

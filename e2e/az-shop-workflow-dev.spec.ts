@@ -451,7 +451,15 @@ test.describe.serial("A-Z shop workflow on deployed DEV", () => {
     await step("dashboard/order list status badge reflects final state", "non-blocking", async () => {
       expect(order?.orderNumber).toBeTruthy();
       await page.goto("/orders", { waitUntil: "networkidle" });
-      await expect(page.getByText(String(order!.orderNumber), { exact: false }).first()).toBeVisible({ timeout: 20_000 });
+      const orderNumber = String(order!.orderNumber);
+      const orderRowText = page.getByText(orderNumber, { exact: false }).first();
+      if (!(await orderRowText.isVisible().catch(() => false))) {
+        const prodCompleteTab = page.getByRole("tab", { name: /Prod Complete/i });
+        if (await prodCompleteTab.isVisible().catch(() => false)) {
+          await prodCompleteTab.click();
+        }
+      }
+      await expect(page.getByText(orderNumber, { exact: false }).first()).toBeVisible({ timeout: 20_000 });
       await page.goto("/dashboard", { waitUntil: "networkidle" });
       await expect(page).not.toHaveURL(/\/login/);
       await expect(page.getByText(/dashboard/i).first()).toBeVisible({ timeout: 20_000 });
