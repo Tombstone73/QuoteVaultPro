@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowRight,
@@ -24,6 +24,15 @@ import { MarketingFooter } from "@/components/marketing/MarketingFooter";
 import { MarketingHeader, marketingRequestAccessHref } from "@/components/marketing/MarketingHeader";
 import { MarketingMeta } from "@/components/marketing/MarketingMeta";
 import { SHIELD_LOGO_SRC, SPLASH_STATIC_SRC } from "@/lib/branding";
+import { cn } from "@/lib/utils";
+
+const CONTENT_REVEAL_DELAY_MS = 450;
+
+const prefersReducedMotionQuery = "(prefers-reduced-motion: reduce)";
+
+function getPrefersReducedMotion() {
+  return typeof window !== "undefined" && window.matchMedia(prefersReducedMotionQuery).matches;
+}
 
 const problems = [
   {
@@ -115,12 +124,46 @@ const differentiators = [
 
 export default function Landing() {
   const splashVideoRef = useRef<HTMLVideoElement>(null);
-  const [videoEnded, setVideoEnded] = useState(false);
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(getPrefersReducedMotion);
+  const [videoEnded, setVideoEnded] = useState(() => getPrefersReducedMotion());
+  const [contentVisible, setContentVisible] = useState(() => getPrefersReducedMotion());
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(prefersReducedMotionQuery);
+    const handleChange = () => {
+      const reduceMotion = mediaQuery.matches;
+      setPrefersReducedMotion(reduceMotion);
+      if (reduceMotion) {
+        splashVideoRef.current?.pause();
+        setVideoEnded(true);
+        setContentVisible(true);
+      }
+    };
+
+    handleChange();
+    mediaQuery.addEventListener("change", handleChange);
+    return () => mediaQuery.removeEventListener("change", handleChange);
+  }, []);
+
+  useEffect(() => {
+    if (!videoEnded || prefersReducedMotion) return undefined;
+
+    const timer = window.setTimeout(() => {
+      setContentVisible(true);
+    }, CONTENT_REVEAL_DELAY_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [prefersReducedMotion, videoEnded]);
 
   const replayIntro = () => {
     const video = splashVideoRef.current;
-    if (!video) return;
+    if (prefersReducedMotion || !video) {
+      setVideoEnded(true);
+      setContentVisible(true);
+      return;
+    }
 
+    setContentVisible(false);
     setVideoEnded(false);
     video.currentTime = 0;
     void video.play().catch(() => {
@@ -141,18 +184,47 @@ export default function Landing() {
             aria-hidden="true"
             className="absolute inset-0 h-full w-full object-cover object-center"
           />
-          <PrintersHeroSplashVideo
-            ref={splashVideoRef}
-            fadeOut={videoEnded}
-            onEnded={() => setVideoEnded(true)}
-            className="absolute inset-0 h-full w-full object-cover object-center"
-          />
-          <div className="absolute inset-0 bg-[#05080d]/70" />
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_35%_25%,rgba(0,169,224,0.22),transparent_34%),radial-gradient(circle_at_70%_20%,rgba(255,45,149,0.14),transparent_28%),linear-gradient(180deg,transparent_0%,#05080d_88%)]" />
+          {!prefersReducedMotion && (
+            <PrintersHeroSplashVideo
+              ref={splashVideoRef}
+              fadeOut={videoEnded}
+              onEnded={() => setVideoEnded(true)}
+              onError={() => setVideoEnded(true)}
+              className="absolute inset-0 h-full w-full object-cover object-center"
+            />
+          )}
+          <div className="absolute inset-0 bg-[#05080d]/45" />
+          <div
+            className={cn(
+              "absolute inset-0 transition-opacity duration-1000 ease-out",
+              contentVisible ? "opacity-100" : "opacity-55",
+            )}
+          >
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_24%,rgba(0,0,0,0)_0%,rgba(5,8,13,0.2)_38%,rgba(5,8,13,0.72)_72%),linear-gradient(180deg,rgba(5,8,13,0.12)_0%,rgba(5,8,13,0.35)_48%,#05080d_94%)]" />
+            <div className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-[#05080d] via-[#05080d]/78 to-transparent" />
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_35%_38%,rgba(0,169,224,0.17),transparent_34%),radial-gradient(circle_at_70%_34%,rgba(255,45,149,0.12),transparent_29%)]" />
+          </div>
 
-          <div className="relative z-10 mx-auto flex min-h-[calc(100vh-4rem)] max-w-7xl flex-col justify-center px-4 pb-20 pt-16 sm:px-6 lg:px-8">
-            <div className="mx-auto max-w-4xl text-center">
-              <div className="mb-7 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-4 py-1.5 text-sm text-slate-200 backdrop-blur">
+          <div className="pointer-events-none absolute inset-x-0 top-24 z-10 flex justify-center px-4 sm:top-28">
+            <div
+              className={cn(
+                "flex items-center gap-3 rounded-full border border-white/10 bg-black/18 px-4 py-2 text-white/80 shadow-2xl backdrop-blur-md transition-all duration-700 ease-out",
+                contentVisible ? "opacity-0 -translate-y-2" : "opacity-100 translate-y-0",
+              )}
+            >
+              <img src={SHIELD_LOGO_SRC} alt="" className="h-7 w-7" aria-hidden="true" />
+              <span className="text-sm font-semibold tracking-tight">Printers Hero</span>
+            </div>
+          </div>
+
+          <div className="relative z-10 mx-auto flex min-h-[calc(100vh-4rem)] max-w-7xl flex-col justify-end px-4 pb-14 pt-24 sm:px-6 sm:pb-16 lg:px-8">
+            <div
+              className={cn(
+                "mx-auto max-w-4xl text-center transition-all duration-1000 ease-out",
+                contentVisible ? "translate-y-0 opacity-100" : "translate-y-5 opacity-0",
+              )}
+            >
+              <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-4 py-1.5 text-sm text-slate-200 backdrop-blur">
                 <span className="h-2 w-2 rounded-full bg-[#00a9e0]" />
                 Built for print production
               </div>
@@ -188,7 +260,12 @@ export default function Landing() {
               </div>
             </div>
 
-            <div className="relative mx-auto mt-16 w-full max-w-6xl">
+            <div
+              className={cn(
+                "relative mx-auto mt-10 w-full max-w-6xl transition-all delay-300 duration-1000 ease-out sm:mt-12",
+                contentVisible ? "translate-y-0 opacity-100" : "translate-y-6 opacity-0",
+              )}
+            >
               <div className="absolute inset-0 rounded-full bg-[#00a9e0]/15 blur-[110px]" />
               <MarketingDashboardMockup />
             </div>
@@ -199,7 +276,7 @@ export default function Landing() {
             variant="outline"
             size="sm"
             onClick={replayIntro}
-            className="absolute bottom-5 right-5 z-20 border-white/20 bg-white/10 text-white shadow-lg backdrop-blur transition hover:bg-white/20 sm:bottom-8 sm:right-8"
+            className="absolute bottom-4 right-4 z-20 h-8 border-white/15 bg-black/20 px-3 text-xs text-white/75 shadow-lg backdrop-blur transition hover:bg-white/10 hover:text-white sm:bottom-6 sm:right-6"
           >
             <RotateCcw className="mr-2 h-3.5 w-3.5" />
             Replay Intro
