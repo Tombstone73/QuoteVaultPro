@@ -503,7 +503,7 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
             "hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-titan-accent",
             isCollapsed && "justify-center group"
           )}
-          title={isCollapsed ? "Expand sidebar" : "TitanOS"}
+          title={isCollapsed ? "Expand sidebar" : "Printers Hero"}
           aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
         >
           <div className={cn(
@@ -513,7 +513,7 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
             <span className="text-sm font-bold text-white">T</span>
           </div>
           {!isCollapsed && (
-            <span className="text-base font-semibold text-titan-text-primary">TitanOS</span>
+            <span className="text-base font-semibold text-titan-text-primary">Printers Hero</span>
           )}
         </button>
 
