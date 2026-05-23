@@ -40,6 +40,7 @@ import {
   isDesignOwnershipJob,
   resolveActiveProductionOwners,
 } from "../services/productionOwnership";
+import { assertParentOrderInProduction } from "../services/orderProductionGate";
 
 // ---------------------------------------------------------------------------
 // Local utility (mirrors top-level helper in routes.ts)
@@ -715,6 +716,13 @@ export function registerDesignRoutes(
   app.post("/api/design/line-item/:lineItemId/send", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      await assertParentOrderInProduction(db, {
+        organizationId,
+        lineItemId: String(req.params.lineItemId),
+        action: "send line item to design",
+      });
       await executeExplicitLineItemWorkflowAction({
         req,
         res,
@@ -735,6 +743,13 @@ export function registerDesignRoutes(
   app.post("/api/design/line-item/:lineItemId/start", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      await assertParentOrderInProduction(db, {
+        organizationId,
+        lineItemId: String(req.params.lineItemId),
+        action: "start design",
+      });
       await executeExplicitLineItemWorkflowAction({
         req,
         res,
@@ -783,6 +798,11 @@ export function registerDesignRoutes(
 
       const lineItemId = String(req.params.lineItemId);
       const note = typeof req.body?.note === "string" ? req.body.note : null;
+      await assertParentOrderInProduction(db, {
+        organizationId,
+        lineItemId,
+        action: "complete design",
+      });
 
       const [currentLineItem] = await db
         .select({

@@ -2176,6 +2176,13 @@ export async function registerOrderRoutes(
             if (order.state !== 'open') {
                 return res.status(400).json({ success: false, code: 'INVALID_STATE', message: `Cannot complete production from ${order.state} state.` });
             }
+            if (order.status !== 'in_production') {
+                return res.status(409).json({
+                    success: false,
+                    code: 'PARENT_ORDER_NOT_IN_PRODUCTION',
+                    message: `Cannot complete production while order status is ${order.status}. Move the order into production first.`,
+                });
+            }
 
             const lineItems = await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
             const remainingLineItems = lineItems.filter((li: any) => li.status !== 'complete' && li.status !== 'canceled');
@@ -3679,7 +3686,13 @@ export async function registerOrderRoutes(
             res.status(201).json({ success: true, data: { order } });
         } catch (error: any) {
             console.error("[QUOTE TO ORDER CONVERSION] failed", error);
-            res.status(error?.message?.includes('already converted') ? 409 : 500).json({ success: false, message: error?.message || "Failed to convert quote to order" });
+            const status = error?.statusCode || (error?.message?.includes('already converted') ? 409 : 500);
+            res.status(status).json({
+                success: false,
+                message: error?.message || "Failed to convert quote to order",
+                code: error?.code,
+                errors: error?.errors,
+            });
         }
     });
 
@@ -3793,7 +3806,14 @@ export async function registerOrderRoutes(
                     error: error.message
                 });
             }
-            res.status(500).json({ message: "Failed to convert quote to order", error: error.message });
+            const status = error?.statusCode || 500;
+            res.status(status).json({
+                success: false,
+                message: error?.message || "Failed to convert quote to order",
+                error: error?.message,
+                code: error?.code,
+                errors: error?.errors,
+            });
         }
     });
 
@@ -3914,7 +3934,13 @@ export async function registerOrderRoutes(
             if (error?.message?.includes('already converted')) {
                 return res.status(409).json({ error: error.message });
             }
-            res.status(500).json({ error: 'Failed to convert quote' });
+            const status = error?.statusCode || 500;
+            res.status(status).json({
+                success: false,
+                error: error?.message || 'Failed to convert quote',
+                code: error?.code,
+                errors: error?.errors,
+            });
         }
     });
 
