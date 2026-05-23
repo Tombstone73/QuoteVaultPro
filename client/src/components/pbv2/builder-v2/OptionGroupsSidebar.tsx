@@ -7,7 +7,9 @@ import {
   AlertTriangle,
   Settings,
   Layers,
+  Library,
   MoreVertical,
+  Save,
   Trash2,
 } from 'lucide-react';
 import {
@@ -44,6 +46,8 @@ interface OptionGroupsSidebarProps {
   selectedGroupId: string | null;
   onSelectGroup: (groupId: string) => void;
   onAddGroup: () => void;
+  onImportTemplate: () => void;
+  onSaveGroupAsTemplate: (groupId: string) => void;
   onDeleteGroup: (groupId: string) => void;
   onReorderGroup: (fromIndex: number, toIndex: number) => void;
 }
@@ -54,6 +58,7 @@ interface SortableGroupItemProps {
   options: Record<string, EditorOption>;
   isSelected: boolean;
   onSelectGroup: (groupId: string) => void;
+  onSaveGroupAsTemplate: (groupId: string) => void;
   onDeleteGroup: (groupId: string) => void;
 }
 
@@ -63,6 +68,7 @@ function SortableGroupItem({
   options,
   isSelected,
   onSelectGroup,
+  onSaveGroupAsTemplate,
   onDeleteGroup,
 }: SortableGroupItemProps) {
   const {
@@ -175,6 +181,15 @@ function SortableGroupItem({
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSaveGroupAsTemplate(group.id);
+                }}
+              >
+                <Save className="h-4 w-4 mr-2" />
+                Save as template
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 className="text-red-400"
@@ -200,6 +215,8 @@ export function OptionGroupsSidebar({
   selectedGroupId,
   onSelectGroup,
   onAddGroup,
+  onImportTemplate,
+  onSaveGroupAsTemplate,
   onDeleteGroup,
   onReorderGroup,
 }: OptionGroupsSidebarProps) {
@@ -238,6 +255,15 @@ export function OptionGroupsSidebar({
           <Plus className="h-4 w-4" />
           Add Group
         </Button>
+        <Button
+          onClick={onImportTemplate}
+          variant="outline"
+          className="w-full gap-2 border-slate-600 bg-slate-900/60 text-slate-100 hover:bg-slate-800"
+          size="sm"
+        >
+          <Library className="h-4 w-4" />
+          Import Template
+        </Button>
       </div>
 
       <ScrollArea className="flex-1">
@@ -259,6 +285,7 @@ export function OptionGroupsSidebar({
                   options={options}
                   isSelected={selectedGroupId === group.id}
                   onSelectGroup={onSelectGroup}
+                  onSaveGroupAsTemplate={onSaveGroupAsTemplate}
                   onDeleteGroup={onDeleteGroup}
                 />
               ))}

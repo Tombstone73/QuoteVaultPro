@@ -37,6 +37,8 @@ type ReleaseCheck =
   | { type: "row_exists"; table: string; where: string; label: string };
 
 const RELEASE_CHECKS: ReleaseCheck[] = [
+  // migration 0058 - PBV2 reusable option group templates.
+  { type: "table_exists", table: "pbv2_option_group_templates", label: "pbv2_option_group_templates table" },
   // migration 0057 — quote line routing/design repair (guards production schema drift)
   { type: "column_exists", table: "quote_line_items", column: "requires_design", label: "quote_line_items.requires_design" },
   { type: "column_exists", table: "quote_line_items", column: "requires_prepress", label: "quote_line_items.requires_prepress" },

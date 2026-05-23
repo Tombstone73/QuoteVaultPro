@@ -149,6 +149,7 @@ function applyTreeUpdate(
 import { PBV2ProductBuilderLayout } from "@/components/pbv2/builder-v2/PBV2ProductBuilderLayout";
 import { ProductImagesSection } from "@/components/pbv2/builder-v2/ProductImagesSection";
 import { ConfirmationModal } from "@/components/pbv2/builder-v2/ConfirmationModal";
+import { SaveOptionGroupTemplateDialog, TemplateLibraryDialog } from "@/components/pbv2/builder-v2/OptionGroupTemplateDialogs";
 import {
   pbv2TreeToEditorModel,
   createAddGroupPatch,
@@ -293,6 +294,8 @@ export default function PBV2ProductBuilderSectionV2({
   const [deleteGroupTarget, setDeleteGroupTarget] = useState<{ id: string; name: string } | null>(null);
   const [jsonImportOpen, setJsonImportOpen] = useState(false);
   const [jsonImportText, setJsonImportText] = useState("");
+  const [templateLibraryOpen, setTemplateLibraryOpen] = useState(false);
+  const [saveTemplateGroupId, setSaveTemplateGroupId] = useState<string | null>(null);
 
   // Fetch draft/active tree (skip for new products without productId)
   const treeQuery = useQuery<TreeResponse>({
@@ -802,6 +805,75 @@ export default function PBV2ProductBuilderSectionV2({
       console.error('[PBV2_ADD_GROUP_ERROR]', err);
       toast({ title: "Add Group failed", description: "Exception thrown. See console.", variant: "destructive" });
     }
+  };
+
+  const describeTemplateErrors = (errors: unknown): string | undefined => {
+    if (!Array.isArray(errors)) return undefined;
+    return errors
+      .slice(0, 3)
+      .map((error: any) => error?.message || error?.code)
+      .filter(Boolean)
+      .join(" ");
+  };
+
+  const handleImportTemplate = async (templateId: string) => {
+    if (!localTreeJson) {
+      toast({ title: "Import failed", description: "No PBV2 draft tree is available.", variant: "destructive" });
+      throw new Error("No PBV2 draft tree is available.");
+    }
+
+    const result = await apiJson<{ treeJson: any; importedGroupId?: string }>(
+      "POST",
+      `/api/pbv2/option-group-templates/${templateId}/clone`,
+      { currentTreeJson: localTreeJson },
+    );
+    if (!result.ok || !result.json?.success) {
+      toast({
+        title: "Import failed",
+        description: describeTemplateErrors((result.json as any)?.errors) || envelopeMessage(result.status, result.json, "Template import failed"),
+        variant: "destructive",
+      });
+      throw new Error("Template import failed.");
+    }
+
+    const nextTree = result.json.data?.treeJson;
+    if (!nextTree) {
+      toast({ title: "Import failed", description: "Template clone did not return a draft tree.", variant: "destructive" });
+      throw new Error("Template clone did not return a draft tree.");
+    }
+
+    applyTreeUpdate(nextTree, 'handleImportTemplate', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
+    if (result.json.data?.importedGroupId) setSelectedGroupId(result.json.data.importedGroupId);
+    toast({ title: "Template imported", description: "Imported group is a detached draft copy." });
+  };
+
+  const handleOpenSaveGroupAsTemplate = (groupId: string) => {
+    setSaveTemplateGroupId(groupId);
+  };
+
+  const handleSaveGroupAsTemplate = async (payload: Record<string, unknown>) => {
+    if (!localTreeJson || !saveTemplateGroupId) {
+      toast({ title: "Template save failed", description: "No PBV2 draft group is selected.", variant: "destructive" });
+      throw new Error("No PBV2 draft group is selected.");
+    }
+
+    const result = await apiJson<{ template: any }>(
+      "POST",
+      "/api/pbv2/option-group-templates/from-group",
+      { ...payload, treeJson: localTreeJson, groupId: saveTemplateGroupId },
+    );
+    if (!result.ok || !result.json?.success) {
+      toast({
+        title: "Template save failed",
+        description: describeTemplateErrors((result.json as any)?.errors) || envelopeMessage(result.status, result.json, "Template save failed"),
+        variant: "destructive",
+      });
+      throw new Error("Template save failed.");
+    }
+
+    await queryClient.invalidateQueries({ queryKey: ["pbv2-option-group-templates"] });
+    toast({ title: "Template saved", description: "Organization template is now available in the library." });
+    setSaveTemplateGroupId(null);
   };
 
   const handleUpdateGroup = (groupId: string, updates: Partial<EditorOptionGroup>) => {
@@ -1419,6 +1491,8 @@ export default function PBV2ProductBuilderSectionV2({
         onSelectGroup={setSelectedGroupId}
         onSelectOption={setSelectedOptionId}
         onAddGroup={handleAddGroup}
+        onImportTemplate={() => setTemplateLibraryOpen(true)}
+        onSaveGroupAsTemplate={handleOpenSaveGroupAsTemplate}
         onDeleteGroup={handleDeleteGroup}
         onReorderGroup={handleReorderGroup}
         onAddOption={handleAddOption}
@@ -1445,6 +1519,21 @@ export default function PBV2ProductBuilderSectionV2({
         onPublish={handlePublish}
         onExportJson={handleExportJson}
         onImportJson={handleImportJson}
+      />
+
+      <TemplateLibraryDialog
+        open={templateLibraryOpen}
+        onOpenChange={setTemplateLibraryOpen}
+        onImport={handleImportTemplate}
+      />
+
+      <SaveOptionGroupTemplateDialog
+        open={!!saveTemplateGroupId}
+        groupName={editorModel.groups.find((group) => group.id === saveTemplateGroupId)?.name}
+        onOpenChange={(open) => {
+          if (!open) setSaveTemplateGroupId(null);
+        }}
+        onSave={handleSaveGroupAsTemplate}
       />
 
       <ConfirmationModal

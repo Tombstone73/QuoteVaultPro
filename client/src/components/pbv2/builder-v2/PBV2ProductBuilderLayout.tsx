@@ -23,6 +23,8 @@ export interface PBV2ProductBuilderLayoutProps {
   onSelectGroup: (groupId: string) => void;
   onSelectOption: (optionId: string | null) => void;
   onAddGroup: () => void;
+  onImportTemplate: () => void;
+  onSaveGroupAsTemplate: (groupId: string) => void;
   onDeleteGroup: (groupId: string) => void;
   onReorderGroup: (fromIndex: number, toIndex: number) => void;
   onAddOption: (groupId: string) => void;
@@ -70,6 +72,8 @@ export function PBV2ProductBuilderLayout({
   onSelectGroup,
   onSelectOption,
   onAddGroup,
+  onImportTemplate,
+  onSaveGroupAsTemplate,
   onDeleteGroup,
   onReorderGroup,
   onAddOption,
@@ -109,6 +113,8 @@ export function PBV2ProductBuilderLayout({
           selectedGroupId={selectedGroupId}
           onSelectGroup={onSelectGroup}
           onAddGroup={onAddGroup}
+          onImportTemplate={onImportTemplate}
+          onSaveGroupAsTemplate={onSaveGroupAsTemplate}
           onDeleteGroup={onDeleteGroup}
           onReorderGroup={onReorderGroup}
         />

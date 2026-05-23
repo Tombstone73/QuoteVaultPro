@@ -796,6 +796,65 @@ export type InsertPbv2TreeVersion = z.infer<typeof insertPbv2TreeVersionSchema>;
 export type UpdatePbv2TreeVersion = z.infer<typeof updatePbv2TreeVersionSchema>;
 export type Pbv2TreeVersion = typeof pbv2TreeVersions.$inferSelect;
 
+export const pbv2OptionGroupTemplateStateValues = ["active", "archived"] as const;
+
+export const pbv2OptionGroupTemplates = pgTable(
+  "pbv2_option_group_templates",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    organizationId: varchar("organization_id").references(() => organizations.id, { onDelete: "cascade" }),
+    isSystemTemplate: boolean("is_system_template").notNull().default(false),
+    state: text("state").$type<(typeof pbv2OptionGroupTemplateStateValues)[number]>().notNull().default("active"),
+    category: text("category").notNull(),
+    name: text("name").notNull(),
+    slug: text("slug").notNull(),
+    description: text("description"),
+    tags: jsonb("tags").$type<string[]>().default(sql`'[]'::jsonb`).notNull(),
+    difficultyLevel: text("difficulty_level"),
+    recommendedProductTypes: jsonb("recommended_product_types").$type<string[]>().default(sql`'[]'::jsonb`).notNull(),
+    recommendedIndustries: jsonb("recommended_industries").$type<string[]>().default(sql`'[]'::jsonb`).notNull(),
+    recommendedPairings: jsonb("recommended_pairings").$type<string[]>().default(sql`'[]'::jsonb`).notNull(),
+    compatibilityMetadata: jsonb("compatibility_metadata").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`).notNull(),
+    workflowMetadata: jsonb("workflow_metadata").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`).notNull(),
+    pricingMetadata: jsonb("pricing_metadata").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`).notNull(),
+    intentMetadata: jsonb("intent_metadata").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`).notNull(),
+    previewConfig: jsonb("preview_config").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`).notNull(),
+    templateTree: jsonb("template_tree").$type<Record<string, any>>().notNull(),
+    createdBy: varchar("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("pbv2_option_group_templates_org_state_idx").on(table.organizationId, table.state),
+    index("pbv2_option_group_templates_category_state_idx").on(table.category, table.state),
+    index("pbv2_option_group_templates_system_idx").on(table.isSystemTemplate),
+    index("pbv2_option_group_templates_slug_idx").on(table.slug),
+    uniqueIndex("pbv2_option_group_templates_system_slug_uidx")
+      .on(table.slug)
+      .where(sql`${table.isSystemTemplate} = true`),
+    uniqueIndex("pbv2_option_group_templates_org_slug_uidx")
+      .on(table.organizationId, table.slug)
+      .where(sql`${table.isSystemTemplate} = false AND ${table.organizationId} IS NOT NULL`),
+  ],
+);
+
+export const insertPbv2OptionGroupTemplateSchema = createInsertSchema(pbv2OptionGroupTemplates).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  archivedAt: true,
+});
+
+export const updatePbv2OptionGroupTemplateSchema = insertPbv2OptionGroupTemplateSchema.partial().extend({
+  id: z.string(),
+  state: z.enum(pbv2OptionGroupTemplateStateValues).optional(),
+});
+
+export type InsertPbv2OptionGroupTemplate = z.infer<typeof insertPbv2OptionGroupTemplateSchema>;
+export type UpdatePbv2OptionGroupTemplate = z.infer<typeof updatePbv2OptionGroupTemplateSchema>;
+export type Pbv2OptionGroupTemplate = typeof pbv2OptionGroupTemplates.$inferSelect;
+
 // Zod schema for product options with enhanced sub-options
 const productOptionItemSchema = z.object({
   id: z.string(),
