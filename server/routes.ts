@@ -229,6 +229,7 @@ import { registerPricingAuditRoutes } from './routes/pricingAudit.routes';
 import { registerMaterialsImportExportRoutes } from './routes/materialsImportExport.routes';
 import { registerInboundOrderRoutes } from './routes/inboundOrders.routes';
 import { registerOperationalSummaryRoutes } from './routes/operationalSummary.routes';
+import { registerPbv2OptionGroupTemplateRoutes } from './routes/pbv2OptionGroupTemplates.routes';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -306,6 +307,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Product routes extracted to ./routes/products.routes.ts (do NOT re-add here)
   // PBV2 pricing-preview routes restored and extracted to ./routes/products.routes.ts
   registerProductRoutes(app, { isAuthenticated, isAdmin, isAdminOrOwner, requireOrgOwnerAdmin, tenantContext });
+  registerPbv2OptionGroupTemplateRoutes(app, { isAuthenticated, tenantContext });
 
 
   // Global Variables routes extracted to ./routes/catalogSettings.routes.ts (do NOT re-add here)

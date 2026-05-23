@@ -372,6 +372,13 @@
       "when": 1779667200000,
       "tag": "0057_quote_line_item_routing_repair",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1779753600000,
+      "tag": "0058_pbv2_option_group_templates",
+      "breakpoints": true
     }
   ]
 }
