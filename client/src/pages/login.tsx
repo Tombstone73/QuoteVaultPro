@@ -89,7 +89,11 @@ export default function Login() {
     <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
       <div className="w-full max-w-md space-y-8">
         <div className="flex flex-col items-center gap-2">
-          <img src={HERO_LOGO_SRC} alt="Printers Hero" className="h-16 w-auto" />
+          <img
+            src={HERO_LOGO_SRC}
+            alt="Printers Hero"
+            className="w-[min(78vw,280px)] max-w-full"
+          />
           <p className="text-muted-foreground">Sign in to your account</p>
         </div>
 
