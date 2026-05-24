@@ -1,0 +1,472 @@
+"filename", "language", "TypeScript", "TypeScript JSX", "JSON", "HTML", "XML", "PostCSS", "Markdown", "JavaScript", "comment", "blank", "total"
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\index.html", "HTML", 0, 0, 0, 28, 0, 0, 0, 0, 0, 1, 29
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\jest.config.js", "JavaScript", 0, 0, 0, 0, 0, 0, 0, 41, 12, 10, 63
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\public\branding\favicon.svg", "XML", 0, 0, 0, 0, 38, 0, 0, 0, 0, 0, 38
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\public\branding\shield-logo.svg", "XML", 0, 0, 0, 0, 41, 0, 0, 0, 1, 1, 43
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\public\branding\site.webmanifest", "JSON", 0, 0, 21, 0, 0, 0, 0, 0, 0, 1, 22
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\App.tsx", "TypeScript JSX", 0, 275, 0, 0, 0, 0, 0, 0, 38, 37, 350
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\AdjustInventoryForm.tsx", "TypeScript JSX", 0, 147, 0, 0, 0, 0, 0, 0, 0, 10, 157
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\AttachmentPreviewMeta.tsx", "TypeScript JSX", 0, 17, 0, 0, 0, 0, 0, 0, 6, 7, 30
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\AttachmentViewerDialog.tsx", "TypeScript JSX", 0, 1017, 0, 0, 0, 0, 0, 0, 6, 94, 1117
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\AttachmentsPanel.tsx", "TypeScript JSX", 0, 376, 0, 0, 0, 0, 0, 0, 18, 48, 442
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\BackNavControls.tsx", "TypeScript JSX", 0, 42, 0, 0, 0, 0, 0, 0, 0, 5, 47
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ColumnConfigModal.tsx", "TypeScript JSX", 0, 104, 0, 0, 0, 0, 0, 0, 0, 13, 117
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ConfigError.tsx", "TypeScript JSX", 0, 66, 0, 0, 0, 0, 0, 0, 4, 8, 78
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ContactFlagPill.tsx", "TypeScript JSX", 0, 51, 0, 0, 0, 0, 0, 0, 9, 6, 66
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\CustomerDetailPanel.tsx", "TypeScript JSX", 0, 757, 0, 0, 0, 0, 0, 0, 11, 44, 812
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\CustomerList.tsx", "TypeScript JSX", 0, 272, 0, 0, 0, 0, 0, 0, 7, 18, 297
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\CustomerSelect.tsx", "TypeScript JSX", 0, 223, 0, 0, 0, 0, 0, 0, 17, 24, 264
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\DestructiveActionModal.tsx", "TypeScript JSX", 0, 116, 0, 0, 0, 0, 0, 0, 3, 11, 130
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\DocumentMetaCard.tsx", "TypeScript JSX", 0, 17, 0, 0, 0, 0, 0, 0, 0, 4, 21
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\FormulaEditor.tsx", "TypeScript JSX", 0, 178, 0, 0, 0, 0, 0, 0, 4, 20, 202
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\FulfillmentShippingPanel.tsx", "TypeScript JSX", 0, 261, 0, 0, 0, 0, 0, 0, 11, 12, 284
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\FulfillmentStatusBadge.tsx", "TypeScript JSX", 0, 43, 0, 0, 0, 0, 0, 0, 0, 5, 48
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\LargeFileLocalDevWarningDialog.tsx", "TypeScript JSX", 0, 33, 0, 0, 0, 0, 0, 0, 0, 3, 36
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\LineItemAttachmentsPanel.tsx", "TypeScript JSX", 0, 879, 0, 0, 0, 0, 0, 0, 76, 90, 1045
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\LineItemThumbnail.tsx", "TypeScript JSX", 0, 128, 0, 0, 0, 0, 0, 0, 18, 13, 159
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\LowStockBadge.tsx", "TypeScript JSX", 0, 5, 0, 0, 0, 0, 0, 0, 0, 2, 7
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\MaterialForm.tsx", "TypeScript JSX", 0, 754, 0, 0, 0, 0, 0, 0, 24, 32, 810
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\OrderArtworkPanel.tsx", "TypeScript JSX", 0, 498, 0, 0, 0, 0, 0, 0, 7, 39, 544
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\OrderAttachmentsPanel.tsx", "TypeScript JSX", 0, 504, 0, 0, 0, 0, 0, 0, 20, 59, 583
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\OrderStateBadge.tsx", "TypeScript JSX", 0, 16, 0, 0, 0, 0, 0, 0, 5, 5, 26
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\OrderStatusPillSelector.tsx", "TypeScript JSX", 0, 79, 0, 0, 0, 0, 0, 0, 6, 8, 93
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\OrgSwitcher.tsx", "TypeScript JSX", 0, 77, 0, 0, 0, 0, 0, 0, 7, 9, 93
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\PBV2ProductBuilderSectionV2.tsx", "TypeScript JSX", 0, 1315, 0, 0, 0, 0, 0, 0, 115, 172, 1602
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\PackingSlipModal.tsx", "TypeScript JSX", 0, 47, 0, 0, 0, 0, 0, 0, 2, 6, 55
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\PlaceholderPage.tsx", "TypeScript JSX", 0, 88, 0, 0, 0, 0, 0, 0, 0, 10, 98
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ProductForm.tsx", "TypeScript JSX", 0, 1000, 0, 0, 0, 0, 0, 0, 33, 58, 1091
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ProductOptionsPanelV2_Mvp.tsx", "TypeScript JSX", 0, 711, 0, 0, 0, 0, 0, 0, 60, 63, 834
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ProductSimulator.tsx", "TypeScript JSX", 0, 284, 0, 0, 0, 0, 0, 0, 5, 33, 322
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\PurchaseOrderForm.tsx", "TypeScript JSX", 0, 175, 0, 0, 0, 0, 0, 0, 0, 12, 187
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\QuoteAttachmentsPanel.tsx", "TypeScript JSX", 0, 459, 0, 0, 0, 0, 0, 0, 15, 54, 528
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\QuoteWorkflowActions.tsx", "TypeScript JSX", 0, 290, 0, 0, 0, 0, 0, 0, 18, 34, 342
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\QuoteWorkflowBadge.tsx", "TypeScript JSX", 0, 19, 0, 0, 0, 0, 0, 0, 4, 5, 28
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ReceiveMaterialReorderDialog.tsx", "TypeScript JSX", 0, 69, 0, 0, 0, 0, 0, 0, 0, 7, 76
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ReceivePurchaseOrderItemsForm.tsx", "TypeScript JSX", 0, 67, 0, 0, 0, 0, 0, 0, 0, 5, 72
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\RequestMaterialReorderDialog.tsx", "TypeScript JSX", 0, 98, 0, 0, 0, 0, 0, 0, 0, 9, 107
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ShipmentForm.tsx", "TypeScript JSX", 0, 257, 0, 0, 0, 0, 0, 0, 7, 19, 283
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ShippingPanel.tsx", "TypeScript JSX", 0, 83, 0, 0, 0, 0, 0, 0, 8, 6, 97
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\SplitWorkspace.tsx", "TypeScript JSX", 0, 66, 0, 0, 0, 0, 0, 0, 0, 10, 76
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\StateTransitionButtons.tsx", "TypeScript JSX", 0, 373, 0, 0, 0, 0, 0, 0, 8, 43, 424
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ThemeToggle.tsx", "TypeScript JSX", 0, 47, 0, 0, 0, 0, 0, 0, 0, 4, 51
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\TimelinePanel.module.css", "PostCSS", 0, 0, 0, 0, 0, 6, 0, 0, 0, 1, 7
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\TimelinePanel.tsx", "TypeScript JSX", 0, 235, 0, 0, 0, 0, 0, 0, 1, 36, 272
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\VendorForm.tsx", "TypeScript JSX", 0, 225, 0, 0, 0, 0, 0, 0, 0, 14, 239
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ViewAllAttachmentsDialog.tsx", "TypeScript JSX", 0, 591, 0, 0, 0, 0, 0, 0, 16, 43, 650
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\VoidQuoteDialog.tsx", "TypeScript JSX", 0, 115, 0, 0, 0, 0, 0, 0, 3, 11, 129
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\admin-dashboard.tsx", "TypeScript JSX", 0, 387, 0, 0, 0, 0, 0, 0, 3, 31, 421
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\admin-settings.tsx", "TypeScript JSX", 0, 5022, 0, 0, 0, 0, 0, 0, 61, 187, 5270
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\branding\PrintersHeroSplashVideo.tsx", "TypeScript JSX", 0, 34, 0, 0, 0, 0, 0, 0, 0, 4, 38
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\bug-report\BugReportModal.tsx", "TypeScript JSX", 0, 350, 0, 0, 0, 0, 0, 0, 13, 42, 405
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\calculator.tsx", "TypeScript JSX", 0, 1285, 0, 0, 0, 0, 0, 0, 42, 86, 1413
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\contact-form.tsx", "TypeScript JSX", 0, 278, 0, 0, 0, 0, 0, 0, 4, 25, 307
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\convert-quote-to-order-dialog.tsx", "TypeScript JSX", 0, 118, 0, 0, 0, 0, 0, 0, 0, 7, 125
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\credit-form.tsx", "TypeScript JSX", 0, 227, 0, 0, 0, 0, 0, 0, 7, 20, 254
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\customer-form.tsx", "TypeScript JSX", 0, 894, 0, 0, 0, 0, 0, 0, 30, 64, 988
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\customers\CustomerActivityTabs.tsx", "TypeScript JSX", 0, 71, 0, 0, 0, 0, 0, 0, 2, 10, 83
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\customers\CustomerStatCard.tsx", "TypeScript JSX", 0, 49, 0, 0, 0, 0, 0, 0, 0, 4, 53
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\customers\CustomerStatsRow.tsx", "TypeScript JSX", 0, 212, 0, 0, 0, 0, 0, 0, 5, 15, 232
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\customers\SplitCustomerDetail.tsx", "TypeScript JSX", 0, 192, 0, 0, 0, 0, 0, 0, 5, 13, 210
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\customers\tables\CustomerInvoicesTable.tsx", "TypeScript JSX", 0, 96, 0, 0, 0, 0, 0, 0, 0, 5, 101
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\customers\tables\CustomerOrdersTable.tsx", "TypeScript JSX", 0, 189, 0, 0, 0, 0, 0, 0, 0, 7, 196
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\customers\tables\CustomerQuotesTable.tsx", "TypeScript JSX", 0, 147, 0, 0, 0, 0, 0, 0, 0, 6, 153
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\ActivityFeedPanel.tsx", "TypeScript JSX", 0, 77, 0, 0, 0, 0, 0, 0, 0, 5, 82
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\CriticalAlertsRow.tsx", "TypeScript JSX", 0, 73, 0, 0, 0, 0, 0, 0, 0, 5, 78
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\DashboardDetailPanel.tsx", "TypeScript JSX", 0, 40, 0, 0, 0, 0, 0, 0, 0, 4, 44
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\DashboardDetailsView.tsx", "TypeScript JSX", 0, 292, 0, 0, 0, 0, 0, 0, 0, 24, 316
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\FulfillmentFinanceCard.tsx", "TypeScript JSX", 0, 104, 0, 0, 0, 0, 0, 0, 0, 7, 111
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\MyWorkPanel.tsx", "TypeScript JSX", 0, 87, 0, 0, 0, 0, 0, 0, 0, 6, 93
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\OrdersPipelineCard.tsx", "TypeScript JSX", 0, 67, 0, 0, 0, 0, 0, 0, 0, 6, 73
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\ProductionJobsCard.tsx", "TypeScript JSX", 0, 92, 0, 0, 0, 0, 0, 0, 0, 8, 100
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\QuickActionsPanel.tsx", "TypeScript JSX", 0, 35, 0, 0, 0, 0, 0, 0, 0, 6, 41
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\dashboardPanels.ts", "TypeScript", 94, 0, 0, 0, 0, 0, 0, 0, 0, 8, 102
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\debug\RenderPathBanner.tsx", "TypeScript JSX", 0, 14, 0, 0, 0, 0, 0, 0, 0, 2, 16
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\fulfillment\FulfillmentDebugPanel.tsx", "TypeScript JSX", 0, 42, 0, 0, 0, 0, 0, 0, 0, 6, 48
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\global-search.tsx", "TypeScript JSX", 0, 142, 0, 0, 0, 0, 0, 0, 2, 17, 161
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\integrations\QBTransientDisconnectBanner.tsx", "TypeScript JSX", 0, 112, 0, 0, 0, 0, 0, 0, 0, 18, 130
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\job-status-settings.tsx", "TypeScript JSX", 0, 167, 0, 0, 0, 0, 0, 0, 0, 9, 176
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\layout\AppLayout.tsx", "TypeScript JSX", 0, 109, 0, 0, 0, 0, 0, 0, 11, 15, 135
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\layout\GlobalSearchOverlay.tsx", "TypeScript JSX", 0, 179, 0, 0, 0, 0, 0, 0, 0, 16, 195
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\layout\PublicPageLayout.tsx", "TypeScript JSX", 0, 72, 0, 0, 0, 0, 0, 0, 0, 7, 79
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\layout\ResizablePanels.tsx", "TypeScript JSX", 0, 87, 0, 0, 0, 0, 0, 0, 15, 14, 116
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\layout\SidebarNav.tsx", "TypeScript JSX", 0, 3, 0, 0, 0, 0, 0, 0, 4, 1, 8
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\layout\TitanSidebarNav.tsx", "TypeScript JSX", 0, 497, 0, 0, 0, 0, 0, 0, 44, 44, 585
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\layout\TitanTopBar.tsx", "TypeScript JSX", 0, 314, 0, 0, 0, 0, 0, 0, 30, 38, 382
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\layout\index.ts", "TypeScript", 5, 0, 0, 0, 0, 0, 0, 0, 6, 3, 14
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\LineItemActionButtons.tsx", "TypeScript JSX", 0, 48, 0, 0, 0, 0, 0, 0, 0, 5, 53
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\LineItemAlertChip.tsx", "TypeScript JSX", 0, 27, 0, 0, 0, 0, 0, 0, 0, 6, 33
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\LineItemCard.tsx", "TypeScript JSX", 0, 608, 0, 0, 0, 0, 0, 0, 38, 42, 688
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\LineItemMainBlock.tsx", "TypeScript JSX", 0, 96, 0, 0, 0, 0, 0, 0, 2, 18, 116
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\LineItemMoneyField.tsx", "TypeScript JSX", 0, 37, 0, 0, 0, 0, 0, 0, 0, 5, 42
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\LineItemOverrideToggle.tsx", "TypeScript JSX", 0, 40, 0, 0, 0, 0, 0, 0, 0, 5, 45
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\LineItemQtyPill.tsx", "TypeScript JSX", 0, 116, 0, 0, 0, 0, 0, 0, 3, 15, 134
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\LineItemRowEnterprise.tsx", "TypeScript JSX", 0, 879, 0, 0, 0, 0, 0, 0, 0, 72, 951
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\LineItemStatusPill.tsx", "TypeScript JSX", 0, 161, 0, 0, 0, 0, 0, 0, 0, 19, 180
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\PBV2LineItemOptions.tsx", "TypeScript JSX", 0, 120, 0, 0, 0, 0, 0, 0, 11, 13, 144
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\lineItemRowEnterprise.module.css", "PostCSS", 0, 0, 0, 0, 0, 736, 0, 0, 2, 117, 855
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\lineItemTheme.css", "PostCSS", 0, 0, 0, 0, 0, 20, 0, 0, 2, 10, 32
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\list\ListViewSettings.tsx", "TypeScript JSX", 0, 101, 0, 0, 0, 0, 0, 0, 0, 4, 105
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\marketing\MarketingDashboardMockup.tsx", "TypeScript JSX", 0, 132, 0, 0, 0, 0, 0, 0, 0, 9, 141
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\marketing\MarketingFooter.tsx", "TypeScript JSX", 0, 24, 0, 0, 0, 0, 0, 0, 0, 4, 28
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\marketing\MarketingHeader.tsx", "TypeScript JSX", 0, 89, 0, 0, 0, 0, 0, 0, 0, 11, 100
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\marketing\MarketingMeta.tsx", "TypeScript JSX", 0, 33, 0, 0, 0, 0, 0, 0, 0, 6, 39
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\media-picker.tsx", "TypeScript JSX", 0, 142, 0, 0, 0, 0, 0, 0, 0, 12, 154
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\media\PdfViewer.tsx", "TypeScript JSX", 0, 47, 0, 0, 0, 0, 0, 0, 11, 9, 67
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\note-form.tsx", "TypeScript JSX", 0, 180, 0, 0, 0, 0, 0, 0, 6, 19, 205
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\object-uploader.tsx", "TypeScript JSX", 0, 212, 0, 0, 0, 0, 0, 0, 1, 26, 239
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\order-form-OLD-BACKUP.tsx", "TypeScript JSX", 0, 453, 0, 0, 0, 0, 0, 0, 9, 37, 499
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\order-form.tsx", "TypeScript JSX", 0, 1168, 0, 0, 0, 0, 0, 0, 45, 88, 1301
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\order-line-item-dialog.tsx", "TypeScript JSX", 0, 1023, 0, 0, 0, 0, 0, 0, 45, 80, 1148
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\order-status-badge.tsx", "TypeScript JSX", 0, 145, 0, 0, 0, 0, 0, 0, 0, 13, 158
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\orders\ManualReservationsCard.tsx", "TypeScript JSX", 0, 320, 0, 0, 0, 0, 0, 0, 0, 31, 351
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\orders\OrderFulfillmentPanel.tsx", "TypeScript JSX", 0, 620, 0, 0, 0, 0, 0, 0, 16, 48, 684
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\orders\OrderLineItemsSection.tsx", "TypeScript JSX", 0, 2988, 0, 0, 0, 0, 0, 0, 101, 288, 3377
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\orders\lineItemPricingDisplay.test.ts", "TypeScript", 126, 0, 0, 0, 0, 0, 0, 0, 5, 13, 144
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\orders\lineItemPricingDisplay.ts", "TypeScript", 52, 0, 0, 0, 0, 0, 0, 0, 30, 9, 91
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\orders\orderLineItemEditState.test.ts", "TypeScript", 112, 0, 0, 0, 0, 0, 0, 0, 0, 8, 120
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\orders\orderLineItemEditState.ts", "TypeScript", 145, 0, 0, 0, 0, 0, 0, 0, 0, 13, 158
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\orders\quoteCalculatePayload.test.ts", "TypeScript", 58, 0, 0, 0, 0, 0, 0, 0, 1, 9, 68
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\orders\quoteCalculatePayload.ts", "TypeScript", 40, 0, 0, 0, 0, 0, 0, 0, 14, 4, 58
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\payments\StripePayDialog.tsx", "TypeScript JSX", 0, 341, 0, 0, 0, 0, 0, 0, 53, 48, 442
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\FormulaLanguageHelp.tsx", "TypeScript JSX", 0, 229, 0, 0, 0, 0, 0, 0, 1, 14, 244
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\BasePricingEditor.tsx", "TypeScript JSX", 0, 318, 0, 0, 0, 0, 0, 0, 3, 25, 346
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\ConfirmationModal.tsx", "TypeScript JSX", 0, 62, 0, 0, 0, 0, 0, 0, 0, 4, 66
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\FormulaReferenceModal.tsx", "TypeScript JSX", 0, 248, 0, 0, 0, 0, 0, 0, 0, 20, 268
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\OptionDetailsEditor.tsx", "TypeScript JSX", 0, 1390, 0, 0, 0, 0, 0, 0, 31, 95, 1516
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\OptionEditor.tsx", "TypeScript JSX", 0, 419, 0, 0, 0, 0, 0, 0, 2, 26, 447
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\OptionGroupTemplateDialogs.tsx", "TypeScript JSX", 0, 304, 0, 0, 0, 0, 0, 0, 2, 18, 324
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\OptionGroupsSidebar.tsx", "TypeScript JSX", 0, 290, 0, 0, 0, 0, 0, 0, 1, 14, 305
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\OptionRulesPricingMatrixEditor.tsx", "TypeScript JSX", 0, 1055, 0, 0, 0, 0, 0, 0, 0, 75, 1130
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\PBV2EditorErrorBoundary.tsx", "TypeScript JSX", 0, 55, 0, 0, 0, 0, 0, 0, 7, 9, 71
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\PBV2ProductBuilderLayout.tsx", "TypeScript JSX", 0, 148, 0, 0, 0, 0, 0, 0, 18, 8, 174
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\PricingValidationPanel.tsx", "TypeScript JSX", 0, 1440, 0, 0, 0, 0, 0, 0, 21, 81, 1542
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\PricingVariableHelper.tsx", "TypeScript JSX", 0, 189, 0, 0, 0, 0, 0, 0, 0, 10, 199
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\ProductHeader.tsx", "TypeScript JSX", 0, 109, 0, 0, 0, 0, 0, 0, 0, 11, 120
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\ProductImagesSection.tsx", "TypeScript JSX", 0, 60, 0, 0, 0, 0, 0, 0, 17, 8, 85
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\pricingVariables.ts", "TypeScript", 13, 0, 0, 0, 0, 0, 0, 0, 0, 1, 14
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\portal\PortalFilesCard.tsx", "TypeScript JSX", 0, 92, 0, 0, 0, 0, 0, 0, 0, 5, 97
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\portal\PortalLayout.tsx", "TypeScript JSX", 0, 69, 0, 0, 0, 0, 0, 0, 0, 6, 75
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\production\PrintOptionsModal.tsx", "TypeScript JSX", 0, 209, 0, 0, 0, 0, 0, 0, 19, 17, 245
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\production\PrintTicketActions.tsx", "TypeScript JSX", 0, 47, 0, 0, 0, 0, 0, 0, 15, 7, 69
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\production\PrintTicketButton.tsx", "TypeScript JSX", 0, 63, 0, 0, 0, 0, 0, 0, 21, 11, 95
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\production\PrinterPicker.tsx", "TypeScript JSX", 0, 56, 0, 0, 0, 0, 0, 0, 7, 5, 68
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\production\StationStepEditor.tsx", "TypeScript JSX", 0, 272, 0, 0, 0, 0, 0, 0, 0, 28, 300
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\production\ZoomPanImageViewer.tsx", "TypeScript JSX", 0, 257, 0, 0, 0, 0, 0, 0, 38, 44, 339
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\production\ticketPrintPrimitives.tsx", "TypeScript JSX", 0, 11, 0, 0, 0, 0, 0, 0, 6, 4, 21
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\quote-history.tsx", "TypeScript JSX", 0, 450, 0, 0, 0, 0, 0, 0, 1, 33, 484
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\quote-source-badge.tsx", "TypeScript JSX", 0, 26, 0, 0, 0, 0, 0, 0, 0, 6, 32
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\runtime\RuntimeEnvironmentBadge.tsx", "TypeScript JSX", 0, 69, 0, 0, 0, 0, 0, 0, 0, 13, 82
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\runtime\RuntimeSafetyWarning.tsx", "TypeScript JSX", 0, 16, 0, 0, 0, 0, 0, 0, 0, 4, 20
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\ColumnConfig.tsx", "TypeScript JSX", 0, 417, 0, 0, 0, 0, 0, 0, 12, 41, 470
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\ContentLayout.tsx", "TypeScript JSX", 0, 9, 0, 0, 0, 0, 0, 0, 0, 3, 12
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\DataCard.tsx", "TypeScript JSX", 0, 40, 0, 0, 0, 0, 0, 0, 0, 4, 44
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\FilterPanel.tsx", "TypeScript JSX", 0, 27, 0, 0, 0, 0, 0, 0, 0, 3, 30
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\Page.tsx", "TypeScript JSX", 0, 19, 0, 0, 0, 0, 0, 0, 0, 3, 22
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\PageHeader.tsx", "TypeScript JSX", 0, 27, 0, 0, 0, 0, 0, 0, 0, 3, 30
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\Section.tsx", "TypeScript JSX", 0, 25, 0, 0, 0, 0, 0, 0, 0, 3, 28
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\StatusPill.tsx", "TypeScript JSX", 0, 46, 0, 0, 0, 0, 0, 0, 5, 12, 63
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\TitanButton.tsx", "TypeScript JSX", 0, 84, 0, 0, 0, 0, 0, 0, 0, 7, 91
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\TitanCard.tsx", "TypeScript JSX", 0, 33, 0, 0, 0, 0, 0, 0, 0, 5, 38
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\TitanSearchInput.tsx", "TypeScript JSX", 0, 32, 0, 0, 0, 0, 0, 0, 0, 4, 36
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\TitanStatCard.tsx", "TypeScript JSX", 0, 62, 0, 0, 0, 0, 0, 0, 4, 5, 71
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\TitanTable.tsx", "TypeScript JSX", 0, 131, 0, 0, 0, 0, 0, 0, 27, 29, 187
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\index.ts", "TypeScript", 25, 0, 0, 0, 0, 0, 0, 0, 7, 7, 39
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\PageShell.tsx", "TypeScript JSX", 0, 8, 0, 0, 0, 0, 0, 0, 0, 2, 10
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\TitanCard.tsx", "TypeScript JSX", 0, 17, 0, 0, 0, 0, 0, 0, 0, 3, 20
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\accordion.tsx", "TypeScript JSX", 0, 49, 0, 0, 0, 0, 0, 0, 0, 8, 57
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\alert-dialog.tsx", "TypeScript JSX", 0, 126, 0, 0, 0, 0, 0, 0, 0, 14, 140
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\alert.tsx", "TypeScript JSX", 0, 53, 0, 0, 0, 0, 0, 0, 0, 7, 60
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\aspect-ratio.tsx", "TypeScript JSX", 0, 3, 0, 0, 0, 0, 0, 0, 0, 3, 6
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\avatar.tsx", "TypeScript JSX", 0, 45, 0, 0, 0, 0, 0, 0, 0, 7, 52
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\badge.tsx", "TypeScript JSX", 0, 31, 0, 0, 0, 0, 0, 0, 1, 7, 39
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\breadcrumb.tsx", "TypeScript JSX", 0, 105, 0, 0, 0, 0, 0, 0, 0, 11, 116
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\button.tsx", "TypeScript JSX", 0, 52, 0, 0, 0, 0, 0, 0, 6, 6, 64
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\calendar.tsx", "TypeScript JSX", 0, 64, 0, 0, 0, 0, 0, 0, 0, 5, 69
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\card.tsx", "TypeScript JSX", 0, 78, 0, 0, 0, 0, 0, 0, 0, 8, 86
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\carousel.tsx", "TypeScript JSX", 0, 231, 0, 0, 0, 0, 0, 0, 0, 30, 261
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\chart.tsx", "TypeScript JSX", 0, 331, 0, 0, 0, 0, 0, 0, 2, 33, 366
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\checkbox.tsx", "TypeScript JSX", 0, 25, 0, 0, 0, 0, 0, 0, 0, 4, 29
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\collapsible.tsx", "TypeScript JSX", 0, 6, 0, 0, 0, 0, 0, 0, 0, 6, 12
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\command.tsx", "TypeScript JSX", 0, 135, 0, 0, 0, 0, 0, 0, 0, 17, 152
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\context-menu.tsx", "TypeScript JSX", 0, 181, 0, 0, 0, 0, 0, 0, 0, 18, 199
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\dialog.tsx", "TypeScript JSX", 0, 113, 0, 0, 0, 0, 0, 0, 0, 14, 127
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\drawer.tsx", "TypeScript JSX", 0, 105, 0, 0, 0, 0, 0, 0, 0, 14, 119
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\dropdown-menu.tsx", "TypeScript JSX", 0, 181, 0, 0, 0, 0, 0, 0, 0, 18, 199
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\form.tsx", "TypeScript JSX", 0, 153, 0, 0, 0, 0, 0, 0, 0, 26, 179
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\hover-card.tsx", "TypeScript JSX", 0, 23, 0, 0, 0, 0, 0, 0, 0, 7, 30
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\input-otp.tsx", "TypeScript JSX", 0, 62, 0, 0, 0, 0, 0, 0, 0, 8, 70
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\input.tsx", "TypeScript JSX", 0, 38, 0, 0, 0, 0, 0, 0, 1, 5, 44
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\label.tsx", "TypeScript JSX", 0, 20, 0, 0, 0, 0, 0, 0, 0, 5, 25
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\menubar.tsx", "TypeScript JSX", 0, 237, 0, 0, 0, 0, 0, 0, 0, 20, 257
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\navigation-menu.tsx", "TypeScript JSX", 0, 117, 0, 0, 0, 0, 0, 0, 0, 12, 129
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\pagination.tsx", "TypeScript JSX", 0, 107, 0, 0, 0, 0, 0, 0, 0, 11, 118
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\popover.tsx", "TypeScript JSX", 0, 24, 0, 0, 0, 0, 0, 0, 0, 6, 30
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\progress.tsx", "TypeScript JSX", 0, 24, 0, 0, 0, 0, 0, 0, 0, 5, 29
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\radio-group.tsx", "TypeScript JSX", 0, 38, 0, 0, 0, 0, 0, 0, 0, 5, 43
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\resizable.tsx", "TypeScript JSX", 0, 39, 0, 0, 0, 0, 0, 0, 0, 7, 46
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\scroll-area.tsx", "TypeScript JSX", 0, 42, 0, 0, 0, 0, 0, 0, 0, 5, 47
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\select.tsx", "TypeScript JSX", 0, 146, 0, 0, 0, 0, 0, 0, 0, 15, 161
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\separator.tsx", "TypeScript JSX", 0, 26, 0, 0, 0, 0, 0, 0, 0, 4, 30
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\sheet.tsx", "TypeScript JSX", 0, 125, 0, 0, 0, 0, 0, 0, 0, 16, 141
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\sidebar.tsx", "TypeScript JSX", 0, 660, 0, 0, 0, 0, 0, 0, 13, 55, 728
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\skeleton.tsx", "TypeScript JSX", 0, 13, 0, 0, 0, 0, 0, 0, 0, 3, 16
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\slider.tsx", "TypeScript JSX", 0, 23, 0, 0, 0, 0, 0, 0, 0, 4, 27
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\switch.tsx", "TypeScript JSX", 0, 24, 0, 0, 0, 0, 0, 0, 0, 4, 28
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\table.tsx", "TypeScript JSX", 0, 107, 0, 0, 0, 0, 0, 0, 0, 11, 118
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\tabs.tsx", "TypeScript JSX", 0, 47, 0, 0, 0, 0, 0, 0, 0, 7, 54
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\textarea.tsx", "TypeScript JSX", 0, 19, 0, 0, 0, 0, 0, 0, 0, 4, 23
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\toast.tsx", "TypeScript JSX", 0, 115, 0, 0, 0, 0, 0, 0, 0, 13, 128
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\toaster.tsx", "TypeScript JSX", 0, 31, 0, 0, 0, 0, 0, 0, 0, 3, 34
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\toggle-group.tsx", "TypeScript JSX", 0, 52, 0, 0, 0, 0, 0, 0, 0, 10, 62
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\toggle.tsx", "TypeScript JSX", 0, 38, 0, 0, 0, 0, 0, 0, 0, 6, 44
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\tooltip.tsx", "TypeScript JSX", 0, 23, 0, 0, 0, 0, 0, 0, 0, 8, 31
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\user-management.tsx", "TypeScript JSX", 0, 291, 0, 0, 0, 0, 0, 0, 1, 14, 306
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\config\routes.ts", "TypeScript", 106, 0, 0, 0, 0, 0, 0, 0, 111, 23, 240
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\contexts\NavigationGuardContext.tsx", "TypeScript JSX", 0, 127, 0, 0, 0, 0, 0, 0, 14, 19, 160
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\contexts\navigationGuardCore.test.ts", "TypeScript", 94, 0, 0, 0, 0, 0, 0, 0, 0, 26, 120
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\contexts\navigationGuardCore.ts", "TypeScript", 160, 0, 0, 0, 0, 0, 0, 0, 1, 25, 186
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\docs\thumbnail-status-auto-refresh-audit.md", "Markdown", 0, 0, 0, 0, 0, 0, 233, 0, 0, 63, 296
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\customers\CustomerActionsMenu.tsx", "TypeScript JSX", 0, 136, 0, 0, 0, 0, 0, 0, 26, 11, 173
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\customers\CustomerIdentityBlock.tsx", "TypeScript JSX", 0, 94, 0, 0, 0, 0, 0, 0, 28, 12, 134
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\customers\EnhancedCustomerView.tsx", "TypeScript JSX", 0, 2002, 0, 0, 0, 0, 0, 0, 89, 159, 2250
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\customers\StatementTab.tsx", "TypeScript JSX", 0, 770, 0, 0, 0, 0, 0, 0, 31, 51, 852
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\customers\TransactionsTab.tsx", "TypeScript JSX", 0, 505, 0, 0, 0, 0, 0, 0, 34, 36, 575
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\customers\index.ts", "TypeScript", 4, 0, 0, 0, 0, 0, 0, 0, 0, 1, 5
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\documents\create\DocumentCreateForm.tsx", "TypeScript JSX", 0, 817, 0, 0, 0, 0, 0, 0, 48, 74, 939
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\materials\CreateMaterialDialog.tsx", "TypeScript JSX", 0, 392, 0, 0, 0, 0, 0, 0, 1, 30, 423
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\materials\MaterialsSettingsPanel.tsx", "TypeScript JSX", 0, 484, 0, 0, 0, 0, 0, 0, 1, 34, 519
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\production\ProductionViewRenderer.tsx", "TypeScript JSX", 0, 22, 0, 0, 0, 0, 0, 0, 0, 5, 27
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\production\theme\productionCardTheme.ts", "TypeScript", 61, 0, 0, 0, 0, 0, 0, 0, 13, 8, 82
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\production\views\FlatbedProductionView.tsx", "TypeScript JSX", 0, 1677, 0, 0, 0, 0, 0, 0, 68, 133, 1878
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\production\views\ProductionOverviewPage.tsx", "TypeScript JSX", 0, 2175, 0, 0, 0, 0, 0, 0, 129, 214, 2518
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\production\views\RollProductionView.tsx", "TypeScript JSX", 0, 1722, 0, 0, 0, 0, 0, 0, 68, 136, 1926
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\products\editor\ProductOptionsEditor.tsx", "TypeScript JSX", 0, 918, 0, 0, 0, 0, 0, 0, 12, 95, 1025
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\QuoteEditorPage.tsx", "TypeScript JSX", 0, 937, 0, 0, 0, 0, 0, 0, 172, 115, 1224
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\CustomerCard.tsx", "TypeScript JSX", 0, 397, 0, 0, 0, 0, 0, 0, 9, 27, 433
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\CustomerInfoFooter.tsx", "TypeScript JSX", 0, 122, 0, 0, 0, 0, 0, 0, 2, 16, 140
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\FulfillmentCard.tsx", "TypeScript JSX", 0, 222, 0, 0, 0, 0, 0, 0, 4, 6, 232
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\LineItemBuilder.tsx", "TypeScript JSX", 0, 367, 0, 0, 0, 0, 0, 0, 13, 22, 402
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\LineItemsSection.tsx", "TypeScript JSX", 0, 984, 0, 0, 0, 0, 0, 0, 82, 105, 1171
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\LineItemsTable.tsx", "TypeScript JSX", 0, 316, 0, 0, 0, 0, 0, 0, 13, 26, 355
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\ProductOptionsPanel.tsx", "TypeScript JSX", 0, 595, 0, 0, 0, 0, 0, 0, 7, 58, 660
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\ProductOptionsPanelV2.tsx", "TypeScript JSX", 0, 694, 0, 0, 0, 0, 0, 0, 45, 98, 837
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\QuoteHeader.tsx", "TypeScript JSX", 0, 112, 0, 0, 0, 0, 0, 0, 9, 11, 132
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\SummaryCard.tsx", "TypeScript JSX", 0, 435, 0, 0, 0, 0, 0, 0, 24, 25, 484
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\types.ts", "TypeScript", 56, 0, 0, 0, 0, 0, 0, 0, 19, 4, 79
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\useQuoteEditorState.ts", "TypeScript", 2131, 0, 0, 0, 0, 0, 0, 0, 329, 315, 2775
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\utils.ts", "TypeScript", 17, 0, 0, 0, 0, 0, 0, 0, 8, 3, 28
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\utils\formatQuoteNumberWithVariant.ts", "TypeScript", 10, 0, 0, 0, 0, 0, 0, 0, 0, 6, 16
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\portal\useProofToken.ts", "TypeScript", 103, 0, 0, 0, 0, 0, 0, 0, 6, 14, 123
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\use-mobile.tsx", "TypeScript JSX", 0, 15, 0, 0, 0, 0, 0, 0, 0, 5, 20
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\use-toast.ts", "TypeScript", 159, 0, 0, 0, 0, 0, 0, 0, 2, 31, 192
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useAuth.ts", "TypeScript", 89, 0, 0, 0, 0, 0, 0, 0, 8, 19, 116
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useContacts.ts", "TypeScript", 178, 0, 0, 0, 0, 0, 0, 0, 11, 23, 212
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useCustomer.ts", "TypeScript", 115, 0, 0, 0, 0, 0, 0, 0, 6, 10, 131
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useDashboardSelection.ts", "TypeScript", 19, 0, 0, 0, 0, 0, 0, 0, 0, 5, 24
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useDashboardSummary.ts", "TypeScript", 51, 0, 0, 0, 0, 0, 0, 0, 0, 6, 57
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useFulfillment.ts", "TypeScript", 236, 0, 0, 0, 0, 0, 0, 0, 0, 28, 264
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useGlobalSearch.ts", "TypeScript", 75, 0, 0, 0, 0, 0, 0, 0, 3, 18, 96
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useInvoices.ts", "TypeScript", 435, 0, 0, 0, 0, 0, 0, 0, 20, 28, 483
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useJobs.ts", "TypeScript", 226, 0, 0, 0, 0, 0, 0, 0, 2, 18, 246
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useListViewSettings.ts", "TypeScript", 48, 0, 0, 0, 0, 0, 0, 0, 1, 12, 61
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useManualReservations.ts", "TypeScript", 79, 0, 0, 0, 0, 0, 0, 0, 0, 12, 91
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useMaterials.ts", "TypeScript", 495, 0, 0, 0, 0, 0, 0, 0, 3, 34, 532
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useOrderAttachments.ts", "TypeScript", 32, 0, 0, 0, 0, 0, 0, 0, 0, 6, 38
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useOrderFiles.ts", "TypeScript", 250, 0, 0, 0, 0, 0, 0, 0, 51, 42, 343
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useOrderLineItemPreviews.ts", "TypeScript", 23, 0, 0, 0, 0, 0, 0, 0, 0, 3, 26
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useOrderState.ts", "TypeScript", 118, 0, 0, 0, 0, 0, 0, 0, 27, 17, 162
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useOrderStatusPills.ts", "TypeScript", 222, 0, 0, 0, 0, 0, 0, 0, 31, 32, 285
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useOrders.ts", "TypeScript", 933, 0, 0, 0, 0, 0, 0, 0, 67, 98, 1098
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useOrgPreferences.ts", "TypeScript", 131, 0, 0, 0, 0, 0, 0, 0, 5, 18, 154
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\usePageVisible.ts", "TypeScript", 12, 0, 0, 0, 0, 0, 0, 0, 8, 4, 24
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\usePortal.ts", "TypeScript", 444, 0, 0, 0, 0, 0, 0, 0, 0, 55, 499
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\usePrepress.tsx", "TypeScript JSX", 0, 175, 0, 0, 0, 0, 0, 0, 32, 30, 237
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\usePricingFormulas.ts", "TypeScript", 132, 0, 0, 0, 0, 0, 0, 0, 0, 12, 144
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useProductBuilderDraft.ts", "TypeScript", 71, 0, 0, 0, 0, 0, 0, 0, 8, 14, 93
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useProductTypes.ts", "TypeScript", 103, 0, 0, 0, 0, 0, 0, 0, 0, 9, 112
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useProduction.ts", "TypeScript", 660, 0, 0, 0, 0, 0, 0, 0, 27, 35, 722
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useProductionSettings.ts", "TypeScript", 168, 0, 0, 0, 0, 0, 0, 0, 1, 16, 185
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\usePurchaseOrders.ts", "TypeScript", 185, 0, 0, 0, 0, 0, 0, 0, 0, 13, 198
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useQuoteWorkflowState.ts", "TypeScript", 17, 0, 0, 0, 0, 0, 0, 0, 3, 6, 26
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useRuntimeEnvironment.ts", "TypeScript", 34, 0, 0, 0, 0, 0, 0, 0, 0, 7, 41
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useShipments.ts", "TypeScript", 137, 0, 0, 0, 0, 0, 0, 0, 7, 13, 157
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useSmartBack.ts", "TypeScript", 39, 0, 0, 0, 0, 0, 0, 0, 0, 10, 49
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useStationPrinter.ts", "TypeScript", 50, 0, 0, 0, 0, 0, 0, 0, 10, 8, 68
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useStorageSettings.ts", "TypeScript", 224, 0, 0, 0, 0, 0, 0, 0, 0, 21, 245
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useTableColumnConfig.ts", "TypeScript", 55, 0, 0, 0, 0, 0, 0, 0, 1, 10, 66
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useTheme.tsx", "TypeScript JSX", 0, 75, 0, 0, 0, 0, 0, 0, 8, 11, 94
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useUserPreferences.ts", "TypeScript", 41, 0, 0, 0, 0, 0, 0, 0, 8, 14, 63
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useVendors.ts", "TypeScript", 119, 0, 0, 0, 0, 0, 0, 0, 0, 9, 128
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\index.css", "PostCSS", 0, 0, 0, 0, 0, 350, 0, 0, 25, 87, 462
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\__tests__\productionHelpers.test.ts", "TypeScript", 92, 0, 0, 0, 0, 0, 0, 0, 12, 22, 126
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\apiConfig.ts", "TypeScript", 117, 0, 0, 0, 0, 0, 0, 0, 15, 31, 163
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\api\me.ts", "TypeScript", 35, 0, 0, 0, 0, 0, 0, 0, 6, 8, 49
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\api\platform.ts", "TypeScript", 78, 0, 0, 0, 0, 0, 0, 0, 25, 15, 118
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\appEnv.ts", "TypeScript", 18, 0, 0, 0, 0, 0, 0, 0, 27, 7, 52
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\assetUrlCache.ts", "TypeScript", 29, 0, 0, 0, 0, 0, 0, 0, 22, 7, 58
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\attachmentViewer.ts", "TypeScript", 77, 0, 0, 0, 0, 0, 0, 0, 0, 10, 87
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\attachments.ts", "TypeScript", 54, 0, 0, 0, 0, 0, 0, 0, 35, 18, 107
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\attachments\attachmentStatus.ts", "TypeScript", 89, 0, 0, 0, 0, 0, 0, 0, 43, 26, 158
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\attachments\orderFileRows.ts", "TypeScript", 99, 0, 0, 0, 0, 0, 0, 0, 0, 12, 111
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\attachments\quoteLineItemRows.ts", "TypeScript", 58, 0, 0, 0, 0, 0, 0, 0, 0, 7, 65
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\authUtils.ts", "TypeScript", 3, 0, 0, 0, 0, 0, 0, 0, 0, 1, 4
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\branding.ts", "TypeScript", 9, 0, 0, 0, 0, 0, 0, 0, 0, 3, 12
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\config\storage.ts", "TypeScript", 11, 0, 0, 0, 0, 0, 0, 0, 1, 3, 15
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\downloadFile.ts", "TypeScript", 117, 0, 0, 0, 0, 0, 0, 0, 23, 22, 162
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\fileUtils.ts", "TypeScript", 61, 0, 0, 0, 0, 0, 0, 0, 25, 14, 100
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\getThumbSrc.ts", "TypeScript", 71, 0, 0, 0, 0, 0, 0, 0, 22, 20, 113
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\lineItems\lineItemDerivation.ts", "TypeScript", 83, 0, 0, 0, 0, 0, 0, 0, 2, 16, 101
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\materialWeightDisplay.test.ts", "TypeScript", 28, 0, 0, 0, 0, 0, 0, 0, 0, 4, 32
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\materialWeightDisplay.ts", "TypeScript", 37, 0, 0, 0, 0, 0, 0, 0, 0, 7, 44
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\nav.ts", "TypeScript", 64, 0, 0, 0, 0, 0, 0, 0, 4, 5, 73
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\nav\browserRouterSync.test.ts", "TypeScript", 17, 0, 0, 0, 0, 0, 0, 0, 0, 5, 22
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\nav\browserRouterSync.ts", "TypeScript", 40, 0, 0, 0, 0, 0, 0, 0, 6, 7, 53
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\nav\smartBack.ts", "TypeScript", 36, 0, 0, 0, 0, 0, 0, 0, 0, 5, 41
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\optionChoiceValidation.ts", "TypeScript", 20, 0, 0, 0, 0, 0, 0, 0, 0, 6, 26
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\optionTreeV2PricingCodec.ts", "TypeScript", 133, 0, 0, 0, 0, 0, 0, 0, 20, 13, 166
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\orderProofUi.ts", "TypeScript", 33, 0, 0, 0, 0, 0, 0, 0, 0, 2, 35
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\orderUtils.ts", "TypeScript", 28, 0, 0, 0, 0, 0, 0, 0, 20, 8, 56
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pbv2Utils.ts", "TypeScript", 131, 0, 0, 0, 0, 0, 0, 0, 19, 28, 178
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pbv2\currency.ts", "TypeScript", 25, 0, 0, 0, 0, 0, 0, 0, 0, 5, 30
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pbv2\pbv2Outputs.ts", "TypeScript", 10, 0, 0, 0, 0, 0, 0, 0, 0, 2, 12
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pbv2\pbv2ViewModel.ts", "TypeScript", 1408, 0, 0, 0, 0, 0, 0, 0, 292, 257, 1957
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pbv2\pricing\geometryWarning.ts", "TypeScript", 58, 0, 0, 0, 0, 0, 0, 0, 0, 14, 72
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pbv2\pricing\previewError.ts", "TypeScript", 390, 0, 0, 0, 0, 0, 0, 0, 79, 46, 515
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pbv2\pricing\pricingImpact.ts", "TypeScript", 252, 0, 0, 0, 0, 0, 0, 0, 47, 39, 338
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pbv2\pricing\pricingVariableCatalog.ts", "TypeScript", 73, 0, 0, 0, 0, 0, 0, 0, 0, 4, 77
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pdfUrls.ts", "TypeScript", 46, 0, 0, 0, 0, 0, 0, 0, 17, 12, 75
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pricingFormulaSelection.ts", "TypeScript", 40, 0, 0, 0, 0, 0, 0, 0, 0, 10, 50
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\productionBoard.ts", "TypeScript", 116, 0, 0, 0, 0, 0, 0, 0, 0, 22, 138
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\productionHelpers.ts", "TypeScript", 90, 0, 0, 0, 0, 0, 0, 0, 26, 16, 132
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\proofingNavigation.ts", "TypeScript", 70, 0, 0, 0, 0, 0, 0, 0, 0, 16, 86
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\proofingQueueControls.ts", "TypeScript", 78, 0, 0, 0, 0, 0, 0, 0, 0, 13, 91
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\proofingRecovery.test.ts", "TypeScript", 44, 0, 0, 0, 0, 0, 0, 0, 0, 7, 51
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\proofingRecovery.ts", "TypeScript", 18, 0, 0, 0, 0, 0, 0, 0, 0, 3, 21
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\queryClient.ts", "TypeScript", 77, 0, 0, 0, 0, 0, 0, 0, 5, 14, 96
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\sanitizeDisplayText.ts", "TypeScript", 20, 0, 0, 0, 0, 0, 0, 0, 21, 6, 47
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\stripeClient.ts", "TypeScript", 14, 0, 0, 0, 0, 0, 0, 0, 18, 6, 38
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\tests\optionTreeV2PricingCodec.test.ts", "TypeScript", 76, 0, 0, 0, 0, 0, 0, 0, 1, 14, 91
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\tests\pbv2Currency.test.ts", "TypeScript", 75, 0, 0, 0, 0, 0, 0, 0, 3, 16, 94
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\tests\pbv2Utils.test.ts", "TypeScript", 74, 0, 0, 0, 0, 0, 0, 0, 0, 9, 83
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\tests\pbv2ViewModel.choiceCascade.test.ts", "TypeScript", 138, 0, 0, 0, 0, 0, 0, 0, 2, 16, 156
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\tests\pbv2ViewModel.reorder.test.ts", "TypeScript", 84, 0, 0, 0, 0, 0, 0, 0, 3, 11, 98
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\tests\pbv2ViewModel.textInput.test.ts", "TypeScript", 80, 0, 0, 0, 0, 0, 0, 0, 0, 9, 89
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\tests\previewError.test.ts", "TypeScript", 265, 0, 0, 0, 0, 0, 0, 0, 2, 31, 298
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\tests\pricingFormulaSelection.test.ts", "TypeScript", 24, 0, 0, 0, 0, 0, 0, 0, 0, 4, 28
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\tests\pricingImpact.test.ts", "TypeScript", 218, 0, 0, 0, 0, 0, 0, 0, 0, 32, 250
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\ticketPrintOverrides.test.ts", "TypeScript", 101, 0, 0, 0, 0, 0, 0, 0, 0, 14, 115
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\ticketPrintOverrides.ts", "TypeScript", 100, 0, 0, 0, 0, 0, 0, 0, 32, 14, 146
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\ticketRender.test.ts", "TypeScript", 40, 0, 0, 0, 0, 0, 0, 0, 0, 7, 47
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\ticketRender.ts", "TypeScript", 32, 0, 0, 0, 0, 0, 0, 0, 18, 6, 56
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\ticketSettings.ts", "TypeScript", 50, 0, 0, 0, 0, 0, 0, 0, 19, 11, 80
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\ui\persistExpandedLineItem.ts", "TypeScript", 34, 0, 0, 0, 0, 0, 0, 0, 29, 5, 68
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\ui\persistScrollPosition.ts", "TypeScript", 26, 0, 0, 0, 0, 0, 0, 0, 22, 5, 53
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\uploads\chunkedAttachmentUpload.ts", "TypeScript", 107, 0, 0, 0, 0, 0, 0, 0, 0, 21, 128
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\uploads\fileToBase64.ts", "TypeScript", 20, 0, 0, 0, 0, 0, 0, 0, 1, 5, 26
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\utils.ts", "TypeScript", 28, 0, 0, 0, 0, 0, 0, 0, 7, 9, 44
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\viewUrlForIframe.ts", "TypeScript", 41, 0, 0, 0, 0, 0, 0, 0, 16, 13, 70
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\main.tsx", "TypeScript JSX", 0, 51, 0, 0, 0, 0, 0, 0, 0, 13, 64
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\ApprovalsPage.tsx", "TypeScript JSX", 0, 309, 0, 0, 0, 0, 0, 0, 5, 15, 329
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\DesignProductionPage.tsx", "TypeScript JSX", 0, 1328, 0, 0, 0, 0, 0, 0, 1, 107, 1436
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\PrepressProductionPage.tsx", "TypeScript JSX", 0, 440, 0, 0, 0, 0, 0, 0, 21, 29, 490
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\PrepressProductionPageV2.tsx", "TypeScript JSX", 0, 2063, 0, 0, 0, 0, 0, 0, 35, 142, 2240
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\ProductEditorPage.tsx", "TypeScript JSX", 0, 1043, 0, 0, 0, 0, 0, 0, 65, 109, 1217
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\SelectOrgPage.tsx", "TypeScript JSX", 0, 107, 0, 0, 0, 0, 0, 0, 2, 11, 120
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\StaffProofingPage.tsx", "TypeScript JSX", 0, 2117, 0, 0, 0, 0, 0, 0, 25, 151, 2293
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\accept-invite.tsx", "TypeScript JSX", 0, 231, 0, 0, 0, 0, 0, 0, 25, 30, 286
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\admin-dashboard.tsx", "TypeScript JSX", 0, 4, 0, 0, 0, 0, 0, 0, 0, 2, 6
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\admin-users.tsx", "TypeScript JSX", 0, 393, 0, 0, 0, 0, 0, 0, 0, 20, 413
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\admin.tsx", "TypeScript JSX", 0, 45, 0, 0, 0, 0, 0, 0, 0, 6, 51
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\admin\BugReportsPage.tsx", "TypeScript JSX", 0, 523, 0, 0, 0, 0, 0, 0, 17, 47, 587
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\admin\MaterialsImportExport.tsx", "TypeScript JSX", 0, 894, 0, 0, 0, 0, 0, 0, 44, 65, 1003
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\admin\PricingAuditPage.tsx", "TypeScript JSX", 0, 804, 0, 0, 0, 0, 0, 0, 34, 47, 885
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\admin\ProductImportExport.tsx", "TypeScript JSX", 0, 447, 0, 0, 0, 0, 0, 0, 17, 29, 493
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\admin\QBCustomerInspectorPage.tsx", "TypeScript JSX", 0, 399, 0, 0, 0, 0, 0, 0, 30, 36, 465
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\admin\QBInvoiceInspectorPage.tsx", "TypeScript JSX", 0, 473, 0, 0, 0, 0, 0, 0, 32, 43, 548
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\audit-logs.tsx", "TypeScript JSX", 0, 295, 0, 0, 0, 0, 0, 0, 2, 22, 319
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\byos.tsx", "TypeScript JSX", 0, 332, 0, 0, 0, 0, 0, 0, 0, 15, 347
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\company-settings.tsx", "TypeScript JSX", 0, 272, 0, 0, 0, 0, 0, 0, 3, 23, 298
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\contact-detail.tsx", "TypeScript JSX", 0, 805, 0, 0, 0, 0, 0, 0, 44, 53, 902
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\contacts.tsx", "TypeScript JSX", 0, 676, 0, 0, 0, 0, 0, 0, 20, 29, 725
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\create-order.tsx", "TypeScript JSX", 0, 72, 0, 0, 0, 0, 0, 0, 3, 6, 81
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\create-quote.tsx", "TypeScript JSX", 0, 74, 0, 0, 0, 0, 0, 0, 2, 5, 81
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\customer-detail-enhanced.tsx", "TypeScript JSX", 0, 27, 0, 0, 0, 0, 0, 0, 7, 6, 40
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\customer-detail.tsx", "TypeScript JSX", 0, 656, 0, 0, 0, 0, 0, 0, 6, 37, 699
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\customer-quotes.tsx", "TypeScript JSX", 0, 250, 0, 0, 0, 0, 0, 0, 1, 18, 269
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\customers.tsx", "TypeScript JSX", 0, 243, 0, 0, 0, 0, 0, 0, 37, 30, 310
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\debug-user.tsx", "TypeScript JSX", 0, 45, 0, 0, 0, 0, 0, 0, 0, 5, 50
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\dev\DevLineItemRowEnterprisePreview.tsx", "TypeScript JSX", 0, 143, 0, 0, 0, 0, 0, 0, 0, 19, 162
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\edit-quote.tsx", "TypeScript JSX", 0, 1057, 0, 0, 0, 0, 0, 0, 43, 75, 1175
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\finance.tsx", "TypeScript JSX", 0, 17, 0, 0, 0, 0, 0, 0, 0, 2, 19
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\force-password-change.tsx", "TypeScript JSX", 0, 128, 0, 0, 0, 0, 0, 0, 3, 16, 147
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\forgot-password.tsx", "TypeScript JSX", 0, 173, 0, 0, 0, 0, 0, 0, 2, 14, 189
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\fulfillment-shipment-detail.tsx", "TypeScript JSX", 0, 665, 0, 0, 0, 0, 0, 0, 0, 54, 719
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\fulfillment.tsx", "TypeScript JSX", 0, 433, 0, 0, 0, 0, 0, 0, 0, 37, 470
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\home.tsx", "TypeScript JSX", 0, 315, 0, 0, 0, 0, 0, 0, 6, 22, 343
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\inbound-orders.tsx", "TypeScript JSX", 0, 2862, 0, 0, 0, 0, 0, 0, 0, 220, 3082
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\internal-quotes.tsx", "TypeScript JSX", 0, 1458, 0, 0, 0, 0, 0, 0, 43, 126, 1627
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\invoice-detail.tsx", "TypeScript JSX", 0, 2275, 0, 0, 0, 0, 0, 0, 19, 197, 2491
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\invoices.tsx", "TypeScript JSX", 0, 239, 0, 0, 0, 0, 0, 0, 4, 19, 262
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\job-detail.tsx", "TypeScript JSX", 0, 254, 0, 0, 0, 0, 0, 0, 15, 20, 289
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\labels.tsx", "TypeScript JSX", 0, 25, 0, 0, 0, 0, 0, 0, 0, 2, 27
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\landing.tsx", "TypeScript JSX", 0, 437, 0, 0, 0, 0, 0, 0, 0, 36, 473
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\login.tsx", "TypeScript JSX", 0, 185, 0, 0, 0, 0, 0, 0, 5, 18, 208
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\material-detail.tsx", "TypeScript JSX", 0, 165, 0, 0, 0, 0, 0, 0, 3, 10, 178
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\materials.tsx", "TypeScript JSX", 0, 379, 0, 0, 0, 0, 0, 0, 3, 35, 417
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\not-found.tsx", "TypeScript JSX", 0, 19, 0, 0, 0, 0, 0, 0, 0, 3, 22
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\order-detail.tsx", "TypeScript JSX", 0, 3301, 0, 0, 0, 0, 0, 0, 121, 263, 3685
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\order-new.tsx", "TypeScript JSX", 0, 4, 0, 0, 0, 0, 0, 0, 6, 2, 12
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\order-traveler.tsx", "TypeScript JSX", 0, 182, 0, 0, 0, 0, 0, 0, 16, 17, 215
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\orderNavigationGuard.test.ts", "TypeScript", 27, 0, 0, 0, 0, 0, 0, 0, 3, 6, 36
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\orderNavigationGuard.ts", "TypeScript", 12, 0, 0, 0, 0, 0, 0, 0, 11, 4, 27
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\orderSaveOrchestration.test.ts", "TypeScript", 87, 0, 0, 0, 0, 0, 0, 0, 0, 9, 96
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\orderSaveOrchestration.ts", "TypeScript", 26, 0, 0, 0, 0, 0, 0, 0, 14, 7, 47
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\orders.tsx", "TypeScript JSX", 0, 1226, 0, 0, 0, 0, 0, 0, 41, 123, 1390
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\platform\PlatformOrgCreatePage.tsx", "TypeScript JSX", 0, 269, 0, 0, 0, 0, 0, 0, 23, 31, 323
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\dashboard.tsx", "TypeScript JSX", 0, 312, 0, 0, 0, 0, 0, 0, 0, 24, 336
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\documents.tsx", "TypeScript JSX", 0, 83, 0, 0, 0, 0, 0, 0, 0, 8, 91
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\invoice-detail.tsx", "TypeScript JSX", 0, 261, 0, 0, 0, 0, 0, 0, 0, 24, 285
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\invoices.tsx", "TypeScript JSX", 0, 104, 0, 0, 0, 0, 0, 0, 0, 14, 118
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\my-orders.tsx", "TypeScript JSX", 0, 109, 0, 0, 0, 0, 0, 0, 0, 12, 121
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\my-quotes.tsx", "TypeScript JSX", 0, 95, 0, 0, 0, 0, 0, 0, 0, 13, 108
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\order-detail.tsx", "TypeScript JSX", 0, 254, 0, 0, 0, 0, 0, 0, 0, 16, 270
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\portal-proof.tsx", "TypeScript JSX", 0, 622, 0, 0, 0, 0, 0, 0, 32, 49, 703
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\proof-detail.tsx", "TypeScript JSX", 0, 183, 0, 0, 0, 0, 0, 0, 0, 13, 196
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\proofs.tsx", "TypeScript JSX", 0, 89, 0, 0, 0, 0, 0, 0, 0, 9, 98
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\quote-checkout.tsx", "TypeScript JSX", 0, 4, 0, 0, 0, 0, 0, 0, 0, 3, 7
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\quote-detail.tsx", "TypeScript JSX", 0, 315, 0, 0, 0, 0, 0, 0, 0, 18, 333
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\prepress.tsx", "TypeScript JSX", 0, 495, 0, 0, 0, 0, 0, 0, 20, 37, 552
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\privacy.tsx", "TypeScript JSX", 0, 259, 0, 0, 0, 0, 0, 0, 0, 13, 272
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\product-builder-v2.tsx", "TypeScript JSX", 0, 19, 0, 0, 0, 0, 0, 0, 6, 5, 30
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\production-job-detail.tsx", "TypeScript JSX", 0, 735, 0, 0, 0, 0, 0, 0, 33, 64, 832
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\production-ticket.tsx", "TypeScript JSX", 0, 313, 0, 0, 0, 0, 0, 0, 34, 26, 373
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\production.tsx", "TypeScript JSX", 0, 248, 0, 0, 0, 0, 0, 0, 14, 29, 291
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\products.tsx", "TypeScript JSX", 0, 2919, 0, 0, 0, 0, 0, 0, 72, 123, 3114
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\purchase-order-detail.tsx", "TypeScript JSX", 0, 83, 0, 0, 0, 0, 0, 0, 0, 8, 91
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\purchase-orders.tsx", "TypeScript JSX", 0, 156, 0, 0, 0, 0, 0, 0, 0, 9, 165
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\quote-detail.tsx", "TypeScript JSX", 0, 505, 0, 0, 0, 0, 0, 0, 9, 28, 542
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\quote-editor.tsx", "TypeScript JSX", 0, 31, 0, 0, 0, 0, 0, 0, 9, 10, 50
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\reports.tsx", "TypeScript JSX", 0, 18, 0, 0, 0, 0, 0, 0, 0, 2, 20
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\reset-password.tsx", "TypeScript JSX", 0, 219, 0, 0, 0, 0, 0, 0, 0, 21, 240
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\set-password.tsx", "TypeScript JSX", 0, 173, 0, 0, 0, 0, 0, 0, 4, 17, 194
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\settings\SettingsLayout.tsx", "TypeScript JSX", 0, 1624, 0, 0, 0, 0, 0, 0, 9, 144, 1777
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\settings\SetupSettings.tsx", "TypeScript JSX", 0, 172, 0, 0, 0, 0, 0, 0, 6, 15, 193
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\settings\admin-tools.tsx", "TypeScript JSX", 0, 604, 0, 0, 0, 0, 0, 0, 29, 45, 678
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\settings\email.tsx", "TypeScript JSX", 0, 367, 0, 0, 0, 0, 0, 0, 15, 28, 410
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\settings\integrations.tsx", "TypeScript JSX", 0, 1723, 0, 0, 0, 0, 0, 0, 39, 106, 1868
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\settings\pricing-formulas.tsx", "TypeScript JSX", 0, 1462, 0, 0, 0, 0, 0, 0, 25, 92, 1579
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\settings\product-types.tsx", "TypeScript JSX", 0, 487, 0, 0, 0, 0, 0, 0, 4, 27, 518
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\settings\storage.tsx", "TypeScript JSX", 0, 990, 0, 0, 0, 0, 0, 0, 0, 77, 1067
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\settings\users.tsx", "TypeScript JSX", 0, 4, 0, 0, 0, 0, 0, 0, 0, 2, 6
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\support.tsx", "TypeScript JSX", 0, 190, 0, 0, 0, 0, 0, 0, 5, 10, 205
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\terms.tsx", "TypeScript JSX", 0, 195, 0, 0, 0, 0, 0, 0, 0, 15, 210
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\titan-dashboard.tsx", "TypeScript JSX", 0, 76, 0, 0, 0, 0, 0, 0, 1, 10, 87
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\user-management.tsx", "TypeScript JSX", 0, 435, 0, 0, 0, 0, 0, 0, 9, 23, 467
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\vendor-detail.tsx", "TypeScript JSX", 0, 87, 0, 0, 0, 0, 0, 0, 0, 8, 95
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\vendors.tsx", "TypeScript JSX", 0, 129, 0, 0, 0, 0, 0, 0, 0, 10, 139
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\tests\orderProofStatus.test.ts", "TypeScript", 86, 0, 0, 0, 0, 0, 0, 0, 0, 12, 98
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\tests\productionBoard.test.ts", "TypeScript", 56, 0, 0, 0, 0, 0, 0, 0, 0, 12, 68
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\tests\proofingNavigation.test.ts", "TypeScript", 58, 0, 0, 0, 0, 0, 0, 0, 0, 9, 67
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\tests\proofingQueueControls.test.ts", "TypeScript", 150, 0, 0, 0, 0, 0, 0, 0, 0, 7, 157
+"c:\Users\dale9\Downloads\QuoteVaultPro\client\src\vite-env.d.ts", "TypeScript", 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2
+"Total", "-", 16429, 115428, 21, 28, 79, 1112, 233, 41, 5586, 12187, 151144

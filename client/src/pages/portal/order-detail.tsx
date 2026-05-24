@@ -1,12 +1,12 @@
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, FileText, Loader2, Package, ReceiptText, Truck } from "lucide-react";
+import { ArrowLeft, FileCheck, FileText, Loader2, Package, ReceiptText, Truck } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import PortalFilesCard from "@/components/portal/PortalFilesCard";
 import { Separator } from "@/components/ui/separator";
-import { usePortalOrder, usePortalOrderFiles } from "@/hooks/usePortal";
+import { usePortalOrder, usePortalOrderFiles, usePortalProofs } from "@/hooks/usePortal";
 
 function formatDate(value: string | null) {
   if (!value) return "Not set";
@@ -36,8 +36,10 @@ export default function PortalOrderDetailPage() {
   const orderId = id || "";
   const orderQuery = usePortalOrder(orderId);
   const filesQuery = usePortalOrderFiles(orderId);
+  const proofsQuery = usePortalProofs();
   const order = orderQuery.data;
   const files = filesQuery.data ?? [];
+  const proofs = (proofsQuery.data ?? []).filter((proof) => proof.orderSummary.id === orderId);
 
   if (orderQuery.isLoading) {
     return (
@@ -147,6 +149,37 @@ export default function PortalOrderDetailPage() {
               <Badge variant={statusVariant(item.displayStatus)}>{item.displayStatus}</Badge>
             </div>
           ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <FileCheck className="h-4 w-4" />
+            Proof Reviews
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {proofs.length ? (
+            proofs.map((proof) => (
+              <div key={proof.id} className="flex flex-col gap-3 rounded-md border p-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium">Proof v{proof.versionNumber}</span>
+                    <Badge variant={proof.customerActionRequired ? "secondary" : "outline"}>{proof.displayStatus}</Badge>
+                  </div>
+                  <p className="mt-1 text-sm text-muted-foreground">{proof.lineItemSummary.name}</p>
+                </div>
+                <Button asChild variant="outline" size="sm">
+                  <Link to={`/portal/proofs/${proof.id}`}>{proof.customerActionRequired ? "Review" : "Open"}</Link>
+                </Button>
+              </div>
+            ))
+          ) : proofsQuery.isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading proofs...</p>
+          ) : (
+            <p className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">No proofs are available for this order.</p>
+          )}
         </CardContent>
       </Card>
 

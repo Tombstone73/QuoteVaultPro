@@ -10,12 +10,14 @@ import {
   integrationConnections,
   invoiceLineItems,
   invoices,
+  lineItemProofApprovals,
   lineItemProofVersions,
   orderAttachments,
   orderLineItems,
   orders,
   payments,
   pickupTickets,
+  quoteAttachmentPages,
   quoteAttachments,
   quoteLineItems,
   quoteWorkflowStates,
@@ -33,6 +35,7 @@ import { refreshInvoiceStatus } from "../invoicesService";
 import { generateInvoicePdfBytes } from "./invoicePdf";
 import { storage } from "../storage";
 import { resolveOriginalFileAccess } from "../lib/supabaseObjectHelpers";
+import { buildProofArtifactSummary, INCOMPLETE_PROOF_MESSAGE, recordProofResponse } from "./proofingService";
 
 export type PortalSessionDto = {
   userId: string;
@@ -101,10 +104,10 @@ export type PortalDashboardFileDto = PortalFileDto & {
 
 export type PortalDashboardActivityDto = {
   id: string;
-  type: "invoice" | "quote" | "order" | "file";
+  type: "invoice" | "quote" | "order" | "file" | "proof";
   label: string;
   occurredAt: string | null;
-  targetType: "invoice" | "quote" | "order" | "file";
+  targetType: "invoice" | "quote" | "order" | "file" | "proof";
   targetId: string;
 };
 
@@ -119,8 +122,65 @@ export type PortalDashboardDto = {
   invoices: InvoicePortalDto[];
   quotes: QuotePortalListDto[];
   activeOrders: OrderPortalListDto[];
+  proofs: PortalProofDto[];
   recentFiles: PortalDashboardFileDto[];
   recentActivity: PortalDashboardActivityDto[];
+};
+
+export type PortalProofStatus =
+  | "awaiting_customer"
+  | "approved"
+  | "rejected"
+  | "revision_requested"
+  | "superseded"
+  | "unavailable"
+  | "under_review";
+
+export type PortalProofAction = "approve" | "reject" | "request_revision";
+
+export type PortalProofLineItemSummaryDto = {
+  id: string;
+  name: string;
+  quantity: number;
+  dimensions: {
+    width: number | null;
+    height: number | null;
+  };
+};
+
+export type PortalProofOrderSummaryDto = {
+  id: string;
+  orderNumber: string;
+  displayStatus: string;
+};
+
+export type PortalProofHistoryItemDto = {
+  id: string;
+  versionNumber: number;
+  displayStatus: string;
+  createdAt: string | null;
+  respondedAt: string | null;
+};
+
+export type PortalProofDto = {
+  id: string;
+  versionNumber: number;
+  status: PortalProofStatus;
+  displayStatus: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  previewAvailable: boolean;
+  proofFileAvailable: boolean;
+  proofNotes: string | null;
+  lineItemSummary: PortalProofLineItemSummaryDto;
+  orderSummary: PortalProofOrderSummaryDto;
+  customerActionRequired: boolean;
+  history?: PortalProofHistoryItemDto[];
+};
+
+export type PortalProofActionResultDto = {
+  proof: PortalProofDto;
+  message: string;
 };
 
 export type PortalStripePaymentIntentDto = {
@@ -410,6 +470,41 @@ type PortalAttachmentRow = {
   portalDescription?: string | null;
 };
 
+type PortalProofRow = {
+  id: string;
+  organizationId: string;
+  orderId: string;
+  orderNumber: string;
+  orderStatus: string | null;
+  orderState: string | null;
+  orderStatusPillValue: string | null;
+  fulfillmentStatus: string | null;
+  shippingMethod: string | null;
+  lineItemId: string;
+  lineItemDescription: string;
+  lineItemQuantity: number | null;
+  lineItemWidth: unknown;
+  lineItemHeight: unknown;
+  proofFileId: string;
+  versionNumber: number;
+  status: string;
+  customerMessage: string | null;
+  customerVisibleDisclaimer: string | null;
+  createdAt: unknown;
+  updatedAt: unknown;
+  proofFileName: string;
+  proofOriginalFilename: string | null;
+  proofMimeType: string | null;
+  proofFileRecordId: string | null;
+  proofFileUrl: string | null;
+  proofThumbKey: string | null;
+  proofPreviewKey: string | null;
+  proofThumbnailUrl: string | null;
+  proofSizeBytes: number | null;
+  respondedAt: unknown;
+  decision: string | null;
+};
+
 const CUSTOMER_VISIBLE_INVOICE_STATUSES = ["billed", "sent", "partially_paid", "overdue", "paid", "void", "open"];
 const PORTAL_PAYABLE_INVOICE_STATUSES = ["billed", "sent", "open", "partially_paid", "overdue"];
 
@@ -598,6 +693,30 @@ function mapQuoteActions(displayStatus: string): QuotePortalActionsDto {
             ? "Your revision request has been recorded."
             : "Quote actions are unavailable for this quote.",
   };
+}
+
+export function mapPortalProofStatus(raw: unknown): { status: PortalProofStatus; displayStatus: string; customerActionRequired: boolean } {
+  const status = normalizeStatus(raw);
+  if (status === "awaiting_response" || status === "awaiting_customer") {
+    return { status: "awaiting_customer", displayStatus: "Awaiting Your Approval", customerActionRequired: true };
+  }
+  if (status === "approved") return { status: "approved", displayStatus: "Approved", customerActionRequired: false };
+  if (status === "rejected") return { status: "rejected", displayStatus: "Declined", customerActionRequired: false };
+  if (status === "revision_requested") return { status: "revision_requested", displayStatus: "Revision Requested", customerActionRequired: false };
+  if (status === "superseded") return { status: "superseded", displayStatus: "Superseded", customerActionRequired: false };
+  if (status === "canceled" || status === "cancelled" || status === "void") {
+    return { status: "unavailable", displayStatus: "Unavailable", customerActionRequired: false };
+  }
+  return { status: "under_review", displayStatus: "Under Review", customerActionRequired: false };
+}
+
+function portalProofActionMessage(action: PortalProofAction, displayStatus: string): string {
+  if (displayStatus !== "Awaiting Your Approval") {
+    return `This proof is ${displayStatus.toLowerCase()}.`;
+  }
+  if (action === "approve") return "Proof approved. Thank you.";
+  if (action === "reject") return "Proof declined.";
+  return "Your revision request has been recorded.";
 }
 
 function methodLabel(payment: Pick<PaymentPortalRow, "provider" | "method">): string {
@@ -1510,6 +1629,288 @@ export async function getPortalQuoteFileDownload(req: Request, quoteId: string, 
   return portalAttachmentDownload(attachment);
 }
 
+function proofArtifactReady(row: PortalProofRow): boolean {
+  const artifact = buildProofArtifactSummary({
+    attachment: {
+      id: row.proofFileId,
+      fileName: row.proofOriginalFilename || row.proofFileName,
+      mimeType: row.proofMimeType ?? null,
+      description: null,
+      fileRecordId: row.proofFileRecordId ?? null,
+      fileUrl: row.proofFileUrl ?? null,
+      thumbKey: row.proofThumbKey ?? null,
+      previewKey: row.proofPreviewKey ?? null,
+      thumbnailUrl: row.proofThumbnailUrl ?? null,
+      pagePreviewCount: 0,
+      pageThumbCount: 0,
+    },
+    snapshot: null,
+  });
+  return artifact.previewStatus === "ready";
+}
+
+function mapPortalProofRow(row: PortalProofRow, history?: PortalProofHistoryItemDto[]): PortalProofDto {
+  const mapped = mapPortalProofStatus(row.status);
+  const orderDisplayStatus = mapPortalOrderStatus({
+    state: row.orderState,
+    status: row.orderStatus,
+    statusPillValue: row.orderStatusPillValue,
+    fulfillmentStatus: row.fulfillmentStatus,
+    shippingMethod: row.shippingMethod,
+    proofActionRequired: mapped.customerActionRequired,
+  });
+  const proofNotes = [row.customerMessage, row.customerVisibleDisclaimer]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join("\n\n") || null;
+
+  return {
+    id: row.id,
+    versionNumber: Number(row.versionNumber || 0),
+    status: mapped.status,
+    displayStatus: mapped.displayStatus,
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt),
+    previewAvailable: proofArtifactReady(row),
+    proofFileAvailable: Boolean(row.proofFileRecordId || row.proofFileUrl),
+    proofNotes,
+    lineItemSummary: {
+      id: row.lineItemId,
+      name: row.lineItemDescription,
+      quantity: Number(row.lineItemQuantity || 0),
+      dimensions: {
+        width: row.lineItemWidth == null ? null : Number(row.lineItemWidth),
+        height: row.lineItemHeight == null ? null : Number(row.lineItemHeight),
+      },
+    },
+    orderSummary: {
+      id: row.orderId,
+      orderNumber: String(row.orderNumber),
+      displayStatus: orderDisplayStatus,
+    },
+    customerActionRequired: mapped.customerActionRequired,
+    ...(history ? { history } : {}),
+  };
+}
+
+async function loadPortalProofRows(scope: PortalScope, proofId?: string, tx: any = db): Promise<PortalProofRow[]> {
+  return tx
+    .select({
+      id: lineItemProofVersions.id,
+      organizationId: lineItemProofVersions.organizationId,
+      orderId: lineItemProofVersions.orderId,
+      orderNumber: orders.orderNumber,
+      orderStatus: orders.status,
+      orderState: orders.state,
+      orderStatusPillValue: orders.statusPillValue,
+      fulfillmentStatus: orders.fulfillmentStatus,
+      shippingMethod: orders.shippingMethod,
+      lineItemId: lineItemProofVersions.lineItemId,
+      lineItemDescription: orderLineItems.description,
+      lineItemQuantity: orderLineItems.quantity,
+      lineItemWidth: orderLineItems.width,
+      lineItemHeight: orderLineItems.height,
+      proofFileId: lineItemProofVersions.proofFileId,
+      versionNumber: lineItemProofVersions.versionNumber,
+      status: lineItemProofVersions.status,
+      customerMessage: lineItemProofVersions.customerMessage,
+      customerVisibleDisclaimer: lineItemProofVersions.customerVisibleDisclaimer,
+      createdAt: lineItemProofVersions.createdAt,
+      updatedAt: lineItemProofVersions.updatedAt,
+      proofFileName: orderAttachments.fileName,
+      proofOriginalFilename: orderAttachments.originalFilename,
+      proofMimeType: orderAttachments.mimeType,
+      proofFileRecordId: orderAttachments.fileRecordId,
+      proofFileUrl: orderAttachments.fileUrl,
+      proofThumbKey: orderAttachments.thumbKey,
+      proofPreviewKey: orderAttachments.previewKey,
+      proofThumbnailUrl: orderAttachments.thumbnailUrl,
+      proofSizeBytes: orderAttachments.sizeBytes,
+      respondedAt: lineItemProofApprovals.respondedAt,
+      decision: lineItemProofApprovals.decision,
+    })
+    .from(lineItemProofVersions)
+    .innerJoin(orderLineItems, eq(orderLineItems.id, lineItemProofVersions.lineItemId))
+    .innerJoin(orders, eq(orders.id, lineItemProofVersions.orderId))
+    .innerJoin(orderAttachments, eq(orderAttachments.id, lineItemProofVersions.proofFileId))
+    .leftJoin(lineItemProofApprovals, eq(lineItemProofApprovals.proofVersionId, lineItemProofVersions.id))
+    .where(
+      and(
+        eq(lineItemProofVersions.organizationId, scope.organizationId),
+        eq(orders.customerId, scope.customerId),
+        inArray(lineItemProofVersions.status, ["awaiting_response", "approved", "rejected", "revision_requested", "superseded"]),
+        proofId ? eq(lineItemProofVersions.id, proofId) : sql`true`,
+      ),
+    )
+    .orderBy(desc(lineItemProofVersions.createdAt));
+}
+
+async function loadPortalProofHistory(scope: PortalScope, lineItemId: string, tx: any = db): Promise<PortalProofHistoryItemDto[]> {
+  const rows: Array<{
+    id: string;
+    versionNumber: number;
+    status: string;
+    createdAt: unknown;
+    respondedAt: unknown;
+  }> = await tx
+    .select({
+      id: lineItemProofVersions.id,
+      versionNumber: lineItemProofVersions.versionNumber,
+      status: lineItemProofVersions.status,
+      createdAt: lineItemProofVersions.createdAt,
+      respondedAt: lineItemProofApprovals.respondedAt,
+    })
+    .from(lineItemProofVersions)
+    .innerJoin(orderLineItems, eq(orderLineItems.id, lineItemProofVersions.lineItemId))
+    .innerJoin(orders, eq(orders.id, lineItemProofVersions.orderId))
+    .leftJoin(lineItemProofApprovals, eq(lineItemProofApprovals.proofVersionId, lineItemProofVersions.id))
+    .where(
+      and(
+        eq(lineItemProofVersions.organizationId, scope.organizationId),
+        eq(lineItemProofVersions.lineItemId, lineItemId),
+        eq(orders.customerId, scope.customerId),
+        inArray(lineItemProofVersions.status, ["awaiting_response", "approved", "rejected", "revision_requested", "superseded"]),
+      ),
+    )
+    .orderBy(desc(lineItemProofVersions.versionNumber));
+
+  return rows.map((row) => ({
+    id: row.id,
+    versionNumber: Number(row.versionNumber || 0),
+    displayStatus: mapPortalProofStatus(row.status).displayStatus,
+    createdAt: toIso(row.createdAt),
+    respondedAt: toIso(row.respondedAt),
+  }));
+}
+
+export async function listPortalProofs(req: Request): Promise<PortalProofDto[]> {
+  const scope = getPortalScope(req);
+  const rows = await loadPortalProofRows(scope);
+  return rows.map((row) => mapPortalProofRow(row));
+}
+
+export async function getPortalProof(req: Request, proofId: string): Promise<PortalProofDto | null> {
+  const scope = getPortalScope(req);
+  const [row] = await loadPortalProofRows(scope, proofId);
+  if (!row) return null;
+  const history = await loadPortalProofHistory(scope, row.lineItemId);
+  return mapPortalProofRow(row, history);
+}
+
+export async function getPortalProofFileDownload(req: Request, proofId: string): Promise<PortalFileDownloadResult | null> {
+  const scope = getPortalScope(req);
+  const [row] = await loadPortalProofRows(scope, proofId);
+  if (!row) return null;
+  return portalAttachmentDownload({
+    id: row.proofFileId,
+    fileRecordId: row.proofFileRecordId,
+    fileName: row.proofFileName,
+    originalFilename: row.proofOriginalFilename,
+    mimeType: row.proofMimeType,
+    fileUrl: row.proofFileUrl,
+    fileSize: row.proofSizeBytes,
+    sizeBytes: row.proofSizeBytes,
+    createdAt: row.createdAt,
+  });
+}
+
+function proofActionDecision(action: PortalProofAction): "approved" | "rejected" | "revision_requested" {
+  if (action === "approve") return "approved";
+  if (action === "reject") return "rejected";
+  return "revision_requested";
+}
+
+export async function submitPortalProofAction(req: Request, proofId: string, action: PortalProofAction): Promise<PortalProofActionResultDto | null> {
+  const scope = getPortalScope(req);
+  const note = typeof req.body?.note === "string" ? req.body.note.slice(0, 2000) : null;
+
+  try {
+    const result = await db.transaction(async (tx) => {
+      const [row] = await loadPortalProofRows(scope, proofId, tx);
+      if (!row) return null;
+
+      const mapped = mapPortalProofStatus(row.status);
+      if (!mapped.customerActionRequired) {
+        if (mapped.status === "superseded" || mapped.status === "unavailable" || mapped.status === "under_review") {
+          throw new PortalAccessError(409, "This proof is not available for customer action.");
+        }
+        return {
+          proof: mapPortalProofRow(row, await loadPortalProofHistory(scope, row.lineItemId, tx)),
+          message: portalProofActionMessage(action, mapped.displayStatus),
+        };
+      }
+
+      if (!proofArtifactReady(row)) {
+        throw new PortalAccessError(400, INCOMPLETE_PROOF_MESSAGE);
+      }
+
+      const responseResult = await recordProofResponse(tx, {
+        organizationId: scope.organizationId,
+        proofVersionId: row.id,
+        actorUserId: scope.userId,
+        responderName: getUserName((req as any).user) || scope.customer.companyName || null,
+        responderEmail: scope.customer.email || null,
+        responderSource: "customer",
+        decision: proofActionDecision(action),
+        responseNotes: note,
+      });
+
+      await tx.insert(auditLogs).values({
+        organizationId: scope.organizationId,
+        userId: scope.userId,
+        userName: getUserName((req as any).user) || scope.customer.email || "Portal customer",
+        actionType: "CREATE",
+        entityType: "line_item_proof_approval",
+        entityId: responseResult.approval.id,
+        entityName: `Proof response ${responseResult.approval.id}`,
+        description: `Portal customer recorded ${responseResult.approval.decision} response for proof version ${responseResult.approval.proofVersionId}`,
+        newValues: {
+          source: "customer_portal",
+          lineItemId: responseResult.approval.lineItemId,
+          proofVersionId: responseResult.approval.proofVersionId,
+          decision: responseResult.approval.decision,
+          workflowState: responseResult.workflowTransition.toState,
+        },
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+      } as any);
+
+      const [updatedRow] = await loadPortalProofRows(scope, proofId, tx);
+      if (!updatedRow) return null;
+      return {
+        proof: mapPortalProofRow(updatedRow, await loadPortalProofHistory(scope, updatedRow.lineItemId, tx)),
+        message: portalProofActionMessage(action, "Awaiting Your Approval"),
+      };
+    });
+
+    return result;
+  } catch (error: any) {
+    const message = String(error?.message || "");
+    if (error?.statusCode === 409 && /already|awaiting response can be decided/i.test(message)) {
+      const current = await getPortalProof(req, proofId);
+      if (current && !current.customerActionRequired) {
+        return {
+          proof: current,
+          message: portalProofActionMessage(action, current.displayStatus),
+        };
+      }
+    }
+    throw error;
+  }
+}
+
+export async function approvePortalProof(req: Request, proofId: string): Promise<PortalProofActionResultDto | null> {
+  return submitPortalProofAction(req, proofId, "approve");
+}
+
+export async function rejectPortalProof(req: Request, proofId: string): Promise<PortalProofActionResultDto | null> {
+  return submitPortalProofAction(req, proofId, "reject");
+}
+
+export async function requestPortalProofRevision(req: Request, proofId: string): Promise<PortalProofActionResultDto | null> {
+  return submitPortalProofAction(req, proofId, "request_revision");
+}
+
 function timestampMs(value: string | null | undefined): number {
   if (!value) return 0;
   const ms = new Date(value).getTime();
@@ -1579,13 +1980,28 @@ function fileDashboardActivity(file: PortalDashboardFileDto): PortalDashboardAct
   };
 }
 
+function proofDashboardActivity(proof: PortalProofDto): PortalDashboardActivityDto {
+  return {
+    id: `proof-${proof.id}`,
+    type: "proof",
+    label:
+      proof.status === "awaiting_customer"
+        ? `Proof for order #${proof.orderSummary.orderNumber} is awaiting your approval`
+        : `Proof for order #${proof.orderSummary.orderNumber} is ${proof.displayStatus.toLowerCase()}`,
+    occurredAt: proof.updatedAt || proof.createdAt,
+    targetType: "proof",
+    targetId: proof.id,
+  };
+}
+
 export async function getPortalDashboard(req: Request): Promise<PortalDashboardDto> {
   getPortalScope(req);
 
-  const [invoices, orders, quotes] = await Promise.all([
+  const [invoices, orders, quotes, proofs] = await Promise.all([
     listPortalInvoices(req),
     listPortalOrders(req),
     listPortalQuotes(req),
+    listPortalProofs(req),
   ]);
 
   const unpaidInvoices = invoices.filter((invoice) => Number(invoice.amountDue || 0) > 0);
@@ -1643,6 +2059,7 @@ export async function getPortalDashboard(req: Request): Promise<PortalDashboardD
     ...unpaidInvoices.slice(0, 3).map(invoiceDashboardActivity),
     ...actionableQuotes.slice(0, 3).map(quoteDashboardActivity),
     ...activeOrders.slice(0, 3).map(orderDashboardActivity),
+    ...proofs.slice(0, 3).map(proofDashboardActivity),
     ...recentFiles.slice(0, 3).map(fileDashboardActivity),
   ]
     .sort((a, b) => timestampMs(b.occurredAt) - timestampMs(a.occurredAt))
@@ -1654,11 +2071,12 @@ export async function getPortalDashboard(req: Request): Promise<PortalDashboardD
       outstandingBalance: Math.round(unpaidInvoices.reduce((sum, invoice) => sum + Number(invoice.amountDue || 0), 0) * 100) / 100,
       activeOrderCount: activeOrders.length,
       quotesNeedingAction: actionableQuotes.length,
-      proofsAwaitingApproval: orders.filter((order) => order.proofStatusSummary.actionRequired).length,
+      proofsAwaitingApproval: proofs.filter((proof) => proof.customerActionRequired).length,
     },
     invoices: payableInvoices,
     quotes: actionableQuotes.slice(0, 4),
     activeOrders: activeOrders.slice(0, 4),
+    proofs: proofs.filter((proof) => proof.customerActionRequired).slice(0, 4),
     recentFiles,
     recentActivity,
   };
@@ -1672,6 +2090,7 @@ function buildProofSummary(
   const requiredCount = requiredLineItemIds.size;
   const approvedCount = lineItems.filter((lineItem) => lineItem.requiresProofApproval && lineItem.approvedProofVersionId).length;
   let revisionRequestedCount = 0;
+  let awaitingResponseCount = 0;
   let latestVersionNumber: number | null = null;
 
   for (const version of proofVersions) {
@@ -1680,6 +2099,9 @@ function buildProofSummary(
     }
     if (requiredLineItemIds.has(version.lineItemId) && version.status === "revision_requested") {
       revisionRequestedCount += 1;
+    }
+    if (requiredLineItemIds.has(version.lineItemId) && version.status === "awaiting_response") {
+      awaitingResponseCount += 1;
     }
   }
 
@@ -1692,7 +2114,7 @@ function buildProofSummary(
         : revisionRequestedCount > 0
           ? "revision_requested"
           : "pending";
-  const actionRequired = statusKey === "pending" || statusKey === "revision_requested";
+  const actionRequired = awaitingResponseCount > 0;
   const statusLabel =
     statusKey === "not_required"
       ? "No proof required"
@@ -1707,7 +2129,7 @@ function buildProofSummary(
     statusLabel,
     actionRequired,
     latestVersionNumber,
-    proofLinkAvailable: false,
+    proofLinkAvailable: awaitingResponseCount > 0,
     requiredCount,
     approvedCount,
     pendingCount,

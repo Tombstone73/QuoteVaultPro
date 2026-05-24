@@ -282,6 +282,82 @@ async function main() {
     assert(fakeOrderFile.status === 404, "fake order file", `expected 404, got ${fakeOrderFile.status}`);
   });
 
+  const proofList = await request<any>("/api/portal/proofs");
+  const proofRows = Array.isArray(proofList.json?.data) ? proofList.json.data : [];
+  const actionableProof = proofRows.find((proof: any) => proof.id === config.proofVersionIds.actionable);
+  const approvedProof = proofRows.find((proof: any) => proof.id === config.proofVersionIds.approved);
+  const supersededProof = proofRows.find((proof: any) => proof.id === config.proofVersionIds.superseded);
+  record("portal proof list loads scoped proofs", () => {
+    assert(proofList.ok, "proof list", `expected 2xx, got ${proofList.status}`);
+    assert(actionableProof, "proof list", "expected actionable proof");
+    assert(approvedProof, "proof list", "expected approved proof");
+    assert(supersededProof, "proof list", "expected superseded proof");
+    assert(!proofRows.some((proof: any) => proof.id === config.proofVersionIds.otherCustomer), "proof list", "other customer proof should not be visible");
+  });
+  record("portal proof list is sanitized", () => {
+    const serialized = JSON.stringify(proofList.json?.data || {});
+    assert(!serialized.includes("internalNotes"), "proof list", "leaked internal notes");
+    assert(!serialized.includes("proofFileId"), "proof list", "leaked proof file id");
+    assert(!serialized.includes("storage") && !serialized.includes("bucket") && !serialized.includes("fileUrl"), "proof list", "leaked storage metadata");
+    assert(actionableProof?.displayStatus === "Awaiting Your Approval", "proof list", `expected Awaiting Your Approval, got ${actionableProof?.displayStatus}`);
+  });
+
+  const proofDetail = await request<any>(`/api/portal/proofs/${encodeURIComponent(config.proofVersionIds.actionable)}`);
+  record("portal proof detail loads", () => {
+    assert(proofDetail.ok, "proof detail", `expected 2xx, got ${proofDetail.status}`);
+    assert(proofDetail.json?.data?.id === config.proofVersionIds.actionable, "proof detail", "expected actionable proof detail");
+    assert(proofDetail.json?.data?.customerActionRequired === true, "proof detail", "expected action required");
+    assert(Array.isArray(proofDetail.json?.data?.history), "proof detail", "expected safe history");
+  });
+
+  const tokenProof = await request<any>(`/api/portal/proof/${encodeURIComponent(config.proofTokenRaw)}`);
+  record("token-link proof flow still resolves", () => {
+    assert(tokenProof.ok, "token proof", `expected 2xx, got ${tokenProof.status}`);
+    assert(tokenProof.json?.data?.proofVersion?.id === config.proofVersionIds.actionable, "token proof", "expected seeded proof token");
+  });
+
+  const proofFileDownload = await request(`/api/portal/proofs/${encodeURIComponent(config.proofVersionIds.actionable)}/file`);
+  record("portal proof file downloads through portal proxy", () => {
+    assert(proofFileDownload.ok, "proof file", `expected 2xx, got ${proofFileDownload.status}`);
+    assert(proofFileDownload.text.includes("actionable proof file"), "proof file", "expected seeded proof content");
+  });
+
+  const fakeProof = await request("/api/portal/proofs/not-a-real-proof");
+  record("fake proof ID returns safe 404", () => {
+    assert(fakeProof.status === 404, "fake proof", `expected 404, got ${fakeProof.status}`);
+  });
+
+  const otherProof = await request(`/api/portal/proofs/${encodeURIComponent(config.proofVersionIds.otherCustomer)}`);
+  record("other customer proof returns safe 404", () => {
+    assert(otherProof.status === 404, "other proof", `expected 404, got ${otherProof.status}`);
+  });
+
+  const supersededProofAction = await request(`/api/portal/proofs/${encodeURIComponent(config.proofVersionIds.superseded)}/approve`, { method: "POST", body: "{}" });
+  record("superseded proof cannot be acted on", () => {
+    assert(supersededProofAction.status === 409, "superseded proof", `expected 409, got ${supersededProofAction.status}`);
+  });
+
+  const approveProof = await request<any>(`/api/portal/proofs/${encodeURIComponent(config.proofVersionIds.actionable)}/approve`, { method: "POST", body: "{}" });
+  record("portal user can approve actionable proof", () => {
+    assert(approveProof.ok, "approve proof", `expected 2xx, got ${approveProof.status}: ${approveProof.text}`);
+    assert(approveProof.json?.data?.proof?.displayStatus === "Approved", "approve proof", "expected approved proof DTO");
+  });
+
+  const repeatApproveProof = await request<any>(`/api/portal/proofs/${encodeURIComponent(config.proofVersionIds.actionable)}/approve`, { method: "POST", body: "{}" });
+  record("repeat proof approve is idempotent", () => {
+    assert(repeatApproveProof.ok, "repeat approve proof", `expected 2xx, got ${repeatApproveProof.status}`);
+    assert(repeatApproveProof.json?.data?.proof?.displayStatus === "Approved", "repeat approve proof", "expected approved proof DTO");
+  });
+
+  const refreshedProofDashboard = await request<any>("/api/portal/dashboard");
+  const refreshedProofOrder = await request<any>(`/api/portal/orders/${encodeURIComponent(config.orderIds.portalStatus)}`);
+  record("proof actions update portal dashboard and order summaries", () => {
+    assert(refreshedProofDashboard.ok, "proof dashboard refresh", `expected 2xx, got ${refreshedProofDashboard.status}`);
+    assert(!((refreshedProofDashboard.json?.data?.proofs || []).some((proof: any) => proof.id === config.proofVersionIds.actionable)), "proof dashboard refresh", "approved proof should no longer require action");
+    assert(refreshedProofOrder.ok, "proof order refresh", `expected 2xx, got ${refreshedProofOrder.status}`);
+    assert(refreshedProofOrder.json?.data?.proofStatusSummary?.actionRequired === false, "proof order refresh", "order should not show proof action required after approval");
+  });
+
   const quoteList = await request<any>("/api/portal/quotes");
   const quoteRows = Array.isArray(quoteList.json?.data) ? quoteList.json.data : [];
   const activeQuote = quoteRows.find((quote: any) => quote.id === config.quoteIds.active);

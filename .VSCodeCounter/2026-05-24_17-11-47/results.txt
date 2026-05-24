@@ -1,0 +1,576 @@
+Date : 2026-05-24 17:11:47
+Directory : c:\Users\dale9\Downloads\QuoteVaultPro\client
+Total : 470 files,  133371 codes, 5586 comments, 12187 blanks, all 151144 lines
+
+Languages
++----------------+------------+------------+------------+------------+------------+
+| language       | files      | code       | comment    | blank      | total      |
++----------------+------------+------------+------------+------------+------------+
+| TypeScript JSX |        327 |    115,428 |      3,668 |      9,537 |    128,633 |
+| TypeScript     |        133 |     16,429 |      1,876 |      2,359 |     20,664 |
+| PostCSS        |          4 |      1,112 |         29 |        215 |      1,356 |
+| Markdown       |          1 |        233 |          0 |         63 |        296 |
+| XML            |          2 |         79 |          1 |          1 |         81 |
+| JavaScript     |          1 |         41 |         12 |         10 |         63 |
+| HTML           |          1 |         28 |          0 |          1 |         29 |
+| JSON           |          1 |         21 |          0 |          1 |         22 |
++----------------+------------+------------+------------+------------+------------+
+
+Directories
++-----------------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| path                                                                                                            | files      | code       | comment    | blank      | total      |
++-----------------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| .                                                                                                               |        470 |    133,371 |      5,586 |     12,187 |    151,144 |
+| . (Files)                                                                                                       |          2 |         69 |         12 |         11 |         92 |
+| public                                                                                                          |          3 |        100 |          1 |          2 |        103 |
+| public\branding                                                                                                 |          3 |        100 |          1 |          2 |        103 |
+| src                                                                                                             |        465 |    133,202 |      5,573 |     12,174 |    150,949 |
+| src (Files)                                                                                                     |          4 |        676 |         64 |        138 |        878 |
+| src\components                                                                                                  |        216 |     50,520 |      1,522 |      4,420 |     56,462 |
+| src\components (Files)                                                                                          |         68 |     25,890 |        811 |      2,018 |     28,719 |
+| src\components\branding                                                                                         |          1 |         34 |          0 |          4 |         38 |
+| src\components\bug-report                                                                                       |          1 |        350 |         13 |         42 |        405 |
+| src\components\customers                                                                                        |          7 |        956 |         12 |         60 |      1,028 |
+| src\components\customers (Files)                                                                                |          4 |        524 |         12 |         42 |        578 |
+| src\components\customers\tables                                                                                 |          3 |        432 |          0 |         18 |        450 |
+| src\components\dashboard                                                                                        |         10 |        961 |          0 |         79 |      1,040 |
+| src\components\debug                                                                                            |          1 |         14 |          0 |          2 |         16 |
+| src\components\fulfillment                                                                                      |          1 |         42 |          0 |          6 |         48 |
+| src\components\integrations                                                                                     |          1 |        112 |          0 |         18 |        130 |
+| src\components\layout                                                                                           |          8 |      1,266 |        110 |        138 |      1,514 |
+| src\components\line-items                                                                                       |         12 |      2,888 |         58 |        327 |      3,273 |
+| src\components\list                                                                                             |          1 |        101 |          0 |          4 |        105 |
+| src\components\marketing                                                                                        |          4 |        278 |          0 |         30 |        308 |
+| src\components\media                                                                                            |          1 |         47 |         11 |          9 |         67 |
+| src\components\orders                                                                                           |          9 |      4,461 |        167 |        423 |      5,051 |
+| src\components\payments                                                                                         |          1 |        341 |         53 |         48 |        442 |
+| src\components\pbv2                                                                                             |         16 |      6,329 |        103 |        419 |      6,851 |
+| src\components\pbv2 (Files)                                                                                     |          1 |        229 |          1 |         14 |        244 |
+| src\components\pbv2\builder-v2                                                                                  |         15 |      6,100 |        102 |        405 |      6,607 |
+| src\components\portal                                                                                           |          2 |        161 |          0 |         11 |        172 |
+| src\components\production                                                                                       |          7 |        915 |        106 |        116 |      1,137 |
+| src\components\runtime                                                                                          |          2 |         85 |          0 |         17 |        102 |
+| src\components\titan                                                                                            |         14 |        977 |         55 |        129 |      1,161 |
+| src\components\ui                                                                                               |         49 |      4,312 |         23 |        520 |      4,855 |
+| src\config                                                                                                      |          1 |        106 |        111 |         23 |        240 |
+| src\contexts                                                                                                    |          3 |        381 |         15 |         70 |        466 |
+| src\docs                                                                                                        |          1 |        233 |          0 |         63 |        296 |
+| src\features                                                                                                    |         30 |     19,174 |      1,284 |      1,836 |     22,294 |
+| src\features\customers                                                                                          |          6 |      3,511 |        208 |        270 |      3,989 |
+| src\features\documents                                                                                          |          1 |        817 |         48 |         74 |        939 |
+| src\features\documents\create                                                                                   |          1 |        817 |         48 |         74 |        939 |
+| src\features\materials                                                                                          |          2 |        876 |          2 |         64 |        942 |
+| src\features\production                                                                                         |          5 |      5,657 |        278 |        496 |      6,431 |
+| src\features\production (Files)                                                                                 |          1 |         22 |          0 |          5 |         27 |
+| src\features\production\theme                                                                                   |          1 |         61 |         13 |          8 |         82 |
+| src\features\production\views                                                                                   |          3 |      5,574 |        265 |        483 |      6,322 |
+| src\features\products                                                                                           |          1 |        918 |         12 |         95 |      1,025 |
+| src\features\products\editor                                                                                    |          1 |        918 |         12 |         95 |      1,025 |
+| src\features\quotes                                                                                             |         15 |      7,395 |        736 |        837 |      8,968 |
+| src\features\quotes\editor                                                                                      |         14 |      7,385 |        736 |        831 |      8,952 |
+| src\features\quotes\editor (Files)                                                                              |          4 |      3,141 |        528 |        437 |      4,106 |
+| src\features\quotes\editor\components                                                                           |         10 |      4,244 |        208 |        394 |      4,846 |
+| src\features\quotes\utils                                                                                       |          1 |         10 |          0 |          6 |         16 |
+| src\hooks                                                                                                       |         41 |      6,773 |        356 |        776 |      7,905 |
+| src\hooks (Files)                                                                                               |         40 |      6,670 |        350 |        762 |      7,782 |
+| src\hooks\portal                                                                                                |          1 |        103 |          6 |         14 |        123 |
+| src\lib                                                                                                         |         67 |      6,110 |        987 |      1,076 |      8,173 |
+| src\lib (Files)                                                                                                 |         36 |      2,035 |        411 |        405 |      2,851 |
+| src\lib\__tests__                                                                                               |          1 |         92 |         12 |         22 |        126 |
+| src\lib\api                                                                                                     |          2 |        113 |         31 |         23 |        167 |
+| src\lib\attachments                                                                                             |          3 |        246 |         43 |         45 |        334 |
+| src\lib\config                                                                                                  |          1 |         11 |          1 |          3 |         15 |
+| src\lib\lineItems                                                                                               |          1 |         83 |          2 |         16 |        101 |
+| src\lib\nav                                                                                                     |          3 |         93 |          6 |         17 |        116 |
+| src\lib\pbv2                                                                                                    |          7 |      2,216 |        418 |        367 |      3,001 |
+| src\lib\pbv2 (Files)                                                                                            |          3 |      1,443 |        292 |        264 |      1,999 |
+| src\lib\pbv2\pricing                                                                                            |          4 |        773 |        126 |        103 |      1,002 |
+| src\lib\tests                                                                                                   |          9 |      1,034 |         11 |        142 |      1,187 |
+| src\lib\ui                                                                                                      |          2 |         60 |         51 |         10 |        121 |
+| src\lib\uploads                                                                                                 |          2 |        127 |          1 |         26 |        154 |
+| src\pages                                                                                                       |         98 |     48,879 |      1,234 |      3,732 |     53,845 |
+| src\pages (Files)                                                                                               |         69 |     35,063 |        878 |      2,676 |     38,617 |
+| src\pages\admin                                                                                                 |          6 |      3,540 |        174 |        267 |      3,981 |
+| src\pages\dev                                                                                                   |          1 |        143 |          0 |         19 |        162 |
+| src\pages\platform                                                                                              |          1 |        269 |         23 |         31 |        323 |
+| src\pages\portal                                                                                                |         12 |      2,431 |         32 |        203 |      2,666 |
+| src\pages\settings                                                                                              |          9 |      7,433 |        127 |        536 |      8,096 |
+| src\tests                                                                                                       |          4 |        350 |          0 |         40 |        390 |
++-----------------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+
+Files
++-----------------------------------------------------------------------------------------------------------------+----------------+------------+------------+------------+------------+
+| filename                                                                                                        | language       | code       | comment    | blank      | total      |
++-----------------------------------------------------------------------------------------------------------------+----------------+------------+------------+------------+------------+
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\index.html                                                        | HTML           |         28 |          0 |          1 |         29 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\jest.config.js                                                    | JavaScript     |         41 |         12 |         10 |         63 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\public\branding\favicon.svg                                       | XML            |         38 |          0 |          0 |         38 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\public\branding\shield-logo.svg                                   | XML            |         41 |          1 |          1 |         43 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\public\branding\site.webmanifest                                  | JSON           |         21 |          0 |          1 |         22 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\App.tsx                                                       | TypeScript JSX |        275 |         38 |         37 |        350 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\AdjustInventoryForm.tsx                            | TypeScript JSX |        147 |          0 |         10 |        157 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\AttachmentPreviewMeta.tsx                          | TypeScript JSX |         17 |          6 |          7 |         30 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\AttachmentViewerDialog.tsx                         | TypeScript JSX |      1,017 |          6 |         94 |      1,117 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\AttachmentsPanel.tsx                               | TypeScript JSX |        376 |         18 |         48 |        442 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\BackNavControls.tsx                                | TypeScript JSX |         42 |          0 |          5 |         47 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ColumnConfigModal.tsx                              | TypeScript JSX |        104 |          0 |         13 |        117 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ConfigError.tsx                                    | TypeScript JSX |         66 |          4 |          8 |         78 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ContactFlagPill.tsx                                | TypeScript JSX |         51 |          9 |          6 |         66 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\CustomerDetailPanel.tsx                            | TypeScript JSX |        757 |         11 |         44 |        812 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\CustomerList.tsx                                   | TypeScript JSX |        272 |          7 |         18 |        297 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\CustomerSelect.tsx                                 | TypeScript JSX |        223 |         17 |         24 |        264 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\DestructiveActionModal.tsx                         | TypeScript JSX |        116 |          3 |         11 |        130 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\DocumentMetaCard.tsx                               | TypeScript JSX |         17 |          0 |          4 |         21 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\FormulaEditor.tsx                                  | TypeScript JSX |        178 |          4 |         20 |        202 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\FulfillmentShippingPanel.tsx                       | TypeScript JSX |        261 |         11 |         12 |        284 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\FulfillmentStatusBadge.tsx                         | TypeScript JSX |         43 |          0 |          5 |         48 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\LargeFileLocalDevWarningDialog.tsx                 | TypeScript JSX |         33 |          0 |          3 |         36 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\LineItemAttachmentsPanel.tsx                       | TypeScript JSX |        879 |         76 |         90 |      1,045 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\LineItemThumbnail.tsx                              | TypeScript JSX |        128 |         18 |         13 |        159 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\LowStockBadge.tsx                                  | TypeScript JSX |          5 |          0 |          2 |          7 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\MaterialForm.tsx                                   | TypeScript JSX |        754 |         24 |         32 |        810 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\OrderArtworkPanel.tsx                              | TypeScript JSX |        498 |          7 |         39 |        544 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\OrderAttachmentsPanel.tsx                          | TypeScript JSX |        504 |         20 |         59 |        583 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\OrderStateBadge.tsx                                | TypeScript JSX |         16 |          5 |          5 |         26 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\OrderStatusPillSelector.tsx                        | TypeScript JSX |         79 |          6 |          8 |         93 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\OrgSwitcher.tsx                                    | TypeScript JSX |         77 |          7 |          9 |         93 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\PBV2ProductBuilderSectionV2.tsx                    | TypeScript JSX |      1,315 |        115 |        172 |      1,602 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\PackingSlipModal.tsx                               | TypeScript JSX |         47 |          2 |          6 |         55 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\PlaceholderPage.tsx                                | TypeScript JSX |         88 |          0 |         10 |         98 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ProductForm.tsx                                    | TypeScript JSX |      1,000 |         33 |         58 |      1,091 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ProductOptionsPanelV2_Mvp.tsx                      | TypeScript JSX |        711 |         60 |         63 |        834 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ProductSimulator.tsx                               | TypeScript JSX |        284 |          5 |         33 |        322 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\PurchaseOrderForm.tsx                              | TypeScript JSX |        175 |          0 |         12 |        187 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\QuoteAttachmentsPanel.tsx                          | TypeScript JSX |        459 |         15 |         54 |        528 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\QuoteWorkflowActions.tsx                           | TypeScript JSX |        290 |         18 |         34 |        342 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\QuoteWorkflowBadge.tsx                             | TypeScript JSX |         19 |          4 |          5 |         28 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ReceiveMaterialReorderDialog.tsx                   | TypeScript JSX |         69 |          0 |          7 |         76 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ReceivePurchaseOrderItemsForm.tsx                  | TypeScript JSX |         67 |          0 |          5 |         72 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\RequestMaterialReorderDialog.tsx                   | TypeScript JSX |         98 |          0 |          9 |        107 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ShipmentForm.tsx                                   | TypeScript JSX |        257 |          7 |         19 |        283 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ShippingPanel.tsx                                  | TypeScript JSX |         83 |          8 |          6 |         97 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\SplitWorkspace.tsx                                 | TypeScript JSX |         66 |          0 |         10 |         76 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\StateTransitionButtons.tsx                         | TypeScript JSX |        373 |          8 |         43 |        424 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ThemeToggle.tsx                                    | TypeScript JSX |         47 |          0 |          4 |         51 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\TimelinePanel.module.css                           | PostCSS        |          6 |          0 |          1 |          7 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\TimelinePanel.tsx                                  | TypeScript JSX |        235 |          1 |         36 |        272 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\VendorForm.tsx                                     | TypeScript JSX |        225 |          0 |         14 |        239 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ViewAllAttachmentsDialog.tsx                       | TypeScript JSX |        591 |         16 |         43 |        650 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\VoidQuoteDialog.tsx                                | TypeScript JSX |        115 |          3 |         11 |        129 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\admin-dashboard.tsx                                | TypeScript JSX |        387 |          3 |         31 |        421 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\admin-settings.tsx                                 | TypeScript JSX |      5,022 |         61 |        187 |      5,270 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\branding\PrintersHeroSplashVideo.tsx               | TypeScript JSX |         34 |          0 |          4 |         38 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\bug-report\BugReportModal.tsx                      | TypeScript JSX |        350 |         13 |         42 |        405 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\calculator.tsx                                     | TypeScript JSX |      1,285 |         42 |         86 |      1,413 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\contact-form.tsx                                   | TypeScript JSX |        278 |          4 |         25 |        307 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\convert-quote-to-order-dialog.tsx                  | TypeScript JSX |        118 |          0 |          7 |        125 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\credit-form.tsx                                    | TypeScript JSX |        227 |          7 |         20 |        254 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\customer-form.tsx                                  | TypeScript JSX |        894 |         30 |         64 |        988 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\customers\CustomerActivityTabs.tsx                 | TypeScript JSX |         71 |          2 |         10 |         83 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\customers\CustomerStatCard.tsx                     | TypeScript JSX |         49 |          0 |          4 |         53 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\customers\CustomerStatsRow.tsx                     | TypeScript JSX |        212 |          5 |         15 |        232 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\customers\SplitCustomerDetail.tsx                  | TypeScript JSX |        192 |          5 |         13 |        210 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\customers\tables\CustomerInvoicesTable.tsx         | TypeScript JSX |         96 |          0 |          5 |        101 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\customers\tables\CustomerOrdersTable.tsx           | TypeScript JSX |        189 |          0 |          7 |        196 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\customers\tables\CustomerQuotesTable.tsx           | TypeScript JSX |        147 |          0 |          6 |        153 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\ActivityFeedPanel.tsx                    | TypeScript JSX |         77 |          0 |          5 |         82 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\CriticalAlertsRow.tsx                    | TypeScript JSX |         73 |          0 |          5 |         78 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\DashboardDetailPanel.tsx                 | TypeScript JSX |         40 |          0 |          4 |         44 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\DashboardDetailsView.tsx                 | TypeScript JSX |        292 |          0 |         24 |        316 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\FulfillmentFinanceCard.tsx               | TypeScript JSX |        104 |          0 |          7 |        111 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\MyWorkPanel.tsx                          | TypeScript JSX |         87 |          0 |          6 |         93 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\OrdersPipelineCard.tsx                   | TypeScript JSX |         67 |          0 |          6 |         73 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\ProductionJobsCard.tsx                   | TypeScript JSX |         92 |          0 |          8 |        100 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\QuickActionsPanel.tsx                    | TypeScript JSX |         35 |          0 |          6 |         41 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\dashboard\dashboardPanels.ts                       | TypeScript     |         94 |          0 |          8 |        102 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\debug\RenderPathBanner.tsx                         | TypeScript JSX |         14 |          0 |          2 |         16 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\fulfillment\FulfillmentDebugPanel.tsx              | TypeScript JSX |         42 |          0 |          6 |         48 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\global-search.tsx                                  | TypeScript JSX |        142 |          2 |         17 |        161 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\integrations\QBTransientDisconnectBanner.tsx       | TypeScript JSX |        112 |          0 |         18 |        130 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\job-status-settings.tsx                            | TypeScript JSX |        167 |          0 |          9 |        176 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\layout\AppLayout.tsx                               | TypeScript JSX |        109 |         11 |         15 |        135 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\layout\GlobalSearchOverlay.tsx                     | TypeScript JSX |        179 |          0 |         16 |        195 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\layout\PublicPageLayout.tsx                        | TypeScript JSX |         72 |          0 |          7 |         79 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\layout\ResizablePanels.tsx                         | TypeScript JSX |         87 |         15 |         14 |        116 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\layout\SidebarNav.tsx                              | TypeScript JSX |          3 |          4 |          1 |          8 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\layout\TitanSidebarNav.tsx                         | TypeScript JSX |        497 |         44 |         44 |        585 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\layout\TitanTopBar.tsx                             | TypeScript JSX |        314 |         30 |         38 |        382 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\layout\index.ts                                    | TypeScript     |          5 |          6 |          3 |         14 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\LineItemActionButtons.tsx               | TypeScript JSX |         48 |          0 |          5 |         53 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\LineItemAlertChip.tsx                   | TypeScript JSX |         27 |          0 |          6 |         33 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\LineItemCard.tsx                        | TypeScript JSX |        608 |         38 |         42 |        688 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\LineItemMainBlock.tsx                   | TypeScript JSX |         96 |          2 |         18 |        116 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\LineItemMoneyField.tsx                  | TypeScript JSX |         37 |          0 |          5 |         42 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\LineItemOverrideToggle.tsx              | TypeScript JSX |         40 |          0 |          5 |         45 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\LineItemQtyPill.tsx                     | TypeScript JSX |        116 |          3 |         15 |        134 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\LineItemRowEnterprise.tsx               | TypeScript JSX |        879 |          0 |         72 |        951 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\LineItemStatusPill.tsx                  | TypeScript JSX |        161 |          0 |         19 |        180 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\PBV2LineItemOptions.tsx                 | TypeScript JSX |        120 |         11 |         13 |        144 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\lineItemRowEnterprise.module.css        | PostCSS        |        736 |          2 |        117 |        855 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\line-items\lineItemTheme.css                       | PostCSS        |         20 |          2 |         10 |         32 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\list\ListViewSettings.tsx                          | TypeScript JSX |        101 |          0 |          4 |        105 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\marketing\MarketingDashboardMockup.tsx             | TypeScript JSX |        132 |          0 |          9 |        141 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\marketing\MarketingFooter.tsx                      | TypeScript JSX |         24 |          0 |          4 |         28 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\marketing\MarketingHeader.tsx                      | TypeScript JSX |         89 |          0 |         11 |        100 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\marketing\MarketingMeta.tsx                        | TypeScript JSX |         33 |          0 |          6 |         39 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\media-picker.tsx                                   | TypeScript JSX |        142 |          0 |         12 |        154 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\media\PdfViewer.tsx                                | TypeScript JSX |         47 |         11 |          9 |         67 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\note-form.tsx                                      | TypeScript JSX |        180 |          6 |         19 |        205 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\object-uploader.tsx                                | TypeScript JSX |        212 |          1 |         26 |        239 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\order-form-OLD-BACKUP.tsx                          | TypeScript JSX |        453 |          9 |         37 |        499 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\order-form.tsx                                     | TypeScript JSX |      1,168 |         45 |         88 |      1,301 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\order-line-item-dialog.tsx                         | TypeScript JSX |      1,023 |         45 |         80 |      1,148 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\order-status-badge.tsx                             | TypeScript JSX |        145 |          0 |         13 |        158 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\orders\ManualReservationsCard.tsx                  | TypeScript JSX |        320 |          0 |         31 |        351 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\orders\OrderFulfillmentPanel.tsx                   | TypeScript JSX |        620 |         16 |         48 |        684 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\orders\OrderLineItemsSection.tsx                   | TypeScript JSX |      2,988 |        101 |        288 |      3,377 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\orders\lineItemPricingDisplay.test.ts              | TypeScript     |        126 |          5 |         13 |        144 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\orders\lineItemPricingDisplay.ts                   | TypeScript     |         52 |         30 |          9 |         91 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\orders\orderLineItemEditState.test.ts              | TypeScript     |        112 |          0 |          8 |        120 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\orders\orderLineItemEditState.ts                   | TypeScript     |        145 |          0 |         13 |        158 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\orders\quoteCalculatePayload.test.ts               | TypeScript     |         58 |          1 |          9 |         68 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\orders\quoteCalculatePayload.ts                    | TypeScript     |         40 |         14 |          4 |         58 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\payments\StripePayDialog.tsx                       | TypeScript JSX |        341 |         53 |         48 |        442 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\FormulaLanguageHelp.tsx                       | TypeScript JSX |        229 |          1 |         14 |        244 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\BasePricingEditor.tsx              | TypeScript JSX |        318 |          3 |         25 |        346 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\ConfirmationModal.tsx              | TypeScript JSX |         62 |          0 |          4 |         66 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\FormulaReferenceModal.tsx          | TypeScript JSX |        248 |          0 |         20 |        268 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\OptionDetailsEditor.tsx            | TypeScript JSX |      1,390 |         31 |         95 |      1,516 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\OptionEditor.tsx                   | TypeScript JSX |        419 |          2 |         26 |        447 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\OptionGroupTemplateDialogs.tsx     | TypeScript JSX |        304 |          2 |         18 |        324 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\OptionGroupsSidebar.tsx            | TypeScript JSX |        290 |          1 |         14 |        305 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\OptionRulesPricingMatrixEditor.tsx | TypeScript JSX |      1,055 |          0 |         75 |      1,130 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\PBV2EditorErrorBoundary.tsx        | TypeScript JSX |         55 |          7 |          9 |         71 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\PBV2ProductBuilderLayout.tsx       | TypeScript JSX |        148 |         18 |          8 |        174 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\PricingValidationPanel.tsx         | TypeScript JSX |      1,440 |         21 |         81 |      1,542 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\PricingVariableHelper.tsx          | TypeScript JSX |        189 |          0 |         10 |        199 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\ProductHeader.tsx                  | TypeScript JSX |        109 |          0 |         11 |        120 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\ProductImagesSection.tsx           | TypeScript JSX |         60 |         17 |          8 |         85 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\pbv2\builder-v2\pricingVariables.ts                | TypeScript     |         13 |          0 |          1 |         14 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\portal\PortalFilesCard.tsx                         | TypeScript JSX |         92 |          0 |          5 |         97 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\portal\PortalLayout.tsx                            | TypeScript JSX |         69 |          0 |          6 |         75 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\production\PrintOptionsModal.tsx                   | TypeScript JSX |        209 |         19 |         17 |        245 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\production\PrintTicketActions.tsx                  | TypeScript JSX |         47 |         15 |          7 |         69 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\production\PrintTicketButton.tsx                   | TypeScript JSX |         63 |         21 |         11 |         95 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\production\PrinterPicker.tsx                       | TypeScript JSX |         56 |          7 |          5 |         68 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\production\StationStepEditor.tsx                   | TypeScript JSX |        272 |          0 |         28 |        300 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\production\ZoomPanImageViewer.tsx                  | TypeScript JSX |        257 |         38 |         44 |        339 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\production\ticketPrintPrimitives.tsx               | TypeScript JSX |         11 |          6 |          4 |         21 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\quote-history.tsx                                  | TypeScript JSX |        450 |          1 |         33 |        484 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\quote-source-badge.tsx                             | TypeScript JSX |         26 |          0 |          6 |         32 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\runtime\RuntimeEnvironmentBadge.tsx                | TypeScript JSX |         69 |          0 |         13 |         82 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\runtime\RuntimeSafetyWarning.tsx                   | TypeScript JSX |         16 |          0 |          4 |         20 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\ColumnConfig.tsx                             | TypeScript JSX |        417 |         12 |         41 |        470 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\ContentLayout.tsx                            | TypeScript JSX |          9 |          0 |          3 |         12 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\DataCard.tsx                                 | TypeScript JSX |         40 |          0 |          4 |         44 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\FilterPanel.tsx                              | TypeScript JSX |         27 |          0 |          3 |         30 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\Page.tsx                                     | TypeScript JSX |         19 |          0 |          3 |         22 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\PageHeader.tsx                               | TypeScript JSX |         27 |          0 |          3 |         30 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\Section.tsx                                  | TypeScript JSX |         25 |          0 |          3 |         28 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\StatusPill.tsx                               | TypeScript JSX |         46 |          5 |         12 |         63 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\TitanButton.tsx                              | TypeScript JSX |         84 |          0 |          7 |         91 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\TitanCard.tsx                                | TypeScript JSX |         33 |          0 |          5 |         38 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\TitanSearchInput.tsx                         | TypeScript JSX |         32 |          0 |          4 |         36 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\TitanStatCard.tsx                            | TypeScript JSX |         62 |          4 |          5 |         71 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\TitanTable.tsx                               | TypeScript JSX |        131 |         27 |         29 |        187 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\titan\index.ts                                     | TypeScript     |         25 |          7 |          7 |         39 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\PageShell.tsx                                   | TypeScript JSX |          8 |          0 |          2 |         10 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\TitanCard.tsx                                   | TypeScript JSX |         17 |          0 |          3 |         20 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\accordion.tsx                                   | TypeScript JSX |         49 |          0 |          8 |         57 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\alert-dialog.tsx                                | TypeScript JSX |        126 |          0 |         14 |        140 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\alert.tsx                                       | TypeScript JSX |         53 |          0 |          7 |         60 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\aspect-ratio.tsx                                | TypeScript JSX |          3 |          0 |          3 |          6 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\avatar.tsx                                      | TypeScript JSX |         45 |          0 |          7 |         52 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\badge.tsx                                       | TypeScript JSX |         31 |          1 |          7 |         39 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\breadcrumb.tsx                                  | TypeScript JSX |        105 |          0 |         11 |        116 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\button.tsx                                      | TypeScript JSX |         52 |          6 |          6 |         64 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\calendar.tsx                                    | TypeScript JSX |         64 |          0 |          5 |         69 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\card.tsx                                        | TypeScript JSX |         78 |          0 |          8 |         86 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\carousel.tsx                                    | TypeScript JSX |        231 |          0 |         30 |        261 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\chart.tsx                                       | TypeScript JSX |        331 |          2 |         33 |        366 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\checkbox.tsx                                    | TypeScript JSX |         25 |          0 |          4 |         29 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\collapsible.tsx                                 | TypeScript JSX |          6 |          0 |          6 |         12 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\command.tsx                                     | TypeScript JSX |        135 |          0 |         17 |        152 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\context-menu.tsx                                | TypeScript JSX |        181 |          0 |         18 |        199 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\dialog.tsx                                      | TypeScript JSX |        113 |          0 |         14 |        127 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\drawer.tsx                                      | TypeScript JSX |        105 |          0 |         14 |        119 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\dropdown-menu.tsx                               | TypeScript JSX |        181 |          0 |         18 |        199 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\form.tsx                                        | TypeScript JSX |        153 |          0 |         26 |        179 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\hover-card.tsx                                  | TypeScript JSX |         23 |          0 |          7 |         30 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\input-otp.tsx                                   | TypeScript JSX |         62 |          0 |          8 |         70 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\input.tsx                                       | TypeScript JSX |         38 |          1 |          5 |         44 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\label.tsx                                       | TypeScript JSX |         20 |          0 |          5 |         25 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\menubar.tsx                                     | TypeScript JSX |        237 |          0 |         20 |        257 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\navigation-menu.tsx                             | TypeScript JSX |        117 |          0 |         12 |        129 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\pagination.tsx                                  | TypeScript JSX |        107 |          0 |         11 |        118 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\popover.tsx                                     | TypeScript JSX |         24 |          0 |          6 |         30 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\progress.tsx                                    | TypeScript JSX |         24 |          0 |          5 |         29 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\radio-group.tsx                                 | TypeScript JSX |         38 |          0 |          5 |         43 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\resizable.tsx                                   | TypeScript JSX |         39 |          0 |          7 |         46 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\scroll-area.tsx                                 | TypeScript JSX |         42 |          0 |          5 |         47 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\select.tsx                                      | TypeScript JSX |        146 |          0 |         15 |        161 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\separator.tsx                                   | TypeScript JSX |         26 |          0 |          4 |         30 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\sheet.tsx                                       | TypeScript JSX |        125 |          0 |         16 |        141 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\sidebar.tsx                                     | TypeScript JSX |        660 |         13 |         55 |        728 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\skeleton.tsx                                    | TypeScript JSX |         13 |          0 |          3 |         16 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\slider.tsx                                      | TypeScript JSX |         23 |          0 |          4 |         27 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\switch.tsx                                      | TypeScript JSX |         24 |          0 |          4 |         28 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\table.tsx                                       | TypeScript JSX |        107 |          0 |         11 |        118 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\tabs.tsx                                        | TypeScript JSX |         47 |          0 |          7 |         54 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\textarea.tsx                                    | TypeScript JSX |         19 |          0 |          4 |         23 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\toast.tsx                                       | TypeScript JSX |        115 |          0 |         13 |        128 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\toaster.tsx                                     | TypeScript JSX |         31 |          0 |          3 |         34 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\toggle-group.tsx                                | TypeScript JSX |         52 |          0 |         10 |         62 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\toggle.tsx                                      | TypeScript JSX |         38 |          0 |          6 |         44 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\ui\tooltip.tsx                                     | TypeScript JSX |         23 |          0 |          8 |         31 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\components\user-management.tsx                                | TypeScript JSX |        291 |          1 |         14 |        306 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\config\routes.ts                                              | TypeScript     |        106 |        111 |         23 |        240 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\contexts\NavigationGuardContext.tsx                           | TypeScript JSX |        127 |         14 |         19 |        160 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\contexts\navigationGuardCore.test.ts                          | TypeScript     |         94 |          0 |         26 |        120 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\contexts\navigationGuardCore.ts                               | TypeScript     |        160 |          1 |         25 |        186 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\docs\thumbnail-status-auto-refresh-audit.md                   | Markdown       |        233 |          0 |         63 |        296 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\customers\CustomerActionsMenu.tsx                    | TypeScript JSX |        136 |         26 |         11 |        173 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\customers\CustomerIdentityBlock.tsx                  | TypeScript JSX |         94 |         28 |         12 |        134 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\customers\EnhancedCustomerView.tsx                   | TypeScript JSX |      2,002 |         89 |        159 |      2,250 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\customers\StatementTab.tsx                           | TypeScript JSX |        770 |         31 |         51 |        852 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\customers\TransactionsTab.tsx                        | TypeScript JSX |        505 |         34 |         36 |        575 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\customers\index.ts                                   | TypeScript     |          4 |          0 |          1 |          5 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\documents\create\DocumentCreateForm.tsx              | TypeScript JSX |        817 |         48 |         74 |        939 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\materials\CreateMaterialDialog.tsx                   | TypeScript JSX |        392 |          1 |         30 |        423 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\materials\MaterialsSettingsPanel.tsx                 | TypeScript JSX |        484 |          1 |         34 |        519 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\production\ProductionViewRenderer.tsx                | TypeScript JSX |         22 |          0 |          5 |         27 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\production\theme\productionCardTheme.ts              | TypeScript     |         61 |         13 |          8 |         82 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\production\views\FlatbedProductionView.tsx           | TypeScript JSX |      1,677 |         68 |        133 |      1,878 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\production\views\ProductionOverviewPage.tsx          | TypeScript JSX |      2,175 |        129 |        214 |      2,518 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\production\views\RollProductionView.tsx              | TypeScript JSX |      1,722 |         68 |        136 |      1,926 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\products\editor\ProductOptionsEditor.tsx             | TypeScript JSX |        918 |         12 |         95 |      1,025 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\QuoteEditorPage.tsx                    | TypeScript JSX |        937 |        172 |        115 |      1,224 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\CustomerCard.tsx            | TypeScript JSX |        397 |          9 |         27 |        433 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\CustomerInfoFooter.tsx      | TypeScript JSX |        122 |          2 |         16 |        140 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\FulfillmentCard.tsx         | TypeScript JSX |        222 |          4 |          6 |        232 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\LineItemBuilder.tsx         | TypeScript JSX |        367 |         13 |         22 |        402 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\LineItemsSection.tsx        | TypeScript JSX |        984 |         82 |        105 |      1,171 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\LineItemsTable.tsx          | TypeScript JSX |        316 |         13 |         26 |        355 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\ProductOptionsPanel.tsx     | TypeScript JSX |        595 |          7 |         58 |        660 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\ProductOptionsPanelV2.tsx   | TypeScript JSX |        694 |         45 |         98 |        837 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\QuoteHeader.tsx             | TypeScript JSX |        112 |          9 |         11 |        132 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\components\SummaryCard.tsx             | TypeScript JSX |        435 |         24 |         25 |        484 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\types.ts                               | TypeScript     |         56 |         19 |          4 |         79 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\useQuoteEditorState.ts                 | TypeScript     |      2,131 |        329 |        315 |      2,775 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\editor\utils.ts                               | TypeScript     |         17 |          8 |          3 |         28 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\features\quotes\utils\formatQuoteNumberWithVariant.ts         | TypeScript     |         10 |          0 |          6 |         16 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\portal\useProofToken.ts                                 | TypeScript     |        103 |          6 |         14 |        123 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\use-mobile.tsx                                          | TypeScript JSX |         15 |          0 |          5 |         20 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\use-toast.ts                                            | TypeScript     |        159 |          2 |         31 |        192 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useAuth.ts                                              | TypeScript     |         89 |          8 |         19 |        116 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useContacts.ts                                          | TypeScript     |        178 |         11 |         23 |        212 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useCustomer.ts                                          | TypeScript     |        115 |          6 |         10 |        131 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useDashboardSelection.ts                                | TypeScript     |         19 |          0 |          5 |         24 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useDashboardSummary.ts                                  | TypeScript     |         51 |          0 |          6 |         57 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useFulfillment.ts                                       | TypeScript     |        236 |          0 |         28 |        264 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useGlobalSearch.ts                                      | TypeScript     |         75 |          3 |         18 |         96 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useInvoices.ts                                          | TypeScript     |        435 |         20 |         28 |        483 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useJobs.ts                                              | TypeScript     |        226 |          2 |         18 |        246 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useListViewSettings.ts                                  | TypeScript     |         48 |          1 |         12 |         61 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useManualReservations.ts                                | TypeScript     |         79 |          0 |         12 |         91 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useMaterials.ts                                         | TypeScript     |        495 |          3 |         34 |        532 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useOrderAttachments.ts                                  | TypeScript     |         32 |          0 |          6 |         38 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useOrderFiles.ts                                        | TypeScript     |        250 |         51 |         42 |        343 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useOrderLineItemPreviews.ts                             | TypeScript     |         23 |          0 |          3 |         26 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useOrderState.ts                                        | TypeScript     |        118 |         27 |         17 |        162 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useOrderStatusPills.ts                                  | TypeScript     |        222 |         31 |         32 |        285 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useOrders.ts                                            | TypeScript     |        933 |         67 |         98 |      1,098 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useOrgPreferences.ts                                    | TypeScript     |        131 |          5 |         18 |        154 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\usePageVisible.ts                                       | TypeScript     |         12 |          8 |          4 |         24 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\usePortal.ts                                            | TypeScript     |        444 |          0 |         55 |        499 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\usePrepress.tsx                                         | TypeScript JSX |        175 |         32 |         30 |        237 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\usePricingFormulas.ts                                   | TypeScript     |        132 |          0 |         12 |        144 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useProductBuilderDraft.ts                               | TypeScript     |         71 |          8 |         14 |         93 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useProductTypes.ts                                      | TypeScript     |        103 |          0 |          9 |        112 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useProduction.ts                                        | TypeScript     |        660 |         27 |         35 |        722 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useProductionSettings.ts                                | TypeScript     |        168 |          1 |         16 |        185 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\usePurchaseOrders.ts                                    | TypeScript     |        185 |          0 |         13 |        198 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useQuoteWorkflowState.ts                                | TypeScript     |         17 |          3 |          6 |         26 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useRuntimeEnvironment.ts                                | TypeScript     |         34 |          0 |          7 |         41 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useShipments.ts                                         | TypeScript     |        137 |          7 |         13 |        157 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useSmartBack.ts                                         | TypeScript     |         39 |          0 |         10 |         49 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useStationPrinter.ts                                    | TypeScript     |         50 |         10 |          8 |         68 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useStorageSettings.ts                                   | TypeScript     |        224 |          0 |         21 |        245 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useTableColumnConfig.ts                                 | TypeScript     |         55 |          1 |         10 |         66 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useTheme.tsx                                            | TypeScript JSX |         75 |          8 |         11 |         94 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useUserPreferences.ts                                   | TypeScript     |         41 |          8 |         14 |         63 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\hooks\useVendors.ts                                           | TypeScript     |        119 |          0 |          9 |        128 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\index.css                                                     | PostCSS        |        350 |         25 |         87 |        462 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\__tests__\productionHelpers.test.ts                       | TypeScript     |         92 |         12 |         22 |        126 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\apiConfig.ts                                              | TypeScript     |        117 |         15 |         31 |        163 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\api\me.ts                                                 | TypeScript     |         35 |          6 |          8 |         49 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\api\platform.ts                                           | TypeScript     |         78 |         25 |         15 |        118 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\appEnv.ts                                                 | TypeScript     |         18 |         27 |          7 |         52 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\assetUrlCache.ts                                          | TypeScript     |         29 |         22 |          7 |         58 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\attachmentViewer.ts                                       | TypeScript     |         77 |          0 |         10 |         87 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\attachments.ts                                            | TypeScript     |         54 |         35 |         18 |        107 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\attachments\attachmentStatus.ts                           | TypeScript     |         89 |         43 |         26 |        158 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\attachments\orderFileRows.ts                              | TypeScript     |         99 |          0 |         12 |        111 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\attachments\quoteLineItemRows.ts                          | TypeScript     |         58 |          0 |          7 |         65 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\authUtils.ts                                              | TypeScript     |          3 |          0 |          1 |          4 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\branding.ts                                               | TypeScript     |          9 |          0 |          3 |         12 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\config\storage.ts                                         | TypeScript     |         11 |          1 |          3 |         15 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\downloadFile.ts                                           | TypeScript     |        117 |         23 |         22 |        162 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\fileUtils.ts                                              | TypeScript     |         61 |         25 |         14 |        100 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\getThumbSrc.ts                                            | TypeScript     |         71 |         22 |         20 |        113 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\lineItems\lineItemDerivation.ts                           | TypeScript     |         83 |          2 |         16 |        101 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\materialWeightDisplay.test.ts                             | TypeScript     |         28 |          0 |          4 |         32 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\materialWeightDisplay.ts                                  | TypeScript     |         37 |          0 |          7 |         44 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\nav.ts                                                    | TypeScript     |         64 |          4 |          5 |         73 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\nav\browserRouterSync.test.ts                             | TypeScript     |         17 |          0 |          5 |         22 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\nav\browserRouterSync.ts                                  | TypeScript     |         40 |          6 |          7 |         53 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\nav\smartBack.ts                                          | TypeScript     |         36 |          0 |          5 |         41 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\optionChoiceValidation.ts                                 | TypeScript     |         20 |          0 |          6 |         26 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\optionTreeV2PricingCodec.ts                               | TypeScript     |        133 |         20 |         13 |        166 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\orderProofUi.ts                                           | TypeScript     |         33 |          0 |          2 |         35 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\orderUtils.ts                                             | TypeScript     |         28 |         20 |          8 |         56 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pbv2Utils.ts                                              | TypeScript     |        131 |         19 |         28 |        178 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pbv2\currency.ts                                          | TypeScript     |         25 |          0 |          5 |         30 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pbv2\pbv2Outputs.ts                                       | TypeScript     |         10 |          0 |          2 |         12 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pbv2\pbv2ViewModel.ts                                     | TypeScript     |      1,408 |        292 |        257 |      1,957 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pbv2\pricing\geometryWarning.ts                           | TypeScript     |         58 |          0 |         14 |         72 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pbv2\pricing\previewError.ts                              | TypeScript     |        390 |         79 |         46 |        515 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pbv2\pricing\pricingImpact.ts                             | TypeScript     |        252 |         47 |         39 |        338 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pbv2\pricing\pricingVariableCatalog.ts                    | TypeScript     |         73 |          0 |          4 |         77 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pdfUrls.ts                                                | TypeScript     |         46 |         17 |         12 |         75 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\pricingFormulaSelection.ts                                | TypeScript     |         40 |          0 |         10 |         50 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\productionBoard.ts                                        | TypeScript     |        116 |          0 |         22 |        138 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\productionHelpers.ts                                      | TypeScript     |         90 |         26 |         16 |        132 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\proofingNavigation.ts                                     | TypeScript     |         70 |          0 |         16 |         86 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\proofingQueueControls.ts                                  | TypeScript     |         78 |          0 |         13 |         91 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\proofingRecovery.test.ts                                  | TypeScript     |         44 |          0 |          7 |         51 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\proofingRecovery.ts                                       | TypeScript     |         18 |          0 |          3 |         21 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\queryClient.ts                                            | TypeScript     |         77 |          5 |         14 |         96 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\sanitizeDisplayText.ts                                    | TypeScript     |         20 |         21 |          6 |         47 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\stripeClient.ts                                           | TypeScript     |         14 |         18 |          6 |         38 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\tests\optionTreeV2PricingCodec.test.ts                    | TypeScript     |         76 |          1 |         14 |         91 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\tests\pbv2Currency.test.ts                                | TypeScript     |         75 |          3 |         16 |         94 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\tests\pbv2Utils.test.ts                                   | TypeScript     |         74 |          0 |          9 |         83 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\tests\pbv2ViewModel.choiceCascade.test.ts                 | TypeScript     |        138 |          2 |         16 |        156 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\tests\pbv2ViewModel.reorder.test.ts                       | TypeScript     |         84 |          3 |         11 |         98 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\tests\pbv2ViewModel.textInput.test.ts                     | TypeScript     |         80 |          0 |          9 |         89 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\tests\previewError.test.ts                                | TypeScript     |        265 |          2 |         31 |        298 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\tests\pricingFormulaSelection.test.ts                     | TypeScript     |         24 |          0 |          4 |         28 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\tests\pricingImpact.test.ts                               | TypeScript     |        218 |          0 |         32 |        250 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\ticketPrintOverrides.test.ts                              | TypeScript     |        101 |          0 |         14 |        115 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\ticketPrintOverrides.ts                                   | TypeScript     |        100 |         32 |         14 |        146 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\ticketRender.test.ts                                      | TypeScript     |         40 |          0 |          7 |         47 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\ticketRender.ts                                           | TypeScript     |         32 |         18 |          6 |         56 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\ticketSettings.ts                                         | TypeScript     |         50 |         19 |         11 |         80 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\ui\persistExpandedLineItem.ts                             | TypeScript     |         34 |         29 |          5 |         68 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\ui\persistScrollPosition.ts                               | TypeScript     |         26 |         22 |          5 |         53 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\uploads\chunkedAttachmentUpload.ts                        | TypeScript     |        107 |          0 |         21 |        128 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\uploads\fileToBase64.ts                                   | TypeScript     |         20 |          1 |          5 |         26 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\utils.ts                                                  | TypeScript     |         28 |          7 |          9 |         44 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\lib\viewUrlForIframe.ts                                       | TypeScript     |         41 |         16 |         13 |         70 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\main.tsx                                                      | TypeScript JSX |         51 |          0 |         13 |         64 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\ApprovalsPage.tsx                                       | TypeScript JSX |        309 |          5 |         15 |        329 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\DesignProductionPage.tsx                                | TypeScript JSX |      1,328 |          1 |        107 |      1,436 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\PrepressProductionPage.tsx                              | TypeScript JSX |        440 |         21 |         29 |        490 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\PrepressProductionPageV2.tsx                            | TypeScript JSX |      2,063 |         35 |        142 |      2,240 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\ProductEditorPage.tsx                                   | TypeScript JSX |      1,043 |         65 |        109 |      1,217 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\SelectOrgPage.tsx                                       | TypeScript JSX |        107 |          2 |         11 |        120 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\StaffProofingPage.tsx                                   | TypeScript JSX |      2,117 |         25 |        151 |      2,293 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\accept-invite.tsx                                       | TypeScript JSX |        231 |         25 |         30 |        286 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\admin-dashboard.tsx                                     | TypeScript JSX |          4 |          0 |          2 |          6 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\admin-users.tsx                                         | TypeScript JSX |        393 |          0 |         20 |        413 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\admin.tsx                                               | TypeScript JSX |         45 |          0 |          6 |         51 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\admin\BugReportsPage.tsx                                | TypeScript JSX |        523 |         17 |         47 |        587 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\admin\MaterialsImportExport.tsx                         | TypeScript JSX |        894 |         44 |         65 |      1,003 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\admin\PricingAuditPage.tsx                              | TypeScript JSX |        804 |         34 |         47 |        885 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\admin\ProductImportExport.tsx                           | TypeScript JSX |        447 |         17 |         29 |        493 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\admin\QBCustomerInspectorPage.tsx                       | TypeScript JSX |        399 |         30 |         36 |        465 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\admin\QBInvoiceInspectorPage.tsx                        | TypeScript JSX |        473 |         32 |         43 |        548 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\audit-logs.tsx                                          | TypeScript JSX |        295 |          2 |         22 |        319 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\byos.tsx                                                | TypeScript JSX |        332 |          0 |         15 |        347 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\company-settings.tsx                                    | TypeScript JSX |        272 |          3 |         23 |        298 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\contact-detail.tsx                                      | TypeScript JSX |        805 |         44 |         53 |        902 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\contacts.tsx                                            | TypeScript JSX |        676 |         20 |         29 |        725 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\create-order.tsx                                        | TypeScript JSX |         72 |          3 |          6 |         81 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\create-quote.tsx                                        | TypeScript JSX |         74 |          2 |          5 |         81 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\customer-detail-enhanced.tsx                            | TypeScript JSX |         27 |          7 |          6 |         40 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\customer-detail.tsx                                     | TypeScript JSX |        656 |          6 |         37 |        699 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\customer-quotes.tsx                                     | TypeScript JSX |        250 |          1 |         18 |        269 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\customers.tsx                                           | TypeScript JSX |        243 |         37 |         30 |        310 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\debug-user.tsx                                          | TypeScript JSX |         45 |          0 |          5 |         50 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\dev\DevLineItemRowEnterprisePreview.tsx                 | TypeScript JSX |        143 |          0 |         19 |        162 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\edit-quote.tsx                                          | TypeScript JSX |      1,057 |         43 |         75 |      1,175 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\finance.tsx                                             | TypeScript JSX |         17 |          0 |          2 |         19 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\force-password-change.tsx                               | TypeScript JSX |        128 |          3 |         16 |        147 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\forgot-password.tsx                                     | TypeScript JSX |        173 |          2 |         14 |        189 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\fulfillment-shipment-detail.tsx                         | TypeScript JSX |        665 |          0 |         54 |        719 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\fulfillment.tsx                                         | TypeScript JSX |        433 |          0 |         37 |        470 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\home.tsx                                                | TypeScript JSX |        315 |          6 |         22 |        343 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\inbound-orders.tsx                                      | TypeScript JSX |      2,862 |          0 |        220 |      3,082 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\internal-quotes.tsx                                     | TypeScript JSX |      1,458 |         43 |        126 |      1,627 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\invoice-detail.tsx                                      | TypeScript JSX |      2,275 |         19 |        197 |      2,491 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\invoices.tsx                                            | TypeScript JSX |        239 |          4 |         19 |        262 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\job-detail.tsx                                          | TypeScript JSX |        254 |         15 |         20 |        289 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\labels.tsx                                              | TypeScript JSX |         25 |          0 |          2 |         27 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\landing.tsx                                             | TypeScript JSX |        437 |          0 |         36 |        473 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\login.tsx                                               | TypeScript JSX |        185 |          5 |         18 |        208 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\material-detail.tsx                                     | TypeScript JSX |        165 |          3 |         10 |        178 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\materials.tsx                                           | TypeScript JSX |        379 |          3 |         35 |        417 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\not-found.tsx                                           | TypeScript JSX |         19 |          0 |          3 |         22 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\order-detail.tsx                                        | TypeScript JSX |      3,301 |        121 |        263 |      3,685 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\order-new.tsx                                           | TypeScript JSX |          4 |          6 |          2 |         12 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\order-traveler.tsx                                      | TypeScript JSX |        182 |         16 |         17 |        215 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\orderNavigationGuard.test.ts                            | TypeScript     |         27 |          3 |          6 |         36 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\orderNavigationGuard.ts                                 | TypeScript     |         12 |         11 |          4 |         27 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\orderSaveOrchestration.test.ts                          | TypeScript     |         87 |          0 |          9 |         96 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\orderSaveOrchestration.ts                               | TypeScript     |         26 |         14 |          7 |         47 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\orders.tsx                                              | TypeScript JSX |      1,226 |         41 |        123 |      1,390 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\platform\PlatformOrgCreatePage.tsx                      | TypeScript JSX |        269 |         23 |         31 |        323 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\dashboard.tsx                                    | TypeScript JSX |        312 |          0 |         24 |        336 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\documents.tsx                                    | TypeScript JSX |         83 |          0 |          8 |         91 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\invoice-detail.tsx                               | TypeScript JSX |        261 |          0 |         24 |        285 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\invoices.tsx                                     | TypeScript JSX |        104 |          0 |         14 |        118 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\my-orders.tsx                                    | TypeScript JSX |        109 |          0 |         12 |        121 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\my-quotes.tsx                                    | TypeScript JSX |         95 |          0 |         13 |        108 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\order-detail.tsx                                 | TypeScript JSX |        254 |          0 |         16 |        270 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\portal-proof.tsx                                 | TypeScript JSX |        622 |         32 |         49 |        703 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\proof-detail.tsx                                 | TypeScript JSX |        183 |          0 |         13 |        196 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\proofs.tsx                                       | TypeScript JSX |         89 |          0 |          9 |         98 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\quote-checkout.tsx                               | TypeScript JSX |          4 |          0 |          3 |          7 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\portal\quote-detail.tsx                                 | TypeScript JSX |        315 |          0 |         18 |        333 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\prepress.tsx                                            | TypeScript JSX |        495 |         20 |         37 |        552 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\privacy.tsx                                             | TypeScript JSX |        259 |          0 |         13 |        272 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\product-builder-v2.tsx                                  | TypeScript JSX |         19 |          6 |          5 |         30 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\production-job-detail.tsx                               | TypeScript JSX |        735 |         33 |         64 |        832 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\production-ticket.tsx                                   | TypeScript JSX |        313 |         34 |         26 |        373 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\production.tsx                                          | TypeScript JSX |        248 |         14 |         29 |        291 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\products.tsx                                            | TypeScript JSX |      2,919 |         72 |        123 |      3,114 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\purchase-order-detail.tsx                               | TypeScript JSX |         83 |          0 |          8 |         91 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\purchase-orders.tsx                                     | TypeScript JSX |        156 |          0 |          9 |        165 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\quote-detail.tsx                                        | TypeScript JSX |        505 |          9 |         28 |        542 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\quote-editor.tsx                                        | TypeScript JSX |         31 |          9 |         10 |         50 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\reports.tsx                                             | TypeScript JSX |         18 |          0 |          2 |         20 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\reset-password.tsx                                      | TypeScript JSX |        219 |          0 |         21 |        240 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\set-password.tsx                                        | TypeScript JSX |        173 |          4 |         17 |        194 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\settings\SettingsLayout.tsx                             | TypeScript JSX |      1,624 |          9 |        144 |      1,777 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\settings\SetupSettings.tsx                              | TypeScript JSX |        172 |          6 |         15 |        193 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\settings\admin-tools.tsx                                | TypeScript JSX |        604 |         29 |         45 |        678 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\settings\email.tsx                                      | TypeScript JSX |        367 |         15 |         28 |        410 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\settings\integrations.tsx                               | TypeScript JSX |      1,723 |         39 |        106 |      1,868 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\settings\pricing-formulas.tsx                           | TypeScript JSX |      1,462 |         25 |         92 |      1,579 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\settings\product-types.tsx                              | TypeScript JSX |        487 |          4 |         27 |        518 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\settings\storage.tsx                                    | TypeScript JSX |        990 |          0 |         77 |      1,067 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\settings\users.tsx                                      | TypeScript JSX |          4 |          0 |          2 |          6 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\support.tsx                                             | TypeScript JSX |        190 |          5 |         10 |        205 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\terms.tsx                                               | TypeScript JSX |        195 |          0 |         15 |        210 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\titan-dashboard.tsx                                     | TypeScript JSX |         76 |          1 |         10 |         87 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\user-management.tsx                                     | TypeScript JSX |        435 |          9 |         23 |        467 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\vendor-detail.tsx                                       | TypeScript JSX |         87 |          0 |          8 |         95 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\pages\vendors.tsx                                             | TypeScript JSX |        129 |          0 |         10 |        139 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\tests\orderProofStatus.test.ts                                | TypeScript     |         86 |          0 |         12 |         98 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\tests\productionBoard.test.ts                                 | TypeScript     |         56 |          0 |         12 |         68 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\tests\proofingNavigation.test.ts                              | TypeScript     |         58 |          0 |          9 |         67 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\tests\proofingQueueControls.test.ts                           | TypeScript     |        150 |          0 |          7 |        157 |
+| c:\Users\dale9\Downloads\QuoteVaultPro\client\src\vite-env.d.ts                                                 | TypeScript     |          0 |          1 |          1 |          2 |
+| Total                                                                                                           |                |    133,371 |      5,586 |     12,187 |    151,144 |
++-----------------------------------------------------------------------------------------------------------------+----------------+------------+------------+------------+------------+
