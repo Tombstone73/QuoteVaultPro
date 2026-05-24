@@ -13,6 +13,8 @@ import {
   customers,
   invoiceLineItems,
   invoices,
+  orderLineItems,
+  orders,
   organizations,
   payments,
   products,
@@ -155,6 +157,94 @@ async function upsertInvoice(params: {
     });
 }
 
+async function upsertOrder(params: {
+  id: string;
+  orderNumber: string;
+  customerId: string;
+  poNumber: string | null;
+  config: ReturnType<typeof parsePortalValidationSeedConfig>;
+  userId: string;
+}) {
+  const values = {
+    id: params.id,
+    organizationId: params.config.organizationId,
+    orderNumber: params.orderNumber,
+    poNumber: params.poNumber,
+    customerId: params.customerId,
+    status: "in_production",
+    state: "open",
+    statusPillValue: "in_production",
+    paymentStatus: "unpaid",
+    billingStatus: "not_ready",
+    priority: "normal",
+    fulfillmentStatus: "pending",
+    shippingMethod: "ship",
+    shippingMode: "single_shipment",
+    subtotal: money(params.config.invoiceAmountCents),
+    tax: "0.00",
+    taxAmount: "0.00",
+    taxableSubtotal: money(params.config.invoiceAmountCents),
+    total: money(params.config.invoiceAmountCents),
+    discount: "0.00",
+    notesInternal: "DEV-only portal validation order. Safe to repair/recreate.",
+    createdByUserId: params.userId,
+    updatedAt: new Date(),
+  } as any;
+
+  await db
+    .insert(orders)
+    .values(values)
+    .onConflictDoUpdate({
+      target: orders.id,
+      set: values,
+    });
+}
+
+async function upsertOrderLineItem(params: {
+  id: string;
+  orderId: string;
+  description: string;
+  workflowState: string;
+  requiresProofApproval: boolean;
+  config: ReturnType<typeof parsePortalValidationSeedConfig>;
+}) {
+  const values = {
+    id: params.id,
+    orderId: params.orderId,
+    productId: params.config.productId,
+    productVariantId: null,
+    productType: "validation",
+    description: params.description,
+    width: "24.00",
+    height: "36.00",
+    quantity: 1,
+    sqft: "6.00",
+    unitPrice: money(params.config.invoiceAmountCents),
+    totalPrice: money(params.config.invoiceAmountCents),
+    status: "new",
+    workflowState: params.workflowState,
+    requiresProofApproval: params.requiresProofApproval,
+    requiresInventory: false,
+    requiresDesign: false,
+    requiresPrepress: false,
+    taxAmount: "0.00",
+    isTaxableSnapshot: true,
+    sortOrder: params.requiresProofApproval ? 0 : 1,
+    specsJson: { portalValidationSeed: true },
+    selectedOptions: [],
+    materialUsages: [],
+    updatedAt: new Date(),
+  } as any;
+
+  await db
+    .insert(orderLineItems)
+    .values(values)
+    .onConflictDoUpdate({
+      target: orderLineItems.id,
+      set: values,
+    });
+}
+
 async function main() {
   const config = parsePortalValidationSeedConfig();
   const safetyErrors = getPortalValidationSeedSafetyErrors(config);
@@ -203,6 +293,28 @@ async function main() {
       set: customerValues,
     });
 
+  await db
+    .insert(customers)
+    .values({
+      ...customerValues,
+      id: config.otherCustomerId,
+      companyName: `${config.customerName} Other`,
+      email: `other-${config.email}`,
+      userId: null,
+      notes: "DEV-only customer used to verify portal order ownership boundaries.",
+    })
+    .onConflictDoUpdate({
+      target: customers.id,
+      set: {
+        ...customerValues,
+        id: config.otherCustomerId,
+        companyName: `${config.customerName} Other`,
+        email: `other-${config.email}`,
+        userId: null,
+        notes: "DEV-only customer used to verify portal order ownership boundaries.",
+      } as any,
+    });
+
   const invoiceIds = Object.values(config.invoiceIds);
   const issueDate = daysFromNow(-1);
 
@@ -214,6 +326,47 @@ async function main() {
     userId: user.id,
     issueDate,
     dueDate: daysFromNow(29),
+  });
+
+  await upsertOrder({
+    id: config.orderIds.portalStatus,
+    orderNumber: "PV-910200",
+    customerId: config.customerId,
+    poNumber: "PORTAL-PO-100",
+    config,
+    userId: user.id,
+  });
+  await upsertOrder({
+    id: config.orderIds.otherCustomer,
+    orderNumber: "PV-910201",
+    customerId: config.otherCustomerId,
+    poNumber: "OTHER-PO-100",
+    config,
+    userId: user.id,
+  });
+  await upsertOrderLineItem({
+    id: config.orderLineItemIds.portalStatusProof,
+    orderId: config.orderIds.portalStatus,
+    description: "Portal Validation Banner - Proof Required",
+    workflowState: "ready_for_production",
+    requiresProofApproval: true,
+    config,
+  });
+  await upsertOrderLineItem({
+    id: config.orderLineItemIds.portalStatusProduction,
+    orderId: config.orderIds.portalStatus,
+    description: "Portal Validation Decals",
+    workflowState: "in_production",
+    requiresProofApproval: false,
+    config,
+  });
+  await upsertOrderLineItem({
+    id: config.orderLineItemIds.otherCustomer,
+    orderId: config.orderIds.otherCustomer,
+    description: "Other Customer Hidden Item",
+    workflowState: "in_production",
+    requiresProofApproval: false,
+    config,
   });
   await upsertInvoice({
     id: config.invoiceIds.paid,
@@ -326,6 +479,7 @@ async function main() {
         email: config.email,
         userId: user.id,
         customerId: config.customerId,
+        orderIds: config.orderIds,
         organizationId: config.organizationId,
         invoices: {
           payable: { id: config.invoiceIds.payable, invoiceNumber: config.invoiceNumbers.payable },

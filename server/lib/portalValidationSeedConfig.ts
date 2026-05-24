@@ -20,7 +20,17 @@ export type PortalValidationSeedConfig = {
   seedKey: string;
   userId: string;
   customerId: string;
+  otherCustomerId: string;
   productId: string;
+  orderIds: {
+    portalStatus: string;
+    otherCustomer: string;
+  };
+  orderLineItemIds: {
+    portalStatusProof: string;
+    portalStatusProduction: string;
+    otherCustomer: string;
+  };
   invoiceIds: {
     payable: string;
     paid: string;
@@ -102,7 +112,17 @@ export function parsePortalValidationSeedConfig(
     seedKey,
     userId: `portal-validation-user-${seedKey}`,
     customerId: `portal-validation-customer-${seedKey}`,
+    otherCustomerId: `portal-validation-other-customer-${seedKey}`,
     productId: `portal-validation-product-${seedKey}`,
+    orderIds: {
+      portalStatus: `portal-validation-order-status-${seedKey}`,
+      otherCustomer: `portal-validation-order-other-${seedKey}`,
+    },
+    orderLineItemIds: {
+      portalStatusProof: `portal-validation-order-line-proof-${seedKey}`,
+      portalStatusProduction: `portal-validation-order-line-production-${seedKey}`,
+      otherCustomer: `portal-validation-order-line-other-${seedKey}`,
+    },
     invoiceIds: {
       payable: `portal-validation-invoice-payable-${seedKey}`,
       paid: `portal-validation-invoice-paid-${seedKey}`,

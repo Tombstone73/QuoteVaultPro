@@ -14,6 +14,7 @@ import {
   orderLineItems,
   orders,
   payments,
+  pickupTickets,
   quoteLineItems,
   quotes,
   shipmentOrders,
@@ -88,36 +89,65 @@ export type PortalInvoicePdfResult = {
 
 export type OrderPortalLineItemDto = {
   id: string;
-  itemName: string;
+  name: string;
+  description: string | null;
   quantity: number;
   dimensions: {
     width: number | null;
     height: number | null;
   };
-  status: string;
+  displayStatus: string;
+  proofStatus: string | null;
+  fulfillmentStatusLabel: string | null;
 };
 
-export type OrderPortalDto = {
+export type OrderPortalProofSummaryDto = {
+  proofRequired: boolean;
+  statusLabel: string;
+  actionRequired: boolean;
+  latestVersionNumber: number | null;
+  proofLinkAvailable: boolean;
+  requiredCount: number;
+  approvedCount: number;
+  pendingCount: number;
+  revisionRequestedCount: number;
+};
+
+export type OrderPortalFulfillmentSummaryDto = {
+  methodLabel: string | null;
+  statusLabel: string;
+  trackingNumber: string | null;
+  trackingUrl: string | null;
+  shippedAt: string | null;
+  pickupReadyAt: string | null;
+};
+
+export type OrderPortalInvoiceSummaryDto = {
+  invoiceCount: number;
+  openInvoiceCount: number;
+  paidInvoiceCount: number;
+  amountDue: number;
+  total: number;
+  currency: string;
+};
+
+export type OrderPortalListDto = {
   id: string;
   orderNumber: string;
   customerPoNumber: string | null;
   createdAt: string | null;
-  status: string;
+  updatedAt: string | null;
   displayStatus: string;
+  rawStatus: string | null;
+  total: number;
+  itemCount: number;
+  proofStatusSummary: OrderPortalProofSummaryDto;
+  fulfillmentSummary: OrderPortalFulfillmentSummaryDto;
+};
+
+export type OrderPortalDetailDto = OrderPortalListDto & {
   lineItems: OrderPortalLineItemDto[];
-  shipmentSummary: {
-    fulfillmentStatus: string | null;
-    shippingMethod: string | null;
-    shippedAt: string | null;
-    trackingNumbers: string[];
-  };
-  proofStatusSummary: {
-    status: "not_required" | "pending" | "approved" | "revision_requested";
-    requiredCount: number;
-    approvedCount: number;
-    pendingCount: number;
-    revisionRequestedCount: number;
-  };
+  invoiceSummary: OrderPortalInvoiceSummaryDto | null;
 };
 
 export type QuotePortalLineItemDto = {
@@ -219,8 +249,11 @@ type OrderPortalRow = Pick<
   | "orderNumber"
   | "poNumber"
   | "createdAt"
+  | "updatedAt"
   | "status"
   | "state"
+  | "statusPillValue"
+  | "total"
   | "fulfillmentStatus"
   | "shippingMethod"
   | "shippedAt"
@@ -243,7 +276,14 @@ type OrderLineItemPortalRow = Pick<
 
 type ShipmentPortalRow = Pick<
   typeof shipments.$inferSelect,
-  "orderId" | "primaryOrderId" | "status" | "trackingNumber"
+  "orderId" | "primaryOrderId" | "status" | "trackingNumber" | "shippedAt" | "carrier"
+>;
+
+type PickupTicketPortalRow = Pick<typeof pickupTickets.$inferSelect, "orderId" | "status" | "readyAt" | "pickedUpAt">;
+
+type OrderInvoiceSummaryRow = Pick<
+  typeof invoices.$inferSelect,
+  "id" | "orderId" | "status" | "totalCents" | "currency"
 >;
 
 type QuotePortalRow = Pick<
@@ -307,34 +347,59 @@ export function isPortalInvoiceStatusPayable(raw: unknown): boolean {
   return PORTAL_PAYABLE_INVOICE_STATUSES.includes(String(raw || "").trim().toLowerCase());
 }
 
-function sanitizeOrderState(state: unknown, fallbackStatus: unknown): string {
-  const normalized = String(state || fallbackStatus || "open").trim().toLowerCase();
-  if (normalized === "production_complete") return "production_complete";
-  if (normalized === "closed") return "closed";
-  if (normalized === "canceled") return "canceled";
-  return "open";
+function normalizeStatus(value: unknown): string {
+  return String(value || "").trim().toLowerCase();
 }
 
-function orderDisplayStatus(status: string): string {
-  switch (status) {
-    case "production_complete":
-      return "Ready";
-    case "closed":
-      return "Completed";
-    case "canceled":
-      return "Canceled";
-    default:
-      return "In Progress";
+export function mapPortalOrderStatus(params: {
+  state?: unknown;
+  status?: unknown;
+  statusPillValue?: unknown;
+  fulfillmentStatus?: unknown;
+  shippingMethod?: unknown;
+  proofActionRequired?: boolean;
+}): string {
+  const state = normalizeStatus(params.state);
+  const status = normalizeStatus(params.status);
+  const pill = normalizeStatus(params.statusPillValue);
+  const fulfillmentStatus = normalizeStatus(params.fulfillmentStatus);
+  const shippingMethod = normalizeStatus(params.shippingMethod);
+
+  if (state === "canceled" || status === "canceled" || status === "cancelled") return "Canceled";
+  if (state === "closed" || status === "completed" || status === "complete") return "Completed";
+  if (fulfillmentStatus === "delivered") return shippingMethod === "pickup" ? "Completed" : "Delivered";
+  if (fulfillmentStatus === "shipped") return "Shipped";
+  if (fulfillmentStatus === "packed") return shippingMethod === "pickup" ? "Ready for Pickup" : "Ready to Ship";
+  if (params.proofActionRequired) return "Awaiting Proof Approval";
+  if (state === "production_complete") return shippingMethod === "pickup" ? "Ready for Pickup" : "Ready to Ship";
+  if (status === "on_hold" || pill === "on_hold" || pill === "hold") return "On Hold";
+  if (status === "new" || status === "created" || pill === "new") return "Received";
+  if (status === "in_production" || pill.includes("production")) return "In Production";
+  return "In Progress";
+}
+
+export function mapPortalLineItemStatus(params: {
+  status?: unknown;
+  workflowState?: unknown;
+  requiresProofApproval?: boolean;
+  approvedProofVersionId?: string | null;
+  proofStatuses?: string[];
+  fulfillmentStatus?: unknown;
+}): string {
+  const raw = normalizeStatus(params.workflowState || params.status);
+  const proofStatuses = (params.proofStatuses || []).map(normalizeStatus);
+  const fulfillmentStatus = normalizeStatus(params.fulfillmentStatus);
+
+  if (raw === "canceled" || raw === "cancelled") return "Canceled";
+  if (raw === "on_hold") return "On Hold";
+  if (params.requiresProofApproval && !params.approvedProofVersionId) {
+    if (proofStatuses.includes("revision_requested") || proofStatuses.includes("rejected")) return "Revision Requested";
+    return "Awaiting Proof Approval";
   }
-}
-
-function sanitizeLineItemStatus(raw: unknown): string {
-  const state = String(raw || "").trim().toLowerCase();
-  if (state === "completed" || state === "complete") return "Complete";
-  if (state === "canceled" || state === "cancelled") return "Canceled";
-  if (state === "on_hold") return "On Hold";
-  if (state === "awaiting_proof_approval") return "Awaiting Approval";
-  if (state === "new" || state === "needs_design") return "Received";
+  if (fulfillmentStatus === "shipped" || fulfillmentStatus === "delivered") return "Completed";
+  if (raw === "completed" || raw === "complete" || raw === "production_complete") return "Completed";
+  if (raw === "new" || raw === "created" || raw === "needs_design") return "Received";
+  if (raw === "ready_for_prepress" || raw === "ready_for_production" || raw === "in_production") return "In Production";
   return "In Progress";
 }
 
@@ -1041,20 +1106,27 @@ export async function getPortalInvoicePdf(req: Request, invoiceId: string): Prom
   };
 }
 
-function buildProofSummary(lineItems: Array<{ id: string; requiresProofApproval: boolean; approvedProofVersionId: string | null }>, proofVersions: Array<{ lineItemId: string; status: string }>): OrderPortalDto["proofStatusSummary"] {
+function buildProofSummary(
+  lineItems: Array<{ id: string; requiresProofApproval: boolean; approvedProofVersionId: string | null }>,
+  proofVersions: Array<{ lineItemId: string; status: string; versionNumber: number }>,
+): OrderPortalProofSummaryDto {
   const requiredLineItemIds = new Set(lineItems.filter((lineItem) => lineItem.requiresProofApproval).map((lineItem) => lineItem.id));
   const requiredCount = requiredLineItemIds.size;
   const approvedCount = lineItems.filter((lineItem) => lineItem.requiresProofApproval && lineItem.approvedProofVersionId).length;
   let revisionRequestedCount = 0;
+  let latestVersionNumber: number | null = null;
 
   for (const version of proofVersions) {
+    if (requiredLineItemIds.has(version.lineItemId)) {
+      latestVersionNumber = Math.max(latestVersionNumber ?? 0, Number(version.versionNumber || 0)) || null;
+    }
     if (requiredLineItemIds.has(version.lineItemId) && version.status === "revision_requested") {
       revisionRequestedCount += 1;
     }
   }
 
   const pendingCount = Math.max(0, requiredCount - approvedCount - revisionRequestedCount);
-  const status =
+  const statusKey =
     requiredCount === 0
       ? "not_required"
       : approvedCount >= requiredCount
@@ -1062,8 +1134,27 @@ function buildProofSummary(lineItems: Array<{ id: string; requiresProofApproval:
         : revisionRequestedCount > 0
           ? "revision_requested"
           : "pending";
+  const actionRequired = statusKey === "pending" || statusKey === "revision_requested";
+  const statusLabel =
+    statusKey === "not_required"
+      ? "No proof required"
+      : statusKey === "approved"
+        ? "Proof approved"
+        : statusKey === "revision_requested"
+          ? "Revision requested"
+          : "Awaiting customer approval";
 
-  return { status, requiredCount, approvedCount, pendingCount, revisionRequestedCount };
+  return {
+    proofRequired: requiredCount > 0,
+    statusLabel,
+    actionRequired,
+    latestVersionNumber,
+    proofLinkAvailable: false,
+    requiredCount,
+    approvedCount,
+    pendingCount,
+    revisionRequestedCount,
+  };
 }
 
 async function loadShipmentsForOrders(organizationId: string, orderIds: string[]) {
@@ -1076,6 +1167,8 @@ async function loadShipmentsForOrders(organizationId: string, orderIds: string[]
         primaryOrderId: shipments.primaryOrderId,
         status: shipments.status,
         trackingNumber: shipments.trackingNumber,
+        shippedAt: shipments.shippedAt,
+        carrier: shipments.carrier,
       },
       linkedOrderId: shipmentOrders.orderId,
     })
@@ -1106,32 +1199,169 @@ async function loadShipmentsForOrders(organizationId: string, orderIds: string[]
   return byOrderId;
 }
 
-function mapOrder(
+async function loadPickupTicketsForOrders(organizationId: string, orderIds: string[]) {
+  if (orderIds.length === 0) return new Map<string, PickupTicketPortalRow>();
+
+  const rows = await db
+    .select({
+      orderId: pickupTickets.orderId,
+      status: pickupTickets.status,
+      readyAt: pickupTickets.readyAt,
+      pickedUpAt: pickupTickets.pickedUpAt,
+    })
+    .from(pickupTickets)
+    .where(and(eq(pickupTickets.organizationId, organizationId), inArray(pickupTickets.orderId, orderIds)));
+
+  const byOrderId = new Map<string, PickupTicketPortalRow>();
+  for (const row of rows) {
+    byOrderId.set(row.orderId, row);
+  }
+  return byOrderId;
+}
+
+async function loadInvoiceSummariesForOrders(organizationId: string, customerId: string, orderIds: string[]) {
+  if (orderIds.length === 0) return new Map<string, OrderPortalInvoiceSummaryDto>();
+
+  const rows = await db
+    .select({
+      id: invoices.id,
+      orderId: invoices.orderId,
+      status: invoices.status,
+      totalCents: invoices.totalCents,
+      currency: invoices.currency,
+    })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.organizationId, organizationId),
+        eq(invoices.customerId, customerId),
+        inArray(invoices.orderId, orderIds),
+        inArray(invoices.status, CUSTOMER_VISIBLE_INVOICE_STATUSES),
+      ),
+    );
+
+  const paymentsByInvoiceId = await loadInvoicePayments(organizationId, rows.map((row) => row.id));
+  const byOrderId = new Map<string, OrderPortalInvoiceSummaryDto>();
+  for (const row of rows as OrderInvoiceSummaryRow[]) {
+    if (!row.orderId) continue;
+    const rollup = computeInvoicePaymentRollup({
+      invoiceTotalCents: Number(row.totalCents || 0),
+      payments: (paymentsByInvoiceId.get(row.id) ?? []).map((payment) => ({
+        id: payment.id,
+        status: payment.status,
+        amountCents: Number(payment.amountCents || 0),
+      })),
+    });
+    const current = byOrderId.get(row.orderId) ?? {
+      invoiceCount: 0,
+      openInvoiceCount: 0,
+      paidInvoiceCount: 0,
+      amountDue: 0,
+      total: 0,
+      currency: String(row.currency || "USD"),
+    };
+    current.invoiceCount += 1;
+    current.amountDue += centsToMoney(rollup.amountDueCents);
+    current.total += centsToMoney(row.totalCents);
+    if (rollup.amountDueCents <= 0) current.paidInvoiceCount += 1;
+    else current.openInvoiceCount += 1;
+    byOrderId.set(row.orderId, current);
+  }
+
+  for (const summary of Array.from(byOrderId.values())) {
+    summary.amountDue = Math.round(summary.amountDue * 100) / 100;
+    summary.total = Math.round(summary.total * 100) / 100;
+  }
+  return byOrderId;
+}
+
+function methodLabelForOrder(raw: unknown): string | null {
+  const method = normalizeStatus(raw);
+  if (!method) return null;
+  if (method === "pickup") return "Pickup";
+  if (method === "ship") return "Shipping";
+  if (method === "deliver" || method === "delivery") return "Delivery";
+  return "Fulfillment";
+}
+
+function buildFulfillmentSummary(
+  order: OrderPortalRow,
+  orderShipments: ShipmentPortalRow[],
+  pickupTicket: PickupTicketPortalRow | null,
+): OrderPortalFulfillmentSummaryDto {
+  const method = normalizeStatus(order.shippingMethod);
+  const fulfillment = normalizeStatus(order.fulfillmentStatus);
+  const activeShipments = orderShipments.filter((shipment) => normalizeStatus(shipment.status) !== "voided");
+  const shippedShipment = activeShipments.find((shipment) => normalizeStatus(shipment.status) === "shipped") ?? activeShipments[0];
+  const trackingNumber = String(order.trackingNumber || shippedShipment?.trackingNumber || "").trim() || null;
+  const shippedAt = order.shippedAt || shippedShipment?.shippedAt || null;
+  const pickupStatus = normalizeStatus(pickupTicket?.status);
+
+  let statusLabel = "Not ready";
+  if (pickupTicket?.pickedUpAt || pickupStatus === "picked_up" || (method === "pickup" && fulfillment === "delivered")) {
+    statusLabel = "Picked up";
+  } else if (shippedAt || fulfillment === "shipped" || normalizeStatus(shippedShipment?.status) === "shipped") {
+    statusLabel = "Shipped";
+  } else if (pickupTicket?.readyAt || pickupStatus === "ready" || (method === "pickup" && fulfillment === "packed")) {
+    statusLabel = "Ready for pickup";
+  } else if (method !== "pickup" && fulfillment === "packed") {
+    statusLabel = "Ready to ship";
+  }
+
+  return {
+    methodLabel: methodLabelForOrder(order.shippingMethod),
+    statusLabel,
+    trackingNumber,
+    trackingUrl: null,
+    shippedAt: toIso(shippedAt),
+    pickupReadyAt: toIso(pickupTicket?.readyAt),
+  };
+}
+
+function mapOrderDetail(
   order: OrderPortalRow,
   lineItems: OrderLineItemPortalRow[],
   orderShipments: ShipmentPortalRow[],
-  proofVersions: Array<{ lineItemId: string; status: string }>,
-): OrderPortalDto {
-  const status = sanitizeOrderState(order.state, order.status);
-  const trackingNumbers = Array.from(
-    new Set([
-      ...(order.trackingNumber ? [String(order.trackingNumber)] : []),
-      ...orderShipments
-        .filter((shipment) => String(shipment.status || "").toUpperCase() !== "VOIDED")
-        .map((shipment) => shipment.trackingNumber)
-        .filter((tracking): tracking is string => typeof tracking === "string" && tracking.trim().length > 0),
-    ]),
+  pickupTicket: PickupTicketPortalRow | null,
+  proofVersions: Array<{ lineItemId: string; status: string; versionNumber: number }>,
+  invoiceSummary: OrderPortalInvoiceSummaryDto | null,
+): OrderPortalDetailDto {
+  const proofSummary = buildProofSummary(
+    lineItems.map((lineItem) => ({
+      id: lineItem.id,
+      requiresProofApproval: Boolean(lineItem.requiresProofApproval),
+      approvedProofVersionId: lineItem.approvedProofVersionId ?? null,
+    })),
+    proofVersions,
   );
-
+  const fulfillmentSummary = buildFulfillmentSummary(order, orderShipments, pickupTicket);
+  const displayStatus = mapPortalOrderStatus({
+    state: order.state,
+    status: order.status,
+    statusPillValue: order.statusPillValue,
+    fulfillmentStatus: order.fulfillmentStatus,
+    shippingMethod: order.shippingMethod,
+    proofActionRequired: proofSummary.actionRequired,
+  });
   const safeLineItems = lineItems.map((lineItem) => ({
     id: lineItem.id,
-    itemName: lineItem.description,
+    name: lineItem.description,
+    description: null,
     quantity: Number(lineItem.quantity || 0),
     dimensions: {
       width: lineItem.width == null ? null : Number(lineItem.width),
       height: lineItem.height == null ? null : Number(lineItem.height),
     },
-    status: sanitizeLineItemStatus(lineItem.workflowState || lineItem.status),
+    displayStatus: mapPortalLineItemStatus({
+      status: lineItem.status,
+      workflowState: lineItem.workflowState,
+      requiresProofApproval: Boolean(lineItem.requiresProofApproval),
+      approvedProofVersionId: lineItem.approvedProofVersionId ?? null,
+      proofStatuses: proofVersions.filter((version) => version.lineItemId === lineItem.id).map((version) => version.status),
+      fulfillmentStatus: order.fulfillmentStatus,
+    }),
+    proofStatus: lineItem.requiresProofApproval ? (lineItem.approvedProofVersionId ? "Approved" : "Awaiting proof approval") : null,
+    fulfillmentStatusLabel: fulfillmentSummary.statusLabel,
   }));
 
   return {
@@ -1139,24 +1369,21 @@ function mapOrder(
     orderNumber: String(order.orderNumber),
     customerPoNumber: order.poNumber ?? null,
     createdAt: toIso(order.createdAt),
-    status,
-    displayStatus: orderDisplayStatus(status),
+    updatedAt: toIso(order.updatedAt),
+    displayStatus,
+    rawStatus: null,
+    total: toMoney(order.total),
+    itemCount: lineItems.length,
+    proofStatusSummary: proofSummary,
+    fulfillmentSummary,
     lineItems: safeLineItems,
-    shipmentSummary: {
-      fulfillmentStatus: order.fulfillmentStatus ?? null,
-      shippingMethod: order.shippingMethod ?? null,
-      shippedAt: toIso(order.shippedAt),
-      trackingNumbers,
-    },
-    proofStatusSummary: buildProofSummary(
-      lineItems.map((lineItem) => ({
-        id: lineItem.id,
-        requiresProofApproval: Boolean(lineItem.requiresProofApproval),
-        approvedProofVersionId: lineItem.approvedProofVersionId ?? null,
-      })),
-      proofVersions,
-    ),
+    invoiceSummary,
   };
+}
+
+function mapOrderList(detail: OrderPortalDetailDto): OrderPortalListDto {
+  const { lineItems: _lineItems, invoiceSummary: _invoiceSummary, ...listDto } = detail;
+  return listDto;
 }
 
 async function loadOrderLineItems(orderIds: string[]) {
@@ -1191,17 +1418,18 @@ async function loadOrderLineItems(orderIds: string[]) {
 }
 
 async function loadProofVersions(organizationId: string, lineItemIds: string[]) {
-  if (lineItemIds.length === 0) return new Map<string, Array<{ lineItemId: string; status: string }>>();
+  if (lineItemIds.length === 0) return new Map<string, Array<{ lineItemId: string; status: string; versionNumber: number }>>();
 
   const rows = await db
     .select({
       lineItemId: lineItemProofVersions.lineItemId,
       status: lineItemProofVersions.status,
+      versionNumber: lineItemProofVersions.versionNumber,
     })
     .from(lineItemProofVersions)
     .where(and(eq(lineItemProofVersions.organizationId, organizationId), inArray(lineItemProofVersions.lineItemId, lineItemIds)));
 
-  const byLineItemId = new Map<string, Array<{ lineItemId: string; status: string }>>();
+  const byLineItemId = new Map<string, Array<{ lineItemId: string; status: string; versionNumber: number }>>();
   for (const row of rows) {
     const list = byLineItemId.get(row.lineItemId) ?? [];
     list.push(row);
@@ -1210,7 +1438,7 @@ async function loadProofVersions(organizationId: string, lineItemIds: string[]) 
   return byLineItemId;
 }
 
-export async function listPortalOrders(req: Request): Promise<OrderPortalDto[]> {
+export async function listPortalOrders(req: Request): Promise<OrderPortalListDto[]> {
   const scope = getPortalScope(req);
   const rows = await db
     .select({
@@ -1218,8 +1446,11 @@ export async function listPortalOrders(req: Request): Promise<OrderPortalDto[]> 
       orderNumber: orders.orderNumber,
       poNumber: orders.poNumber,
       createdAt: orders.createdAt,
+      updatedAt: orders.updatedAt,
       status: orders.status,
       state: orders.state,
+      statusPillValue: orders.statusPillValue,
+      total: orders.total,
       fulfillmentStatus: orders.fulfillmentStatus,
       shippingMethod: orders.shippingMethod,
       shippedAt: orders.shippedAt,
@@ -1234,15 +1465,26 @@ export async function listPortalOrders(req: Request): Promise<OrderPortalDto[]> 
   const allLineItemIds = Array.from(lineItemsByOrderId.values()).flat().map((lineItem) => lineItem.id);
   const proofVersionsByLineItemId = await loadProofVersions(scope.organizationId, allLineItemIds);
   const shipmentsByOrderId = await loadShipmentsForOrders(scope.organizationId, orderIds);
+  const pickupTicketsByOrderId = await loadPickupTicketsForOrders(scope.organizationId, orderIds);
+  const invoiceSummariesByOrderId = await loadInvoiceSummariesForOrders(scope.organizationId, scope.customerId, orderIds);
 
   return rows.map((order) => {
     const lineItems = lineItemsByOrderId.get(order.id) ?? [];
     const proofVersions = lineItems.flatMap((lineItem) => proofVersionsByLineItemId.get(lineItem.id) ?? []);
-    return mapOrder(order, lineItems, shipmentsByOrderId.get(order.id) ?? [], proofVersions);
+    return mapOrderList(
+      mapOrderDetail(
+        order,
+        lineItems,
+        shipmentsByOrderId.get(order.id) ?? [],
+        pickupTicketsByOrderId.get(order.id) ?? null,
+        proofVersions,
+        invoiceSummariesByOrderId.get(order.id) ?? null,
+      ),
+    );
   });
 }
 
-export async function getPortalOrder(req: Request, orderId: string): Promise<OrderPortalDto | null> {
+export async function getPortalOrder(req: Request, orderId: string): Promise<OrderPortalDetailDto | null> {
   const scope = getPortalScope(req);
   const [order] = await db
     .select({
@@ -1250,8 +1492,11 @@ export async function getPortalOrder(req: Request, orderId: string): Promise<Ord
       orderNumber: orders.orderNumber,
       poNumber: orders.poNumber,
       createdAt: orders.createdAt,
+      updatedAt: orders.updatedAt,
       status: orders.status,
       state: orders.state,
+      statusPillValue: orders.statusPillValue,
+      total: orders.total,
       fulfillmentStatus: orders.fulfillmentStatus,
       shippingMethod: orders.shippingMethod,
       shippedAt: orders.shippedAt,
@@ -1267,8 +1512,17 @@ export async function getPortalOrder(req: Request, orderId: string): Promise<Ord
   const lineItems = lineItemsByOrderId.get(order.id) ?? [];
   const proofVersionsByLineItemId = await loadProofVersions(scope.organizationId, lineItems.map((lineItem) => lineItem.id));
   const shipmentsByOrderId = await loadShipmentsForOrders(scope.organizationId, [order.id]);
+  const pickupTicketsByOrderId = await loadPickupTicketsForOrders(scope.organizationId, [order.id]);
+  const invoiceSummariesByOrderId = await loadInvoiceSummariesForOrders(scope.organizationId, scope.customerId, [order.id]);
   const proofVersions = lineItems.flatMap((lineItem) => proofVersionsByLineItemId.get(lineItem.id) ?? []);
-  return mapOrder(order, lineItems, shipmentsByOrderId.get(order.id) ?? [], proofVersions);
+  return mapOrderDetail(
+    order,
+    lineItems,
+    shipmentsByOrderId.get(order.id) ?? [],
+    pickupTicketsByOrderId.get(order.id) ?? null,
+    proofVersions,
+    invoiceSummariesByOrderId.get(order.id) ?? null,
+  );
 }
 
 function mapQuote(quote: QuotePortalRow, lineItems: QuoteLineItemPortalRow[]): QuotePortalDto {

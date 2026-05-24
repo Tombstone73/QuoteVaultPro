@@ -1,104 +1,120 @@
-import { useMyOrders } from "@/hooks/usePortal";
-import { Loader2, Package } from "lucide-react";
-import { Page, PageHeader, ContentLayout, DataCard, StatusPill } from "@/components/titan";
+import { Link } from "react-router-dom";
+import { AlertCircle, Loader2, Package, Truck } from "lucide-react";
+
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { useMyOrders, type PortalOrderListDto } from "@/hooks/usePortal";
+
+function formatDate(value: string | null) {
+  if (!value) return "Not set";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not set";
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(date);
+}
+
+function formatCurrency(amount: number, currency = "USD") {
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(Number(amount || 0));
+  } catch {
+    return `$${Number(amount || 0).toFixed(2)}`;
+  }
+}
+
+function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
+  const normalized = status.toLowerCase();
+  if (normalized.includes("completed") || normalized.includes("shipped") || normalized.includes("ready")) return "default";
+  if (normalized.includes("canceled")) return "destructive";
+  if (normalized.includes("awaiting") || normalized.includes("hold")) return "secondary";
+  return "outline";
+}
+
+function OrderRow({ order }: { order: PortalOrderListDto }) {
+  return (
+    <div className="grid gap-4 border-b px-4 py-4 last:border-b-0 md:grid-cols-[1fr_auto_auto] md:items-center">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <Link to={`/portal/orders/${order.id}`} className="font-medium text-foreground hover:underline">
+            Order #{order.orderNumber}
+          </Link>
+          <Badge variant={statusVariant(order.displayStatus)}>{order.displayStatus}</Badge>
+          {order.proofStatusSummary.actionRequired ? (
+            <Badge variant="secondary">
+              <AlertCircle className="mr-1 h-3 w-3" />
+              Proof needed
+            </Badge>
+          ) : null}
+        </div>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Created {formatDate(order.createdAt)}
+          {order.customerPoNumber ? ` / PO ${order.customerPoNumber}` : ""}
+        </p>
+        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
+          <span>{order.itemCount} item{order.itemCount === 1 ? "" : "s"}</span>
+          <span>{order.proofStatusSummary.statusLabel}</span>
+          <span className="inline-flex items-center gap-1">
+            <Truck className="h-3.5 w-3.5" />
+            {order.fulfillmentSummary.methodLabel || "Fulfillment"}: {order.fulfillmentSummary.statusLabel}
+          </span>
+        </div>
+      </div>
+
+      <div className="text-sm md:text-right">
+        <p className="text-muted-foreground">Total</p>
+        <p className="font-medium text-foreground">{formatCurrency(order.total)}</p>
+      </div>
+
+      <div className="flex md:justify-end">
+        <Button asChild variant="outline" size="sm">
+          <Link to={`/portal/orders/${order.id}`}>View</Link>
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 export default function MyOrders() {
-  const { data: orders, isLoading, error } = useMyOrders();
+  const { data: orders = [], isLoading, error } = useMyOrders();
 
   if (isLoading) {
     return (
-      <Page>
-        <div className="flex items-center justify-center min-h-[400px]">
-          <Loader2 className="h-8 w-8 animate-spin text-titan-text-muted" />
-        </div>
-      </Page>
+      <div className="flex min-h-[360px] items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
     );
   }
-
-  if (error) {
-    return (
-      <Page>
-        <ContentLayout>
-          <DataCard className="bg-titan-bg-card border-titan-border-subtle">
-            <div className="flex flex-col items-center justify-center min-h-[400px] text-center">
-              <p className="text-titan-error mb-2">Failed to load orders</p>
-              <p className="text-titan-sm text-titan-text-muted">{(error as Error).message}</p>
-            </div>
-          </DataCard>
-        </ContentLayout>
-      </Page>
-    );
-  }
-
-  const getStatusVariant = (status: string): "success" | "warning" | "error" | "info" | "default" => {
-    const statusMap: Record<string, "success" | "warning" | "error" | "info" | "default"> = {
-      new: "info",
-      scheduled: "info",
-      in_production: "warning",
-      ready_for_pickup: "success",
-      shipped: "success",
-      completed: "success",
-      on_hold: "warning",
-      canceled: "error",
-    };
-    return statusMap[status] || "default";
-  };
-
-  const getStatusLabel = (status: string) => {
-    return status.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
-  };
 
   return (
-    <Page>
-      <PageHeader
-        title="My Orders"
-        subtitle="Track your production orders"
-        className="pb-3"
-      />
+    <div className="mx-auto w-full max-w-5xl space-y-6">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-normal">Orders</h1>
+        <p className="mt-1 text-sm text-muted-foreground">Track order progress, proofs, and fulfillment.</p>
+      </div>
 
-      <ContentLayout className="space-y-4">
-        {!orders || orders.length === 0 ? (
-          <DataCard className="bg-titan-bg-card border-titan-border-subtle">
-            <div className="flex flex-col items-center justify-center py-12">
-              <Package className="h-12 w-12 text-titan-text-muted mb-4" />
-              <p className="text-titan-text-muted">No orders found</p>
-            </div>
-          </DataCard>
-        ) : (
-          <div className="grid gap-4">
-            {orders.map((order: any) => (
-              <DataCard key={order.id} className="bg-titan-bg-card border-titan-border-subtle">
-                <div className="flex items-start justify-between mb-4">
-                  <div>
-                    <h3 className="text-titan-lg font-semibold text-titan-text-primary">
-                      Order #{order.orderNumber}
-                    </h3>
-                    <p className="text-titan-sm text-titan-text-muted mt-1">
-                      Created {new Date(order.createdAt).toLocaleDateString()}
-                      {order.dueDate && (
-                        <> • Due {new Date(order.dueDate).toLocaleDateString()}</>
-                      )}
-                    </p>
-                  </div>
-                  <StatusPill variant={getStatusVariant(order.status)}>
-                    {getStatusLabel(order.status)}
-                  </StatusPill>
-                </div>
-                <div className="border-t border-titan-border-subtle pt-4">
-                  <p className="text-titan-sm text-titan-text-muted mb-2">
-                    {order.lineItems?.length || 0} item(s)
-                  </p>
-                  <div className="flex items-center justify-between">
-                    <div className="text-titan-sm text-titan-text-muted">
-                      {order.displayStatus || getStatusLabel(order.status)}
-                    </div>
-                  </div>
-                </div>
-              </DataCard>
+      {error ? (
+        <Card>
+          <CardContent className="py-10 text-center">
+            <p className="font-medium text-destructive">Could not load orders</p>
+            <p className="mt-1 text-sm text-muted-foreground">{(error as Error).message}</p>
+          </CardContent>
+        </Card>
+      ) : orders.length === 0 ? (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-14 text-center">
+            <Package className="mb-3 h-9 w-9 text-muted-foreground" />
+            <p className="font-medium">No orders yet</p>
+            <p className="mt-1 text-sm text-muted-foreground">Orders will appear here when they are ready for you.</p>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card>
+          <CardContent className="p-0">
+            {orders.map((order) => (
+              <OrderRow key={order.id} order={order} />
             ))}
-          </div>
-        )}
-      </ContentLayout>
-    </Page>
+          </CardContent>
+        </Card>
+      )}
+    </div>
   );
 }
