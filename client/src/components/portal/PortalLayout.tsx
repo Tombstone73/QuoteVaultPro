@@ -1,12 +1,14 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { FileText, ReceiptText, ShoppingBag } from "lucide-react";
+import { Files, FileText, Home, ReceiptText, ShoppingBag } from "lucide-react";
 
 import { usePortalSession } from "@/hooks/usePortal";
 
 const navItems = [
+  { to: "/portal", label: "Dashboard", icon: Home, end: true },
   { to: "/portal/invoices", label: "Invoices", icon: ReceiptText },
   { to: "/portal/my-orders", label: "Orders", icon: ShoppingBag },
   { to: "/portal/my-quotes", label: "Quotes", icon: FileText },
+  { to: "/portal/documents", label: "Documents", icon: Files },
 ];
 
 export function PortalLayout() {
@@ -27,6 +29,7 @@ export function PortalLayout() {
                 <NavLink
                   key={item.to}
                   to={item.to}
+                  end={item.end}
                   className={({ isActive }) =>
                     [
                       "flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
@@ -48,6 +51,7 @@ export function PortalLayout() {
               <NavLink
                 key={item.to}
                 to={item.to}
+                end={item.end}
                 className={({ isActive }) =>
                   [
                     "whitespace-nowrap rounded-md px-3 py-2 text-sm",
@@ -67,4 +71,3 @@ export function PortalLayout() {
     </div>
   );
 }
-

@@ -36,6 +36,8 @@ import DebugUser from "@/pages/debug-user";
 import NotFound from "@/pages/not-found";
 import MyQuotes from "@/pages/portal/my-quotes";
 import MyOrders from "@/pages/portal/my-orders";
+import PortalDashboardPage from "@/pages/portal/dashboard";
+import PortalDocumentsPage from "@/pages/portal/documents";
 import PortalOrderDetailPage from "@/pages/portal/order-detail";
 import PortalQuoteDetailPage from "@/pages/portal/quote-detail";
 import PortalInvoicesPage from "@/pages/portal/invoices";
@@ -296,14 +298,15 @@ function Router() {
 
       {/* Portal shell (auth-required portal pages with sidebar layout) */}
       <Route path="/portal" element={<PortalLayout />}>
-        <Route index element={<Navigate to="/portal/invoices" replace />} />
-        <Route path="dashboard" element={<Navigate to="/portal/invoices" replace />} />
+        <Route index element={<PortalDashboardPage />} />
+        <Route path="dashboard" element={<Navigate to="/portal" replace />} />
         <Route path="invoices" element={<PortalInvoicesPage />} />
         <Route path="invoices/:id" element={<PortalInvoiceDetailPage />} />
         <Route path="my-orders" element={<MyOrders />} />
         <Route path="orders/:id" element={<PortalOrderDetailPage />} />
         <Route path="my-quotes" element={<MyQuotes />} />
         <Route path="quotes/:id" element={<PortalQuoteDetailPage />} />
+        <Route path="documents" element={<PortalDocumentsPage />} />
         <Route path="quotes/:id/checkout" element={<Navigate to="/portal/my-quotes" replace />} />
       </Route>
 

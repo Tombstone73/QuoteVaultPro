@@ -170,6 +170,40 @@ export type PortalQuoteActionResultDto = {
   message: string;
 };
 
+export type PortalDashboardFileDto = PortalFileDto & {
+  entityType: "invoice" | "order" | "quote";
+  entityId: string;
+  sourceLabel: string;
+};
+
+export type PortalDashboardActivityDto = {
+  id: string;
+  type: "invoice" | "quote" | "order" | "file";
+  label: string;
+  occurredAt: string | null;
+  targetType: "invoice" | "quote" | "order" | "file";
+  targetId: string;
+};
+
+export type PortalDashboardDto = {
+  summary: {
+    openInvoiceCount: number;
+    outstandingBalance: number;
+    activeOrderCount: number;
+    quotesNeedingAction: number;
+    proofsAwaitingApproval: number;
+  };
+  invoices: PortalInvoiceDto[];
+  quotes: PortalQuoteListDto[];
+  activeOrders: PortalOrderListDto[];
+  recentFiles: PortalDashboardFileDto[];
+  recentActivity: PortalDashboardActivityDto[];
+};
+
+export const portalDashboardKeys = {
+  all: ["portal", "dashboard"] as const,
+};
+
 export const portalInvoiceKeys = {
   all: ["portal", "invoices"] as const,
   detail: (invoiceId: string | undefined) => ["portal", "invoices", invoiceId] as const,
@@ -223,6 +257,13 @@ export function usePortalSession() {
     queryKey: ["portal", "me"],
     queryFn: () => portalFetch<PortalSessionDto>("/api/portal/me"),
     staleTime: 30000,
+  });
+}
+
+export function usePortalDashboard() {
+  return useQuery({
+    queryKey: portalDashboardKeys.all,
+    queryFn: () => portalFetch<PortalDashboardDto>("/api/portal/dashboard"),
   });
 }
 

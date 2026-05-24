@@ -93,6 +93,36 @@ export type PortalFileDownloadResult = {
   objectPath?: string;
 };
 
+export type PortalDashboardFileDto = PortalFileDto & {
+  entityType: "invoice" | "order" | "quote";
+  entityId: string;
+  sourceLabel: string;
+};
+
+export type PortalDashboardActivityDto = {
+  id: string;
+  type: "invoice" | "quote" | "order" | "file";
+  label: string;
+  occurredAt: string | null;
+  targetType: "invoice" | "quote" | "order" | "file";
+  targetId: string;
+};
+
+export type PortalDashboardDto = {
+  summary: {
+    openInvoiceCount: number;
+    outstandingBalance: number;
+    activeOrderCount: number;
+    quotesNeedingAction: number;
+    proofsAwaitingApproval: number;
+  };
+  invoices: InvoicePortalDto[];
+  quotes: QuotePortalListDto[];
+  activeOrders: OrderPortalListDto[];
+  recentFiles: PortalDashboardFileDto[];
+  recentActivity: PortalDashboardActivityDto[];
+};
+
 export type PortalStripePaymentIntentDto = {
   clientSecret: string;
   paymentId: string;
@@ -1478,6 +1508,160 @@ export async function getPortalQuoteFileDownload(req: Request, quoteId: string, 
   const attachment = attachments.find((row) => row.id === normalizedFileId);
   if (!attachment) return null;
   return portalAttachmentDownload(attachment);
+}
+
+function timestampMs(value: string | null | undefined): number {
+  if (!value) return 0;
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function isDashboardActiveOrder(order: OrderPortalListDto): boolean {
+  const status = normalizeStatus(order.displayStatus);
+  return !["completed", "canceled", "cancelled", "delivered"].includes(status);
+}
+
+function dashboardFileSortValue(file: PortalDashboardFileDto): number {
+  return timestampMs(file.uploadedAt);
+}
+
+function invoiceDashboardActivity(invoice: InvoicePortalDto): PortalDashboardActivityDto {
+  const dueMs = timestampMs(invoice.dueDate);
+  const isPastDue = invoice.amountDue > 0 && dueMs > 0 && dueMs < Date.now();
+  return {
+    id: `invoice-${invoice.id}`,
+    type: "invoice",
+    label: isPastDue
+      ? `Invoice #${invoice.invoiceNumber} is past due`
+      : invoice.amountDue > 0
+        ? `Invoice #${invoice.invoiceNumber} is ready for payment`
+        : `Invoice #${invoice.invoiceNumber} is paid`,
+    occurredAt: invoice.dueDate || invoice.issueDate,
+    targetType: "invoice",
+    targetId: invoice.id,
+  };
+}
+
+function quoteDashboardActivity(quote: QuotePortalListDto): PortalDashboardActivityDto {
+  return {
+    id: `quote-${quote.id}`,
+    type: "quote",
+    label:
+      quote.displayStatus === "Ready for Review"
+        ? `Quote #${quote.quoteNumber ?? quote.id.slice(0, 8)} is ready for review`
+        : `Quote #${quote.quoteNumber ?? quote.id.slice(0, 8)} ${quote.displayStatus.toLowerCase()}`,
+    occurredAt: quote.createdAt,
+    targetType: "quote",
+    targetId: quote.id,
+  };
+}
+
+function orderDashboardActivity(order: OrderPortalListDto): PortalDashboardActivityDto {
+  const status = order.displayStatus === "Awaiting Proof Approval" ? "is awaiting your approval" : `is ${order.displayStatus.toLowerCase()}`;
+  return {
+    id: `order-${order.id}`,
+    type: "order",
+    label: `Order #${order.orderNumber} ${status}`,
+    occurredAt: order.updatedAt || order.createdAt,
+    targetType: "order",
+    targetId: order.id,
+  };
+}
+
+function fileDashboardActivity(file: PortalDashboardFileDto): PortalDashboardActivityDto {
+  return {
+    id: `file-${file.entityType}-${file.entityId}-${file.id}`,
+    type: "file",
+    label: `${file.displayName} was added to ${file.sourceLabel}`,
+    occurredAt: file.uploadedAt,
+    targetType: "file",
+    targetId: file.id,
+  };
+}
+
+export async function getPortalDashboard(req: Request): Promise<PortalDashboardDto> {
+  getPortalScope(req);
+
+  const [invoices, orders, quotes] = await Promise.all([
+    listPortalInvoices(req),
+    listPortalOrders(req),
+    listPortalQuotes(req),
+  ]);
+
+  const unpaidInvoices = invoices.filter((invoice) => Number(invoice.amountDue || 0) > 0);
+  const payableInvoices = unpaidInvoices
+    .filter((invoice) => isPortalInvoiceStatusPayable(invoice.status))
+    .sort((a, b) => timestampMs(a.dueDate || a.issueDate) - timestampMs(b.dueDate || b.issueDate))
+    .slice(0, 4);
+
+  const actionableQuotes = quotes
+    .filter((quote) => quote.customerVisibleActions.canApprove || quote.customerVisibleActions.canDecline || quote.customerVisibleActions.canRequestRevision)
+    .sort((a, b) => timestampMs(a.validUntil || a.createdAt) - timestampMs(b.validUntil || b.createdAt));
+
+  const activeOrders = orders
+    .filter(isDashboardActiveOrder)
+    .sort((a, b) => timestampMs(b.updatedAt || b.createdAt) - timestampMs(a.updatedAt || a.createdAt));
+
+  const fileSources: PortalDashboardFileDto[] = [];
+  const invoiceFileSources = await Promise.all(
+    invoices.slice(0, 4).map(async (invoice) => {
+      const files = await listPortalInvoiceFiles(req, invoice.id);
+      return (files ?? []).map((file) => ({
+        ...file,
+        entityType: "invoice" as const,
+        entityId: invoice.id,
+        sourceLabel: `Invoice #${invoice.invoiceNumber}`,
+      }));
+    }),
+  );
+  const orderFileSources = await Promise.all(
+    orders.slice(0, 6).map(async (order) => {
+      const files = await listPortalOrderFiles(req, order.id);
+      return (files ?? []).map((file) => ({
+        ...file,
+        entityType: "order" as const,
+        entityId: order.id,
+        sourceLabel: `Order #${order.orderNumber}`,
+      }));
+    }),
+  );
+  const quoteFileSources = await Promise.all(
+    quotes.slice(0, 6).map(async (quote) => {
+      const files = await listPortalQuoteFiles(req, quote.id);
+      return (files ?? []).map((file) => ({
+        ...file,
+        entityType: "quote" as const,
+        entityId: quote.id,
+        sourceLabel: `Quote #${quote.quoteNumber ?? quote.id.slice(0, 8)}`,
+      }));
+    }),
+  );
+  fileSources.push(...invoiceFileSources.flat(), ...orderFileSources.flat(), ...quoteFileSources.flat());
+  const recentFiles = fileSources.sort((a, b) => dashboardFileSortValue(b) - dashboardFileSortValue(a)).slice(0, 8);
+
+  const recentActivity = [
+    ...unpaidInvoices.slice(0, 3).map(invoiceDashboardActivity),
+    ...actionableQuotes.slice(0, 3).map(quoteDashboardActivity),
+    ...activeOrders.slice(0, 3).map(orderDashboardActivity),
+    ...recentFiles.slice(0, 3).map(fileDashboardActivity),
+  ]
+    .sort((a, b) => timestampMs(b.occurredAt) - timestampMs(a.occurredAt))
+    .slice(0, 8);
+
+  return {
+    summary: {
+      openInvoiceCount: unpaidInvoices.length,
+      outstandingBalance: Math.round(unpaidInvoices.reduce((sum, invoice) => sum + Number(invoice.amountDue || 0), 0) * 100) / 100,
+      activeOrderCount: activeOrders.length,
+      quotesNeedingAction: actionableQuotes.length,
+      proofsAwaitingApproval: orders.filter((order) => order.proofStatusSummary.actionRequired).length,
+    },
+    invoices: payableInvoices,
+    quotes: actionableQuotes.slice(0, 4),
+    activeOrders: activeOrders.slice(0, 4),
+    recentFiles,
+    recentActivity,
+  };
 }
 
 function buildProofSummary(

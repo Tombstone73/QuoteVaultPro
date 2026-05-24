@@ -10,6 +10,8 @@ function read(relativePath: string): string {
 function readPortalFrontendSource(): string {
   const files = [
     "client/src/hooks/usePortal.ts",
+    "client/src/pages/portal/dashboard.tsx",
+    "client/src/pages/portal/documents.tsx",
     "client/src/pages/portal/invoice-detail.tsx",
     "client/src/pages/portal/invoices.tsx",
     "client/src/pages/portal/my-orders.tsx",
