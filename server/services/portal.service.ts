@@ -1,10 +1,14 @@
-import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, or } from "drizzle-orm";
 import type { Request } from "express";
 
 import { db } from "../db";
 import {
+  auditLogs,
+  companySettings,
   customerContacts,
   customers,
+  integrationConnections,
+  invoiceLineItems,
   invoices,
   lineItemProofVersions,
   orderLineItems,
@@ -19,6 +23,9 @@ import {
   computeInvoicePaymentRollup,
   getInvoicePaymentStatusLabel,
 } from "@shared/rollups/invoicePaymentRollup";
+import { getStripeClient } from "../lib/stripe";
+import { refreshInvoiceStatus } from "../invoicesService";
+import { generateInvoicePdfBytes } from "./invoicePdf";
 
 export type PortalSessionDto = {
   userId: string;
@@ -48,6 +55,34 @@ export type InvoicePortalDto = {
   currency: string;
   pdfAvailable: boolean;
   paymentStatusLabel: string;
+};
+
+export type PortalInvoicePaymentDto = {
+  id: string;
+  amount: number;
+  currency: string;
+  status: string;
+  paidAt: string | null;
+  methodLabel: string;
+  referenceNumber: string | null;
+};
+
+export type PortalStripePaymentIntentDto = {
+  clientSecret: string;
+  paymentId: string;
+  invoiceId: string;
+  amount: number;
+  currency: string;
+};
+
+export type PortalStripeConfirmDto = {
+  payment: PortalInvoicePaymentDto;
+  invoice: InvoicePortalDto;
+};
+
+export type PortalInvoicePdfResult = {
+  bytes: Buffer;
+  filename: string;
 };
 
 export type OrderPortalLineItemDto = {
@@ -137,6 +172,46 @@ type InvoicePortalRow = Pick<
 
 type PaymentRollupRow = Pick<typeof payments.$inferSelect, "id" | "invoiceId" | "status" | "amountCents">;
 
+type PaymentPortalRow = Pick<
+  typeof payments.$inferSelect,
+  | "id"
+  | "invoiceId"
+  | "provider"
+  | "status"
+  | "amountCents"
+  | "currency"
+  | "method"
+  | "metadata"
+  | "paidAt"
+  | "succeededAt"
+  | "appliedAt"
+  | "stripePaymentIntentId"
+  | "createdAt"
+>;
+
+type InvoicePaymentPortalRow = Pick<
+  typeof invoices.$inferSelect,
+  | "id"
+  | "invoiceNumber"
+  | "status"
+  | "issueDate"
+  | "dueDate"
+  | "subtotal"
+  | "tax"
+  | "total"
+  | "subtotalCents"
+  | "taxCents"
+  | "shippingCents"
+  | "totalCents"
+  | "currency"
+  | "orderId"
+  | "notesPublic"
+  | "terms"
+  | "customTerms"
+  | "importSource"
+  | "isHistorical"
+>;
+
 type OrderPortalRow = Pick<
   typeof orders.$inferSelect,
   | "id"
@@ -181,6 +256,7 @@ type QuoteLineItemPortalRow = Pick<
 >;
 
 const CUSTOMER_VISIBLE_INVOICE_STATUSES = ["billed", "sent", "partially_paid", "overdue", "paid", "void", "open"];
+const PORTAL_PAYABLE_INVOICE_STATUSES = ["billed", "sent", "open", "partially_paid", "overdue"];
 
 class PortalAccessError extends Error {
   statusCode: number;
@@ -212,6 +288,22 @@ const toIso = (value: unknown): string | null => {
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub ?? user?.id;
+}
+
+function getUserName(user: any): string | null {
+  const name = `${user?.firstName || ""} ${user?.lastName || ""}`.trim();
+  return name || user?.email || null;
+}
+
+function normalizeInvoiceStatus(raw: unknown): string {
+  const status = String(raw || "").trim().toLowerCase();
+  if (status === "billed") return "sent";
+  if (status === "voided") return "void";
+  return status || "draft";
+}
+
+export function isPortalInvoiceStatusPayable(raw: unknown): boolean {
+  return PORTAL_PAYABLE_INVOICE_STATUSES.includes(String(raw || "").trim().toLowerCase());
 }
 
 function sanitizeOrderState(state: unknown, fallbackStatus: unknown): string {
@@ -260,6 +352,38 @@ function mapQuoteActions(status: string): QuotePortalDto["customerVisibleActions
   };
 }
 
+function methodLabel(payment: Pick<PaymentPortalRow, "provider" | "method">): string {
+  const provider = String(payment.provider || "").toLowerCase();
+  const method = String(payment.method || "").toLowerCase();
+
+  if (provider === "stripe" || method === "credit_card") return "Credit card";
+  if (method === "bank_transfer") return "Bank transfer";
+  if (method === "ach") return "ACH";
+  if (method === "wire") return "Wire";
+  if (method === "check") return "Check";
+  if (method === "cash") return "Cash";
+  return "Other";
+}
+
+function mapPayment(payment: PaymentPortalRow): PortalInvoicePaymentDto {
+  const metadata = payment.metadata && typeof payment.metadata === "object" ? payment.metadata : {};
+  const status = String(payment.status || "pending").toLowerCase();
+  const permanentPaymentDate =
+    status === "succeeded" || status === "refunded"
+      ? payment.paidAt || payment.succeededAt || payment.appliedAt
+      : null;
+
+  return {
+    id: payment.id,
+    amount: centsToMoney(payment.amountCents),
+    currency: String(payment.currency || "USD"),
+    status,
+    paidAt: toIso(permanentPaymentDate),
+    methodLabel: methodLabel(payment),
+    referenceNumber: typeof (metadata as any).reference === "string" ? String((metadata as any).reference) : null,
+  };
+}
+
 export function getPortalScope(req: Request): PortalScope {
   const userId = getUserId((req as any).user);
   const organizationId = req.organizationId;
@@ -303,7 +427,7 @@ export async function getPortalSession(req: Request): Promise<PortalSessionDto> 
     portalEmail,
     permissions: {
       canViewInvoices: true,
-      canPayInvoices: false,
+      canPayInvoices: true,
       canViewOrders: true,
       canViewQuotes: true,
     },
@@ -323,7 +447,7 @@ function mapInvoice(row: InvoicePortalRow, paymentRows: PaymentRollupRow[]): Inv
   return {
     id: row.id,
     invoiceNumber: Number(row.invoiceNumber),
-    status: String(row.status || "draft"),
+    status: normalizeInvoiceStatus(row.status),
     issueDate: toIso(row.issueDate),
     dueDate: toIso(row.dueDate),
     subtotal: row.subtotalCents ? centsToMoney(row.subtotalCents) : toMoney(row.subtotal),
@@ -421,6 +545,495 @@ export async function getPortalInvoice(req: Request, invoiceId: string): Promise
   if (!row) return null;
   const paymentsByInvoiceId = await loadInvoicePayments(scope.organizationId, [row.id]);
   return mapInvoice(row, paymentsByInvoiceId.get(row.id) ?? []);
+}
+
+async function getPortalInvoiceForPayment(scope: PortalScope, invoiceId: string): Promise<InvoicePaymentPortalRow | null> {
+  const [row] = await db
+    .select({
+      id: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      status: invoices.status,
+      issueDate: invoices.issueDate,
+      dueDate: invoices.dueDate,
+      subtotal: invoices.subtotal,
+      tax: invoices.tax,
+      total: invoices.total,
+      subtotalCents: invoices.subtotalCents,
+      taxCents: invoices.taxCents,
+      shippingCents: invoices.shippingCents,
+      totalCents: invoices.totalCents,
+      currency: invoices.currency,
+      orderId: invoices.orderId,
+      notesPublic: invoices.notesPublic,
+      terms: invoices.terms,
+      customTerms: invoices.customTerms,
+      importSource: invoices.importSource,
+      isHistorical: invoices.isHistorical,
+    })
+    .from(invoices)
+    .where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, scope.organizationId), eq(invoices.customerId, scope.customerId)))
+    .limit(1);
+
+  return row ?? null;
+}
+
+async function loadPortalInvoicePaymentRows(organizationId: string, invoiceId: string): Promise<PaymentPortalRow[]> {
+  return db
+    .select({
+      id: payments.id,
+      invoiceId: payments.invoiceId,
+      provider: payments.provider,
+      status: payments.status,
+      amountCents: payments.amountCents,
+      currency: payments.currency,
+      method: payments.method,
+      metadata: payments.metadata,
+      paidAt: payments.paidAt,
+      succeededAt: payments.succeededAt,
+      appliedAt: payments.appliedAt,
+      stripePaymentIntentId: payments.stripePaymentIntentId,
+      createdAt: payments.createdAt,
+    })
+    .from(payments)
+    .where(and(eq(payments.invoiceId, invoiceId), eq(payments.organizationId, organizationId)))
+    .orderBy(desc(payments.createdAt));
+}
+
+function invoiceRollup(invoice: Pick<InvoicePaymentPortalRow, "totalCents">, paymentRows: PaymentPortalRow[]) {
+  return computeInvoicePaymentRollup({
+    invoiceTotalCents: Number(invoice.totalCents || 0),
+    payments: paymentRows.map((payment) => ({
+      id: payment.id,
+      status: payment.status,
+      amountCents: Number(payment.amountCents || 0),
+    })),
+  });
+}
+
+function isImportedQuickBooksInvoice(invoice: InvoicePaymentPortalRow): boolean {
+  return String(invoice.importSource || "").trim().toLowerCase() === "quickbooks";
+}
+
+function assertPortalInvoicePayable(invoice: InvoicePaymentPortalRow, paymentRows: PaymentPortalRow[]): number {
+  const status = String(invoice.status || "").trim().toLowerCase();
+  if (!isPortalInvoiceStatusPayable(status)) {
+    throw new PortalAccessError(409, "Invoice is not payable");
+  }
+
+  if (isImportedQuickBooksInvoice(invoice) || Boolean(invoice.isHistorical)) {
+    throw new PortalAccessError(409, "Invoice is not payable in the portal");
+  }
+
+  const rollup = invoiceRollup(invoice, paymentRows);
+  const amountDueCents = Math.max(0, Math.round(Number(rollup.amountDueCents || 0)));
+  if (amountDueCents <= 0) {
+    throw new PortalAccessError(409, "Invoice is already paid");
+  }
+
+  return amountDueCents;
+}
+
+async function getStripeAccountId(organizationId: string): Promise<string> {
+  const [stripeConn] = await db
+    .select({
+      externalAccountId: integrationConnections.externalAccountId,
+      status: integrationConnections.status,
+    })
+    .from(integrationConnections)
+    .where(and(eq(integrationConnections.organizationId, organizationId), eq(integrationConnections.provider, "stripe")))
+    .limit(1);
+
+  const stripeAccountId = stripeConn?.externalAccountId ? String(stripeConn.externalAccountId) : "";
+  if (!stripeAccountId || String(stripeConn?.status || "connected") === "disconnected") {
+    throw new PortalAccessError(409, "Stripe is not connected for this organization");
+  }
+
+  return stripeAccountId;
+}
+
+async function markStripePaymentNonPending(paymentId: string, organizationId: string, status: "failed" | "canceled") {
+  const now = new Date();
+  await db
+    .update(payments)
+    .set({
+      status,
+      ...(status === "failed" ? { failedAt: now } : { canceledAt: now }),
+      updatedAt: now,
+    } as any)
+    .where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId)));
+}
+
+async function reconcileSucceededStripePayment(params: {
+  organizationId: string;
+  invoiceId: string;
+  paymentId: string;
+  amountCents: number;
+}) {
+  const now = new Date();
+  await db
+    .update(payments)
+    .set({
+      status: "succeeded",
+      amount: (params.amountCents / 100).toFixed(2),
+      amountCents: params.amountCents,
+      paidAt: now,
+      succeededAt: now,
+      updatedAt: now,
+    } as any)
+    .where(and(eq(payments.id, params.paymentId), eq(payments.organizationId, params.organizationId), eq(payments.invoiceId, params.invoiceId)));
+
+  await refreshInvoiceStatus(params.invoiceId);
+}
+
+async function refreshPortalInvoiceDto(scope: PortalScope, invoiceId: string): Promise<InvoicePortalDto> {
+  const dto = await getPortalInvoice({ organizationId: scope.organizationId, portalCustomerId: scope.customerId, portalCustomer: scope.customer, user: { id: scope.userId } } as any, invoiceId);
+  if (!dto) throw new PortalAccessError(404, "Not found");
+  return dto;
+}
+
+export async function listPortalInvoicePayments(req: Request, invoiceId: string): Promise<PortalInvoicePaymentDto[] | null> {
+  const scope = getPortalScope(req);
+  const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
+  if (!invoice || !CUSTOMER_VISIBLE_INVOICE_STATUSES.includes(String(invoice.status || "").toLowerCase())) return null;
+
+  const rows = await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id);
+  return rows.map(mapPayment);
+}
+
+export async function createPortalStripePaymentIntent(req: Request, invoiceId: string): Promise<PortalStripePaymentIntentDto | null> {
+  const scope = getPortalScope(req);
+  const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
+  if (!invoice) return null;
+
+  const paymentRows = await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id);
+  const amountDueCents = assertPortalInvoicePayable(invoice, paymentRows);
+  const currency = String(invoice.currency || "USD").toUpperCase();
+  const stripeAccountId = await getStripeAccountId(scope.organizationId);
+  const now = new Date();
+
+  await db
+    .update(payments)
+    .set({ status: "canceled", canceledAt: now, updatedAt: now } as any)
+    .where(
+      and(
+        eq(payments.organizationId, scope.organizationId),
+        eq(payments.invoiceId, invoice.id),
+        eq(payments.provider, "stripe"),
+        eq(payments.status, "pending"),
+        ne(payments.amountCents, amountDueCents),
+      ),
+    );
+
+  const [existingPending] = await db
+    .select({
+      id: payments.id,
+      stripePaymentIntentId: payments.stripePaymentIntentId,
+    })
+    .from(payments)
+    .where(
+      and(
+        eq(payments.organizationId, scope.organizationId),
+        eq(payments.invoiceId, invoice.id),
+        eq(payments.provider, "stripe"),
+        eq(payments.status, "pending"),
+        eq(payments.amountCents, amountDueCents),
+      ),
+    )
+    .orderBy(desc(payments.createdAt))
+    .limit(1);
+
+  if (existingPending?.stripePaymentIntentId) {
+    try {
+      const stripe = getStripeClient();
+      const pi = await stripe.paymentIntents.retrieve(String(existingPending.stripePaymentIntentId), { stripeAccount: stripeAccountId } as any);
+      const piStatus = String((pi as any).status || "").toLowerCase();
+
+      if (piStatus === "succeeded") {
+        const paidAmountCents = Math.max(0, Math.round(Number((pi as any).amount_received ?? (pi as any).amount ?? amountDueCents)));
+        await reconcileSucceededStripePayment({
+          organizationId: scope.organizationId,
+          invoiceId: invoice.id,
+          paymentId: existingPending.id,
+          amountCents: paidAmountCents,
+        });
+        throw new PortalAccessError(409, "Invoice is already paid");
+      }
+
+      if (piStatus !== "canceled" && piStatus !== "failed" && (pi as any).client_secret) {
+        return {
+          clientSecret: String((pi as any).client_secret),
+          paymentId: existingPending.id,
+          invoiceId: invoice.id,
+          amount: centsToMoney(amountDueCents),
+          currency,
+        };
+      }
+
+      await markStripePaymentNonPending(existingPending.id, scope.organizationId, piStatus === "failed" ? "failed" : "canceled");
+    } catch (error) {
+      if (error instanceof PortalAccessError) throw error;
+      await markStripePaymentNonPending(existingPending.id, scope.organizationId, "canceled");
+    }
+  }
+
+  const stripe = getStripeClient();
+  const idempotencyKey = `${scope.organizationId}:${invoice.id}:${amountDueCents}:portal:v1`;
+  const pi = await stripe.paymentIntents.create(
+    {
+      amount: amountDueCents,
+      currency: currency.toLowerCase(),
+      description: `Invoice #${invoice.invoiceNumber}`,
+      automatic_payment_methods: { enabled: true },
+      metadata: {
+        organizationId: scope.organizationId,
+        invoiceId: invoice.id,
+        customerId: scope.customerId,
+        stripeAccountId,
+      },
+    },
+    {
+      idempotencyKey,
+      stripeAccount: stripeAccountId,
+    } as any,
+  );
+
+  if (!pi.client_secret) throw new PortalAccessError(502, "Payment processor did not return a client secret");
+
+  const paymentIntentId = String(pi.id);
+  const [existingByIntent] = await db
+    .select({
+      id: payments.id,
+      status: payments.status,
+    })
+    .from(payments)
+    .where(and(eq(payments.organizationId, scope.organizationId), eq(payments.stripePaymentIntentId, paymentIntentId)))
+    .limit(1);
+
+  if (existingByIntent && String(existingByIntent.status || "").toLowerCase() === "pending") {
+    return {
+      clientSecret: String(pi.client_secret),
+      paymentId: existingByIntent.id,
+      invoiceId: invoice.id,
+      amount: centsToMoney(amountDueCents),
+      currency,
+    };
+  }
+
+  const insertedRows = await db
+    .insert(payments)
+    .values({
+      organizationId: scope.organizationId,
+      invoiceId: invoice.id,
+      provider: "stripe",
+      status: "pending",
+      amount: (amountDueCents / 100).toFixed(2),
+      amountCents: amountDueCents,
+      currency,
+      stripePaymentIntentId: paymentIntentId,
+      metadata: {
+        portal: true,
+        invoiceId: invoice.id,
+        customerId: scope.customerId,
+        stripeAccountId,
+      },
+      method: "credit_card",
+      appliedAt: now,
+      createdByUserId: scope.userId,
+      syncStatus: "pending",
+      createdAt: now,
+      updatedAt: now,
+    } as any)
+    .onConflictDoNothing({ target: [payments.organizationId, payments.stripePaymentIntentId] })
+    .returning({ id: payments.id });
+
+  const paymentId = insertedRows[0]?.id;
+  if (!paymentId) {
+    const [existingAfterConflict] = await db
+      .select({ id: payments.id, status: payments.status })
+      .from(payments)
+      .where(and(eq(payments.organizationId, scope.organizationId), eq(payments.stripePaymentIntentId, paymentIntentId)))
+      .limit(1);
+
+    if (!existingAfterConflict || String(existingAfterConflict.status || "").toLowerCase() !== "pending") {
+      throw new PortalAccessError(500, "Failed to create payment record");
+    }
+
+    return {
+      clientSecret: String(pi.client_secret),
+      paymentId: existingAfterConflict.id,
+      invoiceId: invoice.id,
+      amount: centsToMoney(amountDueCents),
+      currency,
+    };
+  }
+
+  try {
+    await db.insert(auditLogs).values({
+      organizationId: scope.organizationId,
+      userId: scope.userId,
+      userName: getUserName((req as any).user),
+      actionType: "portal_payment_intent_created",
+      entityType: "invoice",
+      entityId: invoice.id,
+      entityName: String(invoice.invoiceNumber),
+      description: "Portal Stripe PaymentIntent created",
+      newValues: { paymentId, amountCents: amountDueCents } as any,
+      createdAt: now,
+    } as any);
+  } catch {}
+
+  return {
+    clientSecret: String(pi.client_secret),
+    paymentId,
+    invoiceId: invoice.id,
+    amount: centsToMoney(amountDueCents),
+    currency,
+  };
+}
+
+export async function confirmPortalStripePayment(req: Request, invoiceId: string): Promise<PortalStripeConfirmDto | null> {
+  const scope = getPortalScope(req);
+  const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
+  if (!invoice) return null;
+
+  const paymentIntentId = String((req.body as any)?.paymentIntentId || "").trim();
+  if (!paymentIntentId) {
+    throw new PortalAccessError(400, "Missing payment intent");
+  }
+
+  const stripeAccountId = await getStripeAccountId(scope.organizationId);
+  const stripe = getStripeClient();
+  const pi = await stripe.paymentIntents.retrieve(paymentIntentId, { stripeAccount: stripeAccountId } as any);
+  const piStatus = String((pi as any).status || "").toLowerCase();
+  const metadata = ((pi as any).metadata || {}) as Record<string, any>;
+
+  if (String(metadata.organizationId || "") !== scope.organizationId || String(metadata.invoiceId || "") !== invoice.id) {
+    throw new PortalAccessError(404, "Not found");
+  }
+
+  const [payment] = await db
+    .select({
+      id: payments.id,
+      invoiceId: payments.invoiceId,
+      provider: payments.provider,
+      status: payments.status,
+      amountCents: payments.amountCents,
+      currency: payments.currency,
+      method: payments.method,
+      metadata: payments.metadata,
+      paidAt: payments.paidAt,
+      succeededAt: payments.succeededAt,
+      appliedAt: payments.appliedAt,
+      stripePaymentIntentId: payments.stripePaymentIntentId,
+      createdAt: payments.createdAt,
+    })
+    .from(payments)
+    .where(and(eq(payments.organizationId, scope.organizationId), eq(payments.invoiceId, invoice.id), eq(payments.stripePaymentIntentId, paymentIntentId)))
+    .limit(1);
+
+  if (!payment) return null;
+
+  const piAmountCents = Math.max(0, Math.round(Number((pi as any).amount_received ?? (pi as any).amount ?? 0)));
+  const currentPaymentStatus = String(payment.status || "").toLowerCase();
+  if (piStatus !== "succeeded" && currentPaymentStatus !== "succeeded") {
+    const currentRows = await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id);
+    assertPortalInvoicePayable(invoice, currentRows);
+  }
+
+  if (piStatus === "succeeded") {
+    if (Number(payment.amountCents || 0) !== piAmountCents) {
+      throw new PortalAccessError(409, "Payment amount changed");
+    }
+
+    if (currentPaymentStatus !== "succeeded") {
+      await reconcileSucceededStripePayment({
+        organizationId: scope.organizationId,
+        invoiceId: invoice.id,
+        paymentId: payment.id,
+        amountCents: piAmountCents,
+      });
+    } else {
+      await refreshInvoiceStatus(invoice.id);
+    }
+  } else if (piStatus === "payment_failed" || piStatus === "requires_payment_method") {
+    await markStripePaymentNonPending(payment.id, scope.organizationId, "failed");
+  } else if (piStatus === "canceled") {
+    await markStripePaymentNonPending(payment.id, scope.organizationId, "canceled");
+  }
+
+  const [updatedPayment] = await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id).then((rows) =>
+    rows.filter((row) => row.id === payment.id),
+  );
+  if (!updatedPayment) return null;
+
+  return {
+    payment: mapPayment(updatedPayment),
+    invoice: await refreshPortalInvoiceDto(scope, invoice.id),
+  };
+}
+
+export async function getPortalInvoicePdf(req: Request, invoiceId: string): Promise<PortalInvoicePdfResult | null> {
+  const scope = getPortalScope(req);
+  const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
+  if (!invoice || normalizeInvoiceStatus(invoice.status) === "draft") return null;
+
+  let job: { poNumber?: string | null; jobNumber?: string | null } | null = null;
+  if (invoice.orderId) {
+    const [order] = await db
+      .select({
+        orderNumber: orders.orderNumber,
+        poNumber: orders.poNumber,
+      })
+      .from(orders)
+      .where(and(eq(orders.id, String(invoice.orderId)), eq(orders.organizationId, scope.organizationId), eq(orders.customerId, scope.customerId)))
+      .limit(1);
+
+    if (order) {
+      job = {
+        poNumber: order.poNumber ?? null,
+        jobNumber: order.orderNumber ?? null,
+      };
+    }
+  }
+
+  const [customer] = await db
+    .select()
+    .from(customers)
+    .where(and(eq(customers.id, scope.customerId), eq(customers.organizationId, scope.organizationId)))
+    .limit(1);
+
+  const [orgCompany] = await db
+    .select()
+    .from(companySettings)
+    .where(eq(companySettings.organizationId, scope.organizationId))
+    .limit(1);
+
+  const lineItems = await db
+    .select()
+    .from(invoiceLineItems)
+    .where(eq(invoiceLineItems.invoiceId, invoice.id))
+    .orderBy(invoiceLineItems.sortOrder, desc(invoiceLineItems.createdAt));
+
+  const paymentRows = await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id);
+  const rollup = invoiceRollup(invoice, paymentRows);
+  const statusLabel = getInvoicePaymentStatusLabel({ invoiceStatus: invoice.status, rollup });
+  const pdfBytes = await generateInvoicePdfBytes({
+    invoice: invoice as any,
+    customer: (customer as any) || null,
+    companySettings: (orgCompany as any) || null,
+    paymentSummary: {
+      amountPaidCents: rollup.amountPaidCents,
+      amountDueCents: rollup.amountDueCents,
+      statusLabel,
+    },
+    lineItems: lineItems as any,
+    job,
+  });
+
+  return {
+    bytes: Buffer.from(pdfBytes),
+    filename: `invoice-${invoice.invoiceNumber ? String(invoice.invoiceNumber) : invoice.id}.pdf`,
+  };
 }
 
 function buildProofSummary(lineItems: Array<{ id: string; requiresProofApproval: boolean; approvedProofVersionId: string | null }>, proofVersions: Array<{ lineItemId: string; status: string }>): OrderPortalDto["proofStatusSummary"] {
