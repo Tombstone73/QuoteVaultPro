@@ -12,7 +12,7 @@
 import { describe, expect, test } from "@jest/globals";
 import { evaluatePricingPreviewFromTree } from "../PricingService";
 
-function makeTree() {
+function makeTree(perSqftCents = 100) {
   return {
     schemaVersion: 2 as const,
     rootNodeIds: ["root"],
@@ -25,7 +25,35 @@ function makeTree() {
       },
     },
     meta: {
-      pricingV2: { base: { perSqftCents: 100 } },
+      pricingV2: { base: { perSqftCents } },
+    },
+  };
+}
+
+function makeMatrixBasePriceTree(basePrice: number) {
+  return {
+    ...makeTree(100),
+    rootNodeIds: ["rate"],
+    pricingMatrix: {
+      dimensions: ["rate"],
+      rows: [
+        {
+          id: "standard",
+          when: { rate: "standard" },
+          variables: { base_price: basePrice },
+        },
+      ],
+    },
+    nodes: {
+      rate: {
+        id: "rate",
+        kind: "question" as const,
+        label: "Rate",
+        input: { type: "select" as const, selectionKey: "rate" },
+        choices: [
+          { value: "standard", label: "Standard" },
+        ],
+      },
     },
   };
 }
@@ -261,6 +289,21 @@ describe("sheet_consumption_sqft", () => {
       24, 36, 2,
     );
     expect(result.totalPrice).toBeCloseTo(12, 1);
+  });
+
+  test("24x18 q10 bills one 4x8 sheet at $44 when base_price is $1.375", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeMatrixBasePriceTree(1.375),
+      widthIn: 24,
+      heightIn: 18,
+      quantity: 10,
+      pbv2ExplicitSelections: { rate: { value: "standard" } },
+      pricingFormulaOverride: "sheet_consumption_sqft(w, h, q, 48, 96, 24, 12, 3) * base_price",
+      debug: true,
+    });
+
+    expect(result.totalPrice).toBeCloseTo(44, 2);
+    expect(result.breakdown.basePrice).toBeCloseTo(44, 2);
   });
 });
 

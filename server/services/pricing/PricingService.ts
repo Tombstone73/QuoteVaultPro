@@ -6,7 +6,7 @@
  */
 
 import { db } from '../../db';
-import { products, pbv2TreeVersions, materials } from '../../../shared/schema';
+import { products, pbv2TreeVersions, materials, pricingFormulas } from '../../../shared/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { evaluate } from 'mathjs';
 import { evaluateOptionTreeV2, pbv2ToWeightTotal } from '../optionTreeV2Evaluator';
@@ -440,6 +440,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
 
   // Step 1: Load product (with org scoping)
   const product = await loadProduct(organizationId, productId);
+  const pricingFormulaLibraryExpression = await loadProductPricingFormulaExpression(organizationId, product);
 
   // Step 2: Determine which tree version to use
   const treeVersionId = pbv2TreeVersionIdOverride 
@@ -530,6 +531,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     product,
     baseDetails,
     quantity,
+    pricingFormulaLibraryExpression,
     formulaVariables: formulaVariablesForPricing,
     pricingMatrixVariables: pricingMatrixVariablesForFormula,
   });
@@ -1153,6 +1155,23 @@ async function loadProduct(organizationId: string, productId: string) {
   }
 
   return product;
+}
+
+async function loadProductPricingFormulaExpression(organizationId: string, product: any): Promise<string | null> {
+  const pricingFormulaId = typeof product?.pricingFormulaId === "string"
+    ? product.pricingFormulaId.trim()
+    : "";
+  if (!pricingFormulaId) return null;
+
+  const [formula] = await db
+    .select({ expression: pricingFormulas.expression })
+    .from(pricingFormulas)
+    .where(and(eq(pricingFormulas.id, pricingFormulaId), eq(pricingFormulas.organizationId, organizationId)))
+    .limit(1);
+
+  return typeof formula?.expression === "string" && formula.expression.trim()
+    ? formula.expression
+    : null;
 }
 
 async function loadWeightMaterials(organizationId: string, materialIds: string[]): Promise<Pbv2WeightMaterialRecord[]> {
@@ -2102,6 +2121,7 @@ function calculateFormulaAwareBasePrice(input: {
   baseDetails: BasePriceDetails;
   quantity: number;
   pricingFormulaOverride?: string | null;
+  pricingFormulaLibraryExpression?: string | null;
   formulaVariables?: Record<string, number>;
   pricingMatrixVariables?: Record<string, number>;
 }): FormulaAwareBasePriceResult {
@@ -2114,13 +2134,16 @@ function calculateFormulaAwareBasePrice(input: {
   const formulaFromProduct = typeof input.product?.pricingFormula === "string"
     ? input.product.pricingFormula.trim()
     : "";
+  const formulaFromLibrary = typeof input.pricingFormulaLibraryExpression === "string"
+    ? input.pricingFormulaLibraryExpression.trim()
+    : "";
   const formulaFromProfile = typeof activeProfile.defaultFormula === "string"
     ? activeProfile.defaultFormula.trim()
     : "";
   const overrideFormula = typeof input.pricingFormulaOverride === "string"
     ? input.pricingFormulaOverride.trim()
     : "";
-  const formulaCandidate = overrideFormula || formulaFromTree || formulaFromProduct || formulaFromProfile;
+  const formulaCandidate = overrideFormula || formulaFromTree || formulaFromLibrary || formulaFromProduct || formulaFromProfile;
   const usedFallbackFormula = profileUsesFormula && !formulaCandidate;
   const formulaToUse = profileUsesFormula ? (formulaCandidate || PBV2_PREVIEW_FALLBACK_FORMULA) : "";
   const tierResolution = withFormulaTierReferenceWarning(baseDetails.tierResolution, formulaToUse);
@@ -2351,7 +2374,12 @@ function buildRuntimePricingSnapshot(input: {
   const totalSqft = input.baseDetails?.totalSqft ?? sqftPerItem * input.quantity;
   const linearFeet = input.baseDetails?.linearFeet ?? (orderedWidthIn > 0 ? orderedWidthIn / 12 : 0);
   const pricingProfileKey = String(input.baseDetails?.pricingProfileKey ?? input.product?.pricingProfileKey ?? "default");
-  const formulaSnapshot = resolveSnapshotFormula(input.treeJson, input.product, pricingProfileKey);
+  const formulaSnapshot = input.formulaBasePrice
+    ? {
+        formula: input.formulaBasePrice.formulaToUse,
+        usedFallbackFormula: input.formulaBasePrice.usedFallbackFormula,
+      }
+    : resolveSnapshotFormula(input.treeJson, input.product, pricingProfileKey);
   const formulaVariables = resolveSnapshotFormulaVariables(input.treeJson, input.product);
   const tierResolution = input.formulaBasePrice?.tierResolution ?? input.baseDetails?.tierResolution;
   const formulaDebug = input.formulaBasePrice?.formulaDebug ?? buildBaseFormulaDebugContext({

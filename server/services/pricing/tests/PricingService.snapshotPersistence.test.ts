@@ -8,6 +8,8 @@ const suffix = `${Date.now()}_${Math.floor(Math.random() * 10000)}`;
 const organizationId = `org_pbv2_snapshot_${suffix}`;
 const productId = `prod_pbv2_snapshot_${suffix}`;
 const treeVersionId = `tree_pbv2_snapshot_${suffix}`;
+const pricingFormulaId = `formula_pbv2_snapshot_${suffix}`;
+const COROPLAST_4X8_FORMULA = "sheet_consumption_sqft(w, h, q, 48, 96, 24, 12, 3) * base_price";
 
 function makeAcmTree(matrixBasePriceForDouble = 575, base: Record<string, number> = { perSqftCents: 100 }) {
   return {
@@ -58,6 +60,41 @@ function makeAcmTree(matrixBasePriceForDouble = 575, base: Record<string, number
   };
 }
 
+function makeCoroplastTree() {
+  return {
+    schemaVersion: 2,
+    rootNodeIds: ["rate"],
+    pricingMatrix: {
+      dimensions: ["rate"],
+      rows: [
+        {
+          id: "standard",
+          when: { rate: "standard" },
+          variables: { base_price: 1.375 },
+        },
+      ],
+    },
+    nodes: {
+      rate: {
+        id: "rate",
+        kind: "question",
+        label: "Rate",
+        input: { type: "select", selectionKey: "rate" },
+        choices: [
+          { value: "standard", label: "Standard" },
+        ],
+      },
+    },
+    meta: {
+      pricingV2: {
+        base: {
+          perSqftCents: 100,
+        },
+      },
+    },
+  };
+}
+
 beforeAll(async () => {
   await db.execute(sql`
     insert into organizations (id, name, slug)
@@ -85,6 +122,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await db.execute(sql`delete from pricing_formulas where organization_id = ${organizationId}`);
   await db.execute(sql`delete from pbv2_tree_versions where organization_id = ${organizationId}`);
   await db.execute(sql`delete from products where id = ${productId}`);
   await db.execute(sql`delete from organizations where id = ${organizationId}`);
@@ -98,12 +136,74 @@ beforeEach(async () => {
   `);
   await db.execute(sql`
     update products
-    set price_breaks = '{"enabled":false,"type":"quantity","tiers":[]}'::jsonb
+    set price_breaks = '{"enabled":false,"type":"quantity","tiers":[]}'::jsonb,
+        pricing_formula_id = null,
+        pricing_formula = null,
+        pricing_profile_key = ${"default"},
+        pricing_profile_config = null
     where id = ${productId}
   `);
 });
 
 describe("PricingService PBV2 pricing snapshot persistence payload", () => {
+  test("resolves product pricingFormulaId before stale legacy pricingFormula text", async () => {
+    await db.execute(sql`
+      insert into pricing_formulas (
+        id,
+        organization_id,
+        name,
+        code,
+        description,
+        pricing_profile_key,
+        expression,
+        config,
+        is_active
+      )
+      values (
+        ${pricingFormulaId},
+        ${organizationId},
+        ${"Coroplast 4x8 Sheet Consumption"},
+        ${"coroplast_4x8_sheet_consumption"},
+        ${"Bills Coroplast by consumed 4x8 sheet area"},
+        ${"default"},
+        ${COROPLAST_4X8_FORMULA},
+        ${null}::jsonb,
+        true
+      )
+      on conflict (id) do update
+      set expression = excluded.expression,
+          pricing_profile_key = excluded.pricing_profile_key
+    `);
+
+    await db.execute(sql`
+      update products
+      set pricing_formula_id = ${pricingFormulaId},
+          pricing_formula = ${"ceil(total_sqft) * base_price"},
+          pricing_profile_key = ${"default"}
+      where id = ${productId}
+    `);
+
+    await db.execute(sql`
+      update pbv2_tree_versions
+      set tree_json = ${JSON.stringify(makeCoroplastTree())}::jsonb
+      where id = ${treeVersionId}
+    `);
+
+    const result = await priceLineItem({
+      organizationId,
+      productId,
+      quantity: 10,
+      widthIn: 24,
+      heightIn: 18,
+      pbv2ExplicitSelections: { rate: { value: "standard" } },
+    });
+
+    expect(result.lineTotalCents).toBe(4400);
+    expect(result.breakdown.baseCents).toBe(4400);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formula).toBe(COROPLAST_4X8_FORMULA);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.calculatedPrice).toBe(44);
+  });
+
   test("captures raw selections, effective selections, matrix variables, formula scope, and price", async () => {
     const result = await priceLineItem({
       organizationId,

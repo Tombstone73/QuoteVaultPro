@@ -39,6 +39,7 @@ import PBV2ProductBuilderSectionV2 from "@/components/PBV2ProductBuilderSectionV
 import { ensureRootNodeIds, normalizeTreeJson } from "@/lib/pbv2/pbv2ViewModel";
 import { PricingValidationPanel } from "@/components/pbv2/builder-v2/PricingValidationPanel";
 import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
+import { getPricingFormulaSelectionValues } from "@/lib/pricingFormulaSelection";
 
 interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
   optionsJson: ProductOptionItem[] | null;
@@ -948,6 +949,18 @@ const ProductEditorPage = () => {
     return "Save Changes";
   }, [form.formState.isDirty, saveMutation.isPending]);
 
+  const previewPricingFormulaId = form.watch("pricingFormulaId");
+  const previewPricingFormula = form.watch("pricingFormula");
+  const effectivePreviewFormula = useMemo(() => {
+    const selectedFormula = getPricingFormulaSelectionValues(pricingFormulas, previewPricingFormulaId);
+    if (selectedFormula.pricingFormula?.trim()) {
+      return selectedFormula.pricingFormula;
+    }
+    return typeof previewPricingFormula === "string" && previewPricingFormula.trim()
+      ? previewPricingFormula
+      : null;
+  }, [pricingFormulas, previewPricingFormulaId, previewPricingFormula]);
+
   const hasInvalidChoiceValues = optionsHaveInvalidChoices(form.watch("optionsJson"));
   const hasInvalidOptionTreeJson = Boolean((form.formState.errors as any)?.optionTreeJson);
 
@@ -1185,7 +1198,8 @@ const ProductEditorPage = () => {
           <PricingValidationPanel
             treeJson={pbv2State?.treeJson ?? form.getValues('optionTreeJson') ?? null}
             pricingV2Override={treeMeta.pricingV2}
-            pricingFormulaOverride={form.watch("pricingFormula") || null}
+            pricingFormulaOverride={effectivePreviewFormula}
+            pricingFormulaId={previewPricingFormulaId || null}
             pricingProfileKey={form.watch("pricingProfileKey") || null}
             pricingProfileConfig={form.watch("pricingProfileConfig") || null}
             pricingMode={pbv2PricingMode}
