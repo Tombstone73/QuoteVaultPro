@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, ne, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { Request } from "express";
 
 import { db } from "../db";
@@ -11,11 +11,14 @@ import {
   invoiceLineItems,
   invoices,
   lineItemProofVersions,
+  orderAttachments,
   orderLineItems,
   orders,
   payments,
   pickupTickets,
+  quoteAttachments,
   quoteLineItems,
+  quoteWorkflowStates,
   quotes,
   shipmentOrders,
   shipments,
@@ -27,6 +30,8 @@ import {
 import { getStripeClient } from "../lib/stripe";
 import { refreshInvoiceStatus } from "../invoicesService";
 import { generateInvoicePdfBytes } from "./invoicePdf";
+import { storage } from "../storage";
+import { resolveOriginalFileAccess } from "../lib/supabaseObjectHelpers";
 
 export type PortalSessionDto = {
   userId: string;
@@ -66,6 +71,24 @@ export type PortalInvoicePaymentDto = {
   paidAt: string | null;
   methodLabel: string;
   referenceNumber: string | null;
+};
+
+export type PortalFileDto = {
+  id: string;
+  displayName: string;
+  fileTypeLabel: string;
+  uploadedAt: string | null;
+  fileSize: number | null;
+  categoryLabel: string;
+  previewAvailable: boolean;
+  downloadAvailable: boolean;
+};
+
+export type PortalFileDownloadResult = {
+  filename: string;
+  mimeType: string;
+  bytes?: Buffer;
+  objectPath?: string;
 };
 
 export type PortalStripePaymentIntentDto = {
@@ -167,6 +190,7 @@ export type QuotePortalLineItemDto = {
 export type QuotePortalActionsDto = {
   canView: boolean;
   canApprove: boolean;
+  canDecline: boolean;
   canRequestRevision: boolean;
   disabledReason: string | null;
 };
@@ -193,6 +217,20 @@ export type QuotePortalDetailDto = QuotePortalListDto & {
   tax: number;
   lineItems: QuotePortalLineItemDto[];
   expirationSummary: QuotePortalExpirationSummaryDto;
+};
+
+export type QuotePortalAction = "approve" | "decline" | "request_revision";
+
+export type QuotePortalOrderSummaryDto = {
+  id: string;
+  orderNumber: string;
+  displayStatus: string;
+};
+
+export type QuotePortalActionResultDto = {
+  quote: QuotePortalDetailDto;
+  order?: QuotePortalOrderSummaryDto;
+  message: string;
 };
 
 type PortalScope = {
@@ -313,6 +351,29 @@ type QuoteLineItemPortalRow = Pick<
   "id" | "quoteId" | "productName" | "description" | "width" | "height" | "quantity" | "linePrice" | "selectedOptions"
 >;
 
+type QuoteWorkflowPortalRow = Pick<
+  typeof quoteWorkflowStates.$inferSelect,
+  "quoteId" | "status" | "customerNotes" | "rejectionReason"
+>;
+
+type PortalAttachmentRow = {
+  id: string;
+  fileRecordId: string | null;
+  fileName: string;
+  originalFilename: string | null;
+  mimeType: string | null;
+  fileUrl: string | null;
+  fileSize: number | null;
+  sizeBytes: number | null;
+  createdAt: unknown;
+  role?: string | null;
+  uploadedByUserId?: string | null;
+  thumbKey?: string | null;
+  previewKey?: string | null;
+  thumbnailUrl?: string | null;
+  bucket?: string | null;
+};
+
 const CUSTOMER_VISIBLE_INVOICE_STATUSES = ["billed", "sent", "partially_paid", "overdue", "paid", "void", "open"];
 const PORTAL_PAYABLE_INVOICE_STATUSES = ["billed", "sent", "open", "partially_paid", "overdue"];
 
@@ -426,9 +487,20 @@ function isExpired(validUntil: unknown): boolean {
   return !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
 }
 
-export function mapPortalQuoteStatus(params: { status?: unknown; validUntil?: unknown; convertedToOrderId?: unknown }): string {
+export function mapPortalQuoteStatus(params: {
+  status?: unknown;
+  validUntil?: unknown;
+  convertedToOrderId?: unknown;
+  workflowStatus?: unknown;
+}): string {
   const status = normalizeStatus(params.status || "active");
+  const workflowStatus = normalizeStatus(params.workflowStatus);
   if (params.convertedToOrderId) return "Converted to Order";
+  if (workflowStatus === "customer_revision_requested" || workflowStatus === "revision_requested" || workflowStatus === "change_requested") {
+    return "Revision Requested";
+  }
+  if (workflowStatus === "customer_approved" || workflowStatus === "staff_approved") return "Accepted";
+  if (workflowStatus === "rejected" || workflowStatus === "customer_declined") return "Declined";
   if (status === "canceled" || status === "cancelled" || status === "void") return "Unavailable";
   if (isExpired(params.validUntil)) return "Expired";
   if (status === "accepted" || status === "approved") return "Accepted";
@@ -455,12 +527,40 @@ function formatShortDate(value: string): string {
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }).format(date);
 }
 
-function mapQuoteActions(_displayStatus: string): QuotePortalActionsDto {
+function mapQuoteActions(displayStatus: string): QuotePortalActionsDto {
+  if (displayStatus === "Ready for Review") {
+    return {
+      canView: true,
+      canApprove: true,
+      canDecline: true,
+      canRequestRevision: true,
+      disabledReason: null,
+    };
+  }
+
+  if (displayStatus === "Expired") {
+    return {
+      canView: true,
+      canApprove: false,
+      canDecline: true,
+      canRequestRevision: true,
+      disabledReason: "This quote has expired and cannot be approved.",
+    };
+  }
+
   return {
     canView: true,
     canApprove: false,
+    canDecline: false,
     canRequestRevision: false,
-    disabledReason: "Quote approval will be available soon",
+    disabledReason:
+      displayStatus === "Converted to Order"
+        ? "This quote has already been converted to an order."
+        : displayStatus === "Declined"
+          ? "This quote has been declined."
+          : displayStatus === "Revision Requested"
+            ? "Your revision request has been recorded."
+            : "Quote actions are unavailable for this quote.",
   };
 }
 
@@ -1152,6 +1252,220 @@ export async function getPortalInvoicePdf(req: Request, invoiceId: string): Prom
   };
 }
 
+function sanitizeDownloadFilename(value: unknown, fallback: string): string {
+  const raw = String(value || fallback || "download").trim() || "download";
+  return raw.replace(/[\r\n\t\0]/g, " ").replace(/"/g, "'").slice(0, 240);
+}
+
+function fileTypeLabel(mimeType: unknown, filename: unknown): string {
+  const mime = String(mimeType || "").toLowerCase();
+  const name = String(filename || "").toLowerCase();
+  if (mime.includes("pdf") || name.endsWith(".pdf")) return "PDF";
+  if (mime.startsWith("image/") || /\.(png|jpe?g|gif|webp|tiff?)$/.test(name)) return "Image";
+  if (mime.includes("zip") || name.endsWith(".zip")) return "Archive";
+  if (mime.includes("text") || /\.(txt|csv)$/.test(name)) return "Document";
+  return "File";
+}
+
+function mapPortalAttachmentFile(
+  attachment: PortalAttachmentRow,
+  categoryLabel: string,
+  idPrefix = "",
+): PortalFileDto {
+  const displayName = sanitizeDownloadFilename(attachment.originalFilename || attachment.fileName, `file-${attachment.id}`);
+  return {
+    id: `${idPrefix}${attachment.id}`,
+    displayName,
+    fileTypeLabel: fileTypeLabel(attachment.mimeType, displayName),
+    uploadedAt: toIso(attachment.createdAt),
+    fileSize: attachment.sizeBytes ?? attachment.fileSize ?? null,
+    categoryLabel,
+    previewAvailable: Boolean(attachment.previewKey || attachment.thumbKey || attachment.thumbnailUrl),
+    downloadAvailable: Boolean(attachment.fileRecordId || attachment.fileUrl),
+  };
+}
+
+function mapInvoicePdfFile(invoice: InvoicePaymentPortalRow): PortalFileDto {
+  const invoiceNumber = invoice.invoiceNumber ? String(invoice.invoiceNumber) : invoice.id;
+  return {
+    id: "pdf",
+    displayName: `invoice-${invoiceNumber}.pdf`,
+    fileTypeLabel: "PDF",
+    uploadedAt: toIso(invoice.issueDate),
+    fileSize: null,
+    categoryLabel: "Invoice",
+    previewAvailable: true,
+    downloadAvailable: true,
+  };
+}
+
+async function getScopedPortalOrderId(scope: PortalScope, orderId: string): Promise<string | null> {
+  const [order] = await db
+    .select({ id: orders.id })
+    .from(orders)
+    .where(and(eq(orders.id, orderId), eq(orders.organizationId, scope.organizationId), eq(orders.customerId, scope.customerId)))
+    .limit(1);
+  return order?.id ?? null;
+}
+
+async function getScopedPortalQuoteId(scope: PortalScope, quoteId: string): Promise<string | null> {
+  const [quote] = await db
+    .select({ id: quotes.id })
+    .from(quotes)
+    .where(
+      and(
+        eq(quotes.id, quoteId),
+        eq(quotes.organizationId, scope.organizationId),
+        eq(quotes.customerId, scope.customerId),
+        inArray(quotes.status, CUSTOMER_VISIBLE_QUOTE_STATUSES),
+      ),
+    )
+    .limit(1);
+  return quote?.id ?? null;
+}
+
+async function getCustomerVisibleProofAttachmentIds(scope: PortalScope, orderId: string): Promise<Set<string>> {
+  const proofRows = await db
+    .select({ proofFileId: lineItemProofVersions.proofFileId })
+    .from(lineItemProofVersions)
+    .where(
+      and(
+        eq(lineItemProofVersions.organizationId, scope.organizationId),
+        eq(lineItemProofVersions.orderId, orderId),
+        inArray(lineItemProofVersions.status, ["awaiting_response", "approved", "rejected", "revision_requested"]),
+      ),
+    );
+  return new Set(proofRows.map((row) => row.proofFileId).filter(Boolean));
+}
+
+function isCustomerVisibleOrderAttachment(attachment: PortalAttachmentRow, proofAttachmentIds: Set<string>, scope: PortalScope): boolean {
+  const role = normalizeStatus(attachment.role);
+  if (proofAttachmentIds.has(attachment.id)) return true;
+  if (role === "customer_po") return true;
+  if (attachment.uploadedByUserId && attachment.uploadedByUserId === scope.userId) return true;
+  return false;
+}
+
+function orderAttachmentCategory(attachment: PortalAttachmentRow, proofAttachmentIds: Set<string>): string {
+  const role = normalizeStatus(attachment.role);
+  if (proofAttachmentIds.has(attachment.id) || role === "proof") return "Proof";
+  if (role === "customer_po") return "Customer PO";
+  return "Customer File";
+}
+
+async function loadVisibleOrderAttachments(scope: PortalScope, orderId: string): Promise<PortalAttachmentRow[] | null> {
+  const scopedOrderId = await getScopedPortalOrderId(scope, orderId);
+  if (!scopedOrderId) return null;
+  const proofAttachmentIds = await getCustomerVisibleProofAttachmentIds(scope, scopedOrderId);
+  const rows = await db
+    .select({
+      id: orderAttachments.id,
+      fileRecordId: orderAttachments.fileRecordId,
+      fileName: orderAttachments.fileName,
+      originalFilename: orderAttachments.originalFilename,
+      mimeType: orderAttachments.mimeType,
+      fileUrl: orderAttachments.fileUrl,
+      fileSize: orderAttachments.fileSize,
+      sizeBytes: orderAttachments.sizeBytes,
+      createdAt: orderAttachments.createdAt,
+      role: orderAttachments.role,
+      uploadedByUserId: orderAttachments.uploadedByUserId,
+      thumbKey: orderAttachments.thumbKey,
+      previewKey: orderAttachments.previewKey,
+      thumbnailUrl: orderAttachments.thumbnailUrl,
+    })
+    .from(orderAttachments)
+    .where(eq(orderAttachments.orderId, scopedOrderId))
+    .orderBy(desc(orderAttachments.createdAt));
+
+  return rows.filter((row) => isCustomerVisibleOrderAttachment(row, proofAttachmentIds, scope));
+}
+
+async function loadVisibleQuoteAttachments(scope: PortalScope, quoteId: string): Promise<PortalAttachmentRow[] | null> {
+  const scopedQuoteId = await getScopedPortalQuoteId(scope, quoteId);
+  if (!scopedQuoteId) return null;
+  const rows = await db
+    .select({
+      id: quoteAttachments.id,
+      fileRecordId: quoteAttachments.fileRecordId,
+      fileName: quoteAttachments.fileName,
+      originalFilename: quoteAttachments.originalFilename,
+      mimeType: quoteAttachments.mimeType,
+      fileUrl: quoteAttachments.fileUrl,
+      fileSize: quoteAttachments.fileSize,
+      sizeBytes: quoteAttachments.sizeBytes,
+      createdAt: quoteAttachments.createdAt,
+      uploadedByUserId: quoteAttachments.uploadedByUserId,
+      thumbKey: quoteAttachments.thumbKey,
+      previewKey: quoteAttachments.previewKey,
+      bucket: quoteAttachments.bucket,
+    })
+    .from(quoteAttachments)
+    .where(and(eq(quoteAttachments.quoteId, scopedQuoteId), eq(quoteAttachments.organizationId, scope.organizationId)))
+    .orderBy(desc(quoteAttachments.createdAt));
+
+  return rows.filter((row) => row.uploadedByUserId === scope.userId);
+}
+
+export async function listPortalInvoiceFiles(req: Request, invoiceId: string): Promise<PortalFileDto[] | null> {
+  const scope = getPortalScope(req);
+  const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
+  if (!invoice || normalizeInvoiceStatus(invoice.status) === "draft") return null;
+  return [mapInvoicePdfFile(invoice)];
+}
+
+export async function listPortalOrderFiles(req: Request, orderId: string): Promise<PortalFileDto[] | null> {
+  const scope = getPortalScope(req);
+  const attachments = await loadVisibleOrderAttachments(scope, orderId);
+  if (!attachments) return null;
+  const proofAttachmentIds = await getCustomerVisibleProofAttachmentIds(scope, orderId);
+  return attachments.map((attachment) => mapPortalAttachmentFile(attachment, orderAttachmentCategory(attachment, proofAttachmentIds), "oa_"));
+}
+
+export async function listPortalQuoteFiles(req: Request, quoteId: string): Promise<PortalFileDto[] | null> {
+  const scope = getPortalScope(req);
+  const attachments = await loadVisibleQuoteAttachments(scope, quoteId);
+  if (!attachments) return null;
+  return attachments.map((attachment) => mapPortalAttachmentFile(attachment, "Quote File", "qa_"));
+}
+
+async function portalAttachmentDownload(attachment: PortalAttachmentRow): Promise<PortalFileDownloadResult | null> {
+  const access = await resolveOriginalFileAccess(attachment);
+  if (!access.objectPath || access.availabilityStatus !== "available") return null;
+  return {
+    filename: sanitizeDownloadFilename(access.displayFilename || attachment.originalFilename || attachment.fileName, `file-${attachment.id}`),
+    mimeType: access.mimeType || attachment.mimeType || "application/octet-stream",
+    objectPath: access.objectPath,
+  };
+}
+
+export async function getPortalInvoiceFileDownload(req: Request, invoiceId: string, fileId: string): Promise<PortalFileDownloadResult | null> {
+  if (fileId !== "pdf") return null;
+  const pdf = await getPortalInvoicePdf(req, invoiceId);
+  if (!pdf) return null;
+  return { filename: pdf.filename, mimeType: "application/pdf", bytes: pdf.bytes };
+}
+
+export async function getPortalOrderFileDownload(req: Request, orderId: string, fileId: string): Promise<PortalFileDownloadResult | null> {
+  const scope = getPortalScope(req);
+  const normalizedFileId = fileId.startsWith("oa_") ? fileId.slice(3) : fileId;
+  const attachments = await loadVisibleOrderAttachments(scope, orderId);
+  if (!attachments) return null;
+  const attachment = attachments.find((row) => row.id === normalizedFileId);
+  if (!attachment) return null;
+  return portalAttachmentDownload(attachment);
+}
+
+export async function getPortalQuoteFileDownload(req: Request, quoteId: string, fileId: string): Promise<PortalFileDownloadResult | null> {
+  const scope = getPortalScope(req);
+  const normalizedFileId = fileId.startsWith("qa_") ? fileId.slice(3) : fileId;
+  const attachments = await loadVisibleQuoteAttachments(scope, quoteId);
+  if (!attachments) return null;
+  const attachment = attachments.find((row) => row.id === normalizedFileId);
+  if (!attachment) return null;
+  return portalAttachmentDownload(attachment);
+}
+
 function buildProofSummary(
   lineItems: Array<{ id: string; requiresProofApproval: boolean; approvedProofVersionId: string | null }>,
   proofVersions: Array<{ lineItemId: string; status: string; versionNumber: number }>,
@@ -1584,11 +1898,16 @@ function safeQuoteDisplayOptions(selectedOptions: unknown): string[] {
     .filter((value): value is string => Boolean(value));
 }
 
-function mapQuoteDetail(quote: QuotePortalRow, lineItems: QuoteLineItemPortalRow[]): QuotePortalDetailDto {
+function mapQuoteDetail(
+  quote: QuotePortalRow,
+  lineItems: QuoteLineItemPortalRow[],
+  workflowState: QuoteWorkflowPortalRow | null = null,
+): QuotePortalDetailDto {
   const displayStatus = mapPortalQuoteStatus({
     status: quote.status,
     validUntil: quote.validUntil,
     convertedToOrderId: quote.convertedToOrderId,
+    workflowStatus: workflowState?.status,
   });
   const mappedLineItems = lineItems.map((lineItem) => {
     const quantity = Math.max(1, Number(lineItem.quantity || 0));
@@ -1659,6 +1978,22 @@ async function loadQuoteLineItems(quoteIds: string[]) {
   return byQuoteId;
 }
 
+async function loadQuoteWorkflowStates(quoteIds: string[]) {
+  if (quoteIds.length === 0) return new Map<string, QuoteWorkflowPortalRow>();
+
+  const rows = await db
+    .select({
+      quoteId: quoteWorkflowStates.quoteId,
+      status: quoteWorkflowStates.status,
+      customerNotes: quoteWorkflowStates.customerNotes,
+      rejectionReason: quoteWorkflowStates.rejectionReason,
+    })
+    .from(quoteWorkflowStates)
+    .where(inArray(quoteWorkflowStates.quoteId, quoteIds));
+
+  return new Map(rows.map((row) => [row.quoteId, row]));
+}
+
 const CUSTOMER_VISIBLE_QUOTE_STATUSES: Array<"active" | "pending" | "pending_approval" | "canceled"> = [
   "active",
   "pending",
@@ -1685,7 +2020,10 @@ export async function listPortalQuotes(req: Request): Promise<QuotePortalListDto
     .orderBy(desc(quotes.createdAt));
 
   const lineItemsByQuoteId = await loadQuoteLineItems(rows.map((row) => row.id));
-  return rows.map((quote) => mapQuoteList(mapQuoteDetail(quote, lineItemsByQuoteId.get(quote.id) ?? [])));
+  const workflowStatesByQuoteId = await loadQuoteWorkflowStates(rows.map((row) => row.id));
+  return rows.map((quote) =>
+    mapQuoteList(mapQuoteDetail(quote, lineItemsByQuoteId.get(quote.id) ?? [], workflowStatesByQuoteId.get(quote.id) ?? null)),
+  );
 }
 
 export async function getPortalQuote(req: Request, quoteId: string): Promise<QuotePortalDetailDto | null> {
@@ -1708,7 +2046,337 @@ export async function getPortalQuote(req: Request, quoteId: string): Promise<Quo
 
   if (!quote) return null;
   const lineItemsByQuoteId = await loadQuoteLineItems([quote.id]);
-  return mapQuoteDetail(quote, lineItemsByQuoteId.get(quote.id) ?? []);
+  const workflowStatesByQuoteId = await loadQuoteWorkflowStates([quote.id]);
+  return mapQuoteDetail(quote, lineItemsByQuoteId.get(quote.id) ?? [], workflowStatesByQuoteId.get(quote.id) ?? null);
+}
+
+function sanitizePortalActionNote(value: unknown): string | null {
+  const note = String(value || "").trim();
+  if (!note) return null;
+  return note.slice(0, 1000);
+}
+
+async function lockPortalQuoteAction(tx: Pick<typeof db, "execute">, quoteId: string) {
+  // Quote actions create permanent state, so retries/double-clicks are serialized per quote.
+  // This transaction-level advisory lock is independent of the migration lock and releases
+  // automatically at transaction end; it avoids unbounded session-level locks.
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`portal_quote_action:${quoteId}`}))`);
+}
+
+async function getScopedPortalQuoteRecord(scope: PortalScope, quoteId: string): Promise<QuotePortalRow | null> {
+  const [quote] = await db
+    .select({
+      id: quotes.id,
+      quoteNumber: quotes.quoteNumber,
+      createdAt: quotes.createdAt,
+      validUntil: quotes.validUntil,
+      status: quotes.status,
+      subtotal: quotes.subtotal,
+      taxAmount: quotes.taxAmount,
+      totalPrice: quotes.totalPrice,
+      convertedToOrderId: quotes.convertedToOrderId,
+    })
+    .from(quotes)
+    .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, scope.organizationId), eq(quotes.customerId, scope.customerId)))
+    .limit(1);
+
+  return quote ?? null;
+}
+
+async function getPortalWorkflowState(quoteId: string): Promise<QuoteWorkflowPortalRow | null> {
+  const workflowStates = await loadQuoteWorkflowStates([quoteId]);
+  return workflowStates.get(quoteId) ?? null;
+}
+
+async function upsertPortalQuoteWorkflowState(
+  quoteId: string,
+  values: Partial<typeof quoteWorkflowStates.$inferInsert> & { status: string },
+) {
+  const [existing] = await db
+    .select({ id: quoteWorkflowStates.id })
+    .from(quoteWorkflowStates)
+    .where(eq(quoteWorkflowStates.quoteId, quoteId))
+    .limit(1);
+
+  if (existing) {
+    await db
+      .update(quoteWorkflowStates)
+      .set({ ...values, updatedAt: new Date() })
+      .where(eq(quoteWorkflowStates.id, existing.id));
+    return;
+  }
+
+  await db.insert(quoteWorkflowStates).values({ quoteId, ...values } as typeof quoteWorkflowStates.$inferInsert);
+}
+
+async function getConvertedOrderSummary(scope: PortalScope, quote: QuotePortalRow): Promise<QuotePortalOrderSummaryDto | null> {
+  const orderWhere = quote.convertedToOrderId
+    ? and(
+        eq(orders.id, String(quote.convertedToOrderId)),
+        eq(orders.organizationId, scope.organizationId),
+        eq(orders.customerId, scope.customerId),
+      )
+    : and(eq(orders.quoteId, quote.id), eq(orders.organizationId, scope.organizationId), eq(orders.customerId, scope.customerId));
+
+  const [order] = await db
+    .select({
+      id: orders.id,
+      orderNumber: orders.orderNumber,
+      status: orders.status,
+      state: orders.state,
+      statusPillValue: orders.statusPillValue,
+      fulfillmentStatus: orders.fulfillmentStatus,
+      shippingMethod: orders.shippingMethod,
+    })
+    .from(orders)
+    .where(orderWhere)
+    .limit(1);
+
+  if (!order) return null;
+
+  if (!quote.convertedToOrderId) {
+    await db
+      .update(quotes)
+      .set({ convertedToOrderId: order.id })
+      .where(and(eq(quotes.id, quote.id), eq(quotes.organizationId, scope.organizationId)));
+  }
+
+  return {
+    id: order.id,
+    orderNumber: order.orderNumber,
+    displayStatus: mapPortalOrderStatus(order),
+  };
+}
+
+function assertPortalQuoteCanApprove(quote: QuotePortalRow, workflowState: QuoteWorkflowPortalRow | null) {
+  const displayStatus = mapPortalQuoteStatus({
+    status: quote.status,
+    validUntil: quote.validUntil,
+    convertedToOrderId: quote.convertedToOrderId,
+    workflowStatus: workflowState?.status,
+  });
+
+  if (displayStatus === "Expired") {
+    throw new PortalAccessError(409, "This quote has expired and cannot be approved.");
+  }
+  if (displayStatus === "Unavailable" || displayStatus === "Declined" || displayStatus === "Revision Requested") {
+    throw new PortalAccessError(409, "This quote is not available for approval.");
+  }
+  if (normalizeStatus(quote.status) === "draft") {
+    throw new PortalAccessError(404, "Not found");
+  }
+}
+
+function assertPortalQuoteCanDeclineOrRevise(quote: QuotePortalRow, workflowState: QuoteWorkflowPortalRow | null) {
+  const displayStatus = mapPortalQuoteStatus({
+    status: quote.status,
+    validUntil: quote.validUntil,
+    convertedToOrderId: quote.convertedToOrderId,
+    workflowStatus: workflowState?.status,
+  });
+
+  if (displayStatus === "Converted to Order" || displayStatus === "Unavailable") {
+    throw new PortalAccessError(409, "This quote is not available for this action.");
+  }
+  if (normalizeStatus(quote.status) === "draft") {
+    throw new PortalAccessError(404, "Not found");
+  }
+}
+
+async function writePortalQuoteAudit(args: {
+  req: Request;
+  scope: PortalScope;
+  quote: QuotePortalRow;
+  actionType: string;
+  description: string;
+  oldValues?: Record<string, unknown>;
+  newValues?: Record<string, unknown>;
+}) {
+  try {
+    await db.insert(auditLogs).values({
+      organizationId: args.scope.organizationId,
+      userId: args.scope.userId,
+      userName: getUserName((args.req as any).user),
+      actionType: args.actionType,
+      entityType: "quote",
+      entityId: args.quote.id,
+      entityName: args.quote.quoteNumber != null ? String(args.quote.quoteNumber) : args.quote.id,
+      description: args.description,
+      oldValues: args.oldValues,
+      newValues: args.newValues,
+      ipAddress: args.req.ip,
+      userAgent: args.req.get("user-agent") || null,
+    });
+  } catch (error) {
+    console.error("[Portal Quote Action] audit log failed", {
+      quoteId: args.quote.id,
+      actionType: args.actionType,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function getRequiredPortalQuoteActionResult(
+  req: Request,
+  quoteId: string,
+  message: string,
+  order?: QuotePortalOrderSummaryDto | null,
+): Promise<QuotePortalActionResultDto> {
+  const quote = await getPortalQuote(req, quoteId);
+  if (!quote) {
+    throw new PortalAccessError(404, "Not found");
+  }
+  return order ? { quote, order, message } : { quote, message };
+}
+
+export async function approvePortalQuote(req: Request, quoteId: string): Promise<QuotePortalActionResultDto | null> {
+  const scope = getPortalScope(req);
+  const note = sanitizePortalActionNote((req.body as any)?.note ?? (req.body as any)?.customerNotes);
+
+  return db.transaction(async (tx) => {
+    await lockPortalQuoteAction(tx, quoteId);
+    const quote = await getScopedPortalQuoteRecord(scope, quoteId);
+    if (!quote) return null;
+
+    let workflowState = await getPortalWorkflowState(quote.id);
+    const existingOrder = await getConvertedOrderSummary(scope, quote);
+    if (existingOrder) {
+      await upsertPortalQuoteWorkflowState(quote.id, {
+        status: "customer_approved",
+        approvedByCustomerUserId: scope.userId,
+        customerNotes: note ?? workflowState?.customerNotes ?? null,
+      });
+      return getRequiredPortalQuoteActionResult(req, quote.id, "Quote has already been converted to an order.", existingOrder);
+    }
+
+    assertPortalQuoteCanApprove(quote, workflowState);
+
+    let createdOrder: QuotePortalOrderSummaryDto | null = null;
+    try {
+      const order = await storage.convertQuoteToOrder(scope.organizationId, quote.id, scope.userId);
+      createdOrder = {
+        id: order.id,
+        orderNumber: order.orderNumber,
+        displayStatus: mapPortalOrderStatus(order),
+      };
+    } catch (error) {
+      const freshQuote = await getScopedPortalQuoteRecord(scope, quoteId);
+      const retryOrder = freshQuote ? await getConvertedOrderSummary(scope, freshQuote) : null;
+      if (retryOrder) {
+        createdOrder = retryOrder;
+      } else {
+        throw error;
+      }
+    }
+
+    workflowState = await getPortalWorkflowState(quote.id);
+    await db
+      .update(quotes)
+      .set({ status: "active" })
+      .where(and(eq(quotes.id, quote.id), eq(quotes.organizationId, scope.organizationId), eq(quotes.customerId, scope.customerId)));
+    await upsertPortalQuoteWorkflowState(quote.id, {
+      status: "customer_approved",
+      approvedByCustomerUserId: scope.userId,
+      customerNotes: note ?? workflowState?.customerNotes ?? null,
+    });
+    await writePortalQuoteAudit({
+      req,
+      scope,
+      quote,
+      actionType: "PORTAL_QUOTE_APPROVE",
+      description: createdOrder
+        ? `Customer approved quote and converted it to order ${createdOrder.orderNumber}`
+        : "Customer approved quote",
+      oldValues: { status: quote.status, workflowStatus: workflowState?.status ?? null },
+      newValues: { status: "active", workflowStatus: "customer_approved", orderId: createdOrder?.id ?? null },
+    });
+
+    return getRequiredPortalQuoteActionResult(req, quote.id, "Quote approved and converted to an order.", createdOrder);
+  });
+}
+
+export async function declinePortalQuote(req: Request, quoteId: string): Promise<QuotePortalActionResultDto | null> {
+  const scope = getPortalScope(req);
+  const note = sanitizePortalActionNote((req.body as any)?.note ?? (req.body as any)?.reason);
+
+  return db.transaction(async (tx) => {
+    await lockPortalQuoteAction(tx, quoteId);
+    const quote = await getScopedPortalQuoteRecord(scope, quoteId);
+    if (!quote) return null;
+    const workflowState = await getPortalWorkflowState(quote.id);
+
+    if (mapPortalQuoteStatus({ status: quote.status, validUntil: quote.validUntil, convertedToOrderId: quote.convertedToOrderId, workflowStatus: workflowState?.status }) === "Declined") {
+      return getRequiredPortalQuoteActionResult(req, quote.id, "This quote has already been declined.");
+    }
+
+    assertPortalQuoteCanDeclineOrRevise(quote, workflowState);
+    const order = await getConvertedOrderSummary(scope, quote);
+    if (order) throw new PortalAccessError(409, "This quote has already been converted to an order.");
+
+    await db
+      .update(quotes)
+      .set({ status: "canceled" })
+      .where(and(eq(quotes.id, quote.id), eq(quotes.organizationId, scope.organizationId), eq(quotes.customerId, scope.customerId)));
+    await upsertPortalQuoteWorkflowState(quote.id, {
+      status: "rejected",
+      rejectedByUserId: scope.userId,
+      rejectionReason: note,
+    });
+    await writePortalQuoteAudit({
+      req,
+      scope,
+      quote,
+      actionType: "PORTAL_QUOTE_DECLINE",
+      description: note ? "Customer declined quote with a note" : "Customer declined quote",
+      oldValues: { status: quote.status, workflowStatus: workflowState?.status ?? null },
+      newValues: { status: "canceled", workflowStatus: "rejected" },
+    });
+
+    return getRequiredPortalQuoteActionResult(req, quote.id, "Quote declined.");
+  });
+}
+
+export async function requestPortalQuoteRevision(req: Request, quoteId: string): Promise<QuotePortalActionResultDto | null> {
+  const scope = getPortalScope(req);
+  const note = sanitizePortalActionNote((req.body as any)?.note ?? (req.body as any)?.customerNotes);
+
+  return db.transaction(async (tx) => {
+    await lockPortalQuoteAction(tx, quoteId);
+    const quote = await getScopedPortalQuoteRecord(scope, quoteId);
+    if (!quote) return null;
+    const workflowState = await getPortalWorkflowState(quote.id);
+
+    if (
+      mapPortalQuoteStatus({
+        status: quote.status,
+        validUntil: quote.validUntil,
+        convertedToOrderId: quote.convertedToOrderId,
+        workflowStatus: workflowState?.status,
+      }) === "Revision Requested"
+    ) {
+      return getRequiredPortalQuoteActionResult(req, quote.id, "Your revision request has already been recorded.");
+    }
+
+    assertPortalQuoteCanDeclineOrRevise(quote, workflowState);
+    const order = await getConvertedOrderSummary(scope, quote);
+    if (order) throw new PortalAccessError(409, "This quote has already been converted to an order.");
+
+    await upsertPortalQuoteWorkflowState(quote.id, {
+      status: "customer_revision_requested",
+      customerNotes: note,
+    });
+    await writePortalQuoteAudit({
+      req,
+      scope,
+      quote,
+      actionType: "PORTAL_QUOTE_REVISION_REQUEST",
+      description: note ? "Customer requested quote revision with a note" : "Customer requested quote revision",
+      oldValues: { status: quote.status, workflowStatus: workflowState?.status ?? null },
+      newValues: { status: quote.status, workflowStatus: "customer_revision_requested" },
+    });
+
+    return getRequiredPortalQuoteActionResult(req, quote.id, "Revision request recorded.");
+  });
 }
 
 export function toPortalErrorResponse(error: unknown): { statusCode: number; message: string } {

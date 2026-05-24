@@ -8,6 +8,9 @@ describe("portal quote status mapping", () => {
     expect(mapPortalQuoteStatus({ status: "accepted" })).toBe("Accepted");
     expect(mapPortalQuoteStatus({ status: "rejected" })).toBe("Declined");
     expect(mapPortalQuoteStatus({ status: "canceled" })).toBe("Unavailable");
+    expect(mapPortalQuoteStatus({ status: "canceled", workflowStatus: "rejected" })).toBe("Declined");
+    expect(mapPortalQuoteStatus({ status: "active", workflowStatus: "customer_revision_requested" })).toBe("Revision Requested");
+    expect(mapPortalQuoteStatus({ status: "active", workflowStatus: "customer_approved" })).toBe("Accepted");
     expect(mapPortalQuoteStatus({ status: "mystery_internal_state" })).toBe("Under Review");
   });
 

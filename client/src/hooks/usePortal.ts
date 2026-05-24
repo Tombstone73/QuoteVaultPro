@@ -47,6 +47,17 @@ export type PortalInvoicePaymentDto = {
   referenceNumber: string | null;
 };
 
+export type PortalFileDto = {
+  id: string;
+  displayName: string;
+  fileTypeLabel: string;
+  uploadedAt: string | null;
+  fileSize: number | null;
+  categoryLabel: string;
+  previewAvailable: boolean;
+  downloadAvailable: boolean;
+};
+
 export type PortalOrderProofSummaryDto = {
   proofRequired: boolean;
   statusLabel: string;
@@ -108,6 +119,7 @@ export type PortalOrderDetailDto = PortalOrderListDto & {
 export type PortalQuoteActionsDto = {
   canView: boolean;
   canApprove: boolean;
+  canDecline: boolean;
   canRequestRevision: boolean;
   disabledReason: string | null;
 };
@@ -145,20 +157,35 @@ export type PortalQuoteDetailDto = PortalQuoteListDto & {
   expirationSummary: PortalQuoteExpirationSummaryDto;
 };
 
+export type PortalQuoteAction = "approve" | "decline" | "request_revision";
+
+export type PortalQuoteActionResultDto = {
+  quote: PortalQuoteDetailDto;
+  order?: {
+    id: string;
+    orderNumber: string;
+    displayStatus: string;
+  };
+  message: string;
+};
+
 export const portalInvoiceKeys = {
   all: ["portal", "invoices"] as const,
   detail: (invoiceId: string | undefined) => ["portal", "invoices", invoiceId] as const,
   payments: (invoiceId: string | undefined) => ["portal", "invoices", invoiceId, "payments"] as const,
+  files: (invoiceId: string | undefined) => ["portal", "invoices", invoiceId, "files"] as const,
 };
 
 export const portalOrderKeys = {
   all: ["portal", "orders"] as const,
   detail: (orderId: string | undefined) => ["portal", "orders", orderId] as const,
+  files: (orderId: string | undefined) => ["portal", "orders", orderId, "files"] as const,
 };
 
 export const portalQuoteKeys = {
   all: ["portal", "quotes"] as const,
   detail: (quoteId: string | undefined) => ["portal", "quotes", quoteId] as const,
+  files: (quoteId: string | undefined) => ["portal", "quotes", quoteId, "files"] as const,
 };
 
 async function portalFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -184,6 +211,10 @@ async function portalFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function portalInvoicePdfUrl(invoiceId: string, download = false) {
   return `/api/portal/invoices/${encodeURIComponent(invoiceId)}/pdf${download ? "?download=1" : ""}`;
+}
+
+export function portalFileDownloadUrl(entity: "invoices" | "orders" | "quotes", entityId: string, fileId: string) {
+  return `/api/portal/${entity}/${encodeURIComponent(entityId)}/files/${encodeURIComponent(fileId)}`;
 }
 
 export function usePortalSession() {
@@ -223,6 +254,17 @@ export function usePortalInvoicePayments(invoiceId: string | undefined) {
   });
 }
 
+export function usePortalInvoiceFiles(invoiceId: string | undefined) {
+  return useQuery({
+    queryKey: portalInvoiceKeys.files(invoiceId),
+    queryFn: () => {
+      if (!invoiceId) throw new Error("Invoice ID required");
+      return portalFetch<PortalFileDto[]>(`/api/portal/invoices/${encodeURIComponent(invoiceId)}/files`);
+    },
+    enabled: !!invoiceId,
+  });
+}
+
 export function useMyQuotes() {
   return useQuery({
     queryKey: portalQuoteKeys.all,
@@ -234,6 +276,28 @@ export function useMyOrders() {
   return useQuery({
     queryKey: portalOrderKeys.all,
     queryFn: () => portalFetch<PortalOrderListDto[]>("/api/portal/orders"),
+  });
+}
+
+export function usePortalOrderFiles(orderId: string | undefined) {
+  return useQuery({
+    queryKey: portalOrderKeys.files(orderId),
+    queryFn: () => {
+      if (!orderId) throw new Error("Order ID required");
+      return portalFetch<PortalFileDto[]>(`/api/portal/orders/${encodeURIComponent(orderId)}/files`);
+    },
+    enabled: !!orderId,
+  });
+}
+
+export function usePortalQuoteFiles(quoteId: string | undefined) {
+  return useQuery({
+    queryKey: portalQuoteKeys.files(quoteId),
+    queryFn: () => {
+      if (!quoteId) throw new Error("Quote ID required");
+      return portalFetch<PortalFileDto[]>(`/api/portal/quotes/${encodeURIComponent(quoteId)}/files`);
+    },
+    enabled: !!quoteId,
   });
 }
 
@@ -259,6 +323,25 @@ export function useQuoteCheckout(quoteId: string | undefined) {
   });
 }
 
+export function usePortalQuoteAction(quoteId: string | undefined) {
+  return useMutation({
+    mutationFn: async ({ action, note }: { action: PortalQuoteAction; note?: string | null }) => {
+      if (!quoteId) throw new Error("Quote ID required");
+      const actionPath =
+        action === "approve"
+          ? "approve"
+          : action === "decline"
+            ? "decline"
+            : "request-revision";
+
+      return portalFetch<PortalQuoteActionResultDto>(`/api/portal/quotes/${encodeURIComponent(quoteId)}/${actionPath}`, {
+        method: "POST",
+        body: JSON.stringify(note ? { note } : {}),
+      });
+    },
+  });
+}
+
 export function useUploadOrderFile(_orderId: string) {
   return useMutation({
     mutationFn: async () => {
@@ -269,8 +352,11 @@ export function useUploadOrderFile(_orderId: string) {
 
 export function useOrderFiles(orderId: string | undefined) {
   return useQuery({
-    queryKey: ["portal", "orders", orderId, "files"],
-    queryFn: async () => [],
+    queryKey: portalOrderKeys.files(orderId),
+    queryFn: () => {
+      if (!orderId) throw new Error("Order ID required");
+      return portalFetch<PortalFileDto[]>(`/api/portal/orders/${encodeURIComponent(orderId)}/files`);
+    },
     enabled: !!orderId,
   });
 }

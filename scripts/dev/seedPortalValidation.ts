@@ -19,6 +19,7 @@ import {
   payments,
   products,
   quoteLineItems,
+  quoteWorkflowStates,
   quotes,
   users,
 } from "../../shared/schema";
@@ -253,6 +254,7 @@ async function upsertQuote(params: {
   customerId: string;
   status: "active" | "draft" | "canceled";
   validUntil: Date | null;
+  convertedToOrderId?: string | null;
   config: ReturnType<typeof parsePortalValidationSeedConfig>;
   userId: string;
 }) {
@@ -275,6 +277,7 @@ async function upsertQuote(params: {
     shippingMethod: "pickup",
     shippingMode: "single_shipment",
     validUntil: params.validUntil,
+    convertedToOrderId: params.convertedToOrderId ?? null,
   } as any;
 
   await db
@@ -404,6 +407,10 @@ async function main() {
 
   const invoiceIds = Object.values(config.invoiceIds);
   const issueDate = daysFromNow(-1);
+  const quoteIds = Object.values(config.quoteIds);
+
+  await db.delete(quoteWorkflowStates).where(inArray(quoteWorkflowStates.quoteId, quoteIds));
+  await db.delete(orders).where(inArray(orders.quoteId, [config.quoteIds.active, config.quoteIds.decline, config.quoteIds.revision]));
 
   await upsertInvoice({
     id: config.invoiceIds.payable,
@@ -501,10 +508,30 @@ async function main() {
     config,
     userId: user.id,
   });
+  await upsertQuote({
+    id: config.quoteIds.decline,
+    quoteNumber: config.quoteNumbers.decline,
+    customerId: config.customerId,
+    status: "active",
+    validUntil: daysFromNow(29),
+    config,
+    userId: user.id,
+  });
+  await upsertQuote({
+    id: config.quoteIds.revision,
+    quoteNumber: config.quoteNumbers.revision,
+    customerId: config.customerId,
+    status: "active",
+    validUntil: daysFromNow(29),
+    config,
+    userId: user.id,
+  });
   await upsertQuoteLineItem({ id: config.quoteLineItemIds.active, quoteId: config.quoteIds.active, productName: "Portal Validation Quote - Active", config });
   await upsertQuoteLineItem({ id: config.quoteLineItemIds.expired, quoteId: config.quoteIds.expired, productName: "Portal Validation Quote - Expired", config });
   await upsertQuoteLineItem({ id: config.quoteLineItemIds.draft, quoteId: config.quoteIds.draft, productName: "Portal Validation Quote - Draft", config });
   await upsertQuoteLineItem({ id: config.quoteLineItemIds.canceled, quoteId: config.quoteIds.canceled, productName: "Portal Validation Quote - Canceled", config });
+  await upsertQuoteLineItem({ id: config.quoteLineItemIds.decline, quoteId: config.quoteIds.decline, productName: "Portal Validation Quote - Decline", config });
+  await upsertQuoteLineItem({ id: config.quoteLineItemIds.revision, quoteId: config.quoteIds.revision, productName: "Portal Validation Quote - Revision", config });
   await upsertQuoteLineItem({ id: config.quoteLineItemIds.otherCustomer, quoteId: config.quoteIds.otherCustomer, productName: "Other Customer Hidden Quote", config });
   await upsertInvoice({
     id: config.invoiceIds.paid,

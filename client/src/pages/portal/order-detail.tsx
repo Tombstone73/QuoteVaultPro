@@ -4,8 +4,9 @@ import { ArrowLeft, FileText, Loader2, Package, ReceiptText, Truck } from "lucid
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import PortalFilesCard from "@/components/portal/PortalFilesCard";
 import { Separator } from "@/components/ui/separator";
-import { usePortalOrder } from "@/hooks/usePortal";
+import { usePortalOrder, usePortalOrderFiles } from "@/hooks/usePortal";
 
 function formatDate(value: string | null) {
   if (!value) return "Not set";
@@ -34,7 +35,9 @@ export default function PortalOrderDetailPage() {
   const { id } = useParams<{ id: string }>();
   const orderId = id || "";
   const orderQuery = usePortalOrder(orderId);
+  const filesQuery = usePortalOrderFiles(orderId);
   const order = orderQuery.data;
+  const files = filesQuery.data ?? [];
 
   if (orderQuery.isLoading) {
     return (
@@ -219,6 +222,15 @@ export default function PortalOrderDetailPage() {
           </CardContent>
         </Card>
       ) : null}
+
+      <PortalFilesCard
+        title="Order Documents"
+        files={files}
+        isLoading={filesQuery.isLoading}
+        error={filesQuery.error}
+        entity="orders"
+        entityId={order.id}
+      />
     </div>
   );
 }

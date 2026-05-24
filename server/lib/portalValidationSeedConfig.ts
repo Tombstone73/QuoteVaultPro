@@ -36,6 +36,8 @@ export type PortalValidationSeedConfig = {
     expired: string;
     draft: string;
     canceled: string;
+    decline: string;
+    revision: string;
     otherCustomer: string;
   };
   quoteLineItemIds: {
@@ -43,6 +45,8 @@ export type PortalValidationSeedConfig = {
     expired: string;
     draft: string;
     canceled: string;
+    decline: string;
+    revision: string;
     otherCustomer: string;
   };
   quoteNumbers: {
@@ -50,6 +54,8 @@ export type PortalValidationSeedConfig = {
     expired: number;
     draft: number;
     canceled: number;
+    decline: number;
+    revision: number;
     otherCustomer: number;
   };
   invoiceIds: {
@@ -149,6 +155,8 @@ export function parsePortalValidationSeedConfig(
       expired: `portal-validation-quote-expired-${seedKey}`,
       draft: `portal-validation-quote-draft-${seedKey}`,
       canceled: `portal-validation-quote-canceled-${seedKey}`,
+      decline: `portal-validation-quote-decline-${seedKey}`,
+      revision: `portal-validation-quote-revision-${seedKey}`,
       otherCustomer: `portal-validation-quote-other-${seedKey}`,
     },
     quoteLineItemIds: {
@@ -156,6 +164,8 @@ export function parsePortalValidationSeedConfig(
       expired: `portal-validation-quote-line-expired-${seedKey}`,
       draft: `portal-validation-quote-line-draft-${seedKey}`,
       canceled: `portal-validation-quote-line-canceled-${seedKey}`,
+      decline: `portal-validation-quote-line-decline-${seedKey}`,
+      revision: `portal-validation-quote-line-revision-${seedKey}`,
       otherCustomer: `portal-validation-quote-line-other-${seedKey}`,
     },
     quoteNumbers: {
@@ -163,7 +173,9 @@ export function parsePortalValidationSeedConfig(
       expired: invoiceNumberBase + 201,
       draft: invoiceNumberBase + 202,
       canceled: invoiceNumberBase + 203,
-      otherCustomer: invoiceNumberBase + 204,
+      decline: invoiceNumberBase + 204,
+      revision: invoiceNumberBase + 205,
+      otherCustomer: invoiceNumberBase + 206,
     },
     invoiceIds: {
       payable: `portal-validation-invoice-payable-${seedKey}`,
