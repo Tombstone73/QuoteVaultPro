@@ -19,9 +19,8 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ROUTES } from "@/config/routes";
 import { GlobalSearchOverlay } from "./GlobalSearchOverlay";
 import { OrgSwitcher } from "@/components/OrgSwitcher";
-import { Badge } from "@/components/ui/badge";
 import { isProd, getEnvLabel } from "@/lib/appEnv";
-import { getApiBaseUrlForDebug, getApiEnvironmentLabel } from "@/lib/apiConfig";
+import { RuntimeEnvironmentBadge } from "@/components/runtime/RuntimeEnvironmentBadge";
 
 // ============================================================
 // ROUTE TITLE MAPPING
@@ -262,32 +261,8 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
 
         {/* Mobile title */}
         <span className="font-semibold text-foreground md:hidden">{pageTitle}</span>
+        <RuntimeEnvironmentBadge />
 
-        {/* Environment badges */}
-        {(!isProd() || !!getApiBaseUrlForDebug()) && (
-          <div className="flex items-center gap-2">
-            {/* DEV badge — hidden in prod */}
-            {!isProd() && (
-              <Badge
-                variant="outline"
-                className="text-sm font-bold tracking-widest text-amber-500 border-amber-500 bg-amber-500/20 px-2 py-0.5 rounded-md select-none"
-              >
-                {getEnvLabel()}
-              </Badge>
-            )}
-            {/* API badge — shown whenever the API differs from default same-origin
-                (dev always shows it; prod shows it only when VITE_API_BASE_URL is set) */}
-            {(!isProd() || !!getApiBaseUrlForDebug()) && (
-              <Badge
-                variant="outline"
-                className="text-[10px] uppercase tracking-wide"
-                title={getApiBaseUrlForDebug() || "same-origin"}
-              >
-                API: {getApiEnvironmentLabel()}
-              </Badge>
-            )}
-          </div>
-        )}
       </div>
 
       {/* Center - Search (hidden on mobile) */}

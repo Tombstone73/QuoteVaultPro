@@ -19,6 +19,7 @@ import type { Express } from "express";
 import { storage } from "../storage";
 import { getDashboardSummary } from "../services/dashboardSummaryService";
 import { getAppEnv, getCookieDomain, getPublicWebOrigin } from "../lib/appRuntimeConfig";
+import { getRuntimeEnvironmentSummary } from "../lib/runtimeEnvironment";
 import { getRequestOrganizationId } from "../tenantContext";
 
 function getUserId(user: any): string | undefined {
@@ -123,10 +124,33 @@ export function registerSystemRoutes(
       const { isThumbnailGenerationEnabled } = await import('../services/thumbnailGenerator');
       res.json({
         thumbnailsEnabled: isThumbnailGenerationEnabled(),
+        environment: getRuntimeEnvironmentSummary({
+          requestHost: req.get("host") ?? null,
+          requestOrigin: req.get("origin") ?? null,
+        }),
       });
     } catch (error: any) {
       console.error('[System Status] Error:', error);
       res.status(500).json({ error: 'Failed to get system status' });
+    }
+  });
+
+  /**
+   * GET /api/system/environment
+   * Sanitized runtime summary for UI safety indicators.
+   */
+  app.get('/api/system/environment', isAuthenticated, async (req: any, res) => {
+    try {
+      res.json({
+        success: true,
+        data: getRuntimeEnvironmentSummary({
+          requestHost: req.get("host") ?? null,
+          requestOrigin: req.get("origin") ?? null,
+        }),
+      });
+    } catch (error: any) {
+      console.error('[System Environment] Error:', error);
+      res.status(500).json({ success: false, message: 'Failed to get system environment' });
     }
   });
 }
