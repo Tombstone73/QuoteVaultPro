@@ -57,7 +57,7 @@ function StripePayInner(props: {
     if (DEV) {
       console.log('[StripePayDialog] clientSecret changed (inner)', {
         sessionId: props.sessionId,
-        clientSecret: `${props.clientSecret.slice(0, 12)}…`,
+        hasClientSecret: Boolean(props.clientSecret),
       });
     }
     // Reset ready state if clientSecret changes (new intent).
@@ -79,20 +79,6 @@ function StripePayInner(props: {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stripe, elements, paymentElementReady]);
-
-  const schedulePostSubmitRefresh = () => {
-    // 3–5 attempts over ~10–15s to catch fast webhooks without lying if delayed.
-    const delaysMs = [0, 1500, 3500, 7000, 12000];
-    delaysMs.forEach((delay) => {
-      window.setTimeout(() => {
-        try {
-          props.onSettled();
-        } catch {
-          // no-op
-        }
-      }, delay);
-    });
-  };
 
   const handleConfirm = async () => {
     confirmAttemptRef.current += 1;
@@ -158,7 +144,6 @@ function StripePayInner(props: {
           sessionId: props.sessionId,
           hasError: Boolean(result.error),
           errorType: result.error?.type,
-          paymentIntentId: result.paymentIntent?.id,
           paymentIntentStatus: result.paymentIntent?.status,
         });
       }
@@ -314,7 +299,7 @@ export default function StripePayDialog(props: {
     if (DEV) {
       console.log('[StripePayDialog] Dialog open changed', {
         open: props.open,
-        stripeAccountId: props.stripeAccountId || 'platform',
+        hasStripeAccount: Boolean(props.stripeAccountId),
       });
     }
 
@@ -348,7 +333,7 @@ export default function StripePayDialog(props: {
       console.log('[StripePayDialog] create-intent requested', {
         invoiceId: props.invoiceId,
         sessionId,
-        stripeAccountId: props.stripeAccountId || 'platform',
+        hasStripeAccount: Boolean(props.stripeAccountId),
       });
     }
 
@@ -374,7 +359,7 @@ export default function StripePayDialog(props: {
         if (DEV) {
           console.log('[StripePayDialog] clientSecret received', {
             sessionId,
-            clientSecret: `${secret.slice(0, 12)}…`,
+            hasClientSecret: Boolean(secret),
           });
         }
 

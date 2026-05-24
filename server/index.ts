@@ -13,6 +13,7 @@ import { isWorkerEnabled, logWorkerStatus, getWorkerIntervalOverride, logWorkerT
 import { runInvoiceReminderJob } from "./invoiceReminderJob";
 import { runMigrations } from "./runMigrations";
 import { getAllowedCorsOrigins, getRuntimeConfigLogLine } from "./lib/appRuntimeConfig";
+import { getStartupSharedDevDatabaseWarning } from "./lib/runtimeEnvironment";
 
 const app = express();
 const bootstrapModeEnabled = (process.env.BOOTSTRAP_MODE ?? "").trim().toLowerCase() === "true";
@@ -59,6 +60,10 @@ app.options("*", cors(corsOptions)); // Handle preflight requests
 app.set("trust proxy", 1);
 
 console.log(getRuntimeConfigLogLine());
+const sharedDevDatabaseWarning = getStartupSharedDevDatabaseWarning();
+if (sharedDevDatabaseWarning) {
+  console.warn(sharedDevDatabaseWarning);
+}
 
 declare module 'http' {
   interface IncomingMessage {

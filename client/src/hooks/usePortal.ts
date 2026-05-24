@@ -1,5 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useToast } from "@/hooks/use-toast";
+import { useMutation, useQuery } from "@tanstack/react-query";
 
 type PortalEnvelope<T> = {
   success: boolean;
@@ -106,6 +105,16 @@ export const portalInvoiceKeys = {
   payments: (invoiceId: string | undefined) => ["portal", "invoices", invoiceId, "payments"] as const,
 };
 
+export const portalOrderKeys = {
+  all: ["portal", "orders"] as const,
+  detail: (orderId: string | undefined) => ["portal", "orders", orderId] as const,
+};
+
+export const portalQuoteKeys = {
+  all: ["portal", "quotes"] as const,
+  detail: (quoteId: string | undefined) => ["portal", "quotes", quoteId] as const,
+};
+
 async function portalFetch<T>(path: string, init?: RequestInit): Promise<T> {
   if (!path.startsWith("/api/portal/")) {
     throw new Error("Portal requests must use the portal API boundary");
@@ -168,75 +177,28 @@ export function usePortalInvoicePayments(invoiceId: string | undefined) {
   });
 }
 
-export function usePortalProducts() {
-  return useQuery({
-    queryKey: ["portal", "products"],
-    queryFn: () => portalFetch<any[]>("/api/portal/products"),
-    retry: false,
-  });
-}
-
 export function useMyQuotes() {
   return useQuery({
-    queryKey: ["portal", "my-quotes"],
-    queryFn: () => portalFetch<PortalQuoteDto[]>("/api/portal/my-quotes"),
+    queryKey: portalQuoteKeys.all,
+    queryFn: () => portalFetch<PortalQuoteDto[]>("/api/portal/quotes"),
   });
 }
 
 export function useMyOrders() {
   return useQuery({
-    queryKey: ["portal", "my-orders"],
-    queryFn: () => portalFetch<PortalOrderDto[]>("/api/portal/my-orders"),
+    queryKey: portalOrderKeys.all,
+    queryFn: () => portalFetch<PortalOrderDto[]>("/api/portal/orders"),
   });
 }
 
 export function useQuoteCheckout(quoteId: string | undefined) {
   return useQuery({
-    queryKey: ["portal", "quotes", quoteId],
+    queryKey: portalQuoteKeys.detail(quoteId),
     queryFn: () => {
       if (!quoteId) throw new Error("Quote ID required");
       return portalFetch<PortalQuoteDto>(`/api/portal/quotes/${encodeURIComponent(quoteId)}`);
     },
     enabled: !!quoteId,
-  });
-}
-
-export function useConvertPortalQuoteToOrder() {
-  const queryClient = useQueryClient();
-  const { toast } = useToast();
-
-  return useMutation({
-    mutationFn: async ({
-      quoteId,
-      priority,
-      customerNotes,
-      dueDate,
-    }: {
-      quoteId: string;
-      priority?: string;
-      customerNotes?: string;
-      dueDate?: string;
-    }) => {
-      return portalFetch<any>(`/api/portal/convert-quote/${encodeURIComponent(quoteId)}`, {
-        method: "POST",
-        body: JSON.stringify({ priority, customerNotes, dueDate }),
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["portal", "my-quotes"] });
-      queryClient.invalidateQueries({ queryKey: ["portal", "my-orders"] });
-      toast({
-        title: "Success",
-        description: "Quote converted to order successfully",
-      });
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Not available",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
   });
 }
 
@@ -255,4 +217,3 @@ export function useOrderFiles(orderId: string | undefined) {
     enabled: !!orderId,
   });
 }
-

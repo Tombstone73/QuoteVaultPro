@@ -6,6 +6,7 @@ import { TitanTopBar } from "./TitanTopBar";
 import { Menu, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { RuntimeSafetyWarning } from "@/components/runtime/RuntimeSafetyWarning";
 
 // DIAGNOSTIC: Error boundary to catch route render errors
 class RouteErrorBoundary extends Component<
@@ -63,6 +64,14 @@ export function AppLayout() {
     setIsMobileMenuOpen(!isMobileMenuOpen);
   };
 
+  const showRuntimeSafetyWarning =
+    location.pathname === "/admin" ||
+    location.pathname.startsWith("/admin/") ||
+    location.pathname === "/system/admin" ||
+    location.pathname.startsWith("/system/admin/") ||
+    location.pathname === "/settings" ||
+    location.pathname.startsWith("/settings/");
+
   return (
     <div className="flex h-screen w-full bg-background">
       {/* Desktop Sidebar */}
@@ -104,6 +113,7 @@ export function AppLayout() {
           onMenuClick={toggleMobileMenu}
           showMenuButton={true}
         />
+        {showRuntimeSafetyWarning ? <RuntimeSafetyWarning /> : null}
 
         {/* Scrollable page content */}
         <main
