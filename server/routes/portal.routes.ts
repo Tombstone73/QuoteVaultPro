@@ -7,6 +7,7 @@ import {
   confirmPortalStripePayment,
   createPortalStripePaymentIntent,
   declinePortalQuote,
+  getPortalDashboard,
   getPortalInvoiceFileDownload,
   getPortalInvoicePdf,
   getPortalInvoice,
@@ -236,6 +237,7 @@ export function registerPortalRoutes(
   const portalMiddlewares = [isAuthenticated, portalContext];
 
   app.get("/api/portal/me", ...portalMiddlewares, portalGet(getPortalSession));
+  app.get("/api/portal/dashboard", ...portalMiddlewares, portalGet(getPortalDashboard));
 
   app.get("/api/portal/invoices", ...portalMiddlewares, portalGet(listPortalInvoices));
   app.get("/api/portal/invoices/:id/pdf", ...portalMiddlewares, portalInvoicePdf());

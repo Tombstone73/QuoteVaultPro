@@ -99,6 +99,32 @@ async function main() {
     assert(me.json?.data?.customerId === config.customerId, "portal me", "expected seeded customer scope");
   });
 
+  const dashboard = await request<any>("/api/portal/dashboard");
+  record("portal dashboard loads", () => {
+    assert(dashboard.ok, "dashboard", `expected 2xx, got ${dashboard.status}`);
+    assert(dashboard.json?.data?.summary, "dashboard", "expected summary");
+  });
+  record("portal dashboard summarizes seeded customer state", () => {
+    const summary = dashboard.json?.data?.summary || {};
+    assert(Number(summary.openInvoiceCount) >= 1, "dashboard summary", "expected open invoices");
+    assert(Number(summary.outstandingBalance) > 0, "dashboard summary", "expected outstanding balance");
+    assert(Number(summary.activeOrderCount) >= 1, "dashboard summary", "expected active orders");
+    assert(Number(summary.quotesNeedingAction) >= 1, "dashboard summary", "expected quotes needing action");
+  });
+  record("portal dashboard includes action-safe cards and recent documents", () => {
+    const data = dashboard.json?.data || {};
+    assert((data.invoices || []).some((invoice: any) => invoice.id === config.invoiceIds.payable), "dashboard invoices", "expected payable invoice");
+    assert((data.quotes || []).some((quote: any) => quote.id === config.quoteIds.active), "dashboard quotes", "expected active quote");
+    assert((data.activeOrders || []).some((order: any) => order.id === config.orderIds.portalStatus), "dashboard orders", "expected active order");
+    assert((data.recentFiles || []).some((file: any) => file.id === `oa_${config.fileIds.orderVisible}`), "dashboard files", "expected visible order file");
+    assert((data.recentFiles || []).some((file: any) => file.id === `qa_${config.fileIds.quoteVisible}`), "dashboard files", "expected visible quote file");
+  });
+  record("portal dashboard is sanitized", () => {
+    const serialized = JSON.stringify(dashboard.json?.data || {});
+    assert(!serialized.includes("storage") && !serialized.includes("bucket") && !serialized.includes("fileUrl"), "dashboard", "leaked storage metadata");
+    assert(!serialized.includes("notesInternal") && !serialized.includes("productionNotes") && !serialized.includes("routing"), "dashboard", "leaked internal metadata");
+  });
+
   const list = await request<any>("/api/portal/invoices");
   const invoices = Array.isArray(list.json?.data) ? list.json.data : [];
   const byNumber = new Map<number, any>(invoices.map((invoice: any) => [Number(invoice.invoiceNumber), invoice]));
