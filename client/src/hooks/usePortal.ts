@@ -50,6 +50,7 @@ export type PortalInvoicePaymentDto = {
 export type PortalFileDto = {
   id: string;
   displayName: string;
+  description: string | null;
   fileTypeLabel: string;
   uploadedAt: string | null;
   fileSize: number | null;

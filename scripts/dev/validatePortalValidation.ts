@@ -221,10 +221,34 @@ async function main() {
     const serialized = JSON.stringify(orderFiles.json?.data || {});
     assert(!serialized.includes("storage") && !serialized.includes("bucket") && !serialized.includes("fileUrl"), "order files", "leaked storage metadata");
   });
+  record("visible order file appears and staff-only file is hidden", () => {
+    const files = Array.isArray(orderFiles.json?.data) ? orderFiles.json.data : [];
+    assert(files.some((file: any) => file.id === `oa_${config.fileIds.orderVisible}`), "order files", "expected customer-visible order file");
+    assert(!files.some((file: any) => file.id === `oa_${config.fileIds.orderStaffOnly}`), "order files", "staff-only order file should not appear");
+    const visible = files.find((file: any) => file.id === `oa_${config.fileIds.orderVisible}`);
+    assert(visible?.displayName === "Portal Validation Order Document", "order files", "expected portal display name");
+    assert(visible?.description === "Customer-visible DEV order document.", "order files", "expected portal description");
+  });
+
+  const orderFileDownload = await request(`/api/portal/orders/${encodeURIComponent(config.orderIds.portalStatus)}/files/oa_${encodeURIComponent(config.fileIds.orderVisible)}`);
+  record("visible order file downloads through portal proxy", () => {
+    assert(orderFileDownload.ok, "order file download", `expected 2xx, got ${orderFileDownload.status}`);
+    assert(orderFileDownload.text.includes("visible order document"), "order file download", "expected seeded file content");
+  });
+
+  const orderStaffOnlyDownload = await request(`/api/portal/orders/${encodeURIComponent(config.orderIds.portalStatus)}/files/oa_${encodeURIComponent(config.fileIds.orderStaffOnly)}`);
+  record("staff-only order file download returns safe 404", () => {
+    assert(orderStaffOnlyDownload.status === 404, "staff-only order file", `expected 404, got ${orderStaffOnlyDownload.status}`);
+  });
 
   const otherOrderFiles = await request(`/api/portal/orders/${encodeURIComponent(config.orderIds.otherCustomer)}/files`);
   record("other customer order files return safe 404", () => {
     assert(otherOrderFiles.status === 404, "other order files", `expected 404, got ${otherOrderFiles.status}`);
+  });
+
+  const otherOrderFileDownload = await request(`/api/portal/orders/${encodeURIComponent(config.orderIds.otherCustomer)}/files/oa_${encodeURIComponent(config.fileIds.otherOrderVisible)}`);
+  record("other customer visible order file returns safe 404", () => {
+    assert(otherOrderFileDownload.status === 404, "other order file download", `expected 404, got ${otherOrderFileDownload.status}`);
   });
 
   const fakeOrderFile = await request(`/api/portal/orders/${encodeURIComponent(config.orderIds.portalStatus)}/files/not-a-real-file`);
@@ -309,10 +333,34 @@ async function main() {
     const serialized = JSON.stringify(quoteFiles.json?.data || {});
     assert(!serialized.includes("storage") && !serialized.includes("bucket") && !serialized.includes("fileUrl"), "quote files", "leaked storage metadata");
   });
+  record("visible quote file appears and staff-only file is hidden", () => {
+    const files = Array.isArray(quoteFiles.json?.data) ? quoteFiles.json.data : [];
+    assert(files.some((file: any) => file.id === `qa_${config.fileIds.quoteVisible}`), "quote files", "expected customer-visible quote file");
+    assert(!files.some((file: any) => file.id === `qa_${config.fileIds.quoteStaffOnly}`), "quote files", "staff-only quote file should not appear");
+    const visible = files.find((file: any) => file.id === `qa_${config.fileIds.quoteVisible}`);
+    assert(visible?.displayName === "Portal Validation Quote Document", "quote files", "expected portal display name");
+    assert(visible?.description === "Customer-visible DEV quote document.", "quote files", "expected portal description");
+  });
+
+  const quoteFileDownload = await request(`/api/portal/quotes/${encodeURIComponent(config.quoteIds.active)}/files/qa_${encodeURIComponent(config.fileIds.quoteVisible)}`);
+  record("visible quote file downloads through portal proxy", () => {
+    assert(quoteFileDownload.ok, "quote file download", `expected 2xx, got ${quoteFileDownload.status}`);
+    assert(quoteFileDownload.text.includes("visible quote document"), "quote file download", "expected seeded file content");
+  });
+
+  const quoteStaffOnlyDownload = await request(`/api/portal/quotes/${encodeURIComponent(config.quoteIds.active)}/files/qa_${encodeURIComponent(config.fileIds.quoteStaffOnly)}`);
+  record("staff-only quote file download returns safe 404", () => {
+    assert(quoteStaffOnlyDownload.status === 404, "staff-only quote file", `expected 404, got ${quoteStaffOnlyDownload.status}`);
+  });
 
   const otherQuoteFiles = await request(`/api/portal/quotes/${encodeURIComponent(config.quoteIds.otherCustomer)}/files`);
   record("other customer quote files return safe 404", () => {
     assert(otherQuoteFiles.status === 404, "other quote files", `expected 404, got ${otherQuoteFiles.status}`);
+  });
+
+  const otherQuoteFileDownload = await request(`/api/portal/quotes/${encodeURIComponent(config.quoteIds.otherCustomer)}/files/qa_${encodeURIComponent(config.fileIds.otherQuoteVisible)}`);
+  record("other customer visible quote file returns safe 404", () => {
+    assert(otherQuoteFileDownload.status === 404, "other quote file download", `expected 404, got ${otherQuoteFileDownload.status}`);
   });
 
   const fakeQuoteFile = await request(`/api/portal/quotes/${encodeURIComponent(config.quoteIds.active)}/files/not-a-real-file`);

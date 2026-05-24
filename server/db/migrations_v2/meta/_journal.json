@@ -379,6 +379,13 @@
       "when": 1779753600000,
       "tag": "0058_pbv2_option_group_templates",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1779840000000,
+      "tag": "0059_portal_file_visibility",
+      "breakpoints": true
     }
   ]
 }

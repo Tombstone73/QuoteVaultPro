@@ -1611,6 +1611,12 @@ export const quoteAttachments = pgTable("quote_attachments", {
   pageCountStatus: pageCountStatusEnum("page_count_status").default('unknown'), // Status of page count detection
   pageCountError: text("page_count_error"), // Error message if page count detection failed
   pageCountUpdatedAt: timestamp("page_count_updated_at"), // Timestamp when page count status was last updated
+  customerVisible: boolean("customer_visible").default(false).notNull(),
+  portalFileCategory: varchar("portal_file_category", { length: 64 }),
+  portalDisplayName: varchar("portal_display_name", { length: 500 }),
+  portalDescription: text("portal_description"),
+  portalVisibilityUpdatedAt: timestamp("portal_visibility_updated_at"),
+  portalVisibilityUpdatedBy: varchar("portal_visibility_updated_by").references(() => users.id, { onDelete: 'set null' }),
   bucket: varchar("bucket", { length: 100 }).default('titan-private'),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -1621,6 +1627,7 @@ export const quoteAttachments = pgTable("quote_attachments", {
   index("quote_attachments_file_record_id_idx").on(table.fileRecordId),
   index("quote_attachments_thumb_status_idx").on(table.thumbStatus),
   index("quote_attachments_page_count_status_idx").on(table.pageCountStatus),
+  index("quote_attachments_portal_visible_idx").on(table.organizationId, table.quoteId, table.customerVisible),
 ]);
 
 export const insertQuoteAttachmentSchema = createInsertSchema(quoteAttachments).omit({
@@ -4312,6 +4319,12 @@ export const orderAttachments = pgTable("order_attachments", {
   side: fileSideEnum("side").default('na'), // front, back, or n/a
   isPrimary: boolean("is_primary").default(false).notNull(), // Primary artwork for this side/role
   thumbnailUrl: text("thumbnail_url"), // Optional thumbnail for quick preview (legacy GCS)
+  customerVisible: boolean("customer_visible").default(false).notNull(),
+  portalFileCategory: varchar("portal_file_category", { length: 64 }),
+  portalDisplayName: varchar("portal_display_name", { length: 500 }),
+  portalDescription: text("portal_description"),
+  portalVisibilityUpdatedAt: timestamp("portal_visibility_updated_at"),
+  portalVisibilityUpdatedBy: varchar("portal_visibility_updated_by").references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -4321,6 +4334,7 @@ export const orderAttachments = pgTable("order_attachments", {
   index("order_attachments_file_record_id_idx").on(table.fileRecordId),
   index("order_attachments_role_idx").on(table.role),
   index("order_attachments_thumb_status_idx").on(table.thumbStatus),
+  index("order_attachments_portal_visible_idx").on(table.orderId, table.customerVisible),
 ]);
 
 export const insertOrderAttachmentSchema = createInsertSchema(orderAttachments).omit({
@@ -4337,6 +4351,10 @@ export const updateOrderAttachmentSchema = insertOrderAttachmentSchema.pick({
   side: true,
   isPrimary: true,
   description: true,
+  customerVisible: true,
+  portalFileCategory: true,
+  portalDisplayName: true,
+  portalDescription: true,
 }).partial();
 
 export type InsertOrderAttachment = z.infer<typeof insertOrderAttachmentSchema>;

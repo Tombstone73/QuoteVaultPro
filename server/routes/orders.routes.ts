@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { db } from "../db";
 import {
+    auditLogs,
     orders,
     orderAttachments,
     orderAuditLog,
@@ -19,7 +20,6 @@ import {
     orderStatusPills,
     orderListNotes,
     users,
-    auditLogs,
     customerVisibleProducts,
     materials,
     orderMaterialUsage,
@@ -38,6 +38,7 @@ import {
     insertMaterialReorderRequestSchema,
     type InsertOrder
 } from "@shared/schema";
+import { isPortalFileCategory, normalizePortalFileCategory } from "@shared/portalFileVisibility";
 import { eq, desc, and, isNull, isNotNull, inArray, or, sql } from "drizzle-orm";
 import { storage } from "../storage";
 import { z } from "zod";
@@ -114,6 +115,36 @@ function getUserId(user: any): string | undefined {
 // Helper to get organizationId from request (matches server/routes.ts behavior)
 function getRequestOrganizationId(req: any): string | undefined {
     return req.organizationId || req.headers['x-organization-id'] as string;
+}
+
+const portalAttachmentVisibilitySchema = z.object({
+    customerVisible: z.boolean(),
+    portalFileCategory: z.string().trim().optional().nullable(),
+    portalDisplayName: z.string().trim().max(500).optional().nullable(),
+    portalDescription: z.string().trim().max(2000).optional().nullable(),
+});
+
+function assertInternalStaffUser(req: any, res: any): boolean {
+    if (req.user?.role === "customer" || !req.orgRole) {
+        res.status(403).json({ error: "Access denied" });
+        return false;
+    }
+    return true;
+}
+
+function normalizePortalVisibilityPatch(input: z.infer<typeof portalAttachmentVisibilitySchema>) {
+    const category = input.customerVisible
+        ? normalizePortalFileCategory(input.portalFileCategory)
+        : input.portalFileCategory && isPortalFileCategory(input.portalFileCategory)
+            ? input.portalFileCategory
+            : null;
+
+    return {
+        customerVisible: input.customerVisible,
+        portalFileCategory: category,
+        portalDisplayName: input.portalDisplayName || null,
+        portalDescription: input.portalDescription || null,
+    };
 }
 
 const manualInventoryAdjustmentSchema = z.object({
@@ -2555,6 +2586,85 @@ export async function registerOrderRoutes(
         } catch (error) {
             console.error('[OrderAttachmentsUnified:GET] Error:', error);
             return res.status(500).json({ error: 'Failed to fetch attachments' });
+        }
+    });
+
+    app.patch("/api/orders/:orderId/attachments/:attachmentId/portal-visibility", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            if (!assertInternalStaffUser(req, res)) return;
+
+            const { orderId, attachmentId } = req.params;
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const userId = getUserId(req.user);
+
+            const parsed = portalAttachmentVisibilitySchema.safeParse(req.body);
+            if (!parsed.success) {
+                return res.status(400).json({ error: fromZodError(parsed.error).message });
+            }
+
+            const order = await storage.getOrderById(organizationId, orderId);
+            if (!order) return res.status(404).json({ error: "Attachment not found" });
+
+            const [existing] = await db
+                .select()
+                .from(orderAttachments)
+                .where(and(
+                    eq(orderAttachments.id, attachmentId),
+                    eq(orderAttachments.orderId, orderId),
+                    isNull(orderAttachments.orderLineItemId)
+                ))
+                .limit(1);
+
+            if (!existing) return res.status(404).json({ error: "Attachment not found" });
+
+            const patch = normalizePortalVisibilityPatch(parsed.data);
+            const [updated] = await db
+                .update(orderAttachments)
+                .set({
+                    ...patch,
+                    portalVisibilityUpdatedAt: new Date(),
+                    portalVisibilityUpdatedBy: userId ?? null,
+                    updatedAt: new Date(),
+                } as any)
+                .where(and(
+                    eq(orderAttachments.id, attachmentId),
+                    eq(orderAttachments.orderId, orderId),
+                    isNull(orderAttachments.orderLineItemId)
+                ))
+                .returning();
+
+            try {
+                await db.insert(auditLogs).values({
+                    organizationId,
+                    userId: userId ?? null,
+                    userName: `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email || null,
+                    actionType: "portal_file_visibility.updated",
+                    entityType: "order_attachment",
+                    entityId: attachmentId,
+                    entityName: updated?.originalFilename || updated?.fileName || attachmentId,
+                    description: patch.customerVisible
+                        ? "Order attachment marked visible in the customer portal."
+                        : "Order attachment hidden from the customer portal.",
+                    oldValues: {
+                        customerVisible: existing.customerVisible,
+                        portalFileCategory: existing.portalFileCategory,
+                        portalDisplayName: existing.portalDisplayName,
+                        portalDescription: existing.portalDescription,
+                    },
+                    newValues: patch,
+                    ipAddress: req.ip,
+                    userAgent: req.get?.("user-agent") || null,
+                } as any);
+            } catch (auditError) {
+                console.error("[OrderAttachments:PortalVisibility] Audit log failed:", auditError);
+            }
+
+            const enriched = await enrichAttachmentWithUrls(updated);
+            return res.json({ success: true, data: enriched });
+        } catch (error) {
+            console.error("[OrderAttachments:PortalVisibility] Error:", error);
+            return res.status(500).json({ error: "Failed to update portal visibility" });
         }
     });
 

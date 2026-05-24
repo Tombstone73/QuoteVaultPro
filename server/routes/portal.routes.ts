@@ -1,5 +1,6 @@
 import type { Express, Request, Response } from "express";
 import { Readable } from "node:stream";
+import { promises as fsPromises } from "node:fs";
 
 import {
   approvePortalQuote,
@@ -26,6 +27,7 @@ import {
   toPortalErrorResponse,
 } from "../services/portal.service";
 import { isSupabaseConfigured, SupabaseStorageService } from "../supabaseStorage";
+import { resolveLocalStoragePath } from "../services/localStoragePath";
 
 type PortalHandler<T> = (req: Request) => Promise<T>;
 
@@ -154,31 +156,41 @@ async function sendPortalFile(res: Response, result: PortalFileDownloadResult) {
     return res.status(404).json({ success: false, message: "Not found" });
   }
 
-  if (!isSupabaseConfigured()) {
-    return res.status(503).json({ success: false, message: "File serving is not available" });
+  if (isSupabaseConfigured()) {
+    try {
+      const storage = new SupabaseStorageService();
+      const signedUrl = await storage.getSignedDownloadUrl(result.objectPath, 600);
+      const upstream = await fetch(signedUrl);
+      if (upstream.ok) {
+        const upstreamType = upstream.headers.get("content-type");
+        if (upstreamType) res.setHeader("Content-Type", upstreamType);
+
+        const body: any = (upstream as any).body;
+        if (body && typeof Readable.fromWeb === "function") {
+          const nodeStream = Readable.fromWeb(body);
+          nodeStream.on("error", (error) => {
+            console.error("[Portal] file stream failed", { message: error instanceof Error ? error.message : String(error) });
+            if (!res.headersSent) res.status(500).end();
+          });
+          return nodeStream.pipe(res);
+        }
+
+        return res.status(200).send(Buffer.from(await upstream.arrayBuffer()));
+      }
+    } catch (error) {
+      console.warn("[Portal] Supabase file read failed; trying local storage fallback", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
-  const storage = new SupabaseStorageService();
-  const signedUrl = await storage.getSignedDownloadUrl(result.objectPath, 600);
-  const upstream = await fetch(signedUrl);
-  if (!upstream.ok) {
+  try {
+    const localPath = resolveLocalStoragePath(result.objectPath);
+    const bytes = await fsPromises.readFile(localPath);
+    return res.status(200).send(bytes);
+  } catch {
     return res.status(404).json({ success: false, message: "Not found" });
   }
-
-  const upstreamType = upstream.headers.get("content-type");
-  if (upstreamType) res.setHeader("Content-Type", upstreamType);
-
-  const body: any = (upstream as any).body;
-  if (body && typeof Readable.fromWeb === "function") {
-    const nodeStream = Readable.fromWeb(body);
-    nodeStream.on("error", (error) => {
-      console.error("[Portal] file stream failed", { message: error instanceof Error ? error.message : String(error) });
-      if (!res.headersSent) res.status(500).end();
-    });
-    return nodeStream.pipe(res);
-  }
-
-  return res.status(200).send(Buffer.from(await upstream.arrayBuffer()));
 }
 
 function portalFileDownload(

@@ -68,6 +68,9 @@ export default function PortalFilesCard({
                       {formatDate(file.uploadedAt)}
                       {size ? ` / ${size}` : ""}
                     </p>
+                    {file.description ? (
+                      <p className="mt-1 text-sm text-muted-foreground">{file.description}</p>
+                    ) : null}
                   </div>
                   {file.downloadAvailable ? (
                     <Button asChild variant="outline">

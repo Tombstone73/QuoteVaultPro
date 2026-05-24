@@ -18,6 +18,7 @@ import { Readable } from "stream";
 import { promises as fsPromises } from "fs";
 import { db, hasQuoteAttachmentPagesTable } from "../db";
 import {
+  auditLogs,
   quotes,
   quoteAttachments,
   quoteAttachmentPages,
@@ -29,6 +30,8 @@ import {
   assetLinks,
 } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray, sql } from "drizzle-orm";
+import { z } from "zod";
+import { isPortalFileCategory, normalizePortalFileCategory } from "@shared/portalFileVisibility";
 import { storage } from "../storage";
 import {
   getRequestOrganizationId,
@@ -177,6 +180,36 @@ type AuthenticatedRequest = Express.Request & { user: any };
 function getUserId(user: any): string | null {
   if (!user) return null;
   return user.id || user.claims?.sub || null;
+}
+
+const portalAttachmentVisibilitySchema = z.object({
+  customerVisible: z.boolean(),
+  portalFileCategory: z.string().trim().optional().nullable(),
+  portalDisplayName: z.string().trim().max(500).optional().nullable(),
+  portalDescription: z.string().trim().max(2000).optional().nullable(),
+});
+
+function assertInternalStaffUser(req: any, res: any): boolean {
+  if (req.user?.role === "customer" || !req.orgRole) {
+    res.status(403).json({ error: "Access denied" });
+    return false;
+  }
+  return true;
+}
+
+function normalizePortalVisibilityPatch(input: z.infer<typeof portalAttachmentVisibilitySchema>) {
+  const category = input.customerVisible
+    ? normalizePortalFileCategory(input.portalFileCategory)
+    : input.portalFileCategory && isPortalFileCategory(input.portalFileCategory)
+      ? input.portalFileCategory
+      : null;
+
+  return {
+    customerVisible: input.customerVisible,
+    portalFileCategory: category,
+    portalDisplayName: input.portalDisplayName || null,
+    portalDescription: input.portalDescription || null,
+  };
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1986,6 +2019,91 @@ export async function registerAttachmentRoutes(
     } catch (error) {
       console.error("[QuoteAttachments:GET] Error:", error);
       return res.status(500).json({ error: "Failed to fetch quote attachments" });
+    }
+  });
+
+  app.patch("/api/quotes/:quoteId/attachments/:attachmentId/portal-visibility", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalStaffUser(req, res)) return;
+
+      const { quoteId, attachmentId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+
+      const parsed = portalAttachmentVisibilitySchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues.map((issue) => issue.message).join("; ") || "Invalid portal visibility payload" });
+      }
+
+      const [quote] = await db
+        .select({ id: quotes.id })
+        .from(quotes)
+        .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
+        .limit(1);
+      if (!quote) return res.status(404).json({ error: "Attachment not found" });
+
+      const [existing] = await db
+        .select()
+        .from(quoteAttachments)
+        .where(and(
+          eq(quoteAttachments.id, attachmentId),
+          eq(quoteAttachments.quoteId, quoteId),
+          eq(quoteAttachments.organizationId, organizationId),
+          isNull(quoteAttachments.quoteLineItemId)
+        ))
+        .limit(1);
+
+      if (!existing) return res.status(404).json({ error: "Attachment not found" });
+
+      const patch = normalizePortalVisibilityPatch(parsed.data);
+      const [updated] = await db
+        .update(quoteAttachments)
+        .set({
+          ...patch,
+          portalVisibilityUpdatedAt: new Date(),
+          portalVisibilityUpdatedBy: userId,
+          updatedAt: new Date(),
+        } as any)
+        .where(and(
+          eq(quoteAttachments.id, attachmentId),
+          eq(quoteAttachments.quoteId, quoteId),
+          eq(quoteAttachments.organizationId, organizationId),
+          isNull(quoteAttachments.quoteLineItemId)
+        ))
+        .returning();
+
+      try {
+        await db.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email || null,
+          actionType: "portal_file_visibility.updated",
+          entityType: "quote_attachment",
+          entityId: attachmentId,
+          entityName: updated?.originalFilename || updated?.fileName || attachmentId,
+          description: patch.customerVisible
+            ? "Quote attachment marked visible in the customer portal."
+            : "Quote attachment hidden from the customer portal.",
+          oldValues: {
+            customerVisible: existing.customerVisible,
+            portalFileCategory: existing.portalFileCategory,
+            portalDisplayName: existing.portalDisplayName,
+            portalDescription: existing.portalDescription,
+          },
+          newValues: patch,
+          ipAddress: req.ip,
+          userAgent: req.get?.("user-agent") || null,
+        } as any);
+      } catch (auditError) {
+        console.error("[QuoteAttachments:PortalVisibility] Audit log failed:", auditError);
+      }
+
+      const enriched = await enrichAttachmentWithUrls(updated);
+      return res.json({ success: true, data: enriched });
+    } catch (error) {
+      console.error("[QuoteAttachments:PortalVisibility] Error:", error);
+      return res.status(500).json({ error: "Failed to update portal visibility" });
     }
   });
 
