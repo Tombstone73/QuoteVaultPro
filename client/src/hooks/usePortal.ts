@@ -47,33 +47,62 @@ export type PortalInvoicePaymentDto = {
   referenceNumber: string | null;
 };
 
-export type PortalOrderDto = {
+export type PortalOrderProofSummaryDto = {
+  proofRequired: boolean;
+  statusLabel: string;
+  actionRequired: boolean;
+  latestVersionNumber: number | null;
+  proofLinkAvailable: boolean;
+  requiredCount: number;
+  approvedCount: number;
+  pendingCount: number;
+  revisionRequestedCount: number;
+};
+
+export type PortalOrderFulfillmentSummaryDto = {
+  methodLabel: string | null;
+  statusLabel: string;
+  trackingNumber: string | null;
+  trackingUrl: string | null;
+  shippedAt: string | null;
+  pickupReadyAt: string | null;
+};
+
+export type PortalOrderInvoiceSummaryDto = {
+  invoiceCount: number;
+  openInvoiceCount: number;
+  paidInvoiceCount: number;
+  amountDue: number;
+  total: number;
+  currency: string;
+};
+
+export type PortalOrderListDto = {
   id: string;
   orderNumber: string;
   customerPoNumber: string | null;
   createdAt: string | null;
-  status: string;
+  updatedAt: string | null;
   displayStatus: string;
+  rawStatus: string | null;
+  total: number;
+  itemCount: number;
+  proofStatusSummary: PortalOrderProofSummaryDto;
+  fulfillmentSummary: PortalOrderFulfillmentSummaryDto;
+};
+
+export type PortalOrderDetailDto = PortalOrderListDto & {
   lineItems: Array<{
     id: string;
-    itemName: string;
+    name: string;
+    description: string | null;
     quantity: number;
     dimensions: { width: number | null; height: number | null };
-    status: string;
+    displayStatus: string;
+    proofStatus: string | null;
+    fulfillmentStatusLabel: string | null;
   }>;
-  shipmentSummary?: {
-    fulfillmentStatus: string | null;
-    shippingMethod: string | null;
-    shippedAt: string | null;
-    trackingNumbers: string[];
-  };
-  proofStatusSummary?: {
-    status: string;
-    requiredCount: number;
-    approvedCount: number;
-    pendingCount: number;
-    revisionRequestedCount: number;
-  };
+  invoiceSummary: PortalOrderInvoiceSummaryDto | null;
 };
 
 export type PortalQuoteDto = {
@@ -187,7 +216,18 @@ export function useMyQuotes() {
 export function useMyOrders() {
   return useQuery({
     queryKey: portalOrderKeys.all,
-    queryFn: () => portalFetch<PortalOrderDto[]>("/api/portal/orders"),
+    queryFn: () => portalFetch<PortalOrderListDto[]>("/api/portal/orders"),
+  });
+}
+
+export function usePortalOrder(orderId: string | undefined) {
+  return useQuery({
+    queryKey: portalOrderKeys.detail(orderId),
+    queryFn: () => {
+      if (!orderId) throw new Error("Order ID required");
+      return portalFetch<PortalOrderDetailDto>(`/api/portal/orders/${encodeURIComponent(orderId)}`);
+    },
+    enabled: !!orderId,
   });
 }
 

@@ -36,6 +36,7 @@ import DebugUser from "@/pages/debug-user";
 import NotFound from "@/pages/not-found";
 import MyQuotes from "@/pages/portal/my-quotes";
 import MyOrders from "@/pages/portal/my-orders";
+import PortalOrderDetailPage from "@/pages/portal/order-detail";
 import PortalInvoicesPage from "@/pages/portal/invoices";
 import PortalInvoiceDetailPage from "@/pages/portal/invoice-detail";
 import { PortalLayout } from "@/components/portal/PortalLayout";
@@ -299,6 +300,7 @@ function Router() {
         <Route path="invoices" element={<PortalInvoicesPage />} />
         <Route path="invoices/:id" element={<PortalInvoiceDetailPage />} />
         <Route path="my-orders" element={<MyOrders />} />
+        <Route path="orders/:id" element={<PortalOrderDetailPage />} />
         <Route path="my-quotes" element={<MyQuotes />} />
         <Route path="quotes/:id/checkout" element={<Navigate to="/portal/my-quotes" replace />} />
       </Route>

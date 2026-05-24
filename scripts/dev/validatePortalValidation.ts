@@ -150,6 +150,55 @@ async function main() {
     assert(!fake.text.includes("stack") && !fake.text.includes("DATABASE_URL"), "fake invoice", "response leaked implementation detail");
   });
 
+  const orderList = await request<any>("/api/portal/orders");
+  const orderRows = Array.isArray(orderList.json?.data) ? orderList.json.data : [];
+  const portalOrder = orderRows.find((order: any) => order.id === config.orderIds.portalStatus);
+  record("portal order list loads scoped orders", () => {
+    assert(orderList.ok, "order list", `expected 2xx, got ${orderList.status}`);
+    assert(portalOrder, "order list", "expected seeded portal order");
+    assert(!orderRows.some((order: any) => order.id === config.orderIds.otherCustomer), "order list", "other customer order should not be visible");
+  });
+  record("portal order list is sanitized", () => {
+    const serialized = JSON.stringify(orderList.json?.data || {});
+    assert(!serialized.includes("routingTarget"), "order list", "leaked routingTarget");
+    assert(!serialized.includes("notesInternal"), "order list", "leaked internal notes");
+    assert(!serialized.includes("productionNotes"), "order list", "leaked production notes");
+    assert(!serialized.includes("materialUsage"), "order list", "leaked material usage");
+    assert(!serialized.includes("createdByUserId"), "order list", "leaked staff/user metadata");
+    assert(!serialized.includes("workflowState"), "order list", "leaked workflow state");
+    assert(!serialized.includes('"fulfillmentStatus":'), "order list", "leaked raw fulfillment status");
+  });
+
+  const orderDetail = await request<any>(`/api/portal/orders/${encodeURIComponent(config.orderIds.portalStatus)}`);
+  record("portal order detail loads", () => {
+    assert(orderDetail.ok, "order detail", `expected 2xx, got ${orderDetail.status}`);
+    assert(orderDetail.json?.data?.id === config.orderIds.portalStatus, "order detail", "expected seeded order detail");
+    assert(Array.isArray(orderDetail.json?.data?.lineItems) && orderDetail.json.data.lineItems.length >= 2, "order detail", "expected line items");
+    assert(orderDetail.json?.data?.proofStatusSummary?.actionRequired === true, "order detail", "expected proof action indicator");
+  });
+  record("portal order detail is sanitized", () => {
+    const serialized = JSON.stringify(orderDetail.json?.data || {});
+    assert(!serialized.includes("routingTarget"), "order detail", "leaked routingTarget");
+    assert(!serialized.includes("notesInternal"), "order detail", "leaked internal notes");
+    assert(!serialized.includes("productionNotes"), "order detail", "leaked production notes");
+    assert(!serialized.includes("unitPrice"), "order detail", "leaked line item pricing internals");
+    assert(!serialized.includes("materialUsage"), "order detail", "leaked material usage");
+    assert(!serialized.includes("createdByUserId"), "order detail", "leaked staff/user metadata");
+    assert(!serialized.includes("workflowState"), "order detail", "leaked workflow state");
+    assert(!serialized.includes('"fulfillmentStatus":'), "order detail", "leaked raw fulfillment status");
+  });
+
+  const fakeOrder = await request("/api/portal/orders/not-a-real-order");
+  record("fake order ID returns safe 404", () => {
+    assert(fakeOrder.status === 404, "fake order", `expected 404, got ${fakeOrder.status}`);
+    assert(!fakeOrder.text.includes("stack") && !fakeOrder.text.includes("DATABASE_URL"), "fake order", "response leaked implementation detail");
+  });
+
+  const otherOrder = await request(`/api/portal/orders/${encodeURIComponent(config.orderIds.otherCustomer)}`);
+  record("other customer order returns safe 404", () => {
+    assert(otherOrder.status === 404, "other order", `expected 404, got ${otherOrder.status}`);
+  });
+
   const paidCreateIntent = await request<any>(`/api/portal/invoices/${encodeURIComponent(config.invoiceIds.paid)}/payments/stripe/create-intent`, {
     method: "POST",
     body: JSON.stringify({}),

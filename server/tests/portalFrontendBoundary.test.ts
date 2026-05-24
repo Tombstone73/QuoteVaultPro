@@ -13,6 +13,7 @@ function readPortalFrontendSource(): string {
     "client/src/pages/portal/invoice-detail.tsx",
     "client/src/pages/portal/invoices.tsx",
     "client/src/pages/portal/my-orders.tsx",
+    "client/src/pages/portal/order-detail.tsx",
     "client/src/pages/portal/my-quotes.tsx",
     "client/src/components/portal/PortalLayout.tsx",
   ];
