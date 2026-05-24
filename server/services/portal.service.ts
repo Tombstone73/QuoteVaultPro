@@ -152,30 +152,47 @@ export type OrderPortalDetailDto = OrderPortalListDto & {
 
 export type QuotePortalLineItemDto = {
   id: string;
-  itemName: string;
+  name: string;
+  description: string | null;
   quantity: number;
   dimensions: {
     width: number | null;
     height: number | null;
   };
-  total: number;
+  unitPrice: number;
+  lineTotal: number;
+  displayOptions: string[];
 };
 
-export type QuotePortalDto = {
+export type QuotePortalActionsDto = {
+  canView: boolean;
+  canApprove: boolean;
+  canRequestRevision: boolean;
+  disabledReason: string | null;
+};
+
+export type QuotePortalExpirationSummaryDto = {
+  expired: boolean;
+  expirationLabel: string;
+  validUntil: string | null;
+};
+
+export type QuotePortalListDto = {
   id: string;
   quoteNumber: number | null;
   createdAt: string | null;
   validUntil: string | null;
-  status: string;
+  displayStatus: string;
+  total: number;
+  itemCount: number;
+  customerVisibleActions: QuotePortalActionsDto;
+};
+
+export type QuotePortalDetailDto = QuotePortalListDto & {
   subtotal: number;
   tax: number;
-  total: number;
   lineItems: QuotePortalLineItemDto[];
-  customerVisibleActions: {
-    canView: boolean;
-    canApprove: boolean;
-    canRequestRevision: boolean;
-  };
+  expirationSummary: QuotePortalExpirationSummaryDto;
 };
 
 type PortalScope = {
@@ -288,12 +305,12 @@ type OrderInvoiceSummaryRow = Pick<
 
 type QuotePortalRow = Pick<
   typeof quotes.$inferSelect,
-  "id" | "quoteNumber" | "createdAt" | "validUntil" | "status" | "subtotal" | "taxAmount" | "totalPrice"
+  "id" | "quoteNumber" | "createdAt" | "validUntil" | "status" | "subtotal" | "taxAmount" | "totalPrice" | "convertedToOrderId"
 >;
 
 type QuoteLineItemPortalRow = Pick<
   typeof quoteLineItems.$inferSelect,
-  "id" | "quoteId" | "productName" | "width" | "height" | "quantity" | "linePrice"
+  "id" | "quoteId" | "productName" | "description" | "width" | "height" | "quantity" | "linePrice" | "selectedOptions"
 >;
 
 const CUSTOMER_VISIBLE_INVOICE_STATUSES = ["billed", "sent", "partially_paid", "overdue", "paid", "void", "open"];
@@ -403,18 +420,47 @@ export function mapPortalLineItemStatus(params: {
   return "In Progress";
 }
 
-function quoteDisplayStatus(raw: unknown, validUntil: unknown): string {
-  const status = String(raw || "active").trim().toLowerCase();
-  if (status === "canceled") return "canceled";
-  if (validUntil && new Date(String(validUntil)).getTime() < Date.now()) return "expired";
-  return status;
+function isExpired(validUntil: unknown): boolean {
+  if (!validUntil) return false;
+  const date = validUntil instanceof Date ? validUntil : new Date(String(validUntil));
+  return !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
 }
 
-function mapQuoteActions(status: string): QuotePortalDto["customerVisibleActions"] {
+export function mapPortalQuoteStatus(params: { status?: unknown; validUntil?: unknown; convertedToOrderId?: unknown }): string {
+  const status = normalizeStatus(params.status || "active");
+  if (params.convertedToOrderId) return "Converted to Order";
+  if (status === "canceled" || status === "cancelled" || status === "void") return "Unavailable";
+  if (isExpired(params.validUntil)) return "Expired";
+  if (status === "accepted" || status === "approved") return "Accepted";
+  if (status === "rejected" || status === "declined") return "Declined";
+  if (status === "active" || status === "sent" || status === "pending" || status === "pending_approval") return "Ready for Review";
+  if (status === "draft") return "Under Review";
+  return "Under Review";
+}
+
+function buildQuoteExpirationSummary(validUntil: unknown, displayStatus: string): QuotePortalExpirationSummaryDto {
+  const validUntilIso = toIso(validUntil);
+  const expired = displayStatus === "Expired" || isExpired(validUntil);
+  const expirationLabel = !validUntilIso
+    ? "No expiration date"
+    : expired
+      ? `Expired ${formatShortDate(validUntilIso)}`
+      : `Valid until ${formatShortDate(validUntilIso)}`;
+  return { expired, expirationLabel, validUntil: validUntilIso };
+}
+
+function formatShortDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "date unavailable";
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }).format(date);
+}
+
+function mapQuoteActions(_displayStatus: string): QuotePortalActionsDto {
   return {
     canView: true,
     canApprove: false,
     canRequestRevision: false,
+    disabledReason: "Quote approval will be available soon",
   };
 }
 
@@ -1525,30 +1571,61 @@ export async function getPortalOrder(req: Request, orderId: string): Promise<Ord
   );
 }
 
-function mapQuote(quote: QuotePortalRow, lineItems: QuoteLineItemPortalRow[]): QuotePortalDto {
-  const status = quoteDisplayStatus(quote.status, quote.validUntil);
+function safeQuoteDisplayOptions(selectedOptions: unknown): string[] {
+  if (!Array.isArray(selectedOptions)) return [];
+  return selectedOptions
+    .map((option) => {
+      if (!option || typeof option !== "object") return null;
+      const optionName = String((option as any).optionName || "").trim();
+      const value = (option as any).value;
+      if (!optionName || value == null || typeof value === "object") return null;
+      return `${optionName}: ${String(value)}`.slice(0, 120);
+    })
+    .filter((value): value is string => Boolean(value));
+}
 
+function mapQuoteDetail(quote: QuotePortalRow, lineItems: QuoteLineItemPortalRow[]): QuotePortalDetailDto {
+  const displayStatus = mapPortalQuoteStatus({
+    status: quote.status,
+    validUntil: quote.validUntil,
+    convertedToOrderId: quote.convertedToOrderId,
+  });
+  const mappedLineItems = lineItems.map((lineItem) => {
+    const quantity = Math.max(1, Number(lineItem.quantity || 0));
+    const lineTotal = toMoney(lineItem.linePrice);
+    return {
+      id: lineItem.id,
+      name: lineItem.productName,
+      description: lineItem.description ? String(lineItem.description) : null,
+      quantity,
+      dimensions: {
+        width: lineItem.width == null ? null : Number(lineItem.width),
+        height: lineItem.height == null ? null : Number(lineItem.height),
+      },
+      unitPrice: Math.round((lineTotal / quantity) * 100) / 100,
+      lineTotal,
+      displayOptions: safeQuoteDisplayOptions(lineItem.selectedOptions),
+    };
+  });
   return {
     id: quote.id,
     quoteNumber: quote.quoteNumber == null ? null : Number(quote.quoteNumber),
     createdAt: toIso(quote.createdAt),
     validUntil: toIso(quote.validUntil),
-    status,
+    displayStatus,
+    total: toMoney(quote.totalPrice),
+    itemCount: mappedLineItems.length,
+    customerVisibleActions: mapQuoteActions(displayStatus),
     subtotal: toMoney(quote.subtotal),
     tax: toMoney(quote.taxAmount),
-    total: toMoney(quote.totalPrice),
-    lineItems: lineItems.map((lineItem) => ({
-      id: lineItem.id,
-      itemName: lineItem.productName,
-      quantity: Number(lineItem.quantity || 0),
-      dimensions: {
-        width: lineItem.width == null ? null : Number(lineItem.width),
-        height: lineItem.height == null ? null : Number(lineItem.height),
-      },
-      total: toMoney(lineItem.linePrice),
-    })),
-    customerVisibleActions: mapQuoteActions(status),
+    lineItems: mappedLineItems,
+    expirationSummary: buildQuoteExpirationSummary(quote.validUntil, displayStatus),
   };
+}
+
+function mapQuoteList(detail: QuotePortalDetailDto): QuotePortalListDto {
+  const { subtotal: _subtotal, tax: _tax, lineItems: _lineItems, expirationSummary: _expirationSummary, ...listDto } = detail;
+  return listDto;
 }
 
 async function loadQuoteLineItems(quoteIds: string[]) {
@@ -1559,10 +1636,12 @@ async function loadQuoteLineItems(quoteIds: string[]) {
       id: quoteLineItems.id,
       quoteId: quoteLineItems.quoteId,
       productName: quoteLineItems.productName,
+      description: quoteLineItems.description,
       width: quoteLineItems.width,
       height: quoteLineItems.height,
       quantity: quoteLineItems.quantity,
       linePrice: quoteLineItems.linePrice,
+      selectedOptions: quoteLineItems.selectedOptions,
       displayOrder: quoteLineItems.displayOrder,
       createdAt: quoteLineItems.createdAt,
     })
@@ -1580,7 +1659,14 @@ async function loadQuoteLineItems(quoteIds: string[]) {
   return byQuoteId;
 }
 
-export async function listPortalQuotes(req: Request): Promise<QuotePortalDto[]> {
+const CUSTOMER_VISIBLE_QUOTE_STATUSES: Array<"active" | "pending" | "pending_approval" | "canceled"> = [
+  "active",
+  "pending",
+  "pending_approval",
+  "canceled",
+];
+
+export async function listPortalQuotes(req: Request): Promise<QuotePortalListDto[]> {
   const scope = getPortalScope(req);
   const rows = await db
     .select({
@@ -1592,16 +1678,17 @@ export async function listPortalQuotes(req: Request): Promise<QuotePortalDto[]> 
       subtotal: quotes.subtotal,
       taxAmount: quotes.taxAmount,
       totalPrice: quotes.totalPrice,
+      convertedToOrderId: quotes.convertedToOrderId,
     })
     .from(quotes)
-    .where(and(eq(quotes.organizationId, scope.organizationId), eq(quotes.customerId, scope.customerId), eq(quotes.status, "active")))
+    .where(and(eq(quotes.organizationId, scope.organizationId), eq(quotes.customerId, scope.customerId), inArray(quotes.status, CUSTOMER_VISIBLE_QUOTE_STATUSES)))
     .orderBy(desc(quotes.createdAt));
 
   const lineItemsByQuoteId = await loadQuoteLineItems(rows.map((row) => row.id));
-  return rows.map((quote) => mapQuote(quote, lineItemsByQuoteId.get(quote.id) ?? []));
+  return rows.map((quote) => mapQuoteList(mapQuoteDetail(quote, lineItemsByQuoteId.get(quote.id) ?? [])));
 }
 
-export async function getPortalQuote(req: Request, quoteId: string): Promise<QuotePortalDto | null> {
+export async function getPortalQuote(req: Request, quoteId: string): Promise<QuotePortalDetailDto | null> {
   const scope = getPortalScope(req);
   const [quote] = await db
     .select({
@@ -1613,14 +1700,15 @@ export async function getPortalQuote(req: Request, quoteId: string): Promise<Quo
       subtotal: quotes.subtotal,
       taxAmount: quotes.taxAmount,
       totalPrice: quotes.totalPrice,
+      convertedToOrderId: quotes.convertedToOrderId,
     })
     .from(quotes)
-    .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, scope.organizationId), eq(quotes.customerId, scope.customerId), eq(quotes.status, "active")))
+    .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, scope.organizationId), eq(quotes.customerId, scope.customerId), inArray(quotes.status, CUSTOMER_VISIBLE_QUOTE_STATUSES)))
     .limit(1);
 
   if (!quote) return null;
   const lineItemsByQuoteId = await loadQuoteLineItems([quote.id]);
-  return mapQuote(quote, lineItemsByQuoteId.get(quote.id) ?? []);
+  return mapQuoteDetail(quote, lineItemsByQuoteId.get(quote.id) ?? []);
 }
 
 export function toPortalErrorResponse(error: unknown): { statusCode: number; message: string } {

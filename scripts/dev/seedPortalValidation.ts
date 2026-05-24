@@ -18,6 +18,8 @@ import {
   organizations,
   payments,
   products,
+  quoteLineItems,
+  quotes,
   users,
 } from "../../shared/schema";
 
@@ -245,6 +247,91 @@ async function upsertOrderLineItem(params: {
     });
 }
 
+async function upsertQuote(params: {
+  id: string;
+  quoteNumber: number;
+  customerId: string;
+  status: "active" | "draft" | "canceled";
+  validUntil: Date | null;
+  config: ReturnType<typeof parsePortalValidationSeedConfig>;
+  userId: string;
+}) {
+  const values = {
+    id: params.id,
+    organizationId: params.config.organizationId,
+    quoteNumber: params.quoteNumber,
+    userId: params.userId,
+    customerId: params.customerId,
+    status: params.status,
+    customerName: params.customerId === params.config.customerId ? params.config.customerName : `${params.config.customerName} Other`,
+    source: "internal",
+    subtotal: money(params.config.invoiceAmountCents),
+    taxAmount: "0.00",
+    taxableSubtotal: money(params.config.invoiceAmountCents),
+    taxRate: "0.0000",
+    marginPercentage: "0.0000",
+    discountAmount: "0.00",
+    totalPrice: money(params.config.invoiceAmountCents),
+    shippingMethod: "pickup",
+    shippingMode: "single_shipment",
+    validUntil: params.validUntil,
+  } as any;
+
+  await db
+    .insert(quotes)
+    .values(values)
+    .onConflictDoUpdate({
+      target: quotes.id,
+      set: values,
+    });
+}
+
+async function upsertQuoteLineItem(params: {
+  id: string;
+  quoteId: string;
+  productName: string;
+  config: ReturnType<typeof parsePortalValidationSeedConfig>;
+}) {
+  const values = {
+    id: params.id,
+    quoteId: params.quoteId,
+    status: "active",
+    productId: params.config.productId,
+    productName: params.productName,
+    productType: "validation",
+    width: "24.00",
+    height: "36.00",
+    quantity: 1,
+    specsJson: { portalValidationSeed: true },
+    pbv2SnapshotJson: { portalValidationSeed: true },
+    optionSelectionsJson: null,
+    selectedOptions: [{ optionName: "Finish", value: "Matte", setupCost: 0, calculatedCost: 0 }],
+    linePrice: money(params.config.invoiceAmountCents),
+    formulaLinePrice: money(params.config.invoiceAmountCents),
+    priceBreakdown: { basePrice: params.config.invoiceAmountCents / 100, optionsPrice: 0, total: params.config.invoiceAmountCents / 100, formula: "portal-validation" },
+    materialUsages: [],
+    taxAmount: "0.00",
+    isTaxableSnapshot: true,
+    displayOrder: 0,
+    isTemporary: false,
+    description: "DEV portal validation quote line.",
+    requiresDesignSnapshot: false,
+    designBriefRequiredSnapshot: false,
+    designPricingModeSnapshot: "none",
+    requiresDesign: false,
+    requiresPrepress: false,
+    requiresProofApproval: false,
+  } as any;
+
+  await db
+    .insert(quoteLineItems)
+    .values(values)
+    .onConflictDoUpdate({
+      target: quoteLineItems.id,
+      set: values,
+    });
+}
+
 async function main() {
   const config = parsePortalValidationSeedConfig();
   const safetyErrors = getPortalValidationSeedSafetyErrors(config);
@@ -368,6 +455,57 @@ async function main() {
     requiresProofApproval: false,
     config,
   });
+
+  await upsertQuote({
+    id: config.quoteIds.active,
+    quoteNumber: config.quoteNumbers.active,
+    customerId: config.customerId,
+    status: "active",
+    validUntil: daysFromNow(29),
+    config,
+    userId: user.id,
+  });
+  await upsertQuote({
+    id: config.quoteIds.expired,
+    quoteNumber: config.quoteNumbers.expired,
+    customerId: config.customerId,
+    status: "active",
+    validUntil: daysFromNow(-10),
+    config,
+    userId: user.id,
+  });
+  await upsertQuote({
+    id: config.quoteIds.draft,
+    quoteNumber: config.quoteNumbers.draft,
+    customerId: config.customerId,
+    status: "draft",
+    validUntil: daysFromNow(29),
+    config,
+    userId: user.id,
+  });
+  await upsertQuote({
+    id: config.quoteIds.canceled,
+    quoteNumber: config.quoteNumbers.canceled,
+    customerId: config.customerId,
+    status: "canceled",
+    validUntil: daysFromNow(29),
+    config,
+    userId: user.id,
+  });
+  await upsertQuote({
+    id: config.quoteIds.otherCustomer,
+    quoteNumber: config.quoteNumbers.otherCustomer,
+    customerId: config.otherCustomerId,
+    status: "active",
+    validUntil: daysFromNow(29),
+    config,
+    userId: user.id,
+  });
+  await upsertQuoteLineItem({ id: config.quoteLineItemIds.active, quoteId: config.quoteIds.active, productName: "Portal Validation Quote - Active", config });
+  await upsertQuoteLineItem({ id: config.quoteLineItemIds.expired, quoteId: config.quoteIds.expired, productName: "Portal Validation Quote - Expired", config });
+  await upsertQuoteLineItem({ id: config.quoteLineItemIds.draft, quoteId: config.quoteIds.draft, productName: "Portal Validation Quote - Draft", config });
+  await upsertQuoteLineItem({ id: config.quoteLineItemIds.canceled, quoteId: config.quoteIds.canceled, productName: "Portal Validation Quote - Canceled", config });
+  await upsertQuoteLineItem({ id: config.quoteLineItemIds.otherCustomer, quoteId: config.quoteIds.otherCustomer, productName: "Other Customer Hidden Quote", config });
   await upsertInvoice({
     id: config.invoiceIds.paid,
     invoiceNumber: config.invoiceNumbers.paid,
@@ -480,6 +618,7 @@ async function main() {
         userId: user.id,
         customerId: config.customerId,
         orderIds: config.orderIds,
+        quoteIds: config.quoteIds,
         organizationId: config.organizationId,
         invoices: {
           payable: { id: config.invoiceIds.payable, invoiceNumber: config.invoiceNumbers.payable },

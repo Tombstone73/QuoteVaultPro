@@ -105,27 +105,44 @@ export type PortalOrderDetailDto = PortalOrderListDto & {
   invoiceSummary: PortalOrderInvoiceSummaryDto | null;
 };
 
-export type PortalQuoteDto = {
+export type PortalQuoteActionsDto = {
+  canView: boolean;
+  canApprove: boolean;
+  canRequestRevision: boolean;
+  disabledReason: string | null;
+};
+
+export type PortalQuoteExpirationSummaryDto = {
+  expired: boolean;
+  expirationLabel: string;
+  validUntil: string | null;
+};
+
+export type PortalQuoteListDto = {
   id: string;
   quoteNumber: number | null;
   createdAt: string | null;
   validUntil: string | null;
-  status: string;
+  displayStatus: string;
+  total: number;
+  itemCount: number;
+  customerVisibleActions: PortalQuoteActionsDto;
+};
+
+export type PortalQuoteDetailDto = PortalQuoteListDto & {
   subtotal: number;
   tax: number;
-  total: number;
   lineItems: Array<{
     id: string;
-    itemName: string;
+    name: string;
+    description: string | null;
     quantity: number;
     dimensions: { width: number | null; height: number | null };
-    total: number;
+    unitPrice: number;
+    lineTotal: number;
+    displayOptions: string[];
   }>;
-  customerVisibleActions: {
-    canView: boolean;
-    canApprove: boolean;
-    canRequestRevision: boolean;
-  };
+  expirationSummary: PortalQuoteExpirationSummaryDto;
 };
 
 export const portalInvoiceKeys = {
@@ -209,7 +226,7 @@ export function usePortalInvoicePayments(invoiceId: string | undefined) {
 export function useMyQuotes() {
   return useQuery({
     queryKey: portalQuoteKeys.all,
-    queryFn: () => portalFetch<PortalQuoteDto[]>("/api/portal/quotes"),
+    queryFn: () => portalFetch<PortalQuoteListDto[]>("/api/portal/quotes"),
   });
 }
 
@@ -236,7 +253,7 @@ export function useQuoteCheckout(quoteId: string | undefined) {
     queryKey: portalQuoteKeys.detail(quoteId),
     queryFn: () => {
       if (!quoteId) throw new Error("Quote ID required");
-      return portalFetch<PortalQuoteDto>(`/api/portal/quotes/${encodeURIComponent(quoteId)}`);
+      return portalFetch<PortalQuoteDetailDto>(`/api/portal/quotes/${encodeURIComponent(quoteId)}`);
     },
     enabled: !!quoteId,
   });
