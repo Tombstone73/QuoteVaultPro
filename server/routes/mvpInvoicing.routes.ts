@@ -95,7 +95,7 @@ function logStripeCreateIntentDebug(params: {
 }) {
   if (!paymentsDebugLogsEnabled()) return;
   console.log(
-    `event=${params.event} orgId=${params.orgId} invoiceId=${params.invoiceId} paymentId=${params.paymentId} stripePaymentIntentId=${params.stripePaymentIntentId} amountCents=${params.amountCents}`
+    `event=${params.event} orgId=${params.orgId} invoiceId=${params.invoiceId} paymentId=${params.paymentId} hasStripePaymentIntentId=${Boolean(params.stripePaymentIntentId)} amountCents=${params.amountCents}`
   );
 }
 
@@ -1042,7 +1042,7 @@ export async function registerMvpInvoicingRoutes(
           console.error('[StripeWebhook] missing metadata', {
             eventId,
             type,
-            stripePaymentIntentId: intentId,
+            hasStripePaymentIntentId: !!intentId,
             hasInvoiceId: !!invoiceId,
             hasOrganizationId: !!organizationId,
             hasStripeAccountId: !!stripeAccountId,
@@ -1061,7 +1061,7 @@ export async function registerMvpInvoicingRoutes(
             console.error('[StripeWebhook] stripeAccountId org mismatch', {
               eventId,
               type,
-              stripeAccountId,
+              hasStripeAccountId: !!stripeAccountId,
               organizationId,
               resolvedOrganizationId,
             });
@@ -1090,7 +1090,7 @@ export async function registerMvpInvoicingRoutes(
               type,
               organizationId,
               invoiceId,
-              stripePaymentIntentId: intentId,
+              hasStripePaymentIntentId: !!intentId,
             });
             throw new Error('Invoice not found for webhook metadata');
           }
@@ -1120,7 +1120,7 @@ export async function registerMvpInvoicingRoutes(
               type,
               organizationId,
               invoiceId,
-              stripePaymentIntentId: intentId,
+              hasStripePaymentIntentId: !!intentId,
               message: String(insertErr?.message || insertErr),
             });
             throw insertErr;
@@ -1164,8 +1164,8 @@ export async function registerMvpInvoicingRoutes(
           console.error('[StripeWebhook] payment_failed missing organizationId', {
             eventId,
             type,
-            stripePaymentIntentId: intentId,
-            stripeAccountId: stripeAccountIdFromEvent,
+            hasStripePaymentIntentId: !!intentId,
+            hasStripeAccountId: !!stripeAccountIdFromEvent,
           });
           throw new Error('Missing organizationId for payment_failed');
         }
@@ -1184,8 +1184,8 @@ export async function registerMvpInvoicingRoutes(
           console.error('[StripeWebhook] canceled missing organizationId', {
             eventId,
             type,
-            stripePaymentIntentId: intentId,
-            stripeAccountId: stripeAccountIdFromEvent,
+            hasStripePaymentIntentId: !!intentId,
+            hasStripeAccountId: !!stripeAccountIdFromEvent,
           });
           throw new Error('Missing organizationId for canceled');
         }
@@ -1208,7 +1208,7 @@ export async function registerMvpInvoicingRoutes(
       console.error('[StripeWebhook] processing failed', {
         eventId,
         type,
-        stripeAccountId: stripeAccountIdFromEvent,
+        hasStripeAccountId: !!stripeAccountIdFromEvent,
         message: String(err?.message || err),
       });
       try {

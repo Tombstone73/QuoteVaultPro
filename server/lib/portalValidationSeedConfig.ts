@@ -26,12 +26,18 @@ export type PortalValidationSeedConfig = {
     paid: string;
     draft: string;
     void: string;
+    stripeConfirmFirst: string;
+    stripeWebhookFirst: string;
+    stripeFailed: string;
   };
   invoiceNumbers: {
     payable: number;
     paid: number;
     draft: number;
     void: number;
+    stripeConfirmFirst: number;
+    stripeWebhookFirst: number;
+    stripeFailed: number;
   };
   paymentIds: {
     paid: string;
@@ -102,12 +108,18 @@ export function parsePortalValidationSeedConfig(
       paid: `portal-validation-invoice-paid-${seedKey}`,
       draft: `portal-validation-invoice-draft-${seedKey}`,
       void: `portal-validation-invoice-void-${seedKey}`,
+      stripeConfirmFirst: `portal-validation-invoice-stripe-confirm-first-${seedKey}`,
+      stripeWebhookFirst: `portal-validation-invoice-stripe-webhook-first-${seedKey}`,
+      stripeFailed: `portal-validation-invoice-stripe-failed-${seedKey}`,
     },
     invoiceNumbers: {
       payable: invoiceNumberBase,
       paid: invoiceNumberBase + 1,
       draft: invoiceNumberBase + 2,
       void: invoiceNumberBase + 3,
+      stripeConfirmFirst: invoiceNumberBase + 10,
+      stripeWebhookFirst: invoiceNumberBase + 11,
+      stripeFailed: invoiceNumberBase + 12,
     },
     paymentIds: {
       paid: `portal-validation-payment-paid-${seedKey}`,
@@ -137,4 +149,3 @@ export function getPortalValidationSeedSafetyErrors(config: PortalValidationSeed
   }
   return errors;
 }
-
