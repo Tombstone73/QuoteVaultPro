@@ -4,10 +4,13 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Search, Download, FileText, Image as ImageIcon, Trash2, Loader2 } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { Search, Download, FileText, Image as ImageIcon, Trash2, Loader2, Eye } from "lucide-react";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
+import { getPortalFileCategoryLabel, portalFileCategoryValues, type PortalFileCategory } from "@shared/portalFileVisibility";
 
 type AttachmentWithContext = {
   id: string;
@@ -27,6 +30,10 @@ type AttachmentWithContext = {
   source: "order" | "line-item";
   lineItemLabel?: string | null;
   orderId?: string | null;
+  customerVisible?: boolean | null;
+  portalFileCategory?: string | null;
+  portalDisplayName?: string | null;
+  portalDescription?: string | null;
 };
 
 interface ViewAllAttachmentsDialogProps {
@@ -38,6 +45,7 @@ interface ViewAllAttachmentsDialogProps {
   onDownloadAll?: () => void;
   onDownload?: (attachment: AttachmentWithContext) => void;
   onDeleteAttachment?: (attachment: AttachmentWithContext) => void;
+  onPortalVisibilityUpdated?: () => void;
   canDelete?: boolean;
   orderId?: string | null;
   parentType?: "order" | "quote";
@@ -57,6 +65,7 @@ export function ViewAllAttachmentsDialog({
   lineItemAttachments,
   onViewAttachment,
   onDeleteAttachment,
+  onPortalVisibilityUpdated,
   onDownloadAll,
   onDownload,
   canDelete = true,
@@ -68,6 +77,13 @@ export function ViewAllAttachmentsDialog({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isDownloadingSelected, setIsDownloadingSelected] = useState(false);
   const [isDownloadingAll, setIsDownloadingAll] = useState(false);
+  const [savingVisibilityId, setSavingVisibilityId] = useState<string | null>(null);
+  const [visibilityDrafts, setVisibilityDrafts] = useState<Record<string, {
+    customerVisible: boolean;
+    portalFileCategory: PortalFileCategory;
+    portalDisplayName: string;
+    portalDescription: string;
+  }>>({});
 
   const allAttachments = useMemo(() => {
     return [...orderAttachments, ...lineItemAttachments];
@@ -145,6 +161,79 @@ export function ViewAllAttachmentsDialog({
       }
       return next;
     });
+  };
+
+  const getVisibilityDraft = (attachment: AttachmentWithContext) =>
+    visibilityDrafts[attachment.id] ?? {
+      customerVisible: attachment.customerVisible === true,
+      portalFileCategory: (portalFileCategoryValues.includes(attachment.portalFileCategory as PortalFileCategory)
+        ? attachment.portalFileCategory
+        : "other_customer_document") as PortalFileCategory,
+      portalDisplayName: attachment.portalDisplayName || attachment.originalFilename || attachment.fileName || "",
+      portalDescription: attachment.portalDescription || "",
+    };
+
+  const updateVisibilityDraft = (
+    attachment: AttachmentWithContext,
+    patch: Partial<ReturnType<typeof getVisibilityDraft>>,
+  ) => {
+    setVisibilityDrafts((prev) => ({
+      ...prev,
+      [attachment.id]: {
+        ...getVisibilityDraft(attachment),
+        ...patch,
+      },
+    }));
+  };
+
+  const handleSavePortalVisibility = async (attachment: AttachmentWithContext) => {
+    const parentId = attachment.orderId || orderId;
+    if (!parentId || attachment.source !== "order") return;
+    const draft = getVisibilityDraft(attachment);
+    const endpoint =
+      parentType === "quote"
+        ? `/api/quotes/${parentId}/attachments/${attachment.id}/portal-visibility`
+        : `/api/orders/${parentId}/attachments/${attachment.id}/portal-visibility`;
+
+    setSavingVisibilityId(attachment.id);
+    try {
+      const response = await fetch(endpoint, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(draft),
+      });
+
+      if (!response.ok) {
+        const json = await response.json().catch(() => ({}));
+        throw new Error(json.error || "Failed to update portal visibility");
+      }
+
+      const json = await response.json();
+      Object.assign(attachment, json.data || {});
+      setVisibilityDrafts((prev) => ({
+        ...prev,
+        [attachment.id]: {
+          customerVisible: json.data?.customerVisible === true,
+          portalFileCategory: (json.data?.portalFileCategory || draft.portalFileCategory) as PortalFileCategory,
+          portalDisplayName: json.data?.portalDisplayName || draft.portalDisplayName,
+          portalDescription: json.data?.portalDescription || draft.portalDescription,
+        },
+      }));
+      onPortalVisibilityUpdated?.();
+      toast({
+        title: "Portal visibility updated",
+        description: draft.customerVisible ? "This file can now appear in the customer portal." : "This file is hidden from the customer portal.",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Visibility update failed",
+        description: error?.message || "Could not update portal visibility.",
+        variant: "destructive",
+      });
+    } finally {
+      setSavingVisibilityId(null);
+    }
   };
 
   // Download selected as zip
@@ -264,11 +353,13 @@ export function ViewAllAttachmentsDialog({
     const thumbSrc = getThumbSrc(a);
     const isPdf = a.mimeType?.toLowerCase().includes("pdf") || displayName.toLowerCase().endsWith(".pdf");
     const isSelected = selectedIds.has(a.id);
+    const visibilityDraft = getVisibilityDraft(a);
+    const canManagePortalVisibility = a.source === "order";
 
     return (
       <div
         key={a.id}
-        className="flex items-center gap-3 p-3 rounded-md border border-border hover:bg-muted/50 transition-colors"
+        className="flex items-start gap-3 p-3 rounded-md border border-border hover:bg-muted/50 transition-colors"
       >
         {/* Checkbox */}
         <Checkbox
@@ -316,6 +407,77 @@ export function ViewAllAttachmentsDialog({
               {a.uploadedByName ? ` • ${a.uploadedByName}` : ""}
             </div>
           </div>
+          {canManagePortalVisibility ? (
+            <div
+              className="mt-3 grid gap-2 rounded-md border border-dashed border-border p-3"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="flex items-center gap-2 text-sm font-medium">
+                  <Checkbox
+                    checked={visibilityDraft.customerVisible}
+                    onCheckedChange={(checked) => updateVisibilityDraft(a, { customerVisible: checked === true })}
+                  />
+                  Visible in customer portal
+                </label>
+                {a.customerVisible ? (
+                  <span className="inline-flex items-center gap-1 text-xs text-emerald-700">
+                    <Eye className="h-3.5 w-3.5" />
+                    Currently visible
+                  </span>
+                ) : (
+                  <span className="text-xs text-muted-foreground">Currently staff-only</span>
+                )}
+              </div>
+              <div className="grid gap-2 md:grid-cols-2">
+                <Input
+                  value={visibilityDraft.portalDisplayName}
+                  onChange={(event) => updateVisibilityDraft(a, { portalDisplayName: event.target.value })}
+                  placeholder="Customer display name"
+                />
+                <Select
+                  value={visibilityDraft.portalFileCategory}
+                  onValueChange={(value) => updateVisibilityDraft(a, { portalFileCategory: value as PortalFileCategory })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {portalFileCategoryValues
+                      .filter((category) => category !== "invoice_pdf")
+                      .map((category) => (
+                        <SelectItem key={category} value={category}>
+                          {getPortalFileCategoryLabel(category)}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <Textarea
+                value={visibilityDraft.portalDescription}
+                onChange={(event) => updateVisibilityDraft(a, { portalDescription: event.target.value })}
+                placeholder="Optional customer-safe description"
+                rows={2}
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="justify-self-start"
+                disabled={savingVisibilityId === a.id}
+                onClick={() => void handleSavePortalVisibility(a)}
+              >
+                {savingVisibilityId === a.id ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Saving
+                  </>
+                ) : (
+                  "Save portal visibility"
+                )}
+              </Button>
+            </div>
+          ) : null}
         </div>
 
         {/* Delete button (only for order attachments) */}

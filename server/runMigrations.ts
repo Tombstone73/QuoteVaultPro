@@ -178,6 +178,11 @@ type ReleaseCheck =
   | { type: "row_exists"; table: string; where: string; label: string };
 
 const RELEASE_CHECKS: ReleaseCheck[] = [
+  // migration 0059 - staff-controlled portal file visibility.
+  { type: "column_exists", table: "order_attachments", column: "customer_visible", label: "order_attachments.customer_visible" },
+  { type: "column_exists", table: "quote_attachments", column: "customer_visible", label: "quote_attachments.customer_visible" },
+  { type: "column_exists", table: "order_attachments", column: "portal_file_category", label: "order_attachments.portal_file_category" },
+  { type: "column_exists", table: "quote_attachments", column: "portal_file_category", label: "quote_attachments.portal_file_category" },
   // migration 0058 - PBV2 reusable option group templates.
   { type: "table_exists", table: "pbv2_option_group_templates", label: "pbv2_option_group_templates table" },
   // migration 0057 — quote line routing/design repair (guards production schema drift)

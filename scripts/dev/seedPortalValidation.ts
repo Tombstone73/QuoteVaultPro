@@ -1,5 +1,6 @@
 import "dotenv/config";
 import bcrypt from "bcryptjs";
+import { promises as fs } from "node:fs";
 import { and, eq, inArray, ne } from "drizzle-orm";
 
 import { db, pool } from "../../server/db";
@@ -11,18 +12,24 @@ import {
 import {
   authIdentities,
   customers,
+  fileRecords,
   invoiceLineItems,
   invoices,
   orderLineItems,
+  orderAttachments,
   orders,
   organizations,
   payments,
   products,
+  quoteAttachments,
   quoteLineItems,
   quoteWorkflowStates,
   quotes,
+  storagePlacements,
+  storageProviderConfigs,
   users,
 } from "../../shared/schema";
+import { resolveLocalStoragePath } from "../../server/services/localStoragePath";
 
 function money(cents: number): string {
   return (Math.max(0, Math.round(cents)) / 100).toFixed(2);
@@ -335,6 +342,137 @@ async function upsertQuoteLineItem(params: {
     });
 }
 
+async function upsertLocalPortalValidationAttachment(params: {
+  config: ReturnType<typeof parsePortalValidationSeedConfig>;
+  userId: string;
+  fileId: string;
+  parentType: "order" | "quote";
+  parentId: string;
+  filename: string;
+  body: string;
+  customerVisible: boolean;
+  portalFileCategory: string | null;
+  portalDisplayName: string | null;
+  portalDescription: string | null;
+}) {
+  const objectKey = `portal-validation/${params.config.seedKey}/${params.filename}`;
+  const localPath = resolveLocalStoragePath(objectKey);
+  await fs.mkdir(localPath.replace(/[\\/][^\\/]+$/, ""), { recursive: true });
+  await fs.writeFile(localPath, params.body, "utf8");
+  const bytes = Buffer.byteLength(params.body, "utf8");
+
+  await db
+    .insert(storageProviderConfigs)
+    .values({
+      id: params.config.storageProviderConfigId,
+      organizationId: params.config.organizationId,
+      providerType: "local_filesystem",
+      role: "canonical",
+      status: "configured",
+      displayName: "DEV Portal Validation Local Files",
+      configJson: {},
+      updatedAt: new Date(),
+    } as any)
+    .onConflictDoUpdate({
+      target: storageProviderConfigs.id,
+      set: {
+        providerType: "local_filesystem",
+        role: "canonical",
+        status: "configured",
+        displayName: "DEV Portal Validation Local Files",
+        configJson: {},
+        updatedAt: new Date(),
+      } as any,
+    });
+
+  await db
+    .insert(fileRecords)
+    .values({
+      id: params.fileId,
+      organizationId: params.config.organizationId,
+      storageClass: "hot",
+      lifecycleState: "stored_hot",
+      originalFilename: params.filename,
+      mimeType: "text/plain",
+      sizeBytes: bytes,
+      createdByUserId: params.userId,
+      updatedAt: new Date(),
+    } as any)
+    .onConflictDoUpdate({
+      target: fileRecords.id,
+      set: {
+        lifecycleState: "stored_hot",
+        originalFilename: params.filename,
+        mimeType: "text/plain",
+        sizeBytes: bytes,
+        updatedAt: new Date(),
+      } as any,
+    });
+
+  await db.delete(storagePlacements).where(eq(storagePlacements.fileRecordId, params.fileId));
+  await db.insert(storagePlacements).values({
+    id: `${params.fileId}-placement`,
+    fileRecordId: params.fileId,
+    providerConfigId: params.config.storageProviderConfigId,
+    placementRole: "canonical",
+    placementState: "active",
+    bucket: null,
+    objectKey: null,
+    localPathRef: objectKey,
+    sizeBytes: bytes,
+  } as any);
+
+  const baseAttachment = {
+    fileRecordId: params.fileId,
+    uploadedByUserId: params.userId,
+    uploadedByName: "Portal Validation Seed",
+    fileName: params.filename,
+    originalFilename: params.filename,
+    fileUrl: objectKey,
+    relativePath: objectKey,
+    fileSize: bytes,
+    sizeBytes: bytes,
+    mimeType: "text/plain",
+    description: "DEV-only portal validation fixture.",
+    customerVisible: params.customerVisible,
+    portalFileCategory: params.portalFileCategory,
+    portalDisplayName: params.portalDisplayName,
+    portalDescription: params.portalDescription,
+    portalVisibilityUpdatedAt: new Date(),
+    portalVisibilityUpdatedBy: params.userId,
+    updatedAt: new Date(),
+  } as any;
+
+  if (params.parentType === "order") {
+    await db
+      .insert(orderAttachments)
+      .values({
+        ...baseAttachment,
+        id: params.fileId,
+        orderId: params.parentId,
+        orderLineItemId: null,
+        quoteId: null,
+        role: "other",
+        side: "na",
+        isPrimary: false,
+      })
+      .onConflictDoUpdate({ target: orderAttachments.id, set: baseAttachment });
+    return;
+  }
+
+  await db
+    .insert(quoteAttachments)
+    .values({
+      ...baseAttachment,
+      id: params.fileId,
+      quoteId: params.parentId,
+      quoteLineItemId: null,
+      organizationId: params.config.organizationId,
+      bucket: "titan-private",
+    })
+    .onConflictDoUpdate({ target: quoteAttachments.id, set: { ...baseAttachment, organizationId: params.config.organizationId } });
+}
+
 async function main() {
   const config = parsePortalValidationSeedConfig();
   const safetyErrors = getPortalValidationSeedSafetyErrors(config);
@@ -533,6 +671,86 @@ async function main() {
   await upsertQuoteLineItem({ id: config.quoteLineItemIds.decline, quoteId: config.quoteIds.decline, productName: "Portal Validation Quote - Decline", config });
   await upsertQuoteLineItem({ id: config.quoteLineItemIds.revision, quoteId: config.quoteIds.revision, productName: "Portal Validation Quote - Revision", config });
   await upsertQuoteLineItem({ id: config.quoteLineItemIds.otherCustomer, quoteId: config.quoteIds.otherCustomer, productName: "Other Customer Hidden Quote", config });
+
+  await upsertLocalPortalValidationAttachment({
+    config,
+    userId: user.id,
+    fileId: config.fileIds.orderVisible,
+    parentType: "order",
+    parentId: config.orderIds.portalStatus,
+    filename: "portal-order-visible.txt",
+    body: "DEV portal validation visible order document.\n",
+    customerVisible: true,
+    portalFileCategory: "other_customer_document",
+    portalDisplayName: "Portal Validation Order Document",
+    portalDescription: "Customer-visible DEV order document.",
+  });
+  await upsertLocalPortalValidationAttachment({
+    config,
+    userId: user.id,
+    fileId: config.fileIds.orderStaffOnly,
+    parentType: "order",
+    parentId: config.orderIds.portalStatus,
+    filename: "portal-order-staff-only.txt",
+    body: "DEV portal validation staff-only order document.\n",
+    customerVisible: false,
+    portalFileCategory: null,
+    portalDisplayName: null,
+    portalDescription: null,
+  });
+  await upsertLocalPortalValidationAttachment({
+    config,
+    userId: user.id,
+    fileId: config.fileIds.otherOrderVisible,
+    parentType: "order",
+    parentId: config.orderIds.otherCustomer,
+    filename: "portal-order-other-visible.txt",
+    body: "DEV portal validation other customer order document.\n",
+    customerVisible: true,
+    portalFileCategory: "other_customer_document",
+    portalDisplayName: "Other Customer Order Document",
+    portalDescription: "This should never be accessible to the portal test customer.",
+  });
+  await upsertLocalPortalValidationAttachment({
+    config,
+    userId: user.id,
+    fileId: config.fileIds.quoteVisible,
+    parentType: "quote",
+    parentId: config.quoteIds.active,
+    filename: "portal-quote-visible.txt",
+    body: "DEV portal validation visible quote document.\n",
+    customerVisible: true,
+    portalFileCategory: "quote_pdf",
+    portalDisplayName: "Portal Validation Quote Document",
+    portalDescription: "Customer-visible DEV quote document.",
+  });
+  await upsertLocalPortalValidationAttachment({
+    config,
+    userId: user.id,
+    fileId: config.fileIds.quoteStaffOnly,
+    parentType: "quote",
+    parentId: config.quoteIds.active,
+    filename: "portal-quote-staff-only.txt",
+    body: "DEV portal validation staff-only quote document.\n",
+    customerVisible: false,
+    portalFileCategory: null,
+    portalDisplayName: null,
+    portalDescription: null,
+  });
+  await upsertLocalPortalValidationAttachment({
+    config,
+    userId: user.id,
+    fileId: config.fileIds.otherQuoteVisible,
+    parentType: "quote",
+    parentId: config.quoteIds.otherCustomer,
+    filename: "portal-quote-other-visible.txt",
+    body: "DEV portal validation other customer quote document.\n",
+    customerVisible: true,
+    portalFileCategory: "quote_pdf",
+    portalDisplayName: "Other Customer Quote Document",
+    portalDescription: "This should never be accessible to the portal test customer.",
+  });
+
   await upsertInvoice({
     id: config.invoiceIds.paid,
     invoiceNumber: config.invoiceNumbers.paid,
@@ -646,6 +864,7 @@ async function main() {
         customerId: config.customerId,
         orderIds: config.orderIds,
         quoteIds: config.quoteIds,
+        fileIds: config.fileIds,
         organizationId: config.organizationId,
         invoices: {
           payable: { id: config.invoiceIds.payable, invoiceNumber: config.invoiceNumbers.payable },

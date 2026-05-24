@@ -22,6 +22,15 @@ export type PortalValidationSeedConfig = {
   customerId: string;
   otherCustomerId: string;
   productId: string;
+  storageProviderConfigId: string;
+  fileIds: {
+    orderVisible: string;
+    orderStaffOnly: string;
+    otherOrderVisible: string;
+    quoteVisible: string;
+    quoteStaffOnly: string;
+    otherQuoteVisible: string;
+  };
   orderIds: {
     portalStatus: string;
     otherCustomer: string;
@@ -141,6 +150,15 @@ export function parsePortalValidationSeedConfig(
     customerId: `portal-validation-customer-${seedKey}`,
     otherCustomerId: `portal-validation-other-customer-${seedKey}`,
     productId: `portal-validation-product-${seedKey}`,
+    storageProviderConfigId: `portal-validation-local-storage-${seedKey}`,
+    fileIds: {
+      orderVisible: `portal-validation-file-order-visible-${seedKey}`,
+      orderStaffOnly: `portal-validation-file-order-staff-only-${seedKey}`,
+      otherOrderVisible: `portal-validation-file-order-other-visible-${seedKey}`,
+      quoteVisible: `portal-validation-file-quote-visible-${seedKey}`,
+      quoteStaffOnly: `portal-validation-file-quote-staff-only-${seedKey}`,
+      otherQuoteVisible: `portal-validation-file-quote-other-visible-${seedKey}`,
+    },
     orderIds: {
       portalStatus: `portal-validation-order-status-${seedKey}`,
       otherCustomer: `portal-validation-order-other-${seedKey}`,

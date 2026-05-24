@@ -307,7 +307,7 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
   const showEmptyText = isEmpty && !isUploading && uploadItems.length === 0;
 // PACK B: Show thumbnail grid + "View All" button when attachments > 6
   const THUMBNAIL_GRID_LIMIT = 6;
-  const showViewAll = attachments.length > THUMBNAIL_GRID_LIMIT;
+  const showViewAll = attachments.length > 0;
   const displayedAttachments = showViewAll ? attachments.slice(0, THUMBNAIL_GRID_LIMIT) : attachments;
 
   // PACK C: Download all as zip handler
@@ -510,7 +510,7 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
                   className="w-full"
                   onClick={() => setViewAllOpen(true)}
                 >
-                  View all attachments ({attachments.length})
+                  Manage attachments ({attachments.length})
                 </Button>
               )}
             </div>
@@ -549,6 +549,9 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
         onDownloadAll={attachments.length > 0 ? handleDownloadAllZip : undefined}
         onDownload={handleDownloadAttachment}
         onDeleteAttachment={(a) => setAttachmentToDelete(a as any)}
+        onPortalVisibilityUpdated={() => {
+          queryClient.invalidateQueries({ queryKey: [attachmentsApiPath] });
+        }}
         canDelete={!isLocked}
         orderId={orderId}
         parentType="order"

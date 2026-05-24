@@ -27,6 +27,7 @@ import {
   computeInvoicePaymentRollup,
   getInvoicePaymentStatusLabel,
 } from "@shared/rollups/invoicePaymentRollup";
+import { getPortalFileCategoryLabel, normalizePortalFileCategory } from "@shared/portalFileVisibility";
 import { getStripeClient } from "../lib/stripe";
 import { refreshInvoiceStatus } from "../invoicesService";
 import { generateInvoicePdfBytes } from "./invoicePdf";
@@ -76,6 +77,7 @@ export type PortalInvoicePaymentDto = {
 export type PortalFileDto = {
   id: string;
   displayName: string;
+  description: string | null;
   fileTypeLabel: string;
   uploadedAt: string | null;
   fileSize: number | null;
@@ -372,6 +374,10 @@ type PortalAttachmentRow = {
   previewKey?: string | null;
   thumbnailUrl?: string | null;
   bucket?: string | null;
+  customerVisible?: boolean | null;
+  portalFileCategory?: string | null;
+  portalDisplayName?: string | null;
+  portalDescription?: string | null;
 };
 
 const CUSTOMER_VISIBLE_INVOICE_STATUSES = ["billed", "sent", "partially_paid", "overdue", "paid", "void", "open"];
@@ -1272,10 +1278,11 @@ function mapPortalAttachmentFile(
   categoryLabel: string,
   idPrefix = "",
 ): PortalFileDto {
-  const displayName = sanitizeDownloadFilename(attachment.originalFilename || attachment.fileName, `file-${attachment.id}`);
+  const displayName = sanitizeDownloadFilename(attachment.portalDisplayName || attachment.originalFilename || attachment.fileName, `file-${attachment.id}`);
   return {
     id: `${idPrefix}${attachment.id}`,
     displayName,
+    description: attachment.portalDescription ? String(attachment.portalDescription) : null,
     fileTypeLabel: fileTypeLabel(attachment.mimeType, displayName),
     uploadedAt: toIso(attachment.createdAt),
     fileSize: attachment.sizeBytes ?? attachment.fileSize ?? null,
@@ -1290,6 +1297,7 @@ function mapInvoicePdfFile(invoice: InvoicePaymentPortalRow): PortalFileDto {
   return {
     id: "pdf",
     displayName: `invoice-${invoiceNumber}.pdf`,
+    description: null,
     fileTypeLabel: "PDF",
     uploadedAt: toIso(invoice.issueDate),
     fileSize: null,
@@ -1339,18 +1347,16 @@ async function getCustomerVisibleProofAttachmentIds(scope: PortalScope, orderId:
 }
 
 function isCustomerVisibleOrderAttachment(attachment: PortalAttachmentRow, proofAttachmentIds: Set<string>, scope: PortalScope): boolean {
-  const role = normalizeStatus(attachment.role);
+  void scope;
   if (proofAttachmentIds.has(attachment.id)) return true;
-  if (role === "customer_po") return true;
-  if (attachment.uploadedByUserId && attachment.uploadedByUserId === scope.userId) return true;
-  return false;
+  return attachment.customerVisible === true;
 }
 
 function orderAttachmentCategory(attachment: PortalAttachmentRow, proofAttachmentIds: Set<string>): string {
   const role = normalizeStatus(attachment.role);
+  if (attachment.customerVisible) return getPortalFileCategoryLabel(attachment.portalFileCategory);
   if (proofAttachmentIds.has(attachment.id) || role === "proof") return "Proof";
-  if (role === "customer_po") return "Customer PO";
-  return "Customer File";
+  return getPortalFileCategoryLabel(normalizePortalFileCategory(attachment.portalFileCategory));
 }
 
 async function loadVisibleOrderAttachments(scope: PortalScope, orderId: string): Promise<PortalAttachmentRow[] | null> {
@@ -1373,6 +1379,10 @@ async function loadVisibleOrderAttachments(scope: PortalScope, orderId: string):
       thumbKey: orderAttachments.thumbKey,
       previewKey: orderAttachments.previewKey,
       thumbnailUrl: orderAttachments.thumbnailUrl,
+      customerVisible: orderAttachments.customerVisible,
+      portalFileCategory: orderAttachments.portalFileCategory,
+      portalDisplayName: orderAttachments.portalDisplayName,
+      portalDescription: orderAttachments.portalDescription,
     })
     .from(orderAttachments)
     .where(eq(orderAttachments.orderId, scopedOrderId))
@@ -1399,12 +1409,16 @@ async function loadVisibleQuoteAttachments(scope: PortalScope, quoteId: string):
       thumbKey: quoteAttachments.thumbKey,
       previewKey: quoteAttachments.previewKey,
       bucket: quoteAttachments.bucket,
+      customerVisible: quoteAttachments.customerVisible,
+      portalFileCategory: quoteAttachments.portalFileCategory,
+      portalDisplayName: quoteAttachments.portalDisplayName,
+      portalDescription: quoteAttachments.portalDescription,
     })
     .from(quoteAttachments)
     .where(and(eq(quoteAttachments.quoteId, scopedQuoteId), eq(quoteAttachments.organizationId, scope.organizationId)))
     .orderBy(desc(quoteAttachments.createdAt));
 
-  return rows.filter((row) => row.uploadedByUserId === scope.userId);
+  return rows.filter((row) => row.customerVisible === true);
 }
 
 export async function listPortalInvoiceFiles(req: Request, invoiceId: string): Promise<PortalFileDto[] | null> {
@@ -1426,7 +1440,7 @@ export async function listPortalQuoteFiles(req: Request, quoteId: string): Promi
   const scope = getPortalScope(req);
   const attachments = await loadVisibleQuoteAttachments(scope, quoteId);
   if (!attachments) return null;
-  return attachments.map((attachment) => mapPortalAttachmentFile(attachment, "Quote File", "qa_"));
+  return attachments.map((attachment) => mapPortalAttachmentFile(attachment, getPortalFileCategoryLabel(attachment.portalFileCategory), "qa_"));
 }
 
 async function portalAttachmentDownload(attachment: PortalAttachmentRow): Promise<PortalFileDownloadResult | null> {
