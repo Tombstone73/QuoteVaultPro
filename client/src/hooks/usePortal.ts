@@ -178,10 +178,10 @@ export type PortalDashboardFileDto = PortalFileDto & {
 
 export type PortalDashboardActivityDto = {
   id: string;
-  type: "invoice" | "quote" | "order" | "file";
+  type: "invoice" | "quote" | "order" | "file" | "proof";
   label: string;
   occurredAt: string | null;
-  targetType: "invoice" | "quote" | "order" | "file";
+  targetType: "invoice" | "quote" | "order" | "file" | "proof";
   targetId: string;
 };
 
@@ -196,8 +196,56 @@ export type PortalDashboardDto = {
   invoices: PortalInvoiceDto[];
   quotes: PortalQuoteListDto[];
   activeOrders: PortalOrderListDto[];
+  proofs: PortalProofDto[];
   recentFiles: PortalDashboardFileDto[];
   recentActivity: PortalDashboardActivityDto[];
+};
+
+export type PortalProofStatus =
+  | "awaiting_customer"
+  | "approved"
+  | "rejected"
+  | "revision_requested"
+  | "superseded"
+  | "unavailable"
+  | "under_review";
+
+export type PortalProofAction = "approve" | "reject" | "request_revision";
+
+export type PortalProofDto = {
+  id: string;
+  versionNumber: number;
+  status: PortalProofStatus;
+  displayStatus: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  previewAvailable: boolean;
+  proofFileAvailable: boolean;
+  proofNotes: string | null;
+  lineItemSummary: {
+    id: string;
+    name: string;
+    quantity: number;
+    dimensions: { width: number | null; height: number | null };
+  };
+  orderSummary: {
+    id: string;
+    orderNumber: string;
+    displayStatus: string;
+  };
+  customerActionRequired: boolean;
+  history?: Array<{
+    id: string;
+    versionNumber: number;
+    displayStatus: string;
+    createdAt: string | null;
+    respondedAt: string | null;
+  }>;
+};
+
+export type PortalProofActionResultDto = {
+  proof: PortalProofDto;
+  message: string;
 };
 
 export const portalDashboardKeys = {
@@ -221,6 +269,11 @@ export const portalQuoteKeys = {
   all: ["portal", "quotes"] as const,
   detail: (quoteId: string | undefined) => ["portal", "quotes", quoteId] as const,
   files: (quoteId: string | undefined) => ["portal", "quotes", quoteId, "files"] as const,
+};
+
+export const portalProofKeys = {
+  all: ["portal", "proofs"] as const,
+  detail: (proofId: string | undefined) => ["portal", "proofs", proofId] as const,
 };
 
 async function portalFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -250,6 +303,10 @@ export function portalInvoicePdfUrl(invoiceId: string, download = false) {
 
 export function portalFileDownloadUrl(entity: "invoices" | "orders" | "quotes", entityId: string, fileId: string) {
   return `/api/portal/${entity}/${encodeURIComponent(entityId)}/files/${encodeURIComponent(fileId)}`;
+}
+
+export function portalProofFileUrl(proofId: string) {
+  return `/api/portal/proofs/${encodeURIComponent(proofId)}/file`;
 }
 
 export function usePortalSession() {
@@ -377,6 +434,43 @@ export function usePortalQuoteAction(quoteId: string | undefined) {
             : "request-revision";
 
       return portalFetch<PortalQuoteActionResultDto>(`/api/portal/quotes/${encodeURIComponent(quoteId)}/${actionPath}`, {
+        method: "POST",
+        body: JSON.stringify(note ? { note } : {}),
+      });
+    },
+  });
+}
+
+export function usePortalProofs() {
+  return useQuery({
+    queryKey: portalProofKeys.all,
+    queryFn: () => portalFetch<PortalProofDto[]>("/api/portal/proofs"),
+  });
+}
+
+export function usePortalProof(proofId: string | undefined) {
+  return useQuery({
+    queryKey: portalProofKeys.detail(proofId),
+    queryFn: () => {
+      if (!proofId) throw new Error("Proof ID required");
+      return portalFetch<PortalProofDto>(`/api/portal/proofs/${encodeURIComponent(proofId)}`);
+    },
+    enabled: !!proofId,
+  });
+}
+
+export function usePortalProofAction(proofId: string | undefined) {
+  return useMutation({
+    mutationFn: async ({ action, note }: { action: PortalProofAction; note?: string | null }) => {
+      if (!proofId) throw new Error("Proof ID required");
+      const actionPath =
+        action === "approve"
+          ? "approve"
+          : action === "reject"
+            ? "reject"
+            : "request-revision";
+
+      return portalFetch<PortalProofActionResultDto>(`/api/portal/proofs/${encodeURIComponent(proofId)}/${actionPath}`, {
         method: "POST",
         body: JSON.stringify(note ? { note } : {}),
       });

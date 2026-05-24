@@ -39,6 +39,8 @@ import MyOrders from "@/pages/portal/my-orders";
 import PortalDashboardPage from "@/pages/portal/dashboard";
 import PortalDocumentsPage from "@/pages/portal/documents";
 import PortalOrderDetailPage from "@/pages/portal/order-detail";
+import PortalProofDetailPage from "@/pages/portal/proof-detail";
+import PortalProofsPage from "@/pages/portal/proofs";
 import PortalQuoteDetailPage from "@/pages/portal/quote-detail";
 import PortalInvoicesPage from "@/pages/portal/invoices";
 import PortalInvoiceDetailPage from "@/pages/portal/invoice-detail";
@@ -304,6 +306,8 @@ function Router() {
         <Route path="invoices/:id" element={<PortalInvoiceDetailPage />} />
         <Route path="my-orders" element={<MyOrders />} />
         <Route path="orders/:id" element={<PortalOrderDetailPage />} />
+        <Route path="proofs" element={<PortalProofsPage />} />
+        <Route path="proofs/:id" element={<PortalProofDetailPage />} />
         <Route path="my-quotes" element={<MyQuotes />} />
         <Route path="quotes/:id" element={<PortalQuoteDetailPage />} />
         <Route path="documents" element={<PortalDocumentsPage />} />

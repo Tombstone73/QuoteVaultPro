@@ -10,6 +10,7 @@ import {
   type PortalDashboardFileDto,
   type PortalInvoiceDto,
   type PortalOrderListDto,
+  type PortalProofDto,
   type PortalQuoteListDto,
 } from "@/hooks/usePortal";
 
@@ -124,6 +125,25 @@ function OrderItem({ order }: { order: PortalOrderListDto }) {
           <Link to={`/portal/orders/${order.id}`}>Open</Link>
         </Button>
       </div>
+    </div>
+  );
+}
+
+function ProofItem({ proof }: { proof: PortalProofDto }) {
+  return (
+    <div className="flex flex-col gap-3 rounded-md border p-4 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Link to={`/portal/proofs/${proof.id}`} className="font-medium hover:underline">
+            Proof v{proof.versionNumber} / Order #{proof.orderSummary.orderNumber}
+          </Link>
+          <Badge variant="secondary">Awaiting Your Approval</Badge>
+        </div>
+        <p className="mt-1 text-sm text-muted-foreground">{proof.lineItemSummary.name}</p>
+      </div>
+      <Button asChild variant="outline" size="sm">
+        <Link to={`/portal/proofs/${proof.id}`}>Review</Link>
+      </Button>
     </div>
   );
 }
@@ -256,6 +276,23 @@ export default function PortalDashboardPage() {
           </CardContent>
         </Card>
 
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle>Proofs Awaiting Approval</CardTitle>
+            <Button asChild variant="ghost" size="sm">
+              <Link to="/portal/proofs">
+                View all
+                <ArrowRight className="ml-2 h-4 w-4" />
+              </Link>
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {data.proofs.length ? data.proofs.map((proof) => <ProofItem key={proof.id} proof={proof} />) : <EmptyState text="No proofs awaiting approval" />}
+          </CardContent>
+        </Card>
+      </section>
+
+      <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>Recent Documents</CardTitle>

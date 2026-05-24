@@ -15,6 +15,8 @@ import {
   fileRecords,
   invoiceLineItems,
   invoices,
+  lineItemProofApprovals,
+  lineItemProofVersions,
   orderLineItems,
   orderAttachments,
   orders,
@@ -27,9 +29,11 @@ import {
   quotes,
   storagePlacements,
   storageProviderConfigs,
+  proofAccessTokens,
   users,
 } from "../../shared/schema";
 import { resolveLocalStoragePath } from "../../server/services/localStoragePath";
+import { sha256Hex } from "../../server/lib/tokenHash";
 
 function money(cents: number): string {
   return (Math.max(0, Math.round(cents)) / 100).toFixed(2);
@@ -216,6 +220,7 @@ async function upsertOrderLineItem(params: {
   description: string;
   workflowState: string;
   requiresProofApproval: boolean;
+  approvedProofVersionId?: string | null;
   config: ReturnType<typeof parsePortalValidationSeedConfig>;
 }) {
   const values = {
@@ -234,6 +239,7 @@ async function upsertOrderLineItem(params: {
     status: "new",
     workflowState: params.workflowState,
     requiresProofApproval: params.requiresProofApproval,
+    approvedProofVersionId: params.approvedProofVersionId ?? null,
     requiresInventory: false,
     requiresDesign: false,
     requiresPrepress: false,
@@ -354,6 +360,10 @@ async function upsertLocalPortalValidationAttachment(params: {
   portalFileCategory: string | null;
   portalDisplayName: string | null;
   portalDescription: string | null;
+  role?: string;
+  orderLineItemId?: string | null;
+  mimeType?: string;
+  previewReady?: boolean;
 }) {
   const objectKey = `portal-validation/${params.config.seedKey}/${params.filename}`;
   const localPath = resolveLocalStoragePath(objectKey);
@@ -393,7 +403,7 @@ async function upsertLocalPortalValidationAttachment(params: {
       storageClass: "hot",
       lifecycleState: "stored_hot",
       originalFilename: params.filename,
-      mimeType: "text/plain",
+      mimeType: params.mimeType || "text/plain",
       sizeBytes: bytes,
       createdByUserId: params.userId,
       updatedAt: new Date(),
@@ -403,7 +413,7 @@ async function upsertLocalPortalValidationAttachment(params: {
       set: {
         lifecycleState: "stored_hot",
         originalFilename: params.filename,
-        mimeType: "text/plain",
+        mimeType: params.mimeType || "text/plain",
         sizeBytes: bytes,
         updatedAt: new Date(),
       } as any,
@@ -432,7 +442,8 @@ async function upsertLocalPortalValidationAttachment(params: {
     relativePath: objectKey,
     fileSize: bytes,
     sizeBytes: bytes,
-    mimeType: "text/plain",
+    mimeType: params.mimeType || "text/plain",
+    thumbKey: params.previewReady ? `portal-validation/${params.config.seedKey}/${params.filename}` : null,
     description: "DEV-only portal validation fixture.",
     customerVisible: params.customerVisible,
     portalFileCategory: params.portalFileCategory,
@@ -450,9 +461,9 @@ async function upsertLocalPortalValidationAttachment(params: {
         ...baseAttachment,
         id: params.fileId,
         orderId: params.parentId,
-        orderLineItemId: null,
+        orderLineItemId: params.orderLineItemId ?? null,
         quoteId: null,
-        role: "other",
+        role: params.role || "other",
         side: "na",
         isPrimary: false,
       })
@@ -471,6 +482,99 @@ async function upsertLocalPortalValidationAttachment(params: {
       bucket: "titan-private",
     })
     .onConflictDoUpdate({ target: quoteAttachments.id, set: { ...baseAttachment, organizationId: params.config.organizationId } });
+}
+
+async function upsertProofVersion(params: {
+  config: ReturnType<typeof parsePortalValidationSeedConfig>;
+  proofVersionId: string;
+  orderId: string;
+  lineItemId: string;
+  proofFileId: string;
+  versionNumber: number;
+  status: "awaiting_response" | "approved" | "superseded";
+  userId: string;
+}) {
+  const values = {
+    id: params.proofVersionId,
+    organizationId: params.config.organizationId,
+    orderId: params.orderId,
+    lineItemId: params.lineItemId,
+    proofFileId: params.proofFileId,
+    versionNumber: params.versionNumber,
+    status: params.status,
+    customerMessage: "Please review this DEV validation proof.",
+    customerVisibleDisclaimer: "Verify spelling, layout, and sizing before approval.",
+    sentToName: "Portal Validation",
+    sentToEmail: params.config.email,
+    sentByUserId: params.userId,
+    sentAt: new Date(),
+    createdByUserId: params.userId,
+    updatedAt: new Date(),
+  } as any;
+
+  await db
+    .insert(lineItemProofVersions)
+    .values(values)
+    .onConflictDoUpdate({
+      target: lineItemProofVersions.id,
+      set: values,
+    });
+}
+
+async function upsertApprovedProofResponse(params: {
+  config: ReturnType<typeof parsePortalValidationSeedConfig>;
+  approvalId: string;
+  proofVersionId: string;
+  orderId: string;
+  lineItemId: string;
+  userId: string;
+}) {
+  const values = {
+    id: params.approvalId,
+    organizationId: params.config.organizationId,
+    orderId: params.orderId,
+    lineItemId: params.lineItemId,
+    proofVersionId: params.proofVersionId,
+    decision: "approved",
+    responseNotes: "DEV validation approved proof history.",
+    responderUserId: params.userId,
+    responderName: "Portal Validation",
+    responderEmail: params.config.email,
+    responderSource: "customer",
+  } as any;
+
+  await db
+    .insert(lineItemProofApprovals)
+    .values(values)
+    .onConflictDoUpdate({
+      target: lineItemProofApprovals.id,
+      set: values,
+    });
+}
+
+async function upsertProofAccessToken(params: {
+  config: ReturnType<typeof parsePortalValidationSeedConfig>;
+  proofVersionId: string;
+  lineItemId: string;
+}) {
+  const values = {
+    id: params.config.proofTokenId,
+    organizationId: params.config.organizationId,
+    lineItemId: params.lineItemId,
+    proofVersionId: params.proofVersionId,
+    token: sha256Hex(params.config.proofTokenRaw),
+    expiresAt: daysFromNow(30),
+    revokedAt: null,
+    createdBy: "portal-validation-seed",
+  } as any;
+
+  await db
+    .insert(proofAccessTokens)
+    .values(values)
+    .onConflictDoUpdate({
+      target: proofAccessTokens.id,
+      set: values,
+    });
 }
 
 async function main() {
@@ -593,6 +697,30 @@ async function main() {
     config,
   });
   await upsertOrderLineItem({
+    id: config.orderLineItemIds.portalStatusApprovedProof,
+    orderId: config.orderIds.portalStatus,
+    description: "Portal Validation Approved Proof Item",
+    workflowState: "ready_for_prepress",
+    requiresProofApproval: true,
+    config,
+  });
+  await upsertOrderLineItem({
+    id: config.orderLineItemIds.portalStatusSupersededProof,
+    orderId: config.orderIds.portalStatus,
+    description: "Portal Validation Superseded Proof Item",
+    workflowState: "awaiting_proof_approval",
+    requiresProofApproval: true,
+    config,
+  });
+  await upsertOrderLineItem({
+    id: config.orderLineItemIds.otherCustomerProof,
+    orderId: config.orderIds.otherCustomer,
+    description: "Other Customer Hidden Proof Item",
+    workflowState: "awaiting_proof_approval",
+    requiresProofApproval: true,
+    config,
+  });
+  await upsertOrderLineItem({
     id: config.orderLineItemIds.otherCustomer,
     orderId: config.orderIds.otherCustomer,
     description: "Other Customer Hidden Item",
@@ -711,6 +839,133 @@ async function main() {
     portalDisplayName: "Other Customer Order Document",
     portalDescription: "This should never be accessible to the portal test customer.",
   });
+  await upsertLocalPortalValidationAttachment({
+    config,
+    userId: user.id,
+    fileId: config.fileIds.proofActionable,
+    parentType: "order",
+    parentId: config.orderIds.portalStatus,
+    orderLineItemId: config.orderLineItemIds.portalStatusProof,
+    filename: "portal-proof-actionable.png",
+    body: "DEV portal validation actionable proof file.\n",
+    customerVisible: false,
+    portalFileCategory: "proof",
+    portalDisplayName: "Portal Validation Proof",
+    portalDescription: "Customer proof awaiting approval.",
+    role: "proof",
+    mimeType: "image/png",
+    previewReady: true,
+  });
+  await upsertLocalPortalValidationAttachment({
+    config,
+    userId: user.id,
+    fileId: config.fileIds.proofApproved,
+    parentType: "order",
+    parentId: config.orderIds.portalStatus,
+    orderLineItemId: config.orderLineItemIds.portalStatusApprovedProof,
+    filename: "portal-proof-approved.png",
+    body: "DEV portal validation approved proof file.\n",
+    customerVisible: false,
+    portalFileCategory: "proof",
+    portalDisplayName: "Portal Validation Approved Proof",
+    portalDescription: "Customer proof already approved.",
+    role: "proof",
+    mimeType: "image/png",
+    previewReady: true,
+  });
+  await upsertLocalPortalValidationAttachment({
+    config,
+    userId: user.id,
+    fileId: config.fileIds.proofSuperseded,
+    parentType: "order",
+    parentId: config.orderIds.portalStatus,
+    orderLineItemId: config.orderLineItemIds.portalStatusSupersededProof,
+    filename: "portal-proof-superseded.png",
+    body: "DEV portal validation superseded proof file.\n",
+    customerVisible: false,
+    portalFileCategory: "proof",
+    portalDisplayName: "Portal Validation Superseded Proof",
+    portalDescription: "Customer proof that is no longer current.",
+    role: "proof",
+    mimeType: "image/png",
+    previewReady: true,
+  });
+  await upsertLocalPortalValidationAttachment({
+    config,
+    userId: user.id,
+    fileId: config.fileIds.otherProof,
+    parentType: "order",
+    parentId: config.orderIds.otherCustomer,
+    orderLineItemId: config.orderLineItemIds.otherCustomerProof,
+    filename: "portal-proof-other.png",
+    body: "DEV portal validation other customer proof file.\n",
+    customerVisible: false,
+    portalFileCategory: "proof",
+    portalDisplayName: "Other Customer Proof",
+    portalDescription: "This should never be accessible to the portal test customer.",
+    role: "proof",
+    mimeType: "image/png",
+    previewReady: true,
+  });
+
+  await upsertProofVersion({
+    config,
+    proofVersionId: config.proofVersionIds.actionable,
+    orderId: config.orderIds.portalStatus,
+    lineItemId: config.orderLineItemIds.portalStatusProof,
+    proofFileId: config.fileIds.proofActionable,
+    versionNumber: 1,
+    status: "awaiting_response",
+    userId: user.id,
+  });
+  await upsertProofVersion({
+    config,
+    proofVersionId: config.proofVersionIds.approved,
+    orderId: config.orderIds.portalStatus,
+    lineItemId: config.orderLineItemIds.portalStatusApprovedProof,
+    proofFileId: config.fileIds.proofApproved,
+    versionNumber: 1,
+    status: "approved",
+    userId: user.id,
+  });
+  await upsertProofVersion({
+    config,
+    proofVersionId: config.proofVersionIds.superseded,
+    orderId: config.orderIds.portalStatus,
+    lineItemId: config.orderLineItemIds.portalStatusSupersededProof,
+    proofFileId: config.fileIds.proofSuperseded,
+    versionNumber: 1,
+    status: "superseded",
+    userId: user.id,
+  });
+  await upsertProofVersion({
+    config,
+    proofVersionId: config.proofVersionIds.otherCustomer,
+    orderId: config.orderIds.otherCustomer,
+    lineItemId: config.orderLineItemIds.otherCustomerProof,
+    proofFileId: config.fileIds.otherProof,
+    versionNumber: 1,
+    status: "awaiting_response",
+    userId: user.id,
+  });
+  await upsertApprovedProofResponse({
+    config,
+    approvalId: config.proofApprovalIds.approved,
+    proofVersionId: config.proofVersionIds.approved,
+    orderId: config.orderIds.portalStatus,
+    lineItemId: config.orderLineItemIds.portalStatusApprovedProof,
+    userId: user.id,
+  });
+  await db
+    .update(orderLineItems)
+    .set({ approvedProofVersionId: config.proofVersionIds.approved, updatedAt: new Date() } as any)
+    .where(eq(orderLineItems.id, config.orderLineItemIds.portalStatusApprovedProof));
+  await upsertProofAccessToken({
+    config,
+    proofVersionId: config.proofVersionIds.actionable,
+    lineItemId: config.orderLineItemIds.portalStatusProof,
+  });
+
   await upsertLocalPortalValidationAttachment({
     config,
     userId: user.id,
@@ -863,6 +1118,7 @@ async function main() {
         userId: user.id,
         customerId: config.customerId,
         orderIds: config.orderIds,
+        proofVersionIds: config.proofVersionIds,
         quoteIds: config.quoteIds,
         fileIds: config.fileIds,
         organizationId: config.organizationId,

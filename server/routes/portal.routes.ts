@@ -4,6 +4,7 @@ import { promises as fsPromises } from "node:fs";
 
 import {
   approvePortalQuote,
+  approvePortalProof,
   confirmPortalStripePayment,
   createPortalStripePaymentIntent,
   declinePortalQuote,
@@ -13,6 +14,8 @@ import {
   getPortalInvoice,
   getPortalOrder,
   getPortalOrderFileDownload,
+  getPortalProof,
+  getPortalProofFileDownload,
   getPortalQuote,
   getPortalQuoteFileDownload,
   getPortalSession,
@@ -21,9 +24,12 @@ import {
   listPortalInvoices,
   listPortalOrderFiles,
   listPortalOrders,
+  listPortalProofs,
   listPortalQuoteFiles,
   listPortalQuotes,
   type PortalFileDownloadResult,
+  rejectPortalProof,
+  requestPortalProofRevision,
   requestPortalQuoteRevision,
   toPortalErrorResponse,
 } from "../services/portal.service";
@@ -222,6 +228,33 @@ function portalFileDownload(
   };
 }
 
+function portalProofFileDownload(
+  handler: (req: Request, proofId: string) => Promise<PortalFileDownloadResult | null>,
+) {
+  return async (req: Request, res: Response) => {
+    try {
+      const id = String(req.params.id || "").trim();
+      if (!id) {
+        return res.status(404).json({ success: false, message: "Not found" });
+      }
+
+      const result = await handler(req, id);
+      if (!result) {
+        return res.status(404).json({ success: false, message: "Not found" });
+      }
+
+      return sendPortalFile(res, result);
+    } catch (error) {
+      console.error("[Portal] proof file request failed", {
+        path: req.path,
+        method: req.method,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return sendPortalError(res, error);
+    }
+  };
+}
+
 function denyOutOfPhasePortalSurface(_req: Request, res: Response) {
   return res.status(404).json({ success: false, message: "Not found" });
 }
@@ -252,6 +285,13 @@ export function registerPortalRoutes(
   app.get("/api/portal/orders/:id/files", ...portalMiddlewares, portalGetById("id", listPortalOrderFiles));
   app.get("/api/portal/orders/:id/files/:fileId", ...portalMiddlewares, portalFileDownload(getPortalOrderFileDownload));
   app.get("/api/portal/orders/:id", ...portalMiddlewares, portalGetById("id", getPortalOrder));
+
+  app.get("/api/portal/proofs", ...portalMiddlewares, portalGet(listPortalProofs));
+  app.get("/api/portal/proofs/:id/file", ...portalMiddlewares, portalProofFileDownload(getPortalProofFileDownload));
+  app.post("/api/portal/proofs/:id/approve", ...portalMiddlewares, portalPostById("id", approvePortalProof));
+  app.post("/api/portal/proofs/:id/reject", ...portalMiddlewares, portalPostById("id", rejectPortalProof));
+  app.post("/api/portal/proofs/:id/request-revision", ...portalMiddlewares, portalPostById("id", requestPortalProofRevision));
+  app.get("/api/portal/proofs/:id", ...portalMiddlewares, portalGetById("id", getPortalProof));
 
   app.get("/api/portal/quotes", ...portalMiddlewares, portalGet(listPortalQuotes));
   app.post("/api/portal/quotes/:id/approve", ...portalMiddlewares, portalPostById("id", approvePortalQuote));

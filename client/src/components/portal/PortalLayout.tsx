@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { Files, FileText, Home, ReceiptText, ShoppingBag } from "lucide-react";
+import { FileCheck, Files, FileText, Home, ReceiptText, ShoppingBag } from "lucide-react";
 
 import { usePortalSession } from "@/hooks/usePortal";
 
@@ -7,6 +7,7 @@ const navItems = [
   { to: "/portal", label: "Dashboard", icon: Home, end: true },
   { to: "/portal/invoices", label: "Invoices", icon: ReceiptText },
   { to: "/portal/my-orders", label: "Orders", icon: ShoppingBag },
+  { to: "/portal/proofs", label: "Proofs", icon: FileCheck },
   { to: "/portal/my-quotes", label: "Quotes", icon: FileText },
   { to: "/portal/documents", label: "Documents", icon: Files },
 ];

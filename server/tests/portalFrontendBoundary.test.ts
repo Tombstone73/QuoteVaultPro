@@ -16,6 +16,8 @@ function readPortalFrontendSource(): string {
     "client/src/pages/portal/invoices.tsx",
     "client/src/pages/portal/my-orders.tsx",
     "client/src/pages/portal/order-detail.tsx",
+    "client/src/pages/portal/proofs.tsx",
+    "client/src/pages/portal/proof-detail.tsx",
     "client/src/pages/portal/my-quotes.tsx",
     "client/src/pages/portal/quote-detail.tsx",
     "client/src/components/portal/PortalLayout.tsx",
@@ -37,6 +39,7 @@ describe("portal frontend API boundary", () => {
     expect(source).not.toContain("/api/portal/my-quotes");
     expect(source).not.toContain("/api/portal/products");
     expect(source).not.toContain("/api/portal/convert-quote");
+    expect(source).not.toContain("/api/proofing");
     expect(source).not.toContain("/api/objects");
   });
 

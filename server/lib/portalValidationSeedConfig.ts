@@ -27,6 +27,10 @@ export type PortalValidationSeedConfig = {
     orderVisible: string;
     orderStaffOnly: string;
     otherOrderVisible: string;
+    proofActionable: string;
+    proofApproved: string;
+    proofSuperseded: string;
+    otherProof: string;
     quoteVisible: string;
     quoteStaffOnly: string;
     otherQuoteVisible: string;
@@ -38,8 +42,22 @@ export type PortalValidationSeedConfig = {
   orderLineItemIds: {
     portalStatusProof: string;
     portalStatusProduction: string;
+    portalStatusApprovedProof: string;
+    portalStatusSupersededProof: string;
+    otherCustomerProof: string;
     otherCustomer: string;
   };
+  proofVersionIds: {
+    actionable: string;
+    approved: string;
+    superseded: string;
+    otherCustomer: string;
+  };
+  proofApprovalIds: {
+    approved: string;
+  };
+  proofTokenRaw: string;
+  proofTokenId: string;
   quoteIds: {
     active: string;
     expired: string;
@@ -155,6 +173,10 @@ export function parsePortalValidationSeedConfig(
       orderVisible: `portal-validation-file-order-visible-${seedKey}`,
       orderStaffOnly: `portal-validation-file-order-staff-only-${seedKey}`,
       otherOrderVisible: `portal-validation-file-order-other-visible-${seedKey}`,
+      proofActionable: `portal-validation-file-proof-actionable-${seedKey}`,
+      proofApproved: `portal-validation-file-proof-approved-${seedKey}`,
+      proofSuperseded: `portal-validation-file-proof-superseded-${seedKey}`,
+      otherProof: `portal-validation-file-proof-other-${seedKey}`,
       quoteVisible: `portal-validation-file-quote-visible-${seedKey}`,
       quoteStaffOnly: `portal-validation-file-quote-staff-only-${seedKey}`,
       otherQuoteVisible: `portal-validation-file-quote-other-visible-${seedKey}`,
@@ -166,8 +188,22 @@ export function parsePortalValidationSeedConfig(
     orderLineItemIds: {
       portalStatusProof: `portal-validation-order-line-proof-${seedKey}`,
       portalStatusProduction: `portal-validation-order-line-production-${seedKey}`,
+      portalStatusApprovedProof: `portal-validation-order-line-proof-approved-${seedKey}`,
+      portalStatusSupersededProof: `portal-validation-order-line-proof-superseded-${seedKey}`,
+      otherCustomerProof: `portal-validation-order-line-proof-other-${seedKey}`,
       otherCustomer: `portal-validation-order-line-other-${seedKey}`,
     },
+    proofVersionIds: {
+      actionable: `portal-validation-proof-actionable-${seedKey}`,
+      approved: `portal-validation-proof-approved-${seedKey}`,
+      superseded: `portal-validation-proof-superseded-${seedKey}`,
+      otherCustomer: `portal-validation-proof-other-${seedKey}`,
+    },
+    proofApprovalIds: {
+      approved: `portal-validation-proof-approval-approved-${seedKey}`,
+    },
+    proofTokenRaw: `portal-validation-token-${seedKey}`,
+    proofTokenId: `portal-validation-proof-token-${seedKey}`,
     quoteIds: {
       active: `portal-validation-quote-active-${seedKey}`,
       expired: `portal-validation-quote-expired-${seedKey}`,
