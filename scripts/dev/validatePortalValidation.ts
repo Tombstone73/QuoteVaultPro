@@ -199,6 +199,77 @@ async function main() {
     assert(otherOrder.status === 404, "other order", `expected 404, got ${otherOrder.status}`);
   });
 
+  const quoteList = await request<any>("/api/portal/quotes");
+  const quoteRows = Array.isArray(quoteList.json?.data) ? quoteList.json.data : [];
+  const activeQuote = quoteRows.find((quote: any) => quote.id === config.quoteIds.active);
+  const expiredQuote = quoteRows.find((quote: any) => quote.id === config.quoteIds.expired);
+  const canceledQuote = quoteRows.find((quote: any) => quote.id === config.quoteIds.canceled);
+  record("portal quote list loads scoped visible quotes", () => {
+    assert(quoteList.ok, "quote list", `expected 2xx, got ${quoteList.status}`);
+    assert(activeQuote, "quote list", "expected active seeded quote");
+    assert(expiredQuote, "quote list", "expected expired seeded quote");
+    assert(canceledQuote, "quote list", "expected canceled seeded quote");
+    assert(!quoteRows.some((quote: any) => quote.id === config.quoteIds.draft), "quote list", "draft quote should not be visible");
+    assert(!quoteRows.some((quote: any) => quote.id === config.quoteIds.otherCustomer), "quote list", "other customer quote should not be visible");
+  });
+  record("portal quote list statuses are customer-safe", () => {
+    assert(activeQuote.displayStatus === "Ready for Review", "quote list", `expected Ready for Review, got ${activeQuote?.displayStatus}`);
+    assert(expiredQuote.displayStatus === "Expired", "quote list", `expected Expired, got ${expiredQuote?.displayStatus}`);
+    assert(canceledQuote.displayStatus === "Unavailable", "quote list", `expected Unavailable, got ${canceledQuote?.displayStatus}`);
+  });
+  record("portal quote list is sanitized", () => {
+    const serialized = JSON.stringify(quoteList.json?.data || {});
+    assert(!serialized.includes("organizationId"), "quote list", "leaked organizationId");
+    assert(!serialized.includes("customerId"), "quote list", "leaked customerId");
+    assert(!serialized.includes("margin"), "quote list", "leaked margin");
+    assert(!serialized.includes("priceBreakdown"), "quote list", "leaked price breakdown");
+    assert(!serialized.includes("pbv2Snapshot"), "quote list", "leaked PBV2 snapshot");
+    assert(!serialized.includes("formula"), "quote list", "leaked formula internals");
+    assert(!serialized.includes("createdByUserId"), "quote list", "leaked staff metadata");
+  });
+
+  const quoteDetail = await request<any>(`/api/portal/quotes/${encodeURIComponent(config.quoteIds.active)}`);
+  record("portal quote detail loads", () => {
+    assert(quoteDetail.ok, "quote detail", `expected 2xx, got ${quoteDetail.status}`);
+    assert(quoteDetail.json?.data?.id === config.quoteIds.active, "quote detail", "expected active quote detail");
+    assert(Array.isArray(quoteDetail.json?.data?.lineItems) && quoteDetail.json.data.lineItems.length > 0, "quote detail", "expected line items");
+    assert(quoteDetail.json?.data?.expirationSummary?.expired === false, "quote detail", "expected non-expired summary");
+  });
+  const expiredQuoteDetail = await request<any>(`/api/portal/quotes/${encodeURIComponent(config.quoteIds.expired)}`);
+  record("portal expired quote detail is clearly expired", () => {
+    assert(expiredQuoteDetail.ok, "expired quote", `expected 2xx, got ${expiredQuoteDetail.status}`);
+    assert(expiredQuoteDetail.json?.data?.displayStatus === "Expired", "expired quote", "expected Expired displayStatus");
+    assert(expiredQuoteDetail.json?.data?.expirationSummary?.expired === true, "expired quote", "expected expired=true");
+  });
+  record("portal quote detail is sanitized", () => {
+    const serialized = JSON.stringify(quoteDetail.json?.data || {});
+    assert(!serialized.includes("organizationId"), "quote detail", "leaked organizationId");
+    assert(!serialized.includes("customerId"), "quote detail", "leaked customerId");
+    assert(!serialized.includes("margin"), "quote detail", "leaked margin");
+    assert(!serialized.includes("cost"), "quote detail", "leaked cost");
+    assert(!serialized.includes("priceBreakdown"), "quote detail", "leaked price breakdown");
+    assert(!serialized.includes("pbv2Snapshot"), "quote detail", "leaked PBV2 snapshot");
+    assert(!serialized.includes("formula"), "quote detail", "leaked formula internals");
+    assert(!serialized.includes("createdByUserId"), "quote detail", "leaked staff metadata");
+    assert(!serialized.includes("productionNotes"), "quote detail", "leaked internal production notes");
+  });
+
+  const fakeQuote = await request("/api/portal/quotes/not-a-real-quote");
+  record("fake quote ID returns safe 404", () => {
+    assert(fakeQuote.status === 404, "fake quote", `expected 404, got ${fakeQuote.status}`);
+    assert(!fakeQuote.text.includes("stack") && !fakeQuote.text.includes("DATABASE_URL"), "fake quote", "response leaked implementation detail");
+  });
+
+  const draftQuote = await request(`/api/portal/quotes/${encodeURIComponent(config.quoteIds.draft)}`);
+  record("draft quote returns safe 404", () => {
+    assert(draftQuote.status === 404, "draft quote", `expected 404, got ${draftQuote.status}`);
+  });
+
+  const otherQuote = await request(`/api/portal/quotes/${encodeURIComponent(config.quoteIds.otherCustomer)}`);
+  record("other customer quote returns safe 404", () => {
+    assert(otherQuote.status === 404, "other quote", `expected 404, got ${otherQuote.status}`);
+  });
+
   const paidCreateIntent = await request<any>(`/api/portal/invoices/${encodeURIComponent(config.invoiceIds.paid)}/payments/stripe/create-intent`, {
     method: "POST",
     body: JSON.stringify({}),

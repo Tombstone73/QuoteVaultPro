@@ -31,6 +31,27 @@ export type PortalValidationSeedConfig = {
     portalStatusProduction: string;
     otherCustomer: string;
   };
+  quoteIds: {
+    active: string;
+    expired: string;
+    draft: string;
+    canceled: string;
+    otherCustomer: string;
+  };
+  quoteLineItemIds: {
+    active: string;
+    expired: string;
+    draft: string;
+    canceled: string;
+    otherCustomer: string;
+  };
+  quoteNumbers: {
+    active: number;
+    expired: number;
+    draft: number;
+    canceled: number;
+    otherCustomer: number;
+  };
   invoiceIds: {
     payable: string;
     paid: string;
@@ -122,6 +143,27 @@ export function parsePortalValidationSeedConfig(
       portalStatusProof: `portal-validation-order-line-proof-${seedKey}`,
       portalStatusProduction: `portal-validation-order-line-production-${seedKey}`,
       otherCustomer: `portal-validation-order-line-other-${seedKey}`,
+    },
+    quoteIds: {
+      active: `portal-validation-quote-active-${seedKey}`,
+      expired: `portal-validation-quote-expired-${seedKey}`,
+      draft: `portal-validation-quote-draft-${seedKey}`,
+      canceled: `portal-validation-quote-canceled-${seedKey}`,
+      otherCustomer: `portal-validation-quote-other-${seedKey}`,
+    },
+    quoteLineItemIds: {
+      active: `portal-validation-quote-line-active-${seedKey}`,
+      expired: `portal-validation-quote-line-expired-${seedKey}`,
+      draft: `portal-validation-quote-line-draft-${seedKey}`,
+      canceled: `portal-validation-quote-line-canceled-${seedKey}`,
+      otherCustomer: `portal-validation-quote-line-other-${seedKey}`,
+    },
+    quoteNumbers: {
+      active: invoiceNumberBase + 200,
+      expired: invoiceNumberBase + 201,
+      draft: invoiceNumberBase + 202,
+      canceled: invoiceNumberBase + 203,
+      otherCustomer: invoiceNumberBase + 204,
     },
     invoiceIds: {
       payable: `portal-validation-invoice-payable-${seedKey}`,

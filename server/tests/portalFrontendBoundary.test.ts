@@ -15,6 +15,7 @@ function readPortalFrontendSource(): string {
     "client/src/pages/portal/my-orders.tsx",
     "client/src/pages/portal/order-detail.tsx",
     "client/src/pages/portal/my-quotes.tsx",
+    "client/src/pages/portal/quote-detail.tsx",
     "client/src/components/portal/PortalLayout.tsx",
   ];
 

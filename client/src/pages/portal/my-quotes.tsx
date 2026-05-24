@@ -1,97 +1,107 @@
-import { useMyQuotes } from "@/hooks/usePortal";
+import { Link } from "react-router-dom";
+import { FileText, Loader2 } from "lucide-react";
+
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Loader2, FileText } from "lucide-react";
-import { Page, PageHeader, ContentLayout, DataCard, StatusPill } from "@/components/titan";
+import { Card, CardContent } from "@/components/ui/card";
+import { useMyQuotes, type PortalQuoteListDto } from "@/hooks/usePortal";
+
+function formatDate(value: string | null) {
+  if (!value) return "Not set";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not set";
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(date);
+}
+
+function formatCurrency(amount: number) {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(Number(amount || 0));
+}
+
+function expirationLabel(quote: PortalQuoteListDto) {
+  if (!quote.validUntil) return "No expiration date";
+  return quote.displayStatus === "Expired" ? `Expired ${formatDate(quote.validUntil)}` : `Valid until ${formatDate(quote.validUntil)}`;
+}
+
+function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
+  if (status === "Expired" || status === "Unavailable" || status === "Declined") return "secondary";
+  if (status === "Accepted" || status === "Converted to Order") return "default";
+  return "outline";
+}
+
+function QuoteRow({ quote }: { quote: PortalQuoteListDto }) {
+  return (
+    <div className="grid gap-4 border-b px-4 py-4 last:border-b-0 md:grid-cols-[1fr_auto_auto] md:items-center">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <Link to={`/portal/quotes/${quote.id}`} className="font-medium text-foreground hover:underline">
+            Quote #{quote.quoteNumber ?? quote.id.slice(0, 8)}
+          </Link>
+          <Badge variant={statusVariant(quote.displayStatus)}>{quote.displayStatus}</Badge>
+        </div>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Created {formatDate(quote.createdAt)} / {expirationLabel(quote)}
+        </p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {quote.itemCount} item{quote.itemCount === 1 ? "" : "s"}
+        </p>
+      </div>
+
+      <div className="text-sm md:text-right">
+        <p className="text-muted-foreground">Total</p>
+        <p className="font-medium text-foreground">{formatCurrency(quote.total)}</p>
+      </div>
+
+      <div className="flex md:justify-end">
+        <Button asChild variant="outline" size="sm">
+          <Link to={`/portal/quotes/${quote.id}`}>View</Link>
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 export default function MyQuotes() {
-  const { data: quotes, isLoading, error } = useMyQuotes();
+  const { data: quotes = [], isLoading, error } = useMyQuotes();
 
   if (isLoading) {
     return (
-      <Page>
-        <div className="flex items-center justify-center min-h-[400px]">
-          <Loader2 className="h-8 w-8 animate-spin text-titan-text-muted" />
-        </div>
-      </Page>
-    );
-  }
-
-  if (error) {
-    return (
-      <Page>
-        <ContentLayout>
-          <DataCard className="bg-titan-bg-card border-titan-border-subtle">
-            <div className="flex flex-col items-center justify-center min-h-[400px] text-center">
-              <p className="text-titan-error mb-2">Failed to load quotes</p>
-              <p className="text-titan-sm text-titan-text-muted">{(error as Error).message}</p>
-            </div>
-          </DataCard>
-        </ContentLayout>
-      </Page>
+      <div className="flex min-h-[360px] items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
     );
   }
 
   return (
-    <Page>
-      <PageHeader
-        title="My Quotes"
-        subtitle="View and manage your quote requests"
-        className="pb-3"
-      />
+    <div className="mx-auto w-full max-w-5xl space-y-6">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-normal">Quotes</h1>
+        <p className="mt-1 text-sm text-muted-foreground">Review quote details and expiration dates.</p>
+      </div>
 
-      <ContentLayout className="space-y-4">
-        {!quotes || quotes.length === 0 ? (
-          <DataCard className="bg-titan-bg-card border-titan-border-subtle">
-            <div className="flex flex-col items-center justify-center py-12">
-              <FileText className="h-12 w-12 text-titan-text-muted mb-4" />
-              <p className="text-titan-text-muted">No quotes found</p>
-            </div>
-          </DataCard>
-        ) : (
-          <div className="grid gap-4">
-            {quotes.map((quote: any) => (
-              <DataCard key={quote.id} className="bg-titan-bg-card border-titan-border-subtle">
-                <div className="flex items-start justify-between mb-4">
-                  <div>
-                    <h3 className="text-titan-lg font-semibold text-titan-text-primary">
-                      Quote #{quote.quoteNumber}
-                    </h3>
-                    <p className="text-titan-sm text-titan-text-muted mt-1">
-                      Created {new Date(quote.createdAt).toLocaleDateString()}
-                    </p>
-                  </div>
-                  <StatusPill variant="default">
-                    {quote.status || 'active'}
-                  </StatusPill>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4 text-titan-sm mb-4">
-                  <div>
-                    <p className="text-titan-text-muted">Reference</p>
-                    <p className="font-medium text-titan-text-primary">{quote.validUntil ? new Date(quote.validUntil).toLocaleDateString() : 'Not set'}</p>
-                  </div>
-                </div>
-
-                <div className="border-t border-titan-border-subtle pt-4">
-                  <p className="text-titan-sm text-titan-text-muted mb-2">
-                    {quote.lineItems?.length || 0} item(s)
-                  </p>
-                  <div className="flex items-center justify-between">
-                    <div className="text-titan-xl font-bold text-titan-text-primary">
-                      ${Number(quote.total || 0).toFixed(2)}
-                    </div>
-                    <div className="flex gap-2">
-                      <Button variant="outline" size="sm" disabled>
-                        Review coming soon
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              </DataCard>
+      {error ? (
+        <Card>
+          <CardContent className="py-10 text-center">
+            <p className="font-medium text-destructive">Could not load quotes</p>
+            <p className="mt-1 text-sm text-muted-foreground">{(error as Error).message}</p>
+          </CardContent>
+        </Card>
+      ) : quotes.length === 0 ? (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-14 text-center">
+            <FileText className="mb-3 h-9 w-9 text-muted-foreground" />
+            <p className="font-medium">No quotes yet</p>
+            <p className="mt-1 text-sm text-muted-foreground">Quotes will appear here when they are ready for you.</p>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card>
+          <CardContent className="p-0">
+            {quotes.map((quote) => (
+              <QuoteRow key={quote.id} quote={quote} />
             ))}
-          </div>
-        )}
-      </ContentLayout>
-    </Page>
+          </CardContent>
+        </Card>
+      )}
+    </div>
   );
 }
