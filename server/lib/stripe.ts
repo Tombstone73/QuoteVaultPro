@@ -10,6 +10,8 @@ type StripeServerConfigStatus = {
   reason?: 'missing_secret_key' | 'invalid_secret_key';
 };
 
+type StripeEnv = Record<string, string | undefined>;
+
 function getStripeModeFromSecretKey(secretKey: string): 'test' | 'live' | 'unknown' {
   if (secretKey.startsWith('sk_live_')) return 'live';
   if (secretKey.startsWith('sk_test_')) return 'test';
@@ -17,16 +19,17 @@ function getStripeModeFromSecretKey(secretKey: string): 'test' | 'live' | 'unkno
   return 'unknown';
 }
 
-function getWebhookSecretStatus(): StripeServerConfigStatus['webhookSecretStatus'] {
-  const webhookSecret = String(process.env.STRIPE_WEBHOOK_SECRET || '').trim();
+function getWebhookSecretStatus(env: StripeEnv = process.env): StripeServerConfigStatus['webhookSecretStatus'] {
+  const webhookSecret = String(env.STRIPE_WEBHOOK_SECRET || '').trim();
   if (!webhookSecret) return 'missing';
   if (webhookSecret.startsWith('whsec_')) return 'ok';
   return 'invalid';
 }
 
-export function assertStripeServerConfig(options?: { logOnce?: boolean }): StripeServerConfigStatus {
-  const secretKey = String(process.env.STRIPE_SECRET_KEY || '').trim();
-  const webhookSecretStatus = getWebhookSecretStatus();
+export function assertStripeServerConfig(options?: { logOnce?: boolean; env?: StripeEnv }): StripeServerConfigStatus {
+  const env = options?.env ?? process.env;
+  const secretKey = String(env.STRIPE_SECRET_KEY || '').trim();
+  const webhookSecretStatus = getWebhookSecretStatus(env);
 
   const ok = !!secretKey && secretKey.startsWith('sk_');
   const mode = ok ? getStripeModeFromSecretKey(secretKey) : 'unknown';

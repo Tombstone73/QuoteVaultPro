@@ -242,6 +242,33 @@ async function main() {
     issueDate,
     dueDate: daysFromNow(29),
   });
+  await upsertInvoice({
+    id: config.invoiceIds.stripeConfirmFirst,
+    invoiceNumber: config.invoiceNumbers.stripeConfirmFirst,
+    status: "sent",
+    config,
+    userId: user.id,
+    issueDate,
+    dueDate: daysFromNow(29),
+  });
+  await upsertInvoice({
+    id: config.invoiceIds.stripeWebhookFirst,
+    invoiceNumber: config.invoiceNumbers.stripeWebhookFirst,
+    status: "sent",
+    config,
+    userId: user.id,
+    issueDate,
+    dueDate: daysFromNow(29),
+  });
+  await upsertInvoice({
+    id: config.invoiceIds.stripeFailed,
+    invoiceNumber: config.invoiceNumbers.stripeFailed,
+    status: "sent",
+    config,
+    userId: user.id,
+    issueDate,
+    dueDate: daysFromNow(29),
+  });
 
   await db.delete(invoiceLineItems).where(inArray(invoiceLineItems.invoiceId, invoiceIds));
 
@@ -268,10 +295,7 @@ async function main() {
     } as any)),
   );
 
-  await db
-    .update(payments)
-    .set({ status: "canceled", canceledAt: new Date(), updatedAt: new Date() } as any)
-    .where(and(inArray(payments.invoiceId, invoiceIds), eq(payments.provider, "stripe"), eq(payments.status, "pending")));
+  await db.delete(payments).where(and(inArray(payments.invoiceId, invoiceIds), eq(payments.provider, "stripe")));
 
   await db.delete(payments).where(eq(payments.id, config.paymentIds.paid));
   await db.insert(payments).values({
@@ -308,6 +332,9 @@ async function main() {
           paid: { id: config.invoiceIds.paid, invoiceNumber: config.invoiceNumbers.paid },
           draft: { id: config.invoiceIds.draft, invoiceNumber: config.invoiceNumbers.draft },
           void: { id: config.invoiceIds.void, invoiceNumber: config.invoiceNumbers.void },
+          stripeConfirmFirst: { id: config.invoiceIds.stripeConfirmFirst, invoiceNumber: config.invoiceNumbers.stripeConfirmFirst },
+          stripeWebhookFirst: { id: config.invoiceIds.stripeWebhookFirst, invoiceNumber: config.invoiceNumbers.stripeWebhookFirst },
+          stripeFailed: { id: config.invoiceIds.stripeFailed, invoiceNumber: config.invoiceNumbers.stripeFailed },
         },
       },
       null,
@@ -324,4 +351,3 @@ main()
   .finally(async () => {
     await pool.end();
   });
-
