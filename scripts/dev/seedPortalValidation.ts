@@ -650,9 +650,11 @@ async function main() {
   const invoiceIds = Object.values(config.invoiceIds);
   const issueDate = daysFromNow(-1);
   const quoteIds = Object.values(config.quoteIds);
+  const proofVersionIds = Object.values(config.proofVersionIds);
 
   await db.delete(quoteWorkflowStates).where(inArray(quoteWorkflowStates.quoteId, quoteIds));
   await db.delete(orders).where(inArray(orders.quoteId, [config.quoteIds.active, config.quoteIds.decline, config.quoteIds.revision]));
+  await db.delete(lineItemProofApprovals).where(inArray(lineItemProofApprovals.proofVersionId, proofVersionIds));
 
   await upsertInvoice({
     id: config.invoiceIds.payable,
@@ -684,7 +686,7 @@ async function main() {
     id: config.orderLineItemIds.portalStatusProof,
     orderId: config.orderIds.portalStatus,
     description: "Portal Validation Banner - Proof Required",
-    workflowState: "ready_for_production",
+    workflowState: "awaiting_proof_approval",
     requiresProofApproval: true,
     config,
   });
