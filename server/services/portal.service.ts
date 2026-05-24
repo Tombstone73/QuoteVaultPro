@@ -1927,7 +1927,7 @@ export async function submitPortalProofAction(req: Request, proofId: string, act
     return result;
   } catch (error: any) {
     const message = String(error?.message || "");
-    if (error?.statusCode === 409 && /already|awaiting response can be decided/i.test(message)) {
+    if ((error?.statusCode === 409 || /already|awaiting response can be decided/i.test(message)) && /already|awaiting response can be decided/i.test(message)) {
       const current = await getPortalProof(req, proofId);
       if (current && !current.customerActionRequired) {
         return {
