@@ -1,8 +1,18 @@
 import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
+import { Pool } from "@neondatabase/serverless";
+import { drizzle } from "drizzle-orm/neon-serverless";
 import { migrate } from "drizzle-orm/neon-serverless/migrator";
 import { db, pool } from "./db";
+import * as schema from "@shared/schema";
+import {
+  getMigrationLockConfig,
+  getSafeDatabaseLabel,
+  isPooledNeonDatabaseUrl,
+  parseAutoMigrateConfig,
+  selectMigrationDatabaseUrl,
+} from "./lib/migrationRuntimeConfig";
 
 /**
  * Stable advisory lock key for migration mutual exclusion.
@@ -11,6 +21,137 @@ import { db, pool } from "./db";
 const ADVISORY_LOCK_KEY = 928372001;
 const MIGRATIONS_TABLE = "__drizzle_migrations_v2";
 const MIGRATIONS_SCHEMA = "public";
+
+type MigrationRuntime = {
+  pool: Pool;
+  db: any;
+  close: () => Promise<void>;
+};
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function createMigrationRuntime(): Promise<MigrationRuntime> {
+  const selection = selectMigrationDatabaseUrl();
+  if (!selection.connectionString) {
+    throw new Error("DATABASE_URL must be set before running migrations.");
+  }
+
+  const safeLabel = getSafeDatabaseLabel(selection.connectionString);
+  if (selection.usesAppDatabaseUrl) {
+    console.log(`[Migrations] Using ${selection.source} for migrations: ${safeLabel}`);
+  } else {
+    console.log(`[Migrations] Using ${selection.source} for migrations instead of app DATABASE_URL: ${safeLabel}`);
+  }
+
+  if (isPooledNeonDatabaseUrl(selection.connectionString)) {
+    console.warn(
+      "[Migrations] Migration runner is using a pooled database connection. " +
+      "Prefer a direct database URL for migrations to avoid stale session-level advisory locks.",
+    );
+  }
+
+  if (selection.usesAppDatabaseUrl) {
+    return {
+      pool: pool as unknown as Pool,
+      db,
+      close: async () => {},
+    };
+  }
+
+  const migrationPool = new Pool({ connectionString: selection.connectionString });
+  const migrationDb = drizzle({ client: migrationPool, schema });
+  return {
+    pool: migrationPool,
+    db: migrationDb,
+    close: async () => {
+      await migrationPool.end();
+    },
+  };
+}
+
+async function logAdvisoryLockDiagnostics(client: any): Promise<void> {
+  try {
+    const result = await client.query(
+      `
+        SELECT
+          a.pid,
+          a.application_name,
+          a.client_addr::text AS client_addr,
+          a.state,
+          a.wait_event_type,
+          a.wait_event,
+          l.granted,
+          now() - a.state_change AS state_age
+        FROM pg_locks l
+        JOIN pg_stat_activity a ON a.pid = l.pid
+        WHERE l.locktype = 'advisory'
+          AND (
+            (l.classid = 0 AND l.objid = $1)
+            OR ((l.classid::bigint << 32) + l.objid::bigint = $1)
+          )
+        ORDER BY l.granted DESC, a.pid
+      `,
+      [ADVISORY_LOCK_KEY],
+    );
+
+    if (result.rows.length === 0) {
+      console.warn("[Migrations] No current holder was visible in pg_locks when diagnostics ran.");
+      return;
+    }
+
+    console.warn(
+      "[Migrations] Advisory lock diagnostics:",
+      result.rows.map((row: any) => ({
+        pid: row.pid,
+        applicationName: row.application_name || null,
+        clientAddr: row.client_addr || null,
+        state: row.state || null,
+        waitEventType: row.wait_event_type || null,
+        waitEvent: row.wait_event || null,
+        granted: Boolean(row.granted),
+        stateAge: row.state_age || null,
+      })),
+    );
+  } catch (error: any) {
+    console.warn("[Migrations] Advisory lock diagnostics query failed:", error?.message || error);
+  }
+}
+
+async function acquireMigrationAdvisoryLock(client: any): Promise<boolean> {
+  const { timeoutMs, retryIntervalMs } = getMigrationLockConfig();
+  const startedAt = Date.now();
+  let attempt = 0;
+
+  console.log(
+    `[Migrations] Attempting advisory lock ${ADVISORY_LOCK_KEY} with bounded retry ` +
+    `(timeoutMs=${timeoutMs}, retryIntervalMs=${retryIntervalMs})`,
+  );
+
+  while (Date.now() - startedAt <= timeoutMs) {
+    attempt += 1;
+    const result = await client.query("SELECT pg_try_advisory_lock($1) AS acquired", [ADVISORY_LOCK_KEY]);
+    if (result.rows[0]?.acquired === true) {
+      console.log(`[Migrations] Advisory lock ${ADVISORY_LOCK_KEY} acquired on attempt ${attempt}`);
+      return true;
+    }
+
+    const elapsedMs = Date.now() - startedAt;
+    console.warn(
+      `[Migrations] Advisory lock ${ADVISORY_LOCK_KEY} is held by another session ` +
+      `(attempt=${attempt}, elapsedMs=${elapsedMs}). Retrying...`,
+    );
+    await sleep(Math.min(retryIntervalMs, Math.max(0, timeoutMs - elapsedMs)));
+  }
+
+  console.error(
+    `[Migrations] Could not acquire advisory lock ${ADVISORY_LOCK_KEY} within ${timeoutMs}ms. ` +
+    "This may be a stale pooled database session. Inspect pg_locks/pg_stat_activity before terminating sessions.",
+  );
+  await logAdvisoryLockDiagnostics(client);
+  return false;
+}
 
 // ---------------------------------------------------------------------------
 // Release verification checks
@@ -121,8 +262,9 @@ async function runReleaseChecks(client: any): Promise<void> {
  *
  * Kill switch: set DRIZZLE_AUTO_MIGRATE=0 or DRIZZLE_AUTO_MIGRATE=false to skip.
  *
- * Advisory lock: uses pg_advisory_lock so that concurrent instances
- * (e.g. rolling deploy with two pods) do not race on migrations.
+ * Advisory lock: uses bounded pg_try_advisory_lock retries so concurrent
+ * instances (e.g. rolling deploy with two pods) do not race on migrations and
+ * startup cannot hang forever behind a stale pooled session.
  *
  * Manual smoke checks:
  *   1. DRIZZLE_AUTO_MIGRATE=1  → logs "[Migrations] Complete"
@@ -137,21 +279,14 @@ async function runReleaseChecks(client: any): Promise<void> {
 export async function runMigrations(): Promise<void> {
   console.log("[Migrations] runMigrations() entered");
 
-  // --- TEMP DIAGNOSTIC: redacted DATABASE_URL ---
-  try {
-    const dbUrl = process.env.DATABASE_URL || "";
-    if (dbUrl) {
-      const u = new URL(dbUrl);
-      console.log(`[Migrations] DATABASE_URL → host=${u.hostname} db=${u.pathname.slice(1)} (redacted)`);
-    } else {
-      console.log("[Migrations] DATABASE_URL is EMPTY or UNSET");
-    }
-  } catch { console.log("[Migrations] DATABASE_URL could not be parsed"); }
-
-  const flagVal = (process.env.DRIZZLE_AUTO_MIGRATE ?? "").trim().toLowerCase();
-  console.log(`[Migrations] DRIZZLE_AUTO_MIGRATE raw=${JSON.stringify(process.env.DRIZZLE_AUTO_MIGRATE)} parsed=${JSON.stringify(flagVal)}`);
-  if (flagVal === "0" || flagVal === "false") {
+  const autoMigrate = parseAutoMigrateConfig();
+  console.log(
+    `[Migrations] DRIZZLE_AUTO_MIGRATE raw=${JSON.stringify(autoMigrate.raw)} ` +
+    `parsed=${JSON.stringify(autoMigrate.parsed)}`,
+  );
+  if (!autoMigrate.enabled) {
     console.log("[Migrations] DRIZZLE_AUTO_MIGRATE=disabled — skipping auto-migration");
+    console.log("[Migrations] Release verification checks are also skipped because auto-migration is disabled.");
     return;
   }
 
@@ -239,12 +374,22 @@ export async function runMigrations(): Promise<void> {
     );
   }
 
-  // Acquire a session-level advisory lock on a dedicated connection so that
+  // Acquire a session-level advisory lock on a dedicated migration connection so
   // concurrent server instances do not run migrations simultaneously.
-  // The lock is automatically released when the connection is returned to the pool.
-  const client = await (pool as any).connect();
+  // Use bounded pg_try_advisory_lock retries; never use unbounded
+  // pg_advisory_lock here, especially through pooled Neon/PgBouncer URLs.
+  // Do not switch this to pg_advisory_xact_lock unless Drizzle migrations are
+  // also executed on the same transaction/client; the migrator owns its own
+  // execution path, so a transaction-level lock here would not cover it.
+  const migrationRuntime = await createMigrationRuntime();
+  let lockAcquired = false;
+  let client: any | null = null;
   try {
-    await client.query(`SELECT pg_advisory_lock(${ADVISORY_LOCK_KEY})`);
+    client = await (migrationRuntime.pool as any).connect();
+    lockAcquired = await acquireMigrationAdvisoryLock(client);
+    if (!lockAcquired) {
+      throw new Error(`Could not acquire migration advisory lock ${ADVISORY_LOCK_KEY}`);
+    }
     console.log("[Migrations] Advisory lock acquired");
 
     // --- PRE-MIGRATION DIAGNOSTICS ---
@@ -276,7 +421,7 @@ export async function runMigrations(): Promise<void> {
     }
 
     console.log("[Migrations] Calling drizzle migrate() now...");
-    await migrate(db, {
+    await migrate(migrationRuntime.db, {
       migrationsFolder,
       migrationsTable: MIGRATIONS_TABLE,
       migrationsSchema: MIGRATIONS_SCHEMA,
@@ -302,11 +447,14 @@ export async function runMigrations(): Promise<void> {
     // Fail fast — do not start the server with a potentially partial schema.
     throw err;
   } finally {
-    try {
-      await client.query(`SELECT pg_advisory_unlock(${ADVISORY_LOCK_KEY})`);
-    } catch {
-      // Ignore release errors; the lock is released when the connection closes anyway.
+    if (lockAcquired && client) {
+      try {
+        await client.query("SELECT pg_advisory_unlock($1)", [ADVISORY_LOCK_KEY]);
+      } catch {
+        // Ignore release errors; the lock is released when the connection closes anyway.
+      }
     }
-    client.release();
+    client?.release();
+    await migrationRuntime.close();
   }
 }
