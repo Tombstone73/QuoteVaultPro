@@ -231,6 +231,7 @@ import { registerInboundOrderRoutes } from './routes/inboundOrders.routes';
 import { registerOperationalSummaryRoutes } from './routes/operationalSummary.routes';
 import { registerPbv2OptionGroupTemplateRoutes } from './routes/pbv2OptionGroupTemplates.routes';
 import { registerPortalRoutes } from './routes/portal.routes';
+import { registerPortalFollowUpRoutes } from './routes/portalFollowUps.routes';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -397,6 +398,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Operational summary — single aggregation endpoint for sidebar badges
   registerOperationalSummaryRoutes(app, { isAuthenticated, tenantContext });
+  registerPortalFollowUpRoutes(app, { isAuthenticated, tenantContext });
 
   // Job Status Config + Line Item Workflow Transition + Jobs routes extracted to ./routes/jobs.routes.ts (do NOT re-add here)
 

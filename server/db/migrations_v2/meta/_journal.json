@@ -386,6 +386,13 @@
       "when": 1779840000000,
       "tag": "0059_portal_file_visibility",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1779926400000,
+      "tag": "0060_portal_follow_up_items",
+      "breakpoints": true
     }
   ]
 }

@@ -36,6 +36,7 @@ import { generateInvoicePdfBytes } from "./invoicePdf";
 import { storage } from "../storage";
 import { resolveOriginalFileAccess } from "../lib/supabaseObjectHelpers";
 import { buildProofArtifactSummary, INCOMPLETE_PROOF_MESSAGE, recordProofResponse } from "./proofingService";
+import { recordPortalFollowUpItem } from "./portalFollowUps";
 
 export type PortalSessionDto = {
   userId: string;
@@ -1337,6 +1338,34 @@ export async function confirmPortalStripePayment(req: Request, invoiceId: string
   );
   if (!updatedPayment) return null;
 
+  if (String(updatedPayment.status || "").toLowerCase() === "succeeded") {
+    try {
+      await recordPortalFollowUpItem(db, {
+        organizationId: scope.organizationId,
+        eventType: "INVOICE_PAYMENT_SUCCEEDED",
+        customerId: scope.customerId,
+        customerName: portalCustomerName(scope),
+        entityType: "invoice",
+        entityId: invoice.id,
+        title: `Payment received for invoice #${invoice.invoiceNumber}`,
+        description: null,
+        followUpArea: "Accounting",
+        actionUrl: `/invoices/${invoice.id}`,
+        idempotencyKey: `portal:INVOICE_PAYMENT_SUCCEEDED:invoice:${invoice.id}:payment:${payment.id}`,
+        metadata: {
+          invoiceNumber: invoice.invoiceNumber,
+          paymentId: payment.id,
+        },
+      });
+    } catch (error) {
+      console.error("[Portal Payments] failed to record portal follow-up", {
+        invoiceId: invoice.id,
+        paymentId: payment.id,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   return {
     payment: mapPayment(updatedPayment),
     invoice: await refreshPortalInvoiceDto(scope, invoice.id),
@@ -1874,6 +1903,18 @@ export async function submitPortalProofAction(req: Request, proofId: string, act
         ipAddress: req.ip || null,
         userAgent: req.headers["user-agent"] || null,
       } as any);
+
+      await recordPortalProofFollowUp(tx, {
+        scope,
+        eventType:
+          action === "approve"
+            ? "PROOF_APPROVED"
+            : action === "reject"
+              ? "PROOF_REJECTED"
+              : "PROOF_REVISION_REQUESTED",
+        proof: row,
+        note,
+      });
 
       const [updatedRow] = await loadPortalProofRows(scope, proofId, tx);
       if (!updatedRow) return null;
@@ -2676,6 +2717,83 @@ function sanitizePortalActionNote(value: unknown): string | null {
   return note.slice(0, 1000);
 }
 
+function portalCustomerName(scope: PortalScope): string | null {
+  return scope.customer.companyName || scope.customer.email || null;
+}
+
+async function recordPortalQuoteFollowUp(
+  tx: any,
+  args: {
+    scope: PortalScope;
+    eventType: "QUOTE_APPROVED" | "QUOTE_DECLINED" | "QUOTE_REVISION_REQUESTED";
+    quote: QuotePortalRow;
+    order?: QuotePortalOrderSummaryDto | null;
+    note?: string | null;
+  },
+): Promise<void> {
+  const quoteLabel = args.quote.quoteNumber != null ? `#${args.quote.quoteNumber}` : args.quote.id.slice(0, 8);
+  const orderLabel = args.order?.orderNumber ? ` as order #${args.order.orderNumber}` : "";
+  const titles = {
+    QUOTE_APPROVED: `Quote ${quoteLabel} approved${orderLabel}`,
+    QUOTE_DECLINED: `Quote ${quoteLabel} declined`,
+    QUOTE_REVISION_REQUESTED: `Revision requested for quote ${quoteLabel}`,
+  } as const;
+
+  await recordPortalFollowUpItem(tx, {
+    organizationId: args.scope.organizationId,
+    eventType: args.eventType,
+    customerId: args.scope.customerId,
+    customerName: portalCustomerName(args.scope),
+    entityType: "quote",
+    entityId: args.quote.id,
+    relatedOrderId: args.order?.id ?? null,
+    relatedQuoteId: args.quote.id,
+    title: titles[args.eventType],
+    description: args.note || null,
+    actionUrl: args.order?.id ? `/orders/${args.order.id}` : `/quotes/${args.quote.id}`,
+    metadata: {
+      quoteNumber: args.quote.quoteNumber ?? null,
+      orderNumber: args.order?.orderNumber ?? null,
+    },
+  });
+}
+
+async function recordPortalProofFollowUp(
+  tx: any,
+  args: {
+    scope: PortalScope;
+    eventType: "PROOF_APPROVED" | "PROOF_REJECTED" | "PROOF_REVISION_REQUESTED";
+    proof: PortalProofRow;
+    note?: string | null;
+  },
+): Promise<void> {
+  const orderLabel = args.proof.orderNumber ? `#${args.proof.orderNumber}` : args.proof.orderId.slice(0, 8);
+  const titles = {
+    PROOF_APPROVED: `Proof approved for order ${orderLabel}`,
+    PROOF_REJECTED: `Proof declined for order ${orderLabel}`,
+    PROOF_REVISION_REQUESTED: `Proof revision requested for order ${orderLabel}`,
+  } as const;
+
+  await recordPortalFollowUpItem(tx, {
+    organizationId: args.scope.organizationId,
+    eventType: args.eventType,
+    customerId: args.scope.customerId,
+    customerName: portalCustomerName(args.scope),
+    entityType: "proof",
+    entityId: args.proof.id,
+    relatedOrderId: args.proof.orderId,
+    relatedProofId: args.proof.id,
+    title: titles[args.eventType],
+    description: args.note || null,
+    actionUrl: `/orders/${args.proof.orderId}`,
+    metadata: {
+      orderNumber: args.proof.orderNumber,
+      lineItemId: args.proof.lineItemId,
+      proofVersionNumber: args.proof.versionNumber,
+    },
+  });
+}
+
 async function lockPortalQuoteAction(tx: Pick<typeof db, "execute">, quoteId: string) {
   // Quote actions create permanent state, so retries/double-clicks are serialized per quote.
   // This transaction-level advisory lock is independent of the migration lock and releases
@@ -2866,6 +2984,13 @@ export async function approvePortalQuote(req: Request, quoteId: string): Promise
         approvedByCustomerUserId: scope.userId,
         customerNotes: note ?? workflowState?.customerNotes ?? null,
       });
+      await recordPortalQuoteFollowUp(tx, {
+        scope,
+        eventType: "QUOTE_APPROVED",
+        quote,
+        order: existingOrder,
+        note,
+      });
       return getRequiredPortalQuoteActionResult(req, quote.id, "Quote has already been converted to an order.", existingOrder);
     }
 
@@ -2910,6 +3035,13 @@ export async function approvePortalQuote(req: Request, quoteId: string): Promise
       oldValues: { status: quote.status, workflowStatus: workflowState?.status ?? null },
       newValues: { status: "active", workflowStatus: "customer_approved", orderId: createdOrder?.id ?? null },
     });
+    await recordPortalQuoteFollowUp(tx, {
+      scope,
+      eventType: "QUOTE_APPROVED",
+      quote,
+      order: createdOrder,
+      note,
+    });
 
     return getRequiredPortalQuoteActionResult(req, quote.id, "Quote approved and converted to an order.", createdOrder);
   });
@@ -2926,6 +3058,12 @@ export async function declinePortalQuote(req: Request, quoteId: string): Promise
     const workflowState = await getPortalWorkflowState(quote.id);
 
     if (mapPortalQuoteStatus({ status: quote.status, validUntil: quote.validUntil, convertedToOrderId: quote.convertedToOrderId, workflowStatus: workflowState?.status }) === "Declined") {
+      await recordPortalQuoteFollowUp(tx, {
+        scope,
+        eventType: "QUOTE_DECLINED",
+        quote,
+        note,
+      });
       return getRequiredPortalQuoteActionResult(req, quote.id, "This quote has already been declined.");
     }
 
@@ -2951,6 +3089,12 @@ export async function declinePortalQuote(req: Request, quoteId: string): Promise
       oldValues: { status: quote.status, workflowStatus: workflowState?.status ?? null },
       newValues: { status: "canceled", workflowStatus: "rejected" },
     });
+    await recordPortalQuoteFollowUp(tx, {
+      scope,
+      eventType: "QUOTE_DECLINED",
+      quote,
+      note,
+    });
 
     return getRequiredPortalQuoteActionResult(req, quote.id, "Quote declined.");
   });
@@ -2974,6 +3118,12 @@ export async function requestPortalQuoteRevision(req: Request, quoteId: string):
         workflowStatus: workflowState?.status,
       }) === "Revision Requested"
     ) {
+      await recordPortalQuoteFollowUp(tx, {
+        scope,
+        eventType: "QUOTE_REVISION_REQUESTED",
+        quote,
+        note,
+      });
       return getRequiredPortalQuoteActionResult(req, quote.id, "Your revision request has already been recorded.");
     }
 
@@ -2993,6 +3143,12 @@ export async function requestPortalQuoteRevision(req: Request, quoteId: string):
       description: note ? "Customer requested quote revision with a note" : "Customer requested quote revision",
       oldValues: { status: quote.status, workflowStatus: workflowState?.status ?? null },
       newValues: { status: quote.status, workflowStatus: "customer_revision_requested" },
+    });
+    await recordPortalQuoteFollowUp(tx, {
+      scope,
+      eventType: "QUOTE_REVISION_REQUESTED",
+      quote,
+      note,
     });
 
     return getRequiredPortalQuoteActionResult(req, quote.id, "Revision request recorded.");

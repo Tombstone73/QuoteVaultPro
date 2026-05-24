@@ -17,6 +17,7 @@ import AdminDashboard from "@/components/admin-dashboard";
 import CustomersPage from "@/pages/customers";
 import OrdersPage from "@/pages/orders";
 import AuditLogs from "@/pages/audit-logs";
+import { PortalFollowUpsCard } from "@/components/dashboard/PortalFollowUpsCard";
 import { Page, PageHeader, ContentLayout, DataCard } from "@/components/titan";
 import { cn } from "@/lib/utils";
 
@@ -116,6 +117,7 @@ export default function Home() {
   };
 
   const showAdminFeatures = isAdmin && viewMode === "admin";
+  const showPortalFollowUps = viewMode === "admin" && isApprover;
 
   if (isLoading || !user) {
     return (
@@ -198,6 +200,8 @@ export default function Home() {
             </CardContent>
           </Card>
         )}
+
+        <PortalFollowUpsCard enabled={showPortalFollowUps} />
 
         <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full" data-testid="tabs-main">
           <TabsList 
