@@ -36,7 +36,8 @@ import DebugUser from "@/pages/debug-user";
 import NotFound from "@/pages/not-found";
 import MyQuotes from "@/pages/portal/my-quotes";
 import MyOrders from "@/pages/portal/my-orders";
-import QuoteCheckout from "@/pages/portal/quote-checkout";
+import PortalInvoicesPage from "@/pages/portal/invoices";
+import PortalInvoiceDetailPage from "@/pages/portal/invoice-detail";
 import { PortalLayout } from "@/components/portal/PortalLayout";
 import PortalProofPage from "@/pages/portal/portal-proof";
 import ProductionBoard from "@/pages/production";
@@ -163,12 +164,6 @@ function Router() {
 
         {/* Dashboard route compatibility */}
         <Route path="/dashboard" element={<TitanDashboard />} />
-
-        {/* Legacy customer portal stubs — kept temporarily, will be removed once
-            portal pages are migrated to the /portal/* PortalLayout tree below */}
-        <Route path="/portal/my-quotes" element={<MyQuotes />} />
-        <Route path="/portal/my-orders" element={<MyOrders />} />
-        <Route path="/portal/quotes/:id/checkout" element={<QuoteCheckout />} />
 
         {/* Quote routes */}
         <Route path={ROUTES.quotes.new} element={<QuoteEditorRoute />} />
@@ -299,7 +294,13 @@ function Router() {
 
       {/* Portal shell (auth-required portal pages with sidebar layout) */}
       <Route path="/portal" element={<PortalLayout />}>
-        <Route path="dashboard" element={<div className="p-4 text-muted-foreground">Portal Dashboard — coming soon</div>} />
+        <Route index element={<Navigate to="/portal/invoices" replace />} />
+        <Route path="dashboard" element={<Navigate to="/portal/invoices" replace />} />
+        <Route path="invoices" element={<PortalInvoicesPage />} />
+        <Route path="invoices/:id" element={<PortalInvoiceDetailPage />} />
+        <Route path="my-orders" element={<MyOrders />} />
+        <Route path="my-quotes" element={<MyQuotes />} />
+        <Route path="quotes/:id/checkout" element={<Navigate to="/portal/my-quotes" replace />} />
       </Route>
 
       {/* Public legal/support pages — standalone, no app shell */}

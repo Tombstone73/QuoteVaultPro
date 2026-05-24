@@ -73,6 +73,7 @@ export type PortalStripePaymentIntentDto = {
   invoiceId: string;
   amount: number;
   currency: string;
+  stripeAccountId: string;
 };
 
 export type PortalStripeConfirmDto = {
@@ -766,6 +767,7 @@ export async function createPortalStripePaymentIntent(req: Request, invoiceId: s
           invoiceId: invoice.id,
           amount: centsToMoney(amountDueCents),
           currency,
+          stripeAccountId,
         };
       }
 
@@ -816,6 +818,7 @@ export async function createPortalStripePaymentIntent(req: Request, invoiceId: s
       invoiceId: invoice.id,
       amount: centsToMoney(amountDueCents),
       currency,
+      stripeAccountId,
     };
   }
 
@@ -864,6 +867,7 @@ export async function createPortalStripePaymentIntent(req: Request, invoiceId: s
       invoiceId: invoice.id,
       amount: centsToMoney(amountDueCents),
       currency,
+      stripeAccountId,
     };
   }
 
@@ -888,6 +892,7 @@ export async function createPortalStripePaymentIntent(req: Request, invoiceId: s
     invoiceId: invoice.id,
     amount: centsToMoney(amountDueCents),
     currency,
+    stripeAccountId,
   };
 }
 

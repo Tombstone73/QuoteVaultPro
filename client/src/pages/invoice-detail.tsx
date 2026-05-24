@@ -985,6 +985,7 @@ export default function InvoiceDetailPage() {
           open={stripePayOpen}
           onOpenChange={setStripePayOpen}
           invoiceId={invoiceId ?? ''}
+          apiBasePath="/api/invoices"
           stripeAccountId={stripeIntegrationStatus?.data?.stripeAccountId ?? undefined}
           onSettled={() => {
             refetch();

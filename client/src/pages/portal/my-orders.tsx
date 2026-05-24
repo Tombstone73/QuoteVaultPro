@@ -1,7 +1,4 @@
 import { useMyOrders } from "@/hooks/usePortal";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Link } from "react-router-dom";
 import { Loader2, Package } from "lucide-react";
 import { Page, PageHeader, ContentLayout, DataCard, StatusPill } from "@/components/titan";
 
@@ -92,18 +89,9 @@ export default function MyOrders() {
                     {order.lineItems?.length || 0} item(s)
                   </p>
                   <div className="flex items-center justify-between">
-                    <div className="text-titan-xl font-bold text-titan-text-primary">
-                      ${parseFloat(order.total || 0).toFixed(2)}
+                    <div className="text-titan-sm text-titan-text-muted">
+                      {order.displayStatus || getStatusLabel(order.status)}
                     </div>
-                    <Link to={`/orders/${order.id}`}>
-                      <Button 
-                        variant="outline" 
-                        size="sm"
-                        className="border-titan-border text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
-                      >
-                        View Details
-                      </Button>
-                    </Link>
                   </div>
                 </div>
               </DataCard>

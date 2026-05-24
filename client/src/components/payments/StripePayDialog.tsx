@@ -26,6 +26,7 @@ function nextSessionId() {
 function StripePayInner(props: {
   invoiceId: string;
   clientSecret: string;
+  apiBasePath: string;
   onClose: () => void;
   onSettled: () => void;
   sessionId: string;
@@ -171,11 +172,13 @@ function StripePayInner(props: {
         return;
       }
 
-      // If payment succeeded, immediately confirm with server to update payment record
-      // This avoids waiting for webhook and ensures UI updates immediately
+      let serverConfirmed = false;
+
+      // Frontend success is only a UX signal. The server confirms the PaymentIntent
+      // with Stripe and refreshes invoice state before the UI refetches.
       if (result.paymentIntent) {
         try {
-          const confirmRes = await fetch(`/api/invoices/${props.invoiceId}/payments/stripe/confirm`, {
+          const confirmRes = await fetch(`${props.apiBasePath}/${props.invoiceId}/payments/stripe/confirm`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ paymentIntentId: result.paymentIntent.id }),
@@ -189,11 +192,11 @@ function StripePayInner(props: {
             });
           } else {
             const confirmData = await confirmRes.json();
+            serverConfirmed = confirmData?.data?.payment?.status === 'succeeded';
             if (DEV) {
               console.log('[StripePayDialog] Payment confirmed', {
                 sessionId: props.sessionId,
-                updated: confirmData?.data?.updated,
-                paymentStatus: confirmData?.data?.paymentStatus,
+                paymentStatus: confirmData?.data?.payment?.status,
               });
             }
           }
@@ -203,8 +206,10 @@ function StripePayInner(props: {
       }
 
       toast({
-        title: 'Payment succeeded',
-        description: 'Invoice has been updated with your payment.',
+        title: serverConfirmed ? 'Payment confirmed' : 'Payment submitted',
+        description: serverConfirmed
+          ? 'Your invoice has been updated.'
+          : 'We are verifying the payment and will refresh the invoice shortly.',
       });
 
       // Trigger immediate refresh before closing dialog
@@ -274,14 +279,17 @@ export default function StripePayDialog(props: {
   onOpenChange: (open: boolean) => void;
   invoiceId: string;
   stripeAccountId?: string | null;
+  apiBasePath: string;
   disabled?: boolean;
   onSettled: () => void;
 }) {
   const publishableKey = (import.meta as any).env?.VITE_STRIPE_PUBLISHABLE_KEY as string | undefined;
+  const apiBasePath = props.apiBasePath;
+  const [intentStripeAccountId, setIntentStripeAccountId] = useState<string | null>(null);
 
   // Singleton Stripe.js promise (cached by key + account).
   // CRITICAL: Must match the stripeAccount used when creating the PaymentIntent on the server.
-  const stripePromise = getStripePromise(publishableKey, props.stripeAccountId);
+  const stripePromise = getStripePromise(publishableKey, props.stripeAccountId ?? intentStripeAccountId);
 
   const { toast } = useToast();
 
@@ -323,6 +331,7 @@ export default function StripePayDialog(props: {
       elementsOptionsRef.current = null;
       sessionIdRef.current = null;
       intentRequestedRef.current = false;
+      setIntentStripeAccountId(null);
       return;
     }
 
@@ -347,16 +356,20 @@ export default function StripePayDialog(props: {
       setState('creating_intent');
       setIntentError(null);
       try {
-        const res = await fetch(`/api/invoices/${props.invoiceId}/payments/stripe/create-intent`, {
+        const res = await fetch(`${apiBasePath}/${props.invoiceId}/payments/stripe/create-intent`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
         });
         const json = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error((json as any)?.error || 'Failed to create payment intent');
+        if (!res.ok) throw new Error((json as any)?.message || (json as any)?.error || 'Failed to create payment intent');
 
         const secret = (json as any)?.data?.clientSecret as string | undefined;
         if (!secret) throw new Error('Missing clientSecret');
+        const nextStripeAccountId = (json as any)?.data?.stripeAccountId;
+        if (typeof nextStripeAccountId === 'string' && nextStripeAccountId.trim()) {
+          setIntentStripeAccountId(nextStripeAccountId.trim());
+        }
 
         if (DEV) {
           console.log('[StripePayDialog] clientSecret received', {
@@ -421,6 +434,7 @@ export default function StripePayDialog(props: {
             <StripePayInner
               invoiceId={props.invoiceId}
               clientSecret={frozenClientSecret!}
+              apiBasePath={apiBasePath}
               onClose={close}
               onSettled={props.onSettled}
               sessionId={currentSessionId!}
