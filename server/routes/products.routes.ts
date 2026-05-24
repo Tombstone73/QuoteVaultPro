@@ -16,6 +16,7 @@ import {
   products,
   productDesignConfigs,
   pbv2TreeVersions,
+  pricingFormulas,
   productTypes,
   materials,
   organizations,
@@ -1627,6 +1628,7 @@ export function registerProductRoutes(
 
       const {
         pricingFormulaOverride,
+        pricingFormulaId,
         pricingProfileKey,
         pricingProfileConfig,
         formulaVariables,
@@ -1641,6 +1643,23 @@ export function registerProductRoutes(
         return res.status(validation.status).json(validation.envelope);
       }
       const { treeJson, widthNum, heightNum, quantityNum, pbv2ExplicitSelections } = validation.normalized;
+      const overrideFormula = typeof pricingFormulaOverride === "string" && pricingFormulaOverride.trim()
+        ? pricingFormulaOverride
+        : undefined;
+      let libraryFormulaOverride: string | undefined;
+      const normalizedPricingFormulaId = typeof pricingFormulaId === "string" && pricingFormulaId.trim()
+        ? pricingFormulaId.trim()
+        : "";
+      if (!overrideFormula && normalizedPricingFormulaId) {
+        const [formula] = await db
+          .select({ expression: pricingFormulas.expression })
+          .from(pricingFormulas)
+          .where(and(eq(pricingFormulas.id, normalizedPricingFormulaId), eq(pricingFormulas.organizationId, organizationId)))
+          .limit(1);
+        if (typeof formula?.expression === "string" && formula.expression.trim()) {
+          libraryFormulaOverride = formula.expression;
+        }
+      }
 
       const { evaluatePricingPreviewFromTree } = await import("../services/pricing/PricingService");
       const normalizedPrimaryMaterialId = typeof productPrimaryMaterialId === "string" && productPrimaryMaterialId.trim()
@@ -1672,7 +1691,7 @@ export function registerProductRoutes(
         heightIn: heightNum,
         quantity: quantityNum,
         pbv2ExplicitSelections,
-        pricingFormulaOverride: typeof pricingFormulaOverride === "string" ? pricingFormulaOverride : undefined,
+        pricingFormulaOverride: overrideFormula ?? libraryFormulaOverride,
         pricingProfileKey: typeof pricingProfileKey === "string" ? pricingProfileKey : undefined,
         pricingProfileConfig: pricingProfileConfig ?? undefined,
         formulaVariables: formulaVariables && typeof formulaVariables === "object" && !Array.isArray(formulaVariables)

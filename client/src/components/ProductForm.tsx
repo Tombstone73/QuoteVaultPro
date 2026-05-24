@@ -19,6 +19,7 @@ import { PricingVariableHelper } from "@/components/pbv2/builder-v2/PricingVaria
 import { FormulaReferenceModal } from "@/components/pbv2/builder-v2/FormulaReferenceModal";
 import { CircleHelp } from "lucide-react";
 import { formatMaterialWeightStatus } from "@/lib/materialWeightDisplay";
+import { getPricingFormulaSelectionValues } from "@/lib/pricingFormulaSelection";
 
 // Required field indicator component
 function RequiredIndicator() {
@@ -647,6 +648,25 @@ function PricingEngineRadioSection({
       { shouldDirty }
     );
   }, [form, getSafeFlatGoodsConfig]);
+
+  useEffect(() => {
+    if (!formulaId) return;
+    const values = getPricingFormulaSelectionValues(pricingFormulas, formulaId);
+    if (!values.pricingFormulaId || !values.pricingFormula) return;
+
+    if (String(form.getValues("pricingFormula") || "") !== values.pricingFormula) {
+      form.setValue("pricingFormula", values.pricingFormula, { shouldDirty: false });
+    }
+    if (values.pricingProfileKey && form.getValues("pricingProfileKey") !== values.pricingProfileKey) {
+      form.setValue("pricingProfileKey", values.pricingProfileKey, { shouldDirty: false });
+    }
+    if (values.pricingProfileConfig !== undefined) {
+      const currentConfig = form.getValues("pricingProfileConfig");
+      if (JSON.stringify(currentConfig ?? null) !== JSON.stringify(values.pricingProfileConfig ?? null)) {
+        form.setValue("pricingProfileConfig", values.pricingProfileConfig as FlatGoodsConfig, { shouldDirty: false });
+      }
+    }
+  }, [formulaId, pricingFormulas, form]);
   
   // Determine effective mode (controlled or derived)
   const derivedMode: PricingEngineMode = (() => {
@@ -807,15 +827,16 @@ function PricingEngineRadioSection({
                 <FormItem className="space-y-0">
                   <Select
                     onValueChange={(val) => {
-                      field.onChange(val === "__none__" ? null : val);
-                      if (val !== "__none__") {
-                        const formula = pricingFormulas?.find((f: any) => f.id === val);
-                        if (formula) {
-                          form.setValue("pricingProfileKey", formula.pricingProfileKey || "default");
-                          if (formula.config) {
-                            form.setValue("pricingProfileConfig", formula.config as unknown as FlatGoodsConfig);
-                          }
-                        }
+                      const values = getPricingFormulaSelectionValues(pricingFormulas, val);
+                      field.onChange(values.pricingFormulaId);
+                      if (values.pricingFormula) {
+                        form.setValue("pricingFormula", values.pricingFormula, { shouldDirty: true });
+                      }
+                      if (values.pricingProfileKey) {
+                        form.setValue("pricingProfileKey", values.pricingProfileKey, { shouldDirty: true });
+                      }
+                      if (values.pricingProfileConfig !== undefined) {
+                        form.setValue("pricingProfileConfig", values.pricingProfileConfig as FlatGoodsConfig, { shouldDirty: true });
                       }
                     }}
                     value={field.value || "__none__"}
