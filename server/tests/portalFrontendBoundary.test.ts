@@ -17,6 +17,7 @@ function readPortalFrontendSource(): string {
     "client/src/pages/portal/my-quotes.tsx",
     "client/src/pages/portal/quote-detail.tsx",
     "client/src/components/portal/PortalLayout.tsx",
+    "client/src/components/portal/PortalFilesCard.tsx",
   ];
 
   return files.map((file) => `\n/* ${file} */\n${read(file)}`).join("\n");
@@ -34,6 +35,7 @@ describe("portal frontend API boundary", () => {
     expect(source).not.toContain("/api/portal/my-quotes");
     expect(source).not.toContain("/api/portal/products");
     expect(source).not.toContain("/api/portal/convert-quote");
+    expect(source).not.toContain("/api/objects");
   });
 
   test("portal invoice payment UI is wired to portal-safe payment endpoints", () => {

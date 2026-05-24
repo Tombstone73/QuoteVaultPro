@@ -144,6 +144,22 @@ async function main() {
     assert(pdf.text.startsWith("%PDF"), "pdf", "expected PDF header");
   });
 
+  const invoiceFiles = await request<any>(`/api/portal/invoices/${encodeURIComponent(config.invoiceIds.payable)}/files`);
+  record("invoice file list exposes portal-safe PDF", () => {
+    assert(invoiceFiles.ok, "invoice files", `expected 2xx, got ${invoiceFiles.status}`);
+    const files = Array.isArray(invoiceFiles.json?.data) ? invoiceFiles.json.data : [];
+    assert(files.some((file: any) => file.id === "pdf" && file.categoryLabel === "Invoice"), "invoice files", "expected invoice PDF file");
+    const serialized = JSON.stringify(files);
+    assert(!serialized.includes("storage") && !serialized.includes("bucket") && !serialized.includes("fileUrl"), "invoice files", "leaked storage metadata");
+  });
+
+  const invoiceFileDownload = await request(`/api/portal/invoices/${encodeURIComponent(config.invoiceIds.payable)}/files/pdf`);
+  record("invoice file download returns PDF response", () => {
+    assert(invoiceFileDownload.ok, "invoice file download", `expected 2xx, got ${invoiceFileDownload.status}`);
+    assert(invoiceFileDownload.contentType.includes("application/pdf"), "invoice file download", `expected PDF, got ${invoiceFileDownload.contentType}`);
+    assert(invoiceFileDownload.text.startsWith("%PDF"), "invoice file download", "expected PDF header");
+  });
+
   const fake = await request("/api/portal/invoices/not-a-real-invoice");
   record("fake invoice ID returns safe 404", () => {
     assert(fake.status === 404, "fake invoice", `expected 404, got ${fake.status}`);
@@ -197,6 +213,23 @@ async function main() {
   const otherOrder = await request(`/api/portal/orders/${encodeURIComponent(config.orderIds.otherCustomer)}`);
   record("other customer order returns safe 404", () => {
     assert(otherOrder.status === 404, "other order", `expected 404, got ${otherOrder.status}`);
+  });
+
+  const orderFiles = await request<any>(`/api/portal/orders/${encodeURIComponent(config.orderIds.portalStatus)}/files`);
+  record("portal order file list loads safely", () => {
+    assert(orderFiles.ok, "order files", `expected 2xx, got ${orderFiles.status}`);
+    const serialized = JSON.stringify(orderFiles.json?.data || {});
+    assert(!serialized.includes("storage") && !serialized.includes("bucket") && !serialized.includes("fileUrl"), "order files", "leaked storage metadata");
+  });
+
+  const otherOrderFiles = await request(`/api/portal/orders/${encodeURIComponent(config.orderIds.otherCustomer)}/files`);
+  record("other customer order files return safe 404", () => {
+    assert(otherOrderFiles.status === 404, "other order files", `expected 404, got ${otherOrderFiles.status}`);
+  });
+
+  const fakeOrderFile = await request(`/api/portal/orders/${encodeURIComponent(config.orderIds.portalStatus)}/files/not-a-real-file`);
+  record("fake order file returns safe 404", () => {
+    assert(fakeOrderFile.status === 404, "fake order file", `expected 404, got ${fakeOrderFile.status}`);
   });
 
   const quoteList = await request<any>("/api/portal/quotes");
@@ -268,6 +301,80 @@ async function main() {
   const otherQuote = await request(`/api/portal/quotes/${encodeURIComponent(config.quoteIds.otherCustomer)}`);
   record("other customer quote returns safe 404", () => {
     assert(otherQuote.status === 404, "other quote", `expected 404, got ${otherQuote.status}`);
+  });
+
+  const quoteFiles = await request<any>(`/api/portal/quotes/${encodeURIComponent(config.quoteIds.active)}/files`);
+  record("portal quote file list loads safely", () => {
+    assert(quoteFiles.ok, "quote files", `expected 2xx, got ${quoteFiles.status}`);
+    const serialized = JSON.stringify(quoteFiles.json?.data || {});
+    assert(!serialized.includes("storage") && !serialized.includes("bucket") && !serialized.includes("fileUrl"), "quote files", "leaked storage metadata");
+  });
+
+  const otherQuoteFiles = await request(`/api/portal/quotes/${encodeURIComponent(config.quoteIds.otherCustomer)}/files`);
+  record("other customer quote files return safe 404", () => {
+    assert(otherQuoteFiles.status === 404, "other quote files", `expected 404, got ${otherQuoteFiles.status}`);
+  });
+
+  const fakeQuoteFile = await request(`/api/portal/quotes/${encodeURIComponent(config.quoteIds.active)}/files/not-a-real-file`);
+  record("fake quote file returns safe 404", () => {
+    assert(fakeQuoteFile.status === 404, "fake quote file", `expected 404, got ${fakeQuoteFile.status}`);
+  });
+
+  const approveQuote = await request<any>(`/api/portal/quotes/${encodeURIComponent(config.quoteIds.active)}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ note: "DEV validation approval" }),
+  });
+  const approvedOrderId = approveQuote.json?.data?.order?.id;
+  record("portal user can approve actionable quote", () => {
+    assert(approveQuote.ok, "approve quote", `expected 2xx, got ${approveQuote.status}: ${approveQuote.text.slice(0, 180)}`);
+    assert(approveQuote.json?.data?.quote?.displayStatus === "Converted to Order", "approve quote", "expected converted quote status");
+    assert(approvedOrderId, "approve quote", "expected safe order summary");
+    assert(!approveQuote.text.includes("organizationId") && !approveQuote.text.includes("customerId"), "approve quote", "leaked tenant/customer ids");
+  });
+
+  const repeatApproveQuote = await request<any>(`/api/portal/quotes/${encodeURIComponent(config.quoteIds.active)}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ note: "retry should be idempotent" }),
+  });
+  record("repeat approve does not create duplicate order", () => {
+    assert(repeatApproveQuote.ok, "repeat approve", `expected 2xx, got ${repeatApproveQuote.status}: ${repeatApproveQuote.text.slice(0, 180)}`);
+    assert(repeatApproveQuote.json?.data?.order?.id === approvedOrderId, "repeat approve", "expected same order id");
+  });
+
+  const expiredApprove = await request<any>(`/api/portal/quotes/${encodeURIComponent(config.quoteIds.expired)}/approve`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  record("expired quote cannot be approved", () => {
+    assert(expiredApprove.status === 409, "expired approve", `expected 409, got ${expiredApprove.status}`);
+  });
+
+  const otherApprove = await request<any>(`/api/portal/quotes/${encodeURIComponent(config.quoteIds.otherCustomer)}/approve`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  record("other customer quote cannot be acted on", () => {
+    assert(otherApprove.status === 404, "other approve", `expected 404, got ${otherApprove.status}`);
+  });
+
+  const declineQuote = await request<any>(`/api/portal/quotes/${encodeURIComponent(config.quoteIds.decline)}/decline`, {
+    method: "POST",
+    body: JSON.stringify({ note: "DEV validation decline" }),
+  });
+  record("decline changes visible portal status safely", () => {
+    assert(declineQuote.ok, "decline quote", `expected 2xx, got ${declineQuote.status}: ${declineQuote.text.slice(0, 180)}`);
+    assert(declineQuote.json?.data?.quote?.displayStatus === "Declined", "decline quote", "expected Declined displayStatus");
+    assert(!declineQuote.text.includes("organizationId") && !declineQuote.text.includes("customerId"), "decline quote", "leaked tenant/customer ids");
+  });
+
+  const revisionQuote = await request<any>(`/api/portal/quotes/${encodeURIComponent(config.quoteIds.revision)}/request-revision`, {
+    method: "POST",
+    body: JSON.stringify({ note: "DEV validation revision request" }),
+  });
+  record("request revision changes visible portal status safely", () => {
+    assert(revisionQuote.ok, "revision quote", `expected 2xx, got ${revisionQuote.status}: ${revisionQuote.text.slice(0, 180)}`);
+    assert(revisionQuote.json?.data?.quote?.displayStatus === "Revision Requested", "revision quote", "expected Revision Requested displayStatus");
+    assert(!revisionQuote.text.includes("organizationId") && !revisionQuote.text.includes("customerId"), "revision quote", "leaked tenant/customer ids");
   });
 
   const paidCreateIntent = await request<any>(`/api/portal/invoices/${encodeURIComponent(config.invoiceIds.paid)}/payments/stripe/create-intent`, {

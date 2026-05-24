@@ -1,11 +1,31 @@
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, CalendarClock, FileText, Loader2 } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft, CalendarClock, CheckCircle2, FileText, Loader2, MessageSquare, XCircle } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import PortalFilesCard from "@/components/portal/PortalFilesCard";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
-import { useQuoteCheckout } from "@/hooks/usePortal";
+import { Textarea } from "@/components/ui/textarea";
+import { useToast } from "@/hooks/use-toast";
+import {
+  portalOrderKeys,
+  portalQuoteKeys,
+  usePortalQuoteAction,
+  usePortalQuoteFiles,
+  useQuoteCheckout,
+  type PortalQuoteAction,
+} from "@/hooks/usePortal";
 
 function formatDate(value: string | null) {
   if (!value) return "Not set";
@@ -27,8 +47,68 @@ function statusVariant(status: string): "default" | "secondary" | "destructive" 
 export default function PortalQuoteDetailPage() {
   const { id } = useParams<{ id: string }>();
   const quoteId = id || "";
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
   const quoteQuery = useQuoteCheckout(quoteId);
+  const filesQuery = usePortalQuoteFiles(quoteId);
+  const actionMutation = usePortalQuoteAction(quoteId);
   const quote = quoteQuery.data;
+  const files = filesQuery.data ?? [];
+  const [selectedAction, setSelectedAction] = useState<PortalQuoteAction | null>(null);
+  const [note, setNote] = useState("");
+  const [createdOrder, setCreatedOrder] = useState<{ id: string; orderNumber: string; displayStatus: string } | null>(null);
+
+  const actionLabels: Record<PortalQuoteAction, { title: string; description: string; confirm: string }> = {
+    approve: {
+      title: "Approve quote",
+      description: "This will approve the quote and create an order from the current backend quote record.",
+      confirm: "Approve Quote",
+    },
+    decline: {
+      title: "Decline quote",
+      description: "This will mark the quote as declined. You can include a short note for your account team.",
+      confirm: "Decline Quote",
+    },
+    request_revision: {
+      title: "Request revision",
+      description: "Tell us what should change. Your account team will review the request.",
+      confirm: "Request Revision",
+    },
+  };
+
+  const beginAction = (action: PortalQuoteAction) => {
+    setSelectedAction(action);
+    setNote("");
+  };
+
+  const submitAction = async () => {
+    if (!selectedAction) return;
+    try {
+      const result = await actionMutation.mutateAsync({
+        action: selectedAction,
+        note: note.trim() || null,
+      });
+      setCreatedOrder(result.order ?? null);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: portalQuoteKeys.all }),
+        queryClient.invalidateQueries({ queryKey: portalQuoteKeys.detail(quoteId) }),
+        queryClient.invalidateQueries({ queryKey: portalOrderKeys.all }),
+        result.order ? queryClient.invalidateQueries({ queryKey: portalOrderKeys.detail(result.order.id) }) : Promise.resolve(),
+      ]);
+      toast({
+        title: actionLabels[selectedAction].title,
+        description: result.message,
+      });
+      setSelectedAction(null);
+      setNote("");
+    } catch (error) {
+      toast({
+        title: "Quote action failed",
+        description: error instanceof Error ? error.message : "The quote could not be updated.",
+        variant: "destructive",
+      });
+    }
+  };
 
   if (quoteQuery.isLoading) {
     return (
@@ -75,10 +155,48 @@ export default function PortalQuoteDetailPage() {
             Created {formatDate(quote.createdAt)} / {quote.expirationSummary.expirationLabel}
           </p>
         </div>
-        <Button disabled title={quote.customerVisibleActions.disabledReason || undefined}>
-          Quote approval will be available soon
-        </Button>
+        <div className="flex flex-wrap gap-2 md:justify-end">
+          {quote.customerVisibleActions.canApprove ? (
+            <Button onClick={() => beginAction("approve")} disabled={actionMutation.isPending}>
+              <CheckCircle2 className="mr-2 h-4 w-4" />
+              Approve Quote
+            </Button>
+          ) : null}
+          {quote.customerVisibleActions.canRequestRevision ? (
+            <Button variant="outline" onClick={() => beginAction("request_revision")} disabled={actionMutation.isPending}>
+              <MessageSquare className="mr-2 h-4 w-4" />
+              Request Revision
+            </Button>
+          ) : null}
+          {quote.customerVisibleActions.canDecline ? (
+            <Button variant="outline" onClick={() => beginAction("decline")} disabled={actionMutation.isPending}>
+              <XCircle className="mr-2 h-4 w-4" />
+              Decline Quote
+            </Button>
+          ) : null}
+          {!quote.customerVisibleActions.canApprove &&
+          !quote.customerVisibleActions.canRequestRevision &&
+          !quote.customerVisibleActions.canDecline ? (
+            <Button disabled title={quote.customerVisibleActions.disabledReason || undefined}>
+              {quote.customerVisibleActions.disabledReason || "Actions unavailable"}
+            </Button>
+          ) : null}
+        </div>
       </div>
+
+      {createdOrder ? (
+        <Card>
+          <CardContent className="flex flex-col gap-3 py-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="font-medium">Order #{createdOrder.orderNumber} created</p>
+              <p className="text-sm text-muted-foreground">Status: {createdOrder.displayStatus}</p>
+            </div>
+            <Button asChild variant="outline">
+              <Link to={`/portal/orders/${createdOrder.id}`}>View Order</Link>
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
@@ -160,6 +278,55 @@ export default function PortalQuoteDetailPage() {
           </div>
         </CardContent>
       </Card>
+
+      <PortalFilesCard
+        title="Quote Documents"
+        files={files}
+        isLoading={filesQuery.isLoading}
+        error={filesQuery.error}
+        entity="quotes"
+        entityId={quote.id}
+      />
+
+      <Dialog open={!!selectedAction} onOpenChange={(open) => !open && setSelectedAction(null)}>
+        <DialogContent>
+          {selectedAction ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>{actionLabels[selectedAction].title}</DialogTitle>
+                <DialogDescription>{actionLabels[selectedAction].description}</DialogDescription>
+              </DialogHeader>
+              {selectedAction !== "approve" ? (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium" htmlFor="quote-action-note">
+                    Note optional
+                  </label>
+                  <Textarea
+                    id="quote-action-note"
+                    value={note}
+                    onChange={(event) => setNote(event.target.value)}
+                    placeholder="Add a short note"
+                    maxLength={1000}
+                  />
+                </div>
+              ) : null}
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setSelectedAction(null)} disabled={actionMutation.isPending}>
+                  Cancel
+                </Button>
+                <Button
+                  variant={selectedAction === "decline" ? "destructive" : "default"}
+                  onClick={submitAction}
+                  disabled={actionMutation.isPending}
+                >
+                  {actionMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  {actionLabels[selectedAction].confirm}
+                </Button>
+              </DialogFooter>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

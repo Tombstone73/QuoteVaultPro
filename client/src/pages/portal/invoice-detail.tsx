@@ -4,6 +4,7 @@ import { Download, Loader2, RefreshCcw } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import StripePayDialog from "@/components/payments/StripePayDialog";
+import PortalFilesCard from "@/components/portal/PortalFilesCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,6 +14,7 @@ import {
   portalInvoiceKeys,
   portalInvoicePdfUrl,
   usePortalInvoice,
+  usePortalInvoiceFiles,
   usePortalInvoicePayments,
   type PortalInvoicePaymentDto,
 } from "@/hooks/usePortal";
@@ -77,8 +79,10 @@ export default function PortalInvoiceDetailPage() {
 
   const invoiceQuery = usePortalInvoice(invoiceId);
   const paymentsQuery = usePortalInvoicePayments(invoiceId);
+  const filesQuery = usePortalInvoiceFiles(invoiceId);
   const invoice = invoiceQuery.data;
   const payments = paymentsQuery.data ?? [];
+  const files = filesQuery.data ?? [];
 
   const payable = useMemo(() => (invoice ? canPay(invoice.status, invoice.amountDue) : false), [invoice]);
 
@@ -266,7 +270,15 @@ export default function PortalInvoiceDetailPage() {
           )}
         </CardContent>
       </Card>
+
+      <PortalFilesCard
+        title="Invoice Documents"
+        files={files}
+        isLoading={filesQuery.isLoading}
+        error={filesQuery.error}
+        entity="invoices"
+        entityId={invoice.id}
+      />
     </div>
   );
 }
-
