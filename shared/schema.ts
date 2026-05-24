@@ -1916,6 +1916,59 @@ export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({
 export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
 export type AuditLog = typeof auditLogs.$inferSelect;
 
+export type PortalFollowUpEventType =
+  | "QUOTE_APPROVED"
+  | "QUOTE_DECLINED"
+  | "QUOTE_REVISION_REQUESTED"
+  | "PROOF_APPROVED"
+  | "PROOF_REJECTED"
+  | "PROOF_REVISION_REQUESTED"
+  | "INVOICE_PAYMENT_SUCCEEDED";
+
+export type PortalFollowUpStatus = "new" | "pending" | "completed";
+
+export const portalFollowUpItems = pgTable("portal_follow_up_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  idempotencyKey: varchar("idempotency_key", { length: 255 }).notNull(),
+  eventType: varchar("event_type", { length: 80 }).notNull().$type<PortalFollowUpEventType>(),
+  status: varchar("status", { length: 30 }).notNull().default("new").$type<PortalFollowUpStatus>(),
+  customerId: varchar("customer_id").references(() => customers.id, { onDelete: "set null" }),
+  customerName: text("customer_name"),
+  entityType: varchar("entity_type", { length: 40 }).notNull(),
+  entityId: varchar("entity_id").notNull(),
+  relatedOrderId: varchar("related_order_id"),
+  relatedQuoteId: varchar("related_quote_id"),
+  relatedProofId: varchar("related_proof_id"),
+  title: text("title").notNull(),
+  description: text("description"),
+  followUpArea: varchar("follow_up_area", { length: 80 }),
+  actionUrl: text("action_url"),
+  source: varchar("source", { length: 80 }).notNull().default("customer_portal"),
+  sourceAuditLogId: varchar("source_audit_log_id").references(() => auditLogs.id, { onDelete: "set null" }),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  updatedByUserId: varchar("updated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("portal_follow_up_items_org_idempotency_uidx").on(table.organizationId, table.idempotencyKey),
+  index("portal_follow_up_items_org_status_created_idx").on(table.organizationId, table.status, table.createdAt),
+  index("portal_follow_up_items_org_event_created_idx").on(table.organizationId, table.eventType, table.createdAt),
+  index("portal_follow_up_items_customer_idx").on(table.customerId),
+  index("portal_follow_up_items_entity_idx").on(table.organizationId, table.entityType, table.entityId),
+]);
+
+export const insertPortalFollowUpItemSchema = createInsertSchema(portalFollowUpItems).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type PortalFollowUpItem = typeof portalFollowUpItems.$inferSelect;
+export type InsertPortalFollowUpItem = z.infer<typeof insertPortalFollowUpItemSchema>;
+
 // ============================================================
 // PLATFORM AUDIT LOGS — cross-org platform events (orgId nullable)
 // ============================================================

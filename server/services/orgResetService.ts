@@ -76,6 +76,7 @@ import {
   payments,
   paymentWebhookEvents,
   pickupTickets,
+  portalFollowUpItems,
   prepressSessions,
   productionEvents,
   productionJobs,
@@ -329,6 +330,7 @@ export async function resetTransactionalData(
     await del(tx, 'importJobs', importJobs, orgEq(importJobs.organizationId));
 
     // ── Step 11: Misc org-scoped transactional tables ──────────────────────
+    await del(tx, 'portalFollowUpItems', portalFollowUpItems, orgEq(portalFollowUpItems.organizationId));
     await del(tx, 'outboundNotifications', outboundNotifications, orgEq(outboundNotifications.organizationId));
     await del(tx, 'accountingSyncJobs', accountingSyncJobs, orgEq(accountingSyncJobs.organizationId));
 
