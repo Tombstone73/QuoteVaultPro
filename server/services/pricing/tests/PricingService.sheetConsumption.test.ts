@@ -305,6 +305,59 @@ describe("sheet_consumption_sqft", () => {
     expect(result.totalPrice).toBeCloseTo(44, 2);
     expect(result.breakdown.basePrice).toBeCloseTo(44, 2);
   });
+
+  test("selected formula wins over flat-goods fallback for 24x18 q9", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeMatrixBasePriceTree(1.72),
+      widthIn: 24,
+      heightIn: 18,
+      quantity: 9,
+      pbv2ExplicitSelections: { rate: { value: "standard" } },
+      pricingFormulaOverride: "total_sqft * base_price",
+      pricingProfileKey: "flat_goods",
+      pricingProfileConfig: {
+        sheetWidth: 48,
+        sheetHeight: 96,
+        allowRotation: true,
+        materialType: "sheet",
+        minPricePerItem: 3,
+      },
+      debug: true,
+    });
+
+    expect(result.totalPrice).toBeCloseTo(46.44, 2);
+    expect(result.breakdown.basePrice).toBeCloseTo(46.44, 2);
+    expect(result.debug?.pricing?.finalTotalSource).toBe("formula");
+    expect(result.debug?.pricing?.formulaEvaluatedTotal).toBeCloseTo(46.44, 2);
+    expect(result.debug?.pricing?.fallbackBaseTotal).not.toBeCloseTo(46.44, 2);
+    expect(result.totalPrice).not.toBe(27);
+  });
+
+  test("selected formula wins over fallback for 24x18 q10", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeMatrixBasePriceTree(1.38),
+      widthIn: 24,
+      heightIn: 18,
+      quantity: 10,
+      pbv2ExplicitSelections: { rate: { value: "standard" } },
+      pricingFormulaOverride: "total_sqft * base_price",
+      pricingProfileKey: "flat_goods",
+      pricingProfileConfig: {
+        sheetWidth: 48,
+        sheetHeight: 96,
+        allowRotation: true,
+        materialType: "sheet",
+        minPricePerItem: 3,
+      },
+      debug: true,
+    });
+
+    expect(result.totalPrice).toBeCloseTo(41.4, 2);
+    expect(result.breakdown.basePrice).toBeCloseTo(41.4, 2);
+    expect(result.debug?.pricing?.finalTotalSource).toBe("formula");
+    expect(result.debug?.pricing?.formulaEvaluatedTotal).toBeCloseTo(41.4, 2);
+    expect(result.totalPrice).not.toBe(30);
+  });
 });
 
 // ── 48×96 expected-output table ───────────────────────────────────────────────
