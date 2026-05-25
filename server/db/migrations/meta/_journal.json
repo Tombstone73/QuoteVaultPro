@@ -372,6 +372,13 @@
       "when": 0,
       "tag": "0060_line_item_status_cleanup",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 0,
+      "tag": "0061_pbv2_sheet_formula_returns_dollars",
+      "breakpoints": true
     }
   ]
 }

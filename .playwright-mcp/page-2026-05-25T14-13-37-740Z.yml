@@ -1,0 +1,28 @@
+- generic [ref=e2]:
+  - region "Notifications (F8)":
+    - list
+  - generic [ref=e3]:
+    - img
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - img "Printers Hero"
+        - paragraph [ref=e6]: Print shop workflow software
+      - generic [ref=e7]:
+        - generic [ref=e8]:
+          - img [ref=e10]
+          - generic [ref=e11]: Welcome back
+          - generic [ref=e12]: Sign in to Printers Hero.
+        - generic [ref=e14]:
+          - generic [ref=e15]:
+            - text: Email
+            - textbox "Email" [ref=e16]:
+              - /placeholder: your@email.com
+          - generic [ref=e17]:
+            - text: Password
+            - generic [ref=e18]:
+              - textbox "Password" [ref=e19]
+              - button "Show password" [ref=e20] [cursor=pointer]:
+                - img [ref=e21]
+            - link "Forgot password?" [ref=e25] [cursor=pointer]:
+              - /url: /forgot-password
+          - button "Sign In" [ref=e26] [cursor=pointer]

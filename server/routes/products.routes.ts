@@ -1646,7 +1646,9 @@ export function registerProductRoutes(
 
       const {
         pricingFormulaOverride,
+        manualFormulaText,
         pricingFormulaId,
+        formulaSourceMode,
         pricingProfileKey,
         pricingProfileConfig,
         formulaVariables,
@@ -1661,22 +1663,88 @@ export function registerProductRoutes(
         return res.status(validation.status).json(validation.envelope);
       }
       const { treeJson, widthNum, heightNum, quantityNum, pbv2ExplicitSelections } = validation.normalized;
-      const overrideFormula = typeof pricingFormulaOverride === "string" && pricingFormulaOverride.trim()
+      const normalizedFormulaSourceMode = typeof formulaSourceMode === "string" && formulaSourceMode.trim()
+        ? formulaSourceMode.trim()
+        : undefined;
+      const sourceModeIsLibrary = normalizedFormulaSourceMode === "library" || normalizedFormulaSourceMode === "formulaLibrary";
+      const overrideFormula = !sourceModeIsLibrary && typeof pricingFormulaOverride === "string" && pricingFormulaOverride.trim()
         ? pricingFormulaOverride
         : undefined;
-      let libraryFormulaOverride: string | undefined;
+      let pricingFormulaLibrary: { id: string; name?: string | null; expression: string } | undefined;
       const normalizedPricingFormulaId = typeof pricingFormulaId === "string" && pricingFormulaId.trim()
         ? pricingFormulaId.trim()
         : "";
-      if (!overrideFormula && normalizedPricingFormulaId) {
+      if (normalizedPricingFormulaId) {
         const [formula] = await db
-          .select({ expression: pricingFormulas.expression })
+          .select({ id: pricingFormulas.id, name: pricingFormulas.name, expression: pricingFormulas.expression })
           .from(pricingFormulas)
           .where(and(eq(pricingFormulas.id, normalizedPricingFormulaId), eq(pricingFormulas.organizationId, organizationId)))
           .limit(1);
         if (typeof formula?.expression === "string" && formula.expression.trim()) {
-          libraryFormulaOverride = formula.expression;
+          pricingFormulaLibrary = { id: formula.id, name: formula.name, expression: formula.expression };
+        } else {
+          return res.json({
+            success: false,
+            message: "Formula Library selection could not be resolved",
+            errors: [{
+              code: "PBV2_E_FORMULA_LIBRARY_NOT_FOUND",
+              message: `Selected Formula Library item '${normalizedPricingFormulaId}' could not be resolved.`,
+            }],
+            debug: {
+              pricingSystem: "pbv2",
+              formulaRaw: "",
+              variables: {},
+              formulaSourceMode: "library",
+              resolvedFormulaSource: "none",
+              resolvedFormulaId: normalizedPricingFormulaId,
+              resolvedFormulaName: null,
+              resolvedFormulaExpression: "",
+              manualFormulaPresent: (
+                (typeof pricingFormulaOverride === "string" && pricingFormulaOverride.trim().length > 0) ||
+                (typeof manualFormulaText === "string" && manualFormulaText.trim().length > 0)
+              ),
+              manualFormulaIgnored: (
+                (typeof pricingFormulaOverride === "string" && pricingFormulaOverride.trim().length > 0) ||
+                (typeof manualFormulaText === "string" && manualFormulaText.trim().length > 0)
+              ),
+              errors: [{
+                code: "PBV2_E_FORMULA_LIBRARY_NOT_FOUND",
+                message: `Selected Formula Library item '${normalizedPricingFormulaId}' could not be resolved.`,
+              }],
+            },
+          });
         }
+      } else if (sourceModeIsLibrary) {
+        return res.json({
+          success: false,
+          message: "Formula Library mode is selected, but no Formula Library item is selected",
+          errors: [{
+            code: "PBV2_E_FORMULA_LIBRARY_NOT_FOUND",
+            message: "Formula Library mode is selected, but no Formula Library item is selected.",
+          }],
+          debug: {
+            pricingSystem: "pbv2",
+            formulaRaw: "",
+            variables: {},
+            formulaSourceMode: "library",
+            resolvedFormulaSource: "none",
+            resolvedFormulaId: null,
+            resolvedFormulaName: null,
+            resolvedFormulaExpression: "",
+            manualFormulaPresent: (
+              (typeof pricingFormulaOverride === "string" && pricingFormulaOverride.trim().length > 0) ||
+              (typeof manualFormulaText === "string" && manualFormulaText.trim().length > 0)
+            ),
+            manualFormulaIgnored: (
+              (typeof pricingFormulaOverride === "string" && pricingFormulaOverride.trim().length > 0) ||
+              (typeof manualFormulaText === "string" && manualFormulaText.trim().length > 0)
+            ),
+            errors: [{
+              code: "PBV2_E_FORMULA_LIBRARY_NOT_FOUND",
+              message: "Formula Library mode is selected, but no Formula Library item is selected.",
+            }],
+          },
+        });
       }
 
       const { evaluatePricingPreviewFromTree } = await import("../services/pricing/PricingService");
@@ -1709,7 +1777,10 @@ export function registerProductRoutes(
         heightIn: heightNum,
         quantity: quantityNum,
         pbv2ExplicitSelections,
-        pricingFormulaOverride: overrideFormula ?? libraryFormulaOverride,
+        pricingFormulaOverride: overrideFormula,
+        manualFormulaText: typeof manualFormulaText === "string" ? manualFormulaText : undefined,
+        formulaSourceMode: normalizedFormulaSourceMode as any,
+        pricingFormulaLibrary,
         pricingProfileKey: typeof pricingProfileKey === "string" ? pricingProfileKey : undefined,
         pricingProfileConfig: pricingProfileConfig ?? undefined,
         formulaVariables: formulaVariables && typeof formulaVariables === "object" && !Array.isArray(formulaVariables)

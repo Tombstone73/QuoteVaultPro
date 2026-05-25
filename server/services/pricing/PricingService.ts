@@ -116,6 +116,13 @@ export type PBV2PricingSnapshot = {
 export type PBV2RuntimePricingSnapshot = {
   pricingSystem: "pbv2";
   formula: string;
+  formulaSourceMode?: FormulaSourceMode;
+  resolvedFormulaSource?: ResolvedFormulaSource;
+  resolvedFormulaId?: string | null;
+  resolvedFormulaName?: string | null;
+  resolvedFormulaExpression?: string;
+  manualFormulaPresent?: boolean;
+  manualFormulaIgnored?: boolean;
   formulaVariables: Record<string, number | string | boolean | null>;
   rawSelections: Record<string, any>;
   effectiveSelections: Record<string, any>;
@@ -257,6 +264,13 @@ export type PricingPreviewEvaluationResult = {
     pbv2BaseTotal?: number;
     finalTotalSource?: "formula" | "pbv2_base" | "manual_override";
     finalTotal?: number;
+    formulaSourceMode?: FormulaSourceMode;
+    resolvedFormulaSource?: ResolvedFormulaSource;
+    resolvedFormulaId?: string | null;
+    resolvedFormulaName?: string | null;
+    resolvedFormulaExpression?: string;
+    manualFormulaPresent?: boolean;
+    manualFormulaIgnored?: boolean;
     formulaResultType?: "final_dollars";
     quantityBasisUsed?: string;
     selectedRate?: number | null;
@@ -473,7 +487,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
 
   // Step 1: Load product (with org scoping)
   const product = await loadProduct(organizationId, productId);
-  const pricingFormulaLibraryExpression = await loadProductPricingFormulaExpression(organizationId, product);
+  const pricingFormulaLibrary = await loadProductPricingFormulaLibrary(organizationId, product);
 
   // Step 2: Determine which tree version to use
   const treeVersionId = pbv2TreeVersionIdOverride 
@@ -511,8 +525,16 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
   const productFormulaForPricing = typeof product.pricingFormula === "string"
     ? product.pricingFormula.trim()
     : "";
-  const pricingFormulaExpressionForSheetYield =
-    treeFormulaForPricing || pricingFormulaLibraryExpression || productFormulaForPricing || null;
+  const productFormulaSourceMode = normalizeFormulaSourceMode(
+    product.pricingEngine,
+    Boolean(pricingFormulaLibrary?.expression),
+    Boolean(productFormulaForPricing),
+  );
+  const pricingFormulaExpressionForSheetYield = productFormulaSourceMode === "library"
+    ? (pricingFormulaLibrary?.expression || treeFormulaForPricing || null)
+    : productFormulaSourceMode === "manual"
+      ? (productFormulaForPricing || treeFormulaForPricing || null)
+      : (treeFormulaForPricing || productFormulaForPricing || null);
 
   const runtimeSelectionContext = pbv2ToRuntimeSelectionContext(
     treeVersion.treeJson as any,
@@ -573,7 +595,8 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     product,
     baseDetails,
     quantity,
-    pricingFormulaLibraryExpression,
+    formulaSourceMode: product.pricingEngine,
+    pricingFormulaLibrary,
     formulaVariables: formulaVariablesForPricing,
     pricingMatrixVariables: pricingMatrixVariablesForFormula,
   });
@@ -716,6 +739,9 @@ export function evaluatePricingPreviewFromTree(input: {
   quantity: number;
   pbv2ExplicitSelections?: Record<string, any>;
   pricingFormulaOverride?: string | null;
+  manualFormulaText?: string | null;
+  formulaSourceMode?: FormulaSourceMode | "formulaLibrary" | "pricingFormula" | "pricingProfile" | null;
+  pricingFormulaLibrary?: PricingFormulaLibraryResolution | null;
   pricingProfileKey?: string | null;
   pricingProfileConfig?: unknown;
   formulaVariables?: Record<string, number>;
@@ -764,10 +790,16 @@ export function evaluatePricingPreviewFromTree(input: {
   const treeFormulaForPricing = typeof input.treeJson?.meta?.pricingFormula === "string"
     ? String(input.treeJson.meta.pricingFormula).trim()
     : "";
-  const pricingFormulaExpressionForSheetYield =
-    (typeof input.pricingFormulaOverride === "string" ? input.pricingFormulaOverride.trim() : "") ||
-    treeFormulaForPricing ||
-    null;
+  const previewFormulaSourceMode = normalizeFormulaSourceMode(
+    input.formulaSourceMode,
+    Boolean(input.pricingFormulaLibrary?.expression),
+    typeof input.pricingFormulaOverride === "string" && input.pricingFormulaOverride.trim().length > 0,
+  );
+  const pricingFormulaExpressionForSheetYield = previewFormulaSourceMode === "library"
+    ? (input.pricingFormulaLibrary?.expression || treeFormulaForPricing || null)
+    : previewFormulaSourceMode === "manual"
+      ? ((typeof input.pricingFormulaOverride === "string" ? input.pricingFormulaOverride.trim() : "") || treeFormulaForPricing || null)
+      : (treeFormulaForPricing || null);
   const runtimeSelectionContext = pbv2ToRuntimeSelectionContext(
     input.treeJson as any,
     ruleValidatedSelections.selected,
@@ -818,6 +850,9 @@ export function evaluatePricingPreviewFromTree(input: {
       baseDetails,
       quantity,
       pricingFormulaOverride: input.pricingFormulaOverride,
+      manualFormulaText: input.manualFormulaText,
+      formulaSourceMode: input.formulaSourceMode,
+      pricingFormulaLibrary: input.pricingFormulaLibrary ?? null,
       formulaVariables: formulaVariablesForPricing,
       pricingMatrixVariables: pricingMatrixVariablesForFormula,
     });
@@ -863,6 +898,13 @@ export function evaluatePricingPreviewFromTree(input: {
     pbv2BaseTotal: formulaBasePrice.pbv2BaseTotalCents / 100,
     finalTotalSource: formulaBasePrice.finalTotalSource,
     finalTotal: formulaBasePrice.finalTotalCents / 100,
+    formulaSourceMode: formulaDebug.formulaSourceMode,
+    resolvedFormulaSource: formulaDebug.resolvedFormulaSource,
+    resolvedFormulaId: formulaDebug.resolvedFormulaId,
+    resolvedFormulaName: formulaDebug.resolvedFormulaName,
+    resolvedFormulaExpression: formulaDebug.resolvedFormulaExpression,
+    manualFormulaPresent: formulaDebug.manualFormulaPresent,
+    manualFormulaIgnored: formulaDebug.manualFormulaIgnored,
   };
   const consistencyDebug = {
     pricingSystem: "pbv2" as const,
@@ -881,6 +923,11 @@ export function evaluatePricingPreviewFromTree(input: {
     debug: consistencyDebug,
   });
   if (finalTotalMismatch) throw finalTotalMismatch;
+  const formulaDebugMismatch = buildFormulaDebugMismatchError({
+    formulaBasePrice,
+    debug: consistencyDebug,
+  });
+  if (formulaDebugMismatch) throw formulaDebugMismatch;
 
   return {
     unitPrice: quantity > 0 ? totalCents / 100 / quantity : 0,
@@ -928,6 +975,13 @@ export function evaluatePricingPreviewFromTree(input: {
       pbv2BaseTotal: pricingDebug.pbv2BaseTotal,
       finalTotalSource: pricingDebug.finalTotalSource,
       finalTotal: pricingDebug.finalTotal,
+      formulaSourceMode: formulaDebug.formulaSourceMode,
+      resolvedFormulaSource: formulaDebug.resolvedFormulaSource,
+      resolvedFormulaId: formulaDebug.resolvedFormulaId,
+      resolvedFormulaName: formulaDebug.resolvedFormulaName,
+      resolvedFormulaExpression: formulaDebug.resolvedFormulaExpression,
+      manualFormulaPresent: formulaDebug.manualFormulaPresent,
+      manualFormulaIgnored: formulaDebug.manualFormulaIgnored,
       inputs: {
         widthIn,
         heightIn,
@@ -1240,21 +1294,34 @@ async function loadProduct(organizationId: string, productId: string) {
   return product;
 }
 
-async function loadProductPricingFormulaExpression(organizationId: string, product: any): Promise<string | null> {
+async function loadProductPricingFormulaLibrary(organizationId: string, product: any): Promise<PricingFormulaLibraryResolution | null> {
   const pricingFormulaId = typeof product?.pricingFormulaId === "string"
     ? product.pricingFormulaId.trim()
     : "";
   if (!pricingFormulaId) return null;
 
   const [formula] = await db
-    .select({ expression: pricingFormulas.expression })
+    .select({ id: pricingFormulas.id, name: pricingFormulas.name, expression: pricingFormulas.expression })
     .from(pricingFormulas)
     .where(and(eq(pricingFormulas.id, pricingFormulaId), eq(pricingFormulas.organizationId, organizationId)))
     .limit(1);
 
-  return typeof formula?.expression === "string" && formula.expression.trim()
-    ? formula.expression
-    : null;
+  if (typeof formula?.expression === "string" && formula.expression.trim()) {
+    return {
+      id: formula.id,
+      name: formula.name,
+      expression: formula.expression,
+    };
+  }
+
+  throw Object.assign(new Error(`Selected Formula Library item '${pricingFormulaId}' could not be resolved.`), {
+    code: "PBV2_E_FORMULA_LIBRARY_NOT_FOUND",
+    details: [{
+      code: "PBV2_E_FORMULA_LIBRARY_NOT_FOUND",
+      message: `Selected Formula Library item '${pricingFormulaId}' could not be resolved.`,
+    }],
+  });
+
 }
 
 async function loadWeightMaterials(organizationId: string, materialIds: string[]): Promise<Pbv2WeightMaterialRecord[]> {
@@ -2331,7 +2398,157 @@ type FormulaAwareBasePriceResult = {
   minimumApplied: boolean;
   preMinimumCents: number;
   tierResolution: Pbv2TierResolution;
+  resolvedFormulaSource: ResolvedFormulaSource;
 };
+
+type FormulaSourceMode = "library" | "manual" | "profile";
+type ResolvedFormulaSource = "library" | "manual" | "tree_meta" | "product" | "profile" | "none";
+
+type PricingFormulaLibraryResolution = {
+  id: string;
+  name?: string | null;
+  expression: string;
+};
+
+type FormulaSourceResolution = {
+  formula: string;
+  source: ResolvedFormulaSource;
+  mode: FormulaSourceMode;
+  formulaId: string | null;
+  formulaName: string | null;
+  manualFormulaPresent: boolean;
+  manualFormulaIgnored: boolean;
+  warnings: Array<{ code: string; message: string; detail?: any }>;
+};
+
+function normalizeFormulaSourceMode(value: unknown, hasLibraryFormula: boolean, hasManualFormula: boolean): FormulaSourceMode {
+  const raw = String(value || "").trim();
+  if (raw === "library" || raw === "formulaLibrary") return "library";
+  if (raw === "manual" || raw === "pricingFormula") return "manual";
+  if (raw === "profile" || raw === "pricingProfile") return "profile";
+  if (hasLibraryFormula) return "library";
+  if (hasManualFormula) return "manual";
+  return "profile";
+}
+
+function resolveFormulaSource(input: {
+  formulaSourceMode?: string | null;
+  overrideFormula: string;
+  manualFormulaText?: string;
+  formulaFromTree: string;
+  formulaFromLibrary: string;
+  formulaLibraryId?: string | null;
+  formulaLibraryName?: string | null;
+  formulaFromProduct: string;
+  formulaFromProfile: string;
+}): FormulaSourceResolution {
+  const mode = normalizeFormulaSourceMode(input.formulaSourceMode, Boolean(input.formulaFromLibrary), Boolean(input.overrideFormula));
+  const manualFormulaForDebug = input.overrideFormula || input.manualFormulaText || (
+    mode === "library" || mode === "manual" ? input.formulaFromProduct : ""
+  );
+  const manualFormulaPresent = Boolean(manualFormulaForDebug);
+  const warnings: FormulaSourceResolution["warnings"] = [];
+
+  if (mode === "library") {
+    if (!input.formulaFromLibrary) {
+      return {
+        formula: "",
+        source: "none",
+        mode,
+        formulaId: input.formulaLibraryId ?? null,
+        formulaName: input.formulaLibraryName ?? null,
+        manualFormulaPresent,
+        manualFormulaIgnored: manualFormulaPresent,
+        warnings,
+      };
+    }
+
+    if (manualFormulaPresent && manualFormulaForDebug !== input.formulaFromLibrary) {
+      warnings.push({
+        code: "PBV2_W_LIBRARY_FORMULA_DETACHED",
+        message: "Manual formula text differs from the selected Formula Library expression and was ignored because Formula Library mode is selected.",
+        detail: {
+          manualFormula: manualFormulaForDebug,
+          libraryFormula: input.formulaFromLibrary,
+        },
+      });
+    }
+
+    return {
+      formula: input.formulaFromLibrary,
+      source: "library",
+      mode,
+      formulaId: input.formulaLibraryId ?? null,
+      formulaName: input.formulaLibraryName ?? null,
+      manualFormulaPresent,
+      manualFormulaIgnored: manualFormulaPresent,
+      warnings,
+    };
+  }
+
+  if (mode === "manual" && (input.overrideFormula || input.formulaFromProduct)) {
+    return {
+      formula: input.overrideFormula || input.formulaFromProduct,
+      source: "manual",
+      mode,
+      formulaId: null,
+      formulaName: null,
+      manualFormulaPresent,
+      manualFormulaIgnored: false,
+      warnings,
+    };
+  }
+
+  if (input.formulaFromTree) {
+    return {
+      formula: input.formulaFromTree,
+      source: "tree_meta",
+      mode,
+      formulaId: null,
+      formulaName: null,
+      manualFormulaPresent,
+      manualFormulaIgnored: mode !== "manual" && manualFormulaPresent,
+      warnings,
+    };
+  }
+
+  if (input.formulaFromProduct) {
+    return {
+      formula: input.formulaFromProduct,
+      source: "product",
+      mode,
+      formulaId: null,
+      formulaName: null,
+      manualFormulaPresent,
+      manualFormulaIgnored: mode !== "manual" && manualFormulaPresent,
+      warnings,
+    };
+  }
+
+  if (input.formulaFromProfile) {
+    return {
+      formula: input.formulaFromProfile,
+      source: "profile",
+      mode,
+      formulaId: null,
+      formulaName: null,
+      manualFormulaPresent,
+      manualFormulaIgnored: mode !== "manual" && manualFormulaPresent,
+      warnings,
+    };
+  }
+
+  return {
+    formula: "",
+    source: "none",
+    mode,
+    formulaId: null,
+    formulaName: null,
+    manualFormulaPresent,
+    manualFormulaIgnored: mode !== "manual" && manualFormulaPresent,
+    warnings,
+  };
+}
 
 function centsEqual(left: number, right: number): boolean {
   return Math.abs(Math.round(left) - Math.round(right)) <= 0;
@@ -2378,6 +2595,23 @@ function buildFinalTotalMismatchError(input: {
   });
 }
 
+function buildFormulaDebugMismatchError(input: {
+  formulaBasePrice: FormulaAwareBasePriceResult;
+  debug: NonNullable<PricingPreviewEvaluationResult["debug"]>;
+}): PricingPreviewFormulaError | null {
+  if (input.formulaBasePrice.finalTotalSource !== "formula") return null;
+
+  const resolvedExpression = String(input.debug.resolvedFormulaExpression || "").trim();
+  const formulaUsed = String(input.formulaBasePrice.formulaToUse || "").trim();
+  if (!resolvedExpression || !formulaUsed || resolvedExpression === formulaUsed) return null;
+
+  return buildPbv2PricingFormulaError({
+    code: "PBV2_E_FORMULA_DEBUG_MISMATCH",
+    message: "PBV2 formula debug expression does not match the formula expression used for final pricing.",
+    debug: input.debug,
+  });
+}
+
 function formulaReferencesTierVariables(formula: string): boolean {
   return /\b(?:original_base_price|tier_base_price|tier_rate|effective_base_price)\b/.test(formula);
 }
@@ -2411,7 +2645,9 @@ function calculateFormulaAwareBasePrice(input: {
   baseDetails: BasePriceDetails;
   quantity: number;
   pricingFormulaOverride?: string | null;
-  pricingFormulaLibraryExpression?: string | null;
+  manualFormulaText?: string | null;
+  formulaSourceMode?: FormulaSourceMode | "formulaLibrary" | "pricingFormula" | "pricingProfile" | null;
+  pricingFormulaLibrary?: PricingFormulaLibraryResolution | null;
   formulaVariables?: Record<string, number>;
   pricingMatrixVariables?: Record<string, number>;
 }): FormulaAwareBasePriceResult {
@@ -2424,8 +2660,8 @@ function calculateFormulaAwareBasePrice(input: {
   const formulaFromProduct = typeof input.product?.pricingFormula === "string"
     ? input.product.pricingFormula.trim()
     : "";
-  const formulaFromLibrary = typeof input.pricingFormulaLibraryExpression === "string"
-    ? input.pricingFormulaLibraryExpression.trim()
+  const formulaFromLibrary = typeof input.pricingFormulaLibrary?.expression === "string"
+    ? input.pricingFormulaLibrary.expression.trim()
     : "";
   const formulaFromProfile = typeof activeProfile.defaultFormula === "string"
     ? activeProfile.defaultFormula.trim()
@@ -2433,7 +2669,21 @@ function calculateFormulaAwareBasePrice(input: {
   const overrideFormula = typeof input.pricingFormulaOverride === "string"
     ? input.pricingFormulaOverride.trim()
     : "";
-  const formulaCandidate = overrideFormula || formulaFromTree || formulaFromLibrary || formulaFromProduct || formulaFromProfile;
+  const manualFormulaText = typeof input.manualFormulaText === "string"
+    ? input.manualFormulaText.trim()
+    : "";
+  const sourceResolution = resolveFormulaSource({
+    formulaSourceMode: input.formulaSourceMode,
+    overrideFormula,
+    manualFormulaText,
+    formulaFromTree,
+    formulaFromLibrary,
+    formulaLibraryId: input.pricingFormulaLibrary?.id ?? null,
+    formulaLibraryName: input.pricingFormulaLibrary?.name ?? null,
+    formulaFromProduct,
+    formulaFromProfile,
+  });
+  const formulaCandidate = sourceResolution.formula;
   const shouldEvaluateFormula = Boolean(formulaCandidate);
   const formulaToUse = shouldEvaluateFormula ? formulaCandidate : "";
   const tierResolution = withFormulaTierReferenceWarning(baseDetails.tierResolution, formulaToUse);
@@ -2460,6 +2710,35 @@ function calculateFormulaAwareBasePrice(input: {
     formulaVariables,
     pricingMatrixVariables: input.pricingMatrixVariables,
   });
+  formulaDebug.formulaSourceMode = sourceResolution.mode;
+  formulaDebug.resolvedFormulaSource = sourceResolution.source;
+  formulaDebug.resolvedFormulaId = sourceResolution.formulaId;
+  formulaDebug.resolvedFormulaName = sourceResolution.formulaName;
+  formulaDebug.resolvedFormulaExpression = sourceResolution.formula || undefined;
+  formulaDebug.manualFormulaPresent = sourceResolution.manualFormulaPresent;
+  formulaDebug.manualFormulaIgnored = sourceResolution.manualFormulaIgnored;
+  formulaDebug.errors = [
+    ...(formulaDebug.errors ?? []),
+    ...sourceResolution.warnings,
+  ];
+
+  if (sourceResolution.mode === "library" && sourceResolution.source !== "library") {
+    throw buildPbv2PricingFormulaError({
+      message: sourceResolution.formulaId
+        ? `Selected Formula Library item '${sourceResolution.formulaId}' could not be resolved.`
+        : "Formula Library mode is selected, but no Formula Library item is selected.",
+      code: "PBV2_E_FORMULA_LIBRARY_NOT_FOUND",
+      debug: formulaDebug,
+    });
+  }
+
+  if (sourceResolution.source === "library" && !sourceResolution.manualFormulaIgnored && sourceResolution.manualFormulaPresent) {
+    throw buildPbv2PricingFormulaError({
+      message: "Formula Library source was selected, but manual formula text was not ignored.",
+      code: "PBV2_E_FORMULA_SOURCE_MISMATCH",
+      debug: formulaDebug,
+    });
+  }
 
   if (!shouldEvaluateFormula) {
     if (profileUsesFormula) {
@@ -2481,6 +2760,7 @@ function calculateFormulaAwareBasePrice(input: {
       minimumApplied: baseDetails.minimumApplied,
       preMinimumCents: baseDetails.preMinimumCents,
       tierResolution,
+      resolvedFormulaSource: sourceResolution.source,
     };
   }
 
@@ -2541,6 +2821,7 @@ function calculateFormulaAwareBasePrice(input: {
     minimumApplied,
     preMinimumCents,
     tierResolution,
+    resolvedFormulaSource: sourceResolution.source,
   };
 }
 
@@ -2720,6 +3001,13 @@ function buildRuntimePricingSnapshot(input: {
   return cloneJsonValue({
     pricingSystem: "pbv2",
     formula: formulaSnapshot.formula,
+    formulaSourceMode: formulaDebug.formulaSourceMode,
+    resolvedFormulaSource: formulaDebug.resolvedFormulaSource,
+    resolvedFormulaId: formulaDebug.resolvedFormulaId,
+    resolvedFormulaName: formulaDebug.resolvedFormulaName,
+    resolvedFormulaExpression: formulaDebug.resolvedFormulaExpression ?? formulaSnapshot.formula,
+    manualFormulaPresent: formulaDebug.manualFormulaPresent,
+    manualFormulaIgnored: formulaDebug.manualFormulaIgnored,
     formulaVariables: formulaDebug.variables,
     rawSelections: toPlainSelectionValues(input.rawSelections),
     effectiveSelections: toPlainSelectionValues(input.effectiveSelections),

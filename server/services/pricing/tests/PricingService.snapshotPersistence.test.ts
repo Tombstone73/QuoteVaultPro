@@ -139,6 +139,7 @@ beforeEach(async () => {
     set price_breaks = '{"enabled":false,"type":"quantity","tiers":[]}'::jsonb,
         pricing_formula_id = null,
         pricing_formula = null,
+        pricing_engine = ${"pricingProfile"},
         pricing_profile_key = ${"default"},
         pricing_profile_config = null
     where id = ${productId}
@@ -179,6 +180,7 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
       update products
       set pricing_formula_id = ${pricingFormulaId},
           pricing_formula = ${"ceil(total_sqft) * base_price"},
+          pricing_engine = ${"formulaLibrary"},
           pricing_profile_key = ${"default"}
       where id = ${productId}
     `);
@@ -201,6 +203,13 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
     expect(result.lineTotalCents).toBe(4400);
     expect(result.breakdown.baseCents).toBe(4400);
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formula).toBe(COROPLAST_4X8_FORMULA);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaSourceMode).toBe("library");
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.resolvedFormulaSource).toBe("library");
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.resolvedFormulaId).toBe(pricingFormulaId);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.resolvedFormulaName).toBe("Coroplast 4x8 Sheet Consumption");
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.resolvedFormulaExpression).toBe(COROPLAST_4X8_FORMULA);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.manualFormulaPresent).toBe(true);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.manualFormulaIgnored).toBe(true);
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.calculatedPrice).toBe(44);
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaEvaluatedTotal).toBe(44);
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.finalTotalSource).toBe("formula");

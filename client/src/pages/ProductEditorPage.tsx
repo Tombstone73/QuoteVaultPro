@@ -36,7 +36,6 @@ import PBV2ProductBuilderSectionV2 from "@/components/PBV2ProductBuilderSectionV
 import { ensureRootNodeIds, normalizeTreeJson } from "@/lib/pbv2/pbv2ViewModel";
 import { PricingValidationPanel } from "@/components/pbv2/builder-v2/PricingValidationPanel";
 import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
-import { getPricingFormulaSelectionValues } from "@/lib/pricingFormulaSelection";
 
 interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
   pricingProfileKey: string;
@@ -753,15 +752,17 @@ const ProductEditorPage = () => {
 
   const previewPricingFormulaId = form.watch("pricingFormulaId");
   const previewPricingFormula = form.watch("pricingFormula");
+  const formulaSourceMode = useMemo<"library" | "manual" | "profile">(() => {
+    if (pricingEngine === "formulaLibrary") return "library";
+    if (pricingEngine === "pricingFormula") return "manual";
+    return "profile";
+  }, [pricingEngine]);
   const effectivePreviewFormula = useMemo(() => {
-    const selectedFormula = getPricingFormulaSelectionValues(pricingFormulas, previewPricingFormulaId);
-    if (selectedFormula.pricingFormula?.trim()) {
-      return selectedFormula.pricingFormula;
-    }
+    if (formulaSourceMode !== "manual") return null;
     return typeof previewPricingFormula === "string" && previewPricingFormula.trim()
       ? previewPricingFormula
       : null;
-  }, [pricingFormulas, previewPricingFormulaId, previewPricingFormula]);
+  }, [formulaSourceMode, previewPricingFormula]);
 
   const hasInvalidOptionTreeJson = Boolean((form.formState.errors as any)?.optionTreeJson);
 
@@ -994,7 +995,9 @@ const ProductEditorPage = () => {
             treeJson={pbv2State?.treeJson ?? form.getValues('optionTreeJson') ?? null}
             pricingV2Override={treeMeta.pricingV2}
             pricingFormulaOverride={effectivePreviewFormula}
+            manualFormulaText={typeof previewPricingFormula === "string" ? previewPricingFormula : null}
             pricingFormulaId={previewPricingFormulaId || null}
+            formulaSourceMode={formulaSourceMode}
             pricingProfileKey={form.watch("pricingProfileKey") || null}
             pricingProfileConfig={form.watch("pricingProfileConfig") || null}
             pricingMode={pbv2PricingMode}
