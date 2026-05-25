@@ -1264,7 +1264,26 @@ export function registerQuoteRoutes(
         console.log(`[PATCH /api/quotes/${id}] label value:`, updateData.label);
       }
 
-      const updatedQuote = await storage.updateQuote(organizationId, id, updateData);
+      let updatedQuote = await storage.updateQuote(organizationId, id, updateData);
+
+      const shouldRefreshAggregateTotals =
+        subtotal !== undefined ||
+        taxRate !== undefined ||
+        taxAmount !== undefined ||
+        totalPrice !== undefined ||
+        discountAmount !== undefined ||
+        shippingCents !== undefined ||
+        !isPartialUpdate;
+
+      if (shouldRefreshAggregateTotals) {
+        const refreshedTotals = await refreshQuoteAggregateTotals(organizationId, id);
+        if (refreshedTotals) {
+          updatedQuote = {
+            ...updatedQuote,
+            ...refreshedTotals,
+          };
+        }
+      }
 
       if (status !== undefined && status !== existing.status) {
         await syncInboundCompletionForQuote({
