@@ -135,6 +135,12 @@ type PricingPreviewResponse = {
       billedSheetSqft?: number | null;
       mode?: "exact_flat_goods" | "layout_yield" | "sheet_equivalent" | "unavailable";
       sheetUsageMethod?: string | null;
+      allowRotation?: boolean | null;
+      allowRotationSource?: string | null;
+      normalPiecesPerSheet?: number | null;
+      rotatedPiecesPerSheet?: number | null;
+      mixedPiecesPerSheet?: number | null;
+      mixedLayoutDescription?: string | null;
       piecesPerSheet?: number | null;
       orientationUsed?: string | null;
       fullSheets?: number | null;
@@ -171,6 +177,12 @@ type PricingPreviewResponse = {
       computedSheetUsageAvailable?: boolean;
       computedSheetUsageMode?: "exact_flat_goods" | "layout_yield" | "sheet_equivalent" | "unavailable";
       sheetUsageMethod?: string | null;
+      allowRotation?: boolean | null;
+      allowRotationSource?: string | null;
+      normalPiecesPerSheet?: number | null;
+      rotatedPiecesPerSheet?: number | null;
+      mixedPiecesPerSheet?: number | null;
+      mixedLayoutDescription?: string | null;
       piecesPerSheet?: number | null;
       orientationUsed?: string | null;
       fullSheets?: number | null;
@@ -1272,8 +1284,14 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       <div><span className="text-slate-400">Finished sqft:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.finishedSqft === "number" ? formulaDebug.sheetYield.finishedSqft.toFixed(2) : "—"}</span></div>
                       <div><span className="text-slate-400">Computed sheets:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.computedSheets === "number" ? formulaDebug.sheetYield.computedSheets.toFixed(4) : "—"}</span></div>
                       <div><span className="text-slate-400">Sheet usage method:</span> <span className="font-mono">{formulaDebug.sheetYield?.sheetUsageMethod ?? formulaDebug.sheetYield?.mode ?? "—"}</span></div>
+                      <div><span className="text-slate-400">Allow rotation:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.allowRotation === "boolean" ? String(formulaDebug.sheetYield.allowRotation) : "—"}</span></div>
+                      <div><span className="text-slate-400">Allow rotation source:</span> <span className="font-mono break-all">{formulaDebug.sheetYield?.allowRotationSource ?? formulaDebug.variableSources?.allow_rotation ?? "—"}</span></div>
+                      <div><span className="text-slate-400">Normal pieces per sheet:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.normalPiecesPerSheet === "number" ? formulaDebug.sheetYield.normalPiecesPerSheet.toFixed(0) : "—"}</span></div>
+                      <div><span className="text-slate-400">Rotated pieces per sheet:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.rotatedPiecesPerSheet === "number" ? formulaDebug.sheetYield.rotatedPiecesPerSheet.toFixed(0) : "—"}</span></div>
+                      <div><span className="text-slate-400">Mixed pieces per sheet:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.mixedPiecesPerSheet === "number" ? formulaDebug.sheetYield.mixedPiecesPerSheet.toFixed(0) : "—"}</span></div>
                       <div><span className="text-slate-400">Pieces per sheet:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.piecesPerSheet === "number" ? formulaDebug.sheetYield.piecesPerSheet.toFixed(0) : "—"}</span></div>
                       <div><span className="text-slate-400">Orientation:</span> <span className="font-mono">{formulaDebug.sheetYield?.orientationUsed ?? "—"}</span></div>
+                      <div><span className="text-slate-400">Mixed layout:</span> <span className="font-mono break-all">{formulaDebug.sheetYield?.mixedLayoutDescription ?? "—"}</span></div>
                       <div><span className="text-slate-400">Full sheets:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.fullSheets === "number" ? formulaDebug.sheetYield.fullSheets.toFixed(0) : "—"}</span></div>
                       <div><span className="text-slate-400">Partial sheet pieces:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.partialSheetPieceCount === "number" ? formulaDebug.sheetYield.partialSheetPieceCount.toFixed(0) : "—"}</span></div>
                       <div><span className="text-slate-400">Partial sheet finished sqft:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.partialSheetFinishedSqft === "number" ? formulaDebug.sheetYield.partialSheetFinishedSqft.toFixed(2) : "—"}</span></div>
@@ -1409,10 +1427,22 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                             <div className="font-mono">{computedSheetUsageModeDisplay}</div>
                             <div className="text-slate-400">Sheet usage method</div>
                             <div className="font-mono">{tierResolution?.sheetUsageMethod ?? "—"}</div>
+                            <div className="text-slate-400">Allow rotation</div>
+                            <div className="font-mono">{typeof tierResolution?.allowRotation === "boolean" ? String(tierResolution.allowRotation) : "—"}</div>
+                            <div className="text-slate-400">Allow rotation source</div>
+                            <div className="font-mono break-all">{tierResolution?.allowRotationSource ?? tierResolution?.tierVariableSources?.allow_rotation ?? "—"}</div>
+                            <div className="text-slate-400">Normal pieces per sheet</div>
+                            <div className="font-mono">{displayDebugValue(tierResolution?.normalPiecesPerSheet)}</div>
+                            <div className="text-slate-400">Rotated pieces per sheet</div>
+                            <div className="font-mono">{displayDebugValue(tierResolution?.rotatedPiecesPerSheet)}</div>
+                            <div className="text-slate-400">Mixed pieces per sheet</div>
+                            <div className="font-mono">{displayDebugValue(tierResolution?.mixedPiecesPerSheet)}</div>
                             <div className="text-slate-400">Pieces per sheet</div>
                             <div className="font-mono">{displayDebugValue(tierResolution?.piecesPerSheet)}</div>
                             <div className="text-slate-400">Orientation used</div>
                             <div className="font-mono">{tierResolution?.orientationUsed ?? "—"}</div>
+                            <div className="text-slate-400">Mixed layout</div>
+                            <div className="font-mono break-all">{tierResolution?.mixedLayoutDescription ?? "—"}</div>
                             <div className="text-slate-400">Full sheets</div>
                             <div className="font-mono">{displayDebugValue(tierResolution?.fullSheets)}</div>
                             <div className="text-slate-400">Partial sheet pieces</div>

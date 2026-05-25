@@ -43,6 +43,7 @@ export const FORMULA_VARIABLE_PROTECTED_KEYS = new Set([
   "partial_sheet_finished_sqft",
   "partial_sheet_billable_sqft",
   "total_sheet_count",
+  "allow_rotation",
   "linear_feet",
   "finished_width",
   "fw",
@@ -86,6 +87,7 @@ export const MATRIX_VARIABLE_PROTECTED_KEYS = new Set([
   "partial_sheet_finished_sqft",
   "partial_sheet_billable_sqft",
   "total_sheet_count",
+  "allow_rotation",
   "linear_feet",
   "finished_width",
   "fw",
@@ -126,6 +128,7 @@ export function buildFormulaScope(input: {
   partialSheetFinishedSqft?: number | null;
   partialSheetBillableSqft?: number | null;
   totalSheetCount?: number | null;
+  allowRotation?: boolean | null;
 }): Record<string, number | string | boolean | null> {
   const scope: Record<string, number | string | boolean | null> = {
     width: input.orderedWidthIn,
@@ -157,6 +160,7 @@ export function buildFormulaScope(input: {
     total_sqft: input.totalSqft,
     finished_sqft: input.sqftPerItem,
     total_finished_sqft: input.totalSqft,
+    allow_rotation: input.allowRotation ?? false,
     linear_feet: input.linearFeet,
   };
 

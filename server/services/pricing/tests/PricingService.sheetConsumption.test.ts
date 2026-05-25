@@ -105,6 +105,22 @@ function makeRowTierBasisTree(
   };
 }
 
+function makeAllowRotationTree() {
+  const tree = makeRowTierBasisTree("computed_sheet_usage") as any;
+  tree.rootNodeIds = ["rate", "allow_rotation"];
+  tree.nodes.allow_rotation = {
+    id: "allow_rotation",
+    kind: "question" as const,
+    label: "Allow Rotation",
+    input: { type: "select" as const, selectionKey: "allow_rotation" },
+    choices: [
+      { value: "yes", label: "Yes" },
+      { value: "no", label: "No" },
+    ],
+  };
+  return tree;
+}
+
 function runFormula(formula: string, w = 24, h = 36, q = 1) {
   return evaluatePricingPreviewFromTree({
     treeJson: makeTree(),
@@ -141,7 +157,7 @@ describe("sheet_consumption_sqft", () => {
       "sheet_consumption_sqft(w, h, q, 48, 9999, 0, 1, 0)",
       36, 24, 3,
     );
-    expect(result.totalPrice).toBeCloseTo(24, 1);
+    expect(result.totalPrice).toBeCloseTo(18, 1);
   });
 
   test("rotated orientation wins when pieces pack more efficiently", () => {
@@ -227,7 +243,7 @@ describe("sheet_consumption_sqft", () => {
     //   consumedLength=60, billableLength=60 (multiple of 12), sqft=23*60/144≈9.583
     // best = max(9.583, min=3) = 9.583 → ceil = 10
     const result = runFormula(
-      "sheet_consumption_sqft(w, h, q, 48, 96, 24, 12, 3)",
+      "sheet_consumption_sqft(w, h, q, 48, 96, 24, 12, 3, true)",
       60, 23, 1,
     );
     expect(result.totalPrice).toBeCloseTo(10, 1);
@@ -242,7 +258,7 @@ describe("sheet_consumption_sqft", () => {
     //   consumedLength=60, billableLength=60, sqft=48*60/144=20
     // best = max(20, min=3) = 20
     const result = runFormula(
-      "sheet_consumption_sqft(w, h, q, 48, 96, 24, 12, 3)",
+      "sheet_consumption_sqft(w, h, q, 48, 96, 24, 12, 3, true)",
       60, 25, 1,
     );
     expect(result.totalPrice).toBeCloseTo(32, 1);
@@ -351,6 +367,81 @@ describe("sheet_consumption_sqft", () => {
 
     expect(result.totalPrice).toBeCloseTo(44, 2);
     expect(result.breakdown.basePrice).toBeCloseTo(44, 2);
+  });
+
+  test("24x36 q5 with allow_rotation=false uses normal 4-up layout and two sheets", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeAllowRotationTree(),
+      widthIn: 24,
+      heightIn: 36,
+      quantity: 5,
+      pbv2ExplicitSelections: {
+        rate: { value: "standard" },
+        allow_rotation: { value: "no" },
+      },
+      pricingFormulaOverride: "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price",
+      debug: true,
+    });
+
+    expect(result.debug?.variables.allow_rotation).toBe(false);
+    expect(result.debug?.variableSources?.allow_rotation).toBe("pbv2.choice:allow_rotation");
+    expect(result.debug?.sheetYield).toEqual(expect.objectContaining({
+      allowRotation: false,
+      allowRotationSource: "pbv2.choice:allow_rotation",
+      normalPiecesPerSheet: 4,
+      rotatedPiecesPerSheet: 4,
+      mixedPiecesPerSheet: 5,
+      piecesPerSheet: 4,
+      orientationUsed: "normal",
+      fullSheets: 1,
+      partialSheetPieceCount: 1,
+      totalSheetCount: 2,
+    }));
+    expect(result.debug?.tierResolution).toEqual(expect.objectContaining({
+      allowRotation: false,
+      tierSelectionQuantity: 2,
+      computedSheetUsage: 2,
+      piecesPerSheet: 4,
+      totalSheetCount: 2,
+    }));
+  });
+
+  test("24x36 q5 with allow_rotation=true uses mixed 5-up layout and one sheet", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeAllowRotationTree(),
+      widthIn: 24,
+      heightIn: 36,
+      quantity: 5,
+      pbv2ExplicitSelections: {
+        rate: { value: "standard" },
+        allow_rotation: { value: "yes" },
+      },
+      pricingFormulaOverride: "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price",
+      debug: true,
+    });
+
+    expect(result.debug?.variables.allow_rotation).toBe(true);
+    expect(result.debug?.variableSources?.allow_rotation).toBe("pbv2.choice:allow_rotation");
+    expect(result.debug?.sheetYield).toEqual(expect.objectContaining({
+      allowRotation: true,
+      allowRotationSource: "pbv2.choice:allow_rotation",
+      normalPiecesPerSheet: 4,
+      rotatedPiecesPerSheet: 4,
+      mixedPiecesPerSheet: 5,
+      piecesPerSheet: 5,
+      orientationUsed: "mixed",
+      fullSheets: 1,
+      partialSheetPieceCount: 0,
+      totalSheetCount: 1,
+      billedSheetSqft: 32,
+    }));
+    expect(result.debug?.tierResolution).toEqual(expect.objectContaining({
+      allowRotation: true,
+      tierSelectionQuantity: 1,
+      computedSheetUsage: 1,
+      piecesPerSheet: 5,
+      totalSheetCount: 1,
+    }));
   });
 
   test("formula library mode ignores stale manual formula text and uses library expression", () => {
@@ -829,7 +920,7 @@ describe("sheet_consumption_sqft", () => {
 // All values must be whole integers (ceil applied to final result).
 
 const FORMULA_4X8 =
-  "sheet_consumption_sqft(w, h, q, 48, 96, 24, 12, 3)";
+  "sheet_consumption_sqft(w, h, q, 48, 96, 24, 12, 3, true)";
 
 describe("sheet_consumption_sqft — 48×96 expected outputs", () => {
   test("12×18 q1 → 3  (reusable drop, minimum floor)", () => {

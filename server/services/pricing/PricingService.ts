@@ -46,7 +46,7 @@ import {
   type Pbv2TierResolution,
   type Pbv2TierResolutionWarning,
 } from '../../../shared/pbv2/pricingAdapter';
-import { calculateSheetYield, extractFormulaVariables, sheetConsumptionSqft } from '../../../shared/pbv2/formulaHelpers';
+import { calculateSheetYield, extractFormulaVariables, parseFormulaBoolean, sheetConsumptionSqft } from '../../../shared/pbv2/formulaHelpers';
 import { buildNumericSelectionFormulaVariables } from '../../../shared/pbv2/numericSelectionFormulaVariables';
 import {
   collectPbv2WeightMaterialIds,
@@ -171,6 +171,12 @@ export type PBV2TierResolutionSnapshot = {
   computedSheetUsageAvailable?: boolean;
   computedSheetUsageMode?: "exact_flat_goods" | "layout_yield" | "sheet_equivalent" | "unavailable";
   sheetUsageMethod?: "exact_flat_goods" | "layout_yield" | "mixed_layout" | "sqft_equivalent_fallback" | "sheet_equivalent" | "unavailable" | string | null;
+  allowRotation?: boolean | null;
+  allowRotationSource?: string | null;
+  normalPiecesPerSheet?: number | null;
+  rotatedPiecesPerSheet?: number | null;
+  mixedPiecesPerSheet?: number | null;
+  mixedLayoutDescription?: string | null;
   piecesPerSheet?: number | null;
   orientationUsed?: string | null;
   fullSheets?: number | null;
@@ -308,6 +314,12 @@ export type PricingPreviewEvaluationResult = {
       billedSheetSqft?: number | null;
       mode?: ComputedSheetUsageMode;
       sheetUsageMethod?: string | null;
+      allowRotation?: boolean | null;
+      allowRotationSource?: string | null;
+      normalPiecesPerSheet?: number | null;
+      rotatedPiecesPerSheet?: number | null;
+      mixedPiecesPerSheet?: number | null;
+      mixedLayoutDescription?: string | null;
       piecesPerSheet?: number | null;
       orientationUsed?: string | null;
       fullSheets?: number | null;
@@ -571,6 +583,14 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     selectionFormulaVariables,
   });
   const formulaVariablesForPricing = formulaVariableResolution.variables;
+  const allowRotationResolution = resolveAllowRotationForPricing({
+    treeJson: treeVersion.treeJson,
+    selections: ruleValidatedSelections.selected,
+    formulaVariables: formulaVariablesForPricing,
+    formulaVariableSources: formulaVariableResolution.sources,
+    pricingMatrixVariables: pricingMatrixResolution.variables,
+  });
+  formulaVariableResolution.sources.allow_rotation = allowRotationResolution.source;
 
   const runtimeSelectionContext = pbv2ToRuntimeSelectionContext(
     treeVersion.treeJson as any,
@@ -614,6 +634,8 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     pricingProfileConfig: product.pricingProfileConfig,
     formulaVariables: formulaVariablesForPricing,
     formulaVariableSources: formulaVariableResolution.sources,
+    allowRotation: allowRotationResolution.value,
+    allowRotationSource: allowRotationResolution.source,
     pricingFormulaExpression: pricingFormulaExpressionForSheetYield,
     productLegacy: {
       sheetWidth: product.sheetWidth,
@@ -842,6 +864,14 @@ export function evaluatePricingPreviewFromTree(input: {
     selectionFormulaVariables,
   });
   const formulaVariablesForPricing = formulaVariableResolution.variables;
+  const allowRotationResolution = resolveAllowRotationForPricing({
+    treeJson: input.treeJson,
+    selections: ruleValidatedSelections.selected,
+    formulaVariables: formulaVariablesForPricing,
+    formulaVariableSources: formulaVariableResolution.sources,
+    pricingMatrixVariables: pricingMatrixResolution.variables,
+  });
+  formulaVariableResolution.sources.allow_rotation = allowRotationResolution.source;
   const runtimeSelectionContext = pbv2ToRuntimeSelectionContext(
     input.treeJson as any,
     ruleValidatedSelections.selected,
@@ -866,6 +896,8 @@ export function evaluatePricingPreviewFromTree(input: {
     pricingProfileConfig: input.pricingProfileConfig,
     formulaVariables: formulaVariablesForPricing,
     formulaVariableSources: formulaVariableResolution.sources,
+    allowRotation: allowRotationResolution.value,
+    allowRotationSource: allowRotationResolution.source,
     pricingFormulaExpression: pricingFormulaExpressionForSheetYield,
   });
   const pricingMethod = String(baseDetails.pricingProfileKey || "default");
@@ -1575,6 +1607,12 @@ type SheetYieldMetrics = {
   sheetSqft: number | null;
   billedSheetSqft: number | null;
   sheetUsageMethod?: string | null;
+  allowRotation?: boolean | null;
+  allowRotationSource?: string | null;
+  normalPiecesPerSheet?: number | null;
+  rotatedPiecesPerSheet?: number | null;
+  mixedPiecesPerSheet?: number | null;
+  mixedLayoutDescription?: string | null;
   piecesPerSheet?: number | null;
   orientationUsed?: string | null;
   fullSheets?: number | null;
@@ -1606,6 +1644,12 @@ type TierBasisState = {
   computedSheetUsageAvailable: boolean;
   computedSheetUsageMode: ComputedSheetUsageMode;
   sheetUsageMethod?: string | null;
+  allowRotation?: boolean | null;
+  allowRotationSource?: string | null;
+  normalPiecesPerSheet?: number | null;
+  rotatedPiecesPerSheet?: number | null;
+  mixedPiecesPerSheet?: number | null;
+  mixedLayoutDescription?: string | null;
   piecesPerSheet?: number | null;
   orientationUsed?: string | null;
   fullSheets?: number | null;
@@ -1632,6 +1676,82 @@ function isPbv2TierBasis(value: unknown): value is Pbv2TierBasis {
 function getFiniteNumberFromRecord(record: Record<string, unknown>, key: string): number | null {
   const value = Number(record[key]);
   return Number.isFinite(value) ? value : null;
+}
+
+function toFormulaIdentifier(value: string): string {
+  const collapsed = value.trim().toLowerCase().replace(/[^a-z0-9_$]+/g, "_").replace(/^_+|_+$/g, "");
+  return /^[a-z_$]/.test(collapsed) ? collapsed : collapsed ? `_${collapsed}` : "";
+}
+
+function getSelectionValue(rawValue: unknown): unknown {
+  if (rawValue && typeof rawValue === "object" && !Array.isArray(rawValue) && Object.prototype.hasOwnProperty.call(rawValue, "value")) {
+    return (rawValue as { value?: unknown }).value;
+  }
+  return rawValue;
+}
+
+function resolveAllowRotationFromSelectedChoices(input: {
+  treeJson: any;
+  selections: Record<string, unknown>;
+}): { value: boolean; source: string } | null {
+  const nodes = extractNodesRecord(input.treeJson);
+  const selectionEntries = toSelectionEntryMap(input.selections);
+
+  for (const [selectionKey, entry] of Object.entries(selectionEntries)) {
+    const selectedValue = getSelectionValue(entry);
+    const keyMatches = toFormulaIdentifier(selectionKey) === "allow_rotation";
+    const node = Object.values(nodes).find((candidate: any) => getNodeSelectionKey(candidate) === selectionKey);
+    const labelMatches = node ? toFormulaIdentifier(String(node.label ?? node.input?.label ?? "")) === "allow_rotation" : false;
+    if (!keyMatches && !labelMatches) continue;
+
+    const direct = parseFormulaBoolean(selectedValue);
+    if (direct !== null) return { value: direct, source: `pbv2.choice:${selectionKey}` };
+
+    const choice = Array.isArray((node as any)?.choices)
+      ? (node as any).choices.find((candidate: any) => String(candidate?.value) === String(selectedValue))
+      : null;
+    const fromChoiceValue = parseFormulaBoolean(choice?.value);
+    if (fromChoiceValue !== null) return { value: fromChoiceValue, source: `pbv2.choice:${selectionKey}` };
+    const fromChoiceLabel = parseFormulaBoolean(choice?.label);
+    if (fromChoiceLabel !== null) return { value: fromChoiceLabel, source: `pbv2.choice:${selectionKey}` };
+  }
+
+  return null;
+}
+
+function resolveAllowRotationForPricing(input: {
+  treeJson: any;
+  selections: Record<string, unknown>;
+  formulaVariables?: Record<string, number>;
+  formulaVariableSources?: Record<string, string>;
+  pricingMatrixVariables?: Record<string, number>;
+}): { value: boolean; source: string } {
+  let resolved: { value: boolean; source: string } = { value: false, source: "default.allow_rotation=false" };
+
+  const formulaVariableValue = input.formulaVariables && Object.prototype.hasOwnProperty.call(input.formulaVariables, "allow_rotation")
+    ? parseFormulaBoolean(input.formulaVariables.allow_rotation)
+    : null;
+  if (formulaVariableValue !== null) {
+    resolved = {
+      value: formulaVariableValue,
+      source: input.formulaVariableSources?.allow_rotation ?? "formulaVariables.allow_rotation",
+    };
+  }
+
+  const matrixValue = input.pricingMatrixVariables && Object.prototype.hasOwnProperty.call(input.pricingMatrixVariables, "allow_rotation")
+    ? parseFormulaBoolean(input.pricingMatrixVariables.allow_rotation)
+    : null;
+  if (matrixValue !== null) {
+    resolved = { value: matrixValue, source: "pricing_matrix.variables.allow_rotation" };
+  }
+
+  const selectedChoice = resolveAllowRotationFromSelectedChoices({
+    treeJson: input.treeJson,
+    selections: input.selections,
+  });
+  if (selectedChoice) resolved = selectedChoice;
+
+  return resolved;
 }
 
 function resolveComputedSheetTierSelectionQuantity(metrics: SheetYieldMetrics): number | null {
@@ -1765,6 +1885,8 @@ function resolveComputedSheetUsage(input: {
   pricingMatrixVariables: Record<string, number>;
   formulaVariables?: Record<string, number>;
   formulaVariableSources?: Record<string, string>;
+  allowRotation?: boolean;
+  allowRotationSource?: string;
   pricingFormulaExpression?: string | null;
   orderedWidthIn: number;
   orderedHeightIn: number;
@@ -1780,8 +1902,17 @@ function resolveComputedSheetUsage(input: {
 
   if (input.activePricingProfileKey === "flat_goods" && input.productLegacy.materialType !== "roll") {
     try {
+      const flatGoodsAllowRotation = input.allowRotation ?? input.activeProfileConfig?.allowRotation ?? false;
+      const flatGoodsProfileConfig: FlatGoodsConfig = {
+        sheetWidth: input.activeProfileConfig?.sheetWidth ?? (input.productLegacy.sheetWidth ? Number(input.productLegacy.sheetWidth) : 48),
+        sheetHeight: input.activeProfileConfig?.sheetHeight ?? (input.productLegacy.sheetHeight ? Number(input.productLegacy.sheetHeight) : 96),
+        materialType: input.activeProfileConfig?.materialType ?? input.productLegacy.materialType ?? "sheet",
+        minSheets: input.activeProfileConfig?.minSheets,
+        minPricePerItem: input.activeProfileConfig?.minPricePerItem ?? (input.productLegacy.minPricePerItem ? Number(input.productLegacy.minPricePerItem) : null),
+        allowRotation: flatGoodsAllowRotation,
+      };
       const flatGoodsInput = buildFlatGoodsInput(
-        input.activeProfileConfig,
+        flatGoodsProfileConfig,
         input.productLegacy,
         { basePricePerSqft: "1" },
         input.finishedWidthIn,
@@ -1800,7 +1931,7 @@ function resolveComputedSheetUsage(input: {
             minPricePerItem,
             volumePricing,
             null,
-            allowRotation ?? true,
+            allowRotation ?? flatGoodsAllowRotation,
           ),
       );
 
@@ -1823,6 +1954,12 @@ function resolveComputedSheetUsage(input: {
           sheetSqft,
           billedSheetSqft: sheetSqft !== null ? computedSheets * sheetSqft : null,
           sheetUsageMethod: "exact_flat_goods",
+          allowRotation: input.allowRotation ?? false,
+          allowRotationSource: input.allowRotationSource ?? "default.allow_rotation=false",
+          normalPiecesPerSheet: null,
+          rotatedPiecesPerSheet: null,
+          mixedPiecesPerSheet: null,
+          mixedLayoutDescription: null,
           totalSheetCount: computedSheets,
           finishedSqft,
           totalFinishedSqft,
@@ -1867,10 +2004,17 @@ function resolveComputedSheetUsage(input: {
   const usableDropMin = getFiniteNumberFromRecord(formulaVariables, "usable_drop_min");
   const billableLengthIncrement = getFiniteNumberFromRecord(formulaVariables, "billable_length_increment");
   const minimumBillableSqft = getFiniteNumberFromRecord(formulaVariables, "minimum_billable_sqft");
+  const formulaAllowRotation = Object.prototype.hasOwnProperty.call(formulaVariables, "allow_rotation")
+    ? parseFormulaBoolean(formulaVariables.allow_rotation)
+    : null;
+  const allowRotation = input.allowRotation ?? formulaAllowRotation ?? false;
+  const allowRotationSource = input.allowRotationSource
+    ?? (formulaAllowRotation !== null ? formulaVariableSources.allow_rotation ?? "formulaVariables.allow_rotation" : "default.allow_rotation=false");
   const tierVariableSources: Record<string, string> = {};
   for (const key of ["sheet_width", "sheet_length", "usable_drop_min", "billable_length_increment", "minimum_billable_sqft"]) {
     if (formulaVariableSources[key]) tierVariableSources[key] = formulaVariableSources[key];
   }
+  tierVariableSources.allow_rotation = allowRotationSource;
 
   if (
     sheetWidth === null ||
@@ -1906,6 +2050,12 @@ function resolveComputedSheetUsage(input: {
       sheetSqft: null,
       billedSheetSqft: null,
       sheetUsageMethod: "unavailable",
+      allowRotation,
+      allowRotationSource,
+      normalPiecesPerSheet: null,
+      rotatedPiecesPerSheet: null,
+      mixedPiecesPerSheet: null,
+      mixedLayoutDescription: null,
       piecesPerSheet: null,
       orientationUsed: null,
       fullSheets: null,
@@ -1939,6 +2089,8 @@ function resolveComputedSheetUsage(input: {
       usableDropMin,
       billableLengthIncrement,
       minimumBillableSqft,
+      allowRotation,
+      allowRotationSource,
     );
 
     if (!Number.isFinite(sheetYield.totalSheetCount) || sheetYield.totalSheetCount <= 0) {
@@ -1955,6 +2107,12 @@ function resolveComputedSheetUsage(input: {
         sheetSqft: Number.isFinite(sheetYield.sheetSqft) && sheetYield.sheetSqft > 0 ? sheetYield.sheetSqft : null,
         billedSheetSqft: null,
         sheetUsageMethod: "unavailable",
+        allowRotation: sheetYield.allowRotation,
+        allowRotationSource: sheetYield.allowRotationSource,
+        normalPiecesPerSheet: sheetYield.normalPiecesPerSheet,
+        rotatedPiecesPerSheet: sheetYield.rotatedPiecesPerSheet,
+        mixedPiecesPerSheet: sheetYield.mixedPiecesPerSheet,
+        mixedLayoutDescription: sheetYield.mixedLayoutDescription,
         piecesPerSheet: sheetYield.piecesPerSheet,
         orientationUsed: sheetYield.orientationUsed,
         fullSheets: sheetYield.fullSheets,
@@ -1985,6 +2143,12 @@ function resolveComputedSheetUsage(input: {
       sheetSqft: sheetYield.sheetSqft,
       billedSheetSqft: sheetYield.billedSheetSqft,
       sheetUsageMethod: sheetYield.sheetUsageMethod,
+      allowRotation: sheetYield.allowRotation,
+      allowRotationSource: sheetYield.allowRotationSource,
+      normalPiecesPerSheet: sheetYield.normalPiecesPerSheet,
+      rotatedPiecesPerSheet: sheetYield.rotatedPiecesPerSheet,
+      mixedPiecesPerSheet: sheetYield.mixedPiecesPerSheet,
+      mixedLayoutDescription: sheetYield.mixedLayoutDescription,
       piecesPerSheet: sheetYield.piecesPerSheet,
       orientationUsed: sheetYield.orientationUsed,
       fullSheets: sheetYield.fullSheets,
@@ -2020,6 +2184,12 @@ function resolveComputedSheetUsage(input: {
       sheetSqft: null,
       billedSheetSqft: null,
       sheetUsageMethod: "unavailable",
+      allowRotation,
+      allowRotationSource,
+      normalPiecesPerSheet: null,
+      rotatedPiecesPerSheet: null,
+      mixedPiecesPerSheet: null,
+      mixedLayoutDescription: null,
       piecesPerSheet: null,
       orientationUsed: null,
       fullSheets: null,
@@ -2059,6 +2229,8 @@ function resolveTierBasisState(input: {
   };
   pricingMatrixVariables: Record<string, number>;
   formulaVariables?: Record<string, number>;
+  allowRotation?: boolean;
+  allowRotationSource?: string;
   sheetYieldMetrics: SheetYieldMetrics;
   orderedWidthIn: number;
   orderedHeightIn: number;
@@ -2111,6 +2283,12 @@ function resolveTierBasisState(input: {
       computedSheetUsageAvailable: true,
       computedSheetUsageMode: computed.mode,
       sheetUsageMethod: computed.sheetUsageMethod ?? computed.mode,
+      allowRotation: computed.allowRotation,
+      allowRotationSource: computed.allowRotationSource,
+      normalPiecesPerSheet: computed.normalPiecesPerSheet,
+      rotatedPiecesPerSheet: computed.rotatedPiecesPerSheet,
+      mixedPiecesPerSheet: computed.mixedPiecesPerSheet,
+      mixedLayoutDescription: computed.mixedLayoutDescription,
       piecesPerSheet: computed.piecesPerSheet,
       orientationUsed: computed.orientationUsed,
       fullSheets: computed.fullSheets,
@@ -2149,6 +2327,12 @@ function resolveTierBasisState(input: {
     computedSheetUsageAvailable: false,
     computedSheetUsageMode: "unavailable",
     sheetUsageMethod: computed.sheetUsageMethod ?? "unavailable",
+    allowRotation: computed.allowRotation,
+    allowRotationSource: computed.allowRotationSource,
+    normalPiecesPerSheet: computed.normalPiecesPerSheet,
+    rotatedPiecesPerSheet: computed.rotatedPiecesPerSheet,
+    mixedPiecesPerSheet: computed.mixedPiecesPerSheet,
+    mixedLayoutDescription: computed.mixedLayoutDescription,
     piecesPerSheet: computed.piecesPerSheet,
     orientationUsed: computed.orientationUsed,
     fullSheets: computed.fullSheets,
@@ -2181,6 +2365,8 @@ function calculateBasePriceDetails(
     pricingProfileConfig?: unknown;
     formulaVariables?: Record<string, number>;
     formulaVariableSources?: Record<string, string>;
+    allowRotation?: boolean;
+    allowRotationSource?: string;
     pricingFormulaExpression?: string | null;
     productLegacy?: {
       sheetWidth?: string | null;
@@ -2278,6 +2464,8 @@ function calculateBasePriceDetails(
     pricingMatrixVariables,
     formulaVariables: pricingContext?.formulaVariables,
     formulaVariableSources: pricingContext?.formulaVariableSources,
+    allowRotation: pricingContext?.allowRotation,
+    allowRotationSource: pricingContext?.allowRotationSource,
     pricingFormulaExpression: pricingContext?.pricingFormulaExpression,
     orderedWidthIn,
     orderedHeightIn,
@@ -2294,6 +2482,8 @@ function calculateBasePriceDetails(
     productLegacy,
     pricingMatrixVariables,
     formulaVariables: pricingContext?.formulaVariables,
+    allowRotation: pricingContext?.allowRotation,
+    allowRotationSource: pricingContext?.allowRotationSource,
     sheetYieldMetrics,
     orderedWidthIn,
     orderedHeightIn,
@@ -2397,6 +2587,12 @@ function calculateBasePriceDetails(
         computedSheetUsageAvailable: tierBasisState.computedSheetUsageAvailable,
         computedSheetUsageMode: tierBasisState.computedSheetUsageMode,
         sheetUsageMethod: tierBasisState.sheetUsageMethod,
+        allowRotation: tierBasisState.allowRotation,
+        allowRotationSource: tierBasisState.allowRotationSource,
+        normalPiecesPerSheet: tierBasisState.normalPiecesPerSheet,
+        rotatedPiecesPerSheet: tierBasisState.rotatedPiecesPerSheet,
+        mixedPiecesPerSheet: tierBasisState.mixedPiecesPerSheet,
+        mixedLayoutDescription: tierBasisState.mixedLayoutDescription,
         piecesPerSheet: tierBasisState.piecesPerSheet,
         orientationUsed: tierBasisState.orientationUsed,
         fullSheets: tierBasisState.fullSheets,
@@ -2468,6 +2664,12 @@ function calculateBasePriceDetails(
         computedSheetUsageAvailable: tierBasisState.computedSheetUsageAvailable,
         computedSheetUsageMode: tierBasisState.computedSheetUsageMode,
         sheetUsageMethod: tierBasisState.sheetUsageMethod,
+        allowRotation: tierBasisState.allowRotation,
+        allowRotationSource: tierBasisState.allowRotationSource,
+        normalPiecesPerSheet: tierBasisState.normalPiecesPerSheet,
+        rotatedPiecesPerSheet: tierBasisState.rotatedPiecesPerSheet,
+        mixedPiecesPerSheet: tierBasisState.mixedPiecesPerSheet,
+        mixedLayoutDescription: tierBasisState.mixedLayoutDescription,
         piecesPerSheet: tierBasisState.piecesPerSheet,
         orientationUsed: tierBasisState.orientationUsed,
         fullSheets: tierBasisState.fullSheets,
@@ -2534,6 +2736,12 @@ function calculateBasePriceDetails(
       computedSheetUsageAvailable: tierBasisState.computedSheetUsageAvailable,
       computedSheetUsageMode: tierBasisState.computedSheetUsageMode,
       sheetUsageMethod: tierBasisState.sheetUsageMethod,
+      allowRotation: tierBasisState.allowRotation,
+      allowRotationSource: tierBasisState.allowRotationSource,
+      normalPiecesPerSheet: tierBasisState.normalPiecesPerSheet,
+      rotatedPiecesPerSheet: tierBasisState.rotatedPiecesPerSheet,
+      mixedPiecesPerSheet: tierBasisState.mixedPiecesPerSheet,
+      mixedLayoutDescription: tierBasisState.mixedLayoutDescription,
       piecesPerSheet: tierBasisState.piecesPerSheet,
       orientationUsed: tierBasisState.orientationUsed,
       fullSheets: tierBasisState.fullSheets,
@@ -2606,8 +2814,17 @@ function calculateBasePriceDetails(
   const linearFeet = orderedWidthIn > 0 ? orderedWidthIn / 12 : 0;
 
   if (activePricingProfileKey === 'flat_goods') {
+    const flatGoodsAllowRotation = pricingContext?.allowRotation ?? activeProfileConfig?.allowRotation ?? false;
+    const flatGoodsProfileConfig: FlatGoodsConfig = {
+      sheetWidth: activeProfileConfig?.sheetWidth ?? (productLegacy.sheetWidth ? Number(productLegacy.sheetWidth) : 48),
+      sheetHeight: activeProfileConfig?.sheetHeight ?? (productLegacy.sheetHeight ? Number(productLegacy.sheetHeight) : 96),
+      materialType: activeProfileConfig?.materialType ?? productLegacy.materialType ?? "sheet",
+      minSheets: activeProfileConfig?.minSheets,
+      minPricePerItem: activeProfileConfig?.minPricePerItem ?? (productLegacy.minPricePerItem ? Number(productLegacy.minPricePerItem) : null),
+      allowRotation: flatGoodsAllowRotation,
+    };
     const flatGoodsInput = buildFlatGoodsInput(
-      activeProfileConfig,
+      flatGoodsProfileConfig,
       {
         sheetWidth: productLegacy.sheetWidth,
         sheetHeight: productLegacy.sheetHeight,
@@ -2634,7 +2851,7 @@ function calculateBasePriceDetails(
           minPricePerItem,
           volumePricing,
           null,
-          allowRotation ?? true,
+          allowRotation ?? flatGoodsAllowRotation,
         ),
     );
 
@@ -3350,6 +3567,12 @@ function buildTierResolutionSnapshot(
     computedSheetUsageAvailable: tierResolution.computedSheetUsageAvailable,
     computedSheetUsageMode: tierResolution.computedSheetUsageMode,
     sheetUsageMethod: tierResolution.sheetUsageMethod,
+    allowRotation: tierResolution.allowRotation,
+    allowRotationSource: tierResolution.allowRotationSource,
+    normalPiecesPerSheet: tierResolution.normalPiecesPerSheet,
+    rotatedPiecesPerSheet: tierResolution.rotatedPiecesPerSheet,
+    mixedPiecesPerSheet: tierResolution.mixedPiecesPerSheet,
+    mixedLayoutDescription: tierResolution.mixedLayoutDescription,
     piecesPerSheet: tierResolution.piecesPerSheet,
     orientationUsed: tierResolution.orientationUsed,
     fullSheets: tierResolution.fullSheets,
@@ -3525,6 +3748,10 @@ function buildFormulaVariableSourceDebug(input: {
     }
   }
 
+  if (input.formulaVariableSources?.allow_rotation) {
+    sources.allow_rotation = input.formulaVariableSources.allow_rotation;
+  }
+
   return sources;
 }
 
@@ -3576,6 +3803,7 @@ function evaluatePreviewFormulaToCents(input: {
     partialSheetFinishedSqft: input.sheetYieldMetrics?.partialSheetFinishedSqft,
     partialSheetBillableSqft: input.sheetYieldMetrics?.partialSheetBillableSqft,
     totalSheetCount: input.sheetYieldMetrics?.totalSheetCount,
+    allowRotation: input.sheetYieldMetrics?.allowRotation,
   });
   const formulaScope = buildFormulaEvaluationScope({
     scope,
@@ -3611,6 +3839,7 @@ function evaluatePreviewFormulaToCents(input: {
       usable_drop_min: unknown,
       billable_length_increment: unknown,
       minimum_billable_sqft: unknown,
+      allow_rotation?: unknown,
     ) =>
       sheetConsumptionSqft(
         Number(w),
@@ -3621,6 +3850,8 @@ function evaluatePreviewFormulaToCents(input: {
         Number(usable_drop_min),
         Number(billable_length_increment),
         Number(minimum_billable_sqft),
+        (allow_rotation ?? formulaScope.allow_rotation) as string | number | boolean | null | undefined,
+        input.sheetYieldMetrics?.allowRotationSource ?? variableSources.allow_rotation,
       ),
   };
   const formulaResolved = resolveFormulaAliases(input.formula);
@@ -3635,6 +3866,7 @@ function evaluatePreviewFormulaToCents(input: {
   if (input.sheetYieldMetrics?.available) {
     steps.push(
       { label: 'computed_sheets', value: input.sheetYieldMetrics.computedSheets ?? "unavailable" },
+      { label: 'allow_rotation', value: input.sheetYieldMetrics.allowRotation == null ? "unavailable" : String(input.sheetYieldMetrics.allowRotation) },
       { label: 'pieces_per_sheet', value: input.sheetYieldMetrics.piecesPerSheet ?? "unavailable" },
       { label: 'total_sheet_count', value: input.sheetYieldMetrics.totalSheetCount ?? input.sheetYieldMetrics.sheetCount ?? "unavailable" },
       { label: 'partial_sheet_policy', value: input.sheetYieldMetrics.partialSheetPolicy ?? "unavailable" },
@@ -3801,6 +4033,7 @@ function buildBaseFormulaDebugContext(input: {
     partialSheetFinishedSqft: input.sheetYieldMetrics?.partialSheetFinishedSqft,
     partialSheetBillableSqft: input.sheetYieldMetrics?.partialSheetBillableSqft,
     totalSheetCount: input.sheetYieldMetrics?.totalSheetCount,
+    allowRotation: input.sheetYieldMetrics?.allowRotation,
   });
   const variables = buildFormulaEvaluationScope({
     scope,
@@ -3832,6 +4065,7 @@ function buildBaseFormulaDebugContext(input: {
       { label: 'p(base_rate_per_sqft)', value: resolvedBaseRate },
       ...(input.sheetYieldMetrics?.available ? [
         { label: 'computed_sheets', value: input.sheetYieldMetrics.computedSheets ?? "unavailable" },
+        { label: 'allow_rotation', value: input.sheetYieldMetrics.allowRotation == null ? "unavailable" : String(input.sheetYieldMetrics.allowRotation) },
         { label: 'pieces_per_sheet', value: input.sheetYieldMetrics.piecesPerSheet ?? "unavailable" },
         { label: 'total_sheet_count', value: input.sheetYieldMetrics.totalSheetCount ?? input.sheetYieldMetrics.sheetCount ?? "unavailable" },
         { label: 'partial_sheet_policy', value: input.sheetYieldMetrics.partialSheetPolicy ?? "unavailable" },
@@ -3856,6 +4090,12 @@ function buildBaseFormulaDebugContext(input: {
       sheetSqft: input.sheetYieldMetrics.sheetSqft,
       billedSheetSqft: input.sheetYieldMetrics.billedSheetSqft,
       sheetUsageMethod: input.sheetYieldMetrics.sheetUsageMethod,
+      allowRotation: input.sheetYieldMetrics.allowRotation,
+      allowRotationSource: input.sheetYieldMetrics.allowRotationSource,
+      normalPiecesPerSheet: input.sheetYieldMetrics.normalPiecesPerSheet,
+      rotatedPiecesPerSheet: input.sheetYieldMetrics.rotatedPiecesPerSheet,
+      mixedPiecesPerSheet: input.sheetYieldMetrics.mixedPiecesPerSheet,
+      mixedLayoutDescription: input.sheetYieldMetrics.mixedLayoutDescription,
       piecesPerSheet: input.sheetYieldMetrics.piecesPerSheet,
       orientationUsed: input.sheetYieldMetrics.orientationUsed,
       fullSheets: input.sheetYieldMetrics.fullSheets,
