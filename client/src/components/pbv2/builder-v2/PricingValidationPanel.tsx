@@ -17,7 +17,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
@@ -537,6 +536,8 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   const [responseErrors, setResponseErrors] = useState<string[]>([]);
   const [previewError, setPreviewError] = useState<NormalizedPreviewError | null>(null);
   const [showErrorDetails, setShowErrorDetails] = useState(false);
+  const [openFormulaDebug, setOpenFormulaDebug] = useState(false);
+  const [openQuantityTierDebug, setOpenQuantityTierDebug] = useState(false);
   const requestIdRef = useRef(0);
 
   const errors = findings.filter((f) => f.severity === "ERROR");
@@ -1226,10 +1227,20 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
               )}
 
               {formulaDebug ? (
-                <Accordion type="single" collapsible className="mt-2 border-t border-slate-700/80 pt-2">
-                  <AccordionItem value="formula-debug" className="border-b-0 min-w-0">
-                    <AccordionTrigger className="py-1 text-xs text-slate-300 hover:no-underline">Formula Debug</AccordionTrigger>
-                    <AccordionContent className="space-y-2 text-xs text-slate-300 min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere]">
+                <div className="mt-2 space-y-1 border-t border-slate-700/80 pt-2">
+                  <section className="min-w-0">
+                    <button
+                      type="button"
+                      aria-expanded={openFormulaDebug}
+                      aria-controls="pbv2-formula-debug-content"
+                      className="flex w-full min-w-0 items-center justify-between gap-2 py-1 text-left text-xs text-slate-300 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      onClick={() => setOpenFormulaDebug((open) => !open)}
+                    >
+                      <span className="font-medium">Formula Debug</span>
+                      <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${openFormulaDebug ? "rotate-180" : ""}`} />
+                    </button>
+                    {openFormulaDebug ? (
+                      <div id="pbv2-formula-debug-content" className="space-y-2 pb-4 pt-0 text-xs text-slate-300 min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere]">
                       <div className="min-w-0"><span className="text-slate-400">Formula used:</span> <span className="font-mono break-all">{formulaDebug.formulaRaw || "—"}</span></div>
                       <div><span className="text-slate-400">Formula source mode:</span> <span className="font-mono">{formulaDebug.formulaSourceMode ?? "—"}</span></div>
                       <div><span className="text-slate-400">Resolved formula source:</span> <span className="font-mono">{formulaDebug.resolvedFormulaSource ?? "—"}</span></div>
@@ -1356,19 +1367,30 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                           ))}
                         </div>
                       ) : null}
-                    </AccordionContent>
-                  </AccordionItem>
+                      </div>
+                    ) : null}
+                  </section>
                   {showTierResolutionDebug ? (
-                    <AccordionItem value="tier-resolution" className="border-b-0">
-                      <AccordionTrigger className="py-1 text-xs text-slate-300 hover:no-underline">
-                        Quantity Tier Debug
-                        {tierWarnings.length > 0 || tierResolution?.matrixBasePriceOverride || tierResolution?.matrixStaticBaseRateUsedAsFallback ? (
-                          <Badge variant="outline" className="ml-2 border-amber-500/40 text-[10px] text-amber-300">
-                            Warning
-                          </Badge>
-                        ) : null}
-                      </AccordionTrigger>
-                      <AccordionContent className="space-y-2 text-xs text-slate-300 min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere]">
+                    <section className="min-w-0">
+                      <button
+                        type="button"
+                        aria-expanded={openQuantityTierDebug}
+                        aria-controls="pbv2-quantity-tier-debug-content"
+                        className="flex w-full min-w-0 items-center justify-between gap-2 py-1 text-left text-xs text-slate-300 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        onClick={() => setOpenQuantityTierDebug((open) => !open)}
+                      >
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span className="font-medium">Quantity Tier Debug</span>
+                          {tierWarnings.length > 0 || tierResolution?.matrixBasePriceOverride || tierResolution?.matrixStaticBaseRateUsedAsFallback ? (
+                            <Badge variant="outline" className="border-amber-500/40 text-[10px] text-amber-300">
+                              Warning
+                            </Badge>
+                          ) : null}
+                        </span>
+                        <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${openQuantityTierDebug ? "rotate-180" : ""}`} />
+                      </button>
+                      {openQuantityTierDebug ? (
+                        <div id="pbv2-quantity-tier-debug-content" className="space-y-2 pb-4 pt-0 text-xs text-slate-300 min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere]">
                         <div className="rounded border border-slate-700/70 bg-slate-900/40 p-2 max-w-full overflow-hidden">
                           <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-x-4 gap-y-1 min-w-0">
                             <div className="text-slate-400">Tier source</div>
@@ -1492,10 +1514,11 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                             ))}
                           </div>
                         ) : null}
-                      </AccordionContent>
-                    </AccordionItem>
+                        </div>
+                      ) : null}
+                    </section>
                   ) : null}
-                </Accordion>
+                </div>
               ) : null}
 
               {shouldShowWeightDebug ? (
