@@ -441,7 +441,7 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
     });
 
     const snapshot = result.pbv2SnapshotJson.pbv2PricingSnapshot;
-    expect(result.lineTotalCents).toBe(13500);
+    expect(result.lineTotalCents).toBe(17100);
     expect(snapshot?.tierResolution).toEqual(expect.objectContaining({
       quantity: 5,
       enabled: true,
@@ -503,12 +503,16 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
       tierBasisResolvedFrom: "product",
       lineItemQuantity: 21,
       computedSheetUsageAvailable: true,
-      computedSheetUsageMode: "sheet_equivalent",
+      computedSheetUsageMode: "layout_yield",
+      sheetUsageMethod: "layout_yield",
+      piecesPerSheet: 4,
+      fullSheets: 5,
+      partialSheetPieceCount: 1,
+      totalSheetCount: 6,
       fallbackToLineItemQuantity: false,
       finalBaseRateUsed: 0.8,
     }));
-    expect(snapshot?.tierResolution?.tierBasisValue).toBeGreaterThanOrEqual(2);
-    expect(snapshot?.tierResolution?.tierBasisValue).toBeLessThan(21);
+    expect(snapshot?.tierResolution?.tierBasisValue).toBe(6);
     expect(snapshot?.formulaScopeUsed?.base_price).toBe(0.8);
     expect(snapshot?.formulaScopeUsed?.tier_base_price).toBe(0.8);
   });

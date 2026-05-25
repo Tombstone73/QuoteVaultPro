@@ -112,6 +112,7 @@ export type Pbv2TierResolutionWarning = {
     | "PBV2_E_TIER_COMPUTED_SHEET_USAGE_UNAVAILABLE"
     | "PBV2_TIER_COMPUTED_SHEET_USAGE_FAILED"
     | "PBV2_TIER_COMPUTED_SHEET_USAGE_INVALID"
+    | "PBV2_E_SHEET_YIELD_UNAVAILABLE"
     | "PBV2_TIER_FALLBACK_LINE_ITEM_QUANTITY"
     | "PBV2_TIER_MATRIX_ROW_BASIS_OVERRIDES_PRODUCT"
     | "PBV2_TIER_FORMULA_REFERENCE_WITHOUT_TIER_SYSTEM";
@@ -144,7 +145,15 @@ export type Pbv2TierResolution = {
   tierSelectionQuantity?: number;
   computedSheetUsage?: number | null;
   computedSheetUsageAvailable?: boolean;
-  computedSheetUsageMode?: "exact_flat_goods" | "sheet_equivalent" | "unavailable";
+  computedSheetUsageMode?: "exact_flat_goods" | "layout_yield" | "sheet_equivalent" | "unavailable";
+  sheetUsageMethod?: "exact_flat_goods" | "layout_yield" | "mixed_layout" | "sqft_equivalent_fallback" | "sheet_equivalent" | "unavailable" | string | null;
+  piecesPerSheet?: number | null;
+  orientationUsed?: string | null;
+  fullSheets?: number | null;
+  partialSheetPieceCount?: number | null;
+  partialSheetFinishedSqft?: number | null;
+  partialSheetBillableSqft?: number | null;
+  totalSheetCount?: number | null;
   tierSheetWidth?: number | null;
   tierSheetLength?: number | null;
   tierUsableDropMin?: number | null;

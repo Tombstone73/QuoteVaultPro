@@ -47,8 +47,8 @@ export const PBV2_PRICING_FUNCTIONS: PricingFunctionDefinition[] = [
     signature:
       "sheet_consumption_sqft(w, h, q, sheet_width, sheet_length, usable_drop_min, billable_length_increment, minimum_billable_sqft)",
     description:
-      "Calculates billable square footage for sheet or roll material. Tests normal and rotated orientations and picks the most material-efficient layout. Applies the usable-drop rule: if the leftover side strip is narrower than usable_drop_min it is treated as waste and the full sheet width is charged; otherwise only the used width is charged. Consumed length is rounded up to the nearest billable_length_increment. Returns at least minimum_billable_sqft.",
+      "Calculates billable square footage from actual rectangular sheet yield. Tests normal and rotated orientations, chooses the orientation with the most pieces per sheet, bills full sheets at full sheet area, and applies usable-drop/minimum/increment rules to the final partial sheet.",
     example:
-      "sheet_consumption_sqft(24, 36, 4, 48, 96, 6, 12, 0) => 24",
+      "sheet_consumption_sqft(24, 18, 91, 48, 96, 24, 12, 32) => 320",
   },
 ];

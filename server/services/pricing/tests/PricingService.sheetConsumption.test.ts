@@ -141,7 +141,7 @@ describe("sheet_consumption_sqft", () => {
       "sheet_consumption_sqft(w, h, q, 48, 9999, 0, 1, 0)",
       36, 24, 3,
     );
-    expect(result.totalPrice).toBeCloseTo(18, 1);
+    expect(result.totalPrice).toBeCloseTo(24, 1);
   });
 
   test("rotated orientation wins when pieces pack more efficiently", () => {
@@ -169,7 +169,7 @@ describe("sheet_consumption_sqft", () => {
       "sheet_consumption_sqft(w, h, q, 48, 20, 0, 12, 0)",
       24, 11, 2,
     );
-    expect(result.totalPrice).toBeCloseTo(4, 1);
+    expect(result.totalPrice).toBeCloseTo(7, 1);
   });
 
   test("billable_length_increment=0 treated as 1 (no division by zero)", () => {
@@ -199,7 +199,7 @@ describe("sheet_consumption_sqft", () => {
       "sheet_consumption_sqft(w, h, q, 48, 9999, 10, 1, 0)",
       20, 36, 2,
     );
-    expect(result.totalPrice).toBeCloseTo(10, 1);
+    expect(result.totalPrice).toBeCloseTo(12, 1);
   });
 
   test("usable_drop_min: drop wide enough → charge only used width", () => {
@@ -245,7 +245,7 @@ describe("sheet_consumption_sqft", () => {
       "sheet_consumption_sqft(w, h, q, 48, 96, 24, 12, 3)",
       60, 25, 1,
     );
-    expect(result.totalPrice).toBeCloseTo(20, 1);
+    expect(result.totalPrice).toBeCloseTo(32, 1);
   });
 
   test("partial final row (q < piecesAcross): uses actual occupied width", () => {
@@ -315,7 +315,7 @@ describe("sheet_consumption_sqft", () => {
       "sheet_consumption_sqft(w, h, q, 48, 9999, 0, 12, 0)",
       24, 36, 11,
     );
-    expect(result.totalPrice).toBeCloseTo(66, 1);
+    expect(result.totalPrice).toBeCloseTo(72, 1);
   });
 
   test("symmetric square piece: both orientations identical", () => {
@@ -644,6 +644,58 @@ describe("sheet_consumption_sqft", () => {
     expect(result.totalPrice).not.toBe(10);
   });
 
+  test.each([
+    { quantity: 8, expectedSheets: 1, expectedFullSheets: 0, expectedPartialPieces: 8, expectedBilledSqft: 32, expectedTierMinQty: 1 },
+    { quantity: 10, expectedSheets: 1, expectedFullSheets: 1, expectedPartialPieces: 0, expectedBilledSqft: 32, expectedTierMinQty: 1 },
+    { quantity: 11, expectedSheets: 2, expectedFullSheets: 1, expectedPartialPieces: 1, expectedBilledSqft: 64, expectedTierMinQty: 1 },
+    { quantity: 91, expectedSheets: 10, expectedFullSheets: 9, expectedPartialPieces: 1, expectedBilledSqft: 320, expectedTierMinQty: 10 },
+    { quantity: 100, expectedSheets: 10, expectedFullSheets: 10, expectedPartialPieces: 0, expectedBilledSqft: 320, expectedTierMinQty: 10 },
+    { quantity: 101, expectedSheets: 11, expectedFullSheets: 10, expectedPartialPieces: 1, expectedBilledSqft: 352, expectedTierMinQty: 10 },
+  ])("computed sheet usage uses actual layout yield for 24x18 q$quantity", ({
+    quantity,
+    expectedSheets,
+    expectedFullSheets,
+    expectedPartialPieces,
+    expectedBilledSqft,
+    expectedTierMinQty,
+  }) => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeRowTierBasisTree(
+        "computed_sheet_usage",
+        { base_price: 0 },
+        {
+          sheet_width: 48,
+          sheet_length: 96,
+          usable_drop_min: 0,
+          billable_length_increment: 1,
+          minimum_billable_sqft: 32,
+        },
+      ),
+      widthIn: 24,
+      heightIn: 18,
+      quantity,
+      pbv2ExplicitSelections: { rate: { value: "standard" } },
+      pricingFormulaOverride: "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price",
+      debug: true,
+    });
+
+    expect(result.debug?.tierResolution?.sheetUsageMethod).toBe("layout_yield");
+    expect(result.debug?.tierResolution?.computedSheetUsageMode).toBe("layout_yield");
+    expect(result.debug?.tierResolution?.piecesPerSheet).toBe(10);
+    expect(result.debug?.tierResolution?.orientationUsed).toBe("normal");
+    expect(result.debug?.tierResolution?.fullSheets).toBe(expectedFullSheets);
+    expect(result.debug?.tierResolution?.partialSheetPieceCount).toBe(expectedPartialPieces);
+    expect(result.debug?.tierResolution?.totalSheetCount).toBe(expectedSheets);
+    expect(result.debug?.tierResolution?.computedSheetUsage).toBe(expectedSheets);
+    expect(result.debug?.tierResolution?.tierSelectionQuantity).toBe(expectedSheets);
+    expect(result.debug?.tierResolution?.selectedTierMinQty).toBe(expectedTierMinQty);
+    expect(result.debug?.variables.computed_sheets).toBe(expectedSheets);
+    expect(result.debug?.variables.total_sheet_count).toBe(expectedSheets);
+    expect(result.debug?.variables.pieces_per_sheet).toBe(10);
+    expect(result.debug?.variables.billed_sheet_sqft).toBe(expectedBilledSqft);
+    expect(result.debug?.variables.computed_sheets).toBe(result.debug?.tierResolution?.totalSheetCount);
+  });
+
   test("row-level raw item quantity still selects the qty 10 tier when configured", () => {
     const result = evaluatePricingPreviewFromTree({
       treeJson: makeRowTierBasisTree("line_item_quantity"),
@@ -788,11 +840,11 @@ describe("sheet_consumption_sqft — 48×96 expected outputs", () => {
     expect(runFormula(FORMULA_4X8, 12, 18, 20).totalPrice).toBe(32);
   });
 
-  test("12×18 q21 → 36  (one full sheet + 12\" increment)", () => {
+  test("12x18 q21 bills one full sheet plus partial-sheet minimum", () => {
     // normal (12w×18h): piecesAcross=4, rowsNeeded=6, consumedLength=108
     //   billableLength=108, sqft=48*108/144=36
     // ceil(36)=36
-    expect(runFormula(FORMULA_4X8, 12, 18, 21).totalPrice).toBe(36);
+    expect(runFormula(FORMULA_4X8, 12, 18, 21).totalPrice).toBe(35);
   });
 
   test("60×23 q1 → 10  (reusable drop, fractional area ceiled)", () => {
@@ -801,10 +853,10 @@ describe("sheet_consumption_sqft — 48×96 expected outputs", () => {
     expect(runFormula(FORMULA_4X8, 60, 23, 1).totalPrice).toBe(10);
   });
 
-  test("60×25 q1 → 20  (drop too narrow, full width)", () => {
+  test("60x25 q1 bills the configured partial-sheet minimum", () => {
     // rotated (25w×60h): piecesAcross=1, fullRow, drop=23<24 → effectiveW=48
     //   sqft=48*60/144=20 → ceil=20
-    expect(runFormula(FORMULA_4X8, 60, 25, 1).totalPrice).toBe(20);
+    expect(runFormula(FORMULA_4X8, 60, 25, 1).totalPrice).toBe(32);
   });
 
   test("30×30 q1 → 12  (drop 18\" too narrow, 30\" row rounds to 36\")", () => {

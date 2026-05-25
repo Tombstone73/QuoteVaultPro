@@ -22,6 +22,12 @@ export type CanonicalPricingVariableKey =
   | "sheet_count"
   | "sheet_sqft"
   | "billed_sheet_sqft"
+  | "pieces_per_sheet"
+  | "full_sheets"
+  | "partial_sheet_piece_count"
+  | "partial_sheet_finished_sqft"
+  | "partial_sheet_billable_sqft"
+  | "total_sheet_count"
   | "q"
   | "linear_feet";
 
@@ -208,6 +214,54 @@ export const PBV2_PRICING_VARIABLES: PricingVariableDefinition[] = [
     label: "Billed Sheet SqFt",
     description: "Billable sheet-yield square footage. Use billed_sheet_sqft * base_price for sheet-yield sqft pricing.",
     example: 32,
+    category: "Derived",
+    aliases: [],
+  },
+  {
+    key: "pieces_per_sheet",
+    label: "Pieces Per Sheet",
+    description: "Actual layout yield for one production sheet using the selected orientation.",
+    example: 10,
+    category: "Derived",
+    aliases: [],
+  },
+  {
+    key: "full_sheets",
+    label: "Full Sheets",
+    description: "Number of fully consumed production sheets for the current quantity.",
+    example: 9,
+    category: "Derived",
+    aliases: [],
+  },
+  {
+    key: "partial_sheet_piece_count",
+    label: "Partial Sheet Pieces",
+    description: "Number of pieces placed on the final partial sheet, if any.",
+    example: 1,
+    category: "Derived",
+    aliases: [],
+  },
+  {
+    key: "partial_sheet_finished_sqft",
+    label: "Partial Finished SqFt",
+    description: "Finished square footage represented by the final partial sheet only.",
+    example: 3,
+    category: "Derived",
+    aliases: [],
+  },
+  {
+    key: "partial_sheet_billable_sqft",
+    label: "Partial Billable SqFt",
+    description: "Billable square footage for the final partial sheet after minimum and increment rules.",
+    example: 32,
+    category: "Derived",
+    aliases: [],
+  },
+  {
+    key: "total_sheet_count",
+    label: "Total Sheet Count",
+    description: "Whole production sheet count from actual layout yield. This matches computed_sheets for sheet-yield pricing.",
+    example: 10,
     category: "Derived",
     aliases: [],
   },

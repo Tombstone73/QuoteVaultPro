@@ -377,11 +377,15 @@ describe("PricingService pricing matrix variable resolution", () => {
       tierBasisResolvedFrom: "product",
       lineItemQuantity: 21,
       computedSheetUsageAvailable: true,
-      computedSheetUsageMode: "sheet_equivalent",
+      computedSheetUsageMode: "layout_yield",
+      sheetUsageMethod: "layout_yield",
+      piecesPerSheet: 4,
+      fullSheets: 5,
+      partialSheetPieceCount: 1,
+      totalSheetCount: 6,
       fallbackToLineItemQuantity: false,
     }));
-    expect(result.debug?.tierResolution?.tierBasisValue).toBeGreaterThanOrEqual(1);
-    expect(result.debug?.tierResolution?.tierBasisValue).toBeLessThan(21);
+    expect(result.debug?.tierResolution?.tierBasisValue).toBe(6);
   });
 
   test("matrix-row computed sheet usage basis overrides product tier basis", () => {
@@ -419,12 +423,16 @@ describe("PricingService pricing matrix variable resolution", () => {
       tierBasisResolvedFrom: "matrix_row",
       lineItemQuantity: 21,
       computedSheetUsageAvailable: true,
-      computedSheetUsageMode: "sheet_equivalent",
+      computedSheetUsageMode: "layout_yield",
+      sheetUsageMethod: "layout_yield",
+      piecesPerSheet: 4,
+      fullSheets: 5,
+      partialSheetPieceCount: 1,
+      totalSheetCount: 6,
       fallbackToLineItemQuantity: false,
       finalBaseRateUsed: 5,
     }));
-    expect(result.debug?.tierResolution?.tierBasisValue).toBeGreaterThanOrEqual(2);
-    expect(result.debug?.tierResolution?.tierBasisValue).toBeLessThan(10);
+    expect(result.debug?.tierResolution?.tierBasisValue).toBe(6);
     expect(result.debug?.tierResolution?.warnings).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ code: "PBV2_TIER_MATRIX_ROW_BASIS_OVERRIDES_PRODUCT" }),

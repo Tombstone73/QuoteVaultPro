@@ -134,7 +134,15 @@ type PricingPreviewResponse = {
       sheetCount?: number | null;
       sheetSqft?: number | null;
       billedSheetSqft?: number | null;
-      mode?: "exact_flat_goods" | "sheet_equivalent" | "unavailable";
+      mode?: "exact_flat_goods" | "layout_yield" | "sheet_equivalent" | "unavailable";
+      sheetUsageMethod?: string | null;
+      piecesPerSheet?: number | null;
+      orientationUsed?: string | null;
+      fullSheets?: number | null;
+      partialSheetPieceCount?: number | null;
+      partialSheetFinishedSqft?: number | null;
+      partialSheetBillableSqft?: number | null;
+      totalSheetCount?: number | null;
       available?: boolean;
     };
     tierResolution?: {
@@ -161,7 +169,15 @@ type PricingPreviewResponse = {
       tierSelectionQuantity?: number;
       computedSheetUsage?: number | null;
       computedSheetUsageAvailable?: boolean;
-      computedSheetUsageMode?: "exact_flat_goods" | "sheet_equivalent" | "unavailable";
+      computedSheetUsageMode?: "exact_flat_goods" | "layout_yield" | "sheet_equivalent" | "unavailable";
+      sheetUsageMethod?: string | null;
+      piecesPerSheet?: number | null;
+      orientationUsed?: string | null;
+      fullSheets?: number | null;
+      partialSheetPieceCount?: number | null;
+      partialSheetFinishedSqft?: number | null;
+      partialSheetBillableSqft?: number | null;
+      totalSheetCount?: number | null;
       tierSheetWidth?: number | null;
       tierSheetLength?: number | null;
       tierUsableDropMin?: number | null;
@@ -813,6 +829,8 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
       : "Default";
   const computedSheetUsageModeDisplay = tierResolution?.computedSheetUsageMode === "exact_flat_goods"
     ? "Exact flat-goods nesting"
+    : tierResolution?.computedSheetUsageMode === "layout_yield"
+      ? "Layout yield"
     : tierResolution?.computedSheetUsageMode === "sheet_equivalent"
       ? "Sheet-equivalent"
       : "Unavailable";
@@ -1240,6 +1258,14 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       <div><span className="text-slate-400">Final total:</span> <span className="font-mono">{typeof formulaDebug.finalTotal === "number" ? currencyFormatter.format(formulaDebug.finalTotal) : "—"}</span></div>
                       <div><span className="text-slate-400">Finished sqft:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.finishedSqft === "number" ? formulaDebug.sheetYield.finishedSqft.toFixed(2) : "—"}</span></div>
                       <div><span className="text-slate-400">Computed sheets:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.computedSheets === "number" ? formulaDebug.sheetYield.computedSheets.toFixed(4) : "—"}</span></div>
+                      <div><span className="text-slate-400">Sheet usage method:</span> <span className="font-mono">{formulaDebug.sheetYield?.sheetUsageMethod ?? formulaDebug.sheetYield?.mode ?? "—"}</span></div>
+                      <div><span className="text-slate-400">Pieces per sheet:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.piecesPerSheet === "number" ? formulaDebug.sheetYield.piecesPerSheet.toFixed(0) : "—"}</span></div>
+                      <div><span className="text-slate-400">Orientation:</span> <span className="font-mono">{formulaDebug.sheetYield?.orientationUsed ?? "—"}</span></div>
+                      <div><span className="text-slate-400">Full sheets:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.fullSheets === "number" ? formulaDebug.sheetYield.fullSheets.toFixed(0) : "—"}</span></div>
+                      <div><span className="text-slate-400">Partial sheet pieces:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.partialSheetPieceCount === "number" ? formulaDebug.sheetYield.partialSheetPieceCount.toFixed(0) : "—"}</span></div>
+                      <div><span className="text-slate-400">Partial sheet finished sqft:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.partialSheetFinishedSqft === "number" ? formulaDebug.sheetYield.partialSheetFinishedSqft.toFixed(2) : "—"}</span></div>
+                      <div><span className="text-slate-400">Partial sheet billable sqft:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.partialSheetBillableSqft === "number" ? formulaDebug.sheetYield.partialSheetBillableSqft.toFixed(2) : "—"}</span></div>
+                      <div><span className="text-slate-400">Total sheet count:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.totalSheetCount === "number" ? formulaDebug.sheetYield.totalSheetCount.toFixed(0) : "—"}</span></div>
                       <div><span className="text-slate-400">Billed sheet sqft:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.billedSheetSqft === "number" ? formulaDebug.sheetYield.billedSheetSqft.toFixed(2) : "—"}</span></div>
                       <div><span className="text-slate-400">Selected tier basis:</span> <span className="font-mono">{tierResolution?.tierBasis ?? "—"}</span></div>
                       <div><span className="text-slate-400">Pre-ceil sqft:</span> <span className="font-mono">{typeof formulaDebug.preCeilSqftTotal === "number" ? formulaDebug.preCeilSqftTotal.toFixed(4) : "—"}</span></div>
@@ -1356,6 +1382,22 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                             <div className="font-mono">{tierResolution?.computedSheetUsageAvailable ? displayDebugValue(tierResolution?.computedSheetUsage) : "Unavailable"}</div>
                             <div className="text-slate-400">Sheet usage mode</div>
                             <div className="font-mono">{computedSheetUsageModeDisplay}</div>
+                            <div className="text-slate-400">Sheet usage method</div>
+                            <div className="font-mono">{tierResolution?.sheetUsageMethod ?? "—"}</div>
+                            <div className="text-slate-400">Pieces per sheet</div>
+                            <div className="font-mono">{displayDebugValue(tierResolution?.piecesPerSheet)}</div>
+                            <div className="text-slate-400">Orientation used</div>
+                            <div className="font-mono">{tierResolution?.orientationUsed ?? "—"}</div>
+                            <div className="text-slate-400">Full sheets</div>
+                            <div className="font-mono">{displayDebugValue(tierResolution?.fullSheets)}</div>
+                            <div className="text-slate-400">Partial sheet pieces</div>
+                            <div className="font-mono">{displayDebugValue(tierResolution?.partialSheetPieceCount)}</div>
+                            <div className="text-slate-400">Partial finished sqft</div>
+                            <div className="font-mono">{displayDebugValue(tierResolution?.partialSheetFinishedSqft)}</div>
+                            <div className="text-slate-400">Partial billable sqft</div>
+                            <div className="font-mono">{displayDebugValue(tierResolution?.partialSheetBillableSqft)}</div>
+                            <div className="text-slate-400">Total sheet count</div>
+                            <div className="font-mono">{displayDebugValue(tierResolution?.totalSheetCount)}</div>
                             <div className="text-slate-400">Tier sheet width</div>
                             <div className="font-mono">{displayDebugValue(tierResolution?.tierSheetWidth)}</div>
                             <div className="text-slate-400">Tier sheet length</div>

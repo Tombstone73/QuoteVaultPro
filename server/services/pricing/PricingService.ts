@@ -46,7 +46,7 @@ import {
   type Pbv2TierResolution,
   type Pbv2TierResolutionWarning,
 } from '../../../shared/pbv2/pricingAdapter';
-import { extractFormulaVariables, sheetConsumptionSqft } from '../../../shared/pbv2/formulaHelpers';
+import { calculateSheetYield, extractFormulaVariables, sheetConsumptionSqft } from '../../../shared/pbv2/formulaHelpers';
 import { buildNumericSelectionFormulaVariables } from '../../../shared/pbv2/numericSelectionFormulaVariables';
 import {
   collectPbv2WeightMaterialIds,
@@ -169,7 +169,15 @@ export type PBV2TierResolutionSnapshot = {
   tierSelectionQuantity?: number;
   computedSheetUsage?: number | null;
   computedSheetUsageAvailable?: boolean;
-  computedSheetUsageMode?: "exact_flat_goods" | "sheet_equivalent" | "unavailable";
+  computedSheetUsageMode?: "exact_flat_goods" | "layout_yield" | "sheet_equivalent" | "unavailable";
+  sheetUsageMethod?: "exact_flat_goods" | "layout_yield" | "mixed_layout" | "sqft_equivalent_fallback" | "sheet_equivalent" | "unavailable" | string | null;
+  piecesPerSheet?: number | null;
+  orientationUsed?: string | null;
+  fullSheets?: number | null;
+  partialSheetPieceCount?: number | null;
+  partialSheetFinishedSqft?: number | null;
+  partialSheetBillableSqft?: number | null;
+  totalSheetCount?: number | null;
   tierSheetWidth?: number | null;
   tierSheetLength?: number | null;
   tierUsableDropMin?: number | null;
@@ -298,6 +306,14 @@ export type PricingPreviewEvaluationResult = {
       sheetSqft?: number | null;
       billedSheetSqft?: number | null;
       mode?: ComputedSheetUsageMode;
+      sheetUsageMethod?: string | null;
+      piecesPerSheet?: number | null;
+      orientationUsed?: string | null;
+      fullSheets?: number | null;
+      partialSheetPieceCount?: number | null;
+      partialSheetFinishedSqft?: number | null;
+      partialSheetBillableSqft?: number | null;
+      totalSheetCount?: number | null;
       available?: boolean;
     };
     tierResolution?: PBV2TierResolutionSnapshot;
@@ -1548,7 +1564,7 @@ function getPricingMatrixVariablesForFormula(
 }
 
 type TierBasisResolvedFrom = "matrix_row" | "product" | "default";
-type ComputedSheetUsageMode = "exact_flat_goods" | "sheet_equivalent" | "unavailable";
+type ComputedSheetUsageMode = "exact_flat_goods" | "layout_yield" | "sheet_equivalent" | "unavailable";
 
 type SheetYieldMetrics = {
   computedSheets: number | null;
@@ -1556,6 +1572,14 @@ type SheetYieldMetrics = {
   sheetCount: number | null;
   sheetSqft: number | null;
   billedSheetSqft: number | null;
+  sheetUsageMethod?: string | null;
+  piecesPerSheet?: number | null;
+  orientationUsed?: string | null;
+  fullSheets?: number | null;
+  partialSheetPieceCount?: number | null;
+  partialSheetFinishedSqft?: number | null;
+  partialSheetBillableSqft?: number | null;
+  totalSheetCount?: number | null;
   tierSheetWidth?: number | null;
   tierSheetLength?: number | null;
   tierUsableDropMin?: number | null;
@@ -1578,6 +1602,14 @@ type TierBasisState = {
   computedSheetUsage: number | null;
   computedSheetUsageAvailable: boolean;
   computedSheetUsageMode: ComputedSheetUsageMode;
+  sheetUsageMethod?: string | null;
+  piecesPerSheet?: number | null;
+  orientationUsed?: string | null;
+  fullSheets?: number | null;
+  partialSheetPieceCount?: number | null;
+  partialSheetFinishedSqft?: number | null;
+  partialSheetBillableSqft?: number | null;
+  totalSheetCount?: number | null;
   tierSheetWidth?: number | null;
   tierSheetLength?: number | null;
   tierUsableDropMin?: number | null;
@@ -1786,6 +1818,8 @@ function resolveComputedSheetUsage(input: {
           sheetCount: computedSheets,
           sheetSqft,
           billedSheetSqft: sheetSqft !== null ? computedSheets * sheetSqft : null,
+          sheetUsageMethod: "exact_flat_goods",
+          totalSheetCount: computedSheets,
           finishedSqft,
           totalFinishedSqft,
           available: true,
@@ -1867,6 +1901,14 @@ function resolveComputedSheetUsage(input: {
       sheetCount: null,
       sheetSqft: null,
       billedSheetSqft: null,
+      sheetUsageMethod: "unavailable",
+      piecesPerSheet: null,
+      orientationUsed: null,
+      fullSheets: null,
+      partialSheetPieceCount: null,
+      partialSheetFinishedSqft: null,
+      partialSheetBillableSqft: null,
+      totalSheetCount: null,
       tierSheetWidth: sheetWidth,
       tierSheetLength: sheetLength,
       tierUsableDropMin: usableDropMin,
@@ -1883,7 +1925,7 @@ function resolveComputedSheetUsage(input: {
   }
 
   try {
-    const consumedSqft = sheetConsumptionSqft(
+    const sheetYield = calculateSheetYield(
       input.orderedWidthIn,
       input.orderedHeightIn,
       input.quantity,
@@ -1893,22 +1935,28 @@ function resolveComputedSheetUsage(input: {
       billableLengthIncrement,
       minimumBillableSqft,
     );
-    const sheetAreaSqft = (sheetWidth * sheetLength) / 144;
-    const sheetUsage = sheetAreaSqft > 0 ? consumedSqft / sheetAreaSqft : NaN;
 
-    if (!Number.isFinite(sheetUsage) || sheetUsage <= 0) {
+    if (!Number.isFinite(sheetYield.totalSheetCount) || sheetYield.totalSheetCount <= 0) {
       warnings.push({
         code: "PBV2_TIER_COMPUTED_SHEET_USAGE_INVALID",
         severity: "warning",
-        message: "Computed sheet-equivalent usage was zero or invalid.",
-        detail: { consumedSqft, sheetAreaSqft },
+        message: "Computed sheet-yield usage was zero or invalid.",
+        detail: { sheetYield },
       });
       return {
         computedSheets: null,
         billedSheets: null,
         sheetCount: null,
-        sheetSqft: Number.isFinite(sheetAreaSqft) && sheetAreaSqft > 0 ? sheetAreaSqft : null,
+        sheetSqft: Number.isFinite(sheetYield.sheetSqft) && sheetYield.sheetSqft > 0 ? sheetYield.sheetSqft : null,
         billedSheetSqft: null,
+        sheetUsageMethod: "unavailable",
+        piecesPerSheet: sheetYield.piecesPerSheet,
+        orientationUsed: sheetYield.orientationUsed,
+        fullSheets: sheetYield.fullSheets,
+        partialSheetPieceCount: sheetYield.partialSheetPieceCount,
+        partialSheetFinishedSqft: sheetYield.partialSheetFinishedSqft,
+        partialSheetBillableSqft: sheetYield.partialSheetBillableSqft,
+        totalSheetCount: null,
         tierSheetWidth: sheetWidth,
         tierSheetLength: sheetLength,
         tierUsableDropMin: usableDropMin,
@@ -1925,11 +1973,19 @@ function resolveComputedSheetUsage(input: {
     }
 
     return {
-      computedSheets: sheetUsage,
-      billedSheets: sheetUsage,
-      sheetCount: Math.ceil(sheetUsage),
-      sheetSqft: sheetAreaSqft,
-      billedSheetSqft: consumedSqft,
+      computedSheets: sheetYield.totalSheetCount,
+      billedSheets: sheetYield.sheetSqft > 0 ? sheetYield.billedSheetSqft / sheetYield.sheetSqft : sheetYield.totalSheetCount,
+      sheetCount: sheetYield.totalSheetCount,
+      sheetSqft: sheetYield.sheetSqft,
+      billedSheetSqft: sheetYield.billedSheetSqft,
+      sheetUsageMethod: sheetYield.sheetUsageMethod,
+      piecesPerSheet: sheetYield.piecesPerSheet,
+      orientationUsed: sheetYield.orientationUsed,
+      fullSheets: sheetYield.fullSheets,
+      partialSheetPieceCount: sheetYield.partialSheetPieceCount,
+      partialSheetFinishedSqft: sheetYield.partialSheetFinishedSqft,
+      partialSheetBillableSqft: sheetYield.partialSheetBillableSqft,
+      totalSheetCount: sheetYield.totalSheetCount,
       tierSheetWidth: sheetWidth,
       tierSheetLength: sheetLength,
       tierUsableDropMin: usableDropMin,
@@ -1940,14 +1996,14 @@ function resolveComputedSheetUsage(input: {
       finishedSqft,
       totalFinishedSqft,
       available: true,
-      mode: "sheet_equivalent",
+      mode: "layout_yield",
       warnings,
     };
   } catch (error: any) {
     warnings.push({
-      code: "PBV2_TIER_COMPUTED_SHEET_USAGE_FAILED",
-      severity: "warning",
-      message: "Computed sheet usage calculation failed while running sheet consumption.",
+      code: "PBV2_E_SHEET_YIELD_UNAVAILABLE",
+      severity: "error",
+      message: "Computed sheet usage tier basis is selected, but actual sheet yield could not be computed.",
       detail: { error: error?.message ?? String(error) },
     });
     return {
@@ -1956,6 +2012,14 @@ function resolveComputedSheetUsage(input: {
       sheetCount: null,
       sheetSqft: null,
       billedSheetSqft: null,
+      sheetUsageMethod: "unavailable",
+      piecesPerSheet: null,
+      orientationUsed: null,
+      fullSheets: null,
+      partialSheetPieceCount: null,
+      partialSheetFinishedSqft: null,
+      partialSheetBillableSqft: null,
+      totalSheetCount: null,
       tierSheetWidth: sheetWidth,
       tierSheetLength: sheetLength,
       tierUsableDropMin: usableDropMin,
@@ -2020,6 +2084,7 @@ function resolveTierBasisState(input: {
       computedSheetUsage: null,
       computedSheetUsageAvailable: false,
       computedSheetUsageMode: "unavailable",
+      sheetUsageMethod: "unavailable",
       fallbackToLineItemQuantity: false,
       warnings,
     };
@@ -2037,6 +2102,14 @@ function resolveTierBasisState(input: {
       computedSheetUsage: computed.computedSheets,
       computedSheetUsageAvailable: true,
       computedSheetUsageMode: computed.mode,
+      sheetUsageMethod: computed.sheetUsageMethod ?? computed.mode,
+      piecesPerSheet: computed.piecesPerSheet,
+      orientationUsed: computed.orientationUsed,
+      fullSheets: computed.fullSheets,
+      partialSheetPieceCount: computed.partialSheetPieceCount,
+      partialSheetFinishedSqft: computed.partialSheetFinishedSqft,
+      partialSheetBillableSqft: computed.partialSheetBillableSqft,
+      totalSheetCount: computed.totalSheetCount ?? computed.sheetCount,
       tierSheetWidth: computed.tierSheetWidth,
       tierSheetLength: computed.tierSheetLength,
       tierUsableDropMin: computed.tierUsableDropMin,
@@ -2066,6 +2139,14 @@ function resolveTierBasisState(input: {
     computedSheetUsage: computed.computedSheets,
     computedSheetUsageAvailable: false,
     computedSheetUsageMode: "unavailable",
+    sheetUsageMethod: computed.sheetUsageMethod ?? "unavailable",
+    piecesPerSheet: computed.piecesPerSheet,
+    orientationUsed: computed.orientationUsed,
+    fullSheets: computed.fullSheets,
+    partialSheetPieceCount: computed.partialSheetPieceCount,
+    partialSheetFinishedSqft: computed.partialSheetFinishedSqft,
+    partialSheetBillableSqft: computed.partialSheetBillableSqft,
+    totalSheetCount: computed.totalSheetCount,
     tierSheetWidth: computed.tierSheetWidth,
     tierSheetLength: computed.tierSheetLength,
     tierUsableDropMin: computed.tierUsableDropMin,
@@ -2305,6 +2386,14 @@ function calculateBasePriceDetails(
         computedSheetUsage: tierBasisState.computedSheetUsage,
         computedSheetUsageAvailable: tierBasisState.computedSheetUsageAvailable,
         computedSheetUsageMode: tierBasisState.computedSheetUsageMode,
+        sheetUsageMethod: tierBasisState.sheetUsageMethod,
+        piecesPerSheet: tierBasisState.piecesPerSheet,
+        orientationUsed: tierBasisState.orientationUsed,
+        fullSheets: tierBasisState.fullSheets,
+        partialSheetPieceCount: tierBasisState.partialSheetPieceCount,
+        partialSheetFinishedSqft: tierBasisState.partialSheetFinishedSqft,
+        partialSheetBillableSqft: tierBasisState.partialSheetBillableSqft,
+        totalSheetCount: tierBasisState.totalSheetCount,
         tierSheetWidth: tierBasisState.tierSheetWidth,
         tierSheetLength: tierBasisState.tierSheetLength,
         tierUsableDropMin: tierBasisState.tierUsableDropMin,
@@ -2367,6 +2456,14 @@ function calculateBasePriceDetails(
         computedSheetUsage: tierBasisState.computedSheetUsage,
         computedSheetUsageAvailable: tierBasisState.computedSheetUsageAvailable,
         computedSheetUsageMode: tierBasisState.computedSheetUsageMode,
+        sheetUsageMethod: tierBasisState.sheetUsageMethod,
+        piecesPerSheet: tierBasisState.piecesPerSheet,
+        orientationUsed: tierBasisState.orientationUsed,
+        fullSheets: tierBasisState.fullSheets,
+        partialSheetPieceCount: tierBasisState.partialSheetPieceCount,
+        partialSheetFinishedSqft: tierBasisState.partialSheetFinishedSqft,
+        partialSheetBillableSqft: tierBasisState.partialSheetBillableSqft,
+        totalSheetCount: tierBasisState.totalSheetCount,
         tierSheetWidth: tierBasisState.tierSheetWidth,
         tierSheetLength: tierBasisState.tierSheetLength,
         tierUsableDropMin: tierBasisState.tierUsableDropMin,
@@ -2424,6 +2521,14 @@ function calculateBasePriceDetails(
       computedSheetUsage: tierBasisState.computedSheetUsage,
       computedSheetUsageAvailable: tierBasisState.computedSheetUsageAvailable,
       computedSheetUsageMode: tierBasisState.computedSheetUsageMode,
+      sheetUsageMethod: tierBasisState.sheetUsageMethod,
+      piecesPerSheet: tierBasisState.piecesPerSheet,
+      orientationUsed: tierBasisState.orientationUsed,
+      fullSheets: tierBasisState.fullSheets,
+      partialSheetPieceCount: tierBasisState.partialSheetPieceCount,
+      partialSheetFinishedSqft: tierBasisState.partialSheetFinishedSqft,
+      partialSheetBillableSqft: tierBasisState.partialSheetBillableSqft,
+      totalSheetCount: tierBasisState.totalSheetCount,
       tierSheetWidth: tierBasisState.tierSheetWidth,
       tierSheetLength: tierBasisState.tierSheetLength,
       tierUsableDropMin: tierBasisState.tierUsableDropMin,
@@ -3231,6 +3336,14 @@ function buildTierResolutionSnapshot(
     computedSheetUsage: tierResolution.computedSheetUsage,
     computedSheetUsageAvailable: tierResolution.computedSheetUsageAvailable,
     computedSheetUsageMode: tierResolution.computedSheetUsageMode,
+    sheetUsageMethod: tierResolution.sheetUsageMethod,
+    piecesPerSheet: tierResolution.piecesPerSheet,
+    orientationUsed: tierResolution.orientationUsed,
+    fullSheets: tierResolution.fullSheets,
+    partialSheetPieceCount: tierResolution.partialSheetPieceCount,
+    partialSheetFinishedSqft: tierResolution.partialSheetFinishedSqft,
+    partialSheetBillableSqft: tierResolution.partialSheetBillableSqft,
+    totalSheetCount: tierResolution.totalSheetCount,
     tierSheetWidth: tierResolution.tierSheetWidth,
     tierSheetLength: tierResolution.tierSheetLength,
     tierUsableDropMin: tierResolution.tierUsableDropMin,
@@ -3443,6 +3556,12 @@ function evaluatePreviewFormulaToCents(input: {
     sheetCount: input.sheetYieldMetrics?.sheetCount,
     sheetSqft: input.sheetYieldMetrics?.sheetSqft,
     billedSheetSqft: input.sheetYieldMetrics?.billedSheetSqft,
+    piecesPerSheet: input.sheetYieldMetrics?.piecesPerSheet,
+    fullSheets: input.sheetYieldMetrics?.fullSheets,
+    partialSheetPieceCount: input.sheetYieldMetrics?.partialSheetPieceCount,
+    partialSheetFinishedSqft: input.sheetYieldMetrics?.partialSheetFinishedSqft,
+    partialSheetBillableSqft: input.sheetYieldMetrics?.partialSheetBillableSqft,
+    totalSheetCount: input.sheetYieldMetrics?.totalSheetCount,
   });
   const formulaScope = buildFormulaEvaluationScope({
     scope,
@@ -3502,6 +3621,8 @@ function evaluatePreviewFormulaToCents(input: {
   if (input.sheetYieldMetrics?.available) {
     steps.push(
       { label: 'computed_sheets', value: input.sheetYieldMetrics.computedSheets ?? "unavailable" },
+      { label: 'pieces_per_sheet', value: input.sheetYieldMetrics.piecesPerSheet ?? "unavailable" },
+      { label: 'total_sheet_count', value: input.sheetYieldMetrics.totalSheetCount ?? input.sheetYieldMetrics.sheetCount ?? "unavailable" },
       { label: 'billed_sheet_sqft', value: input.sheetYieldMetrics.billedSheetSqft ?? "unavailable" },
     );
   }
@@ -3659,6 +3780,12 @@ function buildBaseFormulaDebugContext(input: {
     sheetCount: input.sheetYieldMetrics?.sheetCount,
     sheetSqft: input.sheetYieldMetrics?.sheetSqft,
     billedSheetSqft: input.sheetYieldMetrics?.billedSheetSqft,
+    piecesPerSheet: input.sheetYieldMetrics?.piecesPerSheet,
+    fullSheets: input.sheetYieldMetrics?.fullSheets,
+    partialSheetPieceCount: input.sheetYieldMetrics?.partialSheetPieceCount,
+    partialSheetFinishedSqft: input.sheetYieldMetrics?.partialSheetFinishedSqft,
+    partialSheetBillableSqft: input.sheetYieldMetrics?.partialSheetBillableSqft,
+    totalSheetCount: input.sheetYieldMetrics?.totalSheetCount,
   });
   const variables = buildFormulaEvaluationScope({
     scope,
@@ -3690,6 +3817,8 @@ function buildBaseFormulaDebugContext(input: {
       { label: 'p(base_rate_per_sqft)', value: resolvedBaseRate },
       ...(input.sheetYieldMetrics?.available ? [
         { label: 'computed_sheets', value: input.sheetYieldMetrics.computedSheets ?? "unavailable" },
+        { label: 'pieces_per_sheet', value: input.sheetYieldMetrics.piecesPerSheet ?? "unavailable" },
+        { label: 'total_sheet_count', value: input.sheetYieldMetrics.totalSheetCount ?? input.sheetYieldMetrics.sheetCount ?? "unavailable" },
         { label: 'billed_sheet_sqft', value: input.sheetYieldMetrics.billedSheetSqft ?? "unavailable" },
       ] : []),
     ],
@@ -3710,6 +3839,14 @@ function buildBaseFormulaDebugContext(input: {
       sheetCount: input.sheetYieldMetrics.sheetCount,
       sheetSqft: input.sheetYieldMetrics.sheetSqft,
       billedSheetSqft: input.sheetYieldMetrics.billedSheetSqft,
+      sheetUsageMethod: input.sheetYieldMetrics.sheetUsageMethod,
+      piecesPerSheet: input.sheetYieldMetrics.piecesPerSheet,
+      orientationUsed: input.sheetYieldMetrics.orientationUsed,
+      fullSheets: input.sheetYieldMetrics.fullSheets,
+      partialSheetPieceCount: input.sheetYieldMetrics.partialSheetPieceCount,
+      partialSheetFinishedSqft: input.sheetYieldMetrics.partialSheetFinishedSqft,
+      partialSheetBillableSqft: input.sheetYieldMetrics.partialSheetBillableSqft,
+      totalSheetCount: input.sheetYieldMetrics.totalSheetCount,
       mode: input.sheetYieldMetrics.mode,
       available: input.sheetYieldMetrics.available,
     } : undefined,
@@ -3880,8 +4017,11 @@ function buildPricingPreviewWeightDebug(input: {
 function inferFormulaQuantityBasis(formula: string): string {
   const normalized = String(formula || "").toLowerCase();
   if (/\bcomputed_sheets\b/.test(normalized)) return "computed_sheets";
+  if (/\btotal_sheet_count\b/.test(normalized)) return "total_sheet_count";
   if (/\bsheet_count\b/.test(normalized)) return "sheet_count";
   if (/\bbilled_sheet_sqft\b/.test(normalized)) return "billed_sheet_sqft";
+  if (/\bpartial_sheet_billable_sqft\b/.test(normalized)) return "partial_sheet_billable_sqft";
+  if (/\bpieces_per_sheet\b/.test(normalized)) return "pieces_per_sheet";
   if (/\bbilled_sheets\b/.test(normalized)) return "billed_sheets";
   if (/\btotal_finished_sqft\b/.test(normalized)) return "total_finished_sqft";
   if (/\bfinished_sqft\b/.test(normalized)) return "finished_sqft";
@@ -3900,7 +4040,7 @@ function isLikelyGeometryOnlyFormula(formula: string): boolean {
   if (!normalized.trim()) return false;
   const usesGeometryQuantity =
     /\bsheet_consumption_sqft\s*\(/.test(normalized) ||
-    /\b(?:billed_sheet_sqft|computed_sheets|sheet_count|billed_sheets|total_finished_sqft|finished_sqft|total_sqft|sqft)\b/.test(normalized);
+    /\b(?:billed_sheet_sqft|computed_sheets|total_sheet_count|sheet_count|billed_sheets|pieces_per_sheet|partial_sheet_billable_sqft|partial_sheet_finished_sqft|total_finished_sqft|finished_sqft|total_sqft|sqft)\b/.test(normalized);
   return usesGeometryQuantity && !formulaReferencesPricingRate(normalized);
 }
 
@@ -3945,7 +4085,7 @@ function buildPbv2PricingFormulaError(input: {
 function inferFormulaApplication(formula: string): 'unitPrice' | 'totalPrice' | 'unknown' {
   const normalized = String(formula || '').toLowerCase();
   if (!normalized.trim()) return 'unknown';
-  if (/\b(quantity|q|total_sqft|total_finished_sqft|computed_sheets|billed_sheets|sheet_count|billed_sheet_sqft)\b/.test(normalized) || /\bsheet_consumption_sqft\s*\(/.test(normalized)) {
+  if (/\b(quantity|q|total_sqft|total_finished_sqft|computed_sheets|total_sheet_count|billed_sheets|sheet_count|billed_sheet_sqft|partial_sheet_billable_sqft)\b/.test(normalized) || /\bsheet_consumption_sqft\s*\(/.test(normalized)) {
     return 'totalPrice';
   }
   return 'unitPrice';
