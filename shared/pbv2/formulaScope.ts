@@ -37,6 +37,12 @@ export const FORMULA_VARIABLE_PROTECTED_KEYS = new Set([
   "sheet_count",
   "sheet_sqft",
   "billed_sheet_sqft",
+  "pieces_per_sheet",
+  "full_sheets",
+  "partial_sheet_piece_count",
+  "partial_sheet_finished_sqft",
+  "partial_sheet_billable_sqft",
+  "total_sheet_count",
   "linear_feet",
   "finished_width",
   "fw",
@@ -74,6 +80,12 @@ export const MATRIX_VARIABLE_PROTECTED_KEYS = new Set([
   "sheet_count",
   "sheet_sqft",
   "billed_sheet_sqft",
+  "pieces_per_sheet",
+  "full_sheets",
+  "partial_sheet_piece_count",
+  "partial_sheet_finished_sqft",
+  "partial_sheet_billable_sqft",
+  "total_sheet_count",
   "linear_feet",
   "finished_width",
   "fw",
@@ -108,6 +120,12 @@ export function buildFormulaScope(input: {
   sheetCount?: number | null;
   sheetSqft?: number | null;
   billedSheetSqft?: number | null;
+  piecesPerSheet?: number | null;
+  fullSheets?: number | null;
+  partialSheetPieceCount?: number | null;
+  partialSheetFinishedSqft?: number | null;
+  partialSheetBillableSqft?: number | null;
+  totalSheetCount?: number | null;
 }): Record<string, number | string | boolean | null> {
   const scope: Record<string, number | string | boolean | null> = {
     width: input.orderedWidthIn,
@@ -148,6 +166,12 @@ export function buildFormulaScope(input: {
     ["sheet_count", input.sheetCount],
     ["sheet_sqft", input.sheetSqft],
     ["billed_sheet_sqft", input.billedSheetSqft],
+    ["pieces_per_sheet", input.piecesPerSheet],
+    ["full_sheets", input.fullSheets],
+    ["partial_sheet_piece_count", input.partialSheetPieceCount],
+    ["partial_sheet_finished_sqft", input.partialSheetFinishedSqft],
+    ["partial_sheet_billable_sqft", input.partialSheetBillableSqft],
+    ["total_sheet_count", input.totalSheetCount],
   ];
 
   for (const [key, value] of sheetYieldEntries) {

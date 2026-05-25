@@ -14,19 +14,137 @@
  * quantities. They must be multiplied by an explicit rate in the formula.
  */
 
+export type SheetYieldOrientation = "normal" | "rotated";
+export type SheetYieldMethod = "layout_yield";
+
+export type SheetYieldResult = {
+  sheetUsageMethod: SheetYieldMethod;
+  piecesPerSheet: number;
+  orientationUsed: SheetYieldOrientation;
+  fullSheets: number;
+  partialSheetPieceCount: number;
+  partialSheetFinishedSqft: number;
+  partialSheetBillableSqft: number;
+  totalSheetCount: number;
+  sheetSqft: number;
+  billedSheetSqft: number;
+};
+
+function assertPositiveFinite(value: number, label: string): void {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`sheet_consumption_sqft: ${label} must be a positive number`);
+  }
+}
+
+function orientationYield(pieceW: number, pieceH: number, sheetWidth: number, sheetLength: number) {
+  if (pieceW > sheetWidth || pieceH > sheetLength) {
+    return { piecesAcross: 0, rowsPerSheet: 0, piecesPerSheet: 0 };
+  }
+
+  const piecesAcross = Math.floor(sheetWidth / pieceW);
+  const rowsPerSheet = Math.floor(sheetLength / pieceH);
+  return { piecesAcross, rowsPerSheet, piecesPerSheet: piecesAcross * rowsPerSheet };
+}
+
+function billPartialSheetSqft(input: {
+  pieceW: number;
+  pieceH: number;
+  partialPieces: number;
+  sheetWidth: number;
+  usableDropMin: number;
+  billableLengthIncrement: number;
+  minimumBillableSqft: number;
+}): number {
+  if (input.partialPieces <= 0) return 0;
+
+  const piecesAcross = Math.floor(input.sheetWidth / input.pieceW);
+  if (piecesAcross <= 0) return Infinity;
+
+  const rowsNeeded = Math.ceil(input.partialPieces / piecesAcross);
+  const consumedLength = rowsNeeded * input.pieceH;
+  const increment = input.billableLengthIncrement > 0 ? input.billableLengthIncrement : 1;
+  const billableLength = Math.ceil(consumedLength / increment) * increment;
+  const fullRows = Math.floor(input.partialPieces / piecesAcross);
+  const piecesInLastRow = input.partialPieces % piecesAcross;
+  const occupiedWidth =
+    piecesInLastRow > 0 && fullRows === 0
+      ? piecesInLastRow * input.pieceW
+      : piecesAcross * input.pieceW;
+  const drop = input.sheetWidth - occupiedWidth;
+  const effectiveWidth = drop >= input.usableDropMin ? occupiedWidth : input.sheetWidth;
+
+  return Math.ceil(Math.max((effectiveWidth * billableLength) / 144, input.minimumBillableSqft));
+}
+
 /**
- * Calculates billable square footage for sheet or roll material consumption.
+ * Calculates actual sheet yield for rectangular pieces on rectangular sheets.
  *
- * Tests both normal (w×h) and rotated (h×w) piece orientations and picks
- * whichever uses less material. Applies the reusable-drop rule: when the
- * side strip remaining after pieces is narrower than usableDropMin it is
- * treated as waste and the full sheet width is charged; otherwise only the
- * occupied width is charged. Consumed length is rounded up to the nearest
- * billableLengthIncrement. Returns at least minimumBillableSqft, and the
- * final result is always ceil'd to a whole square foot.
- *
- * Throws an Error if the piece cannot physically fit the sheet in either
- * orientation — callers should surface this as a formula evaluation error.
+ * The current algorithm compares a single normal orientation with a single
+ * rotated orientation and chooses the higher yield. Mixed-row nesting can be
+ * added later as a separate method without returning sqft-equivalent counts.
+ */
+export function calculateSheetYield(
+  w: number,
+  h: number,
+  q: number,
+  sheetWidth: number,
+  sheetLength: number,
+  usableDropMin: number,
+  billableLengthIncrement: number,
+  minimumBillableSqft: number,
+): SheetYieldResult {
+  assertPositiveFinite(w, "piece width");
+  assertPositiveFinite(h, "piece height");
+  assertPositiveFinite(q, "quantity");
+  assertPositiveFinite(sheetWidth, "sheet_width");
+  assertPositiveFinite(sheetLength, "sheet_length");
+
+  const normal = orientationYield(w, h, sheetWidth, sheetLength);
+  const rotated = orientationYield(h, w, sheetWidth, sheetLength);
+  const useRotated = rotated.piecesPerSheet > normal.piecesPerSheet;
+  const chosen = useRotated ? rotated : normal;
+  const pieceW = useRotated ? h : w;
+  const pieceH = useRotated ? w : h;
+
+  if (chosen.piecesPerSheet <= 0) {
+    throw new Error(
+      `sheet_consumption_sqft: piece ${w}x${h} exceeds sheet ${sheetWidth}x${sheetLength} in both orientations`,
+    );
+  }
+
+  const quantity = Math.ceil(q);
+  const fullSheets = Math.floor(quantity / chosen.piecesPerSheet);
+  const partialSheetPieceCount = quantity % chosen.piecesPerSheet;
+  const totalSheetCount = fullSheets + (partialSheetPieceCount > 0 ? 1 : 0);
+  const sheetSqft = (sheetWidth * sheetLength) / 144;
+  const partialSheetFinishedSqft = (partialSheetPieceCount * w * h) / 144;
+  const partialSheetBillableSqft = billPartialSheetSqft({
+    pieceW,
+    pieceH,
+    partialPieces: partialSheetPieceCount,
+    sheetWidth,
+    usableDropMin,
+    billableLengthIncrement,
+    minimumBillableSqft,
+  });
+  const billedSheetSqft = Math.ceil(fullSheets * sheetSqft + partialSheetBillableSqft);
+
+  return {
+    sheetUsageMethod: "layout_yield",
+    piecesPerSheet: chosen.piecesPerSheet,
+    orientationUsed: useRotated ? "rotated" : "normal",
+    fullSheets,
+    partialSheetPieceCount,
+    partialSheetFinishedSqft,
+    partialSheetBillableSqft,
+    totalSheetCount,
+    sheetSqft,
+    billedSheetSqft,
+  };
+}
+
+/**
+ * Calculates billable square footage for sheet material using actual sheet yield.
  */
 export function sheetConsumptionSqft(
   w: number,
@@ -38,38 +156,16 @@ export function sheetConsumptionSqft(
   billableLengthIncrement: number,
   minimumBillableSqft: number,
 ): number {
-  function computeOrientation(pieceW: number, pieceH: number): number {
-    if (pieceW > sheetWidth || pieceH > sheetLength) return Infinity;
-    const piecesAcross = Math.floor(sheetWidth / pieceW);
-    if (piecesAcross === 0) return Infinity;
-    const rowsNeeded = Math.ceil(q / piecesAcross);
-    const consumedLength = rowsNeeded * pieceH;
-    const inc = billableLengthIncrement > 0 ? billableLengthIncrement : 1;
-    const billableLength = Math.ceil(consumedLength / inc) * inc;
-    // Use the actual occupied width of the final row for the reusable-drop check.
-    // When there are no full rows (fullRows===0) the job fits entirely in one partial
-    // row; bill only for the pieces actually placed.  When at least one full row
-    // exists, those rows set the dominant width.
-    const fullRows = Math.floor(q / piecesAcross);
-    const piecesInLastRow = q % piecesAcross;
-    const occupiedWidth =
-      piecesInLastRow > 0 && fullRows === 0
-        ? piecesInLastRow * pieceW
-        : piecesAcross * pieceW;
-    const drop = sheetWidth - occupiedWidth;
-    const effectiveWidth = drop >= usableDropMin ? occupiedWidth : sheetWidth;
-    return (effectiveWidth * billableLength) / 144;
-  }
-
-  const normalSqft = computeOrientation(w, h);
-  const rotatedSqft = computeOrientation(h, w);
-  const best = Math.min(normalSqft, rotatedSqft);
-  if (!Number.isFinite(best)) {
-    throw new Error(
-      `sheet_consumption_sqft: piece ${w}×${h} exceeds sheet ${sheetWidth}×${sheetLength} in both orientations`,
-    );
-  }
-  return Math.ceil(Math.max(best, minimumBillableSqft));
+  return calculateSheetYield(
+    w,
+    h,
+    q,
+    sheetWidth,
+    sheetLength,
+    usableDropMin,
+    billableLengthIncrement,
+    minimumBillableSqft,
+  ).billedSheetSqft;
 }
 
 /**
@@ -94,7 +190,7 @@ export function extractFormulaVariables(
 
 /**
  * Returns the evalScope additions that inject all custom formula helpers into
- * a mathjs evaluate() call.  Pass the result spread into the scope object:
+ * a mathjs evaluate() call. Pass the result spread into the scope object:
  *
  *   const scope = { ...buildFormulaScope(input), ...formulaHelperScope() };
  *
