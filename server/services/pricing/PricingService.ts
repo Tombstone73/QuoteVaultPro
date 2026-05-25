@@ -132,6 +132,7 @@ export type PBV2RuntimePricingSnapshot = {
   fallbackBaseTotal?: number;
   finalTotalSource?: "formula" | "fallback_formula" | "fallback_base";
   finalTotal?: number;
+  sheetYield?: NonNullable<PricingPreviewEvaluationResult["debug"]>["sheetYield"];
   calculatedPrice: number;
   capturedAt: string;
   resolvedWeightDebug?: PBV2ResolvedWeightSnapshotDebug;
@@ -155,10 +156,15 @@ export type PBV2TierResolutionSnapshot = {
   tierBasisValue?: number;
   tierBasisResolvedFrom?: "matrix_row" | "product" | "default";
   lineItemQuantity?: number;
+  rawItemQuantity?: number;
+  tierSelectionQuantity?: number;
   computedSheetUsage?: number | null;
   computedSheetUsageAvailable?: boolean;
   computedSheetUsageMode?: "exact_flat_goods" | "sheet_equivalent" | "unavailable";
   fallbackToLineItemQuantity?: boolean;
+  selectedTierMinQty?: number | null;
+  selectedTierRate?: number | null;
+  selectedTierSource?: "matrix_row" | "pbv2_product" | "pbv2_pricing_v2" | "legacy_price_breaks" | "none" | null;
   finalBaseRateUsed: number;
   warnings: Pbv2TierResolutionWarning[];
   capturedAt: string;
@@ -252,6 +258,21 @@ export type PricingPreviewEvaluationResult = {
     fallbackBaseTotal?: number;
     finalTotalSource?: "formula" | "fallback_formula" | "fallback_base";
     finalTotal?: number;
+    formulaResultType?: "final_dollars";
+    quantityBasisUsed?: string;
+    selectedRate?: number | null;
+    finalFormulaTotal?: number | null;
+    sheetYield?: {
+      finishedSqft: number;
+      totalFinishedSqft: number;
+      computedSheets?: number | null;
+      billedSheets?: number | null;
+      sheetCount?: number | null;
+      sheetSqft?: number | null;
+      billedSheetSqft?: number | null;
+      mode?: ComputedSheetUsageMode;
+      available?: boolean;
+    };
     tierResolution?: PBV2TierResolutionSnapshot;
     runtimeSelectionContext?: OptionRuntimeSelectionContext;
     weight?: {
@@ -484,6 +505,14 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     ...resolveSnapshotFormulaVariables(treeVersion.treeJson, product),
     ...selectionFormulaVariables,
   };
+  const treeFormulaForPricing = typeof (treeVersion.treeJson as any)?.meta?.pricingFormula === "string"
+    ? String((treeVersion.treeJson as any).meta.pricingFormula).trim()
+    : "";
+  const productFormulaForPricing = typeof product.pricingFormula === "string"
+    ? product.pricingFormula.trim()
+    : "";
+  const pricingFormulaExpressionForSheetYield =
+    treeFormulaForPricing || pricingFormulaLibraryExpression || productFormulaForPricing || null;
 
   const runtimeSelectionContext = pbv2ToRuntimeSelectionContext(
     treeVersion.treeJson as any,
@@ -525,6 +554,8 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     pricingMatrixResolution,
     pricingProfileKey: product.pricingProfileKey,
     pricingProfileConfig: product.pricingProfileConfig,
+    formulaVariables: formulaVariablesForPricing,
+    pricingFormulaExpression: pricingFormulaExpressionForSheetYield,
     legacyPriceBreaks: product.priceBreaks as LegacyPriceBreaksConfig | null,
     productLegacy: {
       sheetWidth: product.sheetWidth,
@@ -730,6 +761,13 @@ export function evaluatePricingPreviewFromTree(input: {
     ...(input.formulaVariables ?? {}),
     ...selectionFormulaVariables,
   };
+  const treeFormulaForPricing = typeof input.treeJson?.meta?.pricingFormula === "string"
+    ? String(input.treeJson.meta.pricingFormula).trim()
+    : "";
+  const pricingFormulaExpressionForSheetYield =
+    (typeof input.pricingFormulaOverride === "string" ? input.pricingFormulaOverride.trim() : "") ||
+    treeFormulaForPricing ||
+    null;
   const runtimeSelectionContext = pbv2ToRuntimeSelectionContext(
     input.treeJson as any,
     ruleValidatedSelections.selected,
@@ -753,6 +791,7 @@ export function evaluatePricingPreviewFromTree(input: {
     pricingProfileKey: input.pricingProfileKey,
     pricingProfileConfig: input.pricingProfileConfig,
     formulaVariables: formulaVariablesForPricing,
+    pricingFormulaExpression: pricingFormulaExpressionForSheetYield,
   });
   const pricingMethod = String(baseDetails.pricingProfileKey || "default");
   const weightDebug = buildPricingPreviewWeightDebug({
@@ -852,6 +891,11 @@ export function evaluatePricingPreviewFromTree(input: {
       rawSqftPerItem: widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0,
       rawTotalSqft: (widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0) * quantity,
       baseRateUsed: formulaDebug.baseRateUsed,
+      formulaResultType: formulaDebug.formulaResultType,
+      quantityBasisUsed: formulaDebug.quantityBasisUsed,
+      selectedRate: formulaDebug.selectedRate,
+      finalFormulaTotal: formulaDebug.finalFormulaTotal,
+      sheetYield: formulaDebug.sheetYield,
       formulaEvaluatedTotal: formulaBasePrice.formulaEvaluatedTotalCents == null
         ? null
         : formulaBasePrice.formulaEvaluatedTotalCents / 100,
@@ -1321,6 +1365,7 @@ function calculateBasePrice(
     pricingProfileKey?: string | null;
     pricingProfileConfig?: unknown;
     formulaVariables?: Record<string, number>;
+    pricingFormulaExpression?: string | null;
     legacyPriceBreaks?: LegacyPriceBreaksConfig | null;
     productLegacy?: {
       sheetWidth?: string | null;
@@ -1380,6 +1425,19 @@ function getPricingMatrixVariablesForFormula(
 type TierBasisResolvedFrom = "matrix_row" | "product" | "default";
 type ComputedSheetUsageMode = "exact_flat_goods" | "sheet_equivalent" | "unavailable";
 
+type SheetYieldMetrics = {
+  computedSheets: number | null;
+  billedSheets: number | null;
+  sheetCount: number | null;
+  sheetSqft: number | null;
+  billedSheetSqft: number | null;
+  finishedSqft: number;
+  totalFinishedSqft: number;
+  available: boolean;
+  mode: ComputedSheetUsageMode;
+  warnings: Pbv2TierResolutionWarning[];
+};
+
 type TierBasisState = {
   tierBasis: Pbv2TierBasis;
   tierBasisValue: number;
@@ -1427,6 +1485,66 @@ function getFormulaVariableRecord(
   return out;
 }
 
+function splitFormulaArguments(argumentList: string): string[] {
+  const args: string[] = [];
+  let current = "";
+  let depth = 0;
+
+  for (const char of argumentList) {
+    if (char === "(") depth += 1;
+    if (char === ")") depth = Math.max(0, depth - 1);
+    if (char === "," && depth === 0) {
+      args.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+
+  if (current.trim()) args.push(current.trim());
+  return args;
+}
+
+function resolveFormulaArgumentNumber(arg: string, variables: Record<string, number>): number | null {
+  const numeric = Number(arg);
+  if (Number.isFinite(numeric)) return numeric;
+
+  const variableName = arg.trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(variableName)) return null;
+
+  const variableValue = Number(variables[variableName]);
+  return Number.isFinite(variableValue) ? variableValue : null;
+}
+
+function extractSheetConsumptionFormulaVariables(
+  formulaExpression: string | null | undefined,
+  variables: Record<string, number>,
+): Record<string, number> {
+  if (!formulaExpression || typeof formulaExpression !== "string") return {};
+
+  const match = formulaExpression.match(/\bsheet_consumption_sqft\s*\(([^)]*)\)/i);
+  if (!match) return {};
+
+  const args = splitFormulaArguments(match[1] ?? "");
+  if (args.length < 8) return {};
+
+  const mappings: Array<[number, string]> = [
+    [3, "sheet_width"],
+    [4, "sheet_length"],
+    [5, "usable_drop_min"],
+    [6, "billable_length_increment"],
+    [7, "minimum_billable_sqft"],
+  ];
+
+  const out: Record<string, number> = {};
+  for (const [argIndex, variableName] of mappings) {
+    const value = resolveFormulaArgumentNumber(args[argIndex] ?? "", variables);
+    if (value !== null) out[variableName] = value;
+  }
+
+  return out;
+}
+
 function resolveComputedSheetUsage(input: {
   meta: Record<string, unknown>;
   activePricingProfileKey: string;
@@ -1440,18 +1558,18 @@ function resolveComputedSheetUsage(input: {
   };
   pricingMatrixVariables: Record<string, number>;
   formulaVariables?: Record<string, number>;
+  pricingFormulaExpression?: string | null;
   orderedWidthIn: number;
   orderedHeightIn: number;
   finishedWidthIn: number;
   finishedHeightIn: number;
   quantity: number;
-}): {
-  value: number | null;
-  available: boolean;
-  mode: ComputedSheetUsageMode;
-  warnings: Pbv2TierResolutionWarning[];
-} {
+}): SheetYieldMetrics {
   const warnings: Pbv2TierResolutionWarning[] = [];
+  const finishedSqft = input.finishedWidthIn > 0 && input.finishedHeightIn > 0
+    ? (input.finishedWidthIn * input.finishedHeightIn) / 144
+    : 0;
+  const totalFinishedSqft = finishedSqft * input.quantity;
 
   if (input.activePricingProfileKey === "flat_goods" && input.productLegacy.materialType !== "roll") {
     try {
@@ -1487,8 +1605,18 @@ function resolveComputedSheetUsage(input: {
           detail: { error: flatGoodsResult.error },
         });
       } else if (Number.isFinite(flatGoodsResult.sheetCount) && flatGoodsResult.sheetCount > 0) {
+        const sheetWidth = Number(flatGoodsResult.nestingDetails?.sheetWidth ?? input.activeProfileConfig?.sheetWidth ?? input.productLegacy.sheetWidth ?? 48);
+        const sheetHeight = Number(flatGoodsResult.nestingDetails?.sheetHeight ?? input.activeProfileConfig?.sheetHeight ?? input.productLegacy.sheetHeight ?? 96);
+        const sheetSqft = sheetWidth > 0 && sheetHeight > 0 ? (sheetWidth * sheetHeight) / 144 : null;
+        const computedSheets = Number(flatGoodsResult.sheetCount);
         return {
-          value: flatGoodsResult.sheetCount,
+          computedSheets,
+          billedSheets: computedSheets,
+          sheetCount: computedSheets,
+          sheetSqft,
+          billedSheetSqft: sheetSqft !== null ? computedSheets * sheetSqft : null,
+          finishedSqft,
+          totalFinishedSqft,
           available: true,
           mode: "exact_flat_goods",
           warnings,
@@ -1517,6 +1645,10 @@ function resolveComputedSheetUsage(input: {
     input.pricingMatrixVariables,
     input.formulaVariables,
   );
+  Object.assign(
+    formulaVariables,
+    extractSheetConsumptionFormulaVariables(input.pricingFormulaExpression, formulaVariables),
+  );
   const sheetWidth = getFiniteNumberFromRecord(formulaVariables, "sheet_width");
   const sheetLength = getFiniteNumberFromRecord(formulaVariables, "sheet_length");
   const usableDropMin = getFiniteNumberFromRecord(formulaVariables, "usable_drop_min");
@@ -1544,7 +1676,18 @@ function resolveComputedSheetUsage(input: {
         ],
       },
     });
-    return { value: null, available: false, mode: "unavailable", warnings };
+    return {
+      computedSheets: null,
+      billedSheets: null,
+      sheetCount: null,
+      sheetSqft: null,
+      billedSheetSqft: null,
+      finishedSqft,
+      totalFinishedSqft,
+      available: false,
+      mode: "unavailable",
+      warnings,
+    };
   }
 
   try {
@@ -1568,11 +1711,28 @@ function resolveComputedSheetUsage(input: {
         message: "Computed sheet-equivalent usage was zero or invalid.",
         detail: { consumedSqft, sheetAreaSqft },
       });
-      return { value: null, available: false, mode: "unavailable", warnings };
+      return {
+        computedSheets: null,
+        billedSheets: null,
+        sheetCount: null,
+        sheetSqft: Number.isFinite(sheetAreaSqft) && sheetAreaSqft > 0 ? sheetAreaSqft : null,
+        billedSheetSqft: null,
+        finishedSqft,
+        totalFinishedSqft,
+        available: false,
+        mode: "unavailable",
+        warnings,
+      };
     }
 
     return {
-      value: sheetUsage,
+      computedSheets: sheetUsage,
+      billedSheets: sheetUsage,
+      sheetCount: Math.ceil(sheetUsage),
+      sheetSqft: sheetAreaSqft,
+      billedSheetSqft: consumedSqft,
+      finishedSqft,
+      totalFinishedSqft,
       available: true,
       mode: "sheet_equivalent",
       warnings,
@@ -1584,7 +1744,18 @@ function resolveComputedSheetUsage(input: {
       message: "Computed sheet usage calculation failed while running sheet consumption.",
       detail: { error: error?.message ?? String(error) },
     });
-    return { value: null, available: false, mode: "unavailable", warnings };
+    return {
+      computedSheets: null,
+      billedSheets: null,
+      sheetCount: null,
+      sheetSqft: null,
+      billedSheetSqft: null,
+      finishedSqft,
+      totalFinishedSqft,
+      available: false,
+      mode: "unavailable",
+      warnings,
+    };
   }
 }
 
@@ -1603,6 +1774,7 @@ function resolveTierBasisState(input: {
   };
   pricingMatrixVariables: Record<string, number>;
   formulaVariables?: Record<string, number>;
+  sheetYieldMetrics: SheetYieldMetrics;
   orderedWidthIn: number;
   orderedHeightIn: number;
   finishedWidthIn: number;
@@ -1640,15 +1812,15 @@ function resolveTierBasisState(input: {
     };
   }
 
-  const computed = resolveComputedSheetUsage(input);
+  const computed = input.sheetYieldMetrics;
   warnings.push(...computed.warnings);
-  if (computed.available && computed.value !== null && Number.isFinite(computed.value) && computed.value > 0) {
+  if (computed.available && computed.computedSheets !== null && Number.isFinite(computed.computedSheets) && computed.computedSheets > 0) {
     return {
       tierBasis,
-      tierBasisValue: computed.value,
+      tierBasisValue: computed.computedSheets,
       tierBasisResolvedFrom,
       lineItemQuantity: input.quantity,
-      computedSheetUsage: computed.value,
+      computedSheetUsage: computed.computedSheets,
       computedSheetUsageAvailable: true,
       computedSheetUsageMode: computed.mode,
       fallbackToLineItemQuantity: false,
@@ -1667,7 +1839,7 @@ function resolveTierBasisState(input: {
     tierBasisValue: input.quantity,
     tierBasisResolvedFrom,
     lineItemQuantity: input.quantity,
-    computedSheetUsage: computed.value,
+    computedSheetUsage: computed.computedSheets,
     computedSheetUsageAvailable: false,
     computedSheetUsageMode: "unavailable",
     fallbackToLineItemQuantity: true,
@@ -1686,6 +1858,7 @@ function calculateBasePriceDetails(
     pricingProfileKey?: string | null;
     pricingProfileConfig?: unknown;
     formulaVariables?: Record<string, number>;
+    pricingFormulaExpression?: string | null;
     legacyPriceBreaks?: LegacyPriceBreaksConfig | null;
     productLegacy?: {
       sheetWidth?: string | null;
@@ -1715,6 +1888,7 @@ function calculateBasePriceDetails(
   basePriceSource: string;
   rateUsedSource: string;
   tierResolution: Pbv2TierResolution;
+  sheetYieldMetrics: SheetYieldMetrics;
   nestingDetails?: unknown;
 } {
   const meta = tree?.meta;
@@ -1771,6 +1945,20 @@ function calculateBasePriceDetails(
   const finishedHeightIn = orderedHeightIn + trimAllowanceY;
   const sqftPerItem = finishedWidthIn > 0 && finishedHeightIn > 0 ? (finishedWidthIn * finishedHeightIn) / 144 : 0;
   const productLegacy = pricingContext?.productLegacy ?? {};
+  const sheetYieldMetrics = resolveComputedSheetUsage({
+    meta: meta as Record<string, unknown>,
+    activePricingProfileKey,
+    activeProfileConfig,
+    productLegacy,
+    pricingMatrixVariables,
+    formulaVariables: pricingContext?.formulaVariables,
+    pricingFormulaExpression: pricingContext?.pricingFormulaExpression,
+    orderedWidthIn,
+    orderedHeightIn,
+    finishedWidthIn,
+    finishedHeightIn,
+    quantity,
+  });
   const tierBasisState = resolveTierBasisState({
     pricingV2: pricingV2 as Record<string, unknown>,
     matchedMatrixRow,
@@ -1780,6 +1968,7 @@ function calculateBasePriceDetails(
     productLegacy,
     pricingMatrixVariables,
     formulaVariables: pricingContext?.formulaVariables,
+    sheetYieldMetrics,
     orderedWidthIn,
     orderedHeightIn,
     finishedWidthIn,
@@ -1872,10 +2061,15 @@ function calculateBasePriceDetails(
         tierBasisValue: tierBasisState.tierBasisValue,
         tierBasisResolvedFrom: tierBasisState.tierBasisResolvedFrom,
         lineItemQuantity: tierBasisState.lineItemQuantity,
+        rawItemQuantity: tierBasisState.lineItemQuantity,
+        tierSelectionQuantity: tierBasisState.tierBasisValue,
         computedSheetUsage: tierBasisState.computedSheetUsage,
         computedSheetUsageAvailable: tierBasisState.computedSheetUsageAvailable,
         computedSheetUsageMode: tierBasisState.computedSheetUsageMode,
         fallbackToLineItemQuantity: tierBasisState.fallbackToLineItemQuantity,
+        selectedTierMinQty: typeof matchedRowTier.minQty === "number" ? matchedRowTier.minQty : null,
+        selectedTierRate: dollarsFromCents(perSqftCents),
+        selectedTierSource: "matrix_row",
         finalBaseRateUsed: dollarsFromCents(perSqftCents),
         warnings: [...tierBasisState.warnings, ...rowTierWarnings],
       };
@@ -1917,10 +2111,15 @@ function calculateBasePriceDetails(
         tierBasisValue: tierBasisState.tierBasisValue,
         tierBasisResolvedFrom: tierBasisState.tierBasisResolvedFrom,
         lineItemQuantity: tierBasisState.lineItemQuantity,
+        rawItemQuantity: tierBasisState.lineItemQuantity,
+        tierSelectionQuantity: tierBasisState.tierBasisValue,
         computedSheetUsage: tierBasisState.computedSheetUsage,
         computedSheetUsageAvailable: tierBasisState.computedSheetUsageAvailable,
         computedSheetUsageMode: tierBasisState.computedSheetUsageMode,
         fallbackToLineItemQuantity: tierBasisState.fallbackToLineItemQuantity,
+        selectedTierMinQty: null,
+        selectedTierRate: null,
+        selectedTierSource: "matrix_row",
         finalBaseRateUsed: dollarsFromCents(perSqftCents),
         warnings: [...tierBasisState.warnings, ...warnings],
       };
@@ -1958,10 +2157,15 @@ function calculateBasePriceDetails(
       tierBasisValue: tierBasisState.tierBasisValue,
       tierBasisResolvedFrom: tierBasisState.tierBasisResolvedFrom,
       lineItemQuantity: tierBasisState.lineItemQuantity,
+      rawItemQuantity: tierBasisState.lineItemQuantity,
+      tierSelectionQuantity: tierBasisState.tierBasisValue,
       computedSheetUsage: tierBasisState.computedSheetUsage,
       computedSheetUsageAvailable: tierBasisState.computedSheetUsageAvailable,
       computedSheetUsageMode: tierBasisState.computedSheetUsageMode,
       fallbackToLineItemQuantity: tierBasisState.fallbackToLineItemQuantity,
+      selectedTierMinQty: resolvedBaseRates.tierResolution.selectedTierMinQty ?? null,
+      selectedTierRate: resolvedBaseRates.tierResolution.selectedTierRate ?? null,
+      selectedTierSource: resolvedBaseRates.tierResolution.selectedTierSource ?? null,
       warnings: [...tierBasisState.warnings, ...resolvedBaseRates.tierResolution.warnings],
     };
 
@@ -2064,6 +2268,7 @@ function calculateBasePriceDetails(
       basePriceSource,
       rateUsedSource,
       tierResolution,
+      sheetYieldMetrics,
       nestingDetails: {
         ...flatGoodsResult.nestingDetails,
         sheetCount: flatGoodsResult.sheetCount,
@@ -2096,6 +2301,7 @@ function calculateBasePriceDetails(
     basePriceSource,
     rateUsedSource,
     tierResolution,
+    sheetYieldMetrics,
   };
 }
 
@@ -2195,6 +2401,7 @@ function calculateFormulaAwareBasePrice(input: {
     sqftPerItem: baseDetails.sqftPerItem,
     totalSqft: baseDetails.totalSqft,
     linearFeet: baseDetails.linearFeet,
+    sheetYieldMetrics: baseDetails.sheetYieldMetrics,
     usedFallbackFormula,
     formulaVariables,
     pricingMatrixVariables: input.pricingMatrixVariables,
@@ -2233,6 +2440,7 @@ function calculateFormulaAwareBasePrice(input: {
     sqftPerItem: baseDetails.sqftPerItem,
     totalSqft: baseDetails.totalSqft,
     linearFeet: baseDetails.linearFeet,
+    sheetYieldMetrics: baseDetails.sheetYieldMetrics,
     usedFallbackFormula,
     fallbackFormula: PBV2_PREVIEW_FALLBACK_FORMULA,
     formulaVariables,
@@ -2246,6 +2454,9 @@ function calculateFormulaAwareBasePrice(input: {
   formulaDebug.preCeilSqftTotal = formulaEvaluation.preCeilSqftTotal;
   formulaDebug.postCeilSqftTotal = formulaEvaluation.postCeilSqftTotal;
   formulaDebug.baseRateUsed = formulaEvaluation.baseRateUsed;
+  formulaDebug.formulaResultType = formulaEvaluation.formulaResultType;
+  formulaDebug.quantityBasisUsed = formulaEvaluation.quantityBasisUsed;
+  formulaDebug.selectedRate = formulaEvaluation.selectedRate;
 
   const formulaValueCents = Math.round(formulaEvaluation.resultValue * 100);
   const preMinimumCents = formulaEvaluation.appliedAs === "unitPrice"
@@ -2253,6 +2464,7 @@ function calculateFormulaAwareBasePrice(input: {
     : formulaValueCents;
   const minimumApplied = baseDetails.minimumChargeCents > 0 && baseDetails.minimumChargeCents > preMinimumCents;
   const finalTotalCents = minimumApplied ? baseDetails.minimumChargeCents : preMinimumCents;
+  formulaDebug.finalFormulaTotal = preMinimumCents / 100;
 
   return {
     basePriceCents: finalTotalCents,
@@ -2374,10 +2586,15 @@ function buildTierResolutionSnapshot(
     tierBasisValue: tierResolution.tierBasisValue,
     tierBasisResolvedFrom: tierResolution.tierBasisResolvedFrom,
     lineItemQuantity: tierResolution.lineItemQuantity,
+    rawItemQuantity: tierResolution.rawItemQuantity,
+    tierSelectionQuantity: tierResolution.tierSelectionQuantity,
     computedSheetUsage: tierResolution.computedSheetUsage,
     computedSheetUsageAvailable: tierResolution.computedSheetUsageAvailable,
     computedSheetUsageMode: tierResolution.computedSheetUsageMode,
     fallbackToLineItemQuantity: tierResolution.fallbackToLineItemQuantity,
+    selectedTierMinQty: tierResolution.selectedTierMinQty,
+    selectedTierRate: tierResolution.selectedTierRate,
+    selectedTierSource: tierResolution.selectedTierSource,
     finalBaseRateUsed: tierResolution.finalBaseRateUsed,
     warnings: tierResolution.warnings,
     capturedAt,
@@ -2436,6 +2653,7 @@ function buildRuntimePricingSnapshot(input: {
     sqftPerItem,
     totalSqft,
     linearFeet,
+    sheetYieldMetrics: input.baseDetails?.sheetYieldMetrics,
     usedFallbackFormula: formulaSnapshot.usedFallbackFormula,
     formulaVariables,
     pricingMatrixVariables: input.pricingMatrixResolution.variables,
@@ -2469,6 +2687,7 @@ function buildRuntimePricingSnapshot(input: {
     finalTotal: input.formulaBasePrice
       ? input.formulaBasePrice.finalTotalCents / 100
       : input.calculatedPriceCents / 100,
+    sheetYield: formulaDebug.sheetYield,
     calculatedPrice: input.calculatedPriceCents / 100,
     capturedAt: input.capturedAt,
     ...(input.resolvedWeightSource
@@ -2507,6 +2726,7 @@ function evaluatePreviewFormulaToCents(input: {
   sqftPerItem: number;
   totalSqft: number;
   linearFeet: number;
+  sheetYieldMetrics?: SheetYieldMetrics;
   usedFallbackFormula: boolean;
   fallbackFormula: string;
   formulaVariables?: Record<string, number>;
@@ -2519,8 +2739,19 @@ function evaluatePreviewFormulaToCents(input: {
   preCeilSqftTotal: number | null;
   postCeilSqftTotal: number | null;
   baseRateUsed: number;
+  formulaResultType: "final_dollars";
+  quantityBasisUsed: string;
+  selectedRate: number | null;
+  finalFormulaTotal: number | null;
 } {
-  const scope = buildFormulaScope(input);
+  const scope = buildFormulaScope({
+    ...input,
+    computedSheets: input.sheetYieldMetrics?.computedSheets,
+    billedSheets: input.sheetYieldMetrics?.billedSheets,
+    sheetCount: input.sheetYieldMetrics?.sheetCount,
+    sheetSqft: input.sheetYieldMetrics?.sheetSqft,
+    billedSheetSqft: input.sheetYieldMetrics?.billedSheetSqft,
+  });
   const formulaScope = buildFormulaEvaluationScope({
     scope,
     formulaVariables: input.formulaVariables,
@@ -2569,6 +2800,12 @@ function evaluatePreviewFormulaToCents(input: {
     { label: 'sqft*q', value: input.totalSqft },
     { label: 'p(base_rate_per_sqft)', value: resolvedBaseRate },
   ];
+  if (input.sheetYieldMetrics?.available) {
+    steps.push(
+      { label: 'computed_sheets', value: input.sheetYieldMetrics.computedSheets ?? "unavailable" },
+      { label: 'billed_sheet_sqft', value: input.sheetYieldMetrics.billedSheetSqft ?? "unavailable" },
+    );
+  }
 
   // Pre-validate: reject JavaScript-style Math.xxx function calls before they hit mathjs
   const mathDotUsages = detectMathDotUsage(input.formula);
@@ -2646,6 +2883,10 @@ function evaluatePreviewFormulaToCents(input: {
       preCeilSqftTotal,
       postCeilSqftTotal,
       baseRateUsed: resolvedBaseRate,
+      formulaResultType: "final_dollars",
+      quantityBasisUsed: inferFormulaQuantityBasis(input.formula),
+      selectedRate: resolvedBaseRate,
+      finalFormulaTotal: value,
     };
   } catch (error: any) {
     const message = typeof error?.message === 'string' ? error.message : 'Invalid formula';
@@ -2691,6 +2932,7 @@ function buildBaseFormulaDebugContext(input: {
   sqftPerItem: number;
   totalSqft: number;
   linearFeet: number;
+  sheetYieldMetrics?: SheetYieldMetrics;
   usedFallbackFormula: boolean;
   formulaVariables?: Record<string, number>;
   pricingMatrixVariables?: Record<string, number>;
@@ -2711,6 +2953,11 @@ function buildBaseFormulaDebugContext(input: {
     sqftPerItem: input.sqftPerItem,
     totalSqft: input.totalSqft,
     linearFeet: input.linearFeet,
+    computedSheets: input.sheetYieldMetrics?.computedSheets,
+    billedSheets: input.sheetYieldMetrics?.billedSheets,
+    sheetCount: input.sheetYieldMetrics?.sheetCount,
+    sheetSqft: input.sheetYieldMetrics?.sheetSqft,
+    billedSheetSqft: input.sheetYieldMetrics?.billedSheetSqft,
   });
   const variables = buildFormulaEvaluationScope({
     scope,
@@ -2731,6 +2978,10 @@ function buildBaseFormulaDebugContext(input: {
       { label: '(w*h)/144', value: input.sqftPerItem },
       { label: 'sqft*q', value: input.totalSqft },
       { label: 'p(base_rate_per_sqft)', value: resolvedBaseRate },
+      ...(input.sheetYieldMetrics?.available ? [
+        { label: 'computed_sheets', value: input.sheetYieldMetrics.computedSheets ?? "unavailable" },
+        { label: 'billed_sheet_sqft', value: input.sheetYieldMetrics.billedSheetSqft ?? "unavailable" },
+      ] : []),
     ],
     errors: [],
     usedFallbackFormula: input.usedFallbackFormula,
@@ -2738,6 +2989,21 @@ function buildBaseFormulaDebugContext(input: {
     preCeilSqftTotal: null,
     postCeilSqftTotal: null,
     baseRateUsed: resolvedBaseRate,
+    formulaResultType: input.formulaRaw ? "final_dollars" : undefined,
+    quantityBasisUsed: input.formulaRaw ? inferFormulaQuantityBasis(input.formulaRaw) : undefined,
+    selectedRate: resolvedBaseRate,
+    finalFormulaTotal: null,
+    sheetYield: input.sheetYieldMetrics ? {
+      finishedSqft: input.sheetYieldMetrics.finishedSqft,
+      totalFinishedSqft: input.sheetYieldMetrics.totalFinishedSqft,
+      computedSheets: input.sheetYieldMetrics.computedSheets,
+      billedSheets: input.sheetYieldMetrics.billedSheets,
+      sheetCount: input.sheetYieldMetrics.sheetCount,
+      sheetSqft: input.sheetYieldMetrics.sheetSqft,
+      billedSheetSqft: input.sheetYieldMetrics.billedSheetSqft,
+      mode: input.sheetYieldMetrics.mode,
+      available: input.sheetYieldMetrics.available,
+    } : undefined,
   };
 }
 
@@ -2902,10 +3168,24 @@ function buildPricingPreviewWeightDebug(input: {
 // buildFormulaScope, buildFormulaEvaluationScope, FORMULA_VARIABLE_PROTECTED_KEYS,
 // and MATRIX_VARIABLE_PROTECTED_KEYS are imported from shared/pbv2/formulaScope.ts.
 
+function inferFormulaQuantityBasis(formula: string): string {
+  const normalized = String(formula || "").toLowerCase();
+  if (/\bcomputed_sheets\b/.test(normalized)) return "computed_sheets";
+  if (/\bsheet_count\b/.test(normalized)) return "sheet_count";
+  if (/\bbilled_sheet_sqft\b/.test(normalized)) return "billed_sheet_sqft";
+  if (/\bbilled_sheets\b/.test(normalized)) return "billed_sheets";
+  if (/\btotal_finished_sqft\b/.test(normalized)) return "total_finished_sqft";
+  if (/\bfinished_sqft\b/.test(normalized)) return "finished_sqft";
+  if (/\btotal_sqft\b/.test(normalized)) return "total_sqft";
+  if (/\bsqft\b/.test(normalized)) return "sqft";
+  if (/\bsheet_consumption_sqft\s*\(/.test(normalized)) return "sheet_consumption_sqft";
+  return "unknown";
+}
+
 function inferFormulaApplication(formula: string): 'unitPrice' | 'totalPrice' | 'unknown' {
   const normalized = String(formula || '').toLowerCase();
   if (!normalized.trim()) return 'unknown';
-  if (/\b(quantity|q|total_sqft)\b/.test(normalized)) {
+  if (/\b(quantity|q|total_sqft|total_finished_sqft|computed_sheets|billed_sheets|sheet_count|billed_sheet_sqft)\b/.test(normalized) || /\bsheet_consumption_sqft\s*\(/.test(normalized)) {
     return 'totalPrice';
   }
   return 'unitPrice';

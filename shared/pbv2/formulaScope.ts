@@ -30,6 +30,13 @@ export const FORMULA_VARIABLE_PROTECTED_KEYS = new Set([
   "p",
   "sqft",
   "total_sqft",
+  "finished_sqft",
+  "total_finished_sqft",
+  "computed_sheets",
+  "billed_sheets",
+  "sheet_count",
+  "sheet_sqft",
+  "billed_sheet_sqft",
   "linear_feet",
   "finished_width",
   "fw",
@@ -60,6 +67,13 @@ export const MATRIX_VARIABLE_PROTECTED_KEYS = new Set([
   "effective_base_price",
   "sqft",
   "total_sqft",
+  "finished_sqft",
+  "total_finished_sqft",
+  "computed_sheets",
+  "billed_sheets",
+  "sheet_count",
+  "sheet_sqft",
+  "billed_sheet_sqft",
   "linear_feet",
   "finished_width",
   "fw",
@@ -89,8 +103,13 @@ export function buildFormulaScope(input: {
   sqftPerItem: number;
   totalSqft: number;
   linearFeet: number;
+  computedSheets?: number | null;
+  billedSheets?: number | null;
+  sheetCount?: number | null;
+  sheetSqft?: number | null;
+  billedSheetSqft?: number | null;
 }): Record<string, number | string | boolean | null> {
-  return {
+  const scope: Record<string, number | string | boolean | null> = {
     width: input.orderedWidthIn,
     w: input.orderedWidthIn,
     ordered_width: input.orderedWidthIn,
@@ -118,8 +137,27 @@ export function buildFormulaScope(input: {
     p: input.baseRatePerSqft,
     sqft: input.sqftPerItem,
     total_sqft: input.totalSqft,
+    finished_sqft: input.sqftPerItem,
+    total_finished_sqft: input.totalSqft,
     linear_feet: input.linearFeet,
   };
+
+  const sheetYieldEntries: Array<[string, number | null | undefined]> = [
+    ["computed_sheets", input.computedSheets],
+    ["billed_sheets", input.billedSheets],
+    ["sheet_count", input.sheetCount],
+    ["sheet_sqft", input.sheetSqft],
+    ["billed_sheet_sqft", input.billedSheetSqft],
+  ];
+
+  for (const [key, value] of sheetYieldEntries) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      scope[key] = numeric;
+    }
+  }
+
+  return scope;
 }
 
 /**

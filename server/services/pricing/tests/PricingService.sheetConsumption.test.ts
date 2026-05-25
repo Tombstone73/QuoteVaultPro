@@ -58,6 +58,48 @@ function makeMatrixBasePriceTree(basePrice: number) {
   };
 }
 
+function makeRowTierBasisTree(tierBasis: "computed_sheet_usage" | "line_item_quantity") {
+  return {
+    ...makeTree(200),
+    rootNodeIds: ["rate"],
+    pricingMatrix: {
+      dimensions: ["rate"],
+      rows: [
+        {
+          id: "standard",
+          when: { rate: "standard" },
+          tierBasis,
+          qtyTiers: [
+            { id: "sheet_1", label: "1+ sheet", minQty: 1, perSqftCents: 132 },
+            { id: "sheet_10", label: "10+ raw qty", minQty: 10, perSqftCents: 100 },
+          ],
+        },
+      ],
+    },
+    nodes: {
+      rate: {
+        id: "rate",
+        kind: "question" as const,
+        label: "Rate",
+        input: { type: "select" as const, selectionKey: "rate" },
+        choices: [
+          { value: "standard", label: "Standard" },
+        ],
+      },
+    },
+    meta: {
+      pricingV2: { base: { perSqftCents: 200 } },
+      formulaVariables: {
+        sheet_width: 48,
+        sheet_length: 96,
+        usable_drop_min: 24,
+        billable_length_increment: 12,
+        minimum_billable_sqft: 3,
+      },
+    },
+  };
+}
+
 function runFormula(formula: string, w = 24, h = 36, q = 1) {
   return evaluatePricingPreviewFromTree({
     treeJson: makeTree(),
@@ -357,6 +399,132 @@ describe("sheet_consumption_sqft", () => {
     expect(result.debug?.pricing?.finalTotalSource).toBe("formula");
     expect(result.debug?.pricing?.formulaEvaluatedTotal).toBeCloseTo(41.4, 2);
     expect(result.totalPrice).not.toBe(30);
+  });
+
+  test("row-level computed sheet usage selects the min qty 1 tier for 24x18 q10", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeRowTierBasisTree("computed_sheet_usage"),
+      widthIn: 24,
+      heightIn: 18,
+      quantity: 10,
+      pbv2ExplicitSelections: { rate: { value: "standard" } },
+      pricingFormulaOverride: "total_finished_sqft * base_price",
+      debug: true,
+    });
+
+    expect(result.debug?.tierResolution?.rawItemQuantity).toBe(10);
+    expect(result.debug?.tierResolution?.tierBasis).toBe("computed_sheet_usage");
+    expect(result.debug?.tierResolution?.tierBasisResolvedFrom).toBe("matrix_row");
+    expect(result.debug?.tierResolution?.computedSheetUsage).toBe(1);
+    expect(result.debug?.tierResolution?.tierSelectionQuantity).toBe(1);
+    expect(result.debug?.tierResolution?.selectedTierMinQty).toBe(1);
+    expect(result.debug?.tierResolution?.selectedTierRate).toBe(1.32);
+    expect(result.debug?.tierResolution?.selectedTierSource).toBe("matrix_row");
+    expect(result.debug?.variables.computed_sheets).toBe(1);
+    expect(result.debug?.variables.billed_sheet_sqft).toBe(32);
+    expect(result.totalPrice).toBeCloseTo(39.6, 2);
+  });
+
+  test("row-level computed sheet usage selects the min qty 1 tier for 24x18 q9", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeRowTierBasisTree("computed_sheet_usage"),
+      widthIn: 24,
+      heightIn: 18,
+      quantity: 9,
+      pbv2ExplicitSelections: { rate: { value: "standard" } },
+      pricingFormulaOverride: "total_finished_sqft * base_price",
+      debug: true,
+    });
+
+    expect(result.debug?.tierResolution?.computedSheetUsage).toBe(1);
+    expect(result.debug?.tierResolution?.tierSelectionQuantity).toBe(1);
+    expect(result.debug?.tierResolution?.selectedTierMinQty).toBe(1);
+    expect(result.debug?.tierResolution?.selectedTierRate).toBe(1.32);
+  });
+
+  test("row-level raw item quantity still selects the qty 10 tier when configured", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeRowTierBasisTree("line_item_quantity"),
+      widthIn: 24,
+      heightIn: 18,
+      quantity: 10,
+      pbv2ExplicitSelections: { rate: { value: "standard" } },
+      pricingFormulaOverride: "total_finished_sqft * base_price",
+      debug: true,
+    });
+
+    expect(result.debug?.tierResolution?.tierBasis).toBe("line_item_quantity");
+    expect(result.debug?.tierResolution?.tierSelectionQuantity).toBe(10);
+    expect(result.debug?.tierResolution?.selectedTierMinQty).toBe(10);
+    expect(result.debug?.tierResolution?.selectedTierRate).toBe(1);
+    expect(result.totalPrice).toBeCloseTo(30, 2);
+  });
+
+  test("billed sheet sqft formula returns billed-sheet pricing", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeTree(),
+      widthIn: 24,
+      heightIn: 18,
+      quantity: 10,
+      pricingFormulaOverride: "billed_sheet_sqft * sqft_rate",
+      formulaVariables: {
+        sheet_width: 48,
+        sheet_length: 96,
+        usable_drop_min: 24,
+        billable_length_increment: 12,
+        minimum_billable_sqft: 3,
+        sqft_rate: 1.375,
+      },
+      debug: true,
+    });
+
+    expect(result.debug?.variables.computed_sheets).toBe(1);
+    expect(result.debug?.variables.billed_sheet_sqft).toBe(32);
+    expect(result.debug?.quantityBasisUsed).toBe("billed_sheet_sqft");
+    expect(result.debug?.formulaResultType).toBe("final_dollars");
+    expect(result.totalPrice).toBeCloseTo(44, 2);
+  });
+
+  test("computed sheets formula returns sheet-count pricing", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeTree(),
+      widthIn: 24,
+      heightIn: 18,
+      quantity: 10,
+      pricingFormulaOverride: "computed_sheets * sheet_price",
+      formulaVariables: {
+        sheet_width: 48,
+        sheet_length: 96,
+        usable_drop_min: 24,
+        billable_length_increment: 12,
+        minimum_billable_sqft: 3,
+        sheet_price: 44,
+      },
+      debug: true,
+    });
+
+    expect(result.debug?.variables.computed_sheets).toBe(1);
+    expect(result.debug?.quantityBasisUsed).toBe("computed_sheets");
+    expect(result.debug?.formulaResultType).toBe("final_dollars");
+    expect(result.totalPrice).toBeCloseTo(44, 2);
+  });
+
+  test("missing computed sheet usage emits a warning instead of silently hiding fallback", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: {
+        ...makeRowTierBasisTree("computed_sheet_usage"),
+        meta: { pricingV2: { base: { perSqftCents: 200 } } },
+      },
+      widthIn: 24,
+      heightIn: 18,
+      quantity: 10,
+      pbv2ExplicitSelections: { rate: { value: "standard" } },
+      pricingFormulaOverride: "total_finished_sqft * base_price",
+      debug: true,
+    });
+
+    expect(result.debug?.tierResolution?.fallbackToLineItemQuantity).toBe(true);
+    expect(result.debug?.tierResolution?.warnings?.some((warning) => warning.code === "PBV2_TIER_COMPUTED_SHEET_USAGE_UNAVAILABLE")).toBe(true);
   });
 });
 

@@ -15,6 +15,13 @@ export type CanonicalPricingVariableKey =
   | "finished_height"
   | "sqft"
   | "total_sqft"
+  | "finished_sqft"
+  | "total_finished_sqft"
+  | "computed_sheets"
+  | "billed_sheets"
+  | "sheet_count"
+  | "sheet_sqft"
+  | "billed_sheet_sqft"
   | "q"
   | "linear_feet";
 
@@ -145,6 +152,62 @@ export const PBV2_PRICING_VARIABLES: PricingVariableDefinition[] = [
     label: "Total SqFt",
     description: "Canonical billing geometry total square footage: sqft × quantity.",
     example: 24,
+    category: "Derived",
+    aliases: [],
+  },
+  {
+    key: "finished_sqft",
+    label: "Finished SqFt",
+    description: "Finished square footage for one item. Same value as sqft; included to make formula basis explicit.",
+    example: 3,
+    category: "Derived",
+    aliases: [],
+  },
+  {
+    key: "total_finished_sqft",
+    label: "Total Finished SqFt",
+    description: "Finished square footage across all pieces. Same value as total_sqft; included to make formula basis explicit.",
+    example: 30,
+    category: "Derived",
+    aliases: [],
+  },
+  {
+    key: "computed_sheets",
+    label: "Computed Sheets",
+    description: "Computed sheet usage for the current dimensions and quantity. Use for sheet-count pricing formulas.",
+    example: 1,
+    category: "Derived",
+    aliases: [],
+  },
+  {
+    key: "billed_sheets",
+    label: "Billed Sheets",
+    description: "Billed sheet-equivalent quantity derived from sheet yield settings.",
+    example: 1,
+    category: "Derived",
+    aliases: [],
+  },
+  {
+    key: "sheet_count",
+    label: "Sheet Count",
+    description: "Whole or computed sheet count exposed for sheet-count pricing.",
+    example: 1,
+    category: "Derived",
+    aliases: [],
+  },
+  {
+    key: "sheet_sqft",
+    label: "Sheet SqFt",
+    description: "Production sheet area in square feet, such as 48 x 96 / 144 = 32.",
+    example: 32,
+    category: "Derived",
+    aliases: [],
+  },
+  {
+    key: "billed_sheet_sqft",
+    label: "Billed Sheet SqFt",
+    description: "Billable sheet-yield square footage. Use billed_sheet_sqft * base_price for sheet-yield sqft pricing.",
+    example: 32,
     category: "Derived",
     aliases: [],
   },
