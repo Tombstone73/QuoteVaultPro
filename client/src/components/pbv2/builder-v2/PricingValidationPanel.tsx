@@ -60,6 +60,7 @@ type PricingPreviewResponse = {
     formulaRaw: string;
     formulaResolved?: string;
     variables: Record<string, number | string | boolean | null>;
+    variableSources?: Record<string, string>;
     resultValue?: number;
     appliedAs?: "unitPrice" | "totalPrice" | "unknown";
     steps?: Array<{ label: string; value: number | string }>;
@@ -108,6 +109,7 @@ type PricingPreviewResponse = {
       resolvedFormulaExpression?: string;
       manualFormulaPresent?: boolean;
       manualFormulaIgnored?: boolean;
+      variableSources?: Record<string, string>;
     };
     formulaEvaluatedTotal?: number | null;
     pbv2BaseTotal?: number;
@@ -1204,6 +1206,14 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       <div><span className="text-slate-400">Resolved formula expression:</span> <span className="font-mono">{formulaDebug.resolvedFormulaExpression ?? "—"}</span></div>
                       <div><span className="text-slate-400">Manual formula present:</span> <span className="font-mono">{formulaDebug.manualFormulaPresent ? "true" : "false"}</span></div>
                       <div><span className="text-slate-400">Manual formula ignored:</span> <span className="font-mono">{formulaDebug.manualFormulaIgnored ? "true" : "false"}</span></div>
+                      {["sheet_width", "sheet_length", "usable_drop_min", "billable_length_increment", "minimum_billable_sqft"].map((key) => (
+                        <div key={key}>
+                          <span className="text-slate-400">{key}:</span>{" "}
+                          <span className="font-mono">{String(formulaDebug.variables?.[key] ?? "—")}</span>
+                          <span className="text-slate-500"> via </span>
+                          <span className="font-mono">{formulaDebug.variableSources?.[key] ?? "—"}</span>
+                        </div>
+                      ))}
                       {formulaDebug.formulaResolved ? (
                         <div><span className="text-slate-400">Formula resolved:</span> <span className="font-mono">{formulaDebug.formulaResolved}</span></div>
                       ) : null}

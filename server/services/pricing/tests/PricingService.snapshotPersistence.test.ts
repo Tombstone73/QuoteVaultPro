@@ -9,7 +9,16 @@ const organizationId = `org_pbv2_snapshot_${suffix}`;
 const productId = `prod_pbv2_snapshot_${suffix}`;
 const treeVersionId = `tree_pbv2_snapshot_${suffix}`;
 const pricingFormulaId = `formula_pbv2_snapshot_${suffix}`;
-const COROPLAST_4X8_FORMULA = "sheet_consumption_sqft(w, h, q, 48, 96, 24, 12, 3) * base_price";
+const COROPLAST_4X8_FORMULA = "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price";
+const COROPLAST_4X8_FORMULA_CONFIG = {
+  variables: {
+    sheet_width: 48,
+    sheet_length: 96,
+    usable_drop_min: 0,
+    billable_length_increment: 1,
+    minimum_billable_sqft: 32,
+  },
+};
 
 function makeAcmTree(matrixBasePriceForDouble = 575, base: Record<string, number> = { perSqftCents: 100 }) {
   return {
@@ -168,12 +177,13 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
         ${"Bills Coroplast by consumed 4x8 sheet area"},
         ${"default"},
         ${COROPLAST_4X8_FORMULA},
-        ${null}::jsonb,
+        ${JSON.stringify(COROPLAST_4X8_FORMULA_CONFIG)}::jsonb,
         true
       )
       on conflict (id) do update
       set expression = excluded.expression,
-          pricing_profile_key = excluded.pricing_profile_key
+          pricing_profile_key = excluded.pricing_profile_key,
+          config = excluded.config
     `);
 
     await db.execute(sql`
@@ -216,6 +226,9 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.finalTotal).toBe(44);
     expect(result.pbv2SnapshotJson.pricingSystem).toBe("pbv2");
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.pricingSystem).toBe("pbv2");
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaVariables.sheet_width).toBe(48);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaVariableSources?.sheet_width).toBe("formula_library.config.variables");
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaVariables.minimum_billable_sqft).toBe(32);
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaVariables.computed_sheets).toBe(1);
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaVariables.billed_sheet_sqft).toBe(32);
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.sheetYield?.billedSheetSqft).toBe(32);

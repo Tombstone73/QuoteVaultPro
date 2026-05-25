@@ -46,7 +46,7 @@ import {
   type Pbv2TierResolution,
   type Pbv2TierResolutionWarning,
 } from '../../../shared/pbv2/pricingAdapter';
-import { sheetConsumptionSqft } from '../../../shared/pbv2/formulaHelpers';
+import { extractFormulaVariables, sheetConsumptionSqft } from '../../../shared/pbv2/formulaHelpers';
 import { buildNumericSelectionFormulaVariables } from '../../../shared/pbv2/numericSelectionFormulaVariables';
 import {
   collectPbv2WeightMaterialIds,
@@ -124,6 +124,7 @@ export type PBV2RuntimePricingSnapshot = {
   manualFormulaPresent?: boolean;
   manualFormulaIgnored?: boolean;
   formulaVariables: Record<string, number | string | boolean | null>;
+  formulaVariableSources?: Record<string, string>;
   rawSelections: Record<string, any>;
   effectiveSelections: Record<string, any>;
   resolvedMatrixRowId?: string;
@@ -218,6 +219,7 @@ export type PricingPreviewEvaluationResult = {
     formulaRaw: string;
     formulaResolved?: string;
     variables: Record<string, number | string | boolean | null>;
+    variableSources?: Record<string, string>;
     resultValue?: number;
     appliedAs?: 'unitPrice' | 'totalPrice' | 'unknown';
     steps?: Array<{ label: string; value: number | string }>;
@@ -515,10 +517,6 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     treeJson: treeVersion.treeJson,
     selections: ruleValidatedSelections.selected,
   });
-  const formulaVariablesForPricing = {
-    ...resolveSnapshotFormulaVariables(treeVersion.treeJson, product),
-    ...selectionFormulaVariables,
-  };
   const treeFormulaForPricing = typeof (treeVersion.treeJson as any)?.meta?.pricingFormula === "string"
     ? String((treeVersion.treeJson as any).meta.pricingFormula).trim()
     : "";
@@ -535,6 +533,14 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     : productFormulaSourceMode === "manual"
       ? (productFormulaForPricing || treeFormulaForPricing || null)
       : (treeFormulaForPricing || productFormulaForPricing || null);
+  const formulaVariableResolution = resolveFormulaVariablesForPricing({
+    treeJson: treeVersion.treeJson,
+    product,
+    pricingFormulaLibrary,
+    pricingFormulaExpression: pricingFormulaExpressionForSheetYield,
+    selectionFormulaVariables,
+  });
+  const formulaVariablesForPricing = formulaVariableResolution.variables;
 
   const runtimeSelectionContext = pbv2ToRuntimeSelectionContext(
     treeVersion.treeJson as any,
@@ -598,6 +604,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     formulaSourceMode: product.pricingEngine,
     pricingFormulaLibrary,
     formulaVariables: formulaVariablesForPricing,
+    formulaVariableSources: formulaVariableResolution.sources,
     pricingMatrixVariables: pricingMatrixVariablesForFormula,
   });
   const basePriceCents = formulaBasePrice.basePriceCents;
@@ -783,10 +790,6 @@ export function evaluatePricingPreviewFromTree(input: {
     treeJson: input.treeJson,
     selections: ruleValidatedSelections.selected,
   });
-  const formulaVariablesForPricing = {
-    ...(input.formulaVariables ?? {}),
-    ...selectionFormulaVariables,
-  };
   const treeFormulaForPricing = typeof input.treeJson?.meta?.pricingFormula === "string"
     ? String(input.treeJson.meta.pricingFormula).trim()
     : "";
@@ -800,6 +803,14 @@ export function evaluatePricingPreviewFromTree(input: {
     : previewFormulaSourceMode === "manual"
       ? ((typeof input.pricingFormulaOverride === "string" ? input.pricingFormulaOverride.trim() : "") || treeFormulaForPricing || null)
       : (treeFormulaForPricing || null);
+  const formulaVariableResolution = resolveFormulaVariablesForPricing({
+    treeJson: input.treeJson,
+    pricingFormulaLibrary: input.pricingFormulaLibrary,
+    pricingFormulaExpression: pricingFormulaExpressionForSheetYield,
+    explicitFormulaVariables: input.formulaVariables,
+    selectionFormulaVariables,
+  });
+  const formulaVariablesForPricing = formulaVariableResolution.variables;
   const runtimeSelectionContext = pbv2ToRuntimeSelectionContext(
     input.treeJson as any,
     ruleValidatedSelections.selected,
@@ -854,6 +865,7 @@ export function evaluatePricingPreviewFromTree(input: {
       formulaSourceMode: input.formulaSourceMode,
       pricingFormulaLibrary: input.pricingFormulaLibrary ?? null,
       formulaVariables: formulaVariablesForPricing,
+      formulaVariableSources: formulaVariableResolution.sources,
       pricingMatrixVariables: pricingMatrixVariablesForFormula,
     });
   } catch (error: any) {
@@ -956,6 +968,7 @@ export function evaluatePricingPreviewFromTree(input: {
       formulaRaw: formulaDebug.formulaRaw,
       formulaResolved: formulaDebug.formulaResolved,
       variables: formulaDebug.variables,
+      variableSources: formulaDebug.variableSources,
       resultValue: formulaDebug.resultValue,
       appliedAs: formulaDebug.appliedAs,
       steps: formulaDebug.steps,
@@ -1301,7 +1314,13 @@ async function loadProductPricingFormulaLibrary(organizationId: string, product:
   if (!pricingFormulaId) return null;
 
   const [formula] = await db
-    .select({ id: pricingFormulas.id, name: pricingFormulas.name, expression: pricingFormulas.expression })
+    .select({
+      id: pricingFormulas.id,
+      name: pricingFormulas.name,
+      code: pricingFormulas.code,
+      expression: pricingFormulas.expression,
+      config: pricingFormulas.config,
+    })
     .from(pricingFormulas)
     .where(and(eq(pricingFormulas.id, pricingFormulaId), eq(pricingFormulas.organizationId, organizationId)))
     .limit(1);
@@ -1310,7 +1329,9 @@ async function loadProductPricingFormulaLibrary(organizationId: string, product:
     return {
       id: formula.id,
       name: formula.name,
+      code: formula.code,
       expression: formula.expression,
+      config: formula.config as any,
     };
   }
 
@@ -2407,7 +2428,22 @@ type ResolvedFormulaSource = "library" | "manual" | "tree_meta" | "product" | "p
 type PricingFormulaLibraryResolution = {
   id: string;
   name?: string | null;
+  code?: string | null;
   expression: string;
+  config?: Record<string, any> | null;
+};
+
+type FormulaVariableResolution = {
+  variables: Record<string, number>;
+  sources: Record<string, string>;
+};
+
+const SHEET_CONSUMPTION_SAFE_DEFAULTS: Record<string, number> = {
+  sheet_width: 48,
+  sheet_length: 96,
+  usable_drop_min: 0,
+  billable_length_increment: 1,
+  minimum_billable_sqft: 32,
 };
 
 type FormulaSourceResolution = {
@@ -2429,6 +2465,89 @@ function normalizeFormulaSourceMode(value: unknown, hasLibraryFormula: boolean, 
   if (hasLibraryFormula) return "library";
   if (hasManualFormula) return "manual";
   return "profile";
+}
+
+function numericRecord(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+
+  const out: Record<string, number> = {};
+  for (const [key, rawValue] of Object.entries(value as Record<string, unknown>)) {
+    const numeric = Number(rawValue);
+    if (key && Number.isFinite(numeric)) out[key] = numeric;
+  }
+  return out;
+}
+
+function formulaReferencesSheetDefaultVariables(expression: string | null | undefined): boolean {
+  if (!expression || typeof expression !== "string") return false;
+  return /\bsheet_consumption_sqft\s*\(/i.test(expression)
+    || Object.keys(SHEET_CONSUMPTION_SAFE_DEFAULTS).some((key) => new RegExp(`\\b${key}\\b`).test(expression));
+}
+
+function mergeFormulaVariables(
+  target: FormulaVariableResolution,
+  source: Record<string, number> | undefined,
+  sourceLabel: string,
+): void {
+  if (!source) return;
+  for (const [key, value] of Object.entries(source)) {
+    if (!key || !Number.isFinite(Number(value))) continue;
+    target.variables[key] = Number(value);
+    target.sources[key] = sourceLabel;
+  }
+}
+
+function resolveFormulaLibraryDefaultVariables(library: PricingFormulaLibraryResolution | null | undefined): Record<string, number> {
+  if (!library?.config || typeof library.config !== "object" || Array.isArray(library.config)) return {};
+  return extractFormulaVariables(library.config);
+}
+
+function resolveProductFormulaVariables(treeJson: any, product?: any): FormulaVariableResolution {
+  const meta = treeJson?.meta && typeof treeJson.meta === "object" ? treeJson.meta : {};
+  const pricingProfileConfig = product?.pricingProfileConfig && typeof product.pricingProfileConfig === "object"
+    ? product.pricingProfileConfig
+    : {};
+  const resolved: FormulaVariableResolution = { variables: {}, sources: {} };
+
+  mergeFormulaVariables(resolved, numericRecord((pricingProfileConfig as any).formulaVariables), "product.pricingProfileConfig.formulaVariables");
+  mergeFormulaVariables(resolved, numericRecord((meta as any).pricingFormulaVariables), "tree.meta.pricingFormulaVariables");
+  mergeFormulaVariables(resolved, numericRecord((meta as any).formulaVariables), "tree.meta.formulaVariables");
+
+  return resolved;
+}
+
+function resolveFormulaVariablesForPricing(input: {
+  treeJson: any;
+  product?: any;
+  pricingFormulaLibrary?: PricingFormulaLibraryResolution | null;
+  pricingFormulaExpression?: string | null;
+  explicitFormulaVariables?: Record<string, number>;
+  selectionFormulaVariables?: Record<string, number>;
+}): FormulaVariableResolution {
+  const resolved: FormulaVariableResolution = { variables: {}, sources: {} };
+
+  if (formulaReferencesSheetDefaultVariables(input.pricingFormulaExpression)) {
+    mergeFormulaVariables(resolved, SHEET_CONSUMPTION_SAFE_DEFAULTS, "safe.sheet_consumption_defaults");
+  }
+
+  mergeFormulaVariables(
+    resolved,
+    resolveFormulaLibraryDefaultVariables(input.pricingFormulaLibrary),
+    "formula_library.config.variables",
+  );
+
+  const productVariables = resolveProductFormulaVariables(input.treeJson, input.product);
+  mergeFormulaVariables(resolved, productVariables.variables, "product_or_tree.formulaVariables");
+  for (const [key, source] of Object.entries(productVariables.sources)) {
+    if (Object.prototype.hasOwnProperty.call(productVariables.variables, key)) {
+      resolved.sources[key] = source;
+    }
+  }
+
+  mergeFormulaVariables(resolved, input.explicitFormulaVariables, "preview.formulaVariables");
+  mergeFormulaVariables(resolved, input.selectionFormulaVariables, "pbv2.numericSelection");
+
+  return resolved;
 }
 
 function resolveFormulaSource(input: {
@@ -2649,6 +2768,7 @@ function calculateFormulaAwareBasePrice(input: {
   formulaSourceMode?: FormulaSourceMode | "formulaLibrary" | "pricingFormula" | "pricingProfile" | null;
   pricingFormulaLibrary?: PricingFormulaLibraryResolution | null;
   formulaVariables?: Record<string, number>;
+  formulaVariableSources?: Record<string, string>;
   pricingMatrixVariables?: Record<string, number>;
 }): FormulaAwareBasePriceResult {
   const baseDetails = input.baseDetails;
@@ -2708,6 +2828,7 @@ function calculateFormulaAwareBasePrice(input: {
     linearFeet: baseDetails.linearFeet,
     sheetYieldMetrics: baseDetails.sheetYieldMetrics,
     formulaVariables,
+    formulaVariableSources: input.formulaVariableSources,
     pricingMatrixVariables: input.pricingMatrixVariables,
   });
   formulaDebug.formulaSourceMode = sourceResolution.mode;
@@ -2782,6 +2903,7 @@ function calculateFormulaAwareBasePrice(input: {
     linearFeet: baseDetails.linearFeet,
     sheetYieldMetrics: baseDetails.sheetYieldMetrics,
     formulaVariables,
+    formulaVariableSources: input.formulaVariableSources,
     pricingMatrixVariables: input.pricingMatrixVariables,
   });
 
@@ -3009,6 +3131,7 @@ function buildRuntimePricingSnapshot(input: {
     manualFormulaPresent: formulaDebug.manualFormulaPresent,
     manualFormulaIgnored: formulaDebug.manualFormulaIgnored,
     formulaVariables: formulaDebug.variables,
+    formulaVariableSources: formulaDebug.variableSources,
     rawSelections: toPlainSelectionValues(input.rawSelections),
     effectiveSelections: toPlainSelectionValues(input.effectiveSelections),
     selectedOptionValues: toPlainSelectionValues(input.effectiveSelections),
@@ -3056,6 +3179,40 @@ function getTrimAllowancesInches(tree: any): { trimAllowanceX: number; trimAllow
   return { trimAllowanceX, trimAllowanceY };
 }
 
+function buildFormulaVariableSourceDebug(input: {
+  scope: Record<string, number | string | boolean | null>;
+  formulaVariables?: Record<string, number>;
+  formulaVariableSources?: Record<string, string>;
+  pricingMatrixVariables?: Record<string, number>;
+  formulaScope: Record<string, number | string | boolean | null>;
+}): Record<string, string> {
+  const sources: Record<string, string> = {};
+  for (const key of Object.keys(input.scope)) {
+    sources[key] = "runtime";
+  }
+
+  for (const [key, value] of Object.entries(input.formulaVariables ?? {})) {
+    if (FORMULA_VARIABLE_PROTECTED_KEYS.has(key)) continue;
+    if (!Number.isFinite(Number(value))) continue;
+    sources[key] = input.formulaVariableSources?.[key] ?? "formulaVariables";
+  }
+
+  for (const [key, value] of Object.entries(input.pricingMatrixVariables ?? {})) {
+    if (MATRIX_VARIABLE_PROTECTED_KEYS.has(key)) continue;
+    if (!Number.isFinite(Number(value))) continue;
+    sources[key] = "pricing_matrix.variables";
+  }
+
+  const finalBasePrice = input.formulaScope.base_price;
+  if (typeof finalBasePrice === "number") {
+    for (const alias of ["p", "basePricePerSqft", "pricePerSqft", "price", "unitPrice"]) {
+      sources[alias] = sources.base_price ?? sources[alias] ?? "runtime";
+    }
+  }
+
+  return sources;
+}
+
 function evaluatePreviewFormulaToCents(input: {
   formula: string;
   orderedWidthIn: number;
@@ -3074,6 +3231,7 @@ function evaluatePreviewFormulaToCents(input: {
   linearFeet: number;
   sheetYieldMetrics?: SheetYieldMetrics;
   formulaVariables?: Record<string, number>;
+  formulaVariableSources?: Record<string, string>;
   pricingMatrixVariables?: Record<string, number>;
 }): {
   resultValue: number;
@@ -3102,6 +3260,13 @@ function evaluatePreviewFormulaToCents(input: {
     scope,
     formulaVariables: input.formulaVariables,
     pricingMatrixVariables: input.pricingMatrixVariables,
+  });
+  const variableSources = buildFormulaVariableSourceDebug({
+    scope,
+    formulaVariables: input.formulaVariables,
+    formulaVariableSources: input.formulaVariableSources,
+    pricingMatrixVariables: input.pricingMatrixVariables,
+    formulaScope,
   });
   // Use the scope-resolved base_price (matrix may have overridden the tiered fallback).
   const resolvedBaseRate = typeof formulaScope.base_price === 'number' ? formulaScope.base_price : input.baseRatePerSqft;
@@ -3173,6 +3338,7 @@ function evaluatePreviewFormulaToCents(input: {
       formulaRaw: input.formula,
       formulaResolved,
       variables: formulaScope,
+      variableSources,
       appliedAs,
       steps,
       errors: formulaError.details,
@@ -3203,6 +3369,7 @@ function evaluatePreviewFormulaToCents(input: {
       formulaRaw: input.formula,
       formulaResolved,
       variables: formulaScope,
+      variableSources,
       appliedAs,
       steps,
       errors: formulaError.details,
@@ -3250,6 +3417,7 @@ function evaluatePreviewFormulaToCents(input: {
       formulaRaw: input.formula,
       formulaResolved,
       variables: formulaScope,
+      variableSources,
       appliedAs,
       steps,
       errors: [{ code: errorCode, message }],
@@ -3279,6 +3447,7 @@ function buildBaseFormulaDebugContext(input: {
   linearFeet: number;
   sheetYieldMetrics?: SheetYieldMetrics;
   formulaVariables?: Record<string, number>;
+  formulaVariableSources?: Record<string, string>;
   pricingMatrixVariables?: Record<string, number>;
 }): NonNullable<PricingPreviewEvaluationResult['debug']> {
   const scope = buildFormulaScope({
@@ -3308,6 +3477,13 @@ function buildBaseFormulaDebugContext(input: {
     formulaVariables: input.formulaVariables,
     pricingMatrixVariables: input.pricingMatrixVariables,
   });
+  const variableSources = buildFormulaVariableSourceDebug({
+    scope,
+    formulaVariables: input.formulaVariables,
+    formulaVariableSources: input.formulaVariableSources,
+    pricingMatrixVariables: input.pricingMatrixVariables,
+    formulaScope: variables,
+  });
   // Read the resolved base_price after matrix overrides (may differ from input.baseRatePerSqft).
   const resolvedBaseRate = typeof variables.base_price === 'number' ? variables.base_price : input.baseRatePerSqft;
 
@@ -3316,6 +3492,7 @@ function buildBaseFormulaDebugContext(input: {
     formulaRaw: input.formulaRaw,
     formulaResolved: input.formulaRaw ? resolveFormulaAliases(input.formulaRaw) : undefined,
     variables,
+    variableSources,
     appliedAs: input.formulaRaw ? inferFormulaApplication(input.formulaRaw) : 'unknown',
     steps: [
       { label: 'ordered_w*ordered_h', value: input.orderedWidthIn * input.orderedHeightIn },

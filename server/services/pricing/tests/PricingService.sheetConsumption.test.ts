@@ -349,7 +349,7 @@ describe("sheet_consumption_sqft", () => {
   });
 
   test("formula library mode ignores stale manual formula text and uses library expression", () => {
-    const libraryExpression = "sheet_consumption_sqft(w, h, q, 48, 96, 24, 12, 3) * base_price";
+    const libraryExpression = "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price";
     const result = evaluatePricingPreviewFromTree({
       treeJson: makeMatrixBasePriceTree(1.375),
       widthIn: 24,
@@ -361,6 +361,15 @@ describe("sheet_consumption_sqft", () => {
         id: "formula_4x8",
         name: "4x8 Sheets with rounding",
         expression: libraryExpression,
+        config: {
+          variables: {
+            sheet_width: 48,
+            sheet_length: 96,
+            usable_drop_min: 0,
+            billable_length_increment: 1,
+            minimum_billable_sqft: 32,
+          },
+        },
       },
       manualFormulaText: "total_sqft * base_price",
       debug: true,
@@ -379,6 +388,13 @@ describe("sheet_consumption_sqft", () => {
     expect(result.debug?.errors).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "PBV2_W_LIBRARY_FORMULA_DETACHED" }),
     ]));
+    expect(result.debug?.variables.sheet_width).toBe(48);
+    expect(result.debug?.variableSources?.sheet_width).toBe("formula_library.config.variables");
+    expect(result.debug?.variables.sheet_length).toBe(96);
+    expect(result.debug?.variableSources?.sheet_length).toBe("formula_library.config.variables");
+    expect(result.debug?.variables.usable_drop_min).toBe(0);
+    expect(result.debug?.variables.billable_length_increment).toBe(1);
+    expect(result.debug?.variables.minimum_billable_sqft).toBe(32);
     expect(result.debug?.variables.computed_sheets).toBe(1);
     expect(result.debug?.variables.billed_sheet_sqft).toBe(32);
   });
