@@ -99,7 +99,6 @@ function resolveMatrixVariableValue(key: string, rawValue: unknown): number {
   const value = Number(rawValue);
   if (
     isProductOptionPricingMatrixCurrencyVariable(key) &&
-    Number.isInteger(value) &&
     Math.abs(value) >= 100
   ) {
     return value / 100;

@@ -222,6 +222,10 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.manualFormulaIgnored).toBe(true);
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.calculatedPrice).toBe(44);
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaEvaluatedTotal).toBe(44);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.rawBasePrice).toBe(1.375);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.evaluatedFormulaTotalRaw).toBe(44);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.evaluatedFormulaTotalRounded).toBe(44);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.roundingAppliedAt).toBe("final_currency_total");
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.finalTotalSource).toBe("formula");
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.finalTotal).toBe(44);
     expect(result.pbv2SnapshotJson.pricingSystem).toBe("pbv2");

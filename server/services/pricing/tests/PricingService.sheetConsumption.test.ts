@@ -814,6 +814,71 @@ describe("sheet_consumption_sqft", () => {
     expect(result.totalPrice).not.toBe(10);
   });
 
+  test("high-precision row tier rate evaluates 32 sqft at 1.375 as 44.00", () => {
+    const tree = makeRowTierBasisTree(
+      "computed_sheet_usage",
+      { base_price: 0 },
+      {
+        sheet_width: 48,
+        sheet_length: 96,
+        usable_drop_min: 0,
+        billable_length_increment: 1,
+        minimum_billable_sqft: 32,
+      },
+    ) as any;
+    tree.pricingMatrix.rows[0].qtyTiers[0].perSqftCents = 137.5;
+
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: tree,
+      widthIn: 24,
+      heightIn: 18,
+      quantity: 10,
+      pbv2ExplicitSelections: { rate: { value: "standard" } },
+      pricingFormulaOverride: "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price",
+      debug: true,
+    });
+
+    expect(result.debug?.tierResolution?.selectedTierRate).toBe(1.375);
+    expect(result.debug?.variables.base_price).toBe(1.375);
+    expect(result.debug?.variables.p).toBe(1.375);
+    expect(result.debug?.variables.billed_sheet_sqft).toBe(32);
+    expect(result.debug?.rawBasePrice).toBe(1.375);
+    expect(result.debug?.evaluatedFormulaTotalRaw).toBe(44);
+    expect(result.debug?.evaluatedFormulaTotalRounded).toBe(44);
+    expect(result.debug?.roundingAppliedAt).toBe("final_currency_total");
+    expect(result.totalPrice).toBe(44);
+  });
+
+  test("formula evaluation preserves 4-decimal rates internally and rounds final currency", () => {
+    const tree = makeRowTierBasisTree(
+      "computed_sheet_usage",
+      { base_price: 0 },
+      {
+        sheet_width: 48,
+        sheet_length: 96,
+        usable_drop_min: 0,
+        billable_length_increment: 1,
+        minimum_billable_sqft: 32,
+      },
+    ) as any;
+    tree.pricingMatrix.rows[0].qtyTiers[0].perSqftCents = 133.33;
+
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: tree,
+      widthIn: 24,
+      heightIn: 18,
+      quantity: 10,
+      pbv2ExplicitSelections: { rate: { value: "standard" } },
+      pricingFormulaOverride: "billed_sheet_sqft * base_price",
+      debug: true,
+    });
+
+    expect(result.debug?.variables.base_price).toBeCloseTo(1.3333, 6);
+    expect(result.debug?.evaluatedFormulaTotalRaw).toBeCloseTo(42.6656, 6);
+    expect(result.debug?.evaluatedFormulaTotalRounded).toBe(42.67);
+    expect(result.totalPrice).toBe(42.67);
+  });
+
   test.each([
     { quantity: 8, expectedSheets: 1, expectedFullSheets: 0, expectedPartialPieces: 8, expectedPartialFinishedSqft: 24, expectedPartialBillableSqft: 32, expectedBilledSqft: 32, expectedTierMinQty: 1, expectedPolicy: "minimum_billable_sqft" },
     { quantity: 10, expectedSheets: 1, expectedFullSheets: 1, expectedPartialPieces: 0, expectedPartialFinishedSqft: 0, expectedPartialBillableSqft: 0, expectedBilledSqft: 32, expectedTierMinQty: 1, expectedPolicy: "none" },

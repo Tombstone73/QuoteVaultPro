@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { centsToCurrencyInput, currencyInputToCents } from '@/lib/pbv2/currency';
+import { centsToCurrencyInput, centsToCurrencyRateInput, currencyInputToCents, currencyRateInputToCents } from '@/lib/pbv2/currency';
 import type { Pbv2TierBasis } from '@shared/optionTreeV2';
 
 interface BasePricingEditorProps {
@@ -63,21 +63,21 @@ export function BasePricingEditor({
   const [activeTab, setActiveTab] = React.useState<'qty' | 'sqft'>('qty');
 
   // Local state for input values
-  const [basePerSqft, setBasePerSqft] = React.useState(centsToCurrencyInput(base.perSqftCents));
-  const [basePerPiece, setBasePerPiece] = React.useState(centsToCurrencyInput(base.perPieceCents));
+  const [basePerSqft, setBasePerSqft] = React.useState(centsToCurrencyRateInput(base.perSqftCents));
+  const [basePerPiece, setBasePerPiece] = React.useState(centsToCurrencyRateInput(base.perPieceCents));
   const [baseMinCharge, setBaseMinCharge] = React.useState(centsToCurrencyInput(base.minimumChargeCents));
 
   // Sync with props when pricingV2 changes
   React.useEffect(() => {
-    setBasePerSqft(centsToCurrencyInput(base.perSqftCents));
-    setBasePerPiece(centsToCurrencyInput(base.perPieceCents));
+    setBasePerSqft(centsToCurrencyRateInput(base.perSqftCents));
+    setBasePerPiece(centsToCurrencyRateInput(base.perPieceCents));
     setBaseMinCharge(centsToCurrencyInput(base.minimumChargeCents));
   }, [base.perSqftCents, base.perPieceCents, base.minimumChargeCents]);
 
   const handleBaseBlur = () => {
     onUpdateBase({
-      perSqftCents: currencyInputToCents(basePerSqft),
-      perPieceCents: currencyInputToCents(basePerPiece),
+      perSqftCents: currencyRateInputToCents(basePerSqft),
+      perPieceCents: currencyRateInputToCents(basePerPiece),
       minimumChargeCents: currencyInputToCents(baseMinCharge),
     });
   };
@@ -155,6 +155,7 @@ export function BasePricingEditor({
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">$</span>
               <Input
                 type="text"
+                inputMode="decimal"
                 value={basePerSqft}
                 onChange={(e) => setBasePerSqft(e.target.value)}
                 onBlur={handleBaseBlur}
@@ -170,6 +171,7 @@ export function BasePricingEditor({
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">$</span>
               <Input
                 type="text"
+                inputMode="decimal"
                 value={basePerPiece}
                 onChange={(e) => setBasePerPiece(e.target.value)}
                 onBlur={handleBaseBlur}
@@ -185,6 +187,7 @@ export function BasePricingEditor({
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">$</span>
               <Input
                 type="text"
+                inputMode="decimal"
                 value={baseMinCharge}
                 onChange={(e) => setBaseMinCharge(e.target.value)}
                 onBlur={handleBaseBlur}
@@ -278,8 +281,8 @@ function TierRow({
   unitSystem: 'imperial' | 'metric';
 }) {
   const [minValue, setMinValue] = React.useState(kind === 'qty' ? String(tier.minQty || '') : String(tier.minSqft || ''));
-  const [perSqft, setPerSqft] = React.useState(centsToCurrencyInput(tier.perSqftCents));
-  const [perPiece, setPerPiece] = React.useState(centsToCurrencyInput(tier.perPieceCents));
+  const [perSqft, setPerSqft] = React.useState(centsToCurrencyRateInput(tier.perSqftCents));
+  const [perPiece, setPerPiece] = React.useState(centsToCurrencyRateInput(tier.perPieceCents));
   const [minCharge, setMinCharge] = React.useState(centsToCurrencyInput(tier.minimumChargeCents));
 
   const handleBlur = () => {
@@ -287,8 +290,8 @@ function TierRow({
     onUpdate({
       ...(kind === 'qty' ? { minQty: isNaN(minNum) ? 1 : Math.max(1, Math.round(minNum)) } : {}),
       ...(kind === 'sqft' ? { minSqft: isNaN(minNum) ? 0 : Math.max(0, minNum) } : {}),
-      perSqftCents: currencyInputToCents(perSqft),
-      perPieceCents: currencyInputToCents(perPiece),
+      perSqftCents: currencyRateInputToCents(perSqft),
+      perPieceCents: currencyRateInputToCents(perPiece),
       minimumChargeCents: currencyInputToCents(minCharge),
     });
   };
@@ -317,6 +320,7 @@ function TierRow({
               <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs">$</span>
               <Input
                 type="text"
+                inputMode="decimal"
                 value={perSqft}
                 onChange={(e) => setPerSqft(e.target.value)}
                 onBlur={handleBlur}
@@ -332,6 +336,7 @@ function TierRow({
               <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs">$</span>
               <Input
                 type="text"
+                inputMode="decimal"
                 value={perPiece}
                 onChange={(e) => setPerPiece(e.target.value)}
                 onBlur={handleBlur}
@@ -347,6 +352,7 @@ function TierRow({
               <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs">$</span>
               <Input
                 type="text"
+                inputMode="decimal"
                 value={minCharge}
                 onChange={(e) => setMinCharge(e.target.value)}
                 onBlur={handleBlur}

@@ -98,6 +98,10 @@ type PricingPreviewResponse = {
       unitPrice: number;
       totalPrice: number;
       formulaEvaluatedTotal?: number | null;
+      rawBasePrice?: number | null;
+      evaluatedFormulaTotalRaw?: number | null;
+      evaluatedFormulaTotalRounded?: number | null;
+      roundingAppliedAt?: "final_currency_total" | "not_applicable";
       pbv2BaseTotal?: number;
       finalTotalSource?: "formula" | "pbv2_base" | "manual_override";
       finalTotal?: number;
@@ -111,6 +115,10 @@ type PricingPreviewResponse = {
       variableSources?: Record<string, string>;
     };
     formulaEvaluatedTotal?: number | null;
+    rawBasePrice?: number | null;
+    evaluatedFormulaTotalRaw?: number | null;
+    evaluatedFormulaTotalRounded?: number | null;
+    roundingAppliedAt?: "final_currency_total" | "not_applicable";
     pbv2BaseTotal?: number;
     finalTotalSource?: "formula" | "pbv2_base" | "manual_override";
     finalTotal?: number;
@@ -1278,6 +1286,10 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       <div><span className="text-slate-400">Formula basis:</span> <span className="font-mono">{formulaDebug.quantityBasisUsed ?? "—"}</span></div>
                       <div><span className="text-slate-400">Selected rate:</span> <span className="font-mono">{typeof formulaDebug.selectedRate === "number" ? currencyFormatter.format(formulaDebug.selectedRate) : "—"}</span></div>
                       <div><span className="text-slate-400">Formula evaluated total:</span> <span className="font-mono">{typeof formulaDebug.formulaEvaluatedTotal === "number" ? currencyFormatter.format(formulaDebug.formulaEvaluatedTotal) : "—"}</span></div>
+                      <div><span className="text-slate-400">Raw base price:</span> <span className="font-mono">{typeof formulaDebug.rawBasePrice === "number" ? String(formulaDebug.rawBasePrice) : "—"}</span></div>
+                      <div><span className="text-slate-400">Evaluated formula total raw:</span> <span className="font-mono">{typeof formulaDebug.evaluatedFormulaTotalRaw === "number" ? String(formulaDebug.evaluatedFormulaTotalRaw) : "—"}</span></div>
+                      <div><span className="text-slate-400">Evaluated formula total rounded:</span> <span className="font-mono">{typeof formulaDebug.evaluatedFormulaTotalRounded === "number" ? currencyFormatter.format(formulaDebug.evaluatedFormulaTotalRounded) : "—"}</span></div>
+                      <div><span className="text-slate-400">Rounding applied at:</span> <span className="font-mono">{formulaDebug.roundingAppliedAt ?? "—"}</span></div>
                       <div><span className="text-slate-400">PBV2 base total:</span> <span className="font-mono">{typeof formulaDebug.pbv2BaseTotal === "number" ? currencyFormatter.format(formulaDebug.pbv2BaseTotal) : "—"}</span></div>
                       <div><span className="text-slate-400">Final total source:</span> <span className="font-mono">{formulaDebug.finalTotalSource ?? "—"}</span></div>
                       <div><span className="text-slate-400">Final total:</span> <span className="font-mono">{typeof formulaDebug.finalTotal === "number" ? currencyFormatter.format(formulaDebug.finalTotal) : "—"}</span></div>
