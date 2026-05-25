@@ -519,7 +519,10 @@ export function OptionRulesPricingMatrixEditor({
   const optionKeys = React.useMemo(() => getOptionKeys(treeJson), [treeJson]);
   const rules = React.useMemo(() => getRules(treeJson), [treeJson]);
   const pricingMatrix = React.useMemo(() => getPricingMatrix(treeJson), [treeJson]);
-  const matrixSanitizer = React.useMemo(() => sanitizePbv2PricingMatrix(treeJson), [treeJson]);
+  const matrixSanitizer = React.useMemo(
+    () => sanitizePbv2PricingMatrix(treeJson, { allowIncompleteMatrix: true }),
+    [treeJson],
+  );
   const matrixWarnings = React.useMemo(() => getMatrixWarnings(pricingMatrix, optionKeys), [pricingMatrix, optionKeys]);
 
   const optionByKey = React.useMemo(() => {

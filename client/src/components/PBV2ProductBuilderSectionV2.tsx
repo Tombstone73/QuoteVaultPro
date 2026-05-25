@@ -83,7 +83,7 @@ function applyTreeUpdate(
   setIsLocalDirty: (val: boolean) => void
 ) {
   // Always normalize before setting state
-  const matrixSanitizedTree = sanitizePbv2PricingMatrix(normalizeTreeJson(nextTree)).tree;
+  const matrixSanitizedTree = sanitizePbv2PricingMatrix(normalizeTreeJson(nextTree), { allowIncompleteMatrix: true }).tree;
   const normalizedTree = normalizeTreePricingImpacts(matrixSanitizedTree, {
     settleBlankFormula: false,
   }).tree;
@@ -334,7 +334,7 @@ export default function PBV2ProductBuilderSectionV2({
   // CRITICAL: Reads from ref, not state, to avoid stale closure
   const getCurrentPBV2Tree = () => {
     if (!localTreeJsonRef.current) return null;
-    const matrixSanitizedTree = sanitizePbv2PricingMatrix(normalizeTreeJson(localTreeJsonRef.current)).tree;
+    const matrixSanitizedTree = sanitizePbv2PricingMatrix(normalizeTreeJson(localTreeJsonRef.current), { allowIncompleteMatrix: true }).tree;
     return normalizeTreePricingImpacts(matrixSanitizedTree).tree;
   };
 
@@ -530,7 +530,7 @@ export default function PBV2ProductBuilderSectionV2({
 
     // Hydrate from source tree (draft or active)
     const normalizedSourceTree = normalizeTreeJson(sourceTree.treeJson);
-    const matrixSanitizer = sanitizePbv2PricingMatrix(normalizedSourceTree);
+    const matrixSanitizer = sanitizePbv2PricingMatrix(normalizedSourceTree, { allowIncompleteMatrix: true });
     const pricingImpactNormalizer = normalizeTreePricingImpacts(matrixSanitizer.tree);
     const normalizedTree = pricingImpactNormalizer.tree;
     const treeSource = draft ? 'DRAFT' : 'ACTIVE';
@@ -1076,7 +1076,7 @@ export default function PBV2ProductBuilderSectionV2({
   const handleUpdatePricingMatrix = (pricingMatrix: ProductOptionPricingMatrix) => {
     if (!localTreeJson) return;
     const tree = JSON.parse(JSON.stringify(localTreeJson));
-    if (pricingMatrix.dimensions.length === 0 || pricingMatrix.rows.length === 0) {
+    if (pricingMatrix.dimensions.length === 0) {
       delete tree.pricingMatrix;
       if (tree.meta && typeof tree.meta === "object") delete tree.meta.pricingMatrix;
     } else {
@@ -1126,7 +1126,7 @@ export default function PBV2ProductBuilderSectionV2({
     const treeSnapshot = localTreeJson;
 
     // Normalize + ensure rootNodeIds before PUT (client has authority over this field)
-    const matrixSanitizer = sanitizePbv2PricingMatrix(normalizeTreeJson(treeSnapshot));
+    const matrixSanitizer = sanitizePbv2PricingMatrix(normalizeTreeJson(treeSnapshot), { allowIncompleteMatrix: true });
     const pricingImpactNormalizer = normalizeTreePricingImpacts(matrixSanitizer.tree);
     const normalizedTree = pricingImpactNormalizer.tree;
     if (matrixSanitizer.changed || pricingImpactNormalizer.changed) {

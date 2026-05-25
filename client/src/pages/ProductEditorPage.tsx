@@ -508,7 +508,7 @@ const ProductEditorPage = () => {
         }
         
         // Tree is already normalized by getCurrentTree; sanitize matrix refs as a final save guard.
-        const normalizedTree = sanitizePbv2PricingMatrix(freshTreeJson).tree;
+        const normalizedTree = sanitizePbv2PricingMatrix(freshTreeJson, { allowIncompleteMatrix: true }).tree;
         const nodes = (normalizedTree as any)?.nodes || {};
         const edges = (normalizedTree as any)?.edges || [];
         const nodeCount = Object.keys(nodes).length;
