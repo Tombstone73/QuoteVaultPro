@@ -852,6 +852,35 @@ export function evaluatePricingPreviewFromTree(input: {
   const sqft = baseDetails.sqftPerItem;
   const totalSqft = baseDetails.totalSqft;
   const linearFeet = baseDetails.linearFeet;
+  const pricingDebug = {
+    basePrice: basePriceCents / 100,
+    optionsPrice: optionsCents / 100,
+    unitPrice: quantity > 0 ? totalCents / 100 / quantity : 0,
+    totalPrice: totalCents / 100,
+    formulaEvaluatedTotal: formulaBasePrice.formulaEvaluatedTotalCents == null
+      ? null
+      : formulaBasePrice.formulaEvaluatedTotalCents / 100,
+    pbv2BaseTotal: formulaBasePrice.pbv2BaseTotalCents / 100,
+    finalTotalSource: formulaBasePrice.finalTotalSource,
+    finalTotal: formulaBasePrice.finalTotalCents / 100,
+  };
+  const consistencyDebug = {
+    pricingSystem: "pbv2" as const,
+    ...formulaDebug,
+    formulaEvaluatedTotal: pricingDebug.formulaEvaluatedTotal,
+    pbv2BaseTotal: pricingDebug.pbv2BaseTotal,
+    finalTotalSource: pricingDebug.finalTotalSource,
+    finalTotal: pricingDebug.finalTotal,
+    pricing: pricingDebug,
+  };
+  const finalTotalMismatch = buildFinalTotalMismatchError({
+    formulaBasePrice,
+    basePriceCents,
+    optionsCents,
+    totalCents,
+    debug: consistencyDebug,
+  });
+  if (finalTotalMismatch) throw finalTotalMismatch;
 
   return {
     unitPrice: quantity > 0 ? totalCents / 100 / quantity : 0,
@@ -895,12 +924,10 @@ export function evaluatePricingPreviewFromTree(input: {
       selectedRate: formulaDebug.selectedRate,
       finalFormulaTotal: formulaDebug.finalFormulaTotal,
       sheetYield: formulaDebug.sheetYield,
-      formulaEvaluatedTotal: formulaBasePrice.formulaEvaluatedTotalCents == null
-        ? null
-        : formulaBasePrice.formulaEvaluatedTotalCents / 100,
-      pbv2BaseTotal: formulaBasePrice.pbv2BaseTotalCents / 100,
-      finalTotalSource: formulaBasePrice.finalTotalSource,
-      finalTotal: formulaBasePrice.finalTotalCents / 100,
+      formulaEvaluatedTotal: pricingDebug.formulaEvaluatedTotal,
+      pbv2BaseTotal: pricingDebug.pbv2BaseTotal,
+      finalTotalSource: pricingDebug.finalTotalSource,
+      finalTotal: pricingDebug.finalTotal,
       inputs: {
         widthIn,
         heightIn,
@@ -923,18 +950,7 @@ export function evaluatePricingPreviewFromTree(input: {
         finished_width: baseDetails.finishedWidthIn,
         finished_height: baseDetails.finishedHeightIn,
       },
-      pricing: {
-        basePrice: basePriceCents / 100,
-        optionsPrice: optionsCents / 100,
-        unitPrice: quantity > 0 ? totalCents / 100 / quantity : 0,
-        totalPrice: totalCents / 100,
-        formulaEvaluatedTotal: formulaBasePrice.formulaEvaluatedTotalCents == null
-          ? null
-          : formulaBasePrice.formulaEvaluatedTotalCents / 100,
-        pbv2BaseTotal: formulaBasePrice.pbv2BaseTotalCents / 100,
-        finalTotalSource: formulaBasePrice.finalTotalSource,
-        finalTotal: formulaBasePrice.finalTotalCents / 100,
-      },
+      pricing: pricingDebug,
       tierResolution: buildTierResolutionSnapshot(formulaBasePrice.tierResolution, new Date().toISOString()),
       runtimeSelectionContext,
       weight: weightDebug,
@@ -2316,6 +2332,51 @@ type FormulaAwareBasePriceResult = {
   preMinimumCents: number;
   tierResolution: Pbv2TierResolution;
 };
+
+function centsEqual(left: number, right: number): boolean {
+  return Math.abs(Math.round(left) - Math.round(right)) <= 0;
+}
+
+function buildFinalTotalMismatchError(input: {
+  formulaBasePrice: FormulaAwareBasePriceResult;
+  basePriceCents: number;
+  optionsCents: number;
+  totalCents: number;
+  debug: NonNullable<PricingPreviewEvaluationResult["debug"]>;
+}): PricingPreviewFormulaError | null {
+  const { formulaBasePrice } = input;
+  if (formulaBasePrice.finalTotalSource !== "formula") return null;
+
+  const expectedBaseCents = formulaBasePrice.finalTotalCents;
+  const expectedTotalCents = expectedBaseCents + input.optionsCents;
+  const mismatches: string[] = [];
+
+  if (!centsEqual(input.basePriceCents, expectedBaseCents)) {
+    mismatches.push(`base=${input.basePriceCents / 100} expected_formula_base=${expectedBaseCents / 100}`);
+  }
+
+  if (!centsEqual(input.totalCents, expectedTotalCents)) {
+    mismatches.push(`total=${input.totalCents / 100} expected_formula_total=${expectedTotalCents / 100}`);
+  }
+
+  if (
+    !formulaBasePrice.minimumApplied &&
+    formulaBasePrice.formulaEvaluatedTotalCents != null &&
+    !centsEqual(formulaBasePrice.formulaEvaluatedTotalCents, formulaBasePrice.finalTotalCents)
+  ) {
+    mismatches.push(
+      `formula_evaluated_total=${formulaBasePrice.formulaEvaluatedTotalCents / 100} final_total=${formulaBasePrice.finalTotalCents / 100}`,
+    );
+  }
+
+  if (mismatches.length === 0) return null;
+
+  return buildPbv2PricingFormulaError({
+    code: "PBV2_E_FINAL_TOTAL_MISMATCH",
+    message: `PBV2 formula final total mismatch: ${mismatches.join("; ")}`,
+    debug: input.debug,
+  });
+}
 
 function formulaReferencesTierVariables(formula: string): boolean {
   return /\b(?:original_base_price|tier_base_price|tier_rate|effective_base_price)\b/.test(formula);
