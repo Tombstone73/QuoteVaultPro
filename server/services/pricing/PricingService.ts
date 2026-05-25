@@ -128,6 +128,10 @@ export type PBV2RuntimePricingSnapshot = {
   rateUsedSource?: string;
   minimumApplied?: boolean;
   formulaScopeUsed?: Record<string, number | string | boolean | null>;
+  formulaEvaluatedTotal?: number | null;
+  fallbackBaseTotal?: number;
+  finalTotalSource?: "formula" | "fallback_formula" | "fallback_base";
+  finalTotal?: number;
   calculatedPrice: number;
   capturedAt: string;
   resolvedWeightDebug?: PBV2ResolvedWeightSnapshotDebug;
@@ -239,7 +243,15 @@ export type PricingPreviewEvaluationResult = {
       optionsPrice: number;
       unitPrice: number;
       totalPrice: number;
+      formulaEvaluatedTotal?: number | null;
+      fallbackBaseTotal?: number;
+      finalTotalSource?: "formula" | "fallback_formula" | "fallback_base";
+      finalTotal?: number;
     };
+    formulaEvaluatedTotal?: number | null;
+    fallbackBaseTotal?: number;
+    finalTotalSource?: "formula" | "fallback_formula" | "fallback_base";
+    finalTotal?: number;
     tierResolution?: PBV2TierResolutionSnapshot;
     runtimeSelectionContext?: OptionRuntimeSelectionContext;
     weight?: {
@@ -840,6 +852,12 @@ export function evaluatePricingPreviewFromTree(input: {
       rawSqftPerItem: widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0,
       rawTotalSqft: (widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0) * quantity,
       baseRateUsed: formulaDebug.baseRateUsed,
+      formulaEvaluatedTotal: formulaBasePrice.formulaEvaluatedTotalCents == null
+        ? null
+        : formulaBasePrice.formulaEvaluatedTotalCents / 100,
+      fallbackBaseTotal: formulaBasePrice.fallbackBaseTotalCents / 100,
+      finalTotalSource: formulaBasePrice.finalTotalSource,
+      finalTotal: formulaBasePrice.finalTotalCents / 100,
       inputs: {
         widthIn,
         heightIn,
@@ -867,6 +885,12 @@ export function evaluatePricingPreviewFromTree(input: {
         optionsPrice: optionsCents / 100,
         unitPrice: quantity > 0 ? totalCents / 100 / quantity : 0,
         totalPrice: totalCents / 100,
+        formulaEvaluatedTotal: formulaBasePrice.formulaEvaluatedTotalCents == null
+          ? null
+          : formulaBasePrice.formulaEvaluatedTotalCents / 100,
+        fallbackBaseTotal: formulaBasePrice.fallbackBaseTotalCents / 100,
+        finalTotalSource: formulaBasePrice.finalTotalSource,
+        finalTotal: formulaBasePrice.finalTotalCents / 100,
       },
       tierResolution: buildTierResolutionSnapshot(formulaBasePrice.tierResolution, new Date().toISOString()),
       runtimeSelectionContext,
@@ -2083,6 +2107,10 @@ type FormulaAwareBasePriceResult = {
   usedFallbackFormula: boolean;
   formulaDebug: NonNullable<PricingPreviewEvaluationResult["debug"]>;
   formulaApplied: boolean;
+  formulaEvaluatedTotalCents: number | null;
+  fallbackBaseTotalCents: number;
+  finalTotalSource: "formula" | "fallback_formula" | "fallback_base";
+  finalTotalCents: number;
   minimumApplied: boolean;
   preMinimumCents: number;
   tierResolution: Pbv2TierResolution;
@@ -2144,8 +2172,9 @@ function calculateFormulaAwareBasePrice(input: {
     ? input.pricingFormulaOverride.trim()
     : "";
   const formulaCandidate = overrideFormula || formulaFromTree || formulaFromLibrary || formulaFromProduct || formulaFromProfile;
-  const usedFallbackFormula = profileUsesFormula && !formulaCandidate;
-  const formulaToUse = profileUsesFormula ? (formulaCandidate || PBV2_PREVIEW_FALLBACK_FORMULA) : "";
+  const shouldEvaluateFormula = Boolean(formulaCandidate) || profileUsesFormula;
+  const usedFallbackFormula = shouldEvaluateFormula && !formulaCandidate;
+  const formulaToUse = shouldEvaluateFormula ? (formulaCandidate || PBV2_PREVIEW_FALLBACK_FORMULA) : "";
   const tierResolution = withFormulaTierReferenceWarning(baseDetails.tierResolution, formulaToUse);
   const formulaVariables = input.formulaVariables
     ?? (input.product ? resolveSnapshotFormulaVariables(input.treeJson, input.product) : undefined);
@@ -2171,13 +2200,17 @@ function calculateFormulaAwareBasePrice(input: {
     pricingMatrixVariables: input.pricingMatrixVariables,
   });
 
-  if (!profileUsesFormula) {
+  if (!shouldEvaluateFormula) {
     return {
       basePriceCents: baseDetails.totalCents,
       formulaToUse,
       usedFallbackFormula,
       formulaDebug,
       formulaApplied: false,
+      formulaEvaluatedTotalCents: null,
+      fallbackBaseTotalCents: baseDetails.totalCents,
+      finalTotalSource: "fallback_base",
+      finalTotalCents: baseDetails.totalCents,
       minimumApplied: baseDetails.minimumApplied,
       preMinimumCents: baseDetails.preMinimumCents,
       tierResolution,
@@ -2219,13 +2252,18 @@ function calculateFormulaAwareBasePrice(input: {
     ? formulaValueCents * input.quantity
     : formulaValueCents;
   const minimumApplied = baseDetails.minimumChargeCents > 0 && baseDetails.minimumChargeCents > preMinimumCents;
+  const finalTotalCents = minimumApplied ? baseDetails.minimumChargeCents : preMinimumCents;
 
   return {
-    basePriceCents: minimumApplied ? baseDetails.minimumChargeCents : preMinimumCents,
+    basePriceCents: finalTotalCents,
     formulaToUse,
     usedFallbackFormula,
     formulaDebug,
     formulaApplied: true,
+    formulaEvaluatedTotalCents: preMinimumCents,
+    fallbackBaseTotalCents: baseDetails.totalCents,
+    finalTotalSource: usedFallbackFormula ? "fallback_formula" : "formula",
+    finalTotalCents,
     minimumApplied,
     preMinimumCents,
     tierResolution,
@@ -2421,6 +2459,16 @@ function buildRuntimePricingSnapshot(input: {
     rateUsedSource: input.baseDetails?.rateUsedSource ?? (hasMatrixBasePrice ? "pricing_matrix.base_price" : "pricingV2.base"),
     minimumApplied: input.formulaBasePrice?.minimumApplied ?? input.baseDetails?.minimumApplied ?? false,
     formulaScopeUsed: formulaDebug.variables,
+    formulaEvaluatedTotal: input.formulaBasePrice?.formulaEvaluatedTotalCents == null
+      ? null
+      : input.formulaBasePrice.formulaEvaluatedTotalCents / 100,
+    fallbackBaseTotal: input.formulaBasePrice
+      ? input.formulaBasePrice.fallbackBaseTotalCents / 100
+      : input.baseDetails ? input.baseDetails.totalCents / 100 : undefined,
+    finalTotalSource: input.formulaBasePrice?.finalTotalSource,
+    finalTotal: input.formulaBasePrice
+      ? input.formulaBasePrice.finalTotalCents / 100
+      : input.calculatedPriceCents / 100,
     calculatedPrice: input.calculatedPriceCents / 100,
     capturedAt: input.capturedAt,
     ...(input.resolvedWeightSource

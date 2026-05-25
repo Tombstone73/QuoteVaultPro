@@ -61,7 +61,7 @@ export default function PortalQuoteDetailPage() {
   const actionLabels: Record<PortalQuoteAction, { title: string; description: string; confirm: string }> = {
     approve: {
       title: "Approve quote",
-      description: "This will approve the quote and create an order from the current backend quote record.",
+      description: "This will approve the quote and create an order for your account.",
       confirm: "Approve Quote",
     },
     decline: {
@@ -122,7 +122,7 @@ export default function PortalQuoteDetailPage() {
     return (
       <div className="mx-auto w-full max-w-4xl space-y-4">
         <Button asChild variant="ghost">
-          <Link to="/portal/my-quotes">
+          <Link to="/portal/quotes">
             <ArrowLeft className="mr-2 h-4 w-4" />
             Back to quotes
           </Link>
@@ -142,7 +142,7 @@ export default function PortalQuoteDetailPage() {
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div>
           <Button asChild variant="ghost" className="mb-2 px-0">
-            <Link to="/portal/my-quotes">
+            <Link to="/portal/quotes">
               <ArrowLeft className="mr-2 h-4 w-4" />
               Back to quotes
             </Link>

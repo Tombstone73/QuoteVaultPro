@@ -92,7 +92,20 @@ type PricingPreviewResponse = {
       finished_width?: number;
       finished_height?: number;
     };
-    pricing?: { basePrice: number; optionsPrice: number; unitPrice: number; totalPrice: number };
+    pricing?: {
+      basePrice: number;
+      optionsPrice: number;
+      unitPrice: number;
+      totalPrice: number;
+      formulaEvaluatedTotal?: number | null;
+      fallbackBaseTotal?: number;
+      finalTotalSource?: "formula" | "fallback_formula" | "fallback_base";
+      finalTotal?: number;
+    };
+    formulaEvaluatedTotal?: number | null;
+    fallbackBaseTotal?: number;
+    finalTotalSource?: "formula" | "fallback_formula" | "fallback_base";
+    finalTotal?: number;
     tierResolution?: {
       quantity: number;
       enabled: boolean;
@@ -1077,6 +1090,12 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     <>
                       <div className="flex items-center justify-between"><span>Unit price</span><span className="font-mono">{currencyFormatter.format(result.unitPrice)}</span></div>
                       <div className="flex items-center justify-between"><span>Total price</span><span className="font-mono">{currencyFormatter.format(result.totalPrice)}</span></div>
+                      {formulaDebug?.pricing?.finalTotalSource ? (
+                        <div className="flex items-center justify-between text-[11px] text-slate-400">
+                          <span>Final source</span>
+                          <span className="font-mono">{formulaDebug.pricing.finalTotalSource}</span>
+                        </div>
+                      ) : null}
                     </>
                   )}
                   {result.formulaUsed ? (
@@ -1120,6 +1139,10 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       ) : null}
                       <div><span className="text-slate-400">Result value:</span> <span className="font-mono">{typeof formulaDebug.resultValue === "number" ? String(formulaDebug.resultValue) : "—"}</span></div>
                       <div><span className="text-slate-400">Applied as:</span> <span className="font-mono">{formulaDebug.appliedAs ?? "unknown"}</span></div>
+                      <div><span className="text-slate-400">Formula evaluated total:</span> <span className="font-mono">{typeof formulaDebug.formulaEvaluatedTotal === "number" ? currencyFormatter.format(formulaDebug.formulaEvaluatedTotal) : "—"}</span></div>
+                      <div><span className="text-slate-400">Fallback base total:</span> <span className="font-mono">{typeof formulaDebug.fallbackBaseTotal === "number" ? currencyFormatter.format(formulaDebug.fallbackBaseTotal) : "—"}</span></div>
+                      <div><span className="text-slate-400">Final total source:</span> <span className="font-mono">{formulaDebug.finalTotalSource ?? "—"}</span></div>
+                      <div><span className="text-slate-400">Final total:</span> <span className="font-mono">{typeof formulaDebug.finalTotal === "number" ? currencyFormatter.format(formulaDebug.finalTotal) : "—"}</span></div>
                       <div><span className="text-slate-400">Pre-ceil sqft:</span> <span className="font-mono">{typeof formulaDebug.preCeilSqftTotal === "number" ? formulaDebug.preCeilSqftTotal.toFixed(4) : "—"}</span></div>
                       <div><span className="text-slate-400">Post-ceil sqft:</span> <span className="font-mono">{typeof formulaDebug.postCeilSqftTotal === "number" ? formulaDebug.postCeilSqftTotal.toFixed(0) : "—"}</span></div>
                       <div><span className="text-slate-400">Base rate used (p):</span> <span className="font-mono">{typeof formulaDebug.baseRateUsed === "number" ? String(formulaDebug.baseRateUsed) : "—"}</span></div>

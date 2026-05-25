@@ -216,7 +216,7 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
   };
 
   return (
-    <>
+    <div className="contents">
     <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-border bg-card/80 px-4 backdrop-blur-md md:px-6">
       {/* Left side - Menu button (mobile) + Breadcrumbs/Title */}
       <div className="flex items-center gap-3">
@@ -234,7 +234,7 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
         {/* Breadcrumbs on larger screens, title on mobile */}
         <div className="hidden md:flex items-center gap-2 text-sm">
           {breadcrumbs.map((crumb, index) => (
-            <React.Fragment key={crumb.path}>
+            <span key={crumb.path} className="contents">
               {index > 0 && (
                 <ChevronRight className="h-4 w-4 text-muted-foreground" />
               )}
@@ -252,7 +252,7 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
               >
                 {crumb.label}
               </span>
-            </React.Fragment>
+            </span>
           ))}
           {breadcrumbs.length === 0 && (
             <span className="font-semibold text-foreground">{pageTitle}</span>
@@ -372,9 +372,9 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
       </div>
     </header>
 
-    {/* Feedback Modal — rendered outside header to avoid stacking context issues */}
+    {/* Feedback modal rendered outside header to avoid stacking context issues. */}
     <BugReportModal open={bugReportOpen} onClose={() => setBugReportOpen(false)} />
-    </>
+    </div>
   );
 }
 

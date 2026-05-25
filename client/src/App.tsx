@@ -304,14 +304,16 @@ function Router() {
         <Route path="dashboard" element={<Navigate to="/portal" replace />} />
         <Route path="invoices" element={<PortalInvoicesPage />} />
         <Route path="invoices/:id" element={<PortalInvoiceDetailPage />} />
-        <Route path="my-orders" element={<MyOrders />} />
+        <Route path="orders" element={<MyOrders />} />
+        <Route path="my-orders" element={<Navigate to="/portal/orders" replace />} />
         <Route path="orders/:id" element={<PortalOrderDetailPage />} />
         <Route path="proofs" element={<PortalProofsPage />} />
         <Route path="proofs/:id" element={<PortalProofDetailPage />} />
-        <Route path="my-quotes" element={<MyQuotes />} />
+        <Route path="quotes" element={<MyQuotes />} />
+        <Route path="my-quotes" element={<Navigate to="/portal/quotes" replace />} />
         <Route path="quotes/:id" element={<PortalQuoteDetailPage />} />
         <Route path="documents" element={<PortalDocumentsPage />} />
-        <Route path="quotes/:id/checkout" element={<Navigate to="/portal/my-quotes" replace />} />
+        <Route path="quotes/:id/checkout" element={<Navigate to="/portal/quotes" replace />} />
       </Route>
 
       {/* Public legal/support pages — standalone, no app shell */}
