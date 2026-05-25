@@ -645,19 +645,22 @@ describe("sheet_consumption_sqft", () => {
   });
 
   test.each([
-    { quantity: 8, expectedSheets: 1, expectedFullSheets: 0, expectedPartialPieces: 8, expectedBilledSqft: 32, expectedTierMinQty: 1 },
-    { quantity: 10, expectedSheets: 1, expectedFullSheets: 1, expectedPartialPieces: 0, expectedBilledSqft: 32, expectedTierMinQty: 1 },
-    { quantity: 11, expectedSheets: 2, expectedFullSheets: 1, expectedPartialPieces: 1, expectedBilledSqft: 64, expectedTierMinQty: 1 },
-    { quantity: 91, expectedSheets: 10, expectedFullSheets: 9, expectedPartialPieces: 1, expectedBilledSqft: 320, expectedTierMinQty: 10 },
-    { quantity: 100, expectedSheets: 10, expectedFullSheets: 10, expectedPartialPieces: 0, expectedBilledSqft: 320, expectedTierMinQty: 10 },
-    { quantity: 101, expectedSheets: 11, expectedFullSheets: 10, expectedPartialPieces: 1, expectedBilledSqft: 352, expectedTierMinQty: 10 },
+    { quantity: 8, expectedSheets: 1, expectedFullSheets: 0, expectedPartialPieces: 8, expectedPartialFinishedSqft: 24, expectedPartialBillableSqft: 32, expectedBilledSqft: 32, expectedTierMinQty: 1, expectedPolicy: "minimum_billable_sqft" },
+    { quantity: 10, expectedSheets: 1, expectedFullSheets: 1, expectedPartialPieces: 0, expectedPartialFinishedSqft: 0, expectedPartialBillableSqft: 0, expectedBilledSqft: 32, expectedTierMinQty: 1, expectedPolicy: "none" },
+    { quantity: 11, expectedSheets: 2, expectedFullSheets: 1, expectedPartialPieces: 1, expectedPartialFinishedSqft: 3, expectedPartialBillableSqft: 32, expectedBilledSqft: 64, expectedTierMinQty: 1, expectedPolicy: "minimum_billable_sqft" },
+    { quantity: 91, expectedSheets: 10, expectedFullSheets: 9, expectedPartialPieces: 1, expectedPartialFinishedSqft: 3, expectedPartialBillableSqft: 32, expectedBilledSqft: 320, expectedTierMinQty: 10, expectedPolicy: "minimum_billable_sqft" },
+    { quantity: 100, expectedSheets: 10, expectedFullSheets: 10, expectedPartialPieces: 0, expectedPartialFinishedSqft: 0, expectedPartialBillableSqft: 0, expectedBilledSqft: 320, expectedTierMinQty: 10, expectedPolicy: "none" },
+    { quantity: 101, expectedSheets: 11, expectedFullSheets: 10, expectedPartialPieces: 1, expectedPartialFinishedSqft: 3, expectedPartialBillableSqft: 32, expectedBilledSqft: 352, expectedTierMinQty: 10, expectedPolicy: "minimum_billable_sqft" },
   ])("computed sheet usage uses actual layout yield for 24x18 q$quantity", ({
     quantity,
     expectedSheets,
     expectedFullSheets,
     expectedPartialPieces,
+    expectedPartialFinishedSqft,
+    expectedPartialBillableSqft,
     expectedBilledSqft,
     expectedTierMinQty,
+    expectedPolicy,
   }) => {
     const result = evaluatePricingPreviewFromTree({
       treeJson: makeRowTierBasisTree(
@@ -685,6 +688,9 @@ describe("sheet_consumption_sqft", () => {
     expect(result.debug?.tierResolution?.orientationUsed).toBe("normal");
     expect(result.debug?.tierResolution?.fullSheets).toBe(expectedFullSheets);
     expect(result.debug?.tierResolution?.partialSheetPieceCount).toBe(expectedPartialPieces);
+    expect(result.debug?.tierResolution?.partialSheetFinishedSqft).toBe(expectedPartialFinishedSqft);
+    expect(result.debug?.tierResolution?.partialSheetBillableSqft).toBe(expectedPartialBillableSqft);
+    expect(result.debug?.tierResolution?.partialSheetPolicy).toBe(expectedPolicy);
     expect(result.debug?.tierResolution?.totalSheetCount).toBe(expectedSheets);
     expect(result.debug?.tierResolution?.computedSheetUsage).toBe(expectedSheets);
     expect(result.debug?.tierResolution?.tierSelectionQuantity).toBe(expectedSheets);
@@ -694,6 +700,15 @@ describe("sheet_consumption_sqft", () => {
     expect(result.debug?.variables.pieces_per_sheet).toBe(10);
     expect(result.debug?.variables.billed_sheet_sqft).toBe(expectedBilledSqft);
     expect(result.debug?.variables.computed_sheets).toBe(result.debug?.tierResolution?.totalSheetCount);
+    expect(result.debug?.sheetYield).toEqual(expect.objectContaining({
+      fullSheets: expectedFullSheets,
+      partialSheetPieceCount: expectedPartialPieces,
+      partialSheetFinishedSqft: expectedPartialFinishedSqft,
+      partialSheetBillableSqft: expectedPartialBillableSqft,
+      partialSheetPolicy: expectedPolicy,
+      totalSheetCount: expectedSheets,
+      billedSheetSqft: expectedBilledSqft,
+    }));
   });
 
   test("row-level raw item quantity still selects the qty 10 tier when configured", () => {

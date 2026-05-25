@@ -16,6 +16,7 @@
 
 export type SheetYieldOrientation = "normal" | "rotated";
 export type SheetYieldMethod = "layout_yield";
+export type PartialSheetPolicy = "none" | "minimum_billable_sqft" | "measured_partial_sheet";
 
 export type SheetYieldResult = {
   sheetUsageMethod: SheetYieldMethod;
@@ -25,6 +26,7 @@ export type SheetYieldResult = {
   partialSheetPieceCount: number;
   partialSheetFinishedSqft: number;
   partialSheetBillableSqft: number;
+  partialSheetPolicy: PartialSheetPolicy;
   totalSheetCount: number;
   sheetSqft: number;
   billedSheetSqft: number;
@@ -46,7 +48,7 @@ function orientationYield(pieceW: number, pieceH: number, sheetWidth: number, sh
   return { piecesAcross, rowsPerSheet, piecesPerSheet: piecesAcross * rowsPerSheet };
 }
 
-function billPartialSheetSqft(input: {
+function billPartialSheet(input: {
   pieceW: number;
   pieceH: number;
   partialPieces: number;
@@ -54,11 +56,11 @@ function billPartialSheetSqft(input: {
   usableDropMin: number;
   billableLengthIncrement: number;
   minimumBillableSqft: number;
-}): number {
-  if (input.partialPieces <= 0) return 0;
+}): { billableSqft: number; policy: PartialSheetPolicy } {
+  if (input.partialPieces <= 0) return { billableSqft: 0, policy: "none" };
 
   const piecesAcross = Math.floor(input.sheetWidth / input.pieceW);
-  if (piecesAcross <= 0) return Infinity;
+  if (piecesAcross <= 0) return { billableSqft: Infinity, policy: "measured_partial_sheet" };
 
   const rowsNeeded = Math.ceil(input.partialPieces / piecesAcross);
   const consumedLength = rowsNeeded * input.pieceH;
@@ -72,8 +74,15 @@ function billPartialSheetSqft(input: {
       : piecesAcross * input.pieceW;
   const drop = input.sheetWidth - occupiedWidth;
   const effectiveWidth = drop >= input.usableDropMin ? occupiedWidth : input.sheetWidth;
+  const measuredSqft = (effectiveWidth * billableLength) / 144;
+  const policy = input.minimumBillableSqft > measuredSqft
+    ? "minimum_billable_sqft"
+    : "measured_partial_sheet";
 
-  return Math.ceil(Math.max((effectiveWidth * billableLength) / 144, input.minimumBillableSqft));
+  return {
+    billableSqft: Math.ceil(Math.max(measuredSqft, input.minimumBillableSqft)),
+    policy,
+  };
 }
 
 /**
@@ -118,7 +127,7 @@ export function calculateSheetYield(
   const totalSheetCount = fullSheets + (partialSheetPieceCount > 0 ? 1 : 0);
   const sheetSqft = (sheetWidth * sheetLength) / 144;
   const partialSheetFinishedSqft = (partialSheetPieceCount * w * h) / 144;
-  const partialSheetBillableSqft = billPartialSheetSqft({
+  const partialSheet = billPartialSheet({
     pieceW,
     pieceH,
     partialPieces: partialSheetPieceCount,
@@ -127,6 +136,7 @@ export function calculateSheetYield(
     billableLengthIncrement,
     minimumBillableSqft,
   });
+  const partialSheetBillableSqft = partialSheet.billableSqft;
   const billedSheetSqft = Math.ceil(fullSheets * sheetSqft + partialSheetBillableSqft);
 
   return {
@@ -137,6 +147,7 @@ export function calculateSheetYield(
     partialSheetPieceCount,
     partialSheetFinishedSqft,
     partialSheetBillableSqft,
+    partialSheetPolicy: partialSheet.policy,
     totalSheetCount,
     sheetSqft,
     billedSheetSqft,
