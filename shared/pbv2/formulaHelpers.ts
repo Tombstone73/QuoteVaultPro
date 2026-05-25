@@ -14,14 +14,20 @@
  * quantities. They must be multiplied by an explicit rate in the formula.
  */
 
-export type SheetYieldOrientation = "normal" | "rotated";
+export type SheetYieldOrientation = "normal" | "rotated" | "mixed";
 export type SheetYieldMethod = "layout_yield";
 export type PartialSheetPolicy = "none" | "minimum_billable_sqft" | "measured_partial_sheet";
 
 export type SheetYieldResult = {
   sheetUsageMethod: SheetYieldMethod;
+  allowRotation: boolean;
+  allowRotationSource?: string | null;
+  normalPiecesPerSheet: number;
+  rotatedPiecesPerSheet: number;
+  mixedPiecesPerSheet: number;
   piecesPerSheet: number;
   orientationUsed: SheetYieldOrientation;
+  mixedLayoutDescription?: string | null;
   fullSheets: number;
   partialSheetPieceCount: number;
   partialSheetFinishedSqft: number;
@@ -46,6 +52,56 @@ function orientationYield(pieceW: number, pieceH: number, sheetWidth: number, sh
   const piecesAcross = Math.floor(sheetWidth / pieceW);
   const rowsPerSheet = Math.floor(sheetLength / pieceH);
   return { piecesAcross, rowsPerSheet, piecesPerSheet: piecesAcross * rowsPerSheet };
+}
+
+function mixedRowYield(pieceW: number, pieceH: number, sheetWidth: number, sheetLength: number) {
+  const normal = orientationYield(pieceW, pieceH, sheetWidth, sheetLength);
+  const rotated = orientationYield(pieceH, pieceW, sheetWidth, sheetLength);
+  let best = {
+    piecesPerSheet: 0,
+    normalRows: 0,
+    rotatedRows: 0,
+    normalPiecesAcross: normal.piecesAcross,
+    rotatedPiecesAcross: rotated.piecesAcross,
+    description: null as string | null,
+  };
+
+  if (normal.piecesAcross <= 0 && rotated.piecesAcross <= 0) return best;
+
+  const maxNormalRows = pieceH > 0 ? Math.floor(sheetLength / pieceH) : 0;
+  for (let normalRows = 0; normalRows <= maxNormalRows; normalRows += 1) {
+    const usedLength = normalRows * pieceH;
+    const remainingLength = sheetLength - usedLength;
+    const rotatedRows = pieceW > 0 ? Math.floor(remainingLength / pieceW) : 0;
+    const piecesPerSheet = normalRows * normal.piecesAcross + rotatedRows * rotated.piecesAcross;
+    if (piecesPerSheet > best.piecesPerSheet) {
+      best = {
+        piecesPerSheet,
+        normalRows,
+        rotatedRows,
+        normalPiecesAcross: normal.piecesAcross,
+        rotatedPiecesAcross: rotated.piecesAcross,
+        description: `${normalRows} normal row(s) x ${normal.piecesAcross}; ${rotatedRows} rotated row(s) x ${rotated.piecesAcross}`,
+      };
+    }
+  }
+
+  return best;
+}
+
+export function parseFormulaBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (value === 1) return true;
+    if (value === 0) return false;
+    return null;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "yes", "y", "1", "on", "allow", "allowed"].includes(normalized)) return true;
+    if (["false", "no", "n", "0", "off", "deny", "denied", "disallow", "disallowed"].includes(normalized)) return false;
+  }
+  return null;
 }
 
 function billPartialSheet(input: {
@@ -101,6 +157,8 @@ export function calculateSheetYield(
   usableDropMin: number,
   billableLengthIncrement: number,
   minimumBillableSqft: number,
+  allowRotation: boolean | string | number | null | undefined = false,
+  allowRotationSource?: string | null,
 ): SheetYieldResult {
   assertPositiveFinite(w, "piece width");
   assertPositiveFinite(h, "piece height");
@@ -110,14 +168,39 @@ export function calculateSheetYield(
 
   const normal = orientationYield(w, h, sheetWidth, sheetLength);
   const rotated = orientationYield(h, w, sheetWidth, sheetLength);
-  const useRotated = rotated.piecesPerSheet > normal.piecesPerSheet;
-  const chosen = useRotated ? rotated : normal;
-  const pieceW = useRotated ? h : w;
-  const pieceH = useRotated ? w : h;
+  const mixed = mixedRowYield(w, h, sheetWidth, sheetLength);
+  const allowRotationResolved = parseFormulaBoolean(allowRotation) ?? false;
+  let chosen = normal;
+  let pieceW = w;
+  let pieceH = h;
+  let orientationUsed: SheetYieldOrientation = "normal";
+  let mixedLayoutDescription: string | null = null;
+
+  if (allowRotationResolved) {
+    if (rotated.piecesPerSheet > chosen.piecesPerSheet) {
+      chosen = rotated;
+      pieceW = h;
+      pieceH = w;
+      orientationUsed = "rotated";
+    }
+    if (mixed.piecesPerSheet > chosen.piecesPerSheet) {
+      chosen = {
+        piecesAcross: normal.piecesAcross,
+        rowsPerSheet: normal.rowsPerSheet,
+        piecesPerSheet: mixed.piecesPerSheet,
+      };
+      pieceW = w;
+      pieceH = h;
+      orientationUsed = "mixed";
+      mixedLayoutDescription = mixed.description;
+    }
+  }
 
   if (chosen.piecesPerSheet <= 0) {
     throw new Error(
-      `sheet_consumption_sqft: piece ${w}x${h} exceeds sheet ${sheetWidth}x${sheetLength} in both orientations`,
+      allowRotationResolved
+        ? `sheet_consumption_sqft: piece ${w}x${h} exceeds sheet ${sheetWidth}x${sheetLength} in both orientations`
+        : `sheet_consumption_sqft: piece ${w}x${h} exceeds sheet ${sheetWidth}x${sheetLength} without rotation`,
     );
   }
 
@@ -141,8 +224,14 @@ export function calculateSheetYield(
 
   return {
     sheetUsageMethod: "layout_yield",
+    allowRotation: allowRotationResolved,
+    allowRotationSource: allowRotationSource ?? null,
+    normalPiecesPerSheet: normal.piecesPerSheet,
+    rotatedPiecesPerSheet: rotated.piecesPerSheet,
+    mixedPiecesPerSheet: mixed.piecesPerSheet,
     piecesPerSheet: chosen.piecesPerSheet,
-    orientationUsed: useRotated ? "rotated" : "normal",
+    orientationUsed,
+    mixedLayoutDescription,
     fullSheets,
     partialSheetPieceCount,
     partialSheetFinishedSqft,
@@ -166,6 +255,8 @@ export function sheetConsumptionSqft(
   usableDropMin: number,
   billableLengthIncrement: number,
   minimumBillableSqft: number,
+  allowRotation: boolean | string | number | null | undefined = false,
+  allowRotationSource?: string | null,
 ): number {
   return calculateSheetYield(
     w,
@@ -176,6 +267,8 @@ export function sheetConsumptionSqft(
     usableDropMin,
     billableLengthIncrement,
     minimumBillableSqft,
+    allowRotation,
+    allowRotationSource,
   ).billedSheetSqft;
 }
 
@@ -219,6 +312,7 @@ export function formulaHelperScope(): Record<string, (...args: unknown[]) => unk
       usable_drop_min: unknown,
       billable_length_increment: unknown,
       minimum_billable_sqft: unknown,
+      allow_rotation?: unknown,
     ) =>
       sheetConsumptionSqft(
         Number(w),
@@ -229,6 +323,7 @@ export function formulaHelperScope(): Record<string, (...args: unknown[]) => unk
         Number(usable_drop_min),
         Number(billable_length_increment),
         Number(minimum_billable_sqft),
+        allow_rotation as string | number | boolean | null | undefined,
       ),
   };
 }

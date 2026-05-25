@@ -147,6 +147,12 @@ export type Pbv2TierResolution = {
   computedSheetUsageAvailable?: boolean;
   computedSheetUsageMode?: "exact_flat_goods" | "layout_yield" | "sheet_equivalent" | "unavailable";
   sheetUsageMethod?: "exact_flat_goods" | "layout_yield" | "mixed_layout" | "sqft_equivalent_fallback" | "sheet_equivalent" | "unavailable" | string | null;
+  allowRotation?: boolean | null;
+  allowRotationSource?: string | null;
+  normalPiecesPerSheet?: number | null;
+  rotatedPiecesPerSheet?: number | null;
+  mixedPiecesPerSheet?: number | null;
+  mixedLayoutDescription?: string | null;
   piecesPerSheet?: number | null;
   orientationUsed?: string | null;
   fullSheets?: number | null;

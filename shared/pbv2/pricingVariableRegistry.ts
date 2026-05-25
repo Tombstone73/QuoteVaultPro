@@ -28,6 +28,7 @@ export type CanonicalPricingVariableKey =
   | "partial_sheet_finished_sqft"
   | "partial_sheet_billable_sqft"
   | "total_sheet_count"
+  | "allow_rotation"
   | "q"
   | "linear_feet";
 
@@ -222,6 +223,14 @@ export const PBV2_PRICING_VARIABLES: PricingVariableDefinition[] = [
     label: "Pieces Per Sheet",
     description: "Actual layout yield for one production sheet using the selected orientation.",
     example: 10,
+    category: "Derived",
+    aliases: [],
+  },
+  {
+    key: "allow_rotation",
+    label: "Allow Rotation",
+    description: "Boolean sheet-yield control. When true, pricing may use rotated and mixed layouts; when false, normal orientation only.",
+    example: "true",
     category: "Derived",
     aliases: [],
   },

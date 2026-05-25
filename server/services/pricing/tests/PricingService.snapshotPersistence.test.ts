@@ -505,6 +505,8 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
       computedSheetUsageAvailable: true,
       computedSheetUsageMode: "layout_yield",
       sheetUsageMethod: "layout_yield",
+      allowRotation: false,
+      allowRotationSource: "default.allow_rotation=false",
       piecesPerSheet: 4,
       fullSheets: 5,
       partialSheetPieceCount: 1,
@@ -516,8 +518,78 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
       finalBaseRateUsed: 0.8,
     }));
     expect(snapshot?.tierResolution?.tierBasisValue).toBe(6);
+    expect(snapshot?.sheetYield).toEqual(expect.objectContaining({
+      allowRotation: false,
+      orientationUsed: "normal",
+      piecesPerSheet: 4,
+      totalSheetCount: 6,
+      billedSheetSqft: 166,
+    }));
+    expect(snapshot?.formulaScopeUsed?.allow_rotation).toBe(false);
     expect(snapshot?.formulaScopeUsed?.base_price).toBe(0.8);
     expect(snapshot?.formulaScopeUsed?.tier_base_price).toBe(0.8);
+  });
+
+  test("captures selected allow_rotation in the persisted PBV2 snapshot", async () => {
+    const tree = makeAcmTree(575, { perSqftCents: 100 }) as any;
+    delete tree.pricingMatrix;
+    tree.rootNodeIds = ["allow_rotation"];
+    tree.nodes = {
+      allow_rotation: {
+        id: "allow_rotation",
+        kind: "question",
+        label: "Allow Rotation",
+        input: { type: "select", selectionKey: "allow_rotation" },
+        choices: [
+          { value: "yes", label: "Yes" },
+          { value: "no", label: "No" },
+        ],
+      },
+    };
+    tree.meta.pricingV2.tierBasis = "computed_sheet_usage";
+    tree.meta.pricingV2.qtyTiers = [
+      { id: "sheet_usage_1", label: "One sheet plus", minQty: 1, perSqftCents: 132 },
+    ];
+
+    await db.execute(sql`
+      update pbv2_tree_versions
+      set tree_json = ${JSON.stringify(tree)}::jsonb
+      where id = ${treeVersionId}
+    `);
+
+    const result = await priceLineItem({
+      organizationId,
+      productId,
+      quantity: 5,
+      widthIn: 24,
+      heightIn: 36,
+      pbv2ExplicitSelections: {
+        allow_rotation: { value: "yes" },
+      },
+    });
+
+    const snapshot = result.pbv2SnapshotJson.pbv2PricingSnapshot;
+    expect(snapshot?.formulaScopeUsed?.allow_rotation).toBe(true);
+    expect(snapshot?.formulaVariableSources?.allow_rotation).toBe("pbv2.choice:allow_rotation");
+    expect(snapshot?.sheetYield).toEqual(expect.objectContaining({
+      allowRotation: true,
+      allowRotationSource: "pbv2.choice:allow_rotation",
+      orientationUsed: "mixed",
+      piecesPerSheet: 5,
+      totalSheetCount: 1,
+      billedSheetSqft: 32,
+    }));
+    expect(snapshot?.tierResolution).toEqual(expect.objectContaining({
+      allowRotation: true,
+      allowRotationSource: "pbv2.choice:allow_rotation",
+      normalPiecesPerSheet: 4,
+      rotatedPiecesPerSheet: 4,
+      mixedPiecesPerSheet: 5,
+      orientationUsed: "mixed",
+      piecesPerSheet: 5,
+      tierSelectionQuantity: 1,
+      computedSheetUsage: 1,
+    }));
   });
 
   test("ignores legacy priceBreaks while capturing PBV2 matrix override metadata", async () => {
