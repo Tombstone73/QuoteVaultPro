@@ -1,7 +1,9 @@
 import { describe, expect, test } from "@jest/globals";
 import {
   centsToCurrencyInput,
+  centsToCurrencyRateInput,
   currencyInputToCents,
+  currencyRateInputToCents,
   centsToCurrencyLabel,
   normalizeVariableDisplay,
 } from "../pbv2/currency";
@@ -47,6 +49,12 @@ describe("currency helpers", () => {
     expect(storedValue).toBe(575); // stored as cents
   });
 
+  test("rate helpers preserve fractional cents for high-precision pricing", () => {
+    expect(currencyRateInputToCents("1.375")).toBe(137.5);
+    expect(centsToCurrencyRateInput(137.5)).toBe("1.375");
+    expect(centsToCurrencyRateInput(132)).toBe("1.32");
+  });
+
   test("centsToCurrencyLabel formats with sign and dollar symbol", () => {
     expect(centsToCurrencyLabel(575)).toBe("+$5.75");
     expect(centsToCurrencyLabel(-250)).toBe("-$2.50");
@@ -65,6 +73,10 @@ describe("normalizeVariableDisplay (blur normalization)", () => {
 
   test('"5.75" stays "5.75"', () => {
     expect(normalizeVariableDisplay("5.75")).toBe("5.75");
+  });
+
+  test('"1.375" stays high precision', () => {
+    expect(normalizeVariableDisplay("1.375")).toBe("1.375");
   });
 
   test('"5." normalizes to "5.00" on blur', () => {

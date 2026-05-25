@@ -54,6 +54,21 @@ describe("resolveProductOptionPricingMatrix — 2×2 matrix", () => {
       expect(result.variables.base_price).toBe(expectedBasePrice);
     }
   );
+
+  test("high-precision cents storage resolves fractional-cent rates", () => {
+    const result = resolveProductOptionPricingMatrix({
+      pricingMatrix: {
+        dimensions: ["rate"],
+        rows: [
+          { id: "precise", when: { rate: "precise" }, variables: { base_price: 137.5 } },
+        ],
+      },
+      selections: { rate: { value: "precise" } },
+    });
+
+    expect(result.errors).toHaveLength(0);
+    expect(result.variables.base_price).toBe(1.375);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -135,8 +135,12 @@ export type PBV2RuntimePricingSnapshot = {
   rateUsedSource?: string;
   minimumApplied?: boolean;
   formulaScopeUsed?: Record<string, number | string | boolean | null>;
-  formulaEvaluatedTotal?: number | null;
-  pbv2BaseTotal?: number;
+    formulaEvaluatedTotal?: number | null;
+    rawBasePrice?: number | null;
+    evaluatedFormulaTotalRaw?: number | null;
+    evaluatedFormulaTotalRounded?: number | null;
+    roundingAppliedAt?: "final_currency_total" | "not_applicable";
+    pbv2BaseTotal?: number;
   finalTotalSource?: "formula" | "pbv2_base" | "manual_override";
   finalTotal?: number;
   sheetYield?: NonNullable<PricingPreviewEvaluationResult["debug"]>["sheetYield"];
@@ -285,12 +289,20 @@ export type PricingPreviewEvaluationResult = {
       unitPrice: number;
       totalPrice: number;
       formulaEvaluatedTotal?: number | null;
+      rawBasePrice?: number | null;
+      evaluatedFormulaTotalRaw?: number | null;
+      evaluatedFormulaTotalRounded?: number | null;
+      roundingAppliedAt?: "final_currency_total" | "not_applicable";
       pbv2BaseTotal?: number;
       finalTotalSource?: "formula" | "pbv2_base" | "manual_override";
       finalTotal?: number;
     };
-    formulaEvaluatedTotal?: number | null;
-    pbv2BaseTotal?: number;
+  formulaEvaluatedTotal?: number | null;
+  rawBasePrice?: number | null;
+  evaluatedFormulaTotalRaw?: number | null;
+  evaluatedFormulaTotalRounded?: number | null;
+  roundingAppliedAt?: "final_currency_total" | "not_applicable";
+  pbv2BaseTotal?: number;
     finalTotalSource?: "formula" | "pbv2_base" | "manual_override";
     finalTotal?: number;
     formulaSourceMode?: FormulaSourceMode;
@@ -972,6 +984,10 @@ export function evaluatePricingPreviewFromTree(input: {
     formulaEvaluatedTotal: formulaBasePrice.formulaEvaluatedTotalCents == null
       ? null
       : formulaBasePrice.formulaEvaluatedTotalCents / 100,
+    rawBasePrice: formulaBasePrice.rawBasePrice,
+    evaluatedFormulaTotalRaw: formulaBasePrice.formulaEvaluatedTotalRaw,
+    evaluatedFormulaTotalRounded: formulaBasePrice.formulaEvaluatedTotalRounded,
+    roundingAppliedAt: formulaBasePrice.roundingAppliedAt,
     pbv2BaseTotal: formulaBasePrice.pbv2BaseTotalCents / 100,
     finalTotalSource: formulaBasePrice.finalTotalSource,
     finalTotal: formulaBasePrice.finalTotalCents / 100,
@@ -987,6 +1003,10 @@ export function evaluatePricingPreviewFromTree(input: {
     pricingSystem: "pbv2" as const,
     ...formulaDebug,
     formulaEvaluatedTotal: pricingDebug.formulaEvaluatedTotal,
+    rawBasePrice: pricingDebug.rawBasePrice,
+    evaluatedFormulaTotalRaw: pricingDebug.evaluatedFormulaTotalRaw,
+    evaluatedFormulaTotalRounded: pricingDebug.evaluatedFormulaTotalRounded,
+    roundingAppliedAt: pricingDebug.roundingAppliedAt,
     pbv2BaseTotal: pricingDebug.pbv2BaseTotal,
     finalTotalSource: pricingDebug.finalTotalSource,
     finalTotal: pricingDebug.finalTotal,
@@ -1050,6 +1070,10 @@ export function evaluatePricingPreviewFromTree(input: {
       finalFormulaTotal: formulaDebug.finalFormulaTotal,
       sheetYield: formulaDebug.sheetYield,
       formulaEvaluatedTotal: pricingDebug.formulaEvaluatedTotal,
+      rawBasePrice: pricingDebug.rawBasePrice,
+      evaluatedFormulaTotalRaw: pricingDebug.evaluatedFormulaTotalRaw,
+      evaluatedFormulaTotalRounded: pricingDebug.evaluatedFormulaTotalRounded,
+      roundingAppliedAt: pricingDebug.roundingAppliedAt,
       pbv2BaseTotal: pricingDebug.pbv2BaseTotal,
       finalTotalSource: pricingDebug.finalTotalSource,
       finalTotal: pricingDebug.finalTotal,
@@ -2630,7 +2654,7 @@ function calculateBasePriceDetails(
       }];
 
       if (hasMatrixBasePrice) {
-        perSqftCents = Math.round(matrixBasePrice * 100);
+        perSqftCents = matrixBasePrice * 100;
         basePriceSource = "pricing_matrix.base_price_fallback";
         rateUsedSource = "pricing_matrix.base_price_fallback";
         warnings.push({
@@ -2771,7 +2795,7 @@ function calculateBasePriceDetails(
     };
 
     if (hasMatrixBasePrice) {
-      perSqftCents = Math.round(matrixBasePrice * 100);
+      perSqftCents = matrixBasePrice * 100;
       tierResolution = {
         ...tierResolution,
         matrixBasePriceOverride: true,
@@ -2927,6 +2951,10 @@ type FormulaAwareBasePriceResult = {
   formulaDebug: NonNullable<PricingPreviewEvaluationResult["debug"]>;
   formulaApplied: boolean;
   formulaEvaluatedTotalCents: number | null;
+  formulaEvaluatedTotalRaw: number | null;
+  formulaEvaluatedTotalRounded: number | null;
+  rawBasePrice: number | null;
+  roundingAppliedAt: "final_currency_total" | "not_applicable";
   pbv2BaseTotalCents: number;
   finalTotalSource: "formula" | "pbv2_base";
   finalTotalCents: number;
@@ -3192,6 +3220,10 @@ function centsEqual(left: number, right: number): boolean {
   return Math.abs(Math.round(left) - Math.round(right)) <= 0;
 }
 
+function roundCurrencyCents(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100);
+}
+
 function buildFinalTotalMismatchError(input: {
   formulaBasePrice: FormulaAwareBasePriceResult;
   basePriceCents: number;
@@ -3394,6 +3426,10 @@ function calculateFormulaAwareBasePrice(input: {
       formulaDebug,
       formulaApplied: false,
       formulaEvaluatedTotalCents: null,
+      formulaEvaluatedTotalRaw: null,
+      formulaEvaluatedTotalRounded: null,
+      rawBasePrice: baseDetails.perSqftCents / 100,
+      roundingAppliedAt: "not_applicable",
       pbv2BaseTotalCents: baseDetails.totalCents,
       finalTotalSource: "pbv2_base",
       finalTotalCents: baseDetails.totalCents,
@@ -3442,13 +3478,18 @@ function calculateFormulaAwareBasePrice(input: {
     ...formulaEvaluation.warnings,
   ];
 
-  const formulaValueCents = Math.round(formulaEvaluation.resultValue * 100);
-  const preMinimumCents = formulaEvaluation.appliedAs === "unitPrice"
-    ? formulaValueCents * input.quantity
-    : formulaValueCents;
+  const formulaTotalRaw = formulaEvaluation.appliedAs === "unitPrice"
+    ? formulaEvaluation.resultValue * input.quantity
+    : formulaEvaluation.resultValue;
+  const preMinimumCents = roundCurrencyCents(formulaTotalRaw);
+  const evaluatedFormulaTotalRounded = preMinimumCents / 100;
   const minimumApplied = baseDetails.minimumChargeCents > 0 && baseDetails.minimumChargeCents > preMinimumCents;
   const finalTotalCents = minimumApplied ? baseDetails.minimumChargeCents : preMinimumCents;
-  formulaDebug.finalFormulaTotal = preMinimumCents / 100;
+  formulaDebug.rawBasePrice = baseDetails.perSqftCents / 100;
+  formulaDebug.evaluatedFormulaTotalRaw = formulaTotalRaw;
+  formulaDebug.evaluatedFormulaTotalRounded = evaluatedFormulaTotalRounded;
+  formulaDebug.roundingAppliedAt = "final_currency_total";
+  formulaDebug.finalFormulaTotal = formulaTotalRaw;
 
   return {
     basePriceCents: finalTotalCents,
@@ -3456,6 +3497,10 @@ function calculateFormulaAwareBasePrice(input: {
     formulaDebug,
     formulaApplied: true,
     formulaEvaluatedTotalCents: preMinimumCents,
+    formulaEvaluatedTotalRaw: formulaTotalRaw,
+    formulaEvaluatedTotalRounded: evaluatedFormulaTotalRounded,
+    rawBasePrice: baseDetails.perSqftCents / 100,
+    roundingAppliedAt: "final_currency_total",
     pbv2BaseTotalCents: baseDetails.totalCents,
     finalTotalSource: "formula",
     finalTotalCents,
@@ -3696,6 +3741,10 @@ function buildRuntimePricingSnapshot(input: {
     formulaEvaluatedTotal: input.formulaBasePrice?.formulaEvaluatedTotalCents == null
       ? null
       : input.formulaBasePrice.formulaEvaluatedTotalCents / 100,
+    rawBasePrice: input.formulaBasePrice?.rawBasePrice ?? (input.baseDetails ? input.baseDetails.perSqftCents / 100 : null),
+    evaluatedFormulaTotalRaw: input.formulaBasePrice?.formulaEvaluatedTotalRaw ?? null,
+    evaluatedFormulaTotalRounded: input.formulaBasePrice?.formulaEvaluatedTotalRounded ?? null,
+    roundingAppliedAt: input.formulaBasePrice?.roundingAppliedAt ?? "not_applicable",
     pbv2BaseTotal: input.formulaBasePrice
       ? input.formulaBasePrice.pbv2BaseTotalCents / 100
       : input.baseDetails ? input.baseDetails.totalCents / 100 : undefined,

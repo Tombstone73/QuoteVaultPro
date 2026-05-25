@@ -5,7 +5,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { centsToCurrencyInput, currencyInputToCents, decimalCurrencyToInput, normalizeVariableDisplay } from "@/lib/pbv2/currency";
+import {
+  centsToCurrencyRateInput,
+  currencyRateInputToCents,
+  decimalCurrencyToInput,
+  normalizeVariableDisplay,
+} from "@/lib/pbv2/currency";
 import type { ProductOptionRule } from "@shared/productOptionRules";
 import {
   isProductOptionPricingMatrixCurrencyVariable,
@@ -159,7 +164,7 @@ function formatMatrixVariableInput(key: string, rawValue: unknown): string {
   const value = Number(rawValue);
   if (!Number.isFinite(value)) return String(rawValue);
   if (!isProductOptionPricingMatrixCurrencyVariable(key)) return String(rawValue);
-  if (Number.isInteger(value) && Math.abs(value) >= 100) return centsToCurrencyInput(value);
+  if (Math.abs(value) >= 100) return centsToCurrencyRateInput(value);
   return decimalCurrencyToInput(value);
 }
 
@@ -184,7 +189,7 @@ function variablesToRecord(variables: MatrixVariable[]) {
     const key = variable.key.trim();
     if (!key) continue;
     const parsedValue = isProductOptionPricingMatrixCurrencyVariable(key)
-      ? currencyInputToCents(variable.value)
+      ? currencyRateInputToCents(variable.value)
       : Number(variable.value);
     if (typeof parsedValue === "number" && Number.isFinite(parsedValue)) out[key] = parsedValue;
   }
@@ -213,12 +218,12 @@ function rowHasStaticBasePrice(variables: MatrixVariable[]): boolean {
 
 function currencyInputToOptionalCents(value: string): number | undefined {
   if (value.trim() === "") return undefined;
-  const cents = currencyInputToCents(value);
+  const cents = currencyRateInputToCents(value);
   return typeof cents === "number" && Number.isFinite(cents) ? cents : undefined;
 }
 
 function centsToTierInput(value: unknown): string {
-  return typeof value === "number" && Number.isFinite(value) ? centsToCurrencyInput(value) : "";
+  return typeof value === "number" && Number.isFinite(value) ? centsToCurrencyRateInput(value) : "";
 }
 
 function minQtyInputToOptionalInteger(value: string): number | undefined {
@@ -245,7 +250,7 @@ function MatrixVariableInput({ variableValue, onCommit }: MatrixVariableInputPro
   return (
     <Input
       type="number"
-      step="0.01"
+      step="0.0001"
       value={local}
       onFocus={() => { isFocused.current = true; }}
       onChange={(e) => {
