@@ -202,6 +202,9 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
     expect(result.breakdown.baseCents).toBe(4400);
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formula).toBe(COROPLAST_4X8_FORMULA);
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.calculatedPrice).toBe(44);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaEvaluatedTotal).toBe(44);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.finalTotalSource).toBe("formula");
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.finalTotal).toBe(44);
   });
 
   test("captures raw selections, effective selections, matrix variables, formula scope, and price", async () => {
