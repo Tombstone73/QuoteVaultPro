@@ -142,6 +142,7 @@ type PricingPreviewResponse = {
       partialSheetPieceCount?: number | null;
       partialSheetFinishedSqft?: number | null;
       partialSheetBillableSqft?: number | null;
+      partialSheetPolicy?: string | null;
       totalSheetCount?: number | null;
       available?: boolean;
     };
@@ -177,6 +178,7 @@ type PricingPreviewResponse = {
       partialSheetPieceCount?: number | null;
       partialSheetFinishedSqft?: number | null;
       partialSheetBillableSqft?: number | null;
+      partialSheetPolicy?: string | null;
       totalSheetCount?: number | null;
       tierSheetWidth?: number | null;
       tierSheetLength?: number | null;
@@ -1265,6 +1267,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       <div><span className="text-slate-400">Partial sheet pieces:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.partialSheetPieceCount === "number" ? formulaDebug.sheetYield.partialSheetPieceCount.toFixed(0) : "—"}</span></div>
                       <div><span className="text-slate-400">Partial sheet finished sqft:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.partialSheetFinishedSqft === "number" ? formulaDebug.sheetYield.partialSheetFinishedSqft.toFixed(2) : "—"}</span></div>
                       <div><span className="text-slate-400">Partial sheet billable sqft:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.partialSheetBillableSqft === "number" ? formulaDebug.sheetYield.partialSheetBillableSqft.toFixed(2) : "—"}</span></div>
+                      <div><span className="text-slate-400">Partial sheet policy:</span> <span className="font-mono">{formulaDebug.sheetYield?.partialSheetPolicy ?? "—"}</span></div>
                       <div><span className="text-slate-400">Total sheet count:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.totalSheetCount === "number" ? formulaDebug.sheetYield.totalSheetCount.toFixed(0) : "—"}</span></div>
                       <div><span className="text-slate-400">Billed sheet sqft:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.billedSheetSqft === "number" ? formulaDebug.sheetYield.billedSheetSqft.toFixed(2) : "—"}</span></div>
                       <div><span className="text-slate-400">Selected tier basis:</span> <span className="font-mono">{tierResolution?.tierBasis ?? "—"}</span></div>
@@ -1396,6 +1399,8 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                             <div className="font-mono">{displayDebugValue(tierResolution?.partialSheetFinishedSqft)}</div>
                             <div className="text-slate-400">Partial billable sqft</div>
                             <div className="font-mono">{displayDebugValue(tierResolution?.partialSheetBillableSqft)}</div>
+                            <div className="text-slate-400">Partial sheet policy</div>
+                            <div className="font-mono break-all">{tierResolution?.partialSheetPolicy ?? "—"}</div>
                             <div className="text-slate-400">Total sheet count</div>
                             <div className="font-mono">{displayDebugValue(tierResolution?.totalSheetCount)}</div>
                             <div className="text-slate-400">Tier sheet width</div>

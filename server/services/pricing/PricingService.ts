@@ -177,6 +177,7 @@ export type PBV2TierResolutionSnapshot = {
   partialSheetPieceCount?: number | null;
   partialSheetFinishedSqft?: number | null;
   partialSheetBillableSqft?: number | null;
+  partialSheetPolicy?: string | null;
   totalSheetCount?: number | null;
   tierSheetWidth?: number | null;
   tierSheetLength?: number | null;
@@ -313,6 +314,7 @@ export type PricingPreviewEvaluationResult = {
       partialSheetPieceCount?: number | null;
       partialSheetFinishedSqft?: number | null;
       partialSheetBillableSqft?: number | null;
+      partialSheetPolicy?: string | null;
       totalSheetCount?: number | null;
       available?: boolean;
     };
@@ -1579,6 +1581,7 @@ type SheetYieldMetrics = {
   partialSheetPieceCount?: number | null;
   partialSheetFinishedSqft?: number | null;
   partialSheetBillableSqft?: number | null;
+  partialSheetPolicy?: string | null;
   totalSheetCount?: number | null;
   tierSheetWidth?: number | null;
   tierSheetLength?: number | null;
@@ -1609,6 +1612,7 @@ type TierBasisState = {
   partialSheetPieceCount?: number | null;
   partialSheetFinishedSqft?: number | null;
   partialSheetBillableSqft?: number | null;
+  partialSheetPolicy?: string | null;
   totalSheetCount?: number | null;
   tierSheetWidth?: number | null;
   tierSheetLength?: number | null;
@@ -1905,10 +1909,11 @@ function resolveComputedSheetUsage(input: {
       piecesPerSheet: null,
       orientationUsed: null,
       fullSheets: null,
-      partialSheetPieceCount: null,
-      partialSheetFinishedSqft: null,
-      partialSheetBillableSqft: null,
-      totalSheetCount: null,
+        partialSheetPieceCount: null,
+        partialSheetFinishedSqft: null,
+        partialSheetBillableSqft: null,
+        partialSheetPolicy: null,
+        totalSheetCount: null,
       tierSheetWidth: sheetWidth,
       tierSheetLength: sheetLength,
       tierUsableDropMin: usableDropMin,
@@ -1956,6 +1961,7 @@ function resolveComputedSheetUsage(input: {
         partialSheetPieceCount: sheetYield.partialSheetPieceCount,
         partialSheetFinishedSqft: sheetYield.partialSheetFinishedSqft,
         partialSheetBillableSqft: sheetYield.partialSheetBillableSqft,
+        partialSheetPolicy: sheetYield.partialSheetPolicy,
         totalSheetCount: null,
         tierSheetWidth: sheetWidth,
         tierSheetLength: sheetLength,
@@ -1985,6 +1991,7 @@ function resolveComputedSheetUsage(input: {
       partialSheetPieceCount: sheetYield.partialSheetPieceCount,
       partialSheetFinishedSqft: sheetYield.partialSheetFinishedSqft,
       partialSheetBillableSqft: sheetYield.partialSheetBillableSqft,
+      partialSheetPolicy: sheetYield.partialSheetPolicy,
       totalSheetCount: sheetYield.totalSheetCount,
       tierSheetWidth: sheetWidth,
       tierSheetLength: sheetLength,
@@ -2019,6 +2026,7 @@ function resolveComputedSheetUsage(input: {
       partialSheetPieceCount: null,
       partialSheetFinishedSqft: null,
       partialSheetBillableSqft: null,
+      partialSheetPolicy: null,
       totalSheetCount: null,
       tierSheetWidth: sheetWidth,
       tierSheetLength: sheetLength,
@@ -2109,6 +2117,7 @@ function resolveTierBasisState(input: {
       partialSheetPieceCount: computed.partialSheetPieceCount,
       partialSheetFinishedSqft: computed.partialSheetFinishedSqft,
       partialSheetBillableSqft: computed.partialSheetBillableSqft,
+      partialSheetPolicy: computed.partialSheetPolicy,
       totalSheetCount: computed.totalSheetCount ?? computed.sheetCount,
       tierSheetWidth: computed.tierSheetWidth,
       tierSheetLength: computed.tierSheetLength,
@@ -2146,6 +2155,7 @@ function resolveTierBasisState(input: {
     partialSheetPieceCount: computed.partialSheetPieceCount,
     partialSheetFinishedSqft: computed.partialSheetFinishedSqft,
     partialSheetBillableSqft: computed.partialSheetBillableSqft,
+    partialSheetPolicy: computed.partialSheetPolicy,
     totalSheetCount: computed.totalSheetCount,
     tierSheetWidth: computed.tierSheetWidth,
     tierSheetLength: computed.tierSheetLength,
@@ -2393,6 +2403,7 @@ function calculateBasePriceDetails(
         partialSheetPieceCount: tierBasisState.partialSheetPieceCount,
         partialSheetFinishedSqft: tierBasisState.partialSheetFinishedSqft,
         partialSheetBillableSqft: tierBasisState.partialSheetBillableSqft,
+        partialSheetPolicy: tierBasisState.partialSheetPolicy,
         totalSheetCount: tierBasisState.totalSheetCount,
         tierSheetWidth: tierBasisState.tierSheetWidth,
         tierSheetLength: tierBasisState.tierSheetLength,
@@ -2463,6 +2474,7 @@ function calculateBasePriceDetails(
         partialSheetPieceCount: tierBasisState.partialSheetPieceCount,
         partialSheetFinishedSqft: tierBasisState.partialSheetFinishedSqft,
         partialSheetBillableSqft: tierBasisState.partialSheetBillableSqft,
+        partialSheetPolicy: tierBasisState.partialSheetPolicy,
         totalSheetCount: tierBasisState.totalSheetCount,
         tierSheetWidth: tierBasisState.tierSheetWidth,
         tierSheetLength: tierBasisState.tierSheetLength,
@@ -2528,6 +2540,7 @@ function calculateBasePriceDetails(
       partialSheetPieceCount: tierBasisState.partialSheetPieceCount,
       partialSheetFinishedSqft: tierBasisState.partialSheetFinishedSqft,
       partialSheetBillableSqft: tierBasisState.partialSheetBillableSqft,
+      partialSheetPolicy: tierBasisState.partialSheetPolicy,
       totalSheetCount: tierBasisState.totalSheetCount,
       tierSheetWidth: tierBasisState.tierSheetWidth,
       tierSheetLength: tierBasisState.tierSheetLength,
@@ -3343,6 +3356,7 @@ function buildTierResolutionSnapshot(
     partialSheetPieceCount: tierResolution.partialSheetPieceCount,
     partialSheetFinishedSqft: tierResolution.partialSheetFinishedSqft,
     partialSheetBillableSqft: tierResolution.partialSheetBillableSqft,
+    partialSheetPolicy: tierResolution.partialSheetPolicy,
     totalSheetCount: tierResolution.totalSheetCount,
     tierSheetWidth: tierResolution.tierSheetWidth,
     tierSheetLength: tierResolution.tierSheetLength,
@@ -3623,6 +3637,7 @@ function evaluatePreviewFormulaToCents(input: {
       { label: 'computed_sheets', value: input.sheetYieldMetrics.computedSheets ?? "unavailable" },
       { label: 'pieces_per_sheet', value: input.sheetYieldMetrics.piecesPerSheet ?? "unavailable" },
       { label: 'total_sheet_count', value: input.sheetYieldMetrics.totalSheetCount ?? input.sheetYieldMetrics.sheetCount ?? "unavailable" },
+      { label: 'partial_sheet_policy', value: input.sheetYieldMetrics.partialSheetPolicy ?? "unavailable" },
       { label: 'billed_sheet_sqft', value: input.sheetYieldMetrics.billedSheetSqft ?? "unavailable" },
     );
   }
@@ -3819,6 +3834,7 @@ function buildBaseFormulaDebugContext(input: {
         { label: 'computed_sheets', value: input.sheetYieldMetrics.computedSheets ?? "unavailable" },
         { label: 'pieces_per_sheet', value: input.sheetYieldMetrics.piecesPerSheet ?? "unavailable" },
         { label: 'total_sheet_count', value: input.sheetYieldMetrics.totalSheetCount ?? input.sheetYieldMetrics.sheetCount ?? "unavailable" },
+        { label: 'partial_sheet_policy', value: input.sheetYieldMetrics.partialSheetPolicy ?? "unavailable" },
         { label: 'billed_sheet_sqft', value: input.sheetYieldMetrics.billedSheetSqft ?? "unavailable" },
       ] : []),
     ],
@@ -3846,6 +3862,7 @@ function buildBaseFormulaDebugContext(input: {
       partialSheetPieceCount: input.sheetYieldMetrics.partialSheetPieceCount,
       partialSheetFinishedSqft: input.sheetYieldMetrics.partialSheetFinishedSqft,
       partialSheetBillableSqft: input.sheetYieldMetrics.partialSheetBillableSqft,
+      partialSheetPolicy: input.sheetYieldMetrics.partialSheetPolicy,
       totalSheetCount: input.sheetYieldMetrics.totalSheetCount,
       mode: input.sheetYieldMetrics.mode,
       available: input.sheetYieldMetrics.available,

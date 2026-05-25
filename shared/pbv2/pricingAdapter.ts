@@ -153,6 +153,7 @@ export type Pbv2TierResolution = {
   partialSheetPieceCount?: number | null;
   partialSheetFinishedSqft?: number | null;
   partialSheetBillableSqft?: number | null;
+  partialSheetPolicy?: string | null;
   totalSheetCount?: number | null;
   tierSheetWidth?: number | null;
   tierSheetLength?: number | null;
