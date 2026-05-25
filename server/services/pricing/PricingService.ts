@@ -43,7 +43,6 @@ import {
 import {
   pbv2ToRuntimeSelectionContext,
   resolvePricingV2BaseRates,
-  type LegacyPriceBreaksConfig,
   type Pbv2TierResolution,
   type Pbv2TierResolutionWarning,
 } from '../../../shared/pbv2/pricingAdapter';
@@ -59,8 +58,6 @@ import {
 } from '../pbv2WeightResolver';
 // @ts-ignore - NestingCalculator.js is plain JS without exported TS types
 import NestingCalculator from '../../NestingCalculator.js';
-
-export const PBV2_PREVIEW_FALLBACK_FORMULA = 'sqft * base_price * q';
 
 // ============================================================================
 // Types
@@ -93,6 +90,7 @@ export type PricingOutput = {
 };
 
 export type PBV2PricingSnapshot = {
+  pricingSystem: "pbv2";
   treeVersionId: string;
   treeJson: any; // DB stores as jsonb, not strongly typed
   selections: Record<string, any>; // Option selections snapshot
@@ -116,6 +114,7 @@ export type PBV2PricingSnapshot = {
 };
 
 export type PBV2RuntimePricingSnapshot = {
+  pricingSystem: "pbv2";
   formula: string;
   formulaVariables: Record<string, number | string | boolean | null>;
   rawSelections: Record<string, any>;
@@ -129,8 +128,8 @@ export type PBV2RuntimePricingSnapshot = {
   minimumApplied?: boolean;
   formulaScopeUsed?: Record<string, number | string | boolean | null>;
   formulaEvaluatedTotal?: number | null;
-  fallbackBaseTotal?: number;
-  finalTotalSource?: "formula" | "fallback_formula" | "fallback_base";
+  pbv2BaseTotal?: number;
+  finalTotalSource?: "formula" | "pbv2_base" | "manual_override";
   finalTotal?: number;
   sheetYield?: NonNullable<PricingPreviewEvaluationResult["debug"]>["sheetYield"];
   calculatedPrice: number;
@@ -141,7 +140,7 @@ export type PBV2RuntimePricingSnapshot = {
 export type PBV2TierResolutionSnapshot = {
   quantity: number;
   enabled: boolean;
-  source: "matrix_row" | "pbv2_product" | "pbv2_pricing_v2" | "legacy_price_breaks" | "none";
+  source: "matrix_row" | "pbv2_product" | "pbv2_pricing_v2" | "none";
   matchedTierId: string | null;
   matchedTierLabel: string | null;
   originalBaseRate: number;
@@ -164,7 +163,7 @@ export type PBV2TierResolutionSnapshot = {
   fallbackToLineItemQuantity?: boolean;
   selectedTierMinQty?: number | null;
   selectedTierRate?: number | null;
-  selectedTierSource?: "matrix_row" | "pbv2_product" | "pbv2_pricing_v2" | "legacy_price_breaks" | "none" | null;
+  selectedTierSource?: "matrix_row" | "pbv2_product" | "pbv2_pricing_v2" | "none" | null;
   finalBaseRateUsed: number;
   warnings: Pbv2TierResolutionWarning[];
   capturedAt: string;
@@ -208,6 +207,7 @@ export type PricingPreviewEvaluationResult = {
     finishedHeight?: number;
   };
   debug?: {
+    pricingSystem?: "pbv2";
     formulaRaw: string;
     formulaResolved?: string;
     variables: Record<string, number | string | boolean | null>;
@@ -215,8 +215,7 @@ export type PricingPreviewEvaluationResult = {
     appliedAs?: 'unitPrice' | 'totalPrice' | 'unknown';
     steps?: Array<{ label: string; value: number | string }>;
     errors?: Array<{ code: string; message: string; detail?: any }>;
-    usedFallbackFormula?: boolean;
-    fallbackFormula?: string;
+    likelyMisconfiguredFormula?: boolean;
     preCeilSqftTotal?: number | null;
     postCeilSqftTotal?: number | null;
     rawSqftPerItem?: number;
@@ -250,13 +249,13 @@ export type PricingPreviewEvaluationResult = {
       unitPrice: number;
       totalPrice: number;
       formulaEvaluatedTotal?: number | null;
-      fallbackBaseTotal?: number;
-      finalTotalSource?: "formula" | "fallback_formula" | "fallback_base";
+      pbv2BaseTotal?: number;
+      finalTotalSource?: "formula" | "pbv2_base" | "manual_override";
       finalTotal?: number;
     };
     formulaEvaluatedTotal?: number | null;
-    fallbackBaseTotal?: number;
-    finalTotalSource?: "formula" | "fallback_formula" | "fallback_base";
+    pbv2BaseTotal?: number;
+    finalTotalSource?: "formula" | "pbv2_base" | "manual_override";
     finalTotal?: number;
     formulaResultType?: "final_dollars";
     quantityBasisUsed?: string;
@@ -423,6 +422,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     // Build minimal snapshot
     const pricedAt = new Date().toISOString();
     const snapshot: PBV2PricingSnapshot = {
+      pricingSystem: "pbv2",
       treeVersionId,
       treeJson: cloneJsonValue(treeVersion.treeJson),
       selections: cloneJsonValue(ruleValidatedSelections.selected),
@@ -556,7 +556,6 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     pricingProfileConfig: product.pricingProfileConfig,
     formulaVariables: formulaVariablesForPricing,
     pricingFormulaExpression: pricingFormulaExpressionForSheetYield,
-    legacyPriceBreaks: product.priceBreaks as LegacyPriceBreaksConfig | null,
     productLegacy: {
       sheetWidth: product.sheetWidth,
       sheetHeight: product.sheetHeight,
@@ -657,6 +656,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
   // Step 8: Build snapshot
   const pricedAt = new Date().toISOString();
   const snapshot: PBV2PricingSnapshot = {
+    pricingSystem: "pbv2",
     treeVersionId,
     treeJson: cloneJsonValue(treeVersion.treeJson),
     selections: cloneJsonValue(ruleValidatedSelections.selected),
@@ -833,7 +833,6 @@ export function evaluatePricingPreviewFromTree(input: {
   }
   const basePriceCents = formulaBasePrice.basePriceCents;
   const formulaToUse = formulaBasePrice.formulaToUse;
-  const usedFallbackFormula = formulaBasePrice.usedFallbackFormula;
   const formulaDebug = formulaBasePrice.formulaDebug;
 
   const evalResult = evaluateOptionTreeV2({
@@ -877,6 +876,7 @@ export function evaluatePricingPreviewFromTree(input: {
       finishedHeight: Number.isFinite(baseDetails.finishedHeightIn) ? baseDetails.finishedHeightIn : undefined,
     },
     debug: input.debug ? {
+      pricingSystem: "pbv2",
       formulaRaw: formulaDebug.formulaRaw,
       formulaResolved: formulaDebug.formulaResolved,
       variables: formulaDebug.variables,
@@ -884,8 +884,7 @@ export function evaluatePricingPreviewFromTree(input: {
       appliedAs: formulaDebug.appliedAs,
       steps: formulaDebug.steps,
       errors: formulaDebug.errors,
-      usedFallbackFormula,
-      fallbackFormula: usedFallbackFormula ? PBV2_PREVIEW_FALLBACK_FORMULA : undefined,
+      likelyMisconfiguredFormula: formulaDebug.likelyMisconfiguredFormula,
       preCeilSqftTotal: formulaDebug.preCeilSqftTotal,
       postCeilSqftTotal: formulaDebug.postCeilSqftTotal,
       rawSqftPerItem: widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0,
@@ -899,7 +898,7 @@ export function evaluatePricingPreviewFromTree(input: {
       formulaEvaluatedTotal: formulaBasePrice.formulaEvaluatedTotalCents == null
         ? null
         : formulaBasePrice.formulaEvaluatedTotalCents / 100,
-      fallbackBaseTotal: formulaBasePrice.fallbackBaseTotalCents / 100,
+      pbv2BaseTotal: formulaBasePrice.pbv2BaseTotalCents / 100,
       finalTotalSource: formulaBasePrice.finalTotalSource,
       finalTotal: formulaBasePrice.finalTotalCents / 100,
       inputs: {
@@ -932,7 +931,7 @@ export function evaluatePricingPreviewFromTree(input: {
         formulaEvaluatedTotal: formulaBasePrice.formulaEvaluatedTotalCents == null
           ? null
           : formulaBasePrice.formulaEvaluatedTotalCents / 100,
-        fallbackBaseTotal: formulaBasePrice.fallbackBaseTotalCents / 100,
+        pbv2BaseTotal: formulaBasePrice.pbv2BaseTotalCents / 100,
         finalTotalSource: formulaBasePrice.finalTotalSource,
         finalTotal: formulaBasePrice.finalTotalCents / 100,
       },
@@ -1366,7 +1365,6 @@ function calculateBasePrice(
     pricingProfileConfig?: unknown;
     formulaVariables?: Record<string, number>;
     pricingFormulaExpression?: string | null;
-    legacyPriceBreaks?: LegacyPriceBreaksConfig | null;
     productLegacy?: {
       sheetWidth?: string | null;
       sheetHeight?: string | null;
@@ -1859,7 +1857,6 @@ function calculateBasePriceDetails(
     pricingProfileConfig?: unknown;
     formulaVariables?: Record<string, number>;
     pricingFormulaExpression?: string | null;
-    legacyPriceBreaks?: LegacyPriceBreaksConfig | null;
     productLegacy?: {
       sheetWidth?: string | null;
       sheetHeight?: string | null;
@@ -2136,7 +2133,6 @@ function calculateBasePriceDetails(
       },
       {
         runtimeSelectionContext: pricingContext?.runtimeSelectionContext,
-        legacyPriceBreaks: pricingContext?.legacyPriceBreaks,
         tierQuantity: tierBasisState.tierBasisValue,
       }
     );
@@ -2310,12 +2306,11 @@ type BasePriceDetails = ReturnType<typeof calculateBasePriceDetails>;
 type FormulaAwareBasePriceResult = {
   basePriceCents: number;
   formulaToUse: string;
-  usedFallbackFormula: boolean;
   formulaDebug: NonNullable<PricingPreviewEvaluationResult["debug"]>;
   formulaApplied: boolean;
   formulaEvaluatedTotalCents: number | null;
-  fallbackBaseTotalCents: number;
-  finalTotalSource: "formula" | "fallback_formula" | "fallback_base";
+  pbv2BaseTotalCents: number;
+  finalTotalSource: "formula" | "pbv2_base";
   finalTotalCents: number;
   minimumApplied: boolean;
   preMinimumCents: number;
@@ -2378,9 +2373,8 @@ function calculateFormulaAwareBasePrice(input: {
     ? input.pricingFormulaOverride.trim()
     : "";
   const formulaCandidate = overrideFormula || formulaFromTree || formulaFromLibrary || formulaFromProduct || formulaFromProfile;
-  const shouldEvaluateFormula = Boolean(formulaCandidate) || profileUsesFormula;
-  const usedFallbackFormula = shouldEvaluateFormula && !formulaCandidate;
-  const formulaToUse = shouldEvaluateFormula ? (formulaCandidate || PBV2_PREVIEW_FALLBACK_FORMULA) : "";
+  const shouldEvaluateFormula = Boolean(formulaCandidate);
+  const formulaToUse = shouldEvaluateFormula ? formulaCandidate : "";
   const tierResolution = withFormulaTierReferenceWarning(baseDetails.tierResolution, formulaToUse);
   const formulaVariables = input.formulaVariables
     ?? (input.product ? resolveSnapshotFormulaVariables(input.treeJson, input.product) : undefined);
@@ -2402,21 +2396,26 @@ function calculateFormulaAwareBasePrice(input: {
     totalSqft: baseDetails.totalSqft,
     linearFeet: baseDetails.linearFeet,
     sheetYieldMetrics: baseDetails.sheetYieldMetrics,
-    usedFallbackFormula,
     formulaVariables,
     pricingMatrixVariables: input.pricingMatrixVariables,
   });
 
   if (!shouldEvaluateFormula) {
+    if (profileUsesFormula) {
+      throw buildPbv2PricingFormulaError({
+        message: "PBV2 formula pricing is selected, but no formula expression is configured.",
+        code: "PBV2_FORMULA_MISSING",
+        debug: formulaDebug,
+      });
+    }
     return {
       basePriceCents: baseDetails.totalCents,
       formulaToUse,
-      usedFallbackFormula,
       formulaDebug,
       formulaApplied: false,
       formulaEvaluatedTotalCents: null,
-      fallbackBaseTotalCents: baseDetails.totalCents,
-      finalTotalSource: "fallback_base",
+      pbv2BaseTotalCents: baseDetails.totalCents,
+      finalTotalSource: "pbv2_base",
       finalTotalCents: baseDetails.totalCents,
       minimumApplied: baseDetails.minimumApplied,
       preMinimumCents: baseDetails.preMinimumCents,
@@ -2441,8 +2440,6 @@ function calculateFormulaAwareBasePrice(input: {
     totalSqft: baseDetails.totalSqft,
     linearFeet: baseDetails.linearFeet,
     sheetYieldMetrics: baseDetails.sheetYieldMetrics,
-    usedFallbackFormula,
-    fallbackFormula: PBV2_PREVIEW_FALLBACK_FORMULA,
     formulaVariables,
     pricingMatrixVariables: input.pricingMatrixVariables,
   });
@@ -2457,6 +2454,11 @@ function calculateFormulaAwareBasePrice(input: {
   formulaDebug.formulaResultType = formulaEvaluation.formulaResultType;
   formulaDebug.quantityBasisUsed = formulaEvaluation.quantityBasisUsed;
   formulaDebug.selectedRate = formulaEvaluation.selectedRate;
+  formulaDebug.likelyMisconfiguredFormula = formulaEvaluation.likelyMisconfiguredFormula;
+  formulaDebug.errors = [
+    ...(formulaDebug.errors ?? []),
+    ...formulaEvaluation.warnings,
+  ];
 
   const formulaValueCents = Math.round(formulaEvaluation.resultValue * 100);
   const preMinimumCents = formulaEvaluation.appliedAs === "unitPrice"
@@ -2469,12 +2471,11 @@ function calculateFormulaAwareBasePrice(input: {
   return {
     basePriceCents: finalTotalCents,
     formulaToUse,
-    usedFallbackFormula,
     formulaDebug,
     formulaApplied: true,
     formulaEvaluatedTotalCents: preMinimumCents,
-    fallbackBaseTotalCents: baseDetails.totalCents,
-    finalTotalSource: usedFallbackFormula ? "fallback_formula" : "formula",
+    pbv2BaseTotalCents: baseDetails.totalCents,
+    finalTotalSource: "formula",
     finalTotalCents,
     minimumApplied,
     preMinimumCents,
@@ -2516,9 +2517,9 @@ function resolveSnapshotFormulaVariables(treeJson: any, product: any): Record<st
   );
 }
 
-function resolveSnapshotFormula(treeJson: any, product: any, pricingProfileKey: string): { formula: string; usedFallbackFormula: boolean } {
+function resolveSnapshotFormula(treeJson: any, product: any, pricingProfileKey: string): { formula: string } {
   const profile = getProfile(pricingProfileKey);
-  if (!profile.usesFormula) return { formula: "", usedFallbackFormula: false };
+  if (!profile.usesFormula) return { formula: "" };
 
   const formulaFromTree = typeof treeJson?.meta?.pricingFormula === "string"
     ? treeJson.meta.pricingFormula.trim()
@@ -2529,12 +2530,9 @@ function resolveSnapshotFormula(treeJson: any, product: any, pricingProfileKey: 
   const formulaFromProfile = typeof profile.defaultFormula === "string"
     ? profile.defaultFormula.trim()
     : "";
-  const formula = formulaFromTree || formulaFromProduct || formulaFromProfile || PBV2_PREVIEW_FALLBACK_FORMULA;
+  const formula = formulaFromTree || formulaFromProduct || formulaFromProfile || "";
 
-  return {
-    formula,
-    usedFallbackFormula: !formulaFromTree && !formulaFromProduct && !formulaFromProfile,
-  };
+  return { formula };
 }
 
 export function buildResolvedWeightSnapshotDebug(
@@ -2632,7 +2630,6 @@ function buildRuntimePricingSnapshot(input: {
   const formulaSnapshot = input.formulaBasePrice
     ? {
         formula: input.formulaBasePrice.formulaToUse,
-        usedFallbackFormula: input.formulaBasePrice.usedFallbackFormula,
       }
     : resolveSnapshotFormula(input.treeJson, input.product, pricingProfileKey);
   const formulaVariables = resolveSnapshotFormulaVariables(input.treeJson, input.product);
@@ -2654,13 +2651,13 @@ function buildRuntimePricingSnapshot(input: {
     totalSqft,
     linearFeet,
     sheetYieldMetrics: input.baseDetails?.sheetYieldMetrics,
-    usedFallbackFormula: formulaSnapshot.usedFallbackFormula,
     formulaVariables,
     pricingMatrixVariables: input.pricingMatrixResolution.variables,
   });
   const hasMatrixBasePrice = typeof input.pricingMatrixResolution.variables.base_price === "number";
 
   return cloneJsonValue({
+    pricingSystem: "pbv2",
     formula: formulaSnapshot.formula,
     formulaVariables: formulaDebug.variables,
     rawSelections: toPlainSelectionValues(input.rawSelections),
@@ -2680,10 +2677,10 @@ function buildRuntimePricingSnapshot(input: {
     formulaEvaluatedTotal: input.formulaBasePrice?.formulaEvaluatedTotalCents == null
       ? null
       : input.formulaBasePrice.formulaEvaluatedTotalCents / 100,
-    fallbackBaseTotal: input.formulaBasePrice
-      ? input.formulaBasePrice.fallbackBaseTotalCents / 100
+    pbv2BaseTotal: input.formulaBasePrice
+      ? input.formulaBasePrice.pbv2BaseTotalCents / 100
       : input.baseDetails ? input.baseDetails.totalCents / 100 : undefined,
-    finalTotalSource: input.formulaBasePrice?.finalTotalSource,
+    finalTotalSource: input.formulaBasePrice?.finalTotalSource ?? "pbv2_base",
     finalTotal: input.formulaBasePrice
       ? input.formulaBasePrice.finalTotalCents / 100
       : input.calculatedPriceCents / 100,
@@ -2727,8 +2724,6 @@ function evaluatePreviewFormulaToCents(input: {
   totalSqft: number;
   linearFeet: number;
   sheetYieldMetrics?: SheetYieldMetrics;
-  usedFallbackFormula: boolean;
-  fallbackFormula: string;
   formulaVariables?: Record<string, number>;
   pricingMatrixVariables?: Record<string, number>;
 }): {
@@ -2743,6 +2738,8 @@ function evaluatePreviewFormulaToCents(input: {
   quantityBasisUsed: string;
   selectedRate: number | null;
   finalFormulaTotal: number | null;
+  likelyMisconfiguredFormula: boolean;
+  warnings: Array<{ code: string; message: string; detail?: any }>;
 } {
   const scope = buildFormulaScope({
     ...input,
@@ -2823,14 +2820,13 @@ function evaluatePreviewFormulaToCents(input: {
       location: undefined,
     }));
     formulaError.debug = {
+      pricingSystem: "pbv2",
       formulaRaw: input.formula,
       formulaResolved,
       variables: formulaScope,
       appliedAs,
       steps,
       errors: formulaError.details,
-      usedFallbackFormula: input.usedFallbackFormula,
-      fallbackFormula: input.usedFallbackFormula ? input.fallbackFormula : undefined,
       preCeilSqftTotal,
       postCeilSqftTotal,
       baseRateUsed: resolvedBaseRate,
@@ -2854,14 +2850,13 @@ function evaluatePreviewFormulaToCents(input: {
       location: undefined,
     }));
     formulaError.debug = {
+      pricingSystem: "pbv2",
       formulaRaw: input.formula,
       formulaResolved,
       variables: formulaScope,
       appliedAs,
       steps,
       errors: formulaError.details,
-      usedFallbackFormula: input.usedFallbackFormula,
-      fallbackFormula: input.usedFallbackFormula ? input.fallbackFormula : undefined,
       preCeilSqftTotal,
       postCeilSqftTotal,
       baseRateUsed: resolvedBaseRate,
@@ -2887,6 +2882,8 @@ function evaluatePreviewFormulaToCents(input: {
       quantityBasisUsed: inferFormulaQuantityBasis(input.formula),
       selectedRate: resolvedBaseRate,
       finalFormulaTotal: value,
+      likelyMisconfiguredFormula: isLikelyGeometryOnlyFormula(input.formula),
+      warnings: buildFormulaOutputWarnings(input.formula),
     };
   } catch (error: any) {
     const message = typeof error?.message === 'string' ? error.message : 'Invalid formula';
@@ -2900,14 +2897,13 @@ function evaluatePreviewFormulaToCents(input: {
       location,
     }];
     formulaError.debug = {
+      pricingSystem: "pbv2",
       formulaRaw: input.formula,
       formulaResolved,
       variables: formulaScope,
       appliedAs,
       steps,
       errors: [{ code: errorCode, message }],
-      usedFallbackFormula: input.usedFallbackFormula,
-      fallbackFormula: input.usedFallbackFormula ? input.fallbackFormula : undefined,
       preCeilSqftTotal,
       postCeilSqftTotal,
       baseRateUsed: resolvedBaseRate,
@@ -2933,7 +2929,6 @@ function buildBaseFormulaDebugContext(input: {
   totalSqft: number;
   linearFeet: number;
   sheetYieldMetrics?: SheetYieldMetrics;
-  usedFallbackFormula: boolean;
   formulaVariables?: Record<string, number>;
   pricingMatrixVariables?: Record<string, number>;
 }): NonNullable<PricingPreviewEvaluationResult['debug']> {
@@ -2968,6 +2963,7 @@ function buildBaseFormulaDebugContext(input: {
   const resolvedBaseRate = typeof variables.base_price === 'number' ? variables.base_price : input.baseRatePerSqft;
 
   return {
+    pricingSystem: "pbv2",
     formulaRaw: input.formulaRaw,
     formulaResolved: input.formulaRaw ? resolveFormulaAliases(input.formulaRaw) : undefined,
     variables,
@@ -2984,8 +2980,7 @@ function buildBaseFormulaDebugContext(input: {
       ] : []),
     ],
     errors: [],
-    usedFallbackFormula: input.usedFallbackFormula,
-    fallbackFormula: input.usedFallbackFormula ? PBV2_PREVIEW_FALLBACK_FORMULA : undefined,
+    likelyMisconfiguredFormula: input.formulaRaw ? isLikelyGeometryOnlyFormula(input.formulaRaw) : false,
     preCeilSqftTotal: null,
     postCeilSqftTotal: null,
     baseRateUsed: resolvedBaseRate,
@@ -3180,6 +3175,57 @@ function inferFormulaQuantityBasis(formula: string): string {
   if (/\bsqft\b/.test(normalized)) return "sqft";
   if (/\bsheet_consumption_sqft\s*\(/.test(normalized)) return "sheet_consumption_sqft";
   return "unknown";
+}
+
+function formulaReferencesPricingRate(formula: string): boolean {
+  return /\b(?:base_price|p|basepricepersqft|pricepersqft|unitprice|price|sqft_rate|sheet_price|tier_rate|tier_base_price|effective_base_price|original_base_price)\b/i.test(formula);
+}
+
+function isLikelyGeometryOnlyFormula(formula: string): boolean {
+  const normalized = String(formula || "").toLowerCase();
+  if (!normalized.trim()) return false;
+  const usesGeometryQuantity =
+    /\bsheet_consumption_sqft\s*\(/.test(normalized) ||
+    /\b(?:billed_sheet_sqft|computed_sheets|sheet_count|billed_sheets|total_finished_sqft|finished_sqft|total_sqft|sqft)\b/.test(normalized);
+  return usesGeometryQuantity && !formulaReferencesPricingRate(normalized);
+}
+
+function buildFormulaOutputWarnings(formula: string): Array<{ code: string; message: string; detail?: any }> {
+  if (!isLikelyGeometryOnlyFormula(formula)) return [];
+  return [{
+    code: "PBV2_FORMULA_GEOMETRY_OUTPUT_ONLY",
+    message: "Formula appears to return a geometry quantity without multiplying by a PBV2 price or rate. PBV2 formula output is interpreted as final dollars.",
+    detail: {
+      expectedFormulaOutput: "final_dollars",
+      examples: [
+        "total_finished_sqft * base_price",
+        "billed_sheet_sqft * base_price",
+        "computed_sheets * sheet_price",
+      ],
+    },
+  }];
+}
+
+function buildPbv2PricingFormulaError(input: {
+  message: string;
+  code: string;
+  debug: NonNullable<PricingPreviewEvaluationResult["debug"]>;
+}): PricingPreviewFormulaError {
+  const formulaError = new Error(`Formula error: ${input.message}`) as PricingPreviewFormulaError;
+  formulaError.code = "PBV2_FORMULA_ERROR";
+  formulaError.details = [{
+    code: input.code,
+    message: input.message,
+  }];
+  formulaError.debug = {
+    ...input.debug,
+    pricingSystem: "pbv2",
+    errors: [
+      ...(input.debug.errors ?? []),
+      { code: input.code, message: input.message },
+    ],
+  };
+  return formulaError;
 }
 
 function inferFormulaApplication(formula: string): 'unitPrice' | 'totalPrice' | 'unknown' {

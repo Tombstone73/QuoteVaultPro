@@ -22,7 +22,7 @@ export type ProductBuilderDraftState<TFormValues extends FieldValues> = {
 
   // Draft snapshots for page-based builder + split preview.
   productDraft: TFormValues;
-  optionsDraft: unknown;
+  pbv2TreeDraft: unknown;
 
   // Reference data.
   materials?: Material[];
@@ -41,7 +41,7 @@ export function useProductBuilderDraft<TFormValues extends FieldValues>({
 }: UseProductBuilderDraftArgs<TFormValues>): ProductBuilderDraftState<TFormValues> {
   // react-hook-form typing can get tricky with generic useWatch; keep this hook permissive.
   const productDraft = useWatch({ control: form.control }) as TFormValues;
-  const optionsDraft = useWatch({ control: form.control, name: "optionsJson" as any });
+  const pbv2TreeDraft = useWatch({ control: form.control, name: "optionTreeJson" as any });
 
   const materialsById = useMemo(() => {
     const map = new Map<string, Material>();
@@ -76,13 +76,13 @@ export function useProductBuilderDraft<TFormValues extends FieldValues>({
   }, [pricingPreviewInputs]);
 
   // TODO(ProductBuilderPage): The split-screen pricing preview panel should subscribe to
-  // `productDraft` + `optionsDraft` and recompute live as the draft changes.
+  // `productDraft` + `pbv2TreeDraft` and recompute live as the draft changes.
   // Important: do NOT rely on modal open/close lifecycle for resetting this state.
 
   return {
     form,
     productDraft,
-    optionsDraft,
+    pbv2TreeDraft,
     materials,
     materialsById,
     pricingFormulas,

@@ -56,6 +56,7 @@ type PricingPreviewResponse = {
   };
   errors?: string[];
   debug?: {
+    pricingSystem?: "pbv2";
     formulaRaw: string;
     formulaResolved?: string;
     variables: Record<string, number | string | boolean | null>;
@@ -63,8 +64,7 @@ type PricingPreviewResponse = {
     appliedAs?: "unitPrice" | "totalPrice" | "unknown";
     steps?: Array<{ label: string; value: number | string }>;
     errors?: Array<{ code: string; message: string; detail?: any }>;
-    usedFallbackFormula?: boolean;
-    fallbackFormula?: string;
+    likelyMisconfiguredFormula?: boolean;
     preCeilSqftTotal?: number | null;
     postCeilSqftTotal?: number | null;
     rawSqftPerItem?: number;
@@ -98,13 +98,13 @@ type PricingPreviewResponse = {
       unitPrice: number;
       totalPrice: number;
       formulaEvaluatedTotal?: number | null;
-      fallbackBaseTotal?: number;
-      finalTotalSource?: "formula" | "fallback_formula" | "fallback_base";
+      pbv2BaseTotal?: number;
+      finalTotalSource?: "formula" | "pbv2_base" | "manual_override";
       finalTotal?: number;
     };
     formulaEvaluatedTotal?: number | null;
-    fallbackBaseTotal?: number;
-    finalTotalSource?: "formula" | "fallback_formula" | "fallback_base";
+    pbv2BaseTotal?: number;
+    finalTotalSource?: "formula" | "pbv2_base" | "manual_override";
     finalTotal?: number;
     formulaResultType?: "final_dollars";
     quantityBasisUsed?: string;
@@ -124,7 +124,7 @@ type PricingPreviewResponse = {
     tierResolution?: {
       quantity: number;
       enabled: boolean;
-      source: "matrix_row" | "pbv2_product" | "pbv2_pricing_v2" | "legacy_price_breaks" | "none";
+      source: "matrix_row" | "pbv2_product" | "pbv2_pricing_v2" | "none";
       matchedTierId: string | null;
       matchedTierLabel: string | null;
       originalBaseRate: number;
@@ -147,7 +147,7 @@ type PricingPreviewResponse = {
       fallbackToLineItemQuantity?: boolean;
       selectedTierMinQty?: number | null;
       selectedTierRate?: number | null;
-      selectedTierSource?: "matrix_row" | "pbv2_product" | "pbv2_pricing_v2" | "legacy_price_breaks" | "none" | null;
+      selectedTierSource?: "matrix_row" | "pbv2_product" | "pbv2_pricing_v2" | "none" | null;
       finalBaseRateUsed: number;
       warnings: Array<{ code: string; message: string; severity?: string; detail?: Record<string, unknown> }>;
       capturedAt?: string;
@@ -752,9 +752,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
     ? "Matrix row"
     : tierResolution?.source === "pbv2_product" || tierResolution?.source === "pbv2_pricing_v2"
       ? "PBV2 product"
-      : tierResolution?.source === "legacy_price_breaks"
-        ? "Legacy priceBreaks"
-        : "None";
+      : "None";
   const tierBasisDisplay = tierResolution?.tierBasis === "computed_sheet_usage" ? "Computed Sheet Usage" : "Line Item Quantity";
   const tierBasisResolvedFromDisplay = tierResolution?.tierBasisResolvedFrom === "matrix_row"
     ? "Matrix row"
@@ -1121,9 +1119,9 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                   {result.formulaUsed ? (
                     <div className="flex items-center gap-2 text-[11px] text-slate-400">
                       <span>Formula: <span className="font-mono">{result.formulaUsed}</span></span>
-                      {formulaDebug?.usedFallbackFormula ? (
+                      {formulaDebug?.likelyMisconfiguredFormula ? (
                         <Badge variant="outline" className="text-[10px] border-amber-500/40 text-amber-300">
-                          Using fallback formula
+                          Check formula output
                         </Badge>
                       ) : null}
                     </div>
@@ -1163,7 +1161,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       <div><span className="text-slate-400">Formula basis:</span> <span className="font-mono">{formulaDebug.quantityBasisUsed ?? "—"}</span></div>
                       <div><span className="text-slate-400">Selected rate:</span> <span className="font-mono">{typeof formulaDebug.selectedRate === "number" ? currencyFormatter.format(formulaDebug.selectedRate) : "—"}</span></div>
                       <div><span className="text-slate-400">Formula evaluated total:</span> <span className="font-mono">{typeof formulaDebug.formulaEvaluatedTotal === "number" ? currencyFormatter.format(formulaDebug.formulaEvaluatedTotal) : "—"}</span></div>
-                      <div><span className="text-slate-400">Fallback base total:</span> <span className="font-mono">{typeof formulaDebug.fallbackBaseTotal === "number" ? currencyFormatter.format(formulaDebug.fallbackBaseTotal) : "—"}</span></div>
+                      <div><span className="text-slate-400">PBV2 base total:</span> <span className="font-mono">{typeof formulaDebug.pbv2BaseTotal === "number" ? currencyFormatter.format(formulaDebug.pbv2BaseTotal) : "—"}</span></div>
                       <div><span className="text-slate-400">Final total source:</span> <span className="font-mono">{formulaDebug.finalTotalSource ?? "—"}</span></div>
                       <div><span className="text-slate-400">Final total:</span> <span className="font-mono">{typeof formulaDebug.finalTotal === "number" ? currencyFormatter.format(formulaDebug.finalTotal) : "—"}</span></div>
                       <div><span className="text-slate-400">Finished sqft:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.finishedSqft === "number" ? formulaDebug.sheetYield.finishedSqft.toFixed(2) : "—"}</span></div>
@@ -1173,13 +1171,6 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       <div><span className="text-slate-400">Pre-ceil sqft:</span> <span className="font-mono">{typeof formulaDebug.preCeilSqftTotal === "number" ? formulaDebug.preCeilSqftTotal.toFixed(4) : "—"}</span></div>
                       <div><span className="text-slate-400">Post-ceil sqft:</span> <span className="font-mono">{typeof formulaDebug.postCeilSqftTotal === "number" ? formulaDebug.postCeilSqftTotal.toFixed(0) : "—"}</span></div>
                       <div><span className="text-slate-400">Base rate used (p):</span> <span className="font-mono">{typeof formulaDebug.baseRateUsed === "number" ? String(formulaDebug.baseRateUsed) : "—"}</span></div>
-                      {formulaDebug.usedFallbackFormula ? (
-                        <div>
-                          <span className="text-slate-400">Fallback:</span>{" "}
-                          <span className="font-mono">{formulaDebug.fallbackFormula || "sqft * p * q"}</span>
-                        </div>
-                      ) : null}
-
                       <div className="space-y-1">
                         <div className="text-slate-400">Variables</div>
                         <div className="rounded border border-slate-700/70 bg-slate-900/40 p-2 max-h-32 overflow-y-auto">

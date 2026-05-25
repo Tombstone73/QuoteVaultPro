@@ -99,11 +99,10 @@ export type ResolvedPricingV2BaseRates = {
   runtimeSelectionContext: OptionRuntimeSelectionContext;
 };
 
-export type Pbv2TierSource = "matrix_row" | "pbv2_product" | "pbv2_pricing_v2" | "legacy_price_breaks" | "none";
+export type Pbv2TierSource = "matrix_row" | "pbv2_product" | "pbv2_pricing_v2" | "none";
 
 export type Pbv2TierResolutionWarning = {
   code:
-    | "PBV2_TIER_LEGACY_AND_NATIVE_PRESENT"
     | "PBV2_TIER_NO_MATCH"
     | "PBV2_TIER_INVALID_RATE"
     | "PBV2_TIER_MATRIX_BASE_PRICE_OVERRIDE"
@@ -114,8 +113,7 @@ export type Pbv2TierResolutionWarning = {
     | "PBV2_TIER_COMPUTED_SHEET_USAGE_INVALID"
     | "PBV2_TIER_FALLBACK_LINE_ITEM_QUANTITY"
     | "PBV2_TIER_MATRIX_ROW_BASIS_OVERRIDES_PRODUCT"
-    | "PBV2_TIER_FORMULA_REFERENCE_WITHOUT_TIER_SYSTEM"
-    | "PBV2_TIER_LEGACY_PRICE_BREAKS_NOT_APPLIED";
+    | "PBV2_TIER_FORMULA_REFERENCE_WITHOUT_TIER_SYSTEM";
   message: string;
   severity: "warning" | "error";
   detail?: Record<string, unknown>;
@@ -152,6 +150,7 @@ export type Pbv2TierResolution = {
   warnings: Pbv2TierResolutionWarning[];
 };
 
+/** @deprecated Legacy calculator price breaks are not part of PBV2 pricing. */
 export type LegacyPriceBreaksConfig = {
   enabled?: boolean;
   type?: string;
@@ -1090,14 +1089,6 @@ function dollarsFromCents(cents: number): number {
   return cents / 100;
 }
 
-function isLegacyPriceBreaksEnabled(value: unknown): boolean {
-  const config = asRecord(value);
-  if (!config) return false;
-  if ((config as any).enabled !== true) return false;
-  const tiers = Array.isArray((config as any).tiers) ? (config as any).tiers : [];
-  return tiers.length > 0;
-}
-
 function cloneTierResolutionWithRates(
   tierResolution: Pbv2TierResolution,
   rates: Pick<ResolvedPricingV2BaseRates, "perSqftCents" | "perPieceCents" | "minimumChargeCents">
@@ -1112,10 +1103,8 @@ function resolveTieredPricingV2BaseRates(
   tree: AnyRecord,
   quantity: number,
   sqft: number,
-  legacyPriceBreaks?: LegacyPriceBreaksConfig | null,
   tierQuantity?: number,
 ): Pick<ResolvedPricingV2BaseRates, "perSqftCents" | "perPieceCents" | "minimumChargeCents" | "tierResolution"> {
-  const legacyPriceBreaksEnabled = isLegacyPriceBreaksEnabled(legacyPriceBreaks);
   const tierMatchQuantity = Number.isFinite(Number(tierQuantity)) ? Number(tierQuantity) : quantity;
   const warnings: Pbv2TierResolutionWarning[] = [];
   const emptyRates = {
@@ -1125,8 +1114,8 @@ function resolveTieredPricingV2BaseRates(
   };
   const emptyTierResolution: Pbv2TierResolution = {
     quantity,
-    tierSystemEnabled: legacyPriceBreaksEnabled,
-    tierSource: legacyPriceBreaksEnabled ? "legacy_price_breaks" : "none",
+    tierSystemEnabled: false,
+    tierSource: "none",
     matchedTierId: null,
     matchedTierLabel: null,
     originalBaseRate: 0,
@@ -1149,14 +1138,6 @@ function resolveTieredPricingV2BaseRates(
     finalBaseRateUsed: 0,
     warnings,
   };
-
-  if (legacyPriceBreaksEnabled) {
-    warnings.push({
-      code: "PBV2_TIER_LEGACY_PRICE_BREAKS_NOT_APPLIED",
-      severity: "warning",
-      message: "Legacy product priceBreaks are configured but are not applied by the PBV2 pricingV2 tier resolver.",
-    });
-  }
 
   const meta = asRecord(tree.meta);
   if (!meta) {
@@ -1184,14 +1165,6 @@ function resolveTieredPricingV2BaseRates(
   let perPieceCents = isFiniteNonNegativeNumber(base.perPieceCents) ? base.perPieceCents : 0;
   let minimumChargeCents = isFiniteNonNegativeNumber(base.minimumChargeCents) ? base.minimumChargeCents : 0;
   const originalPerSqftCents = perSqftCents;
-
-  if (nativeTierSystemEnabled && legacyPriceBreaksEnabled) {
-    warnings.push({
-      code: "PBV2_TIER_LEGACY_AND_NATIVE_PRESENT",
-      severity: "warning",
-      message: "PBV2 pricingV2 quantity tiers and legacy product priceBreaks are both configured; PBV2 pricingV2 tiers are used.",
-    });
-  }
 
   let bestQtyTier: AnyRecord | null = null;
   let matchedQtyTierPerSqftValid = false;
@@ -1273,11 +1246,7 @@ function resolveTieredPricingV2BaseRates(
     if (isFiniteNonNegativeNumber((bestSqftTier as any).minimumChargeCents)) minimumChargeCents = Number((bestSqftTier as any).minimumChargeCents);
   }
 
-  const tierSource: Pbv2TierSource = nativeTierSystemEnabled
-    ? "pbv2_product"
-    : legacyPriceBreaksEnabled
-      ? "legacy_price_breaks"
-      : "none";
+  const tierSource: Pbv2TierSource = nativeTierSystemEnabled ? "pbv2_product" : "none";
   const tierBaseRate = bestQtyTier && matchedQtyTierPerSqftValid ? dollarsFromCents(perSqftCents) : null;
   const effectiveBaseRateBeforeMatrix = dollarsFromCents(perSqftCents);
 
@@ -1287,7 +1256,7 @@ function resolveTieredPricingV2BaseRates(
     minimumChargeCents,
     tierResolution: {
       quantity,
-      tierSystemEnabled: nativeTierSystemEnabled || legacyPriceBreaksEnabled,
+      tierSystemEnabled: nativeTierSystemEnabled,
       tierSource,
       matchedTierId: bestQtyTier && typeof (bestQtyTier as any).id === "string" ? String((bestQtyTier as any).id) : null,
       matchedTierLabel: bestQtyTier
@@ -1486,7 +1455,6 @@ export function resolvePricingV2BaseRates(
   opts?: {
     pricebook?: Record<string, number>;
     runtimeSelectionContext?: OptionRuntimeSelectionContext;
-    legacyPriceBreaks?: LegacyPriceBreaksConfig | null;
     tierQuantity?: number;
   }
 ): ResolvedPricingV2BaseRates {
@@ -1503,7 +1471,7 @@ export function resolvePricingV2BaseRates(
     opts?.runtimeSelectionContext ??
     pbv2ToRuntimeSelectionContext(tree, selections, { ...(env ?? {}), quantity, sqft, widthIn, heightIn }, { pricebook: opts?.pricebook });
 
-  const baseRates = resolveTieredPricingV2BaseRates(tree, quantity, sqft, opts?.legacyPriceBreaks, opts?.tierQuantity);
+  const baseRates = resolveTieredPricingV2BaseRates(tree, quantity, sqft, opts?.tierQuantity);
   const appliedPricingOverrides = Array.isArray(runtimeSelectionContext.appliedPricingOverrides)
     ? sortAppliedPricingOverrides(runtimeSelectionContext.appliedPricingOverrides)
     : [];

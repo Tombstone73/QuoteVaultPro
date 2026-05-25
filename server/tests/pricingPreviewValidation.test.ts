@@ -74,6 +74,33 @@ describe('validatePricingPreviewRequest', () => {
       expect(result.normalized.pbv2ExplicitSelections).toEqual({ size: { value: 'large' } });
     }
   });
+
+  test('normalizes PBV2 preview payload without legacy variant or product-option data', () => {
+    const result = validatePricingPreviewRequest({
+      treeJson: validTree,
+      width: 24,
+      height: 18,
+      quantity: 10,
+      optionSelectionsJson: { rate: { value: 'standard' } },
+      variants: [{ id: 'legacy_variant', basePricePerSqft: 999 }],
+      productOptions: [{ id: 'legacy_option', setupCost: 999 }],
+      optionsJson: [{ id: 'legacy_inline_option', defaultValue: true }],
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.normalized).toEqual({
+        treeJson: validTree,
+        widthNum: 24,
+        heightNum: 18,
+        quantityNum: 10,
+        pbv2ExplicitSelections: { rate: { value: 'standard' } },
+      });
+      expect(result.normalized).not.toHaveProperty('variants');
+      expect(result.normalized).not.toHaveProperty('productOptions');
+      expect(result.normalized).not.toHaveProperty('optionsJson');
+    }
+  });
 });
 
 describe('zodIssuesToPreviewDetails', () => {

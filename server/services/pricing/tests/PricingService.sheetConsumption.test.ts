@@ -371,7 +371,8 @@ describe("sheet_consumption_sqft", () => {
     expect(result.breakdown.basePrice).toBeCloseTo(46.44, 2);
     expect(result.debug?.pricing?.finalTotalSource).toBe("formula");
     expect(result.debug?.pricing?.formulaEvaluatedTotal).toBeCloseTo(46.44, 2);
-    expect(result.debug?.pricing?.fallbackBaseTotal).not.toBeCloseTo(46.44, 2);
+    expect(result.debug?.pricing?.pbv2BaseTotal).not.toBeCloseTo(46.44, 2);
+    expect(result.debug?.pricingSystem).toBe("pbv2");
     expect(result.totalPrice).not.toBe(27);
   });
 
@@ -422,6 +423,7 @@ describe("sheet_consumption_sqft", () => {
     expect(result.debug?.tierResolution?.selectedTierSource).toBe("matrix_row");
     expect(result.debug?.variables.computed_sheets).toBe(1);
     expect(result.debug?.variables.billed_sheet_sqft).toBe(32);
+    expect(result.debug?.pricingSystem).toBe("pbv2");
     expect(result.totalPrice).toBeCloseTo(39.6, 2);
   });
 
@@ -507,6 +509,30 @@ describe("sheet_consumption_sqft", () => {
     expect(result.debug?.quantityBasisUsed).toBe("computed_sheets");
     expect(result.debug?.formulaResultType).toBe("final_dollars");
     expect(result.totalPrice).toBeCloseTo(44, 2);
+  });
+
+  test("geometry-only formula is flagged as likely misconfigured", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeTree(),
+      widthIn: 24,
+      heightIn: 18,
+      quantity: 10,
+      pricingFormulaOverride: "billed_sheet_sqft",
+      formulaVariables: {
+        sheet_width: 48,
+        sheet_length: 96,
+        usable_drop_min: 24,
+        billable_length_increment: 12,
+        minimum_billable_sqft: 3,
+      },
+      debug: true,
+    });
+
+    expect(result.debug?.likelyMisconfiguredFormula).toBe(true);
+    expect(result.debug?.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "PBV2_FORMULA_GEOMETRY_OUTPUT_ONLY" }),
+    ]));
+    expect(result.debug?.formulaResultType).toBe("final_dollars");
   });
 
   test("missing computed sheet usage emits a warning instead of silently hiding fallback", () => {

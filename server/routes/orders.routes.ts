@@ -5058,6 +5058,7 @@ export async function registerOrderRoutes(
             // Create line item with server-computed pricing
             const created = await storage.createOrderLineItem({
                 ...lineItemData,
+                selectedOptions: pricingResult.pbv2SnapshotJson.selectedOptions || [],
                 status: "new",
                 workflowState: routing.workflowState,
                 requiresDesignSnapshot: designSnapshot.requiresDesignSnapshot,
@@ -5124,6 +5125,14 @@ export async function registerOrderRoutes(
             res.json(created);
         } catch (error) {
             if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            if ((error as any)?.code === 'PBV2_FORMULA_ERROR') {
+                return res.status(422).json({
+                    message: (error as any).message,
+                    code: 'PBV2_FORMULA_ERROR',
+                    details: (error as any).details ?? [],
+                    debug: (error as any).debug,
+                });
+            }
             if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message });
             console.error('[ORDER_LINE_ITEM_CREATE] Error:', error);
             res.status(500).json({ message: "Failed to create order line item" });
@@ -5236,6 +5245,7 @@ export async function registerOrderRoutes(
                 // Set server-authoritative PBV2 fields
                 updateData.pbv2TreeVersionId = pricingResult.pbv2TreeVersionId;
                 updateData.pbv2SnapshotJson = pricingResult.pbv2SnapshotJson as any;
+                updateData.selectedOptions = pricingResult.pbv2SnapshotJson.selectedOptions || [];
                 updateData.pricedAt = new Date();
                 updateData.unitPrice = pricingResult.lineTotalCents / 100 / Number(updateData.quantity ?? oldLineItem.quantity);
                 updateData.totalPrice = pricingResult.lineTotalCents / 100;
@@ -5353,86 +5363,6 @@ export async function registerOrderRoutes(
                     if (from !== to) diffs.push({ fieldKey: 'overrideEnabled', fromValue: from, toValue: to });
                 }
 
-                // Option summary diffs (v1): only selection value changes, skip auto-default applications.
-                try {
-                    const productIdBefore = String((oldLineItem as any).productId || '');
-                    const productIdAfter = String((lineItem as any).productId || '');
-                    if (productIdBefore && productIdBefore === productIdAfter) {
-                        const [p] = await db.select({ optionsJson: products.optionsJson }).from(products).where(eq(products.id, productIdAfter)).limit(1);
-                        const optionDefs = Array.isArray((p as any)?.optionsJson) ? ((p as any).optionsJson as any[]) : [];
-                        const defaultsById = new Map<string, any>();
-                        const labelById = new Map<string, string>();
-                        for (const o of optionDefs) {
-                            const oid = typeof o?.id === 'string' ? o.id : '';
-                            if (!oid) continue;
-                            if (o?.defaultValue != null) defaultsById.set(oid, o.defaultValue);
-                            const lbl = typeof o?.label === 'string' ? o.label : (typeof o?.name === 'string' ? o.name : '');
-                            if (lbl) labelById.set(oid, lbl);
-                        }
-
-                        const normalizeOptVal = (v: any): string | number | boolean | null => {
-                            if (v == null) return null;
-                            if (typeof v === 'boolean') return v;
-                            if (typeof v === 'number') return Number.isFinite(v) ? v : null;
-                            if (typeof v === 'string') {
-                                const t = v.trim();
-                                return t.length > 0 ? t : null;
-                            }
-                            return null;
-                        };
-
-                        const beforeArr = Array.isArray((oldLineItem as any).selectedOptions) ? ((oldLineItem as any).selectedOptions as any[]) : [];
-                        const afterArr = Array.isArray((lineItem as any).selectedOptions) ? ((lineItem as any).selectedOptions as any[]) : [];
-                        const beforeById = new Map<string, any>();
-                        const afterById = new Map<string, any>();
-                        for (const s of beforeArr) {
-                            const oid = typeof s?.optionId === 'string' ? s.optionId : '';
-                            if (oid) beforeById.set(oid, s);
-                        }
-                        for (const s of afterArr) {
-                            const oid = typeof s?.optionId === 'string' ? s.optionId : '';
-                            if (oid) afterById.set(oid, s);
-                        }
-
-                        const allIds = new Set<string>();
-                        for (const optionId of Array.from(beforeById.keys())) allIds.add(optionId);
-                        for (const optionId of Array.from(afterById.keys())) allIds.add(optionId);
-
-                        for (const optionId of Array.from(allIds)) {
-                            const b = beforeById.get(optionId);
-                            const a = afterById.get(optionId);
-                            const bVal = normalizeOptVal(b?.value);
-                            const aVal = normalizeOptVal(a?.value);
-
-                            // Do NOT log when value is null/unknown
-                            if (bVal == null && aVal == null) continue;
-
-                            const defaultVal = defaultsById.get(optionId);
-                            const defaultNorm = normalizeOptVal(defaultVal);
-
-                            // Skip auto-applied defaults
-                            if (bVal == null && aVal != null && defaultNorm != null && aVal === defaultNorm) continue;
-                            if (aVal == null && bVal != null && defaultNorm != null && bVal === defaultNorm) continue;
-
-                            if (bVal === aVal) continue;
-
-                            const optionLabel = labelById.get(optionId) || (typeof a?.optionName === 'string' ? a.optionName : (typeof b?.optionName === 'string' ? b.optionName : 'Option'));
-                            const fromStr = bVal == null ? 'None' : (shortValue(bVal) ?? null);
-                            const toStr = aVal == null ? 'None' : (shortValue(aVal) ?? null);
-                            if (fromStr == null || toStr == null) continue;
-
-                            diffs.push({
-                                fieldKey: `option:${optionId}`,
-                                fromValue: fromStr,
-                                toValue: toStr,
-                                metadata: { optionId, optionLabel },
-                            });
-                        }
-                    }
-                } catch {
-                    // fail-soft: do not block line item updates if option diffing fails
-                }
-
                 for (const d of diffs) {
                     await storage.createOrderAuditLog({
                         orderId: lineItem.orderId,
@@ -5499,6 +5429,14 @@ export async function registerOrderRoutes(
             res.json(finalLineItem ?? lineItem);
         } catch (error) {
             if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            if ((error as any)?.code === 'PBV2_FORMULA_ERROR') {
+                return res.status(422).json({
+                    message: (error as any).message,
+                    code: 'PBV2_FORMULA_ERROR',
+                    details: (error as any).details ?? [],
+                    debug: (error as any).debug,
+                });
+            }
             if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message });
             res.status(500).json({ message: "Failed to update order line item" });
         }
