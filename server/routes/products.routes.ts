@@ -850,7 +850,10 @@ export function registerProductRoutes(
       // active tree before the client-side normalizeTreeJson fix was deployed),
       // validateTreeForPublish would fail with PBV2_E_TREE_STATUS_INVALID and
       // silently leave the old active tree in place.
-      const matrixSanitizer = sanitizePbv2PricingMatrix({ ...(treeJson as any), status: 'DRAFT' });
+      const matrixSanitizer = sanitizePbv2PricingMatrix(
+        { ...(treeJson as any), status: 'DRAFT' },
+        { allowIncompleteMatrix: true }
+      );
       const sanitizedTreeJson = matrixSanitizer.tree;
       if (matrixSanitizer.changed) {
         console.warn('[PBV2_MATRIX_SANITIZER] draft save removed stale matrix references', {
@@ -859,9 +862,24 @@ export function registerProductRoutes(
           changes: matrixSanitizer.changes.map((change) => ({ code: change.code, path: change.path })),
         });
       }
+      const allowsDraftMatrixRowsToBeAddedLater = (finding: any) => {
+        if (finding?.code !== "PBV2_E_PRICING_MATRIX_INVALID_STRUCTURE") return false;
+        const path = String(finding?.path ?? "");
+        if (!path.endsWith(".rows")) return false;
+        const matrix = path.startsWith("tree.meta.")
+          ? (sanitizedTreeJson as any)?.meta?.pricingMatrix
+          : (sanitizedTreeJson as any)?.pricingMatrix;
+        return (
+          Array.isArray(matrix?.dimensions) &&
+          matrix.dimensions.length > 0 &&
+          Array.isArray(matrix?.rows) &&
+          matrix.rows.length === 0
+        );
+      };
       const postSanitizeMatrixErrors = validateTreeForPublish(sanitizedTreeJson as any, DEFAULT_VALIDATE_OPTS)
         .errors
-        .filter((finding: any) => typeof finding?.code === "string" && finding.code.startsWith("PBV2_E_PRICING_MATRIX"));
+        .filter((finding: any) => typeof finding?.code === "string" && finding.code.startsWith("PBV2_E_PRICING_MATRIX"))
+        .filter((finding: any) => !allowsDraftMatrixRowsToBeAddedLater(finding));
       if (postSanitizeMatrixErrors.length > 0) {
         return res.status(400).json({
           success: false,

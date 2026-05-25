@@ -17,6 +17,14 @@ export type Pbv2PricingMatrixSanitizerResult<T = any> = {
   changes: Pbv2PricingMatrixSanitizerChange[];
 };
 
+export type Pbv2PricingMatrixSanitizerOptions = {
+  /**
+   * Draft editing needs to preserve selected pricing dimensions before rows are
+   * generated. Publish/repair paths keep the default strict behavior.
+   */
+  allowIncompleteMatrix?: boolean;
+};
+
 type OptionContext = {
   knownSelectionKeys: Set<string>;
   choiceValuesBySelectionKey: Record<string, Set<string>>;
@@ -124,6 +132,7 @@ function sanitizeMatrix(
   rawMatrix: unknown,
   path: string,
   context: OptionContext,
+  options: Pbv2PricingMatrixSanitizerOptions = {},
 ): { matrix: ProductOptionPricingMatrix | null; changes: Pbv2PricingMatrixSanitizerChange[] } {
   const changes: Pbv2PricingMatrixSanitizerChange[] = [];
   const matrix = asRecord(rawMatrix);
@@ -228,7 +237,7 @@ function sanitizeMatrix(
     } as ProductOptionPricingMatrixRow);
   });
 
-  if (dimensions.length === 0 || rows.length === 0) {
+  if (dimensions.length === 0 || (!options.allowIncompleteMatrix && rows.length === 0)) {
     changes.push({
       code: "PBV2_MATRIX_REMOVED",
       message: "Removed pricing matrix because no valid dimensions or rows remain.",
@@ -248,7 +257,10 @@ function sanitizeMatrix(
   };
 }
 
-export function sanitizePbv2PricingMatrix<T = any>(treeJson: T): Pbv2PricingMatrixSanitizerResult<T> {
+export function sanitizePbv2PricingMatrix<T = any>(
+  treeJson: T,
+  options: Pbv2PricingMatrixSanitizerOptions = {},
+): Pbv2PricingMatrixSanitizerResult<T> {
   const treeRecord = asRecord(treeJson);
   if (!treeRecord) return { tree: treeJson, changed: false, changes: [] };
 
@@ -257,7 +269,7 @@ export function sanitizePbv2PricingMatrix<T = any>(treeJson: T): Pbv2PricingMatr
   const changes: Pbv2PricingMatrixSanitizerChange[] = [];
 
   if (Object.prototype.hasOwnProperty.call(tree, "pricingMatrix")) {
-    const result = sanitizeMatrix(tree.pricingMatrix, "tree.pricingMatrix", context);
+    const result = sanitizeMatrix(tree.pricingMatrix, "tree.pricingMatrix", context, options);
     changes.push(...result.changes);
     if (result.matrix) tree.pricingMatrix = result.matrix;
     else delete tree.pricingMatrix;
@@ -265,7 +277,7 @@ export function sanitizePbv2PricingMatrix<T = any>(treeJson: T): Pbv2PricingMatr
 
   const meta = asRecord(tree.meta);
   if (meta && Object.prototype.hasOwnProperty.call(meta, "pricingMatrix")) {
-    const result = sanitizeMatrix(meta.pricingMatrix, "tree.meta.pricingMatrix", context);
+    const result = sanitizeMatrix(meta.pricingMatrix, "tree.meta.pricingMatrix", context, options);
     changes.push(...result.changes);
     if (result.matrix) meta.pricingMatrix = result.matrix;
     else delete meta.pricingMatrix;

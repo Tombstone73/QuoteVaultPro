@@ -108,6 +108,55 @@ describe("sanitizePbv2PricingMatrix", () => {
     expect(result.changes.some((change) => change.code === "PBV2_MATRIX_REMOVED")).toBe(true);
   });
 
+  test("removes dimension-only matrix by default for strict repair and publish paths", () => {
+    const tree = makeTree({
+      pricingMatrix: {
+        dimensions: ["thickness", "sides"],
+        rows: [],
+      },
+    });
+
+    const result = sanitizePbv2PricingMatrix(tree);
+
+    expect(result.changed).toBe(true);
+    expect((result.tree as any).pricingMatrix).toBeUndefined();
+  });
+
+  test("preserves selected dimensions without rows during draft editing", () => {
+    const tree = makeTree({
+      pricingMatrix: {
+        dimensions: ["thickness", "sides"],
+        rows: [],
+      },
+    });
+
+    const result = sanitizePbv2PricingMatrix(tree, { allowIncompleteMatrix: true });
+
+    expect(result.changed).toBe(false);
+    expect((result.tree as any).pricingMatrix).toEqual({
+      dimensions: ["thickness", "sides"],
+      rows: [],
+    });
+  });
+
+  test("draft editing keeps valid PBV2 dimensions when removed legacy keys leave no rows", () => {
+    const tree = makeTree({
+      pricingMatrix: {
+        dimensions: ["thickness", "legacy_option_id"],
+        rows: [{ id: "row", when: { legacy_option_id: "old" }, variables: { base_price: 500 } }],
+      },
+    });
+
+    const result = sanitizePbv2PricingMatrix(tree, { allowIncompleteMatrix: true });
+
+    expect(result.changed).toBe(true);
+    expect((result.tree as any).pricingMatrix).toEqual({
+      dimensions: ["thickness"],
+      rows: [],
+    });
+    expect(result.changes.some((change) => change.code === "PBV2_MATRIX_DIMENSION_REMOVED")).toBe(true);
+  });
+
   test("deleting an option choice removes affected rows only", () => {
     const tree = makeTree();
     (tree.nodes.sides as any).choices = [{ value: "choice_single", label: "Single" }];
