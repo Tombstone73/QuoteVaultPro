@@ -13,6 +13,7 @@ import {
 } from "@shared/productOptionPricingMatrix";
 import type { Pbv2TierBasis, PricingV2Tier } from "@shared/optionTreeV2";
 import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
+import { setPricingMatrixDimension } from "@shared/pbv2/pricingMatrixDraft";
 
 type OptionKey = {
   selectionKey: string;
@@ -542,10 +543,17 @@ export function OptionRulesPricingMatrixEditor({
   const updateMatrix = (next: ProductOptionPricingMatrix) => onUpdatePricingMatrix(next);
 
   const setMatrixDimension = (dimension: string, checked: boolean) => {
-    const dimensions = checked
-      ? [...pricingMatrix.dimensions, dimension]
-      : pricingMatrix.dimensions.filter((entry) => entry !== dimension);
-    updateMatrix({ ...pricingMatrix, dimensions, rows: pricingMatrix.rows });
+    const nextMatrix = setPricingMatrixDimension(pricingMatrix, dimension, checked);
+    if (import.meta.env.DEV) {
+      console.log("[PBV2_MATRIX_DIMENSION_CLICK]", {
+        clickedDimension: dimension,
+        checked,
+        dimensionsBefore: pricingMatrix.dimensions,
+        dimensionsAfter: nextMatrix.dimensions,
+        updatePayload: nextMatrix,
+      });
+    }
+    updateMatrix(nextMatrix);
   };
 
   const generateMatrixRows = () => {
