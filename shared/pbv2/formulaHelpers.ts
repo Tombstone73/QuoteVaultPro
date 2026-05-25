@@ -3,6 +3,15 @@
  * and the client-side formula tester (pricing-formulas settings page).
  *
  * All functions must be side-effect free and importable in both environments.
+ *
+ * Formula output contract:
+ * - Pricing formulas must resolve to final dollars.
+ * - Finished sqft pricing: `total_finished_sqft * base_price`
+ * - Billed sheet sqft pricing: `billed_sheet_sqft * base_price`
+ * - Sheet-count pricing: `computed_sheets * sheet_price`
+ *
+ * Helpers such as `sheet_consumption_sqft(...)` return intermediate geometry
+ * quantities. They must be multiplied by an explicit rate in the formula.
  */
 
 /**

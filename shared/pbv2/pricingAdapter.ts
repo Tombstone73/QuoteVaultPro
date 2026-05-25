@@ -139,10 +139,15 @@ export type Pbv2TierResolution = {
   tierBasisValue?: number;
   tierBasisResolvedFrom?: "matrix_row" | "product" | "default";
   lineItemQuantity?: number;
+  rawItemQuantity?: number;
+  tierSelectionQuantity?: number;
   computedSheetUsage?: number | null;
   computedSheetUsageAvailable?: boolean;
   computedSheetUsageMode?: "exact_flat_goods" | "sheet_equivalent" | "unavailable";
   fallbackToLineItemQuantity?: boolean;
+  selectedTierMinQty?: number | null;
+  selectedTierRate?: number | null;
+  selectedTierSource?: Pbv2TierSource | null;
   finalBaseRateUsed: number;
   warnings: Pbv2TierResolutionWarning[];
 };
@@ -1132,10 +1137,15 @@ function resolveTieredPricingV2BaseRates(
     tierBasisValue: tierMatchQuantity,
     tierBasisResolvedFrom: "default",
     lineItemQuantity: quantity,
+    rawItemQuantity: quantity,
+    tierSelectionQuantity: tierMatchQuantity,
     computedSheetUsage: null,
     computedSheetUsageAvailable: false,
     computedSheetUsageMode: "unavailable",
     fallbackToLineItemQuantity: false,
+    selectedTierMinQty: null,
+    selectedTierRate: null,
+    selectedTierSource: null,
     finalBaseRateUsed: 0,
     warnings,
   };
@@ -1295,10 +1305,15 @@ function resolveTieredPricingV2BaseRates(
       tierBasisValue: tierMatchQuantity,
       tierBasisResolvedFrom: "default",
       lineItemQuantity: quantity,
+      rawItemQuantity: quantity,
+      tierSelectionQuantity: tierMatchQuantity,
       computedSheetUsage: null,
       computedSheetUsageAvailable: false,
       computedSheetUsageMode: "unavailable",
       fallbackToLineItemQuantity: false,
+      selectedTierMinQty: bestQtyTier && typeof (bestQtyTier as any).minQty === "number" ? Number((bestQtyTier as any).minQty) : null,
+      selectedTierRate: tierBaseRate,
+      selectedTierSource: bestQtyTier ? tierSource : null,
       finalBaseRateUsed: effectiveBaseRateBeforeMatrix,
       warnings,
     },

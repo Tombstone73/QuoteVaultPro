@@ -106,6 +106,21 @@ type PricingPreviewResponse = {
     fallbackBaseTotal?: number;
     finalTotalSource?: "formula" | "fallback_formula" | "fallback_base";
     finalTotal?: number;
+    formulaResultType?: "final_dollars";
+    quantityBasisUsed?: string;
+    selectedRate?: number | null;
+    finalFormulaTotal?: number | null;
+    sheetYield?: {
+      finishedSqft: number;
+      totalFinishedSqft: number;
+      computedSheets?: number | null;
+      billedSheets?: number | null;
+      sheetCount?: number | null;
+      sheetSqft?: number | null;
+      billedSheetSqft?: number | null;
+      mode?: "exact_flat_goods" | "sheet_equivalent" | "unavailable";
+      available?: boolean;
+    };
     tierResolution?: {
       quantity: number;
       enabled: boolean;
@@ -124,10 +139,15 @@ type PricingPreviewResponse = {
       tierBasisValue?: number;
       tierBasisResolvedFrom?: "matrix_row" | "product" | "default";
       lineItemQuantity?: number;
+      rawItemQuantity?: number;
+      tierSelectionQuantity?: number;
       computedSheetUsage?: number | null;
       computedSheetUsageAvailable?: boolean;
       computedSheetUsageMode?: "exact_flat_goods" | "sheet_equivalent" | "unavailable";
       fallbackToLineItemQuantity?: boolean;
+      selectedTierMinQty?: number | null;
+      selectedTierRate?: number | null;
+      selectedTierSource?: "matrix_row" | "pbv2_product" | "pbv2_pricing_v2" | "legacy_price_breaks" | "none" | null;
       finalBaseRateUsed: number;
       warnings: Array<{ code: string; message: string; severity?: string; detail?: Record<string, unknown> }>;
       capturedAt?: string;
@@ -1139,10 +1159,17 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       ) : null}
                       <div><span className="text-slate-400">Result value:</span> <span className="font-mono">{typeof formulaDebug.resultValue === "number" ? String(formulaDebug.resultValue) : "—"}</span></div>
                       <div><span className="text-slate-400">Applied as:</span> <span className="font-mono">{formulaDebug.appliedAs ?? "unknown"}</span></div>
+                      <div><span className="text-slate-400">Formula output type:</span> <span className="font-mono">{formulaDebug.formulaResultType ?? "—"}</span></div>
+                      <div><span className="text-slate-400">Formula basis:</span> <span className="font-mono">{formulaDebug.quantityBasisUsed ?? "—"}</span></div>
+                      <div><span className="text-slate-400">Selected rate:</span> <span className="font-mono">{typeof formulaDebug.selectedRate === "number" ? currencyFormatter.format(formulaDebug.selectedRate) : "—"}</span></div>
                       <div><span className="text-slate-400">Formula evaluated total:</span> <span className="font-mono">{typeof formulaDebug.formulaEvaluatedTotal === "number" ? currencyFormatter.format(formulaDebug.formulaEvaluatedTotal) : "—"}</span></div>
                       <div><span className="text-slate-400">Fallback base total:</span> <span className="font-mono">{typeof formulaDebug.fallbackBaseTotal === "number" ? currencyFormatter.format(formulaDebug.fallbackBaseTotal) : "—"}</span></div>
                       <div><span className="text-slate-400">Final total source:</span> <span className="font-mono">{formulaDebug.finalTotalSource ?? "—"}</span></div>
                       <div><span className="text-slate-400">Final total:</span> <span className="font-mono">{typeof formulaDebug.finalTotal === "number" ? currencyFormatter.format(formulaDebug.finalTotal) : "—"}</span></div>
+                      <div><span className="text-slate-400">Finished sqft:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.finishedSqft === "number" ? formulaDebug.sheetYield.finishedSqft.toFixed(2) : "—"}</span></div>
+                      <div><span className="text-slate-400">Computed sheets:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.computedSheets === "number" ? formulaDebug.sheetYield.computedSheets.toFixed(4) : "—"}</span></div>
+                      <div><span className="text-slate-400">Billed sheet sqft:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.billedSheetSqft === "number" ? formulaDebug.sheetYield.billedSheetSqft.toFixed(2) : "—"}</span></div>
+                      <div><span className="text-slate-400">Selected tier basis:</span> <span className="font-mono">{tierResolution?.tierBasis ?? "—"}</span></div>
                       <div><span className="text-slate-400">Pre-ceil sqft:</span> <span className="font-mono">{typeof formulaDebug.preCeilSqftTotal === "number" ? formulaDebug.preCeilSqftTotal.toFixed(4) : "—"}</span></div>
                       <div><span className="text-slate-400">Post-ceil sqft:</span> <span className="font-mono">{typeof formulaDebug.postCeilSqftTotal === "number" ? formulaDebug.postCeilSqftTotal.toFixed(0) : "—"}</span></div>
                       <div><span className="text-slate-400">Base rate used (p):</span> <span className="font-mono">{typeof formulaDebug.baseRateUsed === "number" ? String(formulaDebug.baseRateUsed) : "—"}</span></div>

@@ -205,6 +205,9 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaEvaluatedTotal).toBe(44);
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.finalTotalSource).toBe("formula");
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.finalTotal).toBe(44);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaVariables.computed_sheets).toBe(1);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaVariables.billed_sheet_sqft).toBe(32);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.sheetYield?.billedSheetSqft).toBe(32);
   });
 
   test("captures raw selections, effective selections, matrix variables, formula scope, and price", async () => {
