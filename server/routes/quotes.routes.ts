@@ -64,6 +64,7 @@ import {
   getOrgPreferences,
   cloneQuoteToDraft,
 } from "./helpers/quoteWorkflow.helpers";
+import { calculateQuoteAggregateTotals } from "./helpers/quoteTotals.helpers";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 import { ensureCustomerForUser } from "../db/syncUsersToCustomers";
@@ -74,6 +75,54 @@ import {
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
+}
+
+async function refreshQuoteAggregateTotals(organizationId: string, quoteId: string) {
+  const [quoteRow] = await db
+    .select({
+      discountAmount: quotes.discountAmount,
+      taxRate: quotes.taxRate,
+      shippingCents: quotes.shippingCents,
+    })
+    .from(quotes)
+    .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
+    .limit(1);
+
+  if (!quoteRow) return null;
+
+  const lineRows = await db
+    .select({
+      status: quoteLineItems.status,
+      linePrice: quoteLineItems.linePrice,
+      isTaxableSnapshot: quoteLineItems.isTaxableSnapshot,
+    })
+    .from(quoteLineItems)
+    .where(eq(quoteLineItems.quoteId, quoteId));
+
+  const totals = calculateQuoteAggregateTotals({
+    lineItems: lineRows,
+    discountAmount: quoteRow.discountAmount,
+    taxRate: quoteRow.taxRate,
+    shippingCents: quoteRow.shippingCents,
+  });
+
+  const [updated] = await db
+    .update(quotes)
+    .set({
+      subtotal: totals.subtotal.toFixed(2),
+      taxableSubtotal: totals.taxableSubtotal.toFixed(2),
+      taxAmount: totals.taxAmount.toFixed(2),
+      totalPrice: totals.totalPrice.toFixed(2),
+    })
+    .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
+    .returning({
+      subtotal: quotes.subtotal,
+      taxableSubtotal: quotes.taxableSubtotal,
+      taxAmount: quotes.taxAmount,
+      totalPrice: quotes.totalPrice,
+    });
+
+  return updated ?? null;
 }
 
 async function syncInboundCompletionForQuote(args: {
@@ -1743,6 +1792,7 @@ export function registerQuoteRoutes(
       };
 
       const createdLineItem = await storage.addLineItem(id, validatedLineItem);
+      await refreshQuoteAggregateTotals(organizationId, id);
       res.json(createdLineItem);
     } catch (error) {
       console.error("Error adding line item:", error);
@@ -1957,6 +2007,7 @@ export function registerQuoteRoutes(
       if (lineItem.requiresPrepress !== undefined) updateData.requiresPrepress = typeof lineItem.requiresPrepress === 'boolean' ? lineItem.requiresPrepress : null;
 
       const updatedLineItem = await storage.updateLineItem(lineItemId, updateData);
+      await refreshQuoteAggregateTotals(organizationId, id);
       res.json(updatedLineItem);
     } catch (error) {
       console.error("Error updating line item:", error);
@@ -1990,6 +2041,7 @@ export function registerQuoteRoutes(
       if (!assertQuoteEditable(res, quote)) return;
 
       await storage.deleteLineItem(lineItemId);
+      await refreshQuoteAggregateTotals(organizationId, id);
       res.json({ success: true });
     } catch (error) {
       console.error("Error deleting line item:", error);
