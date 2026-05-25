@@ -52,6 +52,30 @@ function UnknownLookupWarning({ children }: { children: React.ReactNode }) {
   );
 }
 
+function parseBooleanLikeConfigValue(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (value === 1) return true;
+    if (value === 0) return false;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "yes", "y", "1", "on", "allow", "allowed"].includes(normalized)) return true;
+    if (["false", "no", "n", "0", "off", "deny", "denied", "disallow", "disallowed"].includes(normalized)) return false;
+  }
+  return null;
+}
+
+function getAllowRotationFromPricingConfig(config: unknown): boolean {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return false;
+  const record = config as Record<string, any>;
+  const fromFormulaVariables = parseBooleanLikeConfigValue(record.formulaVariables?.allow_rotation);
+  if (fromFormulaVariables !== null) return fromFormulaVariables;
+  const fromTopLevel = parseBooleanLikeConfigValue(record.allowRotation);
+  if (fromTopLevel !== null) return fromTopLevel;
+  return false;
+}
+
 export const ProductForm = ({
   form,
   materials,
@@ -136,6 +160,29 @@ export const ProductForm = ({
     // Use hidden tracking field to trigger RHF dirty state
     form.setValue("__shippingConfigTracker", Date.now(), { shouldDirty: true });
   }, [shippingPolicy, baseWeight, weightUnit, weightBasis, onUpdateTreeMeta, form]);
+
+  const updateProductAllowRotation = useCallback((allowRotation: boolean) => {
+    const current = form.getValues("pricingProfileConfig");
+    const currentRecord = current && typeof current === "object" && !Array.isArray(current)
+      ? { ...(current as Record<string, any>) }
+      : {};
+    const currentFormulaVariables = currentRecord.formulaVariables && typeof currentRecord.formulaVariables === "object" && !Array.isArray(currentRecord.formulaVariables)
+      ? currentRecord.formulaVariables
+      : {};
+
+    form.setValue(
+      "pricingProfileConfig",
+      {
+        ...currentRecord,
+        allowRotation,
+        formulaVariables: {
+          ...currentFormulaVariables,
+          allow_rotation: allowRotation,
+        },
+      },
+      { shouldDirty: true },
+    );
+  }, [form]);
 
   const isWeightDisabled = shippingPolicy === "pickup_only";
   const selectedPrimaryMaterialId = form.watch("primaryMaterialId");
@@ -439,6 +486,8 @@ export const ProductForm = ({
               onUpdateBase={onUpdatePricingV2Base!}
               onUpdateUnitSystem={onUpdatePricingV2UnitSystem!}
               onUpdateTierBasis={onUpdatePricingV2TierBasis!}
+              allowRotation={getAllowRotationFromPricingConfig(form.watch("pricingProfileConfig"))}
+              onUpdateAllowRotation={updateProductAllowRotation}
               onAddTier={onAddPricingV2Tier!}
               onUpdateTier={onUpdatePricingV2Tier!}
               onDeleteTier={onDeletePricingV2Tier!}

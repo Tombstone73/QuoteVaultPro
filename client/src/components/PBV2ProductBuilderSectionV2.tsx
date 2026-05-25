@@ -766,8 +766,6 @@ export default function PBV2ProductBuilderSectionV2({
 
   // Handlers
   const handleAddGroup = () => {
-    console.error('[PBV2_ADD_GROUP_HANDLER] called', { hasTree: !!localTreeJson, time: Date.now() });
-    
     if (!localTreeJson) {
       console.error('[PBV2_ADD_GROUP_ERROR] No tree available');
       toast({ title: "Add Group failed", description: "No tree available. See console.", variant: "destructive" });
@@ -777,28 +775,15 @@ export default function PBV2ProductBuilderSectionV2({
     try {
       const oldTreeRef = localTreeJson;
       
-      // Count groups before
       const oldNodes = (oldTreeRef as any)?.nodes || {};
       const beforeGroups = Object.values(oldNodes).filter((n: any) => n.type?.toUpperCase() === 'GROUP').length;
-      
-      console.error('[PBV2_ADD_GROUP_BEFORE]', { beforeGroups, totalNodes: Object.keys(oldNodes).length });
-      
+
       const { patch, newGroupId } = createAddGroupPatch(localTreeJson);
       const updatedTree = applyPatchToTree(localTreeJson, patch);
-      
-      // Count groups after patch
+
       const newNodes = (updatedTree as any)?.nodes || {};
       const afterGroups = Object.values(newNodes).filter((n: any) => n.type?.toUpperCase() === 'GROUP').length;
-      
-      console.error('[PBV2_ADD_GROUP_AFTER_PATCH]', {
-        afterGroups,
-        totalNodes: Object.keys(newNodes).length,
-        groupAdded: afterGroups > beforeGroups,
-        newGroupId,
-        newGroupExists: !!newNodes[newGroupId],
-        newGroupNode: newNodes[newGroupId]
-      });
-      
+
       if (afterGroups <= beforeGroups) {
         console.error('[PBV2_ADD_GROUP_ERROR] Group count did not increase', { beforeGroups, afterGroups });
         toast({ title: "Add Group failed", description: `Groups: ${beforeGroups} → ${afterGroups}. See console.`, variant: "destructive" });
