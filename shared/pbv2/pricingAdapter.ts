@@ -131,6 +131,8 @@ export type Pbv2TierResolution = {
   matrixBasePriceOverride: boolean;
   matrixRowId?: string | null;
   matrixStaticBaseRate?: number | null;
+  matrixBasePriceRaw?: number | null;
+  matrixBasePriceIgnoredBecauseTierMatched?: boolean;
   matrixStaticBaseRateUsedAsFallback?: boolean;
   productTierFallbackUsed?: boolean;
   tierBasis?: Pbv2TierBasis;
@@ -146,6 +148,9 @@ export type Pbv2TierResolution = {
   selectedTierMinQty?: number | null;
   selectedTierRate?: number | null;
   selectedTierSource?: Pbv2TierSource | null;
+  selectedTierRateAppliedToBasePrice?: boolean;
+  basePriceFinal?: number;
+  basePriceSource?: string;
   finalBaseRateUsed: number;
   warnings: Pbv2TierResolutionWarning[];
 };

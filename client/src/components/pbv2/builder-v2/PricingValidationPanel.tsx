@@ -149,6 +149,8 @@ type PricingPreviewResponse = {
       matrixBasePriceOverride: boolean;
       matrixRowId?: string | null;
       matrixStaticBaseRate?: number | null;
+      matrixBasePriceRaw?: number | null;
+      matrixBasePriceIgnoredBecauseTierMatched?: boolean;
       matrixStaticBaseRateUsedAsFallback?: boolean;
       productTierFallbackUsed?: boolean;
       tierBasis?: "line_item_quantity" | "computed_sheet_usage";
@@ -164,6 +166,9 @@ type PricingPreviewResponse = {
       selectedTierMinQty?: number | null;
       selectedTierRate?: number | null;
       selectedTierSource?: "matrix_row" | "pbv2_product" | "pbv2_pricing_v2" | "none" | null;
+      selectedTierRateAppliedToBasePrice?: boolean;
+      basePriceFinal?: number;
+      basePriceSource?: string;
       finalBaseRateUsed: number;
       warnings: Array<{ code: string; message: string; severity?: string; detail?: Record<string, unknown> }>;
       capturedAt?: string;
@@ -1356,6 +1361,18 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                             <div className="font-mono">{displayDebugValue(tierResolution?.quantity)}</div>
                             <div className="text-slate-400">Matched tier</div>
                             <div className="font-mono">{matchedTierDisplay ?? (tierResolution?.enabled ? "No matched tier" : "No quantity tier applied")}</div>
+                            <div className="text-slate-400">Selected tier rate</div>
+                            <div className="font-mono">{displayDebugCurrency(tierResolution?.selectedTierRate)}</div>
+                            <div className="text-slate-400">Tier rate applied to base_price</div>
+                            <div className={tierResolution?.selectedTierRateAppliedToBasePrice ? "font-mono text-emerald-200" : "font-mono"}>
+                              {tierResolution?.selectedTierRateAppliedToBasePrice ? "Yes" : "No"}
+                            </div>
+                            <div className="text-slate-400">Matrix base_price raw</div>
+                            <div className="font-mono">{displayDebugCurrency(tierResolution?.matrixBasePriceRaw)}</div>
+                            <div className="text-slate-400">Matrix base_price ignored</div>
+                            <div className={tierResolution?.matrixBasePriceIgnoredBecauseTierMatched ? "font-mono text-emerald-200" : "font-mono"}>
+                              {tierResolution?.matrixBasePriceIgnoredBecauseTierMatched ? "Yes" : "No"}
+                            </div>
                             <div className="text-slate-400">Tier-adjusted base rate</div>
                             <div className="font-mono">{displayDebugCurrency(tierResolution?.tierBaseRate ?? tierResolution?.effectiveBaseRateBeforeMatrix)}</div>
                             <div className="text-slate-400">Matrix base_price override</div>
@@ -1370,6 +1387,10 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                             </div>
                             <div className="text-slate-400">Product tier fallback</div>
                             <div className="font-mono">{tierResolution?.productTierFallbackUsed ? "Yes" : "No"}</div>
+                            <div className="text-slate-400">Base price source</div>
+                            <div className="font-mono break-all">{tierResolution?.basePriceSource ?? previewMeta?.basePriceSource ?? "Unknown"}</div>
+                            <div className="text-slate-400">Base price final</div>
+                            <div className="font-mono">{displayDebugCurrency(tierResolution?.basePriceFinal ?? tierResolution?.finalBaseRateUsed)}</div>
                             <div className="text-slate-400">Final base rate used</div>
                             <div className="font-mono">{displayDebugCurrency(tierResolution?.finalBaseRateUsed)}</div>
                           </div>
