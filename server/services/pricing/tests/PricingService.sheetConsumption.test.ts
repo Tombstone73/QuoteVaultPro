@@ -444,6 +444,85 @@ describe("sheet_consumption_sqft", () => {
     }));
   });
 
+  test("product-level allow_rotation=true feeds formula scope", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeRowTierBasisTree("computed_sheet_usage"),
+      widthIn: 24,
+      heightIn: 36,
+      quantity: 5,
+      pbv2ExplicitSelections: { rate: { value: "standard" } },
+      pricingProfileConfig: {
+        formulaVariables: { allow_rotation: "yes" },
+      },
+      pricingFormulaOverride: "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price",
+      debug: true,
+    });
+
+    expect(result.debug?.variables.allow_rotation).toBe(true);
+    expect(result.debug?.variableSources?.allow_rotation).toBe("product.pricingProfileConfig.formulaVariables");
+    expect(result.debug?.sheetYield).toEqual(expect.objectContaining({
+      allowRotation: true,
+      allowRotationSource: "product.pricingProfileConfig.formulaVariables",
+      piecesPerSheet: 5,
+      orientationUsed: "mixed",
+      totalSheetCount: 1,
+    }));
+  });
+
+  test("PBV2 choice allow_rotation=false overrides product true", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeAllowRotationTree(),
+      widthIn: 24,
+      heightIn: 36,
+      quantity: 5,
+      pbv2ExplicitSelections: {
+        rate: { value: "standard" },
+        allow_rotation: { value: "no" },
+      },
+      pricingProfileConfig: {
+        formulaVariables: { allow_rotation: true },
+      },
+      pricingFormulaOverride: "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price",
+      debug: true,
+    });
+
+    expect(result.debug?.variables.allow_rotation).toBe(false);
+    expect(result.debug?.variableSources?.allow_rotation).toBe("pbv2.choice:allow_rotation");
+    expect(result.debug?.sheetYield).toEqual(expect.objectContaining({
+      allowRotation: false,
+      piecesPerSheet: 4,
+      orientationUsed: "normal",
+      totalSheetCount: 2,
+    }));
+  });
+
+  test("PBV2 choice allow_rotation=true overrides product false", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeAllowRotationTree(),
+      widthIn: 24,
+      heightIn: 36,
+      quantity: 5,
+      pbv2ExplicitSelections: {
+        rate: { value: "standard" },
+        allow_rotation: { value: "yes" },
+      },
+      pricingProfileConfig: {
+        formulaVariables: { allow_rotation: "no" },
+      },
+      pricingFormulaOverride: "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price",
+      debug: true,
+    });
+
+    expect(result.debug?.variables.allow_rotation).toBe(true);
+    expect(result.debug?.variableSources?.allow_rotation).toBe("pbv2.choice:allow_rotation");
+    expect(result.debug?.sheetYield).toEqual(expect.objectContaining({
+      allowRotation: true,
+      piecesPerSheet: 5,
+      orientationUsed: "mixed",
+      totalSheetCount: 1,
+    }));
+  });
+
   test("formula library mode ignores stale manual formula text and uses library expression", () => {
     const libraryExpression = "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price";
     const result = evaluatePricingPreviewFromTree({

@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
+import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { centsToCurrencyInput, currencyInputToCents } from '@/lib/pbv2/currency';
 import type { Pbv2TierBasis } from '@shared/optionTreeV2';
@@ -34,6 +35,8 @@ interface BasePricingEditorProps {
   onUpdateBase: (base: { perSqftCents?: number; perPieceCents?: number; minimumChargeCents?: number }) => void;
   onUpdateUnitSystem: (unitSystem: 'imperial' | 'metric') => void;
   onUpdateTierBasis: (tierBasis: Pbv2TierBasis) => void;
+  allowRotation?: boolean;
+  onUpdateAllowRotation?: (allowRotation: boolean) => void;
   onAddTier: (kind: 'qty' | 'sqft') => void;
   onUpdateTier: (kind: 'qty' | 'sqft', index: number, tier: any) => void;
   onDeleteTier: (kind: 'qty' | 'sqft', index: number) => void;
@@ -44,6 +47,8 @@ export function BasePricingEditor({
   onUpdateBase,
   onUpdateUnitSystem,
   onUpdateTierBasis,
+  allowRotation = false,
+  onUpdateAllowRotation,
   onAddTier,
   onUpdateTier,
   onDeleteTier,
@@ -118,6 +123,29 @@ export function BasePricingEditor({
           ) : null}
         </div>
         
+        <div className="rounded-md border border-slate-700 bg-[#0f172a]/60 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <Label className="text-xs font-medium text-slate-300">
+                Allow Rotation / Mixed Sheet Layout
+              </Label>
+              <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+                Sheet-yield formulas use normal orientation only when off. When on, pricing may use rotated and mixed layouts.
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <span className="text-[11px] text-slate-500">
+                {allowRotation ? 'Allow rotation/mixed layout' : 'No rotation'}
+              </span>
+              <Switch
+                checked={Boolean(allowRotation)}
+                onCheckedChange={(checked) => onUpdateAllowRotation?.(Boolean(checked))}
+                disabled={!onUpdateAllowRotation}
+              />
+            </div>
+          </div>
+        </div>
+
         <div className="grid grid-cols-3 gap-3">
           <div>
             <Label className="text-xs text-slate-400 mb-1 block">

@@ -858,6 +858,7 @@ export function evaluatePricingPreviewFromTree(input: {
       : (treeFormulaForPricing || null);
   const formulaVariableResolution = resolveFormulaVariablesForPricing({
     treeJson: input.treeJson,
+    pricingProfileConfig: input.pricingProfileConfig,
     pricingFormulaLibrary: input.pricingFormulaLibrary,
     pricingFormulaExpression: pricingFormulaExpressionForSheetYield,
     explicitFormulaVariables: input.formulaVariables,
@@ -1785,9 +1786,11 @@ function mergeNumericVariablesWithSources(
 ): void {
   if (!source || typeof source !== "object" || Array.isArray(source)) return;
   for (const [key, rawValue] of Object.entries(source as Record<string, unknown>)) {
-    const value = Number(rawValue);
-    if (!key || !Number.isFinite(value)) continue;
-    target.variables[key] = value;
+    const value = key === "allow_rotation"
+      ? parseFormulaBoolean(rawValue)
+      : Number(rawValue);
+    if (!key || value === null || !Number.isFinite(Number(value))) continue;
+    target.variables[key] = Number(value);
     target.sources[key] = sourceOverrides?.[key] ?? sourceLabel;
   }
 }
@@ -2983,7 +2986,8 @@ function numericRecord(value: unknown): Record<string, number> {
 
   const out: Record<string, number> = {};
   for (const [key, rawValue] of Object.entries(value as Record<string, unknown>)) {
-    const numeric = Number(rawValue);
+    const parsedBoolean = key === "allow_rotation" ? parseFormulaBoolean(rawValue) : null;
+    const numeric = parsedBoolean === null ? Number(rawValue) : Number(parsedBoolean);
     if (key && Number.isFinite(numeric)) out[key] = numeric;
   }
   return out;
@@ -3002,8 +3006,10 @@ function mergeFormulaVariables(
 ): void {
   if (!source) return;
   for (const [key, value] of Object.entries(source)) {
-    if (!key || !Number.isFinite(Number(value))) continue;
-    target.variables[key] = Number(value);
+    const parsedBoolean = key === "allow_rotation" ? parseFormulaBoolean(value) : null;
+    const numeric = parsedBoolean === null ? Number(value) : Number(parsedBoolean);
+    if (!key || !Number.isFinite(numeric)) continue;
+    target.variables[key] = numeric;
     target.sources[key] = sourceLabel;
   }
 }
@@ -3013,10 +3019,11 @@ function resolveFormulaLibraryDefaultVariables(library: PricingFormulaLibraryRes
   return extractFormulaVariables(library.config);
 }
 
-function resolveProductFormulaVariables(treeJson: any, product?: any): FormulaVariableResolution {
+function resolveProductFormulaVariables(treeJson: any, product?: any, pricingProfileConfigOverride?: unknown): FormulaVariableResolution {
   const meta = treeJson?.meta && typeof treeJson.meta === "object" ? treeJson.meta : {};
-  const pricingProfileConfig = product?.pricingProfileConfig && typeof product.pricingProfileConfig === "object"
-    ? product.pricingProfileConfig
+  const pricingProfileConfigSource = pricingProfileConfigOverride ?? product?.pricingProfileConfig;
+  const pricingProfileConfig = pricingProfileConfigSource && typeof pricingProfileConfigSource === "object"
+    ? pricingProfileConfigSource
     : {};
   const resolved: FormulaVariableResolution = { variables: {}, sources: {} };
 
@@ -3030,6 +3037,7 @@ function resolveProductFormulaVariables(treeJson: any, product?: any): FormulaVa
 function resolveFormulaVariablesForPricing(input: {
   treeJson: any;
   product?: any;
+  pricingProfileConfig?: unknown;
   pricingFormulaLibrary?: PricingFormulaLibraryResolution | null;
   pricingFormulaExpression?: string | null;
   explicitFormulaVariables?: Record<string, number>;
@@ -3047,7 +3055,7 @@ function resolveFormulaVariablesForPricing(input: {
     "formula_library.config.variables",
   );
 
-  const productVariables = resolveProductFormulaVariables(input.treeJson, input.product);
+  const productVariables = resolveProductFormulaVariables(input.treeJson, input.product, input.pricingProfileConfig);
   mergeFormulaVariables(resolved, productVariables.variables, "product_or_tree.formulaVariables");
   for (const [key, source] of Object.entries(productVariables.sources)) {
     if (Object.prototype.hasOwnProperty.call(productVariables.variables, key)) {
@@ -3472,7 +3480,8 @@ function numericRecordOrUndefined(value: unknown): Record<string, number> | unde
 
   const out: Record<string, number> = {};
   for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-    const parsed = Number(raw);
+    const parsedBoolean = key === "allow_rotation" ? parseFormulaBoolean(raw) : null;
+    const parsed = parsedBoolean === null ? Number(raw) : Number(parsedBoolean);
     if (Number.isFinite(parsed)) out[key] = parsed;
   }
 
